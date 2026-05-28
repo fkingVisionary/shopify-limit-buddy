@@ -266,6 +266,8 @@ function Index() {
     window.open(url, "_blank", "noopener,noreferrer");
   };
 
+  const handleScan = async (e: React.FormEvent) => {
+    e.preventDefault();
     setError(null);
     setProducts([]);
     setLimits({});
