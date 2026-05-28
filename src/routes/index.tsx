@@ -833,17 +833,34 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // Tasks view
 // ────────────────────────────────────────────
 function TasksView({
-  tasks, profiles, onStart, onStop, onDelete,
+  tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
+  onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
 }) {
   if (tasks.length === 0) {
     return (
-      <div className="mt-10 rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-        <ListChecks className="mx-auto mb-3 h-8 w-8 opacity-60" />
-        <p className="font-medium text-foreground">No tasks yet</p>
-        <p className="mt-1 text-xs">Tap <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-primary text-primary-foreground"><Plus className="h-3 w-3" /></span> to create your first task.</p>
+      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+          <ListChecks className="h-6 w-6" />
+        </div>
+        <p className="text-base font-semibold text-foreground">No tasks yet</p>
+        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+          A task watches one product and fires a prefilled checkout the moment stock appears.
+        </p>
+        {hasProfiles ? (
+          <Button className="mt-4 h-10" onClick={onCreate}>
+            <Plus className="h-4 w-4" /> Create your first task
+          </Button>
+        ) : (
+          <div className="mt-4 space-y-2">
+            <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
+            <Button className="h-10" onClick={onGoProfiles}>
+              <Users className="h-4 w-4" /> Add a profile
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
