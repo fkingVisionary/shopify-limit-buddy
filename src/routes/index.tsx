@@ -355,16 +355,20 @@ function Index() {
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(false);
   const [notifyOn, setNotifyOn] = useState(true);
+  const [tab, setTab] = useState<"watch" | "browse" | "profiles" | "settings">("browse");
+  const [proxiesText, setProxiesText] = useState("");
   const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
   useEffect(() => {
     const { profiles, activeIds } = loadProfiles();
     setProfiles(profiles);
     setActiveIds(activeIds);
-    // Restore last store URL
     try {
       const savedUrl = localStorage.getItem(STORE_URL_KEY);
       if (savedUrl) setUrl(savedUrl);
+      const savedProxies = localStorage.getItem(PROXIES_KEY) ?? "";
+      setProxiesText(savedProxies);
+      setProxyList(savedProxies.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch {}
     // Restore cached catalog
     const cached = loadCatalog();
