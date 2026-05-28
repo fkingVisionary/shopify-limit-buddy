@@ -210,11 +210,66 @@ type Profile = Prefill & { id: string; name: string };
 const PREFILL_KEY = "shopify-limit-checker:prefill"; // legacy single-profile
 const PROFILES_KEY = "shopify-limit-checker:profiles";
 const ACTIVE_KEY = "shopify-limit-checker:active-profiles";
+const STORE_URL_KEY = "shopify-limit-checker:store-url";
+const CATALOG_KEY = "shopify-limit-checker:catalog"; // { storeUrl, products, ts }
+const DEFAULT_STORE_URL = "https://www.jbhifi.com.au";
+const CATALOG_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 const emptyPrefill: Prefill = {
   email: "", first_name: "", last_name: "", address1: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
 };
+
+function saveCatalog(storeUrl: string, products: Product[]) {
+  try {
+    localStorage.setItem(CATALOG_KEY, JSON.stringify({ storeUrl, products, ts: Date.now() }));
+  } catch {}
+}
+
+function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(CATALOG_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data?.storeUrl || !Array.isArray(data.products)) return null;
+    return data;
+  } catch { return null; }
+}
+
+// Fetch a single product by Shopify handle and return it as a Product
+async function fetchProductByHandle(storeUrl: string, handle: string): Promise<Product | null> {
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+  if (!res.ok) return null;
+  const p: any = await res.json();
+  return {
+    id: p.id,
+    title: p.title,
+    handle: p.handle,
+    image: p.featured_image ? (p.featured_image.startsWith("//") ? `https:${p.featured_image}` : p.featured_image) : (p.images?.[0] ?? null),
+    variants: (p.variants ?? []).map((v: any) => ({ id: v.id, title: v.public_title ?? v.title, price: typeof v.price === "number" ? (v.price / 100).toFixed(2) : v.price, available: v.available })),
+  };
+}
+
+// Extract a Shopify product handle from a URL like
+// https://www.jbhifi.com.au/products/some-handle?variant=...
+function handleFromUrl(input: string): string | null {
+  const s = input.trim();
+  const m = s.match(/\/products\/([a-z0-9][a-z0-9-]*)/i);
+  return m ? m[1] : null;
+}
+
+async function searchProducts(storeUrl: string, query: string, limit = 8): Promise<Product[]> {
+  const q = encodeURIComponent(query.trim());
+  const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
+  const res = await fetch(proxied(url));
+  if (!res.ok) return [];
+  const data: any = await res.json();
+  const items: any[] = data?.resources?.results?.products ?? [];
+  // suggest.json doesn't return variants — fetch each handle in parallel
+  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle)));
+  return results.filter((p): p is Product => !!p);
+}
 
 const makeId = () => Math.random().toString(36).slice(2, 10);
 
@@ -262,7 +317,10 @@ function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: P
 }
 
 function Index() {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(DEFAULT_STORE_URL);
+  const [quickAdd, setQuickAdd] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [cacheAge, setCacheAge] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +343,20 @@ function Index() {
     const { profiles, activeIds } = loadProfiles();
     setProfiles(profiles);
     setActiveIds(activeIds);
+    // Restore last store URL
+    try {
+      const savedUrl = localStorage.getItem(STORE_URL_KEY);
+      if (savedUrl) setUrl(savedUrl);
+    } catch {}
+    // Restore cached catalog
+    const cached = loadCatalog();
+    if (cached && Date.now() - cached.ts < CATALOG_TTL_MS) {
+      setStoreUrl(cached.storeUrl);
+      setProducts(cached.products);
+      setCacheAge(cached.ts);
+    }
   }, []);
+
 
   const persistProfiles = (next: Profile[], nextActive?: string[]) => {
     const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
@@ -445,16 +516,20 @@ function Index() {
     setProducts([]);
     setLimits({});
     setProgress(0);
+    setCacheAge(null);
     const normalized = normalizeStoreUrl(url);
     if (!normalized) {
       setError("Please enter a valid store URL.");
       return;
     }
     setStoreUrl(normalized);
+    try { localStorage.setItem(STORE_URL_KEY, normalized); } catch {}
     setLoading(true);
     try {
       const result = await fetchProducts(normalized, (n) => setProgress(n));
       setProducts(result.products);
+      saveCatalog(normalized, result.products);
+      setCacheAge(Date.now());
       if (result.products.length === 0) {
         setError("No products found. The store may be private or empty.");
       } else if (result.partial && result.note) {
@@ -466,6 +541,53 @@ function Index() {
       setLoading(false);
     }
   };
+
+  // Quick-add: accepts a product URL (any /products/<handle>) OR a search keyword.
+  // Skips the full catalog scan and appends matches to the list.
+  const handleQuickAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const raw = quickAdd.trim();
+    if (!raw) return;
+    // Determine target store: URL pasted → derive from it; else current/default
+    let targetStore = storeUrl;
+    if (/^https?:\/\//i.test(raw)) {
+      const norm = normalizeStoreUrl(raw);
+      if (norm) targetStore = norm;
+    }
+    if (!targetStore) {
+      targetStore = normalizeStoreUrl(url) ?? DEFAULT_STORE_URL;
+    }
+    setStoreUrl(targetStore);
+    try { localStorage.setItem(STORE_URL_KEY, targetStore); } catch {}
+    setQuickBusy(true);
+    try {
+      const handle = handleFromUrl(raw);
+      let found: Product[] = [];
+      if (handle) {
+        const p = await fetchProductByHandle(targetStore, handle);
+        if (p) found = [p];
+        else throw new Error("Couldn't load that product. Check the URL.");
+      } else {
+        found = await searchProducts(targetStore, raw, 8);
+        if (found.length === 0) throw new Error(`No matches for "${raw}".`);
+      }
+      // Merge into products (dedupe by id), put new at top
+      setProducts((prev) => {
+        const ids = new Set(prev.map((p) => p.id));
+        const fresh = found.filter((p) => !ids.has(p.id));
+        const next = [...fresh, ...prev];
+        saveCatalog(targetStore!, next);
+        return next;
+      });
+      setQuickAdd("");
+    } catch (err: any) {
+      setError(err.message ?? "Quick add failed.");
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
 
   const checkLimit = async (product: Product) => {
     if (!storeUrl) return;
@@ -620,7 +742,7 @@ function Index() {
         <form onSubmit={handleScan} className="flex flex-col gap-3 sm:flex-row">
           <Input
             type="text"
-            placeholder="e.g. https://store.example.com"
+            placeholder="Store URL (e.g. https://www.jbhifi.com.au)"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             className="flex-1"
@@ -628,17 +750,54 @@ function Index() {
             autoCapitalize="none"
             autoCorrect="off"
           />
-          <Button type="submit" disabled={loading}>
+          <Button type="submit" disabled={loading} variant="secondary">
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {loading ? "Scanning..." : "Scan store"}
+            {loading ? "Scanning..." : "Scan full catalog"}
           </Button>
         </form>
+
+        <form onSubmit={handleQuickAdd} className="mt-3 flex flex-col gap-3 sm:flex-row">
+          <Input
+            type="text"
+            placeholder="Paste product URL or search keywords (e.g. 'PS5 Pro')"
+            value={quickAdd}
+            onChange={(e) => setQuickAdd(e.target.value)}
+            className="flex-1"
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          <Button type="submit" disabled={quickBusy}>
+            {quickBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {quickBusy ? "Adding..." : "Quick add"}
+          </Button>
+        </form>
+
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          {cacheAge && products.length > 0 && (
+            <span>
+              Cached {products.length} products · {Math.round((Date.now() - cacheAge) / 60000)} min ago
+            </span>
+          )}
+          {products.length > 0 && (
+            <button
+              type="button"
+              className="underline hover:text-foreground"
+              onClick={() => {
+                try { localStorage.removeItem(CATALOG_KEY); } catch {}
+                setProducts([]); setLimits({}); setCacheAge(null);
+              }}
+            >
+              Clear cache
+            </button>
+          )}
+        </div>
 
         {loading && (
           <div className="mt-4 text-sm text-muted-foreground">
             Loading products... <span className="font-medium text-foreground">{progress}</span> fetched so far
           </div>
         )}
+
 
         {error && (
           <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
