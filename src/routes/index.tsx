@@ -1,10 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, ShoppingBag, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
