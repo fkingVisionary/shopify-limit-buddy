@@ -399,6 +399,17 @@ function loadTasks(): Task[] {
     return arr.map((t) => ({ ...t, running: false, status: t.status === "in_stock" || t.status === "opened" ? t.status : "idle" }));
   } catch { return []; }
 }
+
+// ─────────────── UX persistence ───────────────
+const WIZARD_KEY = "aio:wizard-done";
+const TIPS_DISMISS_KEY = "aio:tips-dismissed";
+function loadDismissedTips(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(localStorage.getItem(TIPS_DISMISS_KEY) ?? "{}"); } catch { return {}; }
+}
+function saveDismissedTips(d: Record<string, boolean>) {
+  try { localStorage.setItem(TIPS_DISMISS_KEY, JSON.stringify(d)); } catch {}
+}
 function saveTasks(tasks: Task[]) {
   try {
     const slim = tasks.map(({ running: _r, ...rest }) => rest);
