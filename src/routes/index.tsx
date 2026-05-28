@@ -420,8 +420,11 @@ type TaskStatus =
   | "adding_to_cart"
   | "checkout_ready"
   | "opened"
+  | "checking_out"   // browserless run in flight
+  | "confirmed"      // order id received
   | "failed"
   | "error";
+type CheckoutStepLog = { step: string; t: number; ok: boolean; note?: string };
 type Task = {
   id: string;
   storeId: string;
@@ -445,6 +448,12 @@ type Task = {
   checkoutTokenUsed?: boolean;
   checkoutStartedAt?: number;
   checkoutElapsedMs?: number;
+  // Browserless state
+  orderId?: string | null;
+  finalUrl?: string;
+  steps?: CheckoutStepLog[];
+  screenshotB64?: string | null;
+  browserlessElapsedMs?: number;
 };
 const TASKS_KEY = "aio:tasks";
 function loadTasks(): Task[] {
@@ -452,7 +461,7 @@ function loadTasks(): Task[] {
   try {
     const arr = JSON.parse(localStorage.getItem(TASKS_KEY) ?? "[]") as Task[];
     // Reset transient runtime fields
-    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "failed"];
+    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "confirmed", "failed"];
     return arr.map((t) => ({ ...t, running: false, status: keep.includes(t.status) ? t.status : "idle" }));
   } catch { return []; }
 }
