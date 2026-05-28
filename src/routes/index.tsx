@@ -506,7 +506,7 @@ function Index() {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeIds, setActiveIds] = useState<string[]>([]);
   const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
-  const [proxiesText, setProxiesText] = useState("");
+  const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
