@@ -265,7 +265,76 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       elapsedMs: Date.now() - t0,
     });
 
+    // ── 0. Akamai warm-up ──────────────────────────────────────────────────
+    // GET the homepage to seed cookies. If the store is behind Akamai BMP
+    // (JB Hi-Fi, Kmart, Big W, Coles, Myer, etc.) the response carries
+    // _abck/bm_sz cookies or returns 403. We solve the sensor via 2Captcha
+    // and POST it back to the sensor endpoint to upgrade _abck to a "valid"
+    // state — Akamai usually requires 2 posts before accepting downstream
+    // requests. Skipped silently when no Akamai footprint is detected.
+    try {
+      lastStep = "akamai_sensor";
+      const s = Date.now();
+      const probe = await fetch(`${base}/`, {
+        headers: { ...baseHeaders, accept: "text/html,application/xhtml+xml" },
+      });
+      collectCookies(probe, jar);
+      const probeBody = await probe.text();
+      const isAkamai = probe.status === 403 || detectAkamai(probe, probeBody);
+      if (!isAkamai) {
+        record("akamai_sensor", true, probe.status, Date.now() - s, "no Akamai detected — skipped");
+      } else {
+        const scriptUrl = findAkamaiScriptUrl(probeBody, base);
+        if (!scriptUrl) {
+          record(
+            "akamai_sensor",
+            false,
+            probe.status,
+            Date.now() - s,
+            "Akamai detected but sensor script URL not found",
+          );
+          return fail("akamai_sensor", "could not locate Akamai sensor script in HTML");
+        }
+        // Two-pass sensor post — first pass gets an invalid _abck, second
+        // upgrades it. Some Akamai configs need a third pass.
+        let abckValid = false;
+        for (let pass = 0; pass < 3 && !abckValid; pass++) {
+          const sensorData = await solveAkamaiSensor({
+            pageUrl: `${base}/`,
+            scriptUrl,
+            userAgent: UA,
+          });
+          const postRes = await fetch(scriptUrl, {
+            method: "POST",
+            headers: {
+              ...baseHeaders,
+              "content-type": "text/plain;charset=UTF-8",
+              cookie: cookieHeader(jar),
+              accept: "*/*",
+            },
+            body: JSON.stringify({ sensor_data: sensorData }),
+          });
+          collectCookies(postRes, jar);
+          const abck = jar.get("_abck") ?? "";
+          // Valid _abck cookies do NOT contain "~0~" in the second segment.
+          // Invalid sensor responses leave it as "~-1~..." or "~0~...".
+          abckValid = /~-?\d+~[^~]*~[^~]*~/.test(abck) && !/~0~/.test(abck) && !/~-1~/.test(abck);
+        }
+        record(
+          "akamai_sensor",
+          abckValid,
+          probe.status,
+          Date.now() - s,
+          abckValid ? "sensor solved, _abck upgraded" : "sensor failed to upgrade _abck",
+        );
+        if (!abckValid) return fail("akamai_sensor", "Akamai _abck did not validate after 3 passes");
+      }
+    } catch (e) {
+      return fail(lastStep, (e as Error).message);
+    }
+
     // ── 1. cart/add ────────────────────────────────────────────────────────
+
     try {
       lastStep = "cart_add";
       const s = Date.now();
