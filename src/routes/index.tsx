@@ -1520,8 +1520,8 @@ function ProfileBuilderDialog({
 
   return (
     <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90dvh] max-w-md flex-col gap-0 p-0">
+        <DialogHeader className="shrink-0 px-6 pt-6">
           <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
             <Sparkles className="h-6 w-6" />
           </div>
