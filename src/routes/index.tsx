@@ -1455,7 +1455,7 @@ function ProfileBuilderDialog({
   useEffect(() => {
     if (base) {
       setCount(3);
-      setJigAddr(true);
+      setAddrMode("mix");
       setJigNames(true);
       const dom = (base.email.split("@")[1] || "").toLowerCase();
       setEmailMode(dom === "gmail.com" || dom === "googlemail.com" ? "dot" : "off");
