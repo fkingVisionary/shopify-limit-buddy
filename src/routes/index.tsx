@@ -961,103 +961,198 @@ function CreateTaskSheet({
     setInput("");
   };
 
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+
+  const stepValid: Record<1 | 2 | 3, boolean> = {
+    1: input.trim().length > 0,
+    2: !!store,
+    3: !!profile,
+  };
+  const stepMeta = [
+    { n: 1, label: "What", icon: Package, hint: "The product to watch" },
+    { n: 2, label: "Where", icon: Store, hint: "Which store to watch" },
+    { n: 3, label: "Who", icon: UserIcon, hint: "Checkout profile + quantity" },
+  ] as const;
+
   return (
-    <DrawerContent className="max-h-[88vh]">
-      <DrawerHeader className="flex flex-row items-center justify-between">
+    <DrawerContent className="max-h-[92vh]">
+      <DrawerHeader className="flex flex-row items-center justify-between pb-2">
         <div className="flex items-center gap-2">
           <div className="grid h-8 w-8 place-items-center rounded-md bg-primary/15 text-primary"><Plus className="h-4 w-4" /></div>
-          <DrawerTitle>Create Tasks</DrawerTitle>
+          <div>
+            <DrawerTitle className="text-base">New task · Step {step} of 3</DrawerTitle>
+            <p className="text-[11px] text-muted-foreground">{stepMeta[step - 1].hint}</p>
+          </div>
         </div>
         <DrawerClose asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"><X className="h-4 w-4" /></Button>
         </DrawerClose>
       </DrawerHeader>
 
-      <div className="space-y-4 overflow-y-auto px-4 pb-4">
-        <div className="rounded-lg bg-muted/40 p-3 text-center text-sm font-medium text-muted-foreground">Setup</div>
+      {/* Progress dots */}
+      <div className="flex items-center justify-center gap-2 px-4 pb-3">
+        {stepMeta.map((s) => {
+          const done = step > s.n;
+          const active = step === s.n;
+          return (
+            <div key={s.n} className="flex items-center gap-2">
+              <button
+                onClick={() => setStep(s.n)}
+                className={`flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors ${
+                  active ? "bg-primary text-primary-foreground"
+                  : done ? "bg-primary/20 text-primary"
+                  : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {done ? <Check className="h-3 w-3" /> : <s.icon className="h-3 w-3" />}
+                {s.label}
+              </button>
+              {s.n < 3 && <div className={`h-px w-4 ${step > s.n ? "bg-primary/40" : "bg-border"}`} />}
+            </div>
+          );
+        })}
+      </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs text-muted-foreground">Store</Label>
+      <div className="space-y-4 overflow-y-auto px-4 pb-4">
+        {step === 1 && (
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-sm font-medium">What product do you want to watch?</Label>
+                <InfoDot text="Paste a product URL for an exact match, a product handle/SKU, or describe it in keywords — the bot will pick the closest match on the store." />
+              </div>
+              <Input
+                className="mt-2 h-11 text-base"
+                placeholder="Paste URL, SKU, or keywords"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                autoFocus
+              />
+              <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                <div>· <b className="text-foreground/80">URL</b> — https://store.com/products/some-handle</div>
+                <div>· <b className="text-foreground/80">SKU/handle</b> — air-jordan-1-low</div>
+                <div>· <b className="text-foreground/80">Keywords</b> — "Air Jordan 1 Low"</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5">
+              <Label className="text-sm font-medium">Which store sells it?</Label>
+              <InfoDot text="Pick a preset Shopify store or add a custom one by URL. Tasks only watch the store you select here." />
+            </div>
             {addingStore ? (
-              <div className="mt-1 space-y-1.5">
-                <Input className="h-9" placeholder="Name" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
-                <Input className="h-9" placeholder="https://store.com" value={newStoreUrl} onChange={(e) => setNewStoreUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
+              <div className="space-y-1.5">
+                <Input className="h-10" placeholder="Display name (e.g. My Store)" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
+                <Input className="h-10" placeholder="https://store.com" value={newStoreUrl} onChange={(e) => setNewStoreUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
                 <div className="flex gap-1.5">
-                  <Button size="sm" className="h-8 flex-1" onClick={() => { onAddCustomStore(newStoreName, newStoreUrl); setNewStoreName(""); setNewStoreUrl(""); setAddingStore(false); }}>Add</Button>
-                  <Button size="sm" variant="ghost" className="h-8" onClick={() => setAddingStore(false)}>Cancel</Button>
+                  <Button size="sm" className="h-9 flex-1" onClick={() => { onAddCustomStore(newStoreName, newStoreUrl); setNewStoreName(""); setNewStoreUrl(""); setAddingStore(false); }}>Add store</Button>
+                  <Button size="sm" variant="ghost" className="h-9" onClick={() => setAddingStore(false)}>Cancel</Button>
                 </div>
               </div>
             ) : (
-              <Select value={storeId} onValueChange={(v) => v === "__add" ? setAddingStore(true) : setStoreId(v)}>
-                <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select store" /></SelectTrigger>
-                <SelectContent>
-                  {stores.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}{s.preset ? "" : " (custom)"}</SelectItem>
-                  ))}
-                  <SelectItem value="__add">＋ Add custom store…</SelectItem>
-                </SelectContent>
-              </Select>
+              <>
+                <Select value={storeId} onValueChange={(v) => v === "__add" ? setAddingStore(true) : setStoreId(v)}>
+                  <SelectTrigger className="h-11 text-base"><SelectValue placeholder="Select a store" /></SelectTrigger>
+                  <SelectContent>
+                    {stores.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}{s.preset ? "" : " (custom)"}</SelectItem>
+                    ))}
+                    <SelectItem value="__add">＋ Add custom store…</SelectItem>
+                  </SelectContent>
+                </Select>
+                {store && <p className="text-[11px] text-muted-foreground">{store.url}</p>}
+              </>
             )}
           </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Quantity</Label>
-            <Input className="mt-1 h-9" type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
-          </div>
-        </div>
+        )}
 
-        <div>
-          <Label className="text-xs text-muted-foreground">Input</Label>
-          <Input
-            className="mt-1 h-9"
-            placeholder="SKU, product URL, or keywords"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            autoCapitalize="none"
-            autoCorrect="off"
-          />
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            Paste a /products/ URL, a product handle/SKU, or search keywords like "Air Jordan 1 Low".
-          </p>
-        </div>
+        {step === 3 && (
+          <div className="space-y-4">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-sm font-medium">Which profile checks out?</Label>
+                <InfoDot text="The profile's shipping + contact info is pre-filled into Shopify's checkout when stock appears." />
+              </div>
+              <Select value={profileId} onValueChange={setProfileId}>
+                <SelectTrigger className="mt-2 h-11 text-base"><SelectValue placeholder="Select a profile" /></SelectTrigger>
+                <SelectContent>
+                  {profiles.length === 0 ? (
+                    <SelectItem value="__none" disabled>No profiles — add one in the Profiles tab</SelectItem>
+                  ) : profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs text-muted-foreground">Profile</Label>
-            <Select value={profileId} onValueChange={setProfileId}>
-              <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select profile" /></SelectTrigger>
-              <SelectContent>
-                {profiles.length === 0 ? (
-                  <SelectItem value="__none" disabled>No profiles — add one</SelectItem>
-                ) : profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Proxy</Label>
-            <Select value={proxyIdx} onValueChange={setProxyIdx}>
-              <SelectTrigger className="mt-1 h-9"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount})` : " — none configured"}</SelectItem>
-                {Array.from({ length: proxyCount }, (_, i) => (
-                  <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Quantity per checkout</Label>
+                  <InfoDot text="How many units to add to cart. If a per-customer limit is detected, this is capped automatically." />
+                </div>
+                <Input className="mt-1 h-10" type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Number of tasks</Label>
+                  <InfoDot text="Creates this many identical tasks. Useful when you want several attempts running in parallel." />
+                </div>
+                <Input className="mt-1 h-10" type="number" min={1} max={100} value={taskQty} onChange={(e) => setTaskQty(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} />
+              </div>
+            </div>
 
-        <div>
-          <Label className="text-xs text-muted-foreground">Task quantity</Label>
-          <Input className="mt-1 h-9" type="number" min={1} max={100} value={taskQty} onChange={(e) => setTaskQty(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} />
-          <p className="mt-1 text-[10px] text-muted-foreground">Creates this many identical tasks (handy for one task per profile after duplication).</p>
-        </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-xs text-muted-foreground">Proxy</Label>
+                <InfoDot text="Which proxy to route requests through. 'Rotate' cycles through all proxies you've added in the Proxies tab." />
+              </div>
+              <Select value={proxyIdx} onValueChange={setProxyIdx}>
+                <SelectTrigger className="mt-1 h-10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount} configured)` : " — none configured (direct)"}</SelectItem>
+                  {Array.from({ length: proxyCount }, (_, i) => (
+                    <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Summary */}
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-1 font-medium text-foreground">Summary</div>
+              <div className="text-muted-foreground">
+                Watch <span className="text-foreground">{input || "—"}</span> on <span className="text-foreground">{store?.name ?? "—"}</span>,
+                checkout as <span className="text-foreground">{profile?.name ?? "—"}</span>,
+                qty <span className="text-foreground">{qty}</span>{taskQty > 1 ? <> × <span className="text-foreground">{taskQty} tasks</span></> : null}.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <DrawerFooter>
-        <Button size="lg" className="h-12 text-base font-semibold" disabled={!canCreate} onClick={submit}>
-          Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
-        </Button>
+      <DrawerFooter className="flex-row gap-2">
+        {step > 1 ? (
+          <Button variant="secondary" size="lg" className="h-12 flex-1" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
+            <ChevronLeft className="h-4 w-4" /> Back
+          </Button>
+        ) : (
+          <DrawerClose asChild>
+            <Button variant="secondary" size="lg" className="h-12 flex-1">Cancel</Button>
+          </DrawerClose>
+        )}
+        {step < 3 ? (
+          <Button size="lg" className="h-12 flex-1 text-base font-semibold" disabled={!stepValid[step]} onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>
+            Next <ChevronRight className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button size="lg" className="h-12 flex-1 text-base font-semibold" disabled={!canCreate} onClick={submit}>
+            Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
+          </Button>
+        )}
       </DrawerFooter>
     </DrawerContent>
   );
