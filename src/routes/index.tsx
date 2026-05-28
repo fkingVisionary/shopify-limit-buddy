@@ -602,6 +602,25 @@ function jigEmail(
 }
 
 
+// Phone jigger — generates a random valid-looking Australian mobile per seed.
+// AU mobile format: 04XX XXX XXX (10 digits, always starts with 04).
+// Deterministic per seed so the same variant always gets the same number.
+export type PhoneJigMode = "off" | "au_mobile";
+function jigPhone(_phone: string, seed: number, mode: PhoneJigMode): string {
+  if (mode === "off") return _phone;
+  // Simple LCG seeded from the variant index for stable, spread-out digits
+  let s = (seed * 2654435761) >>> 0;
+  const next = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s;
+  };
+  let digits = "";
+  for (let i = 0; i < 8; i++) digits += (next() % 10).toString();
+  // 04 + 8 digits, formatted as "04XX XXX XXX"
+  return `04${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5, 8)}`;
+}
+
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
