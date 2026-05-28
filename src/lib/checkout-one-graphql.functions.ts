@@ -161,6 +161,76 @@ async function solveHCaptcha(siteKey: string, pageUrl: string): Promise<string> 
   throw new Error("2captcha timeout after 150s");
 }
 
+// 2Captcha Akamai sensor solver. Returns sensor_data payload to POST at scriptUrl.
+// https://2captcha.com/2captcha-api#solving_akamai
+async function solveAkamaiSensor(opts: {
+  pageUrl: string;
+  scriptUrl: string;
+  userAgent: string;
+}): Promise<string> {
+  const key = process.env.TWOCAPTCHA_API_KEY;
+  if (!key) throw new Error("captcha_required: TWOCAPTCHA_API_KEY not set");
+  const createBody = new URLSearchParams({
+    key,
+    method: "akamai",
+    pageurl: opts.pageUrl,
+    script: opts.scriptUrl,
+    userAgent: opts.userAgent,
+    json: "1",
+  });
+  const create = (await (
+    await fetch("https://2captcha.com/in.php", { method: "POST", body: createBody })
+  ).json()) as { status: number; request: string };
+  if (create.status !== 1) throw new Error(`2captcha akamai create: ${create.request}`);
+  const id = create.request;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const poll = (await (
+      await fetch(`https://2captcha.com/res.php?key=${key}&action=get&id=${id}&json=1`)
+    ).json()) as { status: number; request: string; sensor_data?: string };
+    if (poll.status === 1) {
+      // some payloads return JSON-wrapped sensor_data, some return raw string
+      try {
+        const parsed = JSON.parse(poll.request) as { sensor_data?: string };
+        return parsed.sensor_data ?? poll.request;
+      } catch {
+        return poll.request;
+      }
+    }
+    if (poll.request !== "CAPCHA_NOT_READY") throw new Error(`2captcha akamai poll: ${poll.request}`);
+  }
+  throw new Error("2captcha akamai timeout after 150s");
+}
+
+// Detects an Akamai bot-manager footprint in a response (cookies or body markers).
+function detectAkamai(res: Response, body: string): boolean {
+  const setCookie = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+  if (setCookie.some((c) => /^(_abck|bm_sz|ak_bmsc|bm_sv|bm_mi)=/i.test(c))) return true;
+  if (/akam\/|\/_bm\/|akamai|_abck|bm_sz/i.test(body)) return true;
+  return false;
+}
+
+// Tries to locate the Akamai sensor script URL in the HTML. Returns absolute URL.
+function findAkamaiScriptUrl(html: string, origin: string): string | null {
+  const candidates = [
+    /src="([^"]*\/_bm\/[^"]+)"/i,
+    /src="([^"]*akam[^"]*\.js[^"]*)"/i,
+    /href="([^"]*\/_bm\/[^"]+)"/i,
+  ];
+  for (const re of candidates) {
+    const m = html.match(re);
+    if (m?.[1]) {
+      try {
+        return new URL(m[1], origin).toString();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+
 export const runCheckoutOne = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<C1Result> => {
