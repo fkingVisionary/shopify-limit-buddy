@@ -8,7 +8,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { Badge } from "@/components/ui/badge";
 import { Play, Square, Zap } from "lucide-react";
-import { runHttpCheckout, type HttpStepRecord } from "@/lib/shopify-http-checkout.functions";
+import { runCheckoutOne, type C1StepRecord } from "@/lib/checkout-one-graphql.functions";
+type HttpStepRecord = C1StepRecord;
 
 type ProfileLike = {
   id: string; name: string;
