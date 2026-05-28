@@ -746,8 +746,11 @@ function Index() {
             pollMs={pollMs} setPollMs={setPollMs}
             autoOpen={autoOpen} setAutoOpen={setAutoOpen}
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+            onShowWizard={() => setWizardOpen(true)}
+            onResetTips={resetTips}
           />
         )}
+        {tab === "help" && <HelpView />}
       </main>
 
       {tab === "tasks" && tasks.length > 0 && (
@@ -767,13 +770,14 @@ function Index() {
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
+        <div className="mx-auto grid max-w-3xl grid-cols-6">
           {([
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
-            ["proxies", "Proxies", Server, proxyLines.length],
             ["stores", "Stores", Store, allStores.length],
+            ["proxies", "Proxies", Server, proxyLines.length],
             ["settings", "Settings", Settings, 0],
+            ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
             const active = tab === key;
             return (
@@ -796,6 +800,15 @@ function Index() {
           })}
         </div>
       </nav>
+
+      <WelcomeWizard
+        open={wizardOpen}
+        onClose={completeWizard}
+        hasProfiles={profiles.length > 0}
+        onGoProfiles={() => { completeWizard(); setTab("profiles"); }}
+        onGoStores={() => { completeWizard(); setTab("stores"); }}
+        onCreateTask={() => { completeWizard(); setTab("tasks"); setCreateOpen(true); }}
+      />
     </div>
   );
 }
