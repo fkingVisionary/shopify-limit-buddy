@@ -52,10 +52,17 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
-async function fetchProducts(storeUrl: string): Promise<Product[]> {
+function proxied(targetUrl: string): string {
+  return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+}
+
+async function fetchProducts(
+  storeUrl: string,
+  onProgress?: (count: number) => void,
+): Promise<Product[]> {
   const all: Product[] = [];
-  for (let page = 1; page <= 4; page++) {
-    const res = await fetch(`${storeUrl}/products.json?limit=250&page=${page}`);
+  for (let page = 1; page <= 40; page++) {
+    const res = await fetch(proxied(`${storeUrl}/products.json?limit=250&page=${page}`));
     if (!res.ok) throw new Error(`Store returned ${res.status}. Is this a public Shopify store?`);
     const data = await res.json();
     const products = (data.products ?? []) as any[];
@@ -74,16 +81,14 @@ async function fetchProducts(storeUrl: string): Promise<Product[]> {
         })),
       });
     }
+    onProgress?.(all.length);
     if (products.length < 250) break;
   }
   return all;
 }
 
 async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
-  // Use a CORS proxy to read the product page HTML
-  const target = `${storeUrl}/products/${handle}`;
-  const proxied = `https://corsproxy.io/?${encodeURIComponent(target)}`;
-  const res = await fetch(proxied);
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
@@ -133,6 +138,7 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
 function Index() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [storeUrl, setStoreUrl] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -144,6 +150,7 @@ function Index() {
     setError(null);
     setProducts([]);
     setLimits({});
+    setProgress(0);
     const normalized = normalizeStoreUrl(url);
     if (!normalized) {
       setError("Please enter a valid store URL.");
@@ -152,7 +159,7 @@ function Index() {
     setStoreUrl(normalized);
     setLoading(true);
     try {
-      const list = await fetchProducts(normalized);
+      const list = await fetchProducts(normalized, (n) => setProgress(n));
       setProducts(list);
       if (list.length === 0) setError("No products found. The store may be private or empty.");
     } catch (err: any) {
@@ -225,6 +232,12 @@ function Index() {
             {loading ? "Scanning..." : "Scan store"}
           </Button>
         </form>
+
+        {loading && (
+          <div className="mt-4 text-sm text-muted-foreground">
+            Loading products... <span className="font-medium text-foreground">{progress}</span> fetched so far
+          </div>
+        )}
 
         {error && (
           <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
