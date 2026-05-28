@@ -386,7 +386,7 @@ type Task = {
   storeName: string;
   input: string;       // URL, handle, SKU, or keyword
   profileId: string;
-  proxyIdx: number | -1; // -1 = rotate
+  proxyGroupId: string | null;
   qty: number;
   status: TaskStatus;
   running: boolean;
