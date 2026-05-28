@@ -2361,6 +2361,12 @@ function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPrefer
         )}
       </div>
 
+      <label className="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4" checked={runnerPreferred} onChange={(e) => setRunnerPreferred(e.target.checked)} />
+        Prefer local runner over Browserless when online
+        <InfoDot text="When a runner is paired and online, jobs dispatch there instead of Browserless. Falls back to Browserless if the runner disconnects." />
+      </label>
+
       <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
         Scaffold note: the job queue lives in server memory and is ephemeral. Swap to a Cloud table before production.
       </p>
