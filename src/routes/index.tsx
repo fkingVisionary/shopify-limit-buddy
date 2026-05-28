@@ -356,16 +356,36 @@ function Index() {
   };
 
 
+  // Open one tab per active profile, staggered to avoid popup blocking
+  const openForProfiles = (urlsByProfile: { profile: Profile; url: string }[]) => {
+    urlsByProfile.forEach(({ profile, url }, i) => {
+      setTimeout(() => {
+        const w = window.open(url, `_blank_${profile.id}`, "noopener,noreferrer");
+        if (!w && i > 0) {
+          console.warn(`Popup blocked for profile "${profile.name}". Allow popups for this site.`);
+        }
+      }, i * 250);
+    });
+  };
+
   const quickCheckout = (p: Product, opts?: { variantId?: number; qty?: number }) => {
     if (!storeUrl) return;
+    if (activeProfiles.length === 0) {
+      setError("No active profiles. Add at least one in Checkout info.");
+      return;
+    }
     const variant = opts?.variantId
       ? p.variants.find((v) => v.id === opts.variantId) ?? p.variants[0]
       : p.variants.find((v) => v.available) ?? p.variants[0];
     if (!variant) return;
     const info = limits[p.id];
     const qty = opts?.qty ?? (info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1);
-    const url = buildCheckoutUrl(storeUrl, variant.id, qty, prefill);
-    window.open(url, "_blank", "noopener,noreferrer");
+    openForProfiles(
+      activeProfiles.map((profile) => ({
+        profile,
+        url: buildCheckoutUrl(storeUrl, variant.id, qty, profile),
+      })),
+    );
   };
 
   // Polling loop for watched products
@@ -393,12 +413,16 @@ function Index() {
           }));
           if (isAvail && !triggeredRef.current.has(pid)) {
             triggeredRef.current.add(pid);
-            notifyDrop("IN STOCK", product.title);
-            if (autoOpen) {
+            notifyDrop("IN STOCK", `${product.title} — opening ${activeProfiles.length} tab(s)`);
+            if (autoOpen && activeProfiles.length > 0) {
               const info = limits[pid];
               const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
-              const url = buildCheckoutUrl(storeUrl, availVariant.id, qty, prefill);
-              window.open(url, "_blank", "noopener,noreferrer");
+              openForProfiles(
+                activeProfiles.map((profile) => ({
+                  profile,
+                  url: buildCheckoutUrl(storeUrl, availVariant.id, qty, profile),
+                })),
+              );
             }
           }
           if (!isAvail) triggeredRef.current.delete(pid);
@@ -411,7 +435,8 @@ function Index() {
     const id = setInterval(() => { if (!cancelled) tick(); }, Math.max(1500, pollMs));
     return () => { cancelled = true; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, prefill, limits]);
+  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, activeProfiles, limits]);
+
 
 
   const handleScan = async (e: React.FormEvent) => {
