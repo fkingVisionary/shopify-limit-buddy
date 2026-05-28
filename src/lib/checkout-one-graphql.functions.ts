@@ -212,7 +212,9 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
         try {
           const j = JSON.parse(body) as { description?: string; message?: string };
           desc = j.description ?? j.message ?? desc;
-        } catch {}
+        } catch {
+          desc = body.slice(0, 160) || desc;
+        }
         record("cart_add", false, res.status, Date.now() - s, desc);
         return fail("cart_add", desc);
       }
@@ -308,7 +310,9 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       try {
         const u = new URL(checkoutUrl!);
         queueToken = u.searchParams.get("_r");
-      } catch {}
+      } catch {
+        queueToken = null;
+      }
       queueToken ??= firstMatch(html, /"queueToken":"([^"]+)"/);
 
       buildId =
