@@ -466,6 +466,33 @@ function Index() {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 border-t pt-3">
+                <div className="mb-2 text-sm font-medium">Drop monitor</div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div>
+                    <Label className="text-xs">Poll interval (ms)</Label>
+                    <Input
+                      type="number"
+                      min={1500}
+                      step={500}
+                      value={pollMs}
+                      onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))}
+                      className="h-8"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs mt-5">
+                    <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
+                    Auto-open checkout on drop
+                  </label>
+                  <label className="flex items-center gap-2 text-xs mt-5">
+                    <input type="checkbox" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
+                    Sound + browser notification
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Watching {watched.size} product{watched.size === 1 ? "" : "s"}. Keep this tab open. Browsers throttle background tabs — pin it.
+                </p>
+              </div>
             </Card>
           )}
         </div>
