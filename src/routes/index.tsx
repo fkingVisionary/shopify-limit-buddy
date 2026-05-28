@@ -78,25 +78,45 @@ const PROXY_GROUPS_KEY = "aio:proxy-groups";              // new: groups
 type ProxyGroup = { id: string; name: string; proxies: string[] };
 
 // In-memory mirror so the network helpers can rotate without React state.
+// Groups can hold two kinds of entries:
+//   - URL templates containing `{url}` — used by fetch-based `proxied()`
+//   - Raw `user:pass:ip:port` (or `ip:port`) — used by captcha harvester and
+//     (later) the in-app browser checkout, both of which need real proxy creds
 let __proxyGroups: ProxyGroup[] = [];
 const __rotIdx: Record<string, number> = {};
+const __rawRotIdx: Record<string, number> = {};
 function setProxyGroupsRuntime(groups: ProxyGroup[]) {
-  __proxyGroups = groups.map((g) => ({
-    ...g,
-    proxies: g.proxies.filter((s) => s.includes("{url}")),
-  }));
+  // Keep all entries — splitters below decide which to use.
+  __proxyGroups = groups.map((g) => ({ ...g, proxies: [...g.proxies] }));
 }
 
-// Build a request URL. If groupId resolves to a group with proxies, rotate
-// round-robin within it; otherwise fall back to the same-origin proxy route.
+// Build a request URL. If groupId resolves to a group with URL-template
+// proxies, rotate round-robin within those; otherwise fall back to the
+// same-origin proxy route. Raw `host:port` entries are ignored here.
 function proxied(targetUrl: string, groupId?: string | null): string {
   const direct = `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
   if (!groupId) return direct;
   const group = __proxyGroups.find((g) => g.id === groupId);
-  if (!group || group.proxies.length === 0) return direct;
-  const i = (__rotIdx[group.id] ?? 0) % group.proxies.length;
-  __rotIdx[group.id] = (i + 1) % group.proxies.length;
-  return group.proxies[i].replace("{url}", encodeURIComponent(targetUrl));
+  const templates = group?.proxies.filter((s) => s.includes("{url}")) ?? [];
+  if (templates.length === 0) return direct;
+  const i = (__rotIdx[group!.id] ?? 0) % templates.length;
+  __rotIdx[group!.id] = (i + 1) % templates.length;
+  return templates[i].replace("{url}", encodeURIComponent(targetUrl));
+}
+
+// Pick the next raw `user:pass:ip:port` proxy from a group, round-robin.
+// Returns null if the group has no raw entries. Used by the captcha
+// harvester (and later: the in-app browser checkout) so a single group can
+// supply both the solver IP and the checkout IP — guaranteeing the
+// harvested token is valid against the same exit IP that submits it.
+function pickRawProxy(groupId: string | null | undefined): string | null {
+  if (!groupId) return null;
+  const group = __proxyGroups.find((g) => g.id === groupId);
+  const raw = group?.proxies.filter((s) => !s.includes("{url}")) ?? [];
+  if (raw.length === 0) return null;
+  const i = (__rawRotIdx[group!.id] ?? 0) % raw.length;
+  __rawRotIdx[group!.id] = (i + 1) % raw.length;
+  return raw[i];
 }
 
 
