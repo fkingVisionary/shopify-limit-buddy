@@ -742,7 +742,7 @@ function Index() {
         <form onSubmit={handleScan} className="flex flex-col gap-3 sm:flex-row">
           <Input
             type="text"
-            placeholder="e.g. https://store.example.com"
+            placeholder="Store URL (e.g. https://www.jbhifi.com.au)"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             className="flex-1"
@@ -750,17 +750,54 @@ function Index() {
             autoCapitalize="none"
             autoCorrect="off"
           />
-          <Button type="submit" disabled={loading}>
+          <Button type="submit" disabled={loading} variant="secondary">
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {loading ? "Scanning..." : "Scan store"}
+            {loading ? "Scanning..." : "Scan full catalog"}
           </Button>
         </form>
+
+        <form onSubmit={handleQuickAdd} className="mt-3 flex flex-col gap-3 sm:flex-row">
+          <Input
+            type="text"
+            placeholder="Paste product URL or search keywords (e.g. 'PS5 Pro')"
+            value={quickAdd}
+            onChange={(e) => setQuickAdd(e.target.value)}
+            className="flex-1"
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          <Button type="submit" disabled={quickBusy}>
+            {quickBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {quickBusy ? "Adding..." : "Quick add"}
+          </Button>
+        </form>
+
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
+          {cacheAge && products.length > 0 && (
+            <span>
+              Cached {products.length} products · {Math.round((Date.now() - cacheAge) / 60000)} min ago
+            </span>
+          )}
+          {products.length > 0 && (
+            <button
+              type="button"
+              className="underline hover:text-foreground"
+              onClick={() => {
+                try { localStorage.removeItem(CATALOG_KEY); } catch {}
+                setProducts([]); setLimits({}); setCacheAge(null);
+              }}
+            >
+              Clear cache
+            </button>
+          )}
+        </div>
 
         {loading && (
           <div className="mt-4 text-sm text-muted-foreground">
             Loading products... <span className="font-medium text-foreground">{progress}</span> fetched so far
           </div>
         )}
+
 
         {error && (
           <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
