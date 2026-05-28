@@ -689,6 +689,23 @@ function Index() {
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
+  // Browserless full-browser checkout
+  const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
+  const [browserlessDryRun, setBrowserlessDryRun] = useState(true);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("aio:browserless");
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (typeof j.enabled === "boolean") setBrowserlessEnabled(j.enabled);
+        if (typeof j.dryRun === "boolean") setBrowserlessDryRun(j.dryRun);
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun })); } catch {}
+  }, [browserlessEnabled, browserlessDryRun]);
+
 
   // ─── Tasks ───
   const [tasks, setTasks] = useState<Task[]>([]);
