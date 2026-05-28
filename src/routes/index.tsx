@@ -27,6 +27,7 @@ import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.fu
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
+import { TaskPoolCard } from "@/components/TaskPoolCard";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
@@ -1190,6 +1191,7 @@ function Index() {
             browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
             browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
             runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
+            profiles={profiles}
             onShowWizard={() => setWizardOpen(true)}
             onResetTips={resetTips}
           />
@@ -2216,6 +2218,7 @@ function SettingsView({
   pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
   runnerPreferred, setRunnerPreferred,
+  profiles,
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
@@ -2224,6 +2227,7 @@ function SettingsView({
   browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
   runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void;
+  profiles: Profile[];
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
@@ -2273,6 +2277,8 @@ function SettingsView({
       </Card>
 
       <LocalRunnerCard runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred} />
+
+      <TaskPoolCard profiles={profiles} />
 
 
 
