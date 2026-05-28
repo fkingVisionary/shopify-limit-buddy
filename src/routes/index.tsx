@@ -245,6 +245,13 @@ function Index() {
   const [query, setQuery] = useState("");
   const [prefill, setPrefill] = useState<Prefill>(emptyPrefill);
   const [showSettings, setShowSettings] = useState(false);
+  // Watcher state
+  const [watched, setWatched] = useState<Set<number>>(new Set());
+  const [watchStatus, setWatchStatus] = useState<Record<number, { lastChecked: number; available: boolean; lastVariantId?: number; error?: string }>>({});
+  const [pollMs, setPollMs] = useState(4000);
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [notifyOn, setNotifyOn] = useState(true);
+  const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
   useEffect(() => { setPrefill(loadPrefill()); }, []);
 
@@ -255,6 +262,46 @@ function Index() {
       return next;
     });
   };
+
+  // Audio beep using WebAudio (no asset needed)
+  const beep = () => {
+    try {
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "square"; o.frequency.value = 880;
+      g.gain.value = 0.15;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      setTimeout(() => { o.frequency.value = 1320; }, 150);
+      setTimeout(() => { o.stop(); ctx.close(); }, 450);
+    } catch {}
+  };
+
+  const notifyDrop = (title: string, body: string) => {
+    if (!notifyOn) return;
+    beep();
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(title, { body });
+      }
+    } catch {}
+  };
+
+  const toggleWatch = async (p: Product) => {
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch {}
+    }
+    setWatched((prev) => {
+      const next = new Set(prev);
+      if (next.has(p.id)) next.delete(p.id);
+      else next.add(p.id);
+      return next;
+    });
+  };
+
 
   const quickCheckout = (p: Product) => {
     if (!storeUrl) return;
