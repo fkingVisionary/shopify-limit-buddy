@@ -16,14 +16,15 @@ import {
   Loader2, ShoppingBag, AlertCircle, Zap, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, Pencil, Search,
 } from "lucide-react";
+import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Shopify Per-Person Limit Checker" },
-      { name: "description", content: "Inspect any public Shopify store and detect per-customer purchase quantity limits on products." },
-      { property: "og:title", content: "Shopify Per-Person Limit Checker" },
-      { property: "og:description", content: "Detect per-customer purchase quantity limits on any public Shopify store." },
+      { title: "J1m's Bot" },
+      { name: "description", content: "J1m's Bot — Shopify monitor, profile manager, and one-tap checkout launcher." },
+      { property: "og:title", content: "J1m's Bot" },
+      { property: "og:description", content: "Shopify monitor, profile manager, and one-tap checkout launcher." },
     ],
   }),
   component: Index,
@@ -607,12 +608,10 @@ function Index() {
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/15 text-primary">
-              <ShoppingBag className="h-5 w-5" />
-            </div>
+          <div className="flex items-center gap-2.5">
+            <img src={jimsLogo} alt="J1m's Bot" className="h-10 w-10 rounded-lg object-cover ring-2 ring-primary/40" />
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-primary">License 1</div>
+              <div className="text-[10px] uppercase tracking-wider text-primary">J1m's Bot</div>
               <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
             </div>
           </div>
