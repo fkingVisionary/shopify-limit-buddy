@@ -52,10 +52,17 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
-async function fetchProducts(storeUrl: string): Promise<Product[]> {
+function proxied(targetUrl: string): string {
+  return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+}
+
+async function fetchProducts(
+  storeUrl: string,
+  onProgress?: (count: number) => void,
+): Promise<Product[]> {
   const all: Product[] = [];
-  for (let page = 1; page <= 4; page++) {
-    const res = await fetch(`${storeUrl}/products.json?limit=250&page=${page}`);
+  for (let page = 1; page <= 40; page++) {
+    const res = await fetch(proxied(`${storeUrl}/products.json?limit=250&page=${page}`));
     if (!res.ok) throw new Error(`Store returned ${res.status}. Is this a public Shopify store?`);
     const data = await res.json();
     const products = (data.products ?? []) as any[];
@@ -74,16 +81,14 @@ async function fetchProducts(storeUrl: string): Promise<Product[]> {
         })),
       });
     }
+    onProgress?.(all.length);
     if (products.length < 250) break;
   }
   return all;
 }
 
 async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
-  // Use a CORS proxy to read the product page HTML
-  const target = `${storeUrl}/products/${handle}`;
-  const proxied = `https://corsproxy.io/?${encodeURIComponent(target)}`;
-  const res = await fetch(proxied);
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
