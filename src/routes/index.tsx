@@ -2276,10 +2276,13 @@ type PoolApi = {
   takeToken: (storeId: string) => PoolToken | null;
 };
 
+type SolveFn = (args: { data: { type: CaptchaType; sitekey: string; pageUrl: string; proxy: string | null; action: string | null; minScore: number | null; timeoutSec: number } }) => Promise<{ ok: true; token: string; captchaId: string; elapsedMs: number } | { ok: false; error: string }>;
+type DetectFn = (args: { data: { storeUrl: string } }) => Promise<{ ok: true; type: CaptchaType; sitekey: string; pageUrl: string } | { ok: false; error: string }>;
+
 function usePool(
   stores: StoreEntry[],
-  solveFn: (args: { data: Parameters<typeof solveCaptcha>[0]["data"] }) => ReturnType<typeof solveCaptcha>,
-  detectFn: (args: { data: Parameters<typeof detectCaptcha>[0]["data"] }) => ReturnType<typeof detectCaptcha>,
+  solveFn: SolveFn,
+  detectFn: DetectFn,
 ): PoolApi {
   const [pool, setPool] = useState<Record<string, PoolToken[]>>({});
   const [config, setConfig] = useState<Record<string, PoolConfig>>({});
