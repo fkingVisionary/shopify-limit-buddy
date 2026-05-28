@@ -1296,10 +1296,11 @@ function TasksView({
           { key: "in_stock", label: "Stock" },
           { key: "adding_to_cart", label: "Cart" },
           { key: "checkout_ready", label: "Checkout" },
-          { key: "opened", label: "Open" },
+          { key: "checking_out", label: "Pay" },
+          { key: "confirmed", label: "Done" },
         ];
         const phaseIdx = phases.findIndex((p) => p.key === t.status);
-        const showStepper = phaseIdx >= 0 || t.status === "failed";
+        const showStepper = phaseIdx >= 0 || t.status === "opened" || t.status === "failed";
         return (
           <Card key={t.id} className="p-3">
             <div className="flex items-start gap-3">
