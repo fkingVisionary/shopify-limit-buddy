@@ -501,6 +501,55 @@ function jigName(first: string, last: string, seed: number): { first: string; la
   return { first: `${first} ${mi}.`, last };
 }
 
+// Email jigging.
+// Mode "dot": Gmail dot trick — insert dots between local-part chars (Gmail
+//   ignores them so all variants deliver to the same inbox). Works for
+//   @gmail.com and @googlemail.com only.
+// Mode "catchall": user owns a domain with catch-all routing → generate a
+//   random/derived local-part on that domain. All mail still lands in the
+//   single catch-all mailbox.
+function jigEmail(
+  email: string,
+  seed: number,
+  mode: "dot" | "catchall" | "off",
+  catchallDomain?: string
+): string {
+  if (!email || mode === "off") return email;
+  const [localRaw, domainRaw] = email.split("@");
+  if (!localRaw) return email;
+  const local = localRaw.toLowerCase();
+
+  if (mode === "catchall") {
+    const dom = (catchallDomain || domainRaw || "").trim().replace(/^@/, "").toLowerCase();
+    if (!dom) return email;
+    // Derive a stable, readable local-part: base + seed token
+    const token = (seed * 9301 + 49297) % 233280;
+    return `${local}.${token.toString(36)}@${dom}`;
+  }
+
+  // Gmail dot trick — only valid on gmail/googlemail
+  const dom = (domainRaw || "").toLowerCase();
+  const isGmail = dom === "gmail.com" || dom === "googlemail.com";
+  if (!isGmail) return email;
+  const stripped = local.replace(/\./g, "");
+  if (stripped.length < 2) return email;
+  // Choose dot positions deterministically from seed across a bitmask of N-1 gaps
+  const gaps = stripped.length - 1;
+  const mask = (seed * 2654435761) >>> 0;
+  let out = "";
+  for (let i = 0; i < stripped.length; i++) {
+    out += stripped[i];
+    if (i < gaps && ((mask >> (i % 31)) & 1) === 1) out += ".";
+  }
+  // Guarantee at least one dot for seed > 0
+  if (!out.includes(".") && seed > 0) {
+    const pos = 1 + (seed % gaps);
+    out = stripped.slice(0, pos) + "." + stripped.slice(pos);
+  }
+  return `${out}@${dom}`;
+}
+
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -1348,12 +1397,17 @@ function ProfileBuilderDialog({
   const [count, setCount] = useState(3);
   const [jigAddr, setJigAddr] = useState(true);
   const [jigNames, setJigNames] = useState(true);
+  const [emailMode, setEmailMode] = useState<"dot" | "catchall" | "off">("dot");
+  const [catchallDomain, setCatchallDomain] = useState("");
 
   useEffect(() => {
     if (base) {
       setCount(3);
       setJigAddr(true);
       setJigNames(true);
+      const dom = (base.email.split("@")[1] || "").toLowerCase();
+      setEmailMode(dom === "gmail.com" || dom === "googlemail.com" ? "dot" : "off");
+      setCatchallDomain("");
     }
   }, [base]);
 
@@ -1363,7 +1417,8 @@ function ProfileBuilderDialog({
     const seed = 1;
     const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
     const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
-    return { name, addr };
+    const email = jigEmail(base.email, seed, emailMode, catchallDomain);
+    return { name, addr, email };
   })();
 
   const build = () => {
@@ -1372,6 +1427,7 @@ function ProfileBuilderDialog({
       const seed = i;
       const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
       const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+      const email = jigEmail(base.email, seed, emailMode, catchallDomain);
       variants.push({
         ...base,
         id: makeId(),
@@ -1379,10 +1435,12 @@ function ProfileBuilderDialog({
         first_name: name.first,
         last_name: name.last,
         address1: addr,
+        email,
       });
     }
     onCreate(variants);
   };
+
 
   return (
     <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
@@ -1421,22 +1479,68 @@ function ProfileBuilderDialog({
             </label>
           </div>
 
+          {/* Email jigger */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <span>Email jigger</span>
+              <InfoDot text="Generates distinct-looking email addresses per variant that all deliver to your inbox." />
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {[
+                { v: "dot", label: "Gmail dot" },
+                { v: "catchall", label: "Catch-all" },
+                { v: "off", label: "Off" },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => setEmailMode(o.v as any)}
+                  className={`h-9 rounded-md border text-xs font-medium transition ${
+                    emailMode === o.v ? "border-primary bg-primary/15 text-primary" : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            {emailMode === "dot" && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Inserts dots into the Gmail local-part (j.ohn@ vs jo.hn@). Gmail ignores them — all mail still lands in your inbox. Gmail/Googlemail only.
+              </p>
+            )}
+            {emailMode === "catchall" && (
+              <>
+                <Label className="text-[11px] text-muted-foreground">Your catch-all domain</Label>
+                <Input
+                  value={catchallDomain}
+                  onChange={(e) => setCatchallDomain(e.target.value)}
+                  placeholder="yourdomain.com"
+                  className="h-9"
+                />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Each variant gets a unique local-part on this domain (e.g. john.4f2@yourdomain.com). Requires catch-all routing on your DNS/mail provider.
+                </p>
+              </>
+            )}
+          </div>
+
           {/* Preview */}
           <div className="rounded-lg border bg-background p-3 text-xs">
             <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
             <div className="text-muted-foreground">
               <div>{preview.name.first} {preview.name.last}</div>
               <div>{preview.addr || <span className="italic">(no address)</span>}</div>
-              <div>{base.email}</div>
+              <div>{preview.email}</div>
             </div>
           </div>
         </div>
 
         <DialogFooter className="flex-row gap-2 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames)}>
+          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
           </Button>
+
         </DialogFooter>
       </DialogContent>
     </Dialog>
