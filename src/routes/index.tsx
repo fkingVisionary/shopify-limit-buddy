@@ -936,7 +936,7 @@ function Index() {
 
   // ─── Counts ───
   const runningCount = tasks.filter((t) => t.running).length;
-  const stockCount = tasks.filter((t) => t.status === "in_stock" || t.status === "opened").length;
+  const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", settings: "Settings", help: "Help" }[tab];
