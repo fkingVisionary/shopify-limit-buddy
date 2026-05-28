@@ -924,7 +924,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles]);
+  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
