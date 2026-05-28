@@ -639,7 +639,17 @@ function Index() {
   const stockCount = tasks.filter((t) => t.status === "in_stock" || t.status === "opened").length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
-  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", settings: "Settings" }[tab];
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", settings: "Settings", help: "Help" }[tab];
+
+  const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
+    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
+    profiles: { key: "tip-profiles", text: "Profiles autofill the Shopify checkout. Add one profile per checkout you want fired in parallel." },
+    proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
+    stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
+    settings: { key: "tip-settings", text: "Lower poll interval = faster detection but more requests. 3000–5000ms is a good balance." },
+    help: null,
+  };
+  const currentTip = tipMap[tab];
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
