@@ -1351,6 +1351,32 @@ function TasksView({
                     Open checkout →
                   </a>
                 )}
+                {t.screenshotB64 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                      Browserless screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
+                    </summary>
+                    <img
+                      src={`data:image/png;base64,${t.screenshotB64}`}
+                      alt="checkout screenshot"
+                      className="mt-1.5 max-w-full rounded border border-border"
+                    />
+                  </details>
+                )}
+                {t.steps && t.steps.length > 0 && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                      Step log ({t.steps.length})
+                    </summary>
+                    <ul className="mt-1 space-y-0.5 text-[10px] font-mono">
+                      {t.steps.map((s, i) => (
+                        <li key={i} className={s.ok ? "text-emerald-400/90" : "text-destructive"}>
+                          [{s.t}ms] {s.step} {s.ok ? "✓" : "✗"} {s.note ?? ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
               </div>
               <div className="flex flex-col items-end gap-1.5">
                 {t.running ? (
