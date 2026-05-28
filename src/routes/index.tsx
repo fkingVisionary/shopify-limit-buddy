@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -26,7 +26,7 @@ import {
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
-import { createRunnerPairingCode, getRunnerStatus } from "@/lib/runner-dispatch.functions";
+import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult } from "@/lib/runner-dispatch.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
