@@ -2464,7 +2464,6 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
       const raw = localStorage.getItem(HARVEST_KEY);
       if (raw) setTokens(JSON.parse(raw) as HarvestEntry[]);
     } catch {}
-    setDetected(loadDetectedCache());
     balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
   }, [balance]);
 
@@ -2482,8 +2481,7 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
       const entry: DetectedCaptcha = {
         type: res.type, sitekey: res.sitekey, pageUrl: res.pageUrl, detectedAt: Date.now(),
       };
-      const next = { ...detected, [currentStore.id]: entry };
-      setDetected(next); saveDetectedCache(next);
+      poolApi.cacheDetected(currentStore.id, entry);
       return entry;
     } catch (e) {
       setErr((e as Error).message); return null;
