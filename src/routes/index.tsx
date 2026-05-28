@@ -1397,12 +1397,17 @@ function ProfileBuilderDialog({
   const [count, setCount] = useState(3);
   const [jigAddr, setJigAddr] = useState(true);
   const [jigNames, setJigNames] = useState(true);
+  const [emailMode, setEmailMode] = useState<"dot" | "catchall" | "off">("dot");
+  const [catchallDomain, setCatchallDomain] = useState("");
 
   useEffect(() => {
     if (base) {
       setCount(3);
       setJigAddr(true);
       setJigNames(true);
+      const dom = (base.email.split("@")[1] || "").toLowerCase();
+      setEmailMode(dom === "gmail.com" || dom === "googlemail.com" ? "dot" : "off");
+      setCatchallDomain("");
     }
   }, [base]);
 
@@ -1412,7 +1417,8 @@ function ProfileBuilderDialog({
     const seed = 1;
     const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
     const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
-    return { name, addr };
+    const email = jigEmail(base.email, seed, emailMode, catchallDomain);
+    return { name, addr, email };
   })();
 
   const build = () => {
@@ -1421,6 +1427,7 @@ function ProfileBuilderDialog({
       const seed = i;
       const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
       const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+      const email = jigEmail(base.email, seed, emailMode, catchallDomain);
       variants.push({
         ...base,
         id: makeId(),
@@ -1428,10 +1435,12 @@ function ProfileBuilderDialog({
         first_name: name.first,
         last_name: name.last,
         address1: addr,
+        email,
       });
     }
     onCreate(variants);
   };
+
 
   return (
     <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
