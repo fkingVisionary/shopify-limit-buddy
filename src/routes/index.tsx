@@ -24,6 +24,7 @@ import {
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
+import { runCheckout } from "@/lib/checkout.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
@@ -401,7 +402,15 @@ function loadCustomStores(): StoreEntry[] {
 function saveCustomStores(s: StoreEntry[]) { try { localStorage.setItem(STORES_KEY, JSON.stringify(s)); } catch {} }
 
 // ─────────────── Tasks ───────────────
-type TaskStatus = "idle" | "monitoring" | "in_stock" | "opened" | "error";
+type TaskStatus =
+  | "idle"
+  | "monitoring"
+  | "in_stock"
+  | "adding_to_cart"
+  | "checkout_ready"
+  | "opened"
+  | "failed"
+  | "error";
 type Task = {
   id: string;
   storeId: string;
@@ -420,6 +429,11 @@ type Task = {
   limit?: number | null;
   lastChecked?: number;
   message?: string;
+  // Checkout engine state
+  checkoutUrl?: string;
+  checkoutTokenUsed?: boolean;
+  checkoutStartedAt?: number;
+  checkoutElapsedMs?: number;
 };
 const TASKS_KEY = "aio:tasks";
 function loadTasks(): Task[] {
@@ -427,7 +441,8 @@ function loadTasks(): Task[] {
   try {
     const arr = JSON.parse(localStorage.getItem(TASKS_KEY) ?? "[]") as Task[];
     // Reset transient runtime fields
-    return arr.map((t) => ({ ...t, running: false, status: t.status === "in_stock" || t.status === "opened" ? t.status : "idle" }));
+    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "failed"];
+    return arr.map((t) => ({ ...t, running: false, status: keep.includes(t.status) ? t.status : "idle" }));
   } catch { return []; }
 }
 
@@ -707,6 +722,7 @@ function Index() {
   // before a drop, not solved on-demand at checkout time.
   const solveFn = useServerFn(solveCaptcha);
   const detectFn = useServerFn(detectCaptcha);
+  const checkoutFn = useServerFn(runCheckout);
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
@@ -844,16 +860,63 @@ function Index() {
               triggeredRef.current.add(t.id);
               const profile = profiles.find((p) => p.id === t.profileId);
               notify("IN STOCK", `${t.productTitle ?? t.input}`);
-              if (autoOpen && profile) {
+              if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
-                const url = buildCheckoutUrl(t.storeUrl, avail.id, qty, profile);
-                window.open(url, `_task_${t.id}`, "noopener,noreferrer");
-                updateTask(t.id, { status: "opened" });
+                // Drive the checkout state machine.
+                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
+                // Pull a captcha token from the pool if one's warm for this store.
+                const pooled = poolApi.takeToken(t.storeId);
+                const rawProxy = pickRawProxy(t.proxyGroupId);
+                (async () => {
+                  try {
+                    const r = await checkoutFn({
+                      data: {
+                        storeUrl: t.storeUrl,
+                        variantId: avail.id,
+                        qty,
+                        profile: {
+                          email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+                          address1: profile.address1, city: profile.city, province: profile.province,
+                          zip: profile.zip, country: profile.country, phone: profile.phone,
+                        },
+                        proxy: rawProxy,
+                        captchaToken: pooled?.token ?? null,
+                      },
+                    });
+                    if (r.ok) {
+                      updateTask(t.id, {
+                        status: "checkout_ready",
+                        checkoutUrl: r.checkoutUrl,
+                        checkoutTokenUsed: !!pooled,
+                        checkoutElapsedMs: r.elapsedMs,
+                        message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
+                      });
+                      if (autoOpen) {
+                        window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
+                        updateTask(t.id, { status: "opened" });
+                      }
+                    } else {
+                      updateTask(t.id, {
+                        status: "failed",
+                        message: `${r.stage}: ${r.error}`,
+                        checkoutElapsedMs: r.elapsedMs,
+                      });
+                    }
+                  } catch (err: any) {
+                    updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
+                  }
+                })();
               }
             }
           } else {
-            updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
-            triggeredRef.current.delete(t.id);
+            // Don't downgrade once the engine has fired.
+            const cur = tasksRef.current.find((x) => x.id === t.id);
+            if (cur && (cur.status === "checkout_ready" || cur.status === "opened" || cur.status === "failed" || cur.status === "adding_to_cart")) {
+              updateTask(t.id, { lastChecked: Date.now() });
+            } else {
+              updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
+              triggeredRef.current.delete(t.id);
+            }
           }
         } catch (e: any) {
           updateTask(t.id, { lastChecked: Date.now(), message: e?.message ?? "fetch failed" });
@@ -861,7 +924,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles]);
+  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
@@ -873,7 +936,7 @@ function Index() {
 
   // ─── Counts ───
   const runningCount = tasks.filter((t) => t.running).length;
-  const stockCount = tasks.filter((t) => t.status === "in_stock" || t.status === "opened").length;
+  const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", settings: "Settings", help: "Help" }[tab];
@@ -1116,13 +1179,25 @@ function TasksView({
         const profile = profiles.find((p) => p.id === t.profileId);
         const statusInfo = (() => {
           switch (t.status) {
-            case "in_stock": return { label: "IN STOCK", color: "text-green-400" };
-            case "opened":   return { label: "Checkout opened", color: "text-primary" };
-            case "monitoring": return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
-            case "error":    return { label: t.message ?? "Error", color: "text-destructive" };
-            default:         return { label: "Idle", color: "text-muted-foreground" };
+            case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
+            case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
+            case "checkout_ready": return { label: "Checkout ready", color: "text-green-400" };
+            case "opened":         return { label: "Checkout opened", color: "text-primary" };
+            case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
+            case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
+            case "error":          return { label: t.message ?? "Error", color: "text-destructive" };
+            default:               return { label: "Idle", color: "text-muted-foreground" };
           }
         })();
+        // Engine phase stepper — only shown once the engine fires.
+        const phases: { key: TaskStatus; label: string }[] = [
+          { key: "in_stock", label: "Stock" },
+          { key: "adding_to_cart", label: "Cart" },
+          { key: "checkout_ready", label: "Checkout" },
+          { key: "opened", label: "Open" },
+        ];
+        const phaseIdx = phases.findIndex((p) => p.key === t.status);
+        const showStepper = phaseIdx >= 0 || t.status === "failed";
         return (
           <Card key={t.id} className="p-3">
             <div className="flex items-start gap-3">
@@ -1132,6 +1207,8 @@ function TasksView({
                 </div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   Qty {t.qty}{t.limit ? ` · limit ${t.limit}` : ""}
+                  {t.checkoutElapsedMs ? ` · ${t.checkoutElapsedMs}ms` : ""}
+                  {t.checkoutTokenUsed ? " · token" : ""}
                 </div>
                 <div className="mt-1.5 flex items-center justify-between gap-2">
                   <div className={`flex items-center gap-1.5 text-xs font-medium ${statusInfo.color}`}>
@@ -1142,6 +1219,35 @@ function TasksView({
                     {t.storeName} · <span className="text-foreground/80">{profile?.name ?? "no profile"}</span>
                   </div>
                 </div>
+                {showStepper && (
+                  <div className="mt-2 flex items-center gap-1">
+                    {phases.map((p, i) => {
+                      const done = phaseIdx > i || t.status === "opened";
+                      const active = phaseIdx === i;
+                      const failed = t.status === "failed" && i === Math.max(0, phaseIdx);
+                      return (
+                        <div key={p.key} className="flex flex-1 items-center gap-1">
+                          <div className={`h-1 flex-1 rounded-full ${
+                            failed ? "bg-destructive"
+                            : done ? "bg-green-400"
+                            : active ? "bg-amber-400 animate-pulse"
+                            : "bg-muted"
+                          }`} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {t.status === "checkout_ready" && t.checkoutUrl && (
+                  <a
+                    href={t.checkoutUrl}
+                    target={`_task_${t.id}`}
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Open checkout →
+                  </a>
+                )}
               </div>
               <div className="flex flex-col items-end gap-1.5">
                 {t.running ? (
