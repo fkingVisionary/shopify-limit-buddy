@@ -2300,23 +2300,30 @@ function SettingsView({
 function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void }) {
   const createCode = useServerFn(createRunnerPairingCode);
   const fetchStatus = useServerFn(getRunnerStatus);
+  const fetchRecent = useServerFn(listRunnerRecentJobs);
+  const disconnect = useServerFn(disconnectRunner);
+  const sendTest = useServerFn(dispatchRunnerTestJob);
   const [code, setCode] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [status, setStatus] = useState<{ connected: boolean; name?: string; staleMs?: number } | null>(null);
+  const [recent, setRecent] = useState<Array<{ id: string; storeUrl: string; ok: boolean | null; orderId: string | null; error: string | null; at: number; dryRun: boolean }>>([]);
   const [busy, setBusy] = useState(false);
+  const [testMsg, setTestMsg] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const tick = async () => {
       try {
-        const s = await fetchStatus();
-        if (alive) setStatus(s.connected ? { connected: true, name: s.name, staleMs: s.staleMs } : { connected: false });
+        const [s, r] = await Promise.all([fetchStatus(), fetchRecent()]);
+        if (!alive) return;
+        setStatus(s.connected ? { connected: true, name: s.name, staleMs: s.staleMs } : { connected: false });
+        setRecent(r.jobs);
       } catch {}
     };
     tick();
     const id = setInterval(tick, 4000);
     return () => { alive = false; clearInterval(id); };
-  }, [fetchStatus]);
+  }, [fetchStatus, fetchRecent]);
 
   const generate = async () => {
     setBusy(true);
@@ -2326,6 +2333,21 @@ function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPrefer
       setExpiresAt(Date.now() + r.expiresInSec * 1000);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const onDisconnect = async () => {
+    await disconnect();
+    setStatus({ connected: false });
+  };
+
+  const onSendTest = async () => {
+    setTestMsg("Dispatching…");
+    try {
+      const r = await sendTest();
+      setTestMsg(r.ok ? `Queued ${r.jobId.slice(0, 8)} — watch the runner window` : `Failed: ${r.error}`);
+    } catch (e: unknown) {
+      setTestMsg(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -2359,13 +2381,43 @@ function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPrefer
             expires in {Math.max(0, Math.round((expiresAt - Date.now()) / 1000))}s
           </span>
         )}
+        {status?.connected && (
+          <>
+            <Button size="sm" variant="secondary" className="h-9" onClick={onSendTest}>
+              Send test job (dry-run)
+            </Button>
+            <Button size="sm" variant="ghost" className="h-9" onClick={onDisconnect}>
+              Disconnect
+            </Button>
+          </>
+        )}
       </div>
+      {testMsg && <p className="mt-2 text-[11px] text-muted-foreground">{testMsg}</p>}
 
       <label className="mt-3 flex items-center gap-2 text-sm">
         <input type="checkbox" className="h-4 w-4" checked={runnerPreferred} onChange={(e) => setRunnerPreferred(e.target.checked)} />
         Prefer local runner over Browserless when online
         <InfoDot text="When a runner is paired and online, jobs dispatch there instead of Browserless. Falls back to Browserless if the runner disconnects." />
       </label>
+
+      {recent.length > 0 && (
+        <div className="mt-3 rounded-md border bg-muted/20">
+          <div className="border-b px-2 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">Recent runner jobs</div>
+          <ul className="divide-y text-[11px]">
+            {recent.map((j) => {
+              const pill = j.ok === null ? "bg-amber-500/15 text-amber-700" : j.ok ? "bg-emerald-500/15 text-emerald-700" : "bg-red-500/15 text-red-700";
+              const label = j.ok === null ? "pending" : j.ok ? (j.dryRun ? "dry-run ok" : `ok${j.orderId ? ` · #${j.orderId}` : ""}`) : "failed";
+              return (
+                <li key={j.id} className="flex items-center gap-2 px-2 py-1">
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${pill}`}>{label}</span>
+                  <span className="truncate text-muted-foreground">{j.storeUrl.replace(/^https?:\/\//, "")}</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">{Math.round((Date.now() - j.at) / 1000)}s ago</span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
 
       <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
         Scaffold note: the job queue lives in server memory and is ephemeral. Swap to a Cloud table before production.
