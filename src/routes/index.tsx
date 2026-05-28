@@ -1632,6 +1632,36 @@ function ProfileBuilderDialog({
             )}
           </div>
 
+          {/* Phone jigger */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <span>Phone jigger</span>
+              <InfoDot text="Replaces the phone with a randomly-generated valid-format Australian mobile (04XX XXX XXX). Same variant always gets the same number." />
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {([
+                { v: "au_mobile", label: "Random AU mobile" },
+                { v: "off",       label: "Keep original" },
+              ] as const).map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => setPhoneMode(o.v)}
+                  className={`h-9 rounded-md border text-xs font-medium transition ${
+                    phoneMode === o.v ? "border-primary bg-primary/15 text-primary" : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {phoneMode === "au_mobile"
+                ? "Generates a valid-format AU mobile per variant (always starts with 04). Couriers ignore it for delivery, but it satisfies checkout validation as a unique number."
+                : "Every variant keeps the base profile's phone number."}
+            </p>
+          </div>
+
           {/* Preview */}
           <div className="rounded-lg border bg-background p-3 text-xs">
             <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
@@ -1639,13 +1669,14 @@ function ProfileBuilderDialog({
               <div>{preview.name.first} {preview.name.last}</div>
               <div>{preview.addr || <span className="italic">(no address)</span>}</div>
               <div>{preview.email}</div>
+              <div>{preview.phone || <span className="italic">(no phone)</span>}</div>
             </div>
           </div>
         </div>
 
         <DialogFooter className="flex-row gap-2 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
+          <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off" && phoneMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
           </Button>
 
