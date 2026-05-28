@@ -10,11 +10,16 @@ import {
   Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerClose, DrawerFooter,
 } from "@/components/ui/drawer";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  Loader2, ShoppingBag, AlertCircle, Zap, Settings, Plus, Trash2, Play, Square,
-  Server, Store, Users, ListChecks, X, Pencil, Search,
+  AlertCircle, Settings, Plus, Trash2, Play, Square,
+  Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
+  Check, BookOpen, Sparkles, Package, MapPin, User as UserIcon,
 } from "lucide-react";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
