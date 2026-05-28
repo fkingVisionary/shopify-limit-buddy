@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -26,7 +26,7 @@ import {
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
-import { createRunnerPairingCode, getRunnerStatus } from "@/lib/runner-dispatch.functions";
+import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult } from "@/lib/runner-dispatch.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
@@ -693,6 +693,8 @@ function Index() {
   // Browserless full-browser checkout
   const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
   const [browserlessDryRun, setBrowserlessDryRun] = useState(true);
+  // Prefer local runner over Browserless when one is paired & online.
+  const [runnerPreferred, setRunnerPreferred] = useState(true);
   useEffect(() => {
     try {
       const raw = localStorage.getItem("aio:browserless");
@@ -700,12 +702,13 @@ function Index() {
         const j = JSON.parse(raw);
         if (typeof j.enabled === "boolean") setBrowserlessEnabled(j.enabled);
         if (typeof j.dryRun === "boolean") setBrowserlessDryRun(j.dryRun);
+        if (typeof j.runnerPreferred === "boolean") setRunnerPreferred(j.runnerPreferred);
       }
     } catch {}
   }, []);
   useEffect(() => {
-    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun })); } catch {}
-  }, [browserlessEnabled, browserlessDryRun]);
+    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun, runnerPreferred })); } catch {}
+  }, [browserlessEnabled, browserlessDryRun, runnerPreferred]);
 
 
   // ─── Tasks ───
@@ -763,6 +766,45 @@ function Index() {
   const detectFn = useServerFn(detectCaptcha);
   const checkoutFn = useServerFn(runCheckout);
   const browserlessFn = useServerFn(runBrowserlessCheckout);
+  const dispatchRunner = useServerFn(dispatchRunnerJob);
+  const pollRunnerResult = useServerFn(pollRunnerJobResult);
+  const fetchRunnerStatus = useServerFn(getRunnerStatus);
+
+  // Polled runner status so the trigger can branch (runner vs. Browserless).
+  const runnerOnlineRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await fetchRunnerStatus();
+        if (alive) runnerOnlineRef.current = s.connected && (s.staleMs ?? 99999) < 15_000;
+      } catch { runnerOnlineRef.current = false; }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, [fetchRunnerStatus]);
+
+  // Dispatch a job to the local runner and poll until a result arrives.
+  // Returned shape mirrors `runBrowserlessCheckout` so callers can be agnostic.
+  const runViaLocalRunner = useCallback(async (payload: {
+    storeUrl: string; variantId: number; qty: number;
+    profile: any; card: any; proxy: string | null; captchaToken: string | null; dryRun: boolean;
+  }) => {
+    const start = Date.now();
+    const disp = await dispatchRunner({ data: payload });
+    if (!disp.ok) {
+      return { ok: false as const, failedStep: "transport" as const, error: disp.error, steps: [], screenshotB64: null, elapsedMs: Date.now() - start };
+    }
+    const deadline = Date.now() + 180_000; // 3 min budget
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const { result } = await pollRunnerResult({ data: { jobId: disp.jobId } });
+      if (result) return result;
+    }
+    return { ok: false as const, failedStep: "transport" as const, error: "Runner timed out (no result in 180s)", steps: [], screenshotB64: null, elapsedMs: Date.now() - start };
+  }, [dispatchRunner, pollRunnerResult]);
+
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
@@ -933,32 +975,40 @@ function Index() {
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
                   const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
-                  if (browserlessEnabled && (hasCard || browserlessDryRun)) {
-                    updateTask(t.id, { status: "checking_out", message: browserlessDryRun ? "Dry-run via Browserless…" : "Submitting order…" });
+                  const wantFullBrowser = browserlessEnabled || (runnerPreferred && runnerOnlineRef.current);
+                  const useRunner = runnerPreferred && runnerOnlineRef.current;
+                  if (wantFullBrowser && (hasCard || browserlessDryRun)) {
+                    const transportLabel = useRunner ? "local runner" : "Browserless";
+                    updateTask(t.id, {
+                      status: "checking_out",
+                      message: browserlessDryRun ? `Dry-run via ${transportLabel}…` : `Submitting order via ${transportLabel}…`,
+                    });
                     const bStart = Date.now();
-                    browserlessFn({
-                      data: {
-                        storeUrl: t.storeUrl,
-                        variantId: avail.id,
-                        qty,
-                        profile: {
-                          email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
-                          address1: profile.address1, address2: profile.address2 ?? null,
-                          city: profile.city, province: profile.province,
-                          zip: profile.zip, country: profile.country, phone: profile.phone,
-                        },
-                        card: {
-                          number: (profile.card_number || "4242424242424242").replace(/\s+/g, ""),
-                          name: profile.card_name || `${profile.first_name} ${profile.last_name}`.trim() || "Test",
-                          exp_month: profile.card_exp_month || "12",
-                          exp_year: profile.card_exp_year || "30",
-                          cvv: profile.card_cvv || "123",
-                        },
-                        proxy: rawProxy,
-                        captchaToken: pooled?.token ?? null,
-                        dryRun: browserlessDryRun,
+                    const payload = {
+                      storeUrl: t.storeUrl,
+                      variantId: avail.id,
+                      qty,
+                      profile: {
+                        email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+                        address1: profile.address1, address2: profile.address2 ?? null,
+                        city: profile.city, province: profile.province,
+                        zip: profile.zip, country: profile.country, phone: profile.phone,
                       },
-                    }).then((b) => {
+                      card: {
+                        number: (profile.card_number || "4242424242424242").replace(/\s+/g, ""),
+                        name: profile.card_name || `${profile.first_name} ${profile.last_name}`.trim() || "Test",
+                        exp_month: profile.card_exp_month || "12",
+                        exp_year: profile.card_exp_year || "30",
+                        cvv: profile.card_cvv || "123",
+                      },
+                      proxy: rawProxy,
+                      captchaToken: pooled?.token ?? null,
+                      dryRun: browserlessDryRun,
+                    };
+                    const transport = useRunner
+                      ? runViaLocalRunner(payload)
+                      : browserlessFn({ data: payload });
+                    transport.then((b: any) => {
                       const elapsed = Date.now() - bStart;
                       if (b.ok) {
                         updateTask(t.id, {
@@ -968,7 +1018,7 @@ function Index() {
                           steps: b.steps,
                           screenshotB64: b.screenshotB64,
                           browserlessElapsedMs: elapsed,
-                          message: b.dryRun ? `Dry-run OK · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${elapsed}ms`,
+                          message: b.dryRun ? `Dry-run OK · ${transportLabel} · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${transportLabel} · ${elapsed}ms`,
                         });
                         if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                       } else {
@@ -981,7 +1031,7 @@ function Index() {
                         });
                       }
                     }).catch((err: any) => {
-                      updateTask(t.id, { status: "failed", message: err?.message ?? "browserless error" });
+                      updateTask(t.id, { status: "failed", message: err?.message ?? `${transportLabel} error` });
                     });
                   } else if (autoOpen) {
                     window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
@@ -1008,7 +1058,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, poolApi]);
+  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
@@ -1139,6 +1189,7 @@ function Index() {
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
             browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
             browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
+            runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
             onShowWizard={() => setWizardOpen(true)}
             onResetTips={resetTips}
           />
@@ -2164,6 +2215,7 @@ function StoresView({
 function SettingsView({
   pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
+  runnerPreferred, setRunnerPreferred,
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
@@ -2171,6 +2223,7 @@ function SettingsView({
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
   browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
+  runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
@@ -2219,7 +2272,7 @@ function SettingsView({
         </p>
       </Card>
 
-      <LocalRunnerCard />
+      <LocalRunnerCard runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred} />
 
 
 
@@ -2244,7 +2297,7 @@ function SettingsView({
 // ────────────────────────────────────────────
 // Local runner card — pair an Electron runner and watch its connection.
 // ────────────────────────────────────────────
-function LocalRunnerCard() {
+function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void }) {
   const createCode = useServerFn(createRunnerPairingCode);
   const fetchStatus = useServerFn(getRunnerStatus);
   const [code, setCode] = useState<string | null>(null);
@@ -2307,6 +2360,12 @@ function LocalRunnerCard() {
           </span>
         )}
       </div>
+
+      <label className="mt-3 flex items-center gap-2 text-sm">
+        <input type="checkbox" className="h-4 w-4" checked={runnerPreferred} onChange={(e) => setRunnerPreferred(e.target.checked)} />
+        Prefer local runner over Browserless when online
+        <InfoDot text="When a runner is paired and online, jobs dispatch there instead of Browserless. Falls back to Browserless if the runner disconnects." />
+      </label>
 
       <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
         Scaffold note: the job queue lives in server memory and is ephemeral. Swap to a Cloud table before production.
