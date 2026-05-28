@@ -539,11 +539,9 @@ function Index() {
     setProfiles(profiles);
     setActiveIds(activeIds);
     setCustomStores(loadCustomStores());
-    try {
-      const px = localStorage.getItem(PROXIES_KEY) ?? "";
-      setProxiesText(px);
-      setProxyList(px.split("\n").map((s) => s.trim()).filter(Boolean));
-    } catch {}
+    const pg = loadProxyGroups();
+    setProxyGroups(pg);
+    setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
     setDismissedTips(loadDismissedTips());
     try {
