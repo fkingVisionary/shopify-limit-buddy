@@ -518,32 +518,72 @@ function Index() {
           </p>
           {showSettings && (
             <Card className="mt-4 p-4">
-              <div className="mb-2 text-sm font-medium">Pre-fill checkout info (saved locally)</div>
-              <p className="mb-3 text-xs text-muted-foreground">
-                Used to populate Shopify's checkout when you click Quick checkout. Nothing is sent anywhere until you submit on the store.
-              </p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {([
-                  ["email", "Email"],
-                  ["phone", "Phone"],
-                  ["first_name", "First name"],
-                  ["last_name", "Last name"],
-                  ["address1", "Address"],
-                  ["city", "City"],
-                  ["province", "State / Province"],
-                  ["zip", "Postcode"],
-                  ["country", "Country"],
-                ] as const).map(([k, label]) => (
-                  <div key={k}>
-                    <Label className="text-xs">{label}</Label>
-                    <Input
-                      value={prefill[k]}
-                      onChange={(e) => updatePrefill({ [k]: e.target.value } as Partial<Prefill>)}
-                      className="h-8"
-                    />
-                  </div>
-                ))}
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-sm font-medium">Checkout profiles ({activeProfiles.length}/{profiles.length} active)</div>
+                <Button size="sm" variant="outline" onClick={addProfile}>+ Add profile</Button>
               </div>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Each active profile opens its own prefilled checkout tab. Saved locally. Allow popups for this site if more than one tab is blocked.
+              </p>
+              {profiles.length === 0 && (
+                <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                  No profiles yet. Click "+ Add profile" to create one.
+                </div>
+              )}
+              <div className="space-y-3">
+                {profiles.map((profile) => {
+                  const isActive = activeIds.includes(profile.id);
+                  return (
+                    <div key={profile.id} className={`rounded-md border p-3 ${isActive ? "" : "opacity-60"}`}>
+                      <div className="mb-2 flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={isActive}
+                          onChange={() => toggleActive(profile.id)}
+                          title="Active (opens checkout tab on Quick checkout / drop)"
+                        />
+                        <Input
+                          value={profile.name}
+                          onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
+                          className="h-8 max-w-[200px] font-medium"
+                          placeholder="Profile name"
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="ml-auto text-destructive"
+                          onClick={() => deleteProfile(profile.id)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {([
+                          ["email", "Email"],
+                          ["phone", "Phone"],
+                          ["first_name", "First name"],
+                          ["last_name", "Last name"],
+                          ["address1", "Address"],
+                          ["city", "City"],
+                          ["province", "State / Province"],
+                          ["zip", "Postcode"],
+                          ["country", "Country"],
+                        ] as const).map(([k, label]) => (
+                          <div key={k}>
+                            <Label className="text-xs">{label}</Label>
+                            <Input
+                              value={profile[k]}
+                              onChange={(e) => updateProfile(profile.id, { [k]: e.target.value } as Partial<Profile>)}
+                              className="h-8"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className="mt-4 border-t pt-3">
                 <div className="mb-2 text-sm font-medium">Drop monitor</div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
