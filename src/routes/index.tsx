@@ -210,11 +210,66 @@ type Profile = Prefill & { id: string; name: string };
 const PREFILL_KEY = "shopify-limit-checker:prefill"; // legacy single-profile
 const PROFILES_KEY = "shopify-limit-checker:profiles";
 const ACTIVE_KEY = "shopify-limit-checker:active-profiles";
+const STORE_URL_KEY = "shopify-limit-checker:store-url";
+const CATALOG_KEY = "shopify-limit-checker:catalog"; // { storeUrl, products, ts }
+const DEFAULT_STORE_URL = "https://www.jbhifi.com.au";
+const CATALOG_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 const emptyPrefill: Prefill = {
   email: "", first_name: "", last_name: "", address1: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
 };
+
+function saveCatalog(storeUrl: string, products: Product[]) {
+  try {
+    localStorage.setItem(CATALOG_KEY, JSON.stringify({ storeUrl, products, ts: Date.now() }));
+  } catch {}
+}
+
+function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(CATALOG_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data?.storeUrl || !Array.isArray(data.products)) return null;
+    return data;
+  } catch { return null; }
+}
+
+// Fetch a single product by Shopify handle and return it as a Product
+async function fetchProductByHandle(storeUrl: string, handle: string): Promise<Product | null> {
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+  if (!res.ok) return null;
+  const p: any = await res.json();
+  return {
+    id: p.id,
+    title: p.title,
+    handle: p.handle,
+    image: p.featured_image ? (p.featured_image.startsWith("//") ? `https:${p.featured_image}` : p.featured_image) : (p.images?.[0] ?? null),
+    variants: (p.variants ?? []).map((v: any) => ({ id: v.id, title: v.public_title ?? v.title, price: typeof v.price === "number" ? (v.price / 100).toFixed(2) : v.price, available: v.available })),
+  };
+}
+
+// Extract a Shopify product handle from a URL like
+// https://www.jbhifi.com.au/products/some-handle?variant=...
+function handleFromUrl(input: string): string | null {
+  const s = input.trim();
+  const m = s.match(/\/products\/([a-z0-9][a-z0-9-]*)/i);
+  return m ? m[1] : null;
+}
+
+async function searchProducts(storeUrl: string, query: string, limit = 8): Promise<Product[]> {
+  const q = encodeURIComponent(query.trim());
+  const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
+  const res = await fetch(proxied(url));
+  if (!res.ok) return [];
+  const data: any = await res.json();
+  const items: any[] = data?.resources?.results?.products ?? [];
+  // suggest.json doesn't return variants — fetch each handle in parallel
+  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle)));
+  return results.filter((p): p is Product => !!p);
+}
 
 const makeId = () => Math.random().toString(36).slice(2, 10);
 
