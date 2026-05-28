@@ -452,18 +452,33 @@ function Index() {
                         >
                           {p.title}
                         </a>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => checkLimit(p)}
-                          disabled={info?.status === "loading"}
-                        >
-                          {info?.status === "loading" ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            "Check limit"
-                          )}
-                        </Button>
+                        <div className="flex shrink-0 gap-1.5">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => checkLimit(p)}
+                            disabled={info?.status === "loading"}
+                          >
+                            {info?.status === "loading" ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              "Check limit"
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => quickCheckout(p)}
+                            title={
+                              info?.maxPerOrder
+                                ? `Add ${info.maxPerOrder} to cart and open checkout`
+                                : "Add 1 to cart and open checkout"
+                            }
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                            Quick checkout{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
+                          </Button>
+                        </div>
                       </div>
                       <div className="mt-1 text-xs text-muted-foreground">
                         {p.variants.length} variant{p.variants.length === 1 ? "" : "s"}
