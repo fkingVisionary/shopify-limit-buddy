@@ -501,6 +501,55 @@ function jigName(first: string, last: string, seed: number): { first: string; la
   return { first: `${first} ${mi}.`, last };
 }
 
+// Email jigging.
+// Mode "dot": Gmail dot trick — insert dots between local-part chars (Gmail
+//   ignores them so all variants deliver to the same inbox). Works for
+//   @gmail.com and @googlemail.com only.
+// Mode "catchall": user owns a domain with catch-all routing → generate a
+//   random/derived local-part on that domain. All mail still lands in the
+//   single catch-all mailbox.
+function jigEmail(
+  email: string,
+  seed: number,
+  mode: "dot" | "catchall" | "off",
+  catchallDomain?: string
+): string {
+  if (!email || mode === "off") return email;
+  const [localRaw, domainRaw] = email.split("@");
+  if (!localRaw) return email;
+  const local = localRaw.toLowerCase();
+
+  if (mode === "catchall") {
+    const dom = (catchallDomain || domainRaw || "").trim().replace(/^@/, "").toLowerCase();
+    if (!dom) return email;
+    // Derive a stable, readable local-part: base + seed token
+    const token = (seed * 9301 + 49297) % 233280;
+    return `${local}.${token.toString(36)}@${dom}`;
+  }
+
+  // Gmail dot trick — only valid on gmail/googlemail
+  const dom = (domainRaw || "").toLowerCase();
+  const isGmail = dom === "gmail.com" || dom === "googlemail.com";
+  if (!isGmail) return email;
+  const stripped = local.replace(/\./g, "");
+  if (stripped.length < 2) return email;
+  // Choose dot positions deterministically from seed across a bitmask of N-1 gaps
+  const gaps = stripped.length - 1;
+  const mask = (seed * 2654435761) >>> 0;
+  let out = "";
+  for (let i = 0; i < stripped.length; i++) {
+    out += stripped[i];
+    if (i < gaps && ((mask >> (i % 31)) & 1) === 1) out += ".";
+  }
+  // Guarantee at least one dot for seed > 0
+  if (!out.includes(".") && seed > 0) {
+    const pos = 1 + (seed % gaps);
+    out = stripped.slice(0, pos) + "." + stripped.slice(pos);
+  }
+  return `${out}@${dom}`;
+}
+
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
