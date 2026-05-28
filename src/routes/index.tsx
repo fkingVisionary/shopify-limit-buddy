@@ -22,7 +22,7 @@ import {
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
 } from "lucide-react";
-import { solveCaptcha, getCaptchaBalance } from "@/lib/captcha.functions";
+import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
@@ -987,7 +987,7 @@ function Index() {
             onResetTips={resetTips}
           />
         )}
-        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} />}
+        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} />}
         {tab === "help" && <HelpView />}
       </main>
 
@@ -2194,28 +2194,47 @@ type HarvestEntry = {
 
 const HARVEST_KEY = "aio:captcha-harvest";
 
-function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
+type DetectedCaptcha = {
+  type: CaptchaType;
+  sitekey: string;
+  pageUrl: string;
+  detectedAt: number;
+};
+const CAPTCHA_CACHE_KEY = "aio:captcha-detected"; // Record<storeId, DetectedCaptcha>
+
+function loadDetectedCache(): Record<string, DetectedCaptcha> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(localStorage.getItem(CAPTCHA_CACHE_KEY) ?? "{}"); } catch { return {}; }
+}
+function saveDetectedCache(c: Record<string, DetectedCaptcha>) {
+  try { localStorage.setItem(CAPTCHA_CACHE_KEY, JSON.stringify(c)); } catch {}
+}
+
+function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; stores: StoreEntry[] }) {
   const solve = useServerFn(solveCaptcha);
   const balance = useServerFn(getCaptchaBalance);
-  const [type, setType] = useState<CaptchaType>("turnstile");
-  const [sitekey, setSitekey] = useState("");
-  const [pageUrl, setPageUrl] = useState("");
-  const [proxyGroupId, setProxyGroupId] = useState<string>("__manual");
+  const detect = useServerFn(detectCaptcha);
+
+  const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
+  const [detected, setDetected] = useState<Record<string, DetectedCaptcha>>({});
+  const [detecting, setDetecting] = useState(false);
+
+  const [proxyGroupId, setProxyGroupId] = useState<string>("__direct");
   const [proxy, setProxy] = useState("");
-  const [action, setAction] = useState("verify");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [bal, setBal] = useState<number | null>(null);
   const [tokens, setTokens] = useState<HarvestEntry[]>([]);
   const [lastUsedProxy, setLastUsedProxy] = useState<string | null>(null);
 
-  // Count raw proxies per group (entries without `{url}`) — those are the
-  // ones eligible for 2Captcha / future in-app checkout swapping.
   const rawCounts = useMemo(() => {
     const m: Record<string, number> = {};
     for (const g of proxyGroups) m[g.id] = g.proxies.filter((s) => !s.includes("{url}")).length;
     return m;
   }, [proxyGroups]);
+
+  const currentStore = stores.find((s) => s.id === storeId) ?? null;
+  const currentDetected = storeId ? detected[storeId] ?? null : null;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2223,6 +2242,7 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
       const raw = localStorage.getItem(HARVEST_KEY);
       if (raw) setTokens(JSON.parse(raw) as HarvestEntry[]);
     } catch {}
+    setDetected(loadDetectedCache());
     balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
   }, [balance]);
 
@@ -2231,10 +2251,32 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
     try { localStorage.setItem(HARVEST_KEY, JSON.stringify(next.slice(0, 30))); } catch {}
   };
 
+  const runDetect = async (): Promise<DetectedCaptcha | null> => {
+    if (!currentStore) { setErr("Pick a store first"); return null; }
+    setDetecting(true); setErr(null);
+    try {
+      const res = await detect({ data: { storeUrl: currentStore.url } });
+      if (!res.ok) { setErr(res.error); return null; }
+      const entry: DetectedCaptcha = {
+        type: res.type, sitekey: res.sitekey, pageUrl: res.pageUrl, detectedAt: Date.now(),
+      };
+      const next = { ...detected, [currentStore.id]: entry };
+      setDetected(next); saveDetectedCache(next);
+      return entry;
+    } catch (e) {
+      setErr((e as Error).message); return null;
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   const harvest = async () => {
     setErr(null);
-    if (!sitekey.trim() || !pageUrl.trim()) { setErr("Sitekey and page URL required"); return; }
-    // Resolve proxy: group rotation wins if a group is selected, else manual field
+    if (!currentStore) { setErr("Pick a store first"); return; }
+    // Auto-detect if we don't have a cached config for this store yet.
+    const config = currentDetected ?? (await runDetect());
+    if (!config) return;
+
     let useProxy = proxy.trim() || null;
     if (proxyGroupId !== "__manual" && proxyGroupId !== "__direct") {
       const picked = pickRawProxy(proxyGroupId);
@@ -2251,15 +2293,13 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
     try {
       const res = await solve({
         data: {
-          type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
-          proxy: useProxy,
-          action: type === "recaptchaV3" ? action.trim() : null,
-          minScore: null, timeoutSec: 120,
+          type: config.type, sitekey: config.sitekey, pageUrl: config.pageUrl,
+          proxy: useProxy, action: null, minScore: null, timeoutSec: 120,
         },
       });
       if (!res.ok) { setErr(res.error); return; }
       const entry: HarvestEntry = {
-        id: makeId(), type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
+        id: makeId(), type: config.type, sitekey: config.sitekey, pageUrl: config.pageUrl,
         proxy: useProxy ?? "", token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
       };
       persist([entry, ...tokens].slice(0, 30));
@@ -2281,7 +2321,7 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
         <div className="mb-3 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Shield className="h-4 w-4 text-primary" />
-            <span className="text-sm font-semibold">2Captcha Harvester</span>
+            <span className="text-sm font-semibold">Captcha Harvester</span>
           </div>
           {bal !== null && (
             <Badge variant="outline" className="text-[10px]">
@@ -2292,32 +2332,34 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
 
         <div className="space-y-2.5">
           <div>
-            <Label className="text-xs">Captcha type</Label>
-            <Select value={type} onValueChange={(v) => setType(v as CaptchaType)}>
-              <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+            <Label className="text-xs">Store</Label>
+            <Select value={storeId} onValueChange={setStoreId}>
+              <SelectTrigger className="h-9 mt-1"><SelectValue placeholder="Pick a store" /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="turnstile">Cloudflare Turnstile</SelectItem>
-                <SelectItem value="recaptchaV2">reCAPTCHA v2</SelectItem>
-                <SelectItem value="recaptchaV3">reCAPTCHA v3</SelectItem>
-                <SelectItem value="hcaptcha">hCaptcha</SelectItem>
+                {stores.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
               </SelectContent>
             </Select>
-          </div>
-
-          <div>
-            <Label className="text-xs">Sitekey</Label>
-            <Input
-              value={sitekey} onChange={(e) => setSitekey(e.target.value)}
-              placeholder="0x4AAAAAAA..." className="h-9 mt-1 font-mono text-xs"
-            />
-          </div>
-
-          <div>
-            <Label className="text-xs">Page URL</Label>
-            <Input
-              value={pageUrl} onChange={(e) => setPageUrl(e.target.value)}
-              placeholder="https://shop.com/checkout" className="h-9 mt-1 text-xs"
-            />
+            {currentDetected ? (
+              <div className="mt-1.5 flex items-center justify-between gap-2 rounded-md border bg-muted/40 p-2">
+                <div className="min-w-0 text-[10px] leading-tight">
+                  <div className="font-medium text-foreground">{currentDetected.type}</div>
+                  <div className="truncate font-mono text-muted-foreground">{currentDetected.sitekey}</div>
+                  <div className="truncate text-muted-foreground">{currentDetected.pageUrl}</div>
+                </div>
+                <Button size="sm" variant="ghost" className="h-7 shrink-0 text-[10px]" onClick={runDetect} disabled={detecting}>
+                  {detecting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Re-detect"}
+                </Button>
+              </div>
+            ) : (
+              <div className="mt-1.5 flex items-center justify-between gap-2 rounded-md border border-dashed p-2 text-[10px] text-muted-foreground">
+                <span>No captcha detected yet — we'll auto-detect on first harvest.</span>
+                <Button size="sm" variant="ghost" className="h-7 shrink-0 text-[10px]" onClick={runDetect} disabled={detecting || !currentStore}>
+                  {detecting ? <Loader2 className="h-3 w-3 animate-spin" /> : "Detect now"}
+                </Button>
+              </div>
+            )}
           </div>
 
           <div>
@@ -2325,8 +2367,8 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
             <Select value={proxyGroupId} onValueChange={setProxyGroupId}>
               <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="__manual">Manual (paste below)</SelectItem>
                 <SelectItem value="__direct">Direct — no proxy (proxyless solve)</SelectItem>
+                <SelectItem value="__manual">Manual (paste below)</SelectItem>
                 {proxyGroups.map((g) => (
                   <SelectItem key={g.id} value={g.id} disabled={(rawCounts[g.id] ?? 0) === 0}>
                     {g.name} ({rawCounts[g.id] ?? 0} raw)
@@ -2348,19 +2390,6 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
                 value={proxy} onChange={(e) => setProxy(e.target.value)}
                 placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
               />
-              <div className="mt-1 text-[10px] text-muted-foreground">
-                Leave blank for proxyless solve. Token is IP-bound — paste the same proxy your checkout will use.
-              </div>
-            </div>
-          )}
-
-          {type === "recaptchaV3" && (
-            <div>
-              <Label className="text-xs">Page action</Label>
-              <Input
-                value={action} onChange={(e) => setAction(e.target.value)}
-                placeholder="verify" className="h-9 mt-1 text-xs"
-              />
             </div>
           )}
 
@@ -2370,9 +2399,11 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
             </div>
           )}
 
-          <Button onClick={harvest} disabled={busy} className="w-full h-10">
+          <Button onClick={harvest} disabled={busy || detecting || !currentStore} className="w-full h-10">
             {busy ? (
               <><Loader2 className="h-4 w-4 animate-spin" /> Solving… (15–60s)</>
+            ) : detecting ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Detecting captcha…</>
             ) : (
               <><Shield className="h-4 w-4" /> Harvest token</>
             )}
@@ -2385,6 +2416,7 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
           )}
         </div>
       </Card>
+
 
       {tokens.length > 0 && (
         <Card className="p-3">
