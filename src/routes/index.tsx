@@ -263,11 +263,21 @@ type Prefill = {
   first_name: string;
   last_name: string;
   address1: string;
+  address2?: string;
   city: string;
   province: string;
   zip: string;
   country: string;
   phone: string;
+  // Optional card fields — only used when "Full browser checkout" is enabled.
+  // Stored locally in the browser (localStorage), never sent anywhere except
+  // directly to the Browserless run when YOU trigger a checkout. Treat like
+  // a wallet entry. Leave blank to skip auto-pay (checkout still opens prefilled).
+  card_number?: string;
+  card_name?: string;
+  card_exp_month?: string;
+  card_exp_year?: string;
+  card_cvv?: string;
 };
 
 type Profile = Prefill & { id: string; name: string };
@@ -281,8 +291,9 @@ const DEFAULT_STORE_URL = "https://www.jbhifi.com.au";
 const CATALOG_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 const emptyPrefill: Prefill = {
-  email: "", first_name: "", last_name: "", address1: "",
+  email: "", first_name: "", last_name: "", address1: "", address2: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
+  card_number: "", card_name: "", card_exp_month: "", card_exp_year: "", card_cvv: "",
 };
 
 function saveCatalog(storeUrl: string, products: Product[]) {
