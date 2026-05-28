@@ -2200,12 +2200,22 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
   const [type, setType] = useState<CaptchaType>("turnstile");
   const [sitekey, setSitekey] = useState("");
   const [pageUrl, setPageUrl] = useState("");
+  const [proxyGroupId, setProxyGroupId] = useState<string>("__manual");
   const [proxy, setProxy] = useState("");
   const [action, setAction] = useState("verify");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [bal, setBal] = useState<number | null>(null);
   const [tokens, setTokens] = useState<HarvestEntry[]>([]);
+  const [lastUsedProxy, setLastUsedProxy] = useState<string | null>(null);
+
+  // Count raw proxies per group (entries without `{url}`) — those are the
+  // ones eligible for 2Captcha / future in-app checkout swapping.
+  const rawCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const g of proxyGroups) m[g.id] = g.proxies.filter((s) => !s.includes("{url}")).length;
+    return m;
+  }, [proxyGroups]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2224,12 +2234,25 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
   const harvest = async () => {
     setErr(null);
     if (!sitekey.trim() || !pageUrl.trim()) { setErr("Sitekey and page URL required"); return; }
+    // Resolve proxy: group rotation wins if a group is selected, else manual field
+    let useProxy = proxy.trim() || null;
+    if (proxyGroupId !== "__manual" && proxyGroupId !== "__direct") {
+      const picked = pickRawProxy(proxyGroupId);
+      if (!picked) {
+        setErr("Selected group has no raw proxies (user:pass:ip:port). Add some in the Proxies tab.");
+        return;
+      }
+      useProxy = picked;
+    } else if (proxyGroupId === "__direct") {
+      useProxy = null;
+    }
+    setLastUsedProxy(useProxy);
     setBusy(true);
     try {
       const res = await solve({
         data: {
           type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
-          proxy: proxy.trim() || null,
+          proxy: useProxy,
           action: type === "recaptchaV3" ? action.trim() : null,
           minScore: null, timeoutSec: 120,
         },
@@ -2237,7 +2260,7 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
       if (!res.ok) { setErr(res.error); return; }
       const entry: HarvestEntry = {
         id: makeId(), type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
-        proxy: proxy.trim(), token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
+        proxy: useProxy ?? "", token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
       };
       persist([entry, ...tokens].slice(0, 30));
       balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
