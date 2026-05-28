@@ -441,7 +441,8 @@ function loadTasks(): Task[] {
   try {
     const arr = JSON.parse(localStorage.getItem(TASKS_KEY) ?? "[]") as Task[];
     // Reset transient runtime fields
-    return arr.map((t) => ({ ...t, running: false, status: t.status === "in_stock" || t.status === "opened" ? t.status : "idle" }));
+    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "failed"];
+    return arr.map((t) => ({ ...t, running: false, status: keep.includes(t.status) ? t.status : "idle" }));
   } catch { return []; }
 }
 
