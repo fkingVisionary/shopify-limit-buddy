@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
+import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
@@ -263,11 +264,21 @@ type Prefill = {
   first_name: string;
   last_name: string;
   address1: string;
+  address2?: string;
   city: string;
   province: string;
   zip: string;
   country: string;
   phone: string;
+  // Optional card fields — only used when "Full browser checkout" is enabled.
+  // Stored locally in the browser (localStorage), never sent anywhere except
+  // directly to the Browserless run when YOU trigger a checkout. Treat like
+  // a wallet entry. Leave blank to skip auto-pay (checkout still opens prefilled).
+  card_number?: string;
+  card_name?: string;
+  card_exp_month?: string;
+  card_exp_year?: string;
+  card_cvv?: string;
 };
 
 type Profile = Prefill & { id: string; name: string };
@@ -281,8 +292,9 @@ const DEFAULT_STORE_URL = "https://www.jbhifi.com.au";
 const CATALOG_TTL_MS = 1000 * 60 * 60 * 12; // 12h
 
 const emptyPrefill: Prefill = {
-  email: "", first_name: "", last_name: "", address1: "",
+  email: "", first_name: "", last_name: "", address1: "", address2: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
+  card_number: "", card_name: "", card_exp_month: "", card_exp_year: "", card_cvv: "",
 };
 
 function saveCatalog(storeUrl: string, products: Product[]) {
@@ -409,8 +421,11 @@ type TaskStatus =
   | "adding_to_cart"
   | "checkout_ready"
   | "opened"
+  | "checking_out"   // browserless run in flight
+  | "confirmed"      // order id received
   | "failed"
   | "error";
+type CheckoutStepLog = { step: string; t: number; ok: boolean; note?: string };
 type Task = {
   id: string;
   storeId: string;
@@ -434,6 +449,12 @@ type Task = {
   checkoutTokenUsed?: boolean;
   checkoutStartedAt?: number;
   checkoutElapsedMs?: number;
+  // Browserless state
+  orderId?: string | null;
+  finalUrl?: string;
+  steps?: CheckoutStepLog[];
+  screenshotB64?: string | null;
+  browserlessElapsedMs?: number;
 };
 const TASKS_KEY = "aio:tasks";
 function loadTasks(): Task[] {
@@ -441,7 +462,7 @@ function loadTasks(): Task[] {
   try {
     const arr = JSON.parse(localStorage.getItem(TASKS_KEY) ?? "[]") as Task[];
     // Reset transient runtime fields
-    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "failed"];
+    const keep: TaskStatus[] = ["in_stock", "opened", "checkout_ready", "confirmed", "failed"];
     return arr.map((t) => ({ ...t, running: false, status: keep.includes(t.status) ? t.status : "idle" }));
   } catch { return []; }
 }
@@ -668,6 +689,23 @@ function Index() {
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
+  // Browserless full-browser checkout
+  const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
+  const [browserlessDryRun, setBrowserlessDryRun] = useState(true);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("aio:browserless");
+      if (raw) {
+        const j = JSON.parse(raw);
+        if (typeof j.enabled === "boolean") setBrowserlessEnabled(j.enabled);
+        if (typeof j.dryRun === "boolean") setBrowserlessDryRun(j.dryRun);
+      }
+    } catch {}
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun })); } catch {}
+  }, [browserlessEnabled, browserlessDryRun]);
+
 
   // ─── Tasks ───
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -723,6 +761,7 @@ function Index() {
   const solveFn = useServerFn(solveCaptcha);
   const detectFn = useServerFn(detectCaptcha);
   const checkoutFn = useServerFn(runCheckout);
+  const browserlessFn = useServerFn(runBrowserlessCheckout);
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
@@ -891,7 +930,66 @@ function Index() {
                         checkoutElapsedMs: r.elapsedMs,
                         message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                       });
-                      if (autoOpen) {
+                      // Full-browser path: hand off to Browserless if enabled
+                      // AND the profile has card data (else dry-run is still
+                      // useful — confirms the checkout walks all the way).
+                      const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
+                      if (browserlessEnabled && (hasCard || browserlessDryRun)) {
+                        updateTask(t.id, { status: "checking_out", message: browserlessDryRun ? "Dry-run via Browserless…" : "Submitting order…" });
+                        (async () => {
+                          const bStart = Date.now();
+                          try {
+                            const b = await browserlessFn({
+                              data: {
+                                storeUrl: t.storeUrl,
+                                variantId: avail.id,
+                                qty,
+                                profile: {
+                                  email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+                                  address1: profile.address1, address2: profile.address2 ?? null,
+                                  city: profile.city, province: profile.province,
+                                  zip: profile.zip, country: profile.country, phone: profile.phone,
+                                },
+                                card: {
+                                  number: (profile.card_number || "4242424242424242").replace(/\s+/g, ""),
+                                  name: profile.card_name || `${profile.first_name} ${profile.last_name}`.trim() || "Test",
+                                  exp_month: profile.card_exp_month || "12",
+                                  exp_year: profile.card_exp_year || "30",
+                                  cvv: profile.card_cvv || "123",
+                                },
+                                proxy: rawProxy,
+                                captchaToken: pooled?.token ?? null,
+                                dryRun: browserlessDryRun,
+                              },
+                            });
+                            const elapsed = Date.now() - bStart;
+                            if (b.ok) {
+                              updateTask(t.id, {
+                                status: b.dryRun ? "checkout_ready" : "confirmed",
+                                orderId: b.orderId ?? null,
+                                finalUrl: b.finalUrl,
+                                steps: b.steps,
+                                screenshotB64: b.screenshotB64,
+                                browserlessElapsedMs: elapsed,
+                                message: b.dryRun
+                                  ? `Dry-run OK · ${elapsed}ms`
+                                  : `Order ${b.orderId ?? "?"} · ${elapsed}ms`,
+                              });
+                              if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}${b.orderId ? ` #${b.orderId}` : ""}`);
+                            } else {
+                              updateTask(t.id, {
+                                status: "failed",
+                                steps: b.steps,
+                                screenshotB64: b.screenshotB64,
+                                browserlessElapsedMs: elapsed,
+                                message: `${b.failedStep}: ${b.error}`,
+                              });
+                            }
+                          } catch (err: any) {
+                            updateTask(t.id, { status: "failed", message: err?.message ?? "browserless error" });
+                          }
+                        })();
+                      } else if (autoOpen) {
                         window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
                         updateTask(t.id, { status: "opened" });
                       }
@@ -924,7 +1022,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, poolApi]);
+  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
@@ -1053,6 +1151,8 @@ function Index() {
             pollMs={pollMs} setPollMs={setPollMs}
             autoOpen={autoOpen} setAutoOpen={setAutoOpen}
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+            browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
+            browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
             onShowWizard={() => setWizardOpen(true)}
             onResetTips={resetTips}
           />
@@ -1183,6 +1283,8 @@ function TasksView({
             case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
             case "checkout_ready": return { label: "Checkout ready", color: "text-green-400" };
             case "opened":         return { label: "Checkout opened", color: "text-primary" };
+            case "checking_out":   return { label: t.message ?? "Submitting order…", color: "text-amber-400" };
+            case "confirmed":      return { label: `ORDER ${t.orderId ?? "CONFIRMED"}`, color: "text-emerald-400" };
             case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
             case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
             case "error":          return { label: t.message ?? "Error", color: "text-destructive" };
@@ -1194,10 +1296,11 @@ function TasksView({
           { key: "in_stock", label: "Stock" },
           { key: "adding_to_cart", label: "Cart" },
           { key: "checkout_ready", label: "Checkout" },
-          { key: "opened", label: "Open" },
+          { key: "checking_out", label: "Pay" },
+          { key: "confirmed", label: "Done" },
         ];
         const phaseIdx = phases.findIndex((p) => p.key === t.status);
-        const showStepper = phaseIdx >= 0 || t.status === "failed";
+        const showStepper = phaseIdx >= 0 || t.status === "opened" || t.status === "failed";
         return (
           <Card key={t.id} className="p-3">
             <div className="flex items-start gap-3">
@@ -1222,7 +1325,7 @@ function TasksView({
                 {showStepper && (
                   <div className="mt-2 flex items-center gap-1">
                     {phases.map((p, i) => {
-                      const done = phaseIdx > i || t.status === "opened";
+                      const done = phaseIdx > i || t.status === "confirmed" || (t.status === "opened" && p.key !== "checking_out" && p.key !== "confirmed");
                       const active = phaseIdx === i;
                       const failed = t.status === "failed" && i === Math.max(0, phaseIdx);
                       return (
@@ -1247,6 +1350,32 @@ function TasksView({
                   >
                     Open checkout →
                   </a>
+                )}
+                {t.screenshotB64 && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                      Browserless screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
+                    </summary>
+                    <img
+                      src={`data:image/png;base64,${t.screenshotB64}`}
+                      alt="checkout screenshot"
+                      className="mt-1.5 max-w-full rounded border border-border"
+                    />
+                  </details>
+                )}
+                {t.steps && t.steps.length > 0 && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                      Step log ({t.steps.length})
+                    </summary>
+                    <ul className="mt-1 space-y-0.5 text-[10px] font-mono">
+                      {t.steps.map((s, i) => (
+                        <li key={i} className={s.ok ? "text-emerald-400/90" : "text-destructive"}>
+                          [{s.t}ms] {s.step} {s.ok ? "✓" : "✗"} {s.note ?? ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
                 )}
               </div>
               <div className="flex flex-col items-end gap-1.5">
@@ -1565,16 +1694,47 @@ function ProfilesView({
               {([
                 ["email", "Email"], ["phone", "Phone"],
                 ["first_name", "First name"], ["last_name", "Last name"],
-                ["address1", "Address"], ["city", "City"],
+                ["address1", "Address"], ["address2", "Apt / suite"],
+                ["city", "City"],
                 ["province", "State"], ["zip", "Postcode"],
                 ["country", "Country"],
               ] as const).map(([k, label]) => (
                 <div key={k} className={k === "address1" ? "col-span-2" : ""}>
                   <Label className="text-[10px] text-muted-foreground">{label}</Label>
-                  <Input value={p[k]} onChange={(e) => onUpdate(p.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
+                  <Input value={(p[k] ?? "") as string} onChange={(e) => onUpdate(p.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
                 </div>
               ))}
             </div>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                Payment card (optional — for full-browser checkout)
+              </summary>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-amber-400/80">
+                Stored only in this browser's localStorage. Sent directly to Browserless when YOU trigger a real checkout. Leave blank to use checkout-only mode (you type the card in the opened tab).
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="col-span-2">
+                  <Label className="text-[10px] text-muted-foreground">Card number</Label>
+                  <Input value={p.card_number ?? ""} onChange={(e) => onUpdate(p.id, { card_number: e.target.value })} className="h-8 font-mono text-sm" placeholder="4242 4242 4242 4242" />
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-[10px] text-muted-foreground">Name on card</Label>
+                  <Input value={p.card_name ?? ""} onChange={(e) => onUpdate(p.id, { card_name: e.target.value })} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">Exp month</Label>
+                  <Input value={p.card_exp_month ?? ""} onChange={(e) => onUpdate(p.id, { card_exp_month: e.target.value })} className="h-8 font-mono text-sm" placeholder="12" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">Exp year</Label>
+                  <Input value={p.card_exp_year ?? ""} onChange={(e) => onUpdate(p.id, { card_exp_year: e.target.value })} className="h-8 font-mono text-sm" placeholder="30" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">CVV</Label>
+                  <Input value={p.card_cvv ?? ""} onChange={(e) => onUpdate(p.id, { card_cvv: e.target.value })} className="h-8 font-mono text-sm" placeholder="123" />
+                </div>
+              </div>
+            </details>
           </Card>
         );
       })}
@@ -2016,11 +2176,15 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn, onShowWizard, onResetTips,
+  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
+  onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
   autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
+  browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
+  browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
@@ -2046,6 +2210,30 @@ function SettingsView({
         </label>
         <p className="mt-2 text-[11px] text-muted-foreground">Keep this tab pinned — browsers throttle background tabs.</p>
       </Card>
+
+      <Card className="p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Full browser checkout (Browserless)
+          <InfoDot text="Instead of just opening a prefilled tab, drives a real headless browser through cart → shipping → payment → submit. Uses your captcha pool + raw proxy. Requires card fields on the profile." />
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          When enabled, after stock is detected the bot drives a real Chrome instance on Browserless all the way through the Shopify checkout. Captcha tokens come from the pool, card data comes from the profile, proxy is the raw entry from the task's group.
+        </p>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={browserlessEnabled} onChange={(e) => setBrowserlessEnabled(e.target.checked)} />
+          Enable full-browser checkout
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={browserlessDryRun} onChange={(e) => setBrowserlessDryRun(e.target.checked)} disabled={!browserlessEnabled} />
+          Dry-run (stop BEFORE clicking "Pay now")
+          <InfoDot text="Walks through every step and screenshots the final review page without actually submitting. Use this to verify the flow before allowing real orders." />
+        </label>
+        <p className="mt-2 text-[10px] leading-relaxed text-amber-400/90">
+          Turn dry-run OFF only when you're ready to place real orders. Each non-dry checkout will charge the card on the assigned profile.
+        </p>
+      </Card>
+
+
 
       <Card className="p-3">
         <div className="text-sm font-medium">Onboarding & tips</div>
