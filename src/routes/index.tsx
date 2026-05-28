@@ -1283,6 +1283,8 @@ function TasksView({
             case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
             case "checkout_ready": return { label: "Checkout ready", color: "text-green-400" };
             case "opened":         return { label: "Checkout opened", color: "text-primary" };
+            case "checking_out":   return { label: t.message ?? "Submitting order…", color: "text-amber-400" };
+            case "confirmed":      return { label: `ORDER ${t.orderId ?? "CONFIRMED"}`, color: "text-emerald-400" };
             case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
             case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
             case "error":          return { label: t.message ?? "Error", color: "text-destructive" };
