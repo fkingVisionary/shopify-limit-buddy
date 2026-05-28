@@ -702,6 +702,12 @@ function Index() {
 
   const allStores = useMemo<StoreEntry[]>(() => [...PRESET_STORES, ...customStores], [customStores]);
 
+  // Pre-harvest captcha pool — runs across all tabs so tokens are ready
+  // before a drop, not solved on-demand at checkout time.
+  const solveFn = useServerFn(solveCaptcha);
+  const detectFn = useServerFn(detectCaptcha);
+  const poolApi = usePool(allStores, solveFn, detectFn);
+
   // ─── Profile helpers ───
   const persistProfiles = (next: Profile[], nextActive?: string[]) => {
     const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
