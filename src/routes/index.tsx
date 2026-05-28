@@ -2278,8 +2278,8 @@ type PoolApi = {
 
 function usePool(
   stores: StoreEntry[],
-  solveFn: ReturnType<typeof useServerFn<typeof solveCaptcha>>,
-  detectFn: ReturnType<typeof useServerFn<typeof detectCaptcha>>,
+  solveFn: (args: { data: Parameters<typeof solveCaptcha>[0]["data"] }) => ReturnType<typeof solveCaptcha>,
+  detectFn: (args: { data: Parameters<typeof detectCaptcha>[0]["data"] }) => ReturnType<typeof detectCaptcha>,
 ): PoolApi {
   const [pool, setPool] = useState<Record<string, PoolToken[]>>({});
   const [config, setConfig] = useState<Record<string, PoolConfig>>({});
