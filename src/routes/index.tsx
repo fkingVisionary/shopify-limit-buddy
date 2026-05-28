@@ -2116,11 +2116,15 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn, onShowWizard, onResetTips,
+  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
+  onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
   autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
+  browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
+  browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
