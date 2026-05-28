@@ -71,3 +71,34 @@ export const pollRunnerJobResult = createServerFn({ method: "GET" })
   .handler(async ({ data }): Promise<{ result: RunnerResult | null }> => {
     return { result: getResult(data.jobId) };
   });
+
+export const listRunnerRecentJobs = createServerFn({ method: "GET" }).handler(async () => {
+  return { jobs: listRecentJobs() };
+});
+
+export const disconnectRunner = createServerFn({ method: "POST" }).handler(async () => {
+  return { ok: disconnectActiveDevice() };
+});
+
+// Dispatches a self-contained dry-run job — useful as a one-click smoke test
+// to validate the entire pair → poll → execute → report loop without touching
+// real Shopify or real cards.
+export const dispatchRunnerTestJob = createServerFn({ method: "POST" }).handler(async () => {
+  const job: RunnerJob = {
+    id: crypto.randomUUID(),
+    createdAt: Date.now(),
+    storeUrl: "https://example.myshopify.com",
+    variantId: 1,
+    qty: 1,
+    profile: {
+      email: "test@example.com", first_name: "Test", last_name: "Runner",
+      address1: "1 Test St", city: "Testville", province: "CA",
+      zip: "94000", country: "US", phone: "5555555555",
+    },
+    card: { number: "4242424242424242", name: "Test Runner", exp_month: "12", exp_year: "30", cvv: "123" },
+    dryRun: true,
+  };
+  const r = enqueueJob(job);
+  if (!r.dispatched) return { ok: false as const, error: "No runner connected" };
+  return { ok: true as const, jobId: job.id };
+});
