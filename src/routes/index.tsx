@@ -2242,6 +2242,80 @@ function SettingsView({
 }
 
 // ────────────────────────────────────────────
+// Local runner card — pair an Electron runner and watch its connection.
+// ────────────────────────────────────────────
+function LocalRunnerCard() {
+  const createCode = useServerFn(createRunnerPairingCode);
+  const fetchStatus = useServerFn(getRunnerStatus);
+  const [code, setCode] = useState<string | null>(null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(null);
+  const [status, setStatus] = useState<{ connected: boolean; name?: string; staleMs?: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await fetchStatus();
+        if (alive) setStatus(s.connected ? { connected: true, name: s.name, staleMs: s.staleMs } : { connected: false });
+      } catch {}
+    };
+    tick();
+    const id = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(id); };
+  }, [fetchStatus]);
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const r = await createCode({ data: { deviceName: "Runner" } });
+      setCode(r.code);
+      setExpiresAt(Date.now() + r.expiresInSec * 1000);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const live = status?.connected && (status.staleMs ?? 0) < 15_000;
+  const dotClass = live ? "bg-emerald-400" : status?.connected ? "bg-amber-400" : "bg-muted-foreground/50";
+
+  return (
+    <Card className="p-3">
+      <div className="flex items-center gap-1.5 text-sm font-medium">
+        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+        Local runner (Electron)
+        <InfoDot text="Runs checkouts on your own machine using local Playwright + your residential IP — no Browserless cost. Download from /runner in this repo, pair with a code below." />
+      </div>
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+        {status?.connected
+          ? <>Paired: <span className="text-foreground">{status.name}</span> · {live ? "online" : `last seen ${Math.round((status.staleMs ?? 0) / 1000)}s ago`}</>
+          : "No runner connected. Generate a code, paste it into the Electron app, then click Start there."}
+      </p>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button size="sm" className="h-9" onClick={generate} disabled={busy}>
+          {busy ? "Generating…" : "Generate pairing code"}
+        </Button>
+        {code && (
+          <div className="flex items-center gap-2 rounded-md border bg-muted/40 px-3 py-1.5 font-mono text-base tracking-[0.3em]">
+            {code}
+          </div>
+        )}
+        {expiresAt && (
+          <span className="text-[10px] text-muted-foreground">
+            expires in {Math.max(0, Math.round((expiresAt - Date.now()) / 1000))}s
+          </span>
+        )}
+      </div>
+
+      <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+        Scaffold note: the job queue lives in server memory and is ephemeral. Swap to a Cloud table before production.
+      </p>
+    </Card>
+  );
+}
+
+// ────────────────────────────────────────────
 // InfoDot — tap to reveal a short explanation
 // ────────────────────────────────────────────
 function InfoDot({ text }: { text: string }) {
