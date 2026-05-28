@@ -69,26 +69,34 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
-const PROXIES_KEY = "shopify-limit-checker:proxies";
+// ─────────────── Proxy groups ───────────────
+const PROXIES_KEY = "shopify-limit-checker:proxies";      // legacy flat list
+const PROXY_GROUPS_KEY = "aio:proxy-groups";              // new: groups
 
-// In-memory proxy list (mirrored to localStorage). A "proxy" is a URL template
-// that contains "{url}" — the request URL is substituted in. Empty/missing
-// means use the same-origin /api/public/shopify route.
-let __proxyList: string[] = [];
-let __proxyIdx = 0;
-function setProxyList(list: string[]) {
-  __proxyList = list.filter((s) => s.includes("{url}"));
-  __proxyIdx = 0;
+type ProxyGroup = { id: string; name: string; proxies: string[] };
+
+// In-memory mirror so the network helpers can rotate without React state.
+let __proxyGroups: ProxyGroup[] = [];
+const __rotIdx: Record<string, number> = {};
+function setProxyGroupsRuntime(groups: ProxyGroup[]) {
+  __proxyGroups = groups.map((g) => ({
+    ...g,
+    proxies: g.proxies.filter((s) => s.includes("{url}")),
+  }));
 }
 
-function proxied(targetUrl: string): string {
-  if (__proxyList.length === 0) {
-    return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
-  }
-  const tmpl = __proxyList[__proxyIdx % __proxyList.length];
-  __proxyIdx = (__proxyIdx + 1) % __proxyList.length;
-  return tmpl.replace("{url}", encodeURIComponent(targetUrl));
+// Build a request URL. If groupId resolves to a group with proxies, rotate
+// round-robin within it; otherwise fall back to the same-origin proxy route.
+function proxied(targetUrl: string, groupId?: string | null): string {
+  const direct = `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  if (!groupId) return direct;
+  const group = __proxyGroups.find((g) => g.id === groupId);
+  if (!group || group.proxies.length === 0) return direct;
+  const i = (__rotIdx[group.id] ?? 0) % group.proxies.length;
+  __rotIdx[group.id] = (i + 1) % group.proxies.length;
+  return group.proxies[i].replace("{url}", encodeURIComponent(targetUrl));
 }
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -157,11 +165,11 @@ async function fetchProducts(
   return { products: all, partial, note };
 }
 
-async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
+async function detectLimit(storeUrl: string, handle: string, groupId?: string | null): Promise<LimitInfo> {
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
   // quantity_rule.max — the merchant-configured per-order limit.
   try {
-    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
     if (res.ok) {
       const data: any = await res.json();
       const variants: any[] = data.variants ?? [];
@@ -178,7 +186,7 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
     // fall through
   }
 
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}`, groupId));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
@@ -271,8 +279,8 @@ function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | 
 }
 
 // Fetch a single product by Shopify handle and return it as a Product
-async function fetchProductByHandle(storeUrl: string, handle: string): Promise<Product | null> {
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+async function fetchProductByHandle(storeUrl: string, handle: string, groupId?: string | null): Promise<Product | null> {
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
   if (!res.ok) return null;
   const p: any = await res.json();
   return {
@@ -292,15 +300,15 @@ function handleFromUrl(input: string): string | null {
   return m ? m[1] : null;
 }
 
-async function searchProducts(storeUrl: string, query: string, limit = 8): Promise<Product[]> {
+async function searchProducts(storeUrl: string, query: string, limit = 8, groupId?: string | null): Promise<Product[]> {
   const q = encodeURIComponent(query.trim());
   const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
-  const res = await fetch(proxied(url));
+  const res = await fetch(proxied(url, groupId));
   if (!res.ok) return [];
   const data: any = await res.json();
   const items: any[] = data?.resources?.results?.products ?? [];
   // suggest.json doesn't return variants — fetch each handle in parallel
-  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle)));
+  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle, groupId)));
   return results.filter((p): p is Product => !!p);
 }
 
@@ -378,7 +386,7 @@ type Task = {
   storeName: string;
   input: string;       // URL, handle, SKU, or keyword
   profileId: string;
-  proxyIdx: number | -1; // -1 = rotate
+  proxyGroupId: string | null;
   qty: number;
   status: TaskStatus;
   running: boolean;
@@ -417,12 +425,88 @@ function saveTasks(tasks: Task[]) {
   } catch {}
 }
 
+// ─────────────── Proxy group persistence ───────────────
+function loadProxyGroups(): ProxyGroup[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PROXY_GROUPS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ProxyGroup[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+    // Migrate legacy flat list → single "Default" group
+    const legacy = localStorage.getItem(PROXIES_KEY) ?? "";
+    const list = legacy.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0) {
+      return [{ id: "default", name: "Default", proxies: list }];
+    }
+  } catch {}
+  return [];
+}
+function saveProxyGroupsLS(groups: ProxyGroup[]) {
+  try { localStorage.setItem(PROXY_GROUPS_KEY, JSON.stringify(groups)); } catch {}
+}
+
+// ─────────────── Address + name jigging ───────────────
+const STREET_SWAPS: Array<[RegExp, string]> = [
+  [/\bStreet\b/gi, "St"],
+  [/\bSt\.?\b/gi, "Street"],
+  [/\bRoad\b/gi, "Rd"],
+  [/\bRd\.?\b/gi, "Road"],
+  [/\bAvenue\b/gi, "Ave"],
+  [/\bAve\.?\b/gi, "Avenue"],
+  [/\bDrive\b/gi, "Dr"],
+  [/\bDr\.?\b/gi, "Drive"],
+  [/\bLane\b/gi, "Ln"],
+  [/\bLn\.?\b/gi, "Lane"],
+  [/\bBoulevard\b/gi, "Blvd"],
+  [/\bBlvd\.?\b/gi, "Boulevard"],
+  [/\bCourt\b/gi, "Ct"],
+  [/\bCt\.?\b/gi, "Court"],
+  [/\bHighway\b/gi, "Hwy"],
+  [/\bHwy\.?\b/gi, "Highway"],
+];
+// Pick a single street-suffix swap (first match wins) for safety
+function jigAddress(addr: string, seed: number): string {
+  if (!addr) return addr;
+  const variants: string[] = [];
+  for (const [re, rep] of STREET_SWAPS) {
+    if (re.test(addr)) {
+      variants.push(addr.replace(re, rep));
+      re.lastIndex = 0;
+    }
+    re.lastIndex = 0;
+  }
+  // Punctuation tweaks (also non-breaking for shipping)
+  variants.push(addr.includes(",") ? addr.replace(",", "") : addr.replace(/(\s\w+)$/, ",$1"));
+  // Extra non-breaking spaces normalisation flip
+  variants.push(addr.replace(/\s+/g, "  ").replace(/\s{2,}/g, " "));
+  if (variants.length === 0) return addr;
+  return variants[seed % variants.length];
+}
+const MIDDLE_INITIALS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "P", "R", "S", "T"];
+function jigName(first: string, last: string, seed: number): { first: string; last: string } {
+  const pick = seed % 3;
+  if (pick === 0 && first) {
+    // Add a middle initial onto first name
+    const mi = MIDDLE_INITIALS[seed % MIDDLE_INITIALS.length];
+    return { first: `${first} ${mi}`, last };
+  }
+  if (pick === 1 && first) {
+    // Hyphenate first letter casing change ("john" -> "John" already from input; flip one inner letter)
+    return { first: first.charAt(0).toUpperCase() + first.slice(1), last: last.toUpperCase().charAt(0) + last.slice(1).toLowerCase() };
+  }
+  // Insert a middle initial between first and last as separate token
+  const mi = MIDDLE_INITIALS[(seed + 7) % MIDDLE_INITIALS.length];
+  return { first: `${first} ${mi}.`, last };
+}
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeIds, setActiveIds] = useState<string[]>([]);
   const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
-  const [proxiesText, setProxiesText] = useState("");
+  const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
@@ -455,11 +539,9 @@ function Index() {
     setProfiles(profiles);
     setActiveIds(activeIds);
     setCustomStores(loadCustomStores());
-    try {
-      const px = localStorage.getItem(PROXIES_KEY) ?? "";
-      setProxiesText(px);
-      setProxyList(px.split("\n").map((s) => s.trim()).filter(Boolean));
-    } catch {}
+    const pg = loadProxyGroups();
+    setProxyGroups(pg);
+    setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
     setDismissedTips(loadDismissedTips());
     try {
@@ -499,14 +581,20 @@ function Index() {
     saveProfiles(profiles, next);
   };
 
-  // ─── Proxy helpers ───
-  const saveProxies = (text: string) => {
-    setProxiesText(text);
-    const list = text.split("\n").map((s) => s.trim()).filter(Boolean);
-    setProxyList(list);
-    try { localStorage.setItem(PROXIES_KEY, text); } catch {}
+  // ─── Proxy group helpers ───
+  const persistGroups = (next: ProxyGroup[]) => {
+    setProxyGroups(next);
+    setProxyGroupsRuntime(next);
+    saveProxyGroupsLS(next);
   };
-  const proxyLines = proxiesText.split("\n").map((s) => s.trim()).filter(Boolean);
+  const addProxyGroup = () => {
+    const n = proxyGroups.length + 1;
+    persistGroups([...proxyGroups, { id: makeId(), name: `Group ${n}`, proxies: [] }]);
+  };
+  const updateProxyGroup = (id: string, patch: Partial<ProxyGroup>) =>
+    persistGroups(proxyGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)));
+  const deleteProxyGroup = (id: string) => persistGroups(proxyGroups.filter((g) => g.id !== id));
+  const totalProxies = proxyGroups.reduce((n, g) => n + g.proxies.length, 0);
 
   // ─── Audio + notify ───
   const beep = () => {
@@ -556,9 +644,9 @@ function Index() {
       try {
         const handle = handleFromUrl(t.input);
         let p: Product | null = null;
-        if (handle) p = await fetchProductByHandle(t.storeUrl, handle);
+        if (handle) p = await fetchProductByHandle(t.storeUrl, handle, t.proxyGroupId);
         else {
-          const results = await searchProducts(t.storeUrl, t.input, 1);
+          const results = await searchProducts(t.storeUrl, t.input, 1, t.proxyGroupId);
           p = results[0] ?? null;
         }
         if (!p) {
@@ -566,7 +654,7 @@ function Index() {
           return;
         }
         // Detect limit
-        const li = await detectLimit(t.storeUrl, p.handle).catch(() => null);
+        const li = await detectLimit(t.storeUrl, p.handle, t.proxyGroupId).catch(() => null);
         updateTask(id, {
           productHandle: p.handle,
           productTitle: p.title,
@@ -593,7 +681,7 @@ function Index() {
       if (running.length === 0) return;
       await Promise.all(running.map(async (t) => {
         try {
-          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`));
+          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId));
           if (!res.ok) {
             updateTask(t.id, { lastChecked: Date.now(), message: `HTTP ${res.status}` });
             return;
@@ -672,7 +760,7 @@ function Index() {
               <CreateTaskSheet
                 stores={allStores}
                 profiles={profiles}
-                proxyCount={proxyLines.length}
+                proxyGroups={proxyGroups}
                 onCreate={(tpl, n) => { createTasks(tpl, n); setCreateOpen(false); }}
                 onAddCustomStore={(name, url) => addCustomStore(name, url)}
               />
@@ -728,10 +816,16 @@ function Index() {
             onUpdate={updateProfile}
             onDelete={deleteProfile}
             onToggle={toggleActive}
+            onPersistMany={(next, nextActive) => persistProfiles(next, nextActive)}
           />
         )}
         {tab === "proxies" && (
-          <ProxiesView text={proxiesText} onChange={saveProxies} count={proxyLines.length} />
+          <ProxiesView
+            groups={proxyGroups}
+            onAdd={addProxyGroup}
+            onUpdate={updateProxyGroup}
+            onDelete={deleteProxyGroup}
+          />
         )}
         {tab === "stores" && (
           <StoresView
@@ -775,7 +869,7 @@ function Index() {
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
             ["stores", "Stores", Store, allStores.length],
-            ["proxies", "Proxies", Server, proxyLines.length],
+            ["proxies", "Proxies", Server, totalProxies],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
@@ -872,7 +966,7 @@ function TasksView({
           switch (t.status) {
             case "in_stock": return { label: "IN STOCK", color: "text-green-400" };
             case "opened":   return { label: "Checkout opened", color: "text-primary" };
-            case "monitoring": return { label: t.message ?? "Monitoring", color: "text-sky-400" };
+            case "monitoring": return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
             case "error":    return { label: t.message ?? "Error", color: "text-destructive" };
             default:         return { label: "Idle", color: "text-muted-foreground" };
           }
@@ -923,16 +1017,16 @@ function TasksView({
 // Create Task bottom sheet
 // ────────────────────────────────────────────
 function CreateTaskSheet({
-  stores, profiles, proxyCount, onCreate, onAddCustomStore,
+  stores, profiles, proxyGroups, onCreate, onAddCustomStore,
 }: {
-  stores: StoreEntry[]; profiles: Profile[]; proxyCount: number;
+  stores: StoreEntry[]; profiles: Profile[]; proxyGroups: ProxyGroup[];
   onCreate: (tpl: Omit<Task, "id" | "status" | "running">, n: number) => void;
   onAddCustomStore: (name: string, url: string) => void;
 }) {
   const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
   const [input, setInput] = useState("");
   const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? "");
-  const [proxyIdx, setProxyIdx] = useState<string>("-1"); // -1 = rotate
+  const [proxyGroupSel, setProxyGroupSel] = useState<string>("__direct"); // __direct = no proxy
   const [qty, setQty] = useState(1);
   const [taskQty, setTaskQty] = useState(1);
   const [addingStore, setAddingStore] = useState(false);
@@ -942,6 +1036,11 @@ function CreateTaskSheet({
   // Re-sync when stores/profiles change
   useEffect(() => { if (!stores.find((s) => s.id === storeId) && stores[0]) setStoreId(stores[0].id); }, [stores, storeId]);
   useEffect(() => { if (!profiles.find((p) => p.id === profileId) && profiles[0]) setProfileId(profiles[0].id); }, [profiles, profileId]);
+  useEffect(() => {
+    // Default to first group if available
+    if (proxyGroupSel === "__direct" && proxyGroups.length > 0) setProxyGroupSel(proxyGroups[0].id);
+    if (proxyGroupSel !== "__direct" && !proxyGroups.find((g) => g.id === proxyGroupSel)) setProxyGroupSel("__direct");
+  }, [proxyGroups, proxyGroupSel]);
 
   const store = stores.find((s) => s.id === storeId);
   const profile = profiles.find((p) => p.id === profileId);
@@ -955,7 +1054,7 @@ function CreateTaskSheet({
       storeName: store!.name,
       input: input.trim(),
       profileId: profile!.id,
-      proxyIdx: parseInt(proxyIdx, 10) as -1 | number,
+      proxyGroupId: proxyGroupSel === "__direct" ? null : proxyGroupSel,
       qty: Math.max(1, qty),
     }, Math.max(1, taskQty));
     setInput("");
@@ -1107,15 +1206,17 @@ function CreateTaskSheet({
 
             <div>
               <div className="flex items-center gap-1.5">
-                <Label className="text-xs text-muted-foreground">Proxy</Label>
-                <InfoDot text="Which proxy to route requests through. 'Rotate' cycles through all proxies you've added in the Proxies tab." />
+                <Label className="text-xs text-muted-foreground">Proxy group</Label>
+                <InfoDot text="Pick a named proxy group to rotate within. Manage groups in the Proxies tab. 'Direct' uses the built-in server proxy with no rotation." />
               </div>
-              <Select value={proxyIdx} onValueChange={setProxyIdx}>
+              <Select value={proxyGroupSel} onValueChange={setProxyGroupSel}>
                 <SelectTrigger className="mt-1 h-10"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount} configured)` : " — none configured (direct)"}</SelectItem>
-                  {Array.from({ length: proxyCount }, (_, i) => (
-                    <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
+                  <SelectItem value="__direct">Direct (no proxy)</SelectItem>
+                  {proxyGroups.map((g) => (
+                    <SelectItem key={g.id} value={g.id}>
+                      {g.name} ({g.proxies.length})
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -1162,14 +1263,17 @@ function CreateTaskSheet({
 // Profiles view
 // ────────────────────────────────────────────
 function ProfilesView({
-  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle,
+  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle, onPersistMany,
 }: {
   profiles: Profile[]; activeIds: string[];
   onAdd: () => void;
   onUpdate: (id: string, patch: Partial<Profile>) => void;
   onDelete: (id: string) => void;
   onToggle: (id: string) => void;
+  onPersistMany: (next: Profile[], nextActive?: string[]) => void;
 }) {
+  const [builderFor, setBuilderFor] = useState<Profile | null>(null);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -1188,6 +1292,15 @@ function ProfilesView({
             <div className="mb-2 flex items-center gap-2">
               <input type="checkbox" className="h-4 w-4" checked={isActive} onChange={() => onToggle(p.id)} />
               <Input value={p.name} onChange={(e) => onUpdate(p.id, { name: e.target.value })} className="h-8 flex-1 font-medium" placeholder="Profile name" />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 text-primary"
+                title="Build jigged variants from this profile"
+                onClick={() => setBuilderFor(p)}
+              >
+                <Sparkles className="h-4 w-4" />
+              </Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -1207,36 +1320,258 @@ function ProfilesView({
           </Card>
         );
       })}
+
+      <ProfileBuilderDialog
+        base={builderFor}
+        onClose={() => setBuilderFor(null)}
+        onCreate={(variants) => {
+          const next = [...profiles, ...variants];
+          const nextActive = [...activeIds, ...variants.map((v) => v.id)];
+          onPersistMany(next, nextActive);
+          setBuilderFor(null);
+        }}
+      />
     </div>
   );
 }
 
 // ────────────────────────────────────────────
-// Proxies view
+// Profile Builder dialog — jig an existing profile into N variants
 // ────────────────────────────────────────────
-function ProxiesView({ text, onChange, count }: { text: string; onChange: (v: string) => void; count: number }) {
+function ProfileBuilderDialog({
+  base, onClose, onCreate,
+}: {
+  base: Profile | null;
+  onClose: () => void;
+  onCreate: (variants: Profile[]) => void;
+}) {
+  const [count, setCount] = useState(3);
+  const [jigAddr, setJigAddr] = useState(true);
+  const [jigNames, setJigNames] = useState(true);
+
+  useEffect(() => {
+    if (base) {
+      setCount(3);
+      setJigAddr(true);
+      setJigNames(true);
+    }
+  }, [base]);
+
+  if (!base) return null;
+
+  const preview = (() => {
+    const seed = 1;
+    const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
+    const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+    return { name, addr };
+  })();
+
+  const build = () => {
+    const variants: Profile[] = [];
+    for (let i = 1; i <= count; i++) {
+      const seed = i;
+      const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
+      const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+      variants.push({
+        ...base,
+        id: makeId(),
+        name: `${base.name} v${i}`,
+        first_name: name.first,
+        last_name: name.last,
+        address1: addr,
+      });
+    }
+    onCreate(variants);
+  };
+
+  return (
+    <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <Sparkles className="h-6 w-6" />
+          </div>
+          <DialogTitle className="text-center text-lg">Build variants from "{base.name}"</DialogTitle>
+          <DialogDescription className="text-center text-xs leading-relaxed">
+            Generate N copies of this profile with small, non-breaking permutations so each checkout looks distinct to Shopify.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">How many variants?</Label>
+            <Input
+              type="number" min={1} max={50}
+              value={count}
+              onChange={(e) => setCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+              className="mt-1 h-10"
+            />
+          </div>
+
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={jigAddr} onChange={(e) => setJigAddr(e.target.checked)} />
+              <span>Address jigger</span>
+              <InfoDot text="Swaps street suffix forms ('St' ↔ 'Street'), tweaks punctuation/spacing. Non-breaking for shipping." />
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={jigNames} onChange={(e) => setJigNames(e.target.checked)} />
+              <span>Name shuffler</span>
+              <InfoDot text="Adds a random middle initial or tweaks capitalisation. Email, phone and address stay intact." />
+            </label>
+          </div>
+
+          {/* Preview */}
+          <div className="rounded-lg border bg-background p-3 text-xs">
+            <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
+            <div className="text-muted-foreground">
+              <div>{preview.name.first} {preview.name.last}</div>
+              <div>{preview.addr || <span className="italic">(no address)</span>}</div>
+              <div>{base.email}</div>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="flex-row gap-2 sm:justify-end">
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames)}>
+            Create {count} variant{count > 1 ? "s" : ""}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────
+// Proxies view — named groups with health tester
+// ────────────────────────────────────────────
+function ProxiesView({
+  groups, onAdd, onUpdate, onDelete,
+}: {
+  groups: ProxyGroup[];
+  onAdd: () => void;
+  onUpdate: (id: string, patch: Partial<ProxyGroup>) => void;
+  onDelete: (id: string) => void;
+}) {
   return (
     <div className="space-y-3">
-      <Card className="p-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">Proxy rotation</div>
-            <div className="text-[11px] text-muted-foreground">Round-robin across listed proxies</div>
-          </div>
-          <Badge variant={count > 0 ? "default" : "outline"}>{count > 0 ? `${count} active` : "Direct"}</Badge>
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">{groups.length} group{groups.length === 1 ? "" : "s"}</div>
+        <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add group</Button>
+      </div>
+
+      {groups.length === 0 && (
+        <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+          No proxy groups yet. Tasks will use the built-in direct proxy.
+          <br />
+          Add a group to rotate through your own proxies during drops.
         </div>
-        <Textarea
-          value={text}
-          onChange={(e) => onChange(e.target.value)}
-          className="mt-3 min-h-[180px] font-mono text-[11px]"
-          placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}\nhttps://proxy2.example.com/get?target={url}"}
-          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+      )}
+
+      {groups.map((g) => (
+        <ProxyGroupCard
+          key={g.id}
+          group={g}
+          onUpdate={(patch) => onUpdate(g.id, patch)}
+          onDelete={() => onDelete(g.id)}
         />
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Use <code className="font-mono">{`{url}`}</code> as a placeholder for the encoded target URL. Leave empty to fetch through the built-in server proxy.
-        </p>
-      </Card>
+      ))}
     </div>
+  );
+}
+
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string };
+
+function ProxyGroupCard({
+  group, onUpdate, onDelete,
+}: {
+  group: ProxyGroup;
+  onUpdate: (patch: Partial<ProxyGroup>) => void;
+  onDelete: () => void;
+}) {
+  const text = group.proxies.join("\n");
+  const [testing, setTesting] = useState(false);
+  const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
+
+  const onTextChange = (v: string) => {
+    onUpdate({ proxies: v.split("\n").map((s) => s.trim()).filter(Boolean) });
+  };
+
+  const testGroup = async () => {
+    setTesting(true);
+    setResults({});
+    // Ping a lightweight, well-known URL through each proxy template
+    const probe = "https://www.shopify.com/robots.txt";
+    await Promise.all(group.proxies.map(async (tmpl, i) => {
+      if (!tmpl.includes("{url}")) {
+        setResults((r) => ({ ...r, [i]: { ok: false, ms: 0, err: "missing {url}" } }));
+        return;
+      }
+      const started = performance.now();
+      try {
+        const url = tmpl.replace("{url}", encodeURIComponent(probe));
+        const res = await fetch(url, { method: "GET" });
+        const ms = Math.round(performance.now() - started);
+        setResults((r) => ({ ...r, [i]: { ok: res.ok, ms, status: res.status } }));
+      } catch (e: any) {
+        const ms = Math.round(performance.now() - started);
+        setResults((r) => ({ ...r, [i]: { ok: false, ms, err: e?.message ?? "network" } }));
+      }
+    }));
+    setTesting(false);
+  };
+
+  return (
+    <Card className="p-3">
+      <div className="flex items-center gap-2">
+        <Input
+          value={group.name}
+          onChange={(e) => onUpdate({ name: e.target.value })}
+          className="h-8 flex-1 font-medium"
+          placeholder="Group name"
+        />
+        <Badge variant={group.proxies.length > 0 ? "default" : "outline"} className="text-[10px]">
+          {group.proxies.length}
+        </Badge>
+        <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={onDelete}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+      <Textarea
+        value={text}
+        onChange={(e) => onTextChange(e.target.value)}
+        className="mt-2 min-h-[120px] font-mono text-[11px]"
+        placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}"}
+        autoCapitalize="none" autoCorrect="off" spellCheck={false}
+      />
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <p className="text-[10px] text-muted-foreground">
+          Use <code className="font-mono">{`{url}`}</code> as the placeholder.
+        </p>
+        <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
+          {testing ? "Testing…" : "Test group"}
+        </Button>
+      </div>
+
+      {Object.keys(results).length > 0 && (
+        <ul className="mt-2 space-y-1 text-[11px]">
+          {group.proxies.map((p, i) => {
+            const r = results[i];
+            const dotColor = !r ? "bg-muted-foreground/40" : r.ok ? "bg-primary" : "bg-destructive";
+            return (
+              <li key={i} className="flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+                <span className="flex-1 truncate font-mono text-muted-foreground">{p}</span>
+                <span className={r?.ok ? "text-primary" : "text-destructive"}>
+                  {r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }
 
