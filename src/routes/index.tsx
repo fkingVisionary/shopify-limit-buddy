@@ -481,54 +481,60 @@ function threeLetterPrefix(seed: number): string {
   const c = PREFIX_LETTERS[(seed * 13 + 11) % PREFIX_LETTERS.length];
   return `${a}${b}${c}`;
 }
-function jigAddress(addr: string, seed: number): string {
-  if (!addr) return addr;
+export type AddrJigMode = "off" | "suffix" | "unit" | "letter" | "prefix" | "mix";
+function jigAddress(addr: string, seed: number, mode: AddrJigMode = "mix"): string {
+  if (!addr || mode === "off") return addr;
   const trimmed = addr.trim();
-  const variants: string[] = [];
-
-  // Parse a leading street number if present: "123 Main Street" or "123A Main Street"
   const leadMatch = trimmed.match(/^(\d+)([A-Z]?)\s+(.+)$/i);
-  if (leadMatch) {
-    const num = leadMatch[1];
-    const existingLetter = leadMatch[2];
-    const rest = leadMatch[3];
+  const num = leadMatch?.[1] ?? "";
+  const existingLetter = leadMatch?.[2] ?? "";
+  const rest = leadMatch?.[3] ?? "";
 
-    // 1. Unit prefix (fake unit numbers are safe — parcel still routes to the street number)
+  const unitVariants = (): string[] => {
+    if (!leadMatch) return [];
     const unitNum = ((seed % 9) + 1).toString();
-    variants.push(`Unit ${unitNum}/${num} ${rest}`);
-    variants.push(`${unitNum}/${num} ${rest}`);
-
-    // 2. Letter unit prefix
     const unitLetter = PREFIX_LETTERS[seed % PREFIX_LETTERS.length];
-    variants.push(`${unitLetter}/${num} ${rest}`);
-
-    // 3. Append a letter to the street number (only if not already lettered)
-    if (!existingLetter) {
-      const tail = PREFIX_LETTERS[(seed + 5) % PREFIX_LETTERS.length];
-      variants.push(`${num}${tail} ${rest}`);
-    }
-
-    // 4. Three random letters prefix — XYZ 123 Main Street
-    variants.push(`${threeLetterPrefix(seed)} ${num}${existingLetter} ${rest}`);
-  } else {
-    // No leading number — still safe to slap a 3-letter prefix on the front
-    variants.push(`${threeLetterPrefix(seed)} ${trimmed}`);
-  }
-
-  // 5. Street-suffix swap (Street <-> St, Avenue <-> Ave, etc.)
-  for (const [re, rep] of STREET_SWAPS) {
-    if (re.test(trimmed)) {
-      variants.push(trimmed.replace(re, rep));
+    return [
+      `Unit ${unitNum}/${num} ${rest}`,
+      `${unitNum}/${num} ${rest}`,
+      `${unitLetter}/${num} ${rest}`,
+    ];
+  };
+  const letterVariants = (): string[] => {
+    if (!leadMatch || existingLetter) return [];
+    const tail = PREFIX_LETTERS[(seed + 5) % PREFIX_LETTERS.length];
+    return [`${num}${tail} ${rest}`];
+  };
+  const prefixVariants = (): string[] => {
+    if (leadMatch) return [`${threeLetterPrefix(seed)} ${num}${existingLetter} ${rest}`];
+    return [`${threeLetterPrefix(seed)} ${trimmed}`];
+  };
+  const suffixVariants = (): string[] => {
+    const out: string[] = [];
+    for (const [re, rep] of STREET_SWAPS) {
+      if (re.test(trimmed)) {
+        out.push(trimmed.replace(re, rep));
+        re.lastIndex = 0;
+        break;
+      }
       re.lastIndex = 0;
-      break; // one suffix swap is enough
     }
-    re.lastIndex = 0;
+    // safe punctuation fallback so this mode always produces something
+    out.push(trimmed.includes(",") ? trimmed.replace(",", "") : trimmed.replace(/(\s\w+)$/, ",$1"));
+    return out;
+  };
+
+  let pool: string[];
+  switch (mode) {
+    case "suffix": pool = suffixVariants(); break;
+    case "unit":   pool = unitVariants(); break;
+    case "letter": pool = letterVariants(); break;
+    case "prefix": pool = prefixVariants(); break;
+    case "mix":
+    default:       pool = [...unitVariants(), ...letterVariants(), ...prefixVariants(), ...suffixVariants()]; break;
   }
-
-  // 6. Punctuation tweak — safe filler if nothing else fired
-  variants.push(trimmed.includes(",") ? trimmed.replace(",", "") : trimmed.replace(/(\s\w+)$/, ",$1"));
-
-  return variants[seed % variants.length];
+  if (pool.length === 0) return trimmed;
+  return pool[seed % pool.length];
 }
 const MIDDLE_INITIALS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "P", "R", "S", "T"];
 function jigName(first: string, last: string, seed: number): { first: string; last: string } {
