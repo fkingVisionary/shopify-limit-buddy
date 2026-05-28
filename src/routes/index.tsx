@@ -699,6 +699,15 @@ function Index() {
       </header>
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 pb-40 pt-3">
+        {currentTip && !dismissedTips[currentTip.key] && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-foreground/90">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="flex-1 leading-relaxed">{currentTip.text}</span>
+            <button onClick={() => dismissTip(currentTip.key)} className="text-muted-foreground hover:text-foreground" aria-label="Dismiss tip">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
         {tab === "tasks" && (
           <TasksView
             tasks={tasks}
@@ -706,6 +715,9 @@ function Index() {
             onStart={startTask}
             onStop={stopTask}
             onDelete={deleteTask}
+            onCreate={() => setCreateOpen(true)}
+            onGoProfiles={() => setTab("profiles")}
+            hasProfiles={profiles.length > 0}
           />
         )}
         {tab === "profiles" && (
