@@ -766,6 +766,45 @@ function Index() {
   const detectFn = useServerFn(detectCaptcha);
   const checkoutFn = useServerFn(runCheckout);
   const browserlessFn = useServerFn(runBrowserlessCheckout);
+  const dispatchRunner = useServerFn(dispatchRunnerJob);
+  const pollRunnerResult = useServerFn(pollRunnerJobResult);
+  const fetchRunnerStatus = useServerFn(getRunnerStatus);
+
+  // Polled runner status so the trigger can branch (runner vs. Browserless).
+  const runnerOnlineRef = useRef(false);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      try {
+        const s = await fetchRunnerStatus();
+        if (alive) runnerOnlineRef.current = s.connected && (s.staleMs ?? 99999) < 15_000;
+      } catch { runnerOnlineRef.current = false; }
+    };
+    tick();
+    const id = setInterval(tick, 5000);
+    return () => { alive = false; clearInterval(id); };
+  }, [fetchRunnerStatus]);
+
+  // Dispatch a job to the local runner and poll until a result arrives.
+  // Returned shape mirrors `runBrowserlessCheckout` so callers can be agnostic.
+  const runViaLocalRunner = useCallback(async (payload: {
+    storeUrl: string; variantId: number; qty: number;
+    profile: any; card: any; proxy: string | null; captchaToken: string | null; dryRun: boolean;
+  }) => {
+    const start = Date.now();
+    const disp = await dispatchRunner({ data: payload });
+    if (!disp.ok) {
+      return { ok: false as const, failedStep: "transport" as const, error: disp.error, steps: [], screenshotB64: null, elapsedMs: Date.now() - start };
+    }
+    const deadline = Date.now() + 180_000; // 3 min budget
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const { result } = await pollRunnerResult({ data: { jobId: disp.jobId } });
+      if (result) return result;
+    }
+    return { ok: false as const, failedStep: "transport" as const, error: "Runner timed out (no result in 180s)", steps: [], screenshotB64: null, elapsedMs: Date.now() - start };
+  }, [dispatchRunner, pollRunnerResult]);
+
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
