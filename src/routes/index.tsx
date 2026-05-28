@@ -317,7 +317,10 @@ function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: P
 }
 
 function Index() {
-  const [url, setUrl] = useState("");
+  const [url, setUrl] = useState(DEFAULT_STORE_URL);
+  const [quickAdd, setQuickAdd] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [cacheAge, setCacheAge] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
