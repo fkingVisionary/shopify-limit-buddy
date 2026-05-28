@@ -1,12 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings, Eye, EyeOff, Bell, Search, Users, Radar, Trash2, Plus, RefreshCw } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerClose, DrawerFooter,
+} from "@/components/ui/drawer";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  Loader2, ShoppingBag, AlertCircle, Zap, Settings, Plus, Trash2, Play, Square,
+  Server, Store, Users, ListChecks, X, Pencil, Search,
+} from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
