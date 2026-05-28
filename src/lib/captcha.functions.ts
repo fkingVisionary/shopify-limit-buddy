@@ -1,6 +1,96 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
+// ---------------------------------------------------------------------------
+// Auto-detect captcha config for a Shopify storefront.
+// ---------------------------------------------------------------------------
+// Shopify gates checkout traffic via /checkpoint (Cloudflare Turnstile) and
+// occasionally /challenge (reCAPTCHA v2 on older stores). We probe both and
+// scrape the sitekey from the rendered HTML so the user never has to fish
+// it out of devtools. Cached client-side per store.
+
+const DetectSchema = z.object({
+  storeUrl: z.string().url().max(500),
+});
+
+type DetectOk = {
+  ok: true;
+  type: "turnstile" | "recaptchaV2";
+  sitekey: string;
+  pageUrl: string;
+};
+type DetectErr = { ok: false; error: string };
+
+const TURNSTILE_PATTERNS: RegExp[] = [
+  /data-sitekey=["']([0-9a-zA-Z_-]{20,})["']/,
+  /turnstile[^"']{0,40}sitekey["'\s:=]{1,5}["']([0-9a-zA-Z_-]{20,})["']/i,
+  /["']sitekey["']\s*:\s*["'](0x[0-9A-Za-z]{20,})["']/,
+];
+const RECAPTCHA_PATTERNS: RegExp[] = [
+  /data-sitekey=["']([0-9A-Za-z_-]{40})["']/,
+  /recaptcha[^"']{0,60}["']sitekey["']\s*:\s*["']([0-9A-Za-z_-]{40})["']/i,
+  /\/recaptcha\/api2?\/[^"']*[?&]k=([0-9A-Za-z_-]{40})/,
+];
+
+async function fetchText(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        accept: "text/html,*/*",
+      },
+    });
+    if (!res.ok && res.status !== 403 && res.status !== 429) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+function scrape(html: string, patterns: RegExp[]): string | null {
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (m && m[1]) return m[1];
+  }
+  return null;
+}
+
+export const detectCaptcha = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => DetectSchema.parse(input))
+  .handler(async ({ data }): Promise<DetectOk | DetectErr> => {
+    const base = data.storeUrl.replace(/\/$/, "");
+    // Try checkpoint first — that's where Shopify drops Turnstile.
+    const candidates: Array<{ url: string; kind: "turnstile" | "recaptchaV2" }> = [
+      { url: `${base}/checkpoint`, kind: "turnstile" },
+      { url: `${base}/challenge`, kind: "recaptchaV2" },
+      { url: `${base}/account/login`, kind: "recaptchaV2" },
+    ];
+    for (const c of candidates) {
+      const html = await fetchText(c.url);
+      if (!html) continue;
+      if (c.kind === "turnstile") {
+        const key = scrape(html, TURNSTILE_PATTERNS);
+        if (key && (key.startsWith("0x") || key.length >= 20)) {
+          return { ok: true, type: "turnstile", sitekey: key, pageUrl: c.url };
+        }
+      } else {
+        const key = scrape(html, RECAPTCHA_PATTERNS);
+        if (key && key.length === 40) {
+          return { ok: true, type: "recaptchaV2", sitekey: key, pageUrl: c.url };
+        }
+      }
+    }
+    return {
+      ok: false,
+      error:
+        "Couldn't auto-detect a captcha on this store. The store may not gate checkout with a captcha right now, or it uses a custom challenge page.",
+    };
+  });
+
+
+
 // 2Captcha harvester. Submits a captcha to 2Captcha's API and polls for the
 // solved token. Tokens are usually IP-bound by the target site — pass a
 // `proxy` (user:pass@ip:port) so the solver worker uses the same exit IP as
