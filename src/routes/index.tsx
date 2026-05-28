@@ -1456,6 +1456,9 @@ function ProfileBuilderDialog({
         </DialogHeader>
 
         <div className="space-y-3">
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Each variant gets small, safe permutations so checkouts look distinct. Check the Help tab for a full jiggling guide with examples.
+          </p>
           <div>
             <Label className="text-xs text-muted-foreground">How many variants?</Label>
             <Input
