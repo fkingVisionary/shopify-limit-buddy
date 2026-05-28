@@ -988,12 +988,13 @@ function Index() {
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-6">
+        <div className="mx-auto grid max-w-3xl grid-cols-7">
           {([
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
             ["stores", "Stores", Store, allStores.length],
             ["proxies", "Proxies", Server, totalProxies],
+            ["captcha", "Captcha", Shield, 0],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
