@@ -2158,3 +2158,210 @@ function HelpView() {
     </div>
   );
 }
+
+// ─────────────── Captcha harvester ───────────────
+type CaptchaType = "turnstile" | "recaptchaV2" | "recaptchaV3" | "hcaptcha";
+type HarvestEntry = {
+  id: string;
+  type: CaptchaType;
+  sitekey: string;
+  pageUrl: string;
+  proxy: string;
+  token: string;
+  elapsedMs: number;
+  ts: number;
+};
+
+const HARVEST_KEY = "aio:captcha-harvest";
+
+function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
+  const solve = useServerFn(solveCaptcha);
+  const balance = useServerFn(getCaptchaBalance);
+  const [type, setType] = useState<CaptchaType>("turnstile");
+  const [sitekey, setSitekey] = useState("");
+  const [pageUrl, setPageUrl] = useState("");
+  const [proxy, setProxy] = useState("");
+  const [action, setAction] = useState("verify");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [bal, setBal] = useState<number | null>(null);
+  const [tokens, setTokens] = useState<HarvestEntry[]>([]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(HARVEST_KEY);
+      if (raw) setTokens(JSON.parse(raw) as HarvestEntry[]);
+    } catch {}
+    balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
+  }, [balance]);
+
+  const persist = (next: HarvestEntry[]) => {
+    setTokens(next);
+    try { localStorage.setItem(HARVEST_KEY, JSON.stringify(next.slice(0, 30))); } catch {}
+  };
+
+  const harvest = async () => {
+    setErr(null);
+    if (!sitekey.trim() || !pageUrl.trim()) { setErr("Sitekey and page URL required"); return; }
+    setBusy(true);
+    try {
+      const res = await solve({
+        data: {
+          type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
+          proxy: proxy.trim() || null,
+          action: type === "recaptchaV3" ? action.trim() : null,
+          minScore: null, timeoutSec: 120,
+        },
+      });
+      if (!res.ok) { setErr(res.error); return; }
+      const entry: HarvestEntry = {
+        id: makeId(), type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
+        proxy: proxy.trim(), token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
+      };
+      persist([entry, ...tokens].slice(0, 30));
+      balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async (text: string) => {
+    try { await navigator.clipboard.writeText(text); } catch {}
+  };
+
+  return (
+    <div className="space-y-3">
+      <Card className="p-3">
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Shield className="h-4 w-4 text-primary" />
+            <span className="text-sm font-semibold">2Captcha Harvester</span>
+          </div>
+          {bal !== null && (
+            <Badge variant="outline" className="text-[10px]">
+              Balance ${bal.toFixed(2)}
+            </Badge>
+          )}
+        </div>
+
+        <div className="space-y-2.5">
+          <div>
+            <Label className="text-xs">Captcha type</Label>
+            <Select value={type} onValueChange={(v) => setType(v as CaptchaType)}>
+              <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="turnstile">Cloudflare Turnstile</SelectItem>
+                <SelectItem value="recaptchaV2">reCAPTCHA v2</SelectItem>
+                <SelectItem value="recaptchaV3">reCAPTCHA v3</SelectItem>
+                <SelectItem value="hcaptcha">hCaptcha</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <Label className="text-xs">Sitekey</Label>
+            <Input
+              value={sitekey} onChange={(e) => setSitekey(e.target.value)}
+              placeholder="0x4AAAAAAA..." className="h-9 mt-1 font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <Label className="text-xs">Page URL</Label>
+            <Input
+              value={pageUrl} onChange={(e) => setPageUrl(e.target.value)}
+              placeholder="https://shop.com/checkout" className="h-9 mt-1 text-xs"
+            />
+          </div>
+
+          <div>
+            <Label className="text-xs">
+              Proxy <span className="text-muted-foreground">(user:pass:ip:port — must match checkout IP)</span>
+            </Label>
+            <Input
+              value={proxy} onChange={(e) => setProxy(e.target.value)}
+              placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
+            />
+            <div className="mt-1 text-[10px] text-muted-foreground">
+              Leave blank for proxyless solve. Token will be IP-bound to whoever submits it — paste the same proxy your checkout will use, or the site will reject the token.
+            </div>
+          </div>
+
+          {type === "recaptchaV3" && (
+            <div>
+              <Label className="text-xs">Page action</Label>
+              <Input
+                value={action} onChange={(e) => setAction(e.target.value)}
+                placeholder="verify" className="h-9 mt-1 text-xs"
+              />
+            </div>
+          )}
+
+          {err && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+              {err}
+            </div>
+          )}
+
+          <Button onClick={harvest} disabled={busy} className="w-full h-10">
+            {busy ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Solving… (15–60s)</>
+            ) : (
+              <><Shield className="h-4 w-4" /> Harvest token</>
+            )}
+          </Button>
+
+          {proxyGroups.length > 0 && (
+            <div className="text-[10px] text-muted-foreground">
+              Tip: copy a proxy from a Proxy group above (Proxies tab) and paste here.
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {tokens.length > 0 && (
+        <Card className="p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-semibold">Recent tokens</span>
+            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => persist([])}>
+              <Trash2 className="h-3 w-3" /> Clear
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {tokens.map((t) => {
+              const ageSec = Math.floor((Date.now() - t.ts) / 1000);
+              const stale = ageSec > 110; // turnstile/hcaptcha ~120s lifetime
+              return (
+                <div key={t.id} className="rounded-md border bg-card p-2 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge variant={stale ? "outline" : "default"} className="text-[10px]">
+                      {t.type} · {stale ? "expired" : `${110 - ageSec}s left`}
+                    </Badge>
+                    <span className="text-[10px] text-muted-foreground">
+                      {(t.elapsedMs / 1000).toFixed(1)}s
+                    </span>
+                  </div>
+                  <div className="mt-1 truncate text-[10px] text-muted-foreground">{t.pageUrl}</div>
+                  <div className="mt-1 flex items-center gap-2">
+                    <code className="flex-1 truncate font-mono text-[10px]">{t.token}</code>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 shrink-0" onClick={() => copy(t.token)}>
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      <Card className="p-3 text-xs leading-relaxed text-muted-foreground">
+        <div className="mb-1 font-semibold text-foreground">How this works</div>
+        Submits your captcha to 2Captcha's human-solver network and polls for a token (~15–60s). Tokens are short-lived (≈120s for Turnstile/hCaptcha) and most sites bind them to the solver's IP — that's why the proxy field exists. Cost: ~$0.001–0.003 per solve.
+      </Card>
+    </div>
+  );
+}
