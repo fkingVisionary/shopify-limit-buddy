@@ -2655,7 +2655,7 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
                 </Label>
                 <Slider
                   value={[cfg.desired]} min={0} max={5} step={1}
-                  onValueChange={([v]) => poolApi.setStoreConfig(currentStore.id, { desired: v })}
+                  onValueChange={([v]: number[]) => poolApi.setStoreConfig(currentStore.id, { desired: v })}
                   className="mt-2"
                 />
                 <div className="mt-1 text-[10px] text-muted-foreground">
