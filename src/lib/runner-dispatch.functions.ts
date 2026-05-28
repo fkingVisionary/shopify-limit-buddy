@@ -5,6 +5,8 @@ import {
   enqueueJob,
   getActiveDevice,
   getResult,
+  listRecentJobs,
+  disconnectActiveDevice,
 } from "./runner-store.server";
 import type { RunnerJob, RunnerResult } from "./runner-protocol";
 
