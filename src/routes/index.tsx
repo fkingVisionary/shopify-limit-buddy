@@ -169,7 +169,7 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
   // quantity_rule.max — the merchant-configured per-order limit.
   try {
-    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
     if (res.ok) {
       const data: any = await res.json();
       const variants: any[] = data.variants ?? [];
@@ -186,7 +186,7 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
     // fall through
   }
 
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}`, groupId));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
@@ -280,7 +280,7 @@ function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | 
 
 // Fetch a single product by Shopify handle and return it as a Product
 async function fetchProductByHandle(storeUrl: string, handle: string): Promise<Product | null> {
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
   if (!res.ok) return null;
   const p: any = await res.json();
   return {
@@ -303,7 +303,7 @@ function handleFromUrl(input: string): string | null {
 async function searchProducts(storeUrl: string, query: string, limit = 8): Promise<Product[]> {
   const q = encodeURIComponent(query.trim());
   const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
-  const res = await fetch(proxied(url));
+  const res = await fetch(proxied(url, groupId));
   if (!res.ok) return [];
   const data: any = await res.json();
   const items: any[] = data?.resources?.results?.products ?? [];
@@ -681,7 +681,7 @@ function Index() {
       if (running.length === 0) return;
       await Promise.all(running.map(async (t) => {
         try {
-          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`));
+          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId));
           if (!res.ok) {
             updateTask(t.id, { lastChecked: Date.now(), message: `HTTP ${res.status}` });
             return;
