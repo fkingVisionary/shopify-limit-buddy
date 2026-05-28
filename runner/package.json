@@ -1,0 +1,22 @@
+{
+  "name": "j1ms-bot-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Electron runner for J1m's Bot — executes Shopify checkouts with local Playwright + residential IP.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "install-browsers": "playwright install chromium",
+    "package:linux": "electron-packager . J1msBotRunner --platform=linux --arch=x64 --out=release --overwrite",
+    "package:mac":   "electron-packager . J1msBotRunner --platform=darwin --arch=x64 --out=release --overwrite",
+    "package:win":   "electron-packager . J1msBotRunner --platform=win32  --arch=x64 --out=release --overwrite"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0",
+    "https-proxy-agent": "^7.0.5"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "@electron/packager": "^18.3.5"
+  }
+}
