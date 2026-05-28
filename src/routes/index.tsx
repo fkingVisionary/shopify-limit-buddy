@@ -966,7 +966,7 @@ function TasksView({
           switch (t.status) {
             case "in_stock": return { label: "IN STOCK", color: "text-green-400" };
             case "opened":   return { label: "Checkout opened", color: "text-primary" };
-            case "monitoring": return { label: t.message ?? "Monitoring", color: "text-sky-400" };
+            case "monitoring": return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
             case "error":    return { label: t.message ?? "Error", color: "text-destructive" };
             default:         return { label: "Idle", color: "text-muted-foreground" };
           }
