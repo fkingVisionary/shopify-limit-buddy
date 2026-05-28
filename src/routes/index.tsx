@@ -343,580 +343,378 @@ function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: P
   return `${storeUrl}/cart/${variantId}:${qty}${qs ? `?${qs}` : ""}`;
 }
 
+// ─────────────── Stores ───────────────
+type StoreEntry = { id: string; name: string; url: string; preset?: boolean };
+
+const PRESET_STORES: StoreEntry[] = [
+  { id: "preset-jbhifi", name: "JB Hi-Fi", url: "https://www.jbhifi.com.au", preset: true },
+  { id: "preset-allbirds", name: "Allbirds", url: "https://www.allbirds.com", preset: true },
+  { id: "preset-gymshark", name: "Gymshark", url: "https://www.gymshark.com", preset: true },
+  { id: "preset-kith", name: "Kith", url: "https://kith.com", preset: true },
+  { id: "preset-culturekings", name: "Culture Kings", url: "https://culturekings.com.au", preset: true },
+  { id: "preset-supplystore", name: "Supply Store", url: "https://www.supplystore.com.au", preset: true },
+  { id: "preset-bape", name: "BAPE", url: "https://us.bape.com", preset: true },
+  { id: "preset-deathwish", name: "Death Wish Coffee", url: "https://www.deathwishcoffee.com", preset: true },
+];
+const STORES_KEY = "aio:custom-stores";
+function loadCustomStores(): StoreEntry[] {
+  if (typeof window === "undefined") return [];
+  try { return JSON.parse(localStorage.getItem(STORES_KEY) ?? "[]"); } catch { return []; }
+}
+function saveCustomStores(s: StoreEntry[]) { try { localStorage.setItem(STORES_KEY, JSON.stringify(s)); } catch {} }
+
+// ─────────────── Tasks ───────────────
+type TaskStatus = "idle" | "monitoring" | "in_stock" | "opened" | "error";
+type Task = {
+  id: string;
+  storeId: string;
+  storeUrl: string;
+  storeName: string;
+  input: string;       // URL, handle, SKU, or keyword
+  profileId: string;
+  proxyIdx: number | -1; // -1 = rotate
+  qty: number;
+  status: TaskStatus;
+  running: boolean;
+  productHandle?: string;
+  productTitle?: string;
+  productImage?: string;
+  variantId?: number;
+  limit?: number | null;
+  lastChecked?: number;
+  message?: string;
+};
+const TASKS_KEY = "aio:tasks";
+function loadTasks(): Task[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const arr = JSON.parse(localStorage.getItem(TASKS_KEY) ?? "[]") as Task[];
+    // Reset transient runtime fields
+    return arr.map((t) => ({ ...t, running: false, status: t.status === "in_stock" || t.status === "opened" ? t.status : "idle" }));
+  } catch { return []; }
+}
+function saveTasks(tasks: Task[]) {
+  try {
+    const slim = tasks.map(({ running: _r, ...rest }) => rest);
+    localStorage.setItem(TASKS_KEY, JSON.stringify(slim));
+  } catch {}
+}
+
 function Index() {
-  const [url, setUrl] = useState(DEFAULT_STORE_URL);
-  const [quickAdd, setQuickAdd] = useState("");
-  const [quickBusy, setQuickBusy] = useState(false);
-  const [cacheAge, setCacheAge] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const [storeUrl, setStoreUrl] = useState<string | null>(null);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [limits, setLimits] = useState<Record<number, LimitInfo>>({});
-  const [query, setQuery] = useState("");
+  // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeIds, setActiveIds] = useState<string[]>([]);
-  const [showSettings, setShowSettings] = useState(false);
-  // Watcher state
-  const [watched, setWatched] = useState<Set<number>>(new Set());
-  const [watchStatus, setWatchStatus] = useState<Record<number, { lastChecked: number; available: boolean; lastVariantId?: number; error?: string }>>({});
-  const [pollMs, setPollMs] = useState(4000);
-  const [autoOpen, setAutoOpen] = useState(false);
-  const [notifyOn, setNotifyOn] = useState(true);
-  const [tab, setTab] = useState<"watch" | "browse" | "profiles" | "settings">("browse");
+  const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
   const [proxiesText, setProxiesText] = useState("");
-  const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
+  const [pollMs, setPollMs] = useState(4000);
+  const [autoOpen, setAutoOpen] = useState(true);
+  const [notifyOn, setNotifyOn] = useState(true);
 
+  // ─── Tasks ───
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const tasksRef = useRef<Task[]>([]);
+  tasksRef.current = tasks;
+
+  // ─── UI ───
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "settings">("tasks");
+  const [error, setError] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+
+  // Bootstrap
   useEffect(() => {
     const { profiles, activeIds } = loadProfiles();
     setProfiles(profiles);
     setActiveIds(activeIds);
+    setCustomStores(loadCustomStores());
     try {
-      const savedUrl = localStorage.getItem(STORE_URL_KEY);
-      if (savedUrl) setUrl(savedUrl);
-      const savedProxies = localStorage.getItem(PROXIES_KEY) ?? "";
-      setProxiesText(savedProxies);
-      setProxyList(savedProxies.split("\n").map((s) => s.trim()).filter(Boolean));
+      const px = localStorage.getItem(PROXIES_KEY) ?? "";
+      setProxiesText(px);
+      setProxyList(px.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch {}
-    // Restore cached catalog
-    const cached = loadCatalog();
-    if (cached && Date.now() - cached.ts < CATALOG_TTL_MS) {
-      setStoreUrl(cached.storeUrl);
-      setProducts(cached.products);
-      setCacheAge(cached.ts);
-    }
+    setTasks(loadTasks());
   }, []);
 
+  // Persistence
+  useEffect(() => { saveTasks(tasks); }, [tasks]);
+  useEffect(() => { saveCustomStores(customStores); }, [customStores]);
 
+  const allStores = useMemo<StoreEntry[]>(() => [...PRESET_STORES, ...customStores], [customStores]);
+
+  // ─── Profile helpers ───
   const persistProfiles = (next: Profile[], nextActive?: string[]) => {
     const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
     setProfiles(next);
     setActiveIds(active);
     saveProfiles(next, active);
   };
-
   const addProfile = () => {
     const p: Profile = { id: makeId(), name: `Profile ${profiles.length + 1}`, ...emptyPrefill };
     persistProfiles([...profiles, p], [...activeIds, p.id]);
   };
-
-  const updateProfile = (id: string, patch: Partial<Profile>) => {
+  const updateProfile = (id: string, patch: Partial<Profile>) =>
     persistProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  };
-
-  const deleteProfile = (id: string) => {
+  const deleteProfile = (id: string) =>
     persistProfiles(profiles.filter((p) => p.id !== id), activeIds.filter((x) => x !== id));
-  };
-
   const toggleActive = (id: string) => {
     const next = activeIds.includes(id) ? activeIds.filter((x) => x !== id) : [...activeIds, id];
     setActiveIds(next);
     saveProfiles(profiles, next);
   };
 
-  const activeProfiles = profiles.filter((p) => activeIds.includes(p.id));
-
-
-  // Audio beep using WebAudio (no asset needed)
-  const beep = () => {
-    try {
-      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = "square"; o.frequency.value = 880;
-      g.gain.value = 0.15;
-      o.connect(g); g.connect(ctx.destination);
-      o.start();
-      setTimeout(() => { o.frequency.value = 1320; }, 150);
-      setTimeout(() => { o.stop(); ctx.close(); }, 450);
-    } catch {}
-  };
-
-  const notifyDrop = (title: string, body: string) => {
-    if (!notifyOn) return;
-    beep();
-    try {
-      if ("Notification" in window && Notification.permission === "granted") {
-        new Notification(title, { body });
-      }
-    } catch {}
-  };
-
-  const toggleWatch = async (p: Product) => {
-    if ("Notification" in window && Notification.permission === "default") {
-      try { await Notification.requestPermission(); } catch {}
-    }
-    setWatched((prev) => {
-      const next = new Set(prev);
-      if (next.has(p.id)) next.delete(p.id);
-      else next.add(p.id);
-      return next;
-    });
-  };
-
-
-  // Open one tab per active profile, staggered to avoid popup blocking
-  const openForProfiles = (urlsByProfile: { profile: Profile; url: string }[]) => {
-    urlsByProfile.forEach(({ profile, url }, i) => {
-      setTimeout(() => {
-        const w = window.open(url, `_blank_${profile.id}`, "noopener,noreferrer");
-        if (!w && i > 0) {
-          console.warn(`Popup blocked for profile "${profile.name}". Allow popups for this site.`);
-        }
-      }, i * 250);
-    });
-  };
-
-  const quickCheckout = (p: Product, opts?: { variantId?: number; qty?: number }) => {
-    if (!storeUrl) return;
-    if (activeProfiles.length === 0) {
-      setError("No active profiles. Add at least one in Checkout info.");
-      return;
-    }
-    const variant = opts?.variantId
-      ? p.variants.find((v) => v.id === opts.variantId) ?? p.variants[0]
-      : p.variants.find((v) => v.available) ?? p.variants[0];
-    if (!variant) return;
-    const info = limits[p.id];
-    const qty = opts?.qty ?? (info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1);
-    openForProfiles(
-      activeProfiles.map((profile) => ({
-        profile,
-        url: buildCheckoutUrl(storeUrl, variant.id, qty, profile),
-      })),
-    );
-  };
-
-  // Polling loop for watched products
-  useEffect(() => {
-    if (!storeUrl || watched.size === 0) return;
-    let cancelled = false;
-    const tick = async () => {
-      const ids = Array.from(watched);
-      await Promise.all(ids.map(async (pid) => {
-        const product = products.find((p) => p.id === pid);
-        if (!product) return;
-        try {
-          const res = await fetch(proxied(`${storeUrl}/products/${product.handle}.js`));
-          if (!res.ok) {
-            setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: `HTTP ${res.status}` } }));
-            return;
-          }
-          const data: any = await res.json();
-          const variants: any[] = data.variants ?? [];
-          const availVariant = variants.find((v) => v.available);
-          const isAvail = !!availVariant;
-          setWatchStatus((s) => ({
-            ...s,
-            [pid]: { lastChecked: Date.now(), available: isAvail, lastVariantId: availVariant?.id, error: undefined },
-          }));
-          if (isAvail && !triggeredRef.current.has(pid)) {
-            triggeredRef.current.add(pid);
-            notifyDrop("IN STOCK", `${product.title} — opening ${activeProfiles.length} tab(s)`);
-            if (autoOpen && activeProfiles.length > 0) {
-              const info = limits[pid];
-              const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
-              openForProfiles(
-                activeProfiles.map((profile) => ({
-                  profile,
-                  url: buildCheckoutUrl(storeUrl, availVariant.id, qty, profile),
-                })),
-              );
-            }
-          }
-          if (!isAvail) triggeredRef.current.delete(pid);
-        } catch (e: any) {
-          setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: e?.message ?? "fetch failed" } }));
-        }
-      }));
-    };
-    tick();
-    const id = setInterval(() => { if (!cancelled) tick(); }, Math.max(1500, pollMs));
-    return () => { cancelled = true; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, activeProfiles, limits]);
-
-
-
-  const handleScan = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setProducts([]);
-    setLimits({});
-    setProgress(0);
-    setCacheAge(null);
-    const normalized = normalizeStoreUrl(url);
-    if (!normalized) {
-      setError("Please enter a valid store URL.");
-      return;
-    }
-    setStoreUrl(normalized);
-    try { localStorage.setItem(STORE_URL_KEY, normalized); } catch {}
-    setLoading(true);
-    try {
-      const result = await fetchProducts(normalized, (n) => setProgress(n));
-      setProducts(result.products);
-      saveCatalog(normalized, result.products);
-      setCacheAge(Date.now());
-      if (result.products.length === 0) {
-        setError("No products found. The store may be private or empty.");
-      } else if (result.partial && result.note) {
-        setError(result.note);
-      }
-    } catch (err: any) {
-      setError(err.message ?? "Failed to fetch products.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Quick-add: accepts a product URL (any /products/<handle>) OR a search keyword.
-  // Skips the full catalog scan and appends matches to the list.
-  const handleQuickAdd = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    const raw = quickAdd.trim();
-    if (!raw) return;
-    // Determine target store: URL pasted → derive from it; else current/default
-    let targetStore = storeUrl;
-    if (/^https?:\/\//i.test(raw)) {
-      const norm = normalizeStoreUrl(raw);
-      if (norm) targetStore = norm;
-    }
-    if (!targetStore) {
-      targetStore = normalizeStoreUrl(url) ?? DEFAULT_STORE_URL;
-    }
-    setStoreUrl(targetStore);
-    try { localStorage.setItem(STORE_URL_KEY, targetStore); } catch {}
-    setQuickBusy(true);
-    try {
-      const handle = handleFromUrl(raw);
-      let found: Product[] = [];
-      if (handle) {
-        const p = await fetchProductByHandle(targetStore, handle);
-        if (p) found = [p];
-        else throw new Error("Couldn't load that product. Check the URL.");
-      } else {
-        found = await searchProducts(targetStore, raw, 8);
-        if (found.length === 0) throw new Error(`No matches for "${raw}".`);
-      }
-      // Merge into products (dedupe by id), put new at top
-      setProducts((prev) => {
-        const ids = new Set(prev.map((p) => p.id));
-        const fresh = found.filter((p) => !ids.has(p.id));
-        const next = [...fresh, ...prev];
-        saveCatalog(targetStore!, next);
-        return next;
-      });
-      setQuickAdd("");
-    } catch (err: any) {
-      setError(err.message ?? "Quick add failed.");
-    } finally {
-      setQuickBusy(false);
-    }
-  };
-
-
-  const checkLimit = async (product: Product) => {
-    if (!storeUrl) return;
-    setLimits((prev) => ({ ...prev, [product.id]: { status: "loading" } }));
-    try {
-      const info = await detectLimit(storeUrl, product.handle);
-      setLimits((prev) => ({ ...prev, [product.id]: info }));
-    } catch (err: any) {
-      setLimits((prev) => ({
-        ...prev,
-        [product.id]: { status: "error", error: err.message ?? "Failed" },
-      }));
-    }
-  };
-
-  const checkAll = async () => {
-    if (!storeUrl) return;
-    // Limit concurrency to be polite
-    const queue = [...products];
-    const workers = Array.from({ length: 4 }, async () => {
-      while (queue.length) {
-        const p = queue.shift();
-        if (!p) break;
-        await checkLimit(p);
-      }
-    });
-    await Promise.all(workers);
-  };
-
-  const filtered = products.filter((p) =>
-    p.title.toLowerCase().includes(query.toLowerCase()),
-  );
-
-  const watchedProducts = products.filter((p) => watched.has(p.id));
-  const proxyCount = __proxyList.length;
-
+  // ─── Proxy helpers ───
   const saveProxies = (text: string) => {
     setProxiesText(text);
     const list = text.split("\n").map((s) => s.trim()).filter(Boolean);
     setProxyList(list);
     try { localStorage.setItem(PROXIES_KEY, text); } catch {}
   };
+  const proxyLines = proxiesText.split("\n").map((s) => s.trim()).filter(Boolean);
 
-  const tabLabel = { watch: "Watch", browse: "Browse", profiles: "Profiles", settings: "Settings" }[tab];
-
-  const ProductCard = ({ p }: { p: Product }) => {
-    const info = limits[p.id];
-    const w = watchStatus[p.id];
-    const isWatched = watched.has(p.id);
-    return (
-      <Card className="p-3">
-        <div className="flex gap-3">
-          <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md bg-muted">
-            {p.image ? <img src={p.image} alt={p.title} className="h-full w-full object-cover" loading="lazy" /> : null}
-          </div>
-          <div className="min-w-0 flex-1">
-            <a href={`${storeUrl}/products/${p.handle}`} target="_blank" rel="noreferrer" className="block truncate text-sm font-medium hover:underline">
-              {p.title}
-            </a>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">{p.variants.length} variant{p.variants.length === 1 ? "" : "s"}</div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {info?.status === "done" && info.maxPerOrder != null && (
-                <Badge variant="default" className="gap-1 text-[10px]"><CheckCircle2 className="h-3 w-3" />Limit {info.maxPerOrder}</Badge>
-              )}
-              {info?.status === "done" && info.maxPerOrder == null && (
-                <Badge variant="secondary" className="text-[10px]">No limit detected</Badge>
-              )}
-              {info?.status === "error" && <span className="text-[10px] text-destructive">{info.error}</span>}
-              {isWatched && (
-                w?.error ? <Badge variant="destructive" className="text-[10px]">{w.error}</Badge>
-                : w?.available ? <Badge className="bg-green-600 text-white gap-1 text-[10px]"><Bell className="h-3 w-3" />IN STOCK</Badge>
-                : w ? <Badge variant="outline" className="gap-1 text-[10px]"><Bell className="h-3 w-3" />{Math.max(0, Math.round((Date.now() - w.lastChecked) / 1000))}s ago</Badge>
-                : <Badge variant="outline" className="gap-1 text-[10px]"><Bell className="h-3 w-3 animate-pulse" />Polling</Badge>
-              )}
-            </div>
-          </div>
-        </div>
-        <div className="mt-2 grid grid-cols-3 gap-1.5">
-          <Button size="sm" variant="outline" onClick={() => checkLimit(p)} disabled={info?.status === "loading"} className="h-8 text-xs">
-            {info?.status === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Limit"}
-          </Button>
-          <Button size="sm" variant={isWatched ? "default" : "secondary"} onClick={() => toggleWatch(p)} className="h-8 text-xs">
-            {isWatched ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            {isWatched ? "Stop" : "Watch"}
-          </Button>
-          <Button size="sm" onClick={() => quickCheckout(p)} disabled={activeProfiles.length === 0} className="h-8 text-xs">
-            <Zap className="h-3.5 w-3.5" />×{activeProfiles.length}
-          </Button>
-        </div>
-      </Card>
-    );
+  // ─── Audio + notify ───
+  const beep = () => {
+    try {
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.type = "square"; o.frequency.value = 880; g.gain.value = 0.15;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      setTimeout(() => { o.frequency.value = 1320; }, 150);
+      setTimeout(() => { o.stop(); ctx.close(); }, 450);
+    } catch {}
   };
+  const notify = (title: string, body: string) => {
+    if (!notifyOn) return;
+    beep();
+    try {
+      if ("Notification" in window && Notification.permission === "granted") new Notification(title, { body });
+    } catch {}
+  };
+
+  // ─── Task ops ───
+  const updateTask = (id: string, patch: Partial<Task>) =>
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+
+  const createTasks = (template: Omit<Task, "id" | "status" | "running">, n: number) => {
+    const fresh: Task[] = Array.from({ length: Math.max(1, n) }, () => ({
+      ...template,
+      id: makeId(),
+      status: "idle",
+      running: false,
+    }));
+    setTasks((prev) => [...fresh, ...prev]);
+  };
+
+  const startTask = async (id: string) => {
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch {}
+    }
+    updateTask(id, { running: true, status: "monitoring", message: "Resolving…", lastChecked: Date.now() });
+    // Resolve handle if not yet resolved
+    const t = tasksRef.current.find((x) => x.id === id);
+    if (!t) return;
+    if (!t.productHandle) {
+      try {
+        const handle = handleFromUrl(t.input);
+        let p: Product | null = null;
+        if (handle) p = await fetchProductByHandle(t.storeUrl, handle);
+        else {
+          const results = await searchProducts(t.storeUrl, t.input, 1);
+          p = results[0] ?? null;
+        }
+        if (!p) {
+          updateTask(id, { running: false, status: "error", message: "Product not found" });
+          return;
+        }
+        // Detect limit
+        const li = await detectLimit(t.storeUrl, p.handle).catch(() => null);
+        updateTask(id, {
+          productHandle: p.handle,
+          productTitle: p.title,
+          productImage: p.image ?? undefined,
+          limit: li?.maxPerOrder ?? null,
+        });
+      } catch (e: any) {
+        updateTask(id, { running: false, status: "error", message: e?.message ?? "Resolve failed" });
+        return;
+      }
+    }
+  };
+
+  const stopTask = (id: string) => updateTask(id, { running: false, status: "idle", message: undefined });
+  const startAll = () => tasksRef.current.forEach((t) => !t.running && startTask(t.id));
+  const stopAll = () => tasksRef.current.forEach((t) => t.running && stopTask(t.id));
+  const deleteTask = (id: string) => setTasks((prev) => prev.filter((t) => t.id !== id));
+
+  // ─── Poll loop ───
+  const triggeredRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const id = setInterval(async () => {
+      const running = tasksRef.current.filter((t) => t.running && t.productHandle);
+      if (running.length === 0) return;
+      await Promise.all(running.map(async (t) => {
+        try {
+          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`));
+          if (!res.ok) {
+            updateTask(t.id, { lastChecked: Date.now(), message: `HTTP ${res.status}` });
+            return;
+          }
+          const data: any = await res.json();
+          const variants: any[] = data.variants ?? [];
+          const avail = variants.find((v) => v.available);
+          if (avail) {
+            updateTask(t.id, { lastChecked: Date.now(), status: "in_stock", variantId: avail.id, message: undefined });
+            if (!triggeredRef.current.has(t.id)) {
+              triggeredRef.current.add(t.id);
+              const profile = profiles.find((p) => p.id === t.profileId);
+              notify("IN STOCK", `${t.productTitle ?? t.input}`);
+              if (autoOpen && profile) {
+                const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
+                const url = buildCheckoutUrl(t.storeUrl, avail.id, qty, profile);
+                window.open(url, `_task_${t.id}`, "noopener,noreferrer");
+                updateTask(t.id, { status: "opened" });
+              }
+            }
+          } else {
+            updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
+            triggeredRef.current.delete(t.id);
+          }
+        } catch (e: any) {
+          updateTask(t.id, { lastChecked: Date.now(), message: e?.message ?? "fetch failed" });
+        }
+      }));
+    }, Math.max(1500, pollMs));
+    return () => clearInterval(id);
+  }, [pollMs, autoOpen, notifyOn, profiles]);
+
+  // ─── Add store ───
+  const addCustomStore = (name: string, url: string) => {
+    const normalized = normalizeStoreUrl(url);
+    if (!normalized || !name.trim()) { setError("Store name and URL required."); return; }
+    setCustomStores((prev) => [...prev, { id: makeId(), name: name.trim(), url: normalized }]);
+  };
+  const deleteCustomStore = (id: string) => setCustomStores((prev) => prev.filter((s) => s.id !== id));
+
+  // ─── Counts ───
+  const runningCount = tasks.filter((t) => t.running).length;
+  const stockCount = tasks.filter((t) => t.status === "in_stock" || t.status === "opened").length;
+  const errorCount = tasks.filter((t) => t.status === "error").length;
+
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", settings: "Settings" }[tab];
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3">
           <div className="flex items-center gap-2">
-            <ShoppingBag className="h-5 w-5" />
+            <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary/15 text-primary">
+              <ShoppingBag className="h-5 w-5" />
+            </div>
             <div>
+              <div className="text-[10px] uppercase tracking-wider text-primary">License 1</div>
               <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
-              <p className="text-[10px] leading-tight text-muted-foreground">
-                {activeProfiles.length} profile{activeProfiles.length === 1 ? "" : "s"} · {proxyCount > 0 ? `${proxyCount} prox` : "direct"} · {watched.size} watch
-              </p>
             </div>
           </div>
-          {tab === "browse" && storeUrl && (
-            <div className="truncate text-[10px] text-muted-foreground">{storeUrl.replace(/^https?:\/\//, "")}</div>
+          {tab === "tasks" && (
+            <Drawer open={createOpen} onOpenChange={setCreateOpen}>
+              <DrawerTrigger asChild>
+                <Button size="icon" className="h-9 w-9 rounded-lg">
+                  <Plus className="h-5 w-5" />
+                </Button>
+              </DrawerTrigger>
+              <CreateTaskSheet
+                stores={allStores}
+                profiles={profiles}
+                proxyCount={proxyLines.length}
+                onCreate={(tpl, n) => { createTasks(tpl, n); setCreateOpen(false); }}
+                onAddCustomStore={(name, url) => addCustomStore(name, url)}
+              />
+            </Drawer>
           )}
         </div>
+        {tab === "tasks" && (
+          <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 pb-3">
+            <div className="flex gap-2">
+              <StatusPill color="green" label="In stock" count={stockCount} />
+              <StatusPill color="red" label="Errors" count={errorCount} />
+              <StatusPill color="blue" label="Running" count={runningCount} />
+            </div>
+            <div className="text-sm font-medium text-muted-foreground">{tasks.length} Tasks</div>
+          </div>
+        )}
         {error && (
           <div className="mx-auto flex max-w-3xl items-start gap-2 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
             <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span className="flex-1">{error}</span>
-            <button onClick={() => setError(null)} className="text-destructive/70 hover:text-destructive">✕</button>
+            <button onClick={() => setError(null)}><X className="h-3.5 w-3.5" /></button>
           </div>
         )}
       </header>
 
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 pb-24 pt-4">
-        {tab === "watch" && (
-          <div className="space-y-3">
-            <Card className="p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <div className="text-sm font-medium">Monitor</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Polling every {(pollMs / 1000).toFixed(1)}s · {proxyCount > 0 ? `rotating ${proxyCount} prox` : "direct"} · auto-open {autoOpen ? "on" : "off"}
-                  </div>
-                </div>
-                <Radar className={`h-5 w-5 ${watched.size > 0 ? "text-green-600 animate-pulse" : "text-muted-foreground"}`} />
-              </div>
-            </Card>
-            {watchedProducts.length === 0 ? (
-              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
-                No products being watched. Add some from the <button className="underline" onClick={() => setTab("browse")}>Browse</button> tab.
-              </div>
-            ) : (
-              watchedProducts.map((p) => <ProductCard key={p.id} p={p} />)
-            )}
-          </div>
+      <main className="mx-auto w-full max-w-3xl flex-1 px-4 pb-40 pt-3">
+        {tab === "tasks" && (
+          <TasksView
+            tasks={tasks}
+            profiles={profiles}
+            onStart={startTask}
+            onStop={stopTask}
+            onDelete={deleteTask}
+          />
         )}
-
-        {tab === "browse" && (
-          <div className="space-y-3">
-            <form onSubmit={handleQuickAdd} className="flex gap-2">
-              <Input
-                type="text"
-                placeholder="Paste product URL or search keywords"
-                value={quickAdd}
-                onChange={(e) => setQuickAdd(e.target.value)}
-                className="flex-1"
-                autoCapitalize="none"
-                autoCorrect="off"
-              />
-              <Button type="submit" disabled={quickBusy} size="icon">
-                {quickBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-              </Button>
-            </form>
-
-            {products.length > 0 && (
-              <div className="flex items-center gap-2">
-                <Search className="h-4 w-4 text-muted-foreground" />
-                <Input placeholder="Filter products..." value={query} onChange={(e) => setQuery(e.target.value)} className="h-9 flex-1" />
-              </div>
-            )}
-
-            {loading && (
-              <div className="text-xs text-muted-foreground">Loading... <span className="font-medium text-foreground">{progress}</span> fetched</div>
-            )}
-
-            <div className="space-y-2">
-              {filtered.map((p) => <ProductCard key={p.id} p={p} />)}
-            </div>
-
-            {products.length === 0 && !loading && (
-              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
-                <p>Paste a product URL above, or scan a full catalog from Settings.</p>
-              </div>
-            )}
-
-            {products.length > 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-muted-foreground">
-                <span>{products.length} cached{cacheAge ? ` · ${Math.round((Date.now() - cacheAge) / 60000)}m ago` : ""}</span>
-                <div className="flex gap-3">
-                  <button className="underline" onClick={checkAll}>Check all limits</button>
-                  <button className="underline" onClick={() => { try { localStorage.removeItem(CATALOG_KEY); } catch {} setProducts([]); setLimits({}); setCacheAge(null); }}>Clear cache</button>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {tab === "profiles" && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-muted-foreground">{activeProfiles.length}/{profiles.length} active</div>
-              <Button size="sm" onClick={addProfile}><Plus className="h-3.5 w-3.5" />Add profile</Button>
-            </div>
-            {profiles.length === 0 && (
-              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
-                No profiles yet. Each active profile opens its own prefilled checkout tab.
-              </div>
-            )}
-            {profiles.map((profile) => {
-              const isActive = activeIds.includes(profile.id);
-              return (
-                <Card key={profile.id} className={`p-3 ${isActive ? "" : "opacity-60"}`}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <input type="checkbox" checked={isActive} onChange={() => toggleActive(profile.id)} className="h-4 w-4" />
-                    <Input value={profile.name} onChange={(e) => updateProfile(profile.id, { name: e.target.value })} className="h-8 flex-1 font-medium" placeholder="Profile name" />
-                    <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteProfile(profile.id)}>
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {([
-                      ["email", "Email"], ["phone", "Phone"],
-                      ["first_name", "First name"], ["last_name", "Last name"],
-                      ["address1", "Address"], ["city", "City"],
-                      ["province", "State"], ["zip", "Postcode"],
-                      ["country", "Country"],
-                    ] as const).map(([k, label]) => (
-                      <div key={k} className={k === "address1" ? "col-span-2" : ""}>
-                        <Label className="text-[10px] text-muted-foreground">{label}</Label>
-                        <Input value={profile[k]} onChange={(e) => updateProfile(profile.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              );
-            })}
-          </div>
+          <ProfilesView
+            profiles={profiles}
+            activeIds={activeIds}
+            onAdd={addProfile}
+            onUpdate={updateProfile}
+            onDelete={deleteProfile}
+            onToggle={toggleActive}
+          />
         )}
-
+        {tab === "proxies" && (
+          <ProxiesView text={proxiesText} onChange={saveProxies} count={proxyLines.length} />
+        )}
+        {tab === "stores" && (
+          <StoresView
+            presets={PRESET_STORES}
+            custom={customStores}
+            onAdd={addCustomStore}
+            onDelete={deleteCustomStore}
+          />
+        )}
         {tab === "settings" && (
-          <div className="space-y-4">
-            <Card className="p-3">
-              <Label className="text-xs font-medium">Store URL</Label>
-              <form onSubmit={handleScan} className="mt-2 flex gap-2">
-                <Input value={url} onChange={(e) => setUrl(e.target.value)} className="flex-1" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://www.jbhifi.com.au" />
-                <Button type="submit" disabled={loading} variant="secondary" size="sm">
-                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-                  Scan
-                </Button>
-              </form>
-              <p className="mt-1.5 text-[10px] text-muted-foreground">Scan downloads the full public catalog (cached 12h).</p>
-            </Card>
-
-            <Card className="p-3">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs font-medium">Proxy rotation</Label>
-                <Badge variant={proxyCount > 0 ? "default" : "outline"} className="text-[10px]">{proxyCount > 0 ? `${proxyCount} active` : "Direct"}</Badge>
-              </div>
-              <Textarea
-                value={proxiesText}
-                onChange={(e) => saveProxies(e.target.value)}
-                className="mt-2 min-h-[100px] font-mono text-[11px]"
-                placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}\nhttps://proxy2.example.com/get?target={url}"}
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-              <p className="mt-1.5 text-[10px] text-muted-foreground">
-                Each request rotates round-robin. Use <code className="font-mono">{`{url}`}</code> as the placeholder for the encoded target URL. Leave blank to fetch through the built-in server proxy.
-              </p>
-            </Card>
-
-            <Card className="p-3">
-              <Label className="text-xs font-medium">Drop monitor</Label>
-              <div className="mt-2 space-y-2">
-                <div>
-                  <Label className="text-[10px] text-muted-foreground">Poll interval (ms, min 1500)</Label>
-                  <Input type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} className="h-8" />
-                </div>
-                <label className="flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} className="h-4 w-4" />
-                  Auto-open checkout tabs on drop
-                </label>
-                <label className="flex items-center gap-2 text-xs">
-                  <input type="checkbox" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} className="h-4 w-4" />
-                  Sound + browser notification
-                </label>
-              </div>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Keep this tab pinned — browsers throttle background tabs.
-              </p>
-            </Card>
-          </div>
+          <SettingsView
+            pollMs={pollMs} setPollMs={setPollMs}
+            autoOpen={autoOpen} setAutoOpen={setAutoOpen}
+            notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+          />
         )}
       </main>
 
+      {tab === "tasks" && tasks.length > 0 && (
+        <div className="fixed inset-x-0 bottom-16 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur">
+          <div className="mx-auto grid max-w-3xl grid-cols-3 gap-2">
+            <Button variant="secondary" size="sm" className="h-10" onClick={() => setTab("settings")}>
+              <Settings className="h-4 w-4" /> Manage
+            </Button>
+            <Button variant="destructive" size="sm" className="h-10" onClick={stopAll} disabled={runningCount === 0}>
+              <Square className="h-4 w-4" /> Stop All
+            </Button>
+            <Button size="sm" className="h-10" onClick={startAll} disabled={tasks.every((t) => t.running)}>
+              <Play className="h-4 w-4" /> Start All
+            </Button>
+          </div>
+        </div>
+      )}
+
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-4">
+        <div className="mx-auto grid max-w-3xl grid-cols-5">
           {([
-            ["watch", "Watch", Radar, watched.size],
-            ["browse", "Browse", Search, products.length],
-            ["profiles", "Profiles", Users, activeProfiles.length],
+            ["tasks", "Tasks", ListChecks, tasks.length],
+            ["profiles", "Profiles", Users, profiles.length],
+            ["proxies", "Proxies", Server, proxyLines.length],
+            ["stores", "Stores", Store, allStores.length],
             ["settings", "Settings", Settings, 0],
           ] as const).map(([key, label, Icon, count]) => {
             const active = tab === key;
@@ -927,9 +725,9 @@ function Index() {
                 className={`flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] transition-colors ${active ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <div className="relative">
-                  <Icon className={`h-5 w-5 ${active && key === "watch" && watched.size > 0 ? "animate-pulse" : ""}`} />
+                  <Icon className="h-5 w-5" />
                   {count > 0 && (
-                    <span className="absolute -right-2 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[9px] font-medium text-primary-foreground">
+                    <span className={`absolute -right-2 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full px-1 text-[9px] font-semibold ${active ? "bg-primary text-primary-foreground" : "bg-muted text-foreground"}`}>
                       {count > 99 ? "99+" : count}
                     </span>
                   )}
@@ -940,6 +738,419 @@ function Index() {
           })}
         </div>
       </nav>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Status pill
+// ────────────────────────────────────────────
+function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; label: string; count: number }) {
+  const cls =
+    color === "green" ? "bg-primary/15 text-primary border-primary/30"
+    : color === "red" ? "bg-destructive/15 text-destructive border-destructive/30"
+    : "bg-sky-500/15 text-sky-400 border-sky-500/30";
+  return (
+    <div className={`flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs font-medium ${cls}`} title={label}>
+      <span className="h-2 w-2 rounded-full bg-current opacity-80" />
+      <span>{count}</span>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Tasks view
+// ────────────────────────────────────────────
+function TasksView({
+  tasks, profiles, onStart, onStop, onDelete,
+}: {
+  tasks: Task[]; profiles: Profile[];
+  onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
+}) {
+  if (tasks.length === 0) {
+    return (
+      <div className="mt-10 rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
+        <ListChecks className="mx-auto mb-3 h-8 w-8 opacity-60" />
+        <p className="font-medium text-foreground">No tasks yet</p>
+        <p className="mt-1 text-xs">Tap <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-primary text-primary-foreground"><Plus className="h-3 w-3" /></span> to create your first task.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      {tasks.map((t) => {
+        const profile = profiles.find((p) => p.id === t.profileId);
+        const statusInfo = (() => {
+          switch (t.status) {
+            case "in_stock": return { label: "IN STOCK", color: "text-green-400" };
+            case "opened":   return { label: "Checkout opened", color: "text-primary" };
+            case "monitoring": return { label: t.message ?? "Monitoring", color: "text-sky-400" };
+            case "error":    return { label: t.message ?? "Error", color: "text-destructive" };
+            default:         return { label: "Idle", color: "text-muted-foreground" };
+          }
+        })();
+        return (
+          <Card key={t.id} className="p-3">
+            <div className="flex items-start gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="truncate text-sm font-semibold">
+                  {t.productTitle ?? t.input}
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">
+                  Qty {t.qty}{t.limit ? ` · limit ${t.limit}` : ""}
+                </div>
+                <div className="mt-1.5 flex items-center justify-between gap-2">
+                  <div className={`flex items-center gap-1.5 text-xs font-medium ${statusInfo.color}`}>
+                    <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                    {statusInfo.label}
+                  </div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {t.storeName} · <span className="text-foreground/80">{profile?.name ?? "no profile"}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-col items-end gap-1.5">
+                {t.running ? (
+                  <Button size="icon" variant="destructive" className="h-10 w-10 rounded-lg" onClick={() => onStop(t.id)}>
+                    <Square className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button size="icon" className="h-10 w-10 rounded-lg" onClick={() => onStart(t.id)}>
+                    <Play className="h-4 w-4" />
+                  </Button>
+                )}
+                <button className="text-[10px] text-muted-foreground hover:text-destructive" onClick={() => onDelete(t.id)}>
+                  delete
+                </button>
+              </div>
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Create Task bottom sheet
+// ────────────────────────────────────────────
+function CreateTaskSheet({
+  stores, profiles, proxyCount, onCreate, onAddCustomStore,
+}: {
+  stores: StoreEntry[]; profiles: Profile[]; proxyCount: number;
+  onCreate: (tpl: Omit<Task, "id" | "status" | "running">, n: number) => void;
+  onAddCustomStore: (name: string, url: string) => void;
+}) {
+  const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
+  const [input, setInput] = useState("");
+  const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? "");
+  const [proxyIdx, setProxyIdx] = useState<string>("-1"); // -1 = rotate
+  const [qty, setQty] = useState(1);
+  const [taskQty, setTaskQty] = useState(1);
+  const [addingStore, setAddingStore] = useState(false);
+  const [newStoreName, setNewStoreName] = useState("");
+  const [newStoreUrl, setNewStoreUrl] = useState("");
+
+  // Re-sync when stores/profiles change
+  useEffect(() => { if (!stores.find((s) => s.id === storeId) && stores[0]) setStoreId(stores[0].id); }, [stores, storeId]);
+  useEffect(() => { if (!profiles.find((p) => p.id === profileId) && profiles[0]) setProfileId(profiles[0].id); }, [profiles, profileId]);
+
+  const store = stores.find((s) => s.id === storeId);
+  const profile = profiles.find((p) => p.id === profileId);
+  const canCreate = store && profile && input.trim().length > 0;
+
+  const submit = () => {
+    if (!canCreate) return;
+    onCreate({
+      storeId: store!.id,
+      storeUrl: store!.url,
+      storeName: store!.name,
+      input: input.trim(),
+      profileId: profile!.id,
+      proxyIdx: parseInt(proxyIdx, 10) as -1 | number,
+      qty: Math.max(1, qty),
+    }, Math.max(1, taskQty));
+    setInput("");
+  };
+
+  return (
+    <DrawerContent className="max-h-[88vh]">
+      <DrawerHeader className="flex flex-row items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="grid h-8 w-8 place-items-center rounded-md bg-primary/15 text-primary"><Plus className="h-4 w-4" /></div>
+          <DrawerTitle>Create Tasks</DrawerTitle>
+        </div>
+        <DrawerClose asChild>
+          <Button variant="ghost" size="icon" className="h-8 w-8"><X className="h-4 w-4" /></Button>
+        </DrawerClose>
+      </DrawerHeader>
+
+      <div className="space-y-4 overflow-y-auto px-4 pb-4">
+        <div className="rounded-lg bg-muted/40 p-3 text-center text-sm font-medium text-muted-foreground">Setup</div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">Store</Label>
+            {addingStore ? (
+              <div className="mt-1 space-y-1.5">
+                <Input className="h-9" placeholder="Name" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
+                <Input className="h-9" placeholder="https://store.com" value={newStoreUrl} onChange={(e) => setNewStoreUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
+                <div className="flex gap-1.5">
+                  <Button size="sm" className="h-8 flex-1" onClick={() => { onAddCustomStore(newStoreName, newStoreUrl); setNewStoreName(""); setNewStoreUrl(""); setAddingStore(false); }}>Add</Button>
+                  <Button size="sm" variant="ghost" className="h-8" onClick={() => setAddingStore(false)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <Select value={storeId} onValueChange={(v) => v === "__add" ? setAddingStore(true) : setStoreId(v)}>
+                <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select store" /></SelectTrigger>
+                <SelectContent>
+                  {stores.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}{s.preset ? "" : " (custom)"}</SelectItem>
+                  ))}
+                  <SelectItem value="__add">＋ Add custom store…</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Quantity</Label>
+            <Input className="mt-1 h-9" type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
+          </div>
+        </div>
+
+        <div>
+          <Label className="text-xs text-muted-foreground">Input</Label>
+          <Input
+            className="mt-1 h-9"
+            placeholder="SKU, product URL, or keywords"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            autoCapitalize="none"
+            autoCorrect="off"
+          />
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Paste a /products/ URL, a product handle/SKU, or search keywords like "Air Jordan 1 Low".
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">Profile</Label>
+            <Select value={profileId} onValueChange={setProfileId}>
+              <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select profile" /></SelectTrigger>
+              <SelectContent>
+                {profiles.length === 0 ? (
+                  <SelectItem value="__none" disabled>No profiles — add one</SelectItem>
+                ) : profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Proxy</Label>
+            <Select value={proxyIdx} onValueChange={setProxyIdx}>
+              <SelectTrigger className="mt-1 h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount})` : " — none configured"}</SelectItem>
+                {Array.from({ length: proxyCount }, (_, i) => (
+                  <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div>
+          <Label className="text-xs text-muted-foreground">Task quantity</Label>
+          <Input className="mt-1 h-9" type="number" min={1} max={100} value={taskQty} onChange={(e) => setTaskQty(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} />
+          <p className="mt-1 text-[10px] text-muted-foreground">Creates this many identical tasks (handy for one task per profile after duplication).</p>
+        </div>
+      </div>
+
+      <DrawerFooter>
+        <Button size="lg" className="h-12 text-base font-semibold" disabled={!canCreate} onClick={submit}>
+          Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
+        </Button>
+      </DrawerFooter>
+    </DrawerContent>
+  );
+}
+
+// ────────────────────────────────────────────
+// Profiles view
+// ────────────────────────────────────────────
+function ProfilesView({
+  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle,
+}: {
+  profiles: Profile[]; activeIds: string[];
+  onAdd: () => void;
+  onUpdate: (id: string, patch: Partial<Profile>) => void;
+  onDelete: (id: string) => void;
+  onToggle: (id: string) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">{activeIds.length}/{profiles.length} active</div>
+        <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add</Button>
+      </div>
+      {profiles.length === 0 && (
+        <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+          No profiles. Each profile holds shipping + contact info for prefilled checkout.
+        </div>
+      )}
+      {profiles.map((p) => {
+        const isActive = activeIds.includes(p.id);
+        return (
+          <Card key={p.id} className={`p-3 ${isActive ? "" : "opacity-60"}`}>
+            <div className="mb-2 flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={isActive} onChange={() => onToggle(p.id)} />
+              <Input value={p.name} onChange={(e) => onUpdate(p.id, { name: e.target.value })} className="h-8 flex-1 font-medium" placeholder="Profile name" />
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {([
+                ["email", "Email"], ["phone", "Phone"],
+                ["first_name", "First name"], ["last_name", "Last name"],
+                ["address1", "Address"], ["city", "City"],
+                ["province", "State"], ["zip", "Postcode"],
+                ["country", "Country"],
+              ] as const).map(([k, label]) => (
+                <div key={k} className={k === "address1" ? "col-span-2" : ""}>
+                  <Label className="text-[10px] text-muted-foreground">{label}</Label>
+                  <Input value={p[k]} onChange={(e) => onUpdate(p.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
+                </div>
+              ))}
+            </div>
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Proxies view
+// ────────────────────────────────────────────
+function ProxiesView({ text, onChange, count }: { text: string; onChange: (v: string) => void; count: number }) {
+  return (
+    <div className="space-y-3">
+      <Card className="p-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-medium">Proxy rotation</div>
+            <div className="text-[11px] text-muted-foreground">Round-robin across listed proxies</div>
+          </div>
+          <Badge variant={count > 0 ? "default" : "outline"}>{count > 0 ? `${count} active` : "Direct"}</Badge>
+        </div>
+        <Textarea
+          value={text}
+          onChange={(e) => onChange(e.target.value)}
+          className="mt-3 min-h-[180px] font-mono text-[11px]"
+          placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}\nhttps://proxy2.example.com/get?target={url}"}
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        />
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Use <code className="font-mono">{`{url}`}</code> as a placeholder for the encoded target URL. Leave empty to fetch through the built-in server proxy.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Stores view
+// ────────────────────────────────────────────
+function StoresView({
+  presets, custom, onAdd, onDelete,
+}: { presets: StoreEntry[]; custom: StoreEntry[]; onAdd: (name: string, url: string) => void; onDelete: (id: string) => void }) {
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  return (
+    <div className="space-y-4">
+      <Card className="p-3">
+        <div className="mb-2 text-sm font-medium">Add custom store</div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Input className="h-9 sm:w-1/3" placeholder="Display name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input className="h-9 flex-1" placeholder="https://store.com" value={url} onChange={(e) => setUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
+          <Button size="sm" className="h-9" onClick={() => { onAdd(name, url); setName(""); setUrl(""); }}><Plus className="h-4 w-4" /> Add</Button>
+        </div>
+      </Card>
+
+      {custom.length > 0 && (
+        <div>
+          <div className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Custom</div>
+          <div className="space-y-1.5">
+            {custom.map((s) => (
+              <Card key={s.id} className="flex items-center gap-2 p-3">
+                <Store className="h-4 w-4 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{s.name}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+                </div>
+                <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(s.id)}><Trash2 className="h-4 w-4" /></Button>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Presets</div>
+        <div className="space-y-1.5">
+          {presets.map((s) => (
+            <Card key={s.id} className="flex items-center gap-2 p-3">
+              <Store className="h-4 w-4 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-medium">{s.name}</div>
+                <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+              </div>
+              <Badge variant="outline" className="text-[10px]">preset</Badge>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Settings view
+// ────────────────────────────────────────────
+function SettingsView({
+  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+}: {
+  pollMs: number; setPollMs: (n: number) => void;
+  autoOpen: boolean; setAutoOpen: (v: boolean) => void;
+  notifyOn: boolean; setNotifyOn: (v: boolean) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <Card className="p-3">
+        <div className="text-sm font-medium">Monitor</div>
+        <div className="mt-2">
+          <Label className="text-[11px] text-muted-foreground">Poll interval (ms, min 1500)</Label>
+          <Input className="mt-1 h-9" type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} />
+        </div>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
+          Auto-open checkout tab on drop
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
+          Sound + browser notification
+        </label>
+        <p className="mt-2 text-[11px] text-muted-foreground">Keep this tab pinned — browsers throttle background tabs.</p>
+      </Card>
+
+      <Card className="p-3 text-[11px] text-muted-foreground">
+        <div className="text-sm font-medium text-foreground">Tips</div>
+        <ul className="mt-2 list-disc space-y-1 pl-4">
+          <li>Each task polls its product on the configured interval and opens the prefilled checkout when a variant becomes available.</li>
+          <li>If multiple proxies are configured, requests rotate round-robin automatically.</li>
+          <li>If a per-customer limit is detected, qty is capped accordingly.</li>
+          <li>Allow popups for this site so auto-open isn't blocked.</li>
+        </ul>
+      </Card>
     </div>
   );
 }
