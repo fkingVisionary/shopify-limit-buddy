@@ -122,9 +122,16 @@ function pickScript(html: string, id: string): string | null {
 function firstMatch(html: string, re: RegExp): string | null {
   return html.match(re)?.[1] ?? null;
 }
-function checkoutProtectionBlock(status: number, html: string, proxy?: string | null): string | null {
+function checkoutProtectionBlock(
+  status: number,
+  html: string,
+  proxy?: string | null,
+): string | null {
   const preview = html.slice(0, 180).replace(/\s+/g, " ").trim();
-  if (status === 403 || /Request Forbidden|Access Denied|Cloudflare|cf-ray|Attention Required/i.test(html)) {
+  if (
+    status === 403 ||
+    /Request Forbidden|Access Denied|Cloudflare|cf-ray|Attention Required/i.test(html)
+  ) {
     const proxyNote = proxy ? " Server fetch cannot use the supplied proxy here." : "";
     return `checkout protection returned HTTP ${status}${proxyNote} Body: ${preview}`;
   }
@@ -219,7 +226,13 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       // re-GETting the URL invalidates the session.
       html = await res.text();
       const blocked = checkoutProtectionBlock(res.status, html, data.proxy);
-      record("cart_redirect", landed && !blocked, res.status, Date.now() - s, blocked ?? `${checkoutUrl} (${html.length}b)`);
+      record(
+        "cart_redirect",
+        landed && !blocked,
+        res.status,
+        Date.now() - s,
+        blocked ?? `${checkoutUrl} (${html.length}b)`,
+      );
       if (!landed) return fail("cart_redirect", `bad redirect: ${res.status} ${checkoutUrl}`);
       if (blocked) return fail("cart_redirect", blocked);
     } catch (e) {
