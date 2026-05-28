@@ -10,11 +10,16 @@ import {
   Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger, DrawerClose, DrawerFooter,
 } from "@/components/ui/drawer";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+} from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  Loader2, ShoppingBag, AlertCircle, Zap, Settings, Plus, Trash2, Play, Square,
-  Server, Store, Users, ListChecks, X, Pencil, Search,
+  AlertCircle, Settings, Plus, Trash2, Play, Square,
+  Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
+  Check, BookOpen, Sparkles, Package, User as UserIcon,
 } from "lucide-react";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
@@ -394,6 +399,17 @@ function loadTasks(): Task[] {
     return arr.map((t) => ({ ...t, running: false, status: t.status === "in_stock" || t.status === "opened" ? t.status : "idle" }));
   } catch { return []; }
 }
+
+// ─────────────── UX persistence ───────────────
+const WIZARD_KEY = "aio:wizard-done";
+const TIPS_DISMISS_KEY = "aio:tips-dismissed";
+function loadDismissedTips(): Record<string, boolean> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(localStorage.getItem(TIPS_DISMISS_KEY) ?? "{}"); } catch { return {}; }
+}
+function saveDismissedTips(d: Record<string, boolean>) {
+  try { localStorage.setItem(TIPS_DISMISS_KEY, JSON.stringify(d)); } catch {}
+}
 function saveTasks(tasks: Task[]) {
   try {
     const slim = tasks.map(({ running: _r, ...rest }) => rest);
@@ -417,9 +433,21 @@ function Index() {
   tasksRef.current = tasks;
 
   // ─── UI ───
-  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "settings">("tasks");
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "settings" | "help">("tasks");
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [dismissedTips, setDismissedTips] = useState<Record<string, boolean>>({});
+
+  const dismissTip = (key: string) => {
+    const next = { ...dismissedTips, [key]: true };
+    setDismissedTips(next);
+    saveDismissedTips(next);
+  };
+  const resetTips = () => {
+    setDismissedTips({});
+    saveDismissedTips({});
+  };
 
   // Bootstrap
   useEffect(() => {
@@ -433,7 +461,16 @@ function Index() {
       setProxyList(px.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch {}
     setTasks(loadTasks());
+    setDismissedTips(loadDismissedTips());
+    try {
+      if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
+    } catch {}
   }, []);
+
+  const completeWizard = () => {
+    try { localStorage.setItem(WIZARD_KEY, "1"); } catch {}
+    setWizardOpen(false);
+  };
 
   // Persistence
   useEffect(() => { saveTasks(tasks); }, [tasks]);
@@ -602,7 +639,17 @@ function Index() {
   const stockCount = tasks.filter((t) => t.status === "in_stock" || t.status === "opened").length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
-  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", settings: "Settings" }[tab];
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", settings: "Settings", help: "Help" }[tab];
+
+  const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
+    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
+    profiles: { key: "tip-profiles", text: "Profiles autofill the Shopify checkout. Add one profile per checkout you want fired in parallel." },
+    proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
+    stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
+    settings: { key: "tip-settings", text: "Lower poll interval = faster detection but more requests. 3000–5000ms is a good balance." },
+    help: null,
+  };
+  const currentTip = tipMap[tab];
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
@@ -652,6 +699,15 @@ function Index() {
       </header>
 
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 pb-40 pt-3">
+        {currentTip && !dismissedTips[currentTip.key] && (
+          <div className="mb-3 flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 p-3 text-xs text-foreground/90">
+            <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+            <span className="flex-1 leading-relaxed">{currentTip.text}</span>
+            <button onClick={() => dismissTip(currentTip.key)} className="text-muted-foreground hover:text-foreground" aria-label="Dismiss tip">
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
         {tab === "tasks" && (
           <TasksView
             tasks={tasks}
@@ -659,6 +715,9 @@ function Index() {
             onStart={startTask}
             onStop={stopTask}
             onDelete={deleteTask}
+            onCreate={() => setCreateOpen(true)}
+            onGoProfiles={() => setTab("profiles")}
+            hasProfiles={profiles.length > 0}
           />
         )}
         {tab === "profiles" && (
@@ -687,8 +746,11 @@ function Index() {
             pollMs={pollMs} setPollMs={setPollMs}
             autoOpen={autoOpen} setAutoOpen={setAutoOpen}
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+            onShowWizard={() => setWizardOpen(true)}
+            onResetTips={resetTips}
           />
         )}
+        {tab === "help" && <HelpView />}
       </main>
 
       {tab === "tasks" && tasks.length > 0 && (
@@ -708,13 +770,14 @@ function Index() {
       )}
 
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
-        <div className="mx-auto grid max-w-3xl grid-cols-5">
+        <div className="mx-auto grid max-w-3xl grid-cols-6">
           {([
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
-            ["proxies", "Proxies", Server, proxyLines.length],
             ["stores", "Stores", Store, allStores.length],
+            ["proxies", "Proxies", Server, proxyLines.length],
             ["settings", "Settings", Settings, 0],
+            ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
             const active = tab === key;
             return (
@@ -737,6 +800,15 @@ function Index() {
           })}
         </div>
       </nav>
+
+      <WelcomeWizard
+        open={wizardOpen}
+        onClose={completeWizard}
+        hasProfiles={profiles.length > 0}
+        onGoProfiles={() => { completeWizard(); setTab("profiles"); }}
+        onGoStores={() => { completeWizard(); setTab("stores"); }}
+        onCreateTask={() => { completeWizard(); setTab("tasks"); setCreateOpen(true); }}
+      />
     </div>
   );
 }
@@ -761,17 +833,34 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // Tasks view
 // ────────────────────────────────────────────
 function TasksView({
-  tasks, profiles, onStart, onStop, onDelete,
+  tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
+  onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
 }) {
   if (tasks.length === 0) {
     return (
-      <div className="mt-10 rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground">
-        <ListChecks className="mx-auto mb-3 h-8 w-8 opacity-60" />
-        <p className="font-medium text-foreground">No tasks yet</p>
-        <p className="mt-1 text-xs">Tap <span className="inline-flex h-5 w-5 items-center justify-center rounded bg-primary text-primary-foreground"><Plus className="h-3 w-3" /></span> to create your first task.</p>
+      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+          <ListChecks className="h-6 w-6" />
+        </div>
+        <p className="text-base font-semibold text-foreground">No tasks yet</p>
+        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+          A task watches one product and fires a prefilled checkout the moment stock appears.
+        </p>
+        {hasProfiles ? (
+          <Button className="mt-4 h-10" onClick={onCreate}>
+            <Plus className="h-4 w-4" /> Create your first task
+          </Button>
+        ) : (
+          <div className="mt-4 space-y-2">
+            <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
+            <Button className="h-10" onClick={onGoProfiles}>
+              <Users className="h-4 w-4" /> Add a profile
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -872,103 +961,198 @@ function CreateTaskSheet({
     setInput("");
   };
 
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+
+  const stepValid: Record<1 | 2 | 3, boolean> = {
+    1: input.trim().length > 0,
+    2: !!store,
+    3: !!profile,
+  };
+  const stepMeta = [
+    { n: 1, label: "What", icon: Package, hint: "The product to watch" },
+    { n: 2, label: "Where", icon: Store, hint: "Which store to watch" },
+    { n: 3, label: "Who", icon: UserIcon, hint: "Checkout profile + quantity" },
+  ] as const;
+
   return (
-    <DrawerContent className="max-h-[88vh]">
-      <DrawerHeader className="flex flex-row items-center justify-between">
+    <DrawerContent className="max-h-[92vh]">
+      <DrawerHeader className="flex flex-row items-center justify-between pb-2">
         <div className="flex items-center gap-2">
           <div className="grid h-8 w-8 place-items-center rounded-md bg-primary/15 text-primary"><Plus className="h-4 w-4" /></div>
-          <DrawerTitle>Create Tasks</DrawerTitle>
+          <div>
+            <DrawerTitle className="text-base">New task · Step {step} of 3</DrawerTitle>
+            <p className="text-[11px] text-muted-foreground">{stepMeta[step - 1].hint}</p>
+          </div>
         </div>
         <DrawerClose asChild>
           <Button variant="ghost" size="icon" className="h-8 w-8"><X className="h-4 w-4" /></Button>
         </DrawerClose>
       </DrawerHeader>
 
-      <div className="space-y-4 overflow-y-auto px-4 pb-4">
-        <div className="rounded-lg bg-muted/40 p-3 text-center text-sm font-medium text-muted-foreground">Setup</div>
+      {/* Progress dots */}
+      <div className="flex items-center justify-center gap-2 px-4 pb-3">
+        {stepMeta.map((s) => {
+          const done = step > s.n;
+          const active = step === s.n;
+          return (
+            <div key={s.n} className="flex items-center gap-2">
+              <button
+                onClick={() => setStep(s.n)}
+                className={`flex h-7 items-center gap-1.5 rounded-full px-2.5 text-[11px] font-medium transition-colors ${
+                  active ? "bg-primary text-primary-foreground"
+                  : done ? "bg-primary/20 text-primary"
+                  : "bg-muted text-muted-foreground"
+                }`}
+              >
+                {done ? <Check className="h-3 w-3" /> : <s.icon className="h-3 w-3" />}
+                {s.label}
+              </button>
+              {s.n < 3 && <div className={`h-px w-4 ${step > s.n ? "bg-primary/40" : "bg-border"}`} />}
+            </div>
+          );
+        })}
+      </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs text-muted-foreground">Store</Label>
+      <div className="space-y-4 overflow-y-auto px-4 pb-4">
+        {step === 1 && (
+          <div className="space-y-3">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-sm font-medium">What product do you want to watch?</Label>
+                <InfoDot text="Paste a product URL for an exact match, a product handle/SKU, or describe it in keywords — the bot will pick the closest match on the store." />
+              </div>
+              <Input
+                className="mt-2 h-11 text-base"
+                placeholder="Paste URL, SKU, or keywords"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                autoFocus
+              />
+              <div className="mt-2 space-y-1 text-[11px] text-muted-foreground">
+                <div>· <b className="text-foreground/80">URL</b> — https://store.com/products/some-handle</div>
+                <div>· <b className="text-foreground/80">SKU/handle</b> — air-jordan-1-low</div>
+                <div>· <b className="text-foreground/80">Keywords</b> — "Air Jordan 1 Low"</div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {step === 2 && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-1.5">
+              <Label className="text-sm font-medium">Which store sells it?</Label>
+              <InfoDot text="Pick a preset Shopify store or add a custom one by URL. Tasks only watch the store you select here." />
+            </div>
             {addingStore ? (
-              <div className="mt-1 space-y-1.5">
-                <Input className="h-9" placeholder="Name" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
-                <Input className="h-9" placeholder="https://store.com" value={newStoreUrl} onChange={(e) => setNewStoreUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
+              <div className="space-y-1.5">
+                <Input className="h-10" placeholder="Display name (e.g. My Store)" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
+                <Input className="h-10" placeholder="https://store.com" value={newStoreUrl} onChange={(e) => setNewStoreUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
                 <div className="flex gap-1.5">
-                  <Button size="sm" className="h-8 flex-1" onClick={() => { onAddCustomStore(newStoreName, newStoreUrl); setNewStoreName(""); setNewStoreUrl(""); setAddingStore(false); }}>Add</Button>
-                  <Button size="sm" variant="ghost" className="h-8" onClick={() => setAddingStore(false)}>Cancel</Button>
+                  <Button size="sm" className="h-9 flex-1" onClick={() => { onAddCustomStore(newStoreName, newStoreUrl); setNewStoreName(""); setNewStoreUrl(""); setAddingStore(false); }}>Add store</Button>
+                  <Button size="sm" variant="ghost" className="h-9" onClick={() => setAddingStore(false)}>Cancel</Button>
                 </div>
               </div>
             ) : (
-              <Select value={storeId} onValueChange={(v) => v === "__add" ? setAddingStore(true) : setStoreId(v)}>
-                <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select store" /></SelectTrigger>
-                <SelectContent>
-                  {stores.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>{s.name}{s.preset ? "" : " (custom)"}</SelectItem>
-                  ))}
-                  <SelectItem value="__add">＋ Add custom store…</SelectItem>
-                </SelectContent>
-              </Select>
+              <>
+                <Select value={storeId} onValueChange={(v) => v === "__add" ? setAddingStore(true) : setStoreId(v)}>
+                  <SelectTrigger className="h-11 text-base"><SelectValue placeholder="Select a store" /></SelectTrigger>
+                  <SelectContent>
+                    {stores.map((s) => (
+                      <SelectItem key={s.id} value={s.id}>{s.name}{s.preset ? "" : " (custom)"}</SelectItem>
+                    ))}
+                    <SelectItem value="__add">＋ Add custom store…</SelectItem>
+                  </SelectContent>
+                </Select>
+                {store && <p className="text-[11px] text-muted-foreground">{store.url}</p>}
+              </>
             )}
           </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Quantity</Label>
-            <Input className="mt-1 h-9" type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
-          </div>
-        </div>
+        )}
 
-        <div>
-          <Label className="text-xs text-muted-foreground">Input</Label>
-          <Input
-            className="mt-1 h-9"
-            placeholder="SKU, product URL, or keywords"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            autoCapitalize="none"
-            autoCorrect="off"
-          />
-          <p className="mt-1 text-[10px] text-muted-foreground">
-            Paste a /products/ URL, a product handle/SKU, or search keywords like "Air Jordan 1 Low".
-          </p>
-        </div>
+        {step === 3 && (
+          <div className="space-y-4">
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-sm font-medium">Which profile checks out?</Label>
+                <InfoDot text="The profile's shipping + contact info is pre-filled into Shopify's checkout when stock appears." />
+              </div>
+              <Select value={profileId} onValueChange={setProfileId}>
+                <SelectTrigger className="mt-2 h-11 text-base"><SelectValue placeholder="Select a profile" /></SelectTrigger>
+                <SelectContent>
+                  {profiles.length === 0 ? (
+                    <SelectItem value="__none" disabled>No profiles — add one in the Profiles tab</SelectItem>
+                  ) : profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
 
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs text-muted-foreground">Profile</Label>
-            <Select value={profileId} onValueChange={setProfileId}>
-              <SelectTrigger className="mt-1 h-9"><SelectValue placeholder="Select profile" /></SelectTrigger>
-              <SelectContent>
-                {profiles.length === 0 ? (
-                  <SelectItem value="__none" disabled>No profiles — add one</SelectItem>
-                ) : profiles.map((p) => <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Proxy</Label>
-            <Select value={proxyIdx} onValueChange={setProxyIdx}>
-              <SelectTrigger className="mt-1 h-9"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount})` : " — none configured"}</SelectItem>
-                {Array.from({ length: proxyCount }, (_, i) => (
-                  <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Quantity per checkout</Label>
+                  <InfoDot text="How many units to add to cart. If a per-customer limit is detected, this is capped automatically." />
+                </div>
+                <Input className="mt-1 h-10" type="number" min={1} value={qty} onChange={(e) => setQty(Math.max(1, Number(e.target.value) || 1))} />
+              </div>
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <Label className="text-xs text-muted-foreground">Number of tasks</Label>
+                  <InfoDot text="Creates this many identical tasks. Useful when you want several attempts running in parallel." />
+                </div>
+                <Input className="mt-1 h-10" type="number" min={1} max={100} value={taskQty} onChange={(e) => setTaskQty(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} />
+              </div>
+            </div>
 
-        <div>
-          <Label className="text-xs text-muted-foreground">Task quantity</Label>
-          <Input className="mt-1 h-9" type="number" min={1} max={100} value={taskQty} onChange={(e) => setTaskQty(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} />
-          <p className="mt-1 text-[10px] text-muted-foreground">Creates this many identical tasks (handy for one task per profile after duplication).</p>
-        </div>
+            <div>
+              <div className="flex items-center gap-1.5">
+                <Label className="text-xs text-muted-foreground">Proxy</Label>
+                <InfoDot text="Which proxy to route requests through. 'Rotate' cycles through all proxies you've added in the Proxies tab." />
+              </div>
+              <Select value={proxyIdx} onValueChange={setProxyIdx}>
+                <SelectTrigger className="mt-1 h-10"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount} configured)` : " — none configured (direct)"}</SelectItem>
+                  {Array.from({ length: proxyCount }, (_, i) => (
+                    <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Summary */}
+            <div className="rounded-lg border bg-muted/30 p-3 text-xs">
+              <div className="mb-1 font-medium text-foreground">Summary</div>
+              <div className="text-muted-foreground">
+                Watch <span className="text-foreground">{input || "—"}</span> on <span className="text-foreground">{store?.name ?? "—"}</span>,
+                checkout as <span className="text-foreground">{profile?.name ?? "—"}</span>,
+                qty <span className="text-foreground">{qty}</span>{taskQty > 1 ? <> × <span className="text-foreground">{taskQty} tasks</span></> : null}.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <DrawerFooter>
-        <Button size="lg" className="h-12 text-base font-semibold" disabled={!canCreate} onClick={submit}>
-          Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
-        </Button>
+      <DrawerFooter className="flex-row gap-2">
+        {step > 1 ? (
+          <Button variant="secondary" size="lg" className="h-12 flex-1" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
+            <ChevronLeft className="h-4 w-4" /> Back
+          </Button>
+        ) : (
+          <DrawerClose asChild>
+            <Button variant="secondary" size="lg" className="h-12 flex-1">Cancel</Button>
+          </DrawerClose>
+        )}
+        {step < 3 ? (
+          <Button size="lg" className="h-12 flex-1 text-base font-semibold" disabled={!stepValid[step]} onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}>
+            Next <ChevronRight className="h-4 w-4" />
+          </Button>
+        ) : (
+          <Button size="lg" className="h-12 flex-1 text-base font-semibold" disabled={!canCreate} onClick={submit}>
+            Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
+          </Button>
+        )}
       </DrawerFooter>
     </DrawerContent>
   );
@@ -1116,39 +1300,208 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn, onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
   autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
+  onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
     <div className="space-y-3">
       <Card className="p-3">
-        <div className="text-sm font-medium">Monitor</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Monitor <InfoDot text="How often each running task checks its product. Lower = faster detection but more requests, which can trigger rate limits." />
+        </div>
         <div className="mt-2">
           <Label className="text-[11px] text-muted-foreground">Poll interval (ms, min 1500)</Label>
           <Input className="mt-1 h-9" type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} />
+          <p className="mt-1 text-[10px] text-muted-foreground">3000–5000ms is a safe balance for most stores.</p>
         </div>
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
           Auto-open checkout tab on drop
+          <InfoDot text="When stock appears, a new tab opens to Shopify's checkout with your profile pre-filled. Allow popups for this site." />
         </label>
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
           Sound + browser notification
+          <InfoDot text="Plays a beep and (if permitted) shows a browser notification when a task detects stock." />
         </label>
         <p className="mt-2 text-[11px] text-muted-foreground">Keep this tab pinned — browsers throttle background tabs.</p>
       </Card>
 
-      <Card className="p-3 text-[11px] text-muted-foreground">
-        <div className="text-sm font-medium text-foreground">Tips</div>
-        <ul className="mt-2 list-disc space-y-1 pl-4">
-          <li>Each task polls its product on the configured interval and opens the prefilled checkout when a variant becomes available.</li>
-          <li>If multiple proxies are configured, requests rotate round-robin automatically.</li>
-          <li>If a per-customer limit is detected, qty is capped accordingly.</li>
-          <li>Allow popups for this site so auto-open isn't blocked.</li>
-        </ul>
+      <Card className="p-3">
+        <div className="text-sm font-medium">Onboarding & tips</div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Replay the welcome tour or bring back dismissed tip bars.</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" className="h-9" onClick={onShowWizard}>
+            <Sparkles className="h-4 w-4" /> Show welcome tour
+          </Button>
+          <Button size="sm" variant="ghost" className="h-9" onClick={onResetTips}>
+            <Info className="h-4 w-4" /> Restore tips
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// InfoDot — tap to reveal a short explanation
+// ────────────────────────────────────────────
+function InfoDot({ text }: { text: string }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+          aria-label="More info"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <HelpCircle className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" className="w-64 text-xs leading-relaxed">
+        {text}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ────────────────────────────────────────────
+// Welcome wizard — shown once
+// ────────────────────────────────────────────
+function WelcomeWizard({
+  open, onClose, hasProfiles, onGoProfiles, onGoStores: _onGoStores, onCreateTask,
+}: {
+  open: boolean; onClose: () => void;
+  hasProfiles: boolean;
+  onGoProfiles: () => void; onGoStores: () => void; onCreateTask: () => void;
+}) {
+  const [step, setStep] = useState(0);
+  const slides = [
+    {
+      icon: Sparkles,
+      title: "Welcome to J1m's Bot",
+      body: "A pocket-sized shopping bot. Tell it what you want, which store, and which profile — when stock drops it fires the checkout for you.",
+      cta: { label: "Next", action: () => setStep(1) },
+    },
+    {
+      icon: UserIcon,
+      title: "Step 1 — Add a profile",
+      body: "A profile is the shipping + contact info that pre-fills Shopify checkout. Add one profile per checkout you want to fire in parallel.",
+      cta: { label: hasProfiles ? "Next" : "Add a profile", action: hasProfiles ? () => setStep(2) : onGoProfiles },
+    },
+    {
+      icon: Store,
+      title: "Step 2 — Pick a store",
+      body: "Choose from preset Shopify stores (JB Hi-Fi, Kith, Gymshark…) or add any public Shopify store by URL. You can manage stores anytime from the Stores tab.",
+      cta: { label: "Next", action: () => setStep(3) },
+    },
+    {
+      icon: ListChecks,
+      title: "Step 3 — Create your first task",
+      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, the checkout opens automatically.",
+      cta: { label: "Create a task", action: onCreateTask },
+    },
+  ];
+  const s = slides[step];
+  const Icon = s.icon;
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <Icon className="h-6 w-6" />
+          </div>
+          <DialogTitle className="text-center text-lg">{s.title}</DialogTitle>
+          <DialogDescription className="text-center text-sm leading-relaxed">
+            {s.body}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center justify-center gap-1.5 py-1">
+          {slides.map((_, i) => (
+            <div key={i} className={`h-1.5 w-6 rounded-full transition-colors ${i === step ? "bg-primary" : "bg-muted"}`} />
+          ))}
+        </div>
+
+        <DialogFooter className="flex-row gap-2 sm:justify-between">
+          <Button variant="ghost" size="sm" onClick={onClose}>Skip</Button>
+          <div className="flex gap-2">
+            {step > 0 && (
+              <Button variant="secondary" size="sm" onClick={() => setStep((p) => p - 1)}>
+                <ChevronLeft className="h-4 w-4" /> Back
+              </Button>
+            )}
+            <Button size="sm" onClick={s.cta.action}>
+              {s.cta.label} <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────
+// Help view — glossary, how-it-works, FAQ
+// ────────────────────────────────────────────
+function HelpView() {
+  return (
+    <div className="space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">How J1m's Bot works</h2>
+        </div>
+        <ol className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
+          <li><b className="text-foreground">1. Profile</b> — your shipping + contact info, used to pre-fill Shopify checkout.</li>
+          <li><b className="text-foreground">2. Store</b> — the Shopify storefront you want to watch.</li>
+          <li><b className="text-foreground">3. Task</b> — links a product on that store to a profile.</li>
+          <li><b className="text-foreground">4. Monitor</b> — the bot polls the product on a fast interval.</li>
+          <li><b className="text-foreground">5. Drop</b> — the moment stock appears, the checkout opens, prefilled and ready to pay.</li>
+        </ol>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="text-sm font-semibold">Glossary</h2>
+        <dl className="mt-3 space-y-2.5 text-xs">
+          {[
+            ["Task", "One product being watched with one profile."],
+            ["Profile", "Saved shipping + contact info used to fill checkout."],
+            ["SKU / handle", "Shopify's product identifier — usually visible in the URL after /products/."],
+            ["Proxy", "An intermediate server requests are routed through. Helps avoid rate limits during drops."],
+            ["Poll interval", "How often the bot rechecks the product (ms). Lower = faster but more requests."],
+            ["Per-customer limit", "Shopify's max-per-order rule. The bot detects and caps quantity automatically."],
+            ["In stock", "At least one variant became available. The bot fires the checkout."],
+          ].map(([term, def]) => (
+            <div key={term}>
+              <dt className="font-medium text-foreground">{term}</dt>
+              <dd className="text-muted-foreground">{def}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="text-sm font-semibold">FAQ</h2>
+        <div className="mt-3 space-y-3 text-xs">
+          {[
+            ["Why didn't the checkout tab open?", "Allow popups for this site in your browser settings — the bot can only auto-open with permission."],
+            ["Why was a task slower than expected?", "Browsers throttle background tabs. Keep J1m's Bot pinned and visible during a drop."],
+            ["What stores work?", "Any public Shopify store. The bot reads each store's /products.json and /products/{handle}.js endpoints."],
+            ["Do I need proxies?", "No — they're optional. They help when a store rate-limits during high traffic drops."],
+            ["Is anything sent off-device?", "Profile data is stored locally in your browser. Product requests go directly to the store (or through your proxies)."],
+          ].map(([q, a]) => (
+            <div key={q}>
+              <div className="font-medium text-foreground">{q}</div>
+              <div className="mt-0.5 text-muted-foreground">{a}</div>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
