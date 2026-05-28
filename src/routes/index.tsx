@@ -930,7 +930,66 @@ function Index() {
                         checkoutElapsedMs: r.elapsedMs,
                         message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                       });
-                      if (autoOpen) {
+                      // Full-browser path: hand off to Browserless if enabled
+                      // AND the profile has card data (else dry-run is still
+                      // useful — confirms the checkout walks all the way).
+                      const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
+                      if (browserlessEnabled && (hasCard || browserlessDryRun)) {
+                        updateTask(t.id, { status: "checking_out", message: browserlessDryRun ? "Dry-run via Browserless…" : "Submitting order…" });
+                        (async () => {
+                          const bStart = Date.now();
+                          try {
+                            const b = await browserlessFn({
+                              data: {
+                                storeUrl: t.storeUrl,
+                                variantId: avail.id,
+                                qty,
+                                profile: {
+                                  email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+                                  address1: profile.address1, address2: profile.address2 ?? null,
+                                  city: profile.city, province: profile.province,
+                                  zip: profile.zip, country: profile.country, phone: profile.phone,
+                                },
+                                card: {
+                                  number: (profile.card_number || "4242424242424242").replace(/\s+/g, ""),
+                                  name: profile.card_name || `${profile.first_name} ${profile.last_name}`.trim() || "Test",
+                                  exp_month: profile.card_exp_month || "12",
+                                  exp_year: profile.card_exp_year || "30",
+                                  cvv: profile.card_cvv || "123",
+                                },
+                                proxy: rawProxy,
+                                captchaToken: pooled?.token ?? null,
+                                dryRun: browserlessDryRun,
+                              },
+                            });
+                            const elapsed = Date.now() - bStart;
+                            if (b.ok) {
+                              updateTask(t.id, {
+                                status: b.dryRun ? "checkout_ready" : "confirmed",
+                                orderId: b.orderId ?? null,
+                                finalUrl: b.finalUrl,
+                                steps: b.steps,
+                                screenshotB64: b.screenshotB64,
+                                browserlessElapsedMs: elapsed,
+                                message: b.dryRun
+                                  ? `Dry-run OK · ${elapsed}ms`
+                                  : `Order ${b.orderId ?? "?"} · ${elapsed}ms`,
+                              });
+                              if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}${b.orderId ? ` #${b.orderId}` : ""}`);
+                            } else {
+                              updateTask(t.id, {
+                                status: "failed",
+                                steps: b.steps,
+                                screenshotB64: b.screenshotB64,
+                                browserlessElapsedMs: elapsed,
+                                message: `${b.failedStep}: ${b.error}`,
+                              });
+                            }
+                          } catch (err: any) {
+                            updateTask(t.id, { status: "failed", message: err?.message ?? "browserless error" });
+                          }
+                        })();
+                      } else if (autoOpen) {
                         window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
                         updateTask(t.id, { status: "opened" });
                       }
@@ -941,12 +1000,6 @@ function Index() {
                         checkoutElapsedMs: r.elapsedMs,
                       });
                     }
-                  } catch (err: any) {
-                    updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
-                  }
-                })();
-              }
-            }
           } else {
             // Don't downgrade once the engine has fired.
             const cur = tasksRef.current.find((x) => x.id === t.id);
