@@ -1325,7 +1325,7 @@ function TasksView({
                 {showStepper && (
                   <div className="mt-2 flex items-center gap-1">
                     {phases.map((p, i) => {
-                      const done = phaseIdx > i || t.status === "opened";
+                      const done = phaseIdx > i || t.status === "confirmed" || (t.status === "opened" && p.key !== "checking_out" && p.key !== "confirmed");
                       const active = phaseIdx === i;
                       const failed = t.status === "failed" && i === Math.max(0, phaseIdx);
                       return (
