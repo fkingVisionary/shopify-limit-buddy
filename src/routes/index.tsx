@@ -1179,13 +1179,25 @@ function TasksView({
         const profile = profiles.find((p) => p.id === t.profileId);
         const statusInfo = (() => {
           switch (t.status) {
-            case "in_stock": return { label: "IN STOCK", color: "text-green-400" };
-            case "opened":   return { label: "Checkout opened", color: "text-primary" };
-            case "monitoring": return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
-            case "error":    return { label: t.message ?? "Error", color: "text-destructive" };
-            default:         return { label: "Idle", color: "text-muted-foreground" };
+            case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
+            case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
+            case "checkout_ready": return { label: "Checkout ready", color: "text-green-400" };
+            case "opened":         return { label: "Checkout opened", color: "text-primary" };
+            case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
+            case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
+            case "error":          return { label: t.message ?? "Error", color: "text-destructive" };
+            default:               return { label: "Idle", color: "text-muted-foreground" };
           }
         })();
+        // Engine phase stepper — only shown once the engine fires.
+        const phases: { key: TaskStatus; label: string }[] = [
+          { key: "in_stock", label: "Stock" },
+          { key: "adding_to_cart", label: "Cart" },
+          { key: "checkout_ready", label: "Checkout" },
+          { key: "opened", label: "Open" },
+        ];
+        const phaseIdx = phases.findIndex((p) => p.key === t.status);
+        const showStepper = phaseIdx >= 0 || t.status === "failed";
         return (
           <Card key={t.id} className="p-3">
             <div className="flex items-start gap-3">
@@ -1195,6 +1207,8 @@ function TasksView({
                 </div>
                 <div className="mt-0.5 text-xs text-muted-foreground">
                   Qty {t.qty}{t.limit ? ` · limit ${t.limit}` : ""}
+                  {t.checkoutElapsedMs ? ` · ${t.checkoutElapsedMs}ms` : ""}
+                  {t.checkoutTokenUsed ? " · token" : ""}
                 </div>
                 <div className="mt-1.5 flex items-center justify-between gap-2">
                   <div className={`flex items-center gap-1.5 text-xs font-medium ${statusInfo.color}`}>
@@ -1205,6 +1219,35 @@ function TasksView({
                     {t.storeName} · <span className="text-foreground/80">{profile?.name ?? "no profile"}</span>
                   </div>
                 </div>
+                {showStepper && (
+                  <div className="mt-2 flex items-center gap-1">
+                    {phases.map((p, i) => {
+                      const done = phaseIdx > i || t.status === "opened";
+                      const active = phaseIdx === i;
+                      const failed = t.status === "failed" && i === Math.max(0, phaseIdx);
+                      return (
+                        <div key={p.key} className="flex flex-1 items-center gap-1">
+                          <div className={`h-1 flex-1 rounded-full ${
+                            failed ? "bg-destructive"
+                            : done ? "bg-green-400"
+                            : active ? "bg-amber-400 animate-pulse"
+                            : "bg-muted"
+                          }`} />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {t.status === "checkout_ready" && t.checkoutUrl && (
+                  <a
+                    href={t.checkoutUrl}
+                    target={`_task_${t.id}`}
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    Open checkout →
+                  </a>
+                )}
               </div>
               <div className="flex flex-col items-end gap-1.5">
                 {t.running ? (
