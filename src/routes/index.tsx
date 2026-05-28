@@ -1263,14 +1263,17 @@ function CreateTaskSheet({
 // Profiles view
 // ────────────────────────────────────────────
 function ProfilesView({
-  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle,
+  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle, onPersistMany,
 }: {
   profiles: Profile[]; activeIds: string[];
   onAdd: () => void;
   onUpdate: (id: string, patch: Partial<Profile>) => void;
   onDelete: (id: string) => void;
   onToggle: (id: string) => void;
+  onPersistMany: (next: Profile[], nextActive?: string[]) => void;
 }) {
+  const [builderFor, setBuilderFor] = useState<Profile | null>(null);
+
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -1289,6 +1292,15 @@ function ProfilesView({
             <div className="mb-2 flex items-center gap-2">
               <input type="checkbox" className="h-4 w-4" checked={isActive} onChange={() => onToggle(p.id)} />
               <Input value={p.name} onChange={(e) => onUpdate(p.id, { name: e.target.value })} className="h-8 flex-1 font-medium" placeholder="Profile name" />
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 text-primary"
+                title="Build jigged variants from this profile"
+                onClick={() => setBuilderFor(p)}
+              >
+                <Sparkles className="h-4 w-4" />
+              </Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -1308,36 +1320,258 @@ function ProfilesView({
           </Card>
         );
       })}
+
+      <ProfileBuilderDialog
+        base={builderFor}
+        onClose={() => setBuilderFor(null)}
+        onCreate={(variants) => {
+          const next = [...profiles, ...variants];
+          const nextActive = [...activeIds, ...variants.map((v) => v.id)];
+          onPersistMany(next, nextActive);
+          setBuilderFor(null);
+        }}
+      />
     </div>
   );
 }
 
 // ────────────────────────────────────────────
-// Proxies view
+// Profile Builder dialog — jig an existing profile into N variants
 // ────────────────────────────────────────────
-function ProxiesView({ text, onChange, count }: { text: string; onChange: (v: string) => void; count: number }) {
+function ProfileBuilderDialog({
+  base, onClose, onCreate,
+}: {
+  base: Profile | null;
+  onClose: () => void;
+  onCreate: (variants: Profile[]) => void;
+}) {
+  const [count, setCount] = useState(3);
+  const [jigAddr, setJigAddr] = useState(true);
+  const [jigNames, setJigNames] = useState(true);
+
+  useEffect(() => {
+    if (base) {
+      setCount(3);
+      setJigAddr(true);
+      setJigNames(true);
+    }
+  }, [base]);
+
+  if (!base) return null;
+
+  const preview = (() => {
+    const seed = 1;
+    const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
+    const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+    return { name, addr };
+  })();
+
+  const build = () => {
+    const variants: Profile[] = [];
+    for (let i = 1; i <= count; i++) {
+      const seed = i;
+      const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
+      const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+      variants.push({
+        ...base,
+        id: makeId(),
+        name: `${base.name} v${i}`,
+        first_name: name.first,
+        last_name: name.last,
+        address1: addr,
+      });
+    }
+    onCreate(variants);
+  };
+
+  return (
+    <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <Sparkles className="h-6 w-6" />
+          </div>
+          <DialogTitle className="text-center text-lg">Build variants from "{base.name}"</DialogTitle>
+          <DialogDescription className="text-center text-xs leading-relaxed">
+            Generate N copies of this profile with small, non-breaking permutations so each checkout looks distinct to Shopify.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">How many variants?</Label>
+            <Input
+              type="number" min={1} max={50}
+              value={count}
+              onChange={(e) => setCount(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+              className="mt-1 h-10"
+            />
+          </div>
+
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={jigAddr} onChange={(e) => setJigAddr(e.target.checked)} />
+              <span>Address jigger</span>
+              <InfoDot text="Swaps street suffix forms ('St' ↔ 'Street'), tweaks punctuation/spacing. Non-breaking for shipping." />
+            </label>
+            <label className="flex items-center gap-2">
+              <input type="checkbox" className="h-4 w-4" checked={jigNames} onChange={(e) => setJigNames(e.target.checked)} />
+              <span>Name shuffler</span>
+              <InfoDot text="Adds a random middle initial or tweaks capitalisation. Email, phone and address stay intact." />
+            </label>
+          </div>
+
+          {/* Preview */}
+          <div className="rounded-lg border bg-background p-3 text-xs">
+            <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
+            <div className="text-muted-foreground">
+              <div>{preview.name.first} {preview.name.last}</div>
+              <div>{preview.addr || <span className="italic">(no address)</span>}</div>
+              <div>{base.email}</div>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="flex-row gap-2 sm:justify-end">
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames)}>
+            Create {count} variant{count > 1 ? "s" : ""}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────
+// Proxies view — named groups with health tester
+// ────────────────────────────────────────────
+function ProxiesView({
+  groups, onAdd, onUpdate, onDelete,
+}: {
+  groups: ProxyGroup[];
+  onAdd: () => void;
+  onUpdate: (id: string, patch: Partial<ProxyGroup>) => void;
+  onDelete: (id: string) => void;
+}) {
   return (
     <div className="space-y-3">
-      <Card className="p-3">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium">Proxy rotation</div>
-            <div className="text-[11px] text-muted-foreground">Round-robin across listed proxies</div>
-          </div>
-          <Badge variant={count > 0 ? "default" : "outline"}>{count > 0 ? `${count} active` : "Direct"}</Badge>
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">{groups.length} group{groups.length === 1 ? "" : "s"}</div>
+        <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add group</Button>
+      </div>
+
+      {groups.length === 0 && (
+        <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+          No proxy groups yet. Tasks will use the built-in direct proxy.
+          <br />
+          Add a group to rotate through your own proxies during drops.
         </div>
-        <Textarea
-          value={text}
-          onChange={(e) => onChange(e.target.value)}
-          className="mt-3 min-h-[180px] font-mono text-[11px]"
-          placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}\nhttps://proxy2.example.com/get?target={url}"}
-          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+      )}
+
+      {groups.map((g) => (
+        <ProxyGroupCard
+          key={g.id}
+          group={g}
+          onUpdate={(patch) => onUpdate(g.id, patch)}
+          onDelete={() => onDelete(g.id)}
         />
-        <p className="mt-2 text-[11px] text-muted-foreground">
-          Use <code className="font-mono">{`{url}`}</code> as a placeholder for the encoded target URL. Leave empty to fetch through the built-in server proxy.
-        </p>
-      </Card>
+      ))}
     </div>
+  );
+}
+
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string };
+
+function ProxyGroupCard({
+  group, onUpdate, onDelete,
+}: {
+  group: ProxyGroup;
+  onUpdate: (patch: Partial<ProxyGroup>) => void;
+  onDelete: () => void;
+}) {
+  const text = group.proxies.join("\n");
+  const [testing, setTesting] = useState(false);
+  const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
+
+  const onTextChange = (v: string) => {
+    onUpdate({ proxies: v.split("\n").map((s) => s.trim()).filter(Boolean) });
+  };
+
+  const testGroup = async () => {
+    setTesting(true);
+    setResults({});
+    // Ping a lightweight, well-known URL through each proxy template
+    const probe = "https://www.shopify.com/robots.txt";
+    await Promise.all(group.proxies.map(async (tmpl, i) => {
+      if (!tmpl.includes("{url}")) {
+        setResults((r) => ({ ...r, [i]: { ok: false, ms: 0, err: "missing {url}" } }));
+        return;
+      }
+      const started = performance.now();
+      try {
+        const url = tmpl.replace("{url}", encodeURIComponent(probe));
+        const res = await fetch(url, { method: "GET" });
+        const ms = Math.round(performance.now() - started);
+        setResults((r) => ({ ...r, [i]: { ok: res.ok, ms, status: res.status } }));
+      } catch (e: any) {
+        const ms = Math.round(performance.now() - started);
+        setResults((r) => ({ ...r, [i]: { ok: false, ms, err: e?.message ?? "network" } }));
+      }
+    }));
+    setTesting(false);
+  };
+
+  return (
+    <Card className="p-3">
+      <div className="flex items-center gap-2">
+        <Input
+          value={group.name}
+          onChange={(e) => onUpdate({ name: e.target.value })}
+          className="h-8 flex-1 font-medium"
+          placeholder="Group name"
+        />
+        <Badge variant={group.proxies.length > 0 ? "default" : "outline"} className="text-[10px]">
+          {group.proxies.length}
+        </Badge>
+        <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={onDelete}>
+          <Trash2 className="h-4 w-4" />
+        </Button>
+      </div>
+      <Textarea
+        value={text}
+        onChange={(e) => onTextChange(e.target.value)}
+        className="mt-2 min-h-[120px] font-mono text-[11px]"
+        placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}"}
+        autoCapitalize="none" autoCorrect="off" spellCheck={false}
+      />
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <p className="text-[10px] text-muted-foreground">
+          Use <code className="font-mono">{`{url}`}</code> as the placeholder.
+        </p>
+        <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
+          {testing ? "Testing…" : "Test group"}
+        </Button>
+      </div>
+
+      {Object.keys(results).length > 0 && (
+        <ul className="mt-2 space-y-1 text-[11px]">
+          {group.proxies.map((p, i) => {
+            const r = results[i];
+            const dotColor = !r ? "bg-muted-foreground/40" : r.ok ? "bg-primary" : "bg-destructive";
+            return (
+              <li key={i} className="flex items-center gap-2">
+                <span className={`h-2 w-2 rounded-full ${dotColor}`} />
+                <span className="flex-1 truncate font-mono text-muted-foreground">{p}</span>
+                <span className={r?.ok ? "text-primary" : "text-destructive"}>
+                  {r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
   );
 }
 
