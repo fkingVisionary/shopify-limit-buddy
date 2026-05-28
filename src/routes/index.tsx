@@ -760,7 +760,7 @@ function Index() {
               <CreateTaskSheet
                 stores={allStores}
                 profiles={profiles}
-                proxyCount={proxyLines.length}
+                proxyGroups={proxyGroups}
                 onCreate={(tpl, n) => { createTasks(tpl, n); setCreateOpen(false); }}
                 onAddCustomStore={(name, url) => addCustomStore(name, url)}
               />
@@ -816,10 +816,16 @@ function Index() {
             onUpdate={updateProfile}
             onDelete={deleteProfile}
             onToggle={toggleActive}
+            onPersistMany={(next, nextActive) => persistProfiles(next, nextActive)}
           />
         )}
         {tab === "proxies" && (
-          <ProxiesView text={proxiesText} onChange={saveProxies} count={proxyLines.length} />
+          <ProxiesView
+            groups={proxyGroups}
+            onAdd={addProxyGroup}
+            onUpdate={updateProxyGroup}
+            onDelete={deleteProxyGroup}
+          />
         )}
         {tab === "stores" && (
           <StoresView
@@ -863,7 +869,7 @@ function Index() {
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
             ["stores", "Stores", Store, allStores.length],
-            ["proxies", "Proxies", Server, proxyLines.length],
+            ["proxies", "Proxies", Server, totalProxies],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
