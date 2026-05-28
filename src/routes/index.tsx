@@ -1000,6 +1000,12 @@ function Index() {
                         checkoutElapsedMs: r.elapsedMs,
                       });
                     }
+                  } catch (err: any) {
+                    updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
+                  }
+                })();
+              }
+            }
           } else {
             // Don't downgrade once the engine has fired.
             const cur = tasksRef.current.find((x) => x.id === t.id);
