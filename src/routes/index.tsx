@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,8 +20,9 @@ import {
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
-  Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle,
+  Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
 } from "lucide-react";
+import { solveCaptcha, getCaptchaBalance } from "@/lib/captcha.functions";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/")({
