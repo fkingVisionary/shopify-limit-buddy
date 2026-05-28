@@ -1206,15 +1206,17 @@ function CreateTaskSheet({
 
             <div>
               <div className="flex items-center gap-1.5">
-                <Label className="text-xs text-muted-foreground">Proxy</Label>
-                <InfoDot text="Which proxy to route requests through. 'Rotate' cycles through all proxies you've added in the Proxies tab." />
+                <Label className="text-xs text-muted-foreground">Proxy group</Label>
+                <InfoDot text="Pick a named proxy group to rotate within. Manage groups in the Proxies tab. 'Direct' uses the built-in server proxy with no rotation." />
               </div>
-              <Select value={proxyIdx} onValueChange={setProxyIdx}>
+              <Select value={proxyGroupSel} onValueChange={setProxyGroupSel}>
                 <SelectTrigger className="mt-1 h-10"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="-1">Rotate{proxyCount > 0 ? ` (${proxyCount} configured)` : " — none configured (direct)"}</SelectItem>
-                  {Array.from({ length: proxyCount }, (_, i) => (
-                    <SelectItem key={i} value={String(i)}>Proxy {i + 1}</SelectItem>
+                  <SelectItem value="__direct">Direct (no proxy)</SelectItem>
+                  {proxyGroups.map((g) => (
+                    <SelectItem key={g.id} value={g.id}>
+                      {g.name} ({g.proxies.length})
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
