@@ -11,6 +11,9 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
+import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
+import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
+import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/runner.pair'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +25,74 @@ const ApiPublicShopifyRoute = ApiPublicShopifyRouteImport.update({
   path: '/api/public/shopify',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicRunnerReportRoute = ApiPublicRunnerReportRouteImport.update({
+  id: '/api/public/runner/report',
+  path: '/api/public/runner/report',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicRunnerPollRoute = ApiPublicRunnerPollRouteImport.update({
+  id: '/api/public/runner/poll',
+  path: '/api/public/runner/poll',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicRunnerPairRoute = ApiPublicRunnerPairRouteImport.update({
+  id: '/api/public/runner/pair',
+  path: '/api/public/runner/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
+  '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
+  '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
+  '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
+  '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
+  '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
+  '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/public/shopify'
+  fullPaths:
+    | '/'
+    | '/api/public/shopify'
+    | '/api/public/runner/pair'
+    | '/api/public/runner/poll'
+    | '/api/public/runner/report'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/public/shopify'
-  id: '__root__' | '/' | '/api/public/shopify'
+  to:
+    | '/'
+    | '/api/public/shopify'
+    | '/api/public/runner/pair'
+    | '/api/public/runner/poll'
+    | '/api/public/runner/report'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/public/shopify'
+    | '/api/public/runner/pair'
+    | '/api/public/runner/poll'
+    | '/api/public/runner/report'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
+  ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
+  ApiPublicRunnerPollRoute: typeof ApiPublicRunnerPollRoute
+  ApiPublicRunnerReportRoute: typeof ApiPublicRunnerReportRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,23 +111,37 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicShopifyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/runner/report': {
+      id: '/api/public/runner/report'
+      path: '/api/public/runner/report'
+      fullPath: '/api/public/runner/report'
+      preLoaderRoute: typeof ApiPublicRunnerReportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/runner/poll': {
+      id: '/api/public/runner/poll'
+      path: '/api/public/runner/poll'
+      fullPath: '/api/public/runner/poll'
+      preLoaderRoute: typeof ApiPublicRunnerPollRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/runner/pair': {
+      id: '/api/public/runner/pair'
+      path: '/api/public/runner/pair'
+      fullPath: '/api/public/runner/pair'
+      preLoaderRoute: typeof ApiPublicRunnerPairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
+  ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
+  ApiPublicRunnerPollRoute: ApiPublicRunnerPollRoute,
+  ApiPublicRunnerReportRoute: ApiPublicRunnerReportRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
