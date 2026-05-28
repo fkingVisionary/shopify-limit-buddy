@@ -1480,6 +1480,7 @@ function ProfileBuilderDialog({
       const dom = (base.email.split("@")[1] || "").toLowerCase();
       setEmailMode(dom === "gmail.com" || dom === "googlemail.com" ? "dot" : "off");
       setCatchallDomain("");
+      setPhoneMode("au_mobile");
     }
   }, [base]);
 
@@ -1490,7 +1491,8 @@ function ProfileBuilderDialog({
     const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
     const addr = jigAddress(base.address1, seed, addrMode);
     const email = jigEmail(base.email, seed, emailMode, catchallDomain);
-    return { name, addr, email };
+    const phone = jigPhone(base.phone, seed, phoneMode);
+    return { name, addr, email, phone };
   })();
 
   const build = () => {
@@ -1500,6 +1502,7 @@ function ProfileBuilderDialog({
       const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
       const addr = jigAddress(base.address1, seed, addrMode);
       const email = jigEmail(base.email, seed, emailMode, catchallDomain);
+      const phone = jigPhone(base.phone, seed, phoneMode);
       variants.push({
         ...base,
         id: makeId(),
@@ -1508,6 +1511,7 @@ function ProfileBuilderDialog({
         last_name: name.last,
         address1: addr,
         email,
+        phone,
       });
     }
     onCreate(variants);
