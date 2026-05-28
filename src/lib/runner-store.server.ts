@@ -14,6 +14,8 @@ const pairingCodes = new Map<string, { deviceName: string; createdAt: number }>(
 const devicesByToken = new Map<string, Device>();
 const jobsByDevice  = new Map<string, RunnerJob[]>(); // FIFO queue per device
 const resultsByJob  = new Map<string, RunnerResult>();
+type RecentJob = { id: string; storeUrl: string; ok: boolean | null; orderId: string | null; error: string | null; at: number; dryRun: boolean };
+const recentJobs: RecentJob[] = [];
 const activeDeviceRef = { id: null as string | null };
 
 const TEN_MIN = 10 * 60 * 1000;
@@ -58,13 +60,13 @@ export function authDevice(token: string | null | undefined): Device | null {
 }
 
 export function enqueueJob(job: RunnerJob): { dispatched: boolean; deviceId: string | null } {
-  // Round-robin not needed — single-runner scaffold uses the most recent
-  // paired device.
   const deviceId = activeDeviceRef.id;
   if (!deviceId) return { dispatched: false, deviceId: null };
   const list = jobsByDevice.get(deviceId) ?? [];
   list.push(job);
   jobsByDevice.set(deviceId, list);
+  recentJobs.unshift({ id: job.id, storeUrl: job.storeUrl, ok: null, orderId: null, error: null, at: Date.now(), dryRun: job.dryRun });
+  if (recentJobs.length > 25) recentJobs.length = 25;
   return { dispatched: true, deviceId };
 }
 
@@ -78,10 +80,31 @@ export function dequeueJobFor(deviceId: string): RunnerJob | null {
 
 export function recordResult(result: RunnerResult) {
   resultsByJob.set(result.jobId, result);
+  const r = recentJobs.find((j) => j.id === result.jobId);
+  if (r) {
+    r.ok = result.ok;
+    r.orderId = result.ok ? result.orderId : null;
+    r.error = result.ok ? null : `${result.failedStep}: ${result.error}`;
+  }
 }
 
 export function getResult(jobId: string): RunnerResult | null {
   return resultsByJob.get(jobId) ?? null;
+}
+
+export function listRecentJobs(): RecentJob[] {
+  return recentJobs.slice(0, 10);
+}
+
+export function disconnectActiveDevice(): boolean {
+  const id = activeDeviceRef.id;
+  if (!id) return false;
+  for (const [tok, d] of devicesByToken.entries()) {
+    if (d.id === id) devicesByToken.delete(tok);
+  }
+  jobsByDevice.delete(id);
+  activeDeviceRef.id = null;
+  return true;
 }
 
 export function getActiveDevice(): Device | null {
