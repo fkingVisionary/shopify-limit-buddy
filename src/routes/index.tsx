@@ -303,15 +303,63 @@ function Index() {
   };
 
 
-  const quickCheckout = (p: Product) => {
+  const quickCheckout = (p: Product, opts?: { variantId?: number; qty?: number }) => {
     if (!storeUrl) return;
-    const variant = p.variants.find((v) => v.available) ?? p.variants[0];
+    const variant = opts?.variantId
+      ? p.variants.find((v) => v.id === opts.variantId) ?? p.variants[0]
+      : p.variants.find((v) => v.available) ?? p.variants[0];
     if (!variant) return;
     const info = limits[p.id];
-    const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
+    const qty = opts?.qty ?? (info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1);
     const url = buildCheckoutUrl(storeUrl, variant.id, qty, prefill);
     window.open(url, "_blank", "noopener,noreferrer");
   };
+
+  // Polling loop for watched products
+  useEffect(() => {
+    if (!storeUrl || watched.size === 0) return;
+    let cancelled = false;
+    const tick = async () => {
+      const ids = Array.from(watched);
+      await Promise.all(ids.map(async (pid) => {
+        const product = products.find((p) => p.id === pid);
+        if (!product) return;
+        try {
+          const res = await fetch(proxied(`${storeUrl}/products/${product.handle}.js`));
+          if (!res.ok) {
+            setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: `HTTP ${res.status}` } }));
+            return;
+          }
+          const data: any = await res.json();
+          const variants: any[] = data.variants ?? [];
+          const availVariant = variants.find((v) => v.available);
+          const isAvail = !!availVariant;
+          setWatchStatus((s) => ({
+            ...s,
+            [pid]: { lastChecked: Date.now(), available: isAvail, lastVariantId: availVariant?.id, error: undefined },
+          }));
+          if (isAvail && !triggeredRef.current.has(pid)) {
+            triggeredRef.current.add(pid);
+            notifyDrop("IN STOCK", product.title);
+            if (autoOpen) {
+              const info = limits[pid];
+              const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
+              const url = buildCheckoutUrl(storeUrl, availVariant.id, qty, prefill);
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
+          }
+          if (!isAvail) triggeredRef.current.delete(pid);
+        } catch (e: any) {
+          setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: e?.message ?? "fetch failed" } }));
+        }
+      }));
+    };
+    tick();
+    const id = setInterval(() => { if (!cancelled) tick(); }, Math.max(1500, pollMs));
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, prefill, limits]);
+
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
