@@ -60,6 +60,7 @@ const InputSchema = z.object({
 });
 
 export type C1Step =
+  | "akamai_sensor"
   | "cart_add"
   | "cart_redirect"
   | "checkout_page"
@@ -68,6 +69,7 @@ export type C1Step =
   | "submit_for_completion"
   | "captcha_solve"
   | "poll_receipt";
+
 
 export type C1StepRecord = {
   step: C1Step;
@@ -159,6 +161,76 @@ async function solveHCaptcha(siteKey: string, pageUrl: string): Promise<string> 
   throw new Error("2captcha timeout after 150s");
 }
 
+// 2Captcha Akamai sensor solver. Returns sensor_data payload to POST at scriptUrl.
+// https://2captcha.com/2captcha-api#solving_akamai
+async function solveAkamaiSensor(opts: {
+  pageUrl: string;
+  scriptUrl: string;
+  userAgent: string;
+}): Promise<string> {
+  const key = process.env.TWOCAPTCHA_API_KEY;
+  if (!key) throw new Error("captcha_required: TWOCAPTCHA_API_KEY not set");
+  const createBody = new URLSearchParams({
+    key,
+    method: "akamai",
+    pageurl: opts.pageUrl,
+    script: opts.scriptUrl,
+    userAgent: opts.userAgent,
+    json: "1",
+  });
+  const create = (await (
+    await fetch("https://2captcha.com/in.php", { method: "POST", body: createBody })
+  ).json()) as { status: number; request: string };
+  if (create.status !== 1) throw new Error(`2captcha akamai create: ${create.request}`);
+  const id = create.request;
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 5000));
+    const poll = (await (
+      await fetch(`https://2captcha.com/res.php?key=${key}&action=get&id=${id}&json=1`)
+    ).json()) as { status: number; request: string; sensor_data?: string };
+    if (poll.status === 1) {
+      // some payloads return JSON-wrapped sensor_data, some return raw string
+      try {
+        const parsed = JSON.parse(poll.request) as { sensor_data?: string };
+        return parsed.sensor_data ?? poll.request;
+      } catch {
+        return poll.request;
+      }
+    }
+    if (poll.request !== "CAPCHA_NOT_READY") throw new Error(`2captcha akamai poll: ${poll.request}`);
+  }
+  throw new Error("2captcha akamai timeout after 150s");
+}
+
+// Detects an Akamai bot-manager footprint in a response (cookies or body markers).
+function detectAkamai(res: Response, body: string): boolean {
+  const setCookie = (res.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+  if (setCookie.some((c) => /^(_abck|bm_sz|ak_bmsc|bm_sv|bm_mi)=/i.test(c))) return true;
+  if (/akam\/|\/_bm\/|akamai|_abck|bm_sz/i.test(body)) return true;
+  return false;
+}
+
+// Tries to locate the Akamai sensor script URL in the HTML. Returns absolute URL.
+function findAkamaiScriptUrl(html: string, origin: string): string | null {
+  const candidates = [
+    /src="([^"]*\/_bm\/[^"]+)"/i,
+    /src="([^"]*akam[^"]*\.js[^"]*)"/i,
+    /href="([^"]*\/_bm\/[^"]+)"/i,
+  ];
+  for (const re of candidates) {
+    const m = html.match(re);
+    if (m?.[1]) {
+      try {
+        return new URL(m[1], origin).toString();
+      } catch {
+        return null;
+      }
+    }
+  }
+  return null;
+}
+
+
 export const runCheckoutOne = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<C1Result> => {
@@ -193,7 +265,76 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       elapsedMs: Date.now() - t0,
     });
 
+    // ── 0. Akamai warm-up ──────────────────────────────────────────────────
+    // GET the homepage to seed cookies. If the store is behind Akamai BMP
+    // (JB Hi-Fi, Kmart, Big W, Coles, Myer, etc.) the response carries
+    // _abck/bm_sz cookies or returns 403. We solve the sensor via 2Captcha
+    // and POST it back to the sensor endpoint to upgrade _abck to a "valid"
+    // state — Akamai usually requires 2 posts before accepting downstream
+    // requests. Skipped silently when no Akamai footprint is detected.
+    try {
+      lastStep = "akamai_sensor";
+      const s = Date.now();
+      const probe = await fetch(`${base}/`, {
+        headers: { ...baseHeaders, accept: "text/html,application/xhtml+xml" },
+      });
+      collectCookies(probe, jar);
+      const probeBody = await probe.text();
+      const isAkamai = probe.status === 403 || detectAkamai(probe, probeBody);
+      if (!isAkamai) {
+        record("akamai_sensor", true, probe.status, Date.now() - s, "no Akamai detected — skipped");
+      } else {
+        const scriptUrl = findAkamaiScriptUrl(probeBody, base);
+        if (!scriptUrl) {
+          record(
+            "akamai_sensor",
+            false,
+            probe.status,
+            Date.now() - s,
+            "Akamai detected but sensor script URL not found",
+          );
+          return fail("akamai_sensor", "could not locate Akamai sensor script in HTML");
+        }
+        // Two-pass sensor post — first pass gets an invalid _abck, second
+        // upgrades it. Some Akamai configs need a third pass.
+        let abckValid = false;
+        for (let pass = 0; pass < 3 && !abckValid; pass++) {
+          const sensorData = await solveAkamaiSensor({
+            pageUrl: `${base}/`,
+            scriptUrl,
+            userAgent: UA,
+          });
+          const postRes = await fetch(scriptUrl, {
+            method: "POST",
+            headers: {
+              ...baseHeaders,
+              "content-type": "text/plain;charset=UTF-8",
+              cookie: cookieHeader(jar),
+              accept: "*/*",
+            },
+            body: JSON.stringify({ sensor_data: sensorData }),
+          });
+          collectCookies(postRes, jar);
+          const abck = jar.get("_abck") ?? "";
+          // Valid _abck cookies do NOT contain "~0~" in the second segment.
+          // Invalid sensor responses leave it as "~-1~..." or "~0~...".
+          abckValid = /~-?\d+~[^~]*~[^~]*~/.test(abck) && !/~0~/.test(abck) && !/~-1~/.test(abck);
+        }
+        record(
+          "akamai_sensor",
+          abckValid,
+          probe.status,
+          Date.now() - s,
+          abckValid ? "sensor solved, _abck upgraded" : "sensor failed to upgrade _abck",
+        );
+        if (!abckValid) return fail("akamai_sensor", "Akamai _abck did not validate after 3 passes");
+      }
+    } catch (e) {
+      return fail(lastStep, (e as Error).message);
+    }
+
     // ── 1. cart/add ────────────────────────────────────────────────────────
+
     try {
       lastStep = "cart_add";
       const s = Date.now();
