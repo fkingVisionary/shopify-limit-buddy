@@ -402,7 +402,15 @@ function loadCustomStores(): StoreEntry[] {
 function saveCustomStores(s: StoreEntry[]) { try { localStorage.setItem(STORES_KEY, JSON.stringify(s)); } catch {} }
 
 // ─────────────── Tasks ───────────────
-type TaskStatus = "idle" | "monitoring" | "in_stock" | "opened" | "error";
+type TaskStatus =
+  | "idle"
+  | "monitoring"
+  | "in_stock"
+  | "adding_to_cart"
+  | "checkout_ready"
+  | "opened"
+  | "failed"
+  | "error";
 type Task = {
   id: string;
   storeId: string;
@@ -421,6 +429,11 @@ type Task = {
   limit?: number | null;
   lastChecked?: number;
   message?: string;
+  // Checkout engine state
+  checkoutUrl?: string;
+  checkoutTokenUsed?: boolean;
+  checkoutStartedAt?: number;
+  checkoutElapsedMs?: number;
 };
 const TASKS_KEY = "aio:tasks";
 function loadTasks(): Task[] {
