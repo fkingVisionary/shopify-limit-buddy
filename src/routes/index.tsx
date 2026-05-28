@@ -2426,13 +2426,19 @@ function usePool(
 
 
 
-function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; stores: StoreEntry[] }) {
+function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup[]; stores: StoreEntry[]; poolApi: PoolApi }) {
   const solve = useServerFn(solveCaptcha);
   const balance = useServerFn(getCaptchaBalance);
   const detect = useServerFn(detectCaptcha);
 
   const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
-  const [detected, setDetected] = useState<Record<string, DetectedCaptcha>>({});
+  // Detected configs come from poolApi (single source of truth); local
+  // detecting flag is for the manual "Re-detect" button only.
+  const detected = poolApi.detected;
+  const setDetected = (next: Record<string, DetectedCaptcha>) => {
+    // delegate caching to pool — keeps both views in sync
+    for (const [sid, d] of Object.entries(next)) poolApi.cacheDetected(sid, d);
+  };
   const [detecting, setDetecting] = useState(false);
 
   const [proxyGroupId, setProxyGroupId] = useState<string>("__direct");
