@@ -433,9 +433,21 @@ function Index() {
   tasksRef.current = tasks;
 
   // ─── UI ───
-  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "settings">("tasks");
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "settings" | "help">("tasks");
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [dismissedTips, setDismissedTips] = useState<Record<string, boolean>>({});
+
+  const dismissTip = (key: string) => {
+    const next = { ...dismissedTips, [key]: true };
+    setDismissedTips(next);
+    saveDismissedTips(next);
+  };
+  const resetTips = () => {
+    setDismissedTips({});
+    saveDismissedTips({});
+  };
 
   // Bootstrap
   useEffect(() => {
@@ -449,7 +461,16 @@ function Index() {
       setProxyList(px.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch {}
     setTasks(loadTasks());
+    setDismissedTips(loadDismissedTips());
+    try {
+      if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
+    } catch {}
   }, []);
+
+  const completeWizard = () => {
+    try { localStorage.setItem(WIZARD_KEY, "1"); } catch {}
+    setWizardOpen(false);
+  };
 
   // Persistence
   useEffect(() => { saveTasks(tasks); }, [tasks]);
