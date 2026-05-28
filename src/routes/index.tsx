@@ -722,6 +722,7 @@ function Index() {
   // before a drop, not solved on-demand at checkout time.
   const solveFn = useServerFn(solveCaptcha);
   const detectFn = useServerFn(detectCaptcha);
+  const checkoutFn = useServerFn(runCheckout);
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
