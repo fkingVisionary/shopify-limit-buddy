@@ -581,14 +581,20 @@ function Index() {
     saveProfiles(profiles, next);
   };
 
-  // ─── Proxy helpers ───
-  const saveProxies = (text: string) => {
-    setProxiesText(text);
-    const list = text.split("\n").map((s) => s.trim()).filter(Boolean);
-    setProxyList(list);
-    try { localStorage.setItem(PROXIES_KEY, text); } catch {}
+  // ─── Proxy group helpers ───
+  const persistGroups = (next: ProxyGroup[]) => {
+    setProxyGroups(next);
+    setProxyGroupsRuntime(next);
+    saveProxyGroupsLS(next);
   };
-  const proxyLines = proxiesText.split("\n").map((s) => s.trim()).filter(Boolean);
+  const addProxyGroup = () => {
+    const n = proxyGroups.length + 1;
+    persistGroups([...proxyGroups, { id: makeId(), name: `Group ${n}`, proxies: [] }]);
+  };
+  const updateProxyGroup = (id: string, patch: Partial<ProxyGroup>) =>
+    persistGroups(proxyGroups.map((g) => (g.id === id ? { ...g, ...patch } : g)));
+  const deleteProxyGroup = (id: string) => persistGroups(proxyGroups.filter((g) => g.id !== id));
+  const totalProxies = proxyGroups.reduce((n, g) => n + g.proxies.length, 0);
 
   // ─── Audio + notify ───
   const beep = () => {
