@@ -653,13 +653,6 @@ function Index() {
             </div>
           </section>
         )}
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          </section>
-        )}
 
         {products.length === 0 && !loading && !error && (
           <div className="mt-10 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
