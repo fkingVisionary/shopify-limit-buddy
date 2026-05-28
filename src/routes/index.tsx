@@ -425,6 +425,82 @@ function saveTasks(tasks: Task[]) {
   } catch {}
 }
 
+// ─────────────── Proxy group persistence ───────────────
+function loadProxyGroups(): ProxyGroup[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PROXY_GROUPS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ProxyGroup[];
+      if (Array.isArray(parsed)) return parsed;
+    }
+    // Migrate legacy flat list → single "Default" group
+    const legacy = localStorage.getItem(PROXIES_KEY) ?? "";
+    const list = legacy.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (list.length > 0) {
+      return [{ id: "default", name: "Default", proxies: list }];
+    }
+  } catch {}
+  return [];
+}
+function saveProxyGroupsLS(groups: ProxyGroup[]) {
+  try { localStorage.setItem(PROXY_GROUPS_KEY, JSON.stringify(groups)); } catch {}
+}
+
+// ─────────────── Address + name jigging ───────────────
+const STREET_SWAPS: Array<[RegExp, string]> = [
+  [/\bStreet\b/gi, "St"],
+  [/\bSt\.?\b/gi, "Street"],
+  [/\bRoad\b/gi, "Rd"],
+  [/\bRd\.?\b/gi, "Road"],
+  [/\bAvenue\b/gi, "Ave"],
+  [/\bAve\.?\b/gi, "Avenue"],
+  [/\bDrive\b/gi, "Dr"],
+  [/\bDr\.?\b/gi, "Drive"],
+  [/\bLane\b/gi, "Ln"],
+  [/\bLn\.?\b/gi, "Lane"],
+  [/\bBoulevard\b/gi, "Blvd"],
+  [/\bBlvd\.?\b/gi, "Boulevard"],
+  [/\bCourt\b/gi, "Ct"],
+  [/\bCt\.?\b/gi, "Court"],
+  [/\bHighway\b/gi, "Hwy"],
+  [/\bHwy\.?\b/gi, "Highway"],
+];
+// Pick a single street-suffix swap (first match wins) for safety
+function jigAddress(addr: string, seed: number): string {
+  if (!addr) return addr;
+  const variants: string[] = [];
+  for (const [re, rep] of STREET_SWAPS) {
+    if (re.test(addr)) {
+      variants.push(addr.replace(re, rep));
+      re.lastIndex = 0;
+    }
+    re.lastIndex = 0;
+  }
+  // Punctuation tweaks (also non-breaking for shipping)
+  variants.push(addr.includes(",") ? addr.replace(",", "") : addr.replace(/(\s\w+)$/, ",$1"));
+  // Extra non-breaking spaces normalisation flip
+  variants.push(addr.replace(/\s+/g, "  ").replace(/\s{2,}/g, " "));
+  if (variants.length === 0) return addr;
+  return variants[seed % variants.length];
+}
+const MIDDLE_INITIALS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "P", "R", "S", "T"];
+function jigName(first: string, last: string, seed: number): { first: string; last: string } {
+  const pick = seed % 3;
+  if (pick === 0 && first) {
+    // Add a middle initial onto first name
+    const mi = MIDDLE_INITIALS[seed % MIDDLE_INITIALS.length];
+    return { first: `${first} ${mi}`, last };
+  }
+  if (pick === 1 && first) {
+    // Hyphenate first letter casing change ("john" -> "John" already from input; flip one inner letter)
+    return { first: first.charAt(0).toUpperCase() + first.slice(1), last: last.toUpperCase().charAt(0) + last.slice(1).toLowerCase() };
+  }
+  // Insert a middle initial between first and last as separate token
+  const mi = MIDDLE_INITIALS[(seed + 7) % MIDDLE_INITIALS.length];
+  return { first: `${first} ${mi}.`, last };
+}
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
