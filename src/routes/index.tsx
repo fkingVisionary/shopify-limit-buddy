@@ -2272,7 +2272,7 @@ function SettingsView({
         </p>
       </Card>
 
-      <LocalRunnerCard />
+      <LocalRunnerCard runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred} />
 
 
 
