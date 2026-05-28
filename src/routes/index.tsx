@@ -967,6 +967,7 @@ function Index() {
             onResetTips={resetTips}
           />
         )}
+        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} />}
         {tab === "help" && <HelpView />}
       </main>
 
