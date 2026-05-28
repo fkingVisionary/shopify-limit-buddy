@@ -12,8 +12,9 @@ function isAllowed(target: URL): boolean {
   // /collections/* and /search/suggest.json on any host.
   const p = target.pathname;
   if (p === "/products.json") return true;
-  if (/^\/products\/[a-z0-9-]+(\.json)?$/i.test(p)) return true;
+  if (/^\/products\/[a-z0-9-]+(\.json|\.js)?$/i.test(p)) return true;
   if (/^\/collections\/[a-z0-9-]+(\/products\.json)?$/i.test(p)) return true;
+  if (/^\/variants\/\d+\.js$/i.test(p)) return true;
   if (p === "/search/suggest.json") return true;
   return false;
 }
