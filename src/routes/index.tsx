@@ -1189,6 +1189,7 @@ function Index() {
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
             browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
             browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
+            runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
             onShowWizard={() => setWizardOpen(true)}
             onResetTips={resetTips}
           />
@@ -2214,6 +2215,7 @@ function StoresView({
 function SettingsView({
   pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
+  runnerPreferred, setRunnerPreferred,
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
@@ -2221,6 +2223,7 @@ function SettingsView({
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
   browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
+  runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
