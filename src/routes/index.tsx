@@ -54,8 +54,25 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
+const PROXIES_KEY = "shopify-limit-checker:proxies";
+
+// In-memory proxy list (mirrored to localStorage). A "proxy" is a URL template
+// that contains "{url}" — the request URL is substituted in. Empty/missing
+// means use the same-origin /api/public/shopify route.
+let __proxyList: string[] = [];
+let __proxyIdx = 0;
+function setProxyList(list: string[]) {
+  __proxyList = list.filter((s) => s.includes("{url}"));
+  __proxyIdx = 0;
+}
+
 function proxied(targetUrl: string): string {
-  return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  if (__proxyList.length === 0) {
+    return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  }
+  const tmpl = __proxyList[__proxyIdx % __proxyList.length];
+  __proxyIdx = (__proxyIdx + 1) % __proxyList.length;
+  return tmpl.replace("{url}", encodeURIComponent(targetUrl));
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
