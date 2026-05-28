@@ -1674,7 +1674,7 @@ function ProfileBuilderDialog({
           </div>
         </div>
 
-        <DialogFooter className="flex-row gap-2 sm:justify-end">
+        <DialogFooter className="shrink-0 flex-row gap-2 border-t bg-background px-6 py-3 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off" && phoneMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
