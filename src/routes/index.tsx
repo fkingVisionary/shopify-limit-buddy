@@ -1522,12 +1522,41 @@ function ProfileBuilderDialog({
           </div>
 
           <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
-            <label className="flex items-center gap-2">
-              <input type="checkbox" className="h-4 w-4" checked={jigAddr} onChange={(e) => setJigAddr(e.target.checked)} />
+            <div className="flex items-center gap-2 font-medium">
               <span>Address jigger</span>
-              <InfoDot text="Swaps street suffix forms ('St' ↔ 'Street'), tweaks punctuation/spacing. Non-breaking for shipping." />
-            </label>
-            <label className="flex items-center gap-2">
+              <InfoDot text="Pick the style of address variation. All options keep your street name, number digits and suburb/zip intact — parcels still deliver." />
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {([
+                { v: "mix",    label: "Mix",       hint: "Rotate through every safe style." },
+                { v: "suffix", label: "Suffix",    hint: "Only swap 'St' ↔ 'Street' style abbreviations + punctuation. Safest." },
+                { v: "unit",   label: "Fake unit", hint: "Prepend 'Unit 2/', '2/' or 'A/'. Don't use if you already live in a unit/complex." },
+                { v: "letter", label: "Num letter", hint: "Append a letter to the street number ('123B Main Street')." },
+                { v: "prefix", label: "XYZ prefix", hint: "Three random letters in front ('XYZ 123 Main Street'). Couriers ignore them." },
+                { v: "off",    label: "Off",       hint: "Don't touch the address." },
+              ] as const).map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  title={o.hint}
+                  onClick={() => setAddrMode(o.v)}
+                  className={`h-9 rounded-md border text-xs font-medium transition ${
+                    addrMode === o.v ? "border-primary bg-primary/15 text-primary" : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {addrMode === "mix"    && "Cycles through suffix swaps, fake units, number-letters and XYZ prefixes."}
+              {addrMode === "suffix" && "Safest: only swaps 'St' ↔ 'Street', 'Ave' ↔ 'Avenue' etc. Use if you live in a unit/complex."}
+              {addrMode === "unit"   && "Adds a fake unit like 'Unit 2/123 Main St'. Skip if you already live in a unit — the real one is needed."}
+              {addrMode === "letter" && "Adds a letter to the street number ('123B'). Good middle-ground when you can't use units."}
+              {addrMode === "prefix" && "Prepends three random letters ('XYZ 123 Main St'). Couriers ignore them, but the line still looks unique."}
+              {addrMode === "off"    && "Address stays exactly as on the base profile."}
+            </p>
+            <label className="flex items-center gap-2 pt-1">
               <input type="checkbox" className="h-4 w-4" checked={jigNames} onChange={(e) => setJigNames(e.target.checked)} />
               <span>Name shuffler</span>
               <InfoDot text="Adds a random middle initial or tweaks capitalisation. Email, phone and address stay intact." />
