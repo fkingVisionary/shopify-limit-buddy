@@ -205,18 +205,45 @@ type Prefill = {
   phone: string;
 };
 
-const PREFILL_KEY = "shopify-limit-checker:prefill";
+type Profile = Prefill & { id: string; name: string };
+
+const PREFILL_KEY = "shopify-limit-checker:prefill"; // legacy single-profile
+const PROFILES_KEY = "shopify-limit-checker:profiles";
+const ACTIVE_KEY = "shopify-limit-checker:active-profiles";
+
 const emptyPrefill: Prefill = {
   email: "", first_name: "", last_name: "", address1: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
 };
 
-function loadPrefill(): Prefill {
-  if (typeof window === "undefined") return emptyPrefill;
+const makeId = () => Math.random().toString(36).slice(2, 10);
+
+function loadProfiles(): { profiles: Profile[]; activeIds: string[] } {
+  if (typeof window === "undefined") return { profiles: [], activeIds: [] };
   try {
-    const raw = localStorage.getItem(PREFILL_KEY);
-    return raw ? { ...emptyPrefill, ...JSON.parse(raw) } : emptyPrefill;
-  } catch { return emptyPrefill; }
+    const raw = localStorage.getItem(PROFILES_KEY);
+    if (raw) {
+      const profiles = JSON.parse(raw) as Profile[];
+      const activeRaw = localStorage.getItem(ACTIVE_KEY);
+      const activeIds = activeRaw ? (JSON.parse(activeRaw) as string[]) : profiles.map((p) => p.id);
+      return { profiles, activeIds };
+    }
+    // Migrate legacy single prefill
+    const legacy = localStorage.getItem(PREFILL_KEY);
+    if (legacy) {
+      const data = { ...emptyPrefill, ...JSON.parse(legacy) } as Prefill;
+      const p: Profile = { id: makeId(), name: "Default", ...data };
+      return { profiles: [p], activeIds: [p.id] };
+    }
+  } catch {}
+  return { profiles: [], activeIds: [] };
+}
+
+function saveProfiles(profiles: Profile[], activeIds: string[]) {
+  try {
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeIds));
+  } catch {}
 }
 
 function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: Prefill): string {
