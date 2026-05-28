@@ -187,45 +187,43 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       return fail(lastStep, (e as Error).message);
     }
 
-    // ── 2. POST /cart → 302 to /checkouts/cn/{token} ──────────────────────
+    // ── 2. POST /cart → 302 to /checkouts/cn/{token}, capture HTML ───────
     let checkoutUrl: string | null = null;
+    let html = "";
     try {
       lastStep = "cart_redirect";
       const s = Date.now();
       const res = await fetch(`${base}/cart`, {
         method: "POST",
-        headers: { ...baseHeaders, cookie: cookieHeader(jar), "content-type": "application/x-www-form-urlencoded" },
+        headers: {
+          ...baseHeaders,
+          cookie: cookieHeader(jar),
+          "content-type": "application/x-www-form-urlencoded",
+          accept: "text/html,application/xhtml+xml",
+        },
         body: new URLSearchParams({ checkout: "Check out", updates: String(data.qty) }).toString(),
         redirect: "follow",
       });
       collectCookies(res, jar);
       checkoutUrl = res.url;
       const landed = /\/checkouts?\//i.test(checkoutUrl);
-      record("cart_redirect", landed, res.status, Date.now() - s, checkoutUrl);
+      // Capture HTML from the same response — the _r queue token is single-use,
+      // re-GETting the URL invalidates the session.
+      html = await res.text();
+      record("cart_redirect", landed, res.status, Date.now() - s, `${checkoutUrl} (${html.length}b)`);
       if (!landed) return fail("cart_redirect", `bad redirect: ${res.status} ${checkoutUrl}`);
     } catch (e) {
       return fail(lastStep, (e as Error).message);
     }
 
-    // ── 3. GET checkout page ──────────────────────────────────────────────
-    let html = "";
-    try {
-      lastStep = "checkout_page";
+    // ── 3. checkout_page (already loaded above, just sanity-check) ────────
+    {
       const s = Date.now();
-      const res = await fetch(checkoutUrl, {
-        headers: {
-          ...baseHeaders,
-          cookie: cookieHeader(jar),
-          accept: "text/html,application/xhtml+xml",
-        },
-      });
-      collectCookies(res, jar);
-      html = await res.text();
-      record("checkout_page", res.ok, res.status, Date.now() - s, `${html.length} bytes`);
-      if (!res.ok) return fail("checkout_page", `HTTP ${res.status}`);
-    } catch (e) {
-      return fail(lastStep, (e as Error).message);
+      const looksLikeCheckout = /checkout-web|serialized-session-token|shopify-checkout/i.test(html);
+      record("checkout_page", looksLikeCheckout, null, Date.now() - s, looksLikeCheckout ? "OK" : html.slice(0, 200));
+      if (!looksLikeCheckout) return fail("checkout_page", "response is not a checkout page");
     }
+
 
     // ── 4. Scrape Checkout One tokens ─────────────────────────────────────
     // Checkout One embeds its bootstrap as several <script> JSON blobs:
