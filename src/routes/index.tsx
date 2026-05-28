@@ -693,6 +693,8 @@ function Index() {
   // Browserless full-browser checkout
   const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
   const [browserlessDryRun, setBrowserlessDryRun] = useState(true);
+  // Prefer local runner over Browserless when one is paired & online.
+  const [runnerPreferred, setRunnerPreferred] = useState(true);
   useEffect(() => {
     try {
       const raw = localStorage.getItem("aio:browserless");
@@ -700,12 +702,13 @@ function Index() {
         const j = JSON.parse(raw);
         if (typeof j.enabled === "boolean") setBrowserlessEnabled(j.enabled);
         if (typeof j.dryRun === "boolean") setBrowserlessDryRun(j.dryRun);
+        if (typeof j.runnerPreferred === "boolean") setRunnerPreferred(j.runnerPreferred);
       }
     } catch {}
   }, []);
   useEffect(() => {
-    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun })); } catch {}
-  }, [browserlessEnabled, browserlessDryRun]);
+    try { localStorage.setItem("aio:browserless", JSON.stringify({ enabled: browserlessEnabled, dryRun: browserlessDryRun, runnerPreferred })); } catch {}
+  }, [browserlessEnabled, browserlessDryRun, runnerPreferred]);
 
 
   // ─── Tasks ───
