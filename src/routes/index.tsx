@@ -1531,7 +1531,7 @@ function ProfileBuilderDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-3">
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             Each variant gets small, safe permutations so checkouts look distinct. Check the Help tab for a full jiggling guide with examples.
           </p>
