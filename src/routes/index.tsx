@@ -195,9 +195,13 @@ function Index() {
     setStoreUrl(normalized);
     setLoading(true);
     try {
-      const list = await fetchProducts(normalized, (n) => setProgress(n));
-      setProducts(list);
-      if (list.length === 0) setError("No products found. The store may be private or empty.");
+      const result = await fetchProducts(normalized, (n) => setProgress(n));
+      setProducts(result.products);
+      if (result.products.length === 0) {
+        setError("No products found. The store may be private or empty.");
+      } else if (result.partial && result.note) {
+        setError(result.note);
+      }
     } catch (err: any) {
       setError(err.message ?? "Failed to fetch products.");
     } finally {
