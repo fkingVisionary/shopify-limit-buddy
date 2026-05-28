@@ -2632,6 +2632,91 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
         </div>
       </Card>
 
+      {/* Pre-harvest pool for the currently selected store */}
+      {currentStore && (() => {
+        const cfg = poolApi.config[currentStore.id] ?? { desired: 0, proxyGroupId: "__direct" };
+        const fresh = freshOf(poolApi.pool[currentStore.id]);
+        const isHarvesting = poolApi.harvesting.has(currentStore.id);
+        const poolErr = poolApi.errors[currentStore.id];
+        return (
+          <Card className="p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">Pool · {currentStore.name}</span>
+              <Badge variant={fresh.length >= cfg.desired && cfg.desired > 0 ? "default" : "outline"} className="text-[10px]">
+                {fresh.length}/{cfg.desired} ready{isHarvesting ? " · solving…" : ""}
+              </Badge>
+            </div>
+
+            <div className="space-y-2.5">
+              <div>
+                <Label className="text-xs">
+                  Desired pool size · <span className="font-mono">{cfg.desired}</span>
+                </Label>
+                <Slider
+                  value={[cfg.desired]} min={0} max={5} step={1}
+                  onValueChange={([v]) => poolApi.setStoreConfig(currentStore.id, { desired: v })}
+                  className="mt-2"
+                />
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  0 = off. Higher = more tokens ready at drop time, more 2Captcha cost (~$0.002 each, refilled every ~110s).
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs">Pool proxy source</Label>
+                <Select
+                  value={cfg.proxyGroupId}
+                  onValueChange={(v) => poolApi.setStoreConfig(currentStore.id, { proxyGroupId: v })}
+                >
+                  <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__direct">Direct — no proxy</SelectItem>
+                    {proxyGroups.map((g) => (
+                      <SelectItem key={g.id} value={g.id} disabled={(rawCounts[g.id] ?? 0) === 0}>
+                        {g.name} ({rawCounts[g.id] ?? 0} raw)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  Each refill rotates to the next raw proxy in the group — when checkout submits, it pulls the matching token by proxy.
+                </div>
+              </div>
+
+              {poolErr && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[10px] text-destructive">
+                  {poolErr}
+                </div>
+              )}
+
+              {fresh.length > 0 && (
+                <div className="space-y-1.5">
+                  {fresh.map((t) => {
+                    const remaining = Math.max(0, Math.ceil((t.expiresAt - Date.now()) / 1000));
+                    return (
+                      <div key={t.id} className="flex items-center justify-between gap-2 rounded-md border bg-card p-2">
+                        <div className="min-w-0 text-[10px] leading-tight">
+                          <div className="font-medium">{t.type} · {remaining}s left</div>
+                          <div className="truncate font-mono text-muted-foreground">{t.proxy || "direct"}</div>
+                        </div>
+                        <Button
+                          size="sm" variant="ghost" className="h-7 shrink-0 text-[10px]"
+                          onClick={() => { const tk = poolApi.takeToken(currentStore.id); if (tk) copy(tk.token); }}
+                        >
+                          <Copy className="h-3 w-3" /> Take
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
+
+
 
       {tokens.length > 0 && (
         <Card className="p-3">
