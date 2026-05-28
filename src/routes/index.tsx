@@ -205,18 +205,45 @@ type Prefill = {
   phone: string;
 };
 
-const PREFILL_KEY = "shopify-limit-checker:prefill";
+type Profile = Prefill & { id: string; name: string };
+
+const PREFILL_KEY = "shopify-limit-checker:prefill"; // legacy single-profile
+const PROFILES_KEY = "shopify-limit-checker:profiles";
+const ACTIVE_KEY = "shopify-limit-checker:active-profiles";
+
 const emptyPrefill: Prefill = {
   email: "", first_name: "", last_name: "", address1: "",
   city: "", province: "", zip: "", country: "Australia", phone: "",
 };
 
-function loadPrefill(): Prefill {
-  if (typeof window === "undefined") return emptyPrefill;
+const makeId = () => Math.random().toString(36).slice(2, 10);
+
+function loadProfiles(): { profiles: Profile[]; activeIds: string[] } {
+  if (typeof window === "undefined") return { profiles: [], activeIds: [] };
   try {
-    const raw = localStorage.getItem(PREFILL_KEY);
-    return raw ? { ...emptyPrefill, ...JSON.parse(raw) } : emptyPrefill;
-  } catch { return emptyPrefill; }
+    const raw = localStorage.getItem(PROFILES_KEY);
+    if (raw) {
+      const profiles = JSON.parse(raw) as Profile[];
+      const activeRaw = localStorage.getItem(ACTIVE_KEY);
+      const activeIds = activeRaw ? (JSON.parse(activeRaw) as string[]) : profiles.map((p) => p.id);
+      return { profiles, activeIds };
+    }
+    // Migrate legacy single prefill
+    const legacy = localStorage.getItem(PREFILL_KEY);
+    if (legacy) {
+      const data = { ...emptyPrefill, ...JSON.parse(legacy) } as Prefill;
+      const p: Profile = { id: makeId(), name: "Default", ...data };
+      return { profiles: [p], activeIds: [p.id] };
+    }
+  } catch {}
+  return { profiles: [], activeIds: [] };
+}
+
+function saveProfiles(profiles: Profile[], activeIds: string[]) {
+  try {
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    localStorage.setItem(ACTIVE_KEY, JSON.stringify(activeIds));
+  } catch {}
 }
 
 function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: Prefill): string {
@@ -243,7 +270,8 @@ function Index() {
   const [products, setProducts] = useState<Product[]>([]);
   const [limits, setLimits] = useState<Record<number, LimitInfo>>({});
   const [query, setQuery] = useState("");
-  const [prefill, setPrefill] = useState<Prefill>(emptyPrefill);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [activeIds, setActiveIds] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   // Watcher state
   const [watched, setWatched] = useState<Set<number>>(new Set());
@@ -253,15 +281,40 @@ function Index() {
   const [notifyOn, setNotifyOn] = useState(true);
   const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
-  useEffect(() => { setPrefill(loadPrefill()); }, []);
+  useEffect(() => {
+    const { profiles, activeIds } = loadProfiles();
+    setProfiles(profiles);
+    setActiveIds(activeIds);
+  }, []);
 
-  const updatePrefill = (patch: Partial<Prefill>) => {
-    setPrefill((prev) => {
-      const next = { ...prev, ...patch };
-      try { localStorage.setItem(PREFILL_KEY, JSON.stringify(next)); } catch {}
-      return next;
-    });
+  const persistProfiles = (next: Profile[], nextActive?: string[]) => {
+    const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
+    setProfiles(next);
+    setActiveIds(active);
+    saveProfiles(next, active);
   };
+
+  const addProfile = () => {
+    const p: Profile = { id: makeId(), name: `Profile ${profiles.length + 1}`, ...emptyPrefill };
+    persistProfiles([...profiles, p], [...activeIds, p.id]);
+  };
+
+  const updateProfile = (id: string, patch: Partial<Profile>) => {
+    persistProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
+  const deleteProfile = (id: string) => {
+    persistProfiles(profiles.filter((p) => p.id !== id), activeIds.filter((x) => x !== id));
+  };
+
+  const toggleActive = (id: string) => {
+    const next = activeIds.includes(id) ? activeIds.filter((x) => x !== id) : [...activeIds, id];
+    setActiveIds(next);
+    saveProfiles(profiles, next);
+  };
+
+  const activeProfiles = profiles.filter((p) => activeIds.includes(p.id));
+
 
   // Audio beep using WebAudio (no asset needed)
   const beep = () => {
@@ -303,16 +356,36 @@ function Index() {
   };
 
 
+  // Open one tab per active profile, staggered to avoid popup blocking
+  const openForProfiles = (urlsByProfile: { profile: Profile; url: string }[]) => {
+    urlsByProfile.forEach(({ profile, url }, i) => {
+      setTimeout(() => {
+        const w = window.open(url, `_blank_${profile.id}`, "noopener,noreferrer");
+        if (!w && i > 0) {
+          console.warn(`Popup blocked for profile "${profile.name}". Allow popups for this site.`);
+        }
+      }, i * 250);
+    });
+  };
+
   const quickCheckout = (p: Product, opts?: { variantId?: number; qty?: number }) => {
     if (!storeUrl) return;
+    if (activeProfiles.length === 0) {
+      setError("No active profiles. Add at least one in Checkout info.");
+      return;
+    }
     const variant = opts?.variantId
       ? p.variants.find((v) => v.id === opts.variantId) ?? p.variants[0]
       : p.variants.find((v) => v.available) ?? p.variants[0];
     if (!variant) return;
     const info = limits[p.id];
     const qty = opts?.qty ?? (info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1);
-    const url = buildCheckoutUrl(storeUrl, variant.id, qty, prefill);
-    window.open(url, "_blank", "noopener,noreferrer");
+    openForProfiles(
+      activeProfiles.map((profile) => ({
+        profile,
+        url: buildCheckoutUrl(storeUrl, variant.id, qty, profile),
+      })),
+    );
   };
 
   // Polling loop for watched products
@@ -340,12 +413,16 @@ function Index() {
           }));
           if (isAvail && !triggeredRef.current.has(pid)) {
             triggeredRef.current.add(pid);
-            notifyDrop("IN STOCK", product.title);
-            if (autoOpen) {
+            notifyDrop("IN STOCK", `${product.title} — opening ${activeProfiles.length} tab(s)`);
+            if (autoOpen && activeProfiles.length > 0) {
               const info = limits[pid];
               const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
-              const url = buildCheckoutUrl(storeUrl, availVariant.id, qty, prefill);
-              window.open(url, "_blank", "noopener,noreferrer");
+              openForProfiles(
+                activeProfiles.map((profile) => ({
+                  profile,
+                  url: buildCheckoutUrl(storeUrl, availVariant.id, qty, profile),
+                })),
+              );
             }
           }
           if (!isAvail) triggeredRef.current.delete(pid);
@@ -358,7 +435,8 @@ function Index() {
     const id = setInterval(() => { if (!cancelled) tick(); }, Math.max(1500, pollMs));
     return () => { cancelled = true; clearInterval(id); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, prefill, limits]);
+  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, activeProfiles, limits]);
+
 
 
   const handleScan = async (e: React.FormEvent) => {
@@ -440,32 +518,72 @@ function Index() {
           </p>
           {showSettings && (
             <Card className="mt-4 p-4">
-              <div className="mb-2 text-sm font-medium">Pre-fill checkout info (saved locally)</div>
-              <p className="mb-3 text-xs text-muted-foreground">
-                Used to populate Shopify's checkout when you click Quick checkout. Nothing is sent anywhere until you submit on the store.
-              </p>
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {([
-                  ["email", "Email"],
-                  ["phone", "Phone"],
-                  ["first_name", "First name"],
-                  ["last_name", "Last name"],
-                  ["address1", "Address"],
-                  ["city", "City"],
-                  ["province", "State / Province"],
-                  ["zip", "Postcode"],
-                  ["country", "Country"],
-                ] as const).map(([k, label]) => (
-                  <div key={k}>
-                    <Label className="text-xs">{label}</Label>
-                    <Input
-                      value={prefill[k]}
-                      onChange={(e) => updatePrefill({ [k]: e.target.value } as Partial<Prefill>)}
-                      className="h-8"
-                    />
-                  </div>
-                ))}
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-sm font-medium">Checkout profiles ({activeProfiles.length}/{profiles.length} active)</div>
+                <Button size="sm" variant="outline" onClick={addProfile}>+ Add profile</Button>
               </div>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Each active profile opens its own prefilled checkout tab. Saved locally. Allow popups for this site if more than one tab is blocked.
+              </p>
+              {profiles.length === 0 && (
+                <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+                  No profiles yet. Click "+ Add profile" to create one.
+                </div>
+              )}
+              <div className="space-y-3">
+                {profiles.map((profile) => {
+                  const isActive = activeIds.includes(profile.id);
+                  return (
+                    <div key={profile.id} className={`rounded-md border p-3 ${isActive ? "" : "opacity-60"}`}>
+                      <div className="mb-2 flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={isActive}
+                          onChange={() => toggleActive(profile.id)}
+                          title="Active (opens checkout tab on Quick checkout / drop)"
+                        />
+                        <Input
+                          value={profile.name}
+                          onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
+                          className="h-8 max-w-[200px] font-medium"
+                          placeholder="Profile name"
+                        />
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="ml-auto text-destructive"
+                          onClick={() => deleteProfile(profile.id)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                        {([
+                          ["email", "Email"],
+                          ["phone", "Phone"],
+                          ["first_name", "First name"],
+                          ["last_name", "Last name"],
+                          ["address1", "Address"],
+                          ["city", "City"],
+                          ["province", "State / Province"],
+                          ["zip", "Postcode"],
+                          ["country", "Country"],
+                        ] as const).map(([k, label]) => (
+                          <div key={k}>
+                            <Label className="text-xs">{label}</Label>
+                            <Input
+                              value={profile[k]}
+                              onChange={(e) => updateProfile(profile.id, { [k]: e.target.value } as Partial<Profile>)}
+                              className="h-8"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
               <div className="mt-4 border-t pt-3">
                 <div className="mb-2 text-sm font-medium">Drop monitor</div>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -601,13 +719,14 @@ function Index() {
                             variant="default"
                             onClick={() => quickCheckout(p)}
                             title={
-                              info?.maxPerOrder
-                                ? `Add ${info.maxPerOrder} to cart and open checkout`
-                                : "Add 1 to cart and open checkout"
+                              activeProfiles.length === 0
+                                ? "Add an active profile first"
+                                : `Open ${activeProfiles.length} prefilled checkout tab(s)${info?.maxPerOrder ? ` with qty ${info.maxPerOrder}` : ""}`
                             }
+                            disabled={activeProfiles.length === 0}
                           >
                             <Zap className="h-3.5 w-3.5" />
-                            Quick checkout{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
+                            Quick checkout × {activeProfiles.length}{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
                           </Button>
                         </div>
                       </div>
