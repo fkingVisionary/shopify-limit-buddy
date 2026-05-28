@@ -719,13 +719,14 @@ function Index() {
                             variant="default"
                             onClick={() => quickCheckout(p)}
                             title={
-                              info?.maxPerOrder
-                                ? `Add ${info.maxPerOrder} to cart and open checkout`
-                                : "Add 1 to cart and open checkout"
+                              activeProfiles.length === 0
+                                ? "Add an active profile first"
+                                : `Open ${activeProfiles.length} prefilled checkout tab(s)${info?.maxPerOrder ? ` with qty ${info.maxPerOrder}` : ""}`
                             }
+                            disabled={activeProfiles.length === 0}
                           >
                             <Zap className="h-3.5 w-3.5" />
-                            Quick checkout{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
+                            Quick checkout × {activeProfiles.length}{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
                           </Button>
                         </div>
                       </div>
