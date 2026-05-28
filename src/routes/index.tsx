@@ -243,9 +243,29 @@ function Index() {
   const [products, setProducts] = useState<Product[]>([]);
   const [limits, setLimits] = useState<Record<number, LimitInfo>>({});
   const [query, setQuery] = useState("");
+  const [prefill, setPrefill] = useState<Prefill>(emptyPrefill);
+  const [showSettings, setShowSettings] = useState(false);
 
-  const handleScan = async (e: React.FormEvent) => {
-    e.preventDefault();
+  useEffect(() => { setPrefill(loadPrefill()); }, []);
+
+  const updatePrefill = (patch: Partial<Prefill>) => {
+    setPrefill((prev) => {
+      const next = { ...prev, ...patch };
+      try { localStorage.setItem(PREFILL_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
+  const quickCheckout = (p: Product) => {
+    if (!storeUrl) return;
+    const variant = p.variants.find((v) => v.available) ?? p.variants[0];
+    if (!variant) return;
+    const info = limits[p.id];
+    const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
+    const url = buildCheckoutUrl(storeUrl, variant.id, qty, prefill);
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+
     setError(null);
     setProducts([]);
     setLimits({});
