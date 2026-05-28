@@ -1621,7 +1621,7 @@ function ProfileBuilderDialog({
 
         <DialogFooter className="flex-row gap-2 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
+          <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
           </Button>
 
