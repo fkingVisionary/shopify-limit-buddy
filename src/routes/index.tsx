@@ -2152,6 +2152,30 @@ function SettingsView({
       </Card>
 
       <Card className="p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Full browser checkout (Browserless)
+          <InfoDot text="Instead of just opening a prefilled tab, drives a real headless browser through cart → shipping → payment → submit. Uses your captcha pool + raw proxy. Requires card fields on the profile." />
+        </div>
+        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+          When enabled, after stock is detected the bot drives a real Chrome instance on Browserless all the way through the Shopify checkout. Captcha tokens come from the pool, card data comes from the profile, proxy is the raw entry from the task's group.
+        </p>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={browserlessEnabled} onChange={(e) => setBrowserlessEnabled(e.target.checked)} />
+          Enable full-browser checkout
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm">
+          <input type="checkbox" className="h-4 w-4" checked={browserlessDryRun} onChange={(e) => setBrowserlessDryRun(e.target.checked)} disabled={!browserlessEnabled} />
+          Dry-run (stop BEFORE clicking "Pay now")
+          <InfoDot text="Walks through every step and screenshots the final review page without actually submitting. Use this to verify the flow before allowing real orders." />
+        </label>
+        <p className="mt-2 text-[10px] leading-relaxed text-amber-400/90">
+          Turn dry-run OFF only when you're ready to place real orders. Each non-dry checkout will charge the card on the assigned profile.
+        </p>
+      </Card>
+
+
+
+      <Card className="p-3">
         <div className="text-sm font-medium">Onboarding & tips</div>
         <p className="mt-1 text-[11px] text-muted-foreground">Replay the welcome tour or bring back dismissed tip bars.</p>
         <div className="mt-2 flex flex-wrap gap-2">
