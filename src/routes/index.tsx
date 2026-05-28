@@ -1470,6 +1470,7 @@ function ProfileBuilderDialog({
   const [jigNames, setJigNames] = useState(true);
   const [emailMode, setEmailMode] = useState<"dot" | "catchall" | "off">("dot");
   const [catchallDomain, setCatchallDomain] = useState("");
+  const [phoneMode, setPhoneMode] = useState<PhoneJigMode>("au_mobile");
 
   useEffect(() => {
     if (base) {
