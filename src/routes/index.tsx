@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings, Eye, EyeOff, Bell } from "lucide-react";
+import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings, Eye, EyeOff, Bell, Search, Users, Radar, Trash2, Plus, RefreshCw } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -53,8 +54,25 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
+const PROXIES_KEY = "shopify-limit-checker:proxies";
+
+// In-memory proxy list (mirrored to localStorage). A "proxy" is a URL template
+// that contains "{url}" — the request URL is substituted in. Empty/missing
+// means use the same-origin /api/public/shopify route.
+let __proxyList: string[] = [];
+let __proxyIdx = 0;
+function setProxyList(list: string[]) {
+  __proxyList = list.filter((s) => s.includes("{url}"));
+  __proxyIdx = 0;
+}
+
 function proxied(targetUrl: string): string {
-  return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  if (__proxyList.length === 0) {
+    return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  }
+  const tmpl = __proxyList[__proxyIdx % __proxyList.length];
+  __proxyIdx = (__proxyIdx + 1) % __proxyList.length;
+  return tmpl.replace("{url}", encodeURIComponent(targetUrl));
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -337,16 +355,20 @@ function Index() {
   const [pollMs, setPollMs] = useState(4000);
   const [autoOpen, setAutoOpen] = useState(false);
   const [notifyOn, setNotifyOn] = useState(true);
+  const [tab, setTab] = useState<"watch" | "browse" | "profiles" | "settings">("browse");
+  const [proxiesText, setProxiesText] = useState("");
   const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
   useEffect(() => {
     const { profiles, activeIds } = loadProfiles();
     setProfiles(profiles);
     setActiveIds(activeIds);
-    // Restore last store URL
     try {
       const savedUrl = localStorage.getItem(STORE_URL_KEY);
       if (savedUrl) setUrl(savedUrl);
+      const savedProxies = localStorage.getItem(PROXIES_KEY) ?? "";
+      setProxiesText(savedProxies);
+      setProxyList(savedProxies.split("\n").map((s) => s.trim()).filter(Boolean));
     } catch {}
     // Restore cached catalog
     const cached = loadCatalog();
@@ -621,327 +643,294 @@ function Index() {
     p.title.toLowerCase().includes(query.toLowerCase()),
   );
 
-  return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b">
-        <div className="mx-auto max-w-5xl px-4 py-6">
-          <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <ShoppingBag className="h-6 w-6" />
-              <h1 className="text-2xl font-semibold tracking-tight">Shopify Limit Checker</h1>
-            </div>
-            <Button variant="ghost" size="sm" onClick={() => setShowSettings((s) => !s)}>
-              <Settings className="h-4 w-4" />
-              Checkout info
-            </Button>
-          </div>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Enter any public Shopify store URL to inspect products and detect per-customer purchase quantity limits.
-          </p>
-          {showSettings && (
-            <Card className="mt-4 p-4">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-sm font-medium">Checkout profiles ({activeProfiles.length}/{profiles.length} active)</div>
-                <Button size="sm" variant="outline" onClick={addProfile}>+ Add profile</Button>
-              </div>
-              <p className="mb-3 text-xs text-muted-foreground">
-                Each active profile opens its own prefilled checkout tab. Saved locally. Allow popups for this site if more than one tab is blocked.
-              </p>
-              {profiles.length === 0 && (
-                <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
-                  No profiles yet. Click "+ Add profile" to create one.
-                </div>
-              )}
-              <div className="space-y-3">
-                {profiles.map((profile) => {
-                  const isActive = activeIds.includes(profile.id);
-                  return (
-                    <div key={profile.id} className={`rounded-md border p-3 ${isActive ? "" : "opacity-60"}`}>
-                      <div className="mb-2 flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={isActive}
-                          onChange={() => toggleActive(profile.id)}
-                          title="Active (opens checkout tab on Quick checkout / drop)"
-                        />
-                        <Input
-                          value={profile.name}
-                          onChange={(e) => updateProfile(profile.id, { name: e.target.value })}
-                          className="h-8 max-w-[200px] font-medium"
-                          placeholder="Profile name"
-                        />
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="ml-auto text-destructive"
-                          onClick={() => deleteProfile(profile.id)}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                        {([
-                          ["email", "Email"],
-                          ["phone", "Phone"],
-                          ["first_name", "First name"],
-                          ["last_name", "Last name"],
-                          ["address1", "Address"],
-                          ["city", "City"],
-                          ["province", "State / Province"],
-                          ["zip", "Postcode"],
-                          ["country", "Country"],
-                        ] as const).map(([k, label]) => (
-                          <div key={k}>
-                            <Label className="text-xs">{label}</Label>
-                            <Input
-                              value={profile[k]}
-                              onChange={(e) => updateProfile(profile.id, { [k]: e.target.value } as Partial<Profile>)}
-                              className="h-8"
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+  const watchedProducts = products.filter((p) => watched.has(p.id));
+  const proxyCount = __proxyList.length;
 
-              <div className="mt-4 border-t pt-3">
-                <div className="mb-2 text-sm font-medium">Drop monitor</div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-                  <div>
-                    <Label className="text-xs">Poll interval (ms)</Label>
-                    <Input
-                      type="number"
-                      min={1500}
-                      step={500}
-                      value={pollMs}
-                      onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))}
-                      className="h-8"
-                    />
-                  </div>
-                  <label className="flex items-center gap-2 text-xs mt-5">
-                    <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
-                    Auto-open checkout on drop
-                  </label>
-                  <label className="flex items-center gap-2 text-xs mt-5">
-                    <input type="checkbox" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
-                    Sound + browser notification
-                  </label>
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Watching {watched.size} product{watched.size === 1 ? "" : "s"}. Keep this tab open. Browsers throttle background tabs — pin it.
-                </p>
-              </div>
-            </Card>
+  const saveProxies = (text: string) => {
+    setProxiesText(text);
+    const list = text.split("\n").map((s) => s.trim()).filter(Boolean);
+    setProxyList(list);
+    try { localStorage.setItem(PROXIES_KEY, text); } catch {}
+  };
+
+  const tabLabel = { watch: "Watch", browse: "Browse", profiles: "Profiles", settings: "Settings" }[tab];
+
+  const ProductCard = ({ p }: { p: Product }) => {
+    const info = limits[p.id];
+    const w = watchStatus[p.id];
+    const isWatched = watched.has(p.id);
+    return (
+      <Card className="p-3">
+        <div className="flex gap-3">
+          <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md bg-muted">
+            {p.image ? <img src={p.image} alt={p.title} className="h-full w-full object-cover" loading="lazy" /> : null}
+          </div>
+          <div className="min-w-0 flex-1">
+            <a href={`${storeUrl}/products/${p.handle}`} target="_blank" rel="noreferrer" className="block truncate text-sm font-medium hover:underline">
+              {p.title}
+            </a>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">{p.variants.length} variant{p.variants.length === 1 ? "" : "s"}</div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              {info?.status === "done" && info.maxPerOrder != null && (
+                <Badge variant="default" className="gap-1 text-[10px]"><CheckCircle2 className="h-3 w-3" />Limit {info.maxPerOrder}</Badge>
+              )}
+              {info?.status === "done" && info.maxPerOrder == null && (
+                <Badge variant="secondary" className="text-[10px]">No limit detected</Badge>
+              )}
+              {info?.status === "error" && <span className="text-[10px] text-destructive">{info.error}</span>}
+              {isWatched && (
+                w?.error ? <Badge variant="destructive" className="text-[10px]">{w.error}</Badge>
+                : w?.available ? <Badge className="bg-green-600 text-white gap-1 text-[10px]"><Bell className="h-3 w-3" />IN STOCK</Badge>
+                : w ? <Badge variant="outline" className="gap-1 text-[10px]"><Bell className="h-3 w-3" />{Math.max(0, Math.round((Date.now() - w.lastChecked) / 1000))}s ago</Badge>
+                : <Badge variant="outline" className="gap-1 text-[10px]"><Bell className="h-3 w-3 animate-pulse" />Polling</Badge>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="mt-2 grid grid-cols-3 gap-1.5">
+          <Button size="sm" variant="outline" onClick={() => checkLimit(p)} disabled={info?.status === "loading"} className="h-8 text-xs">
+            {info?.status === "loading" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Limit"}
+          </Button>
+          <Button size="sm" variant={isWatched ? "default" : "secondary"} onClick={() => toggleWatch(p)} className="h-8 text-xs">
+            {isWatched ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+            {isWatched ? "Stop" : "Watch"}
+          </Button>
+          <Button size="sm" onClick={() => quickCheckout(p)} disabled={activeProfiles.length === 0} className="h-8 text-xs">
+            <Zap className="h-3.5 w-3.5" />×{activeProfiles.length}
+          </Button>
+        </div>
+      </Card>
+    );
+  };
+
+  return (
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
+        <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <ShoppingBag className="h-5 w-5" />
+            <div>
+              <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
+              <p className="text-[10px] leading-tight text-muted-foreground">
+                {activeProfiles.length} profile{activeProfiles.length === 1 ? "" : "s"} · {proxyCount > 0 ? `${proxyCount} prox` : "direct"} · {watched.size} watch
+              </p>
+            </div>
+          </div>
+          {tab === "browse" && storeUrl && (
+            <div className="truncate text-[10px] text-muted-foreground">{storeUrl.replace(/^https?:\/\//, "")}</div>
           )}
         </div>
+        {error && (
+          <div className="mx-auto flex max-w-3xl items-start gap-2 border-t border-destructive/30 bg-destructive/10 px-4 py-2 text-xs text-destructive">
+            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span className="flex-1">{error}</span>
+            <button onClick={() => setError(null)} className="text-destructive/70 hover:text-destructive">✕</button>
+          </div>
+        )}
       </header>
 
-      <main className="mx-auto max-w-5xl px-4 py-6">
-        <form onSubmit={handleScan} className="flex flex-col gap-3 sm:flex-row">
-          <Input
-            type="text"
-            placeholder="Store URL (e.g. https://www.jbhifi.com.au)"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            className="flex-1"
-            inputMode="url"
-            autoCapitalize="none"
-            autoCorrect="off"
-          />
-          <Button type="submit" disabled={loading} variant="secondary">
-            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {loading ? "Scanning..." : "Scan full catalog"}
-          </Button>
-        </form>
-
-        <form onSubmit={handleQuickAdd} className="mt-3 flex flex-col gap-3 sm:flex-row">
-          <Input
-            type="text"
-            placeholder="Paste product URL or search keywords (e.g. 'PS5 Pro')"
-            value={quickAdd}
-            onChange={(e) => setQuickAdd(e.target.value)}
-            className="flex-1"
-            autoCapitalize="none"
-            autoCorrect="off"
-          />
-          <Button type="submit" disabled={quickBusy}>
-            {quickBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            {quickBusy ? "Adding..." : "Quick add"}
-          </Button>
-        </form>
-
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-          {cacheAge && products.length > 0 && (
-            <span>
-              Cached {products.length} products · {Math.round((Date.now() - cacheAge) / 60000)} min ago
-            </span>
-          )}
-          {products.length > 0 && (
-            <button
-              type="button"
-              className="underline hover:text-foreground"
-              onClick={() => {
-                try { localStorage.removeItem(CATALOG_KEY); } catch {}
-                setProducts([]); setLimits({}); setCacheAge(null);
-              }}
-            >
-              Clear cache
-            </button>
-          )}
-        </div>
-
-        {loading && (
-          <div className="mt-4 text-sm text-muted-foreground">
-            Loading products... <span className="font-medium text-foreground">{progress}</span> fetched so far
-          </div>
-        )}
-
-
-        {error && (
-          <div className="mt-4 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {products.length > 0 && (
-          <section className="mt-6">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-sm text-muted-foreground">
-                Found <span className="font-medium text-foreground">{products.length}</span> products on{" "}
-                <span className="font-medium text-foreground">{storeUrl}</span>
+      <main className="mx-auto w-full max-w-3xl flex-1 px-4 pb-24 pt-4">
+        {tab === "watch" && (
+          <div className="space-y-3">
+            <Card className="p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium">Monitor</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Polling every {(pollMs / 1000).toFixed(1)}s · {proxyCount > 0 ? `rotating ${proxyCount} prox` : "direct"} · auto-open {autoOpen ? "on" : "off"}
+                  </div>
+                </div>
+                <Radar className={`h-5 w-5 ${watched.size > 0 ? "text-green-600 animate-pulse" : "text-muted-foreground"}`} />
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  placeholder="Filter products..."
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  className="sm:w-56"
-                />
-                <Button variant="secondary" onClick={checkAll}>
-                  Check all limits
+            </Card>
+            {watchedProducts.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+                No products being watched. Add some from the <button className="underline" onClick={() => setTab("browse")}>Browse</button> tab.
+              </div>
+            ) : (
+              watchedProducts.map((p) => <ProductCard key={p.id} p={p} />)
+            )}
+          </div>
+        )}
+
+        {tab === "browse" && (
+          <div className="space-y-3">
+            <form onSubmit={handleQuickAdd} className="flex gap-2">
+              <Input
+                type="text"
+                placeholder="Paste product URL or search keywords"
+                value={quickAdd}
+                onChange={(e) => setQuickAdd(e.target.value)}
+                className="flex-1"
+                autoCapitalize="none"
+                autoCorrect="off"
+              />
+              <Button type="submit" disabled={quickBusy} size="icon">
+                {quickBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              </Button>
+            </form>
+
+            {products.length > 0 && (
+              <div className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                <Input placeholder="Filter products..." value={query} onChange={(e) => setQuery(e.target.value)} className="h-9 flex-1" />
+              </div>
+            )}
+
+            {loading && (
+              <div className="text-xs text-muted-foreground">Loading... <span className="font-medium text-foreground">{progress}</span> fetched</div>
+            )}
+
+            <div className="space-y-2">
+              {filtered.map((p) => <ProductCard key={p.id} p={p} />)}
+            </div>
+
+            {products.length === 0 && !loading && (
+              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+                <p>Paste a product URL above, or scan a full catalog from Settings.</p>
+              </div>
+            )}
+
+            {products.length > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 text-[11px] text-muted-foreground">
+                <span>{products.length} cached{cacheAge ? ` · ${Math.round((Date.now() - cacheAge) / 60000)}m ago` : ""}</span>
+                <div className="flex gap-3">
+                  <button className="underline" onClick={checkAll}>Check all limits</button>
+                  <button className="underline" onClick={() => { try { localStorage.removeItem(CATALOG_KEY); } catch {} setProducts([]); setLimits({}); setCacheAge(null); }}>Clear cache</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {tab === "profiles" && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm text-muted-foreground">{activeProfiles.length}/{profiles.length} active</div>
+              <Button size="sm" onClick={addProfile}><Plus className="h-3.5 w-3.5" />Add profile</Button>
+            </div>
+            {profiles.length === 0 && (
+              <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
+                No profiles yet. Each active profile opens its own prefilled checkout tab.
+              </div>
+            )}
+            {profiles.map((profile) => {
+              const isActive = activeIds.includes(profile.id);
+              return (
+                <Card key={profile.id} className={`p-3 ${isActive ? "" : "opacity-60"}`}>
+                  <div className="mb-2 flex items-center gap-2">
+                    <input type="checkbox" checked={isActive} onChange={() => toggleActive(profile.id)} className="h-4 w-4" />
+                    <Input value={profile.name} onChange={(e) => updateProfile(profile.id, { name: e.target.value })} className="h-8 flex-1 font-medium" placeholder="Profile name" />
+                    <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => deleteProfile(profile.id)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {([
+                      ["email", "Email"], ["phone", "Phone"],
+                      ["first_name", "First name"], ["last_name", "Last name"],
+                      ["address1", "Address"], ["city", "City"],
+                      ["province", "State"], ["zip", "Postcode"],
+                      ["country", "Country"],
+                    ] as const).map(([k, label]) => (
+                      <div key={k} className={k === "address1" ? "col-span-2" : ""}>
+                        <Label className="text-[10px] text-muted-foreground">{label}</Label>
+                        <Input value={profile[k]} onChange={(e) => updateProfile(profile.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === "settings" && (
+          <div className="space-y-4">
+            <Card className="p-3">
+              <Label className="text-xs font-medium">Store URL</Label>
+              <form onSubmit={handleScan} className="mt-2 flex gap-2">
+                <Input value={url} onChange={(e) => setUrl(e.target.value)} className="flex-1" inputMode="url" autoCapitalize="none" autoCorrect="off" placeholder="https://www.jbhifi.com.au" />
+                <Button type="submit" disabled={loading} variant="secondary" size="sm">
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  Scan
                 </Button>
+              </form>
+              <p className="mt-1.5 text-[10px] text-muted-foreground">Scan downloads the full public catalog (cached 12h).</p>
+            </Card>
+
+            <Card className="p-3">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-medium">Proxy rotation</Label>
+                <Badge variant={proxyCount > 0 ? "default" : "outline"} className="text-[10px]">{proxyCount > 0 ? `${proxyCount} active` : "Direct"}</Badge>
               </div>
-            </div>
+              <Textarea
+                value={proxiesText}
+                onChange={(e) => saveProxies(e.target.value)}
+                className="mt-2 min-h-[100px] font-mono text-[11px]"
+                placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}\nhttps://proxy2.example.com/get?target={url}"}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+              />
+              <p className="mt-1.5 text-[10px] text-muted-foreground">
+                Each request rotates round-robin. Use <code className="font-mono">{`{url}`}</code> as the placeholder for the encoded target URL. Leave blank to fetch through the built-in server proxy.
+              </p>
+            </Card>
 
-            <div className="mt-4 grid grid-cols-1 gap-3">
-              {filtered.map((p) => {
-                const info = limits[p.id];
-                return (
-                  <Card key={p.id} className="flex gap-3 p-3">
-                    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-md bg-muted">
-                      {p.image ? (
-                        <img
-                          src={p.image}
-                          alt={p.title}
-                          className="h-full w-full object-cover"
-                          loading="lazy"
-                        />
-                      ) : null}
-                    </div>
-                    <div className="flex min-w-0 flex-1 flex-col">
-                      <div className="flex items-start justify-between gap-2">
-                        <a
-                          href={`${storeUrl}/products/${p.handle}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="truncate font-medium hover:underline"
-                        >
-                          {p.title}
-                        </a>
-                        <div className="flex shrink-0 flex-wrap gap-1.5">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => checkLimit(p)}
-                            disabled={info?.status === "loading"}
-                          >
-                            {info?.status === "loading" ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              "Check limit"
-                            )}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant={watched.has(p.id) ? "default" : "secondary"}
-                            onClick={() => toggleWatch(p)}
-                            title={watched.has(p.id) ? "Stop watching" : "Watch for restock"}
-                          >
-                            {watched.has(p.id) ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                            {watched.has(p.id) ? "Watching" : "Watch"}
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="default"
-                            onClick={() => quickCheckout(p)}
-                            title={
-                              activeProfiles.length === 0
-                                ? "Add an active profile first"
-                                : `Open ${activeProfiles.length} prefilled checkout tab(s)${info?.maxPerOrder ? ` with qty ${info.maxPerOrder}` : ""}`
-                            }
-                            disabled={activeProfiles.length === 0}
-                          >
-                            <Zap className="h-3.5 w-3.5" />
-                            Quick checkout × {activeProfiles.length}{info?.maxPerOrder ? ` (${info.maxPerOrder})` : ""}
-                          </Button>
-                        </div>
-                      </div>
-                      <div className="mt-1 text-xs text-muted-foreground">
-                        {p.variants.length} variant{p.variants.length === 1 ? "" : "s"}
-                      </div>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {info?.status === "done" && (
-                          info.maxPerOrder != null ? (
-                            <>
-                              <Badge variant="default" className="gap-1">
-                                <CheckCircle2 className="h-3 w-3" />
-                                Limit: {info.maxPerOrder} per customer/order
-                              </Badge>
-                              {info.textHints?.map((h, i) => (
-                                <span key={i} className="text-xs text-muted-foreground italic">
-                                  "{h}"
-                                </span>
-                              ))}
-                            </>
-                          ) : (
-                            <Badge variant="secondary">No per-person limit detected</Badge>
-                          )
-                        )}
-                        {info?.status === "error" && (
-                          <span className="text-xs text-destructive">{info.error}</span>
-                        )}
-                        {watched.has(p.id) && (() => {
-                          const w = watchStatus[p.id];
-                          if (!w) return <Badge variant="outline" className="gap-1"><Bell className="h-3 w-3 animate-pulse" />Polling...</Badge>;
-                          if (w.error) return <Badge variant="destructive">Monitor: {w.error}</Badge>;
-                          if (w.available) return <Badge className="bg-green-600 text-white gap-1"><Bell className="h-3 w-3" />IN STOCK</Badge>;
-                          return <Badge variant="outline" className="gap-1">
-                            <Bell className="h-3 w-3" />
-                            Out · checked {Math.max(0, Math.round((Date.now() - w.lastChecked) / 1000))}s ago
-                          </Badge>;
-                        })()}
-                      </div>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {products.length === 0 && !loading && !error && (
-          <div className="mt-10 rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-            <p>Tip: try a public store like <code className="font-mono">allbirds.com</code> or <code className="font-mono">gymshark.com</code>.</p>
-            <p className="mt-2">
-              Per-customer limits are detected by scanning each product page for Shopify's quantity rules and merchant-written notes
-              (e.g. "Limit 2 per customer").
-            </p>
+            <Card className="p-3">
+              <Label className="text-xs font-medium">Drop monitor</Label>
+              <div className="mt-2 space-y-2">
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">Poll interval (ms, min 1500)</Label>
+                  <Input type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} className="h-8" />
+                </div>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} className="h-4 w-4" />
+                  Auto-open checkout tabs on drop
+                </label>
+                <label className="flex items-center gap-2 text-xs">
+                  <input type="checkbox" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} className="h-4 w-4" />
+                  Sound + browser notification
+                </label>
+              </div>
+              <p className="mt-2 text-[10px] text-muted-foreground">
+                Keep this tab pinned — browsers throttle background tabs.
+              </p>
+            </Card>
           </div>
         )}
       </main>
+
+      <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
+        <div className="mx-auto grid max-w-3xl grid-cols-4">
+          {([
+            ["watch", "Watch", Radar, watched.size],
+            ["browse", "Browse", Search, products.length],
+            ["profiles", "Profiles", Users, activeProfiles.length],
+            ["settings", "Settings", Settings, 0],
+          ] as const).map(([key, label, Icon, count]) => {
+            const active = tab === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] transition-colors ${active ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+              >
+                <div className="relative">
+                  <Icon className={`h-5 w-5 ${active && key === "watch" && watched.size > 0 ? "animate-pulse" : ""}`} />
+                  {count > 0 && (
+                    <span className="absolute -right-2 -top-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[9px] font-medium text-primary-foreground">
+                      {count > 99 ? "99+" : count}
+                    </span>
+                  )}
+                </div>
+                <span className="font-medium">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
     </div>
   );
 }
