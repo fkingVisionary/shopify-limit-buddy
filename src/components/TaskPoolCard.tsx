@@ -34,7 +34,7 @@ type TaskRow = {
 export function TaskPoolCard({
   defaultStoreUrl, profiles,
 }: { defaultStoreUrl?: string; profiles: ProfileLike[] }) {
-  const run = useServerFn(runHttpCheckout);
+  const run = useServerFn(runCheckoutOne);
   const [storeUrl, setStoreUrl] = useState(defaultStoreUrl ?? "");
   const [variantId, setVariantId] = useState("");
   const [qty, setQty] = useState("1");
