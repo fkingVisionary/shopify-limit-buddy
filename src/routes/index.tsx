@@ -78,25 +78,45 @@ const PROXY_GROUPS_KEY = "aio:proxy-groups";              // new: groups
 type ProxyGroup = { id: string; name: string; proxies: string[] };
 
 // In-memory mirror so the network helpers can rotate without React state.
+// Groups can hold two kinds of entries:
+//   - URL templates containing `{url}` — used by fetch-based `proxied()`
+//   - Raw `user:pass:ip:port` (or `ip:port`) — used by captcha harvester and
+//     (later) the in-app browser checkout, both of which need real proxy creds
 let __proxyGroups: ProxyGroup[] = [];
 const __rotIdx: Record<string, number> = {};
+const __rawRotIdx: Record<string, number> = {};
 function setProxyGroupsRuntime(groups: ProxyGroup[]) {
-  __proxyGroups = groups.map((g) => ({
-    ...g,
-    proxies: g.proxies.filter((s) => s.includes("{url}")),
-  }));
+  // Keep all entries — splitters below decide which to use.
+  __proxyGroups = groups.map((g) => ({ ...g, proxies: [...g.proxies] }));
 }
 
-// Build a request URL. If groupId resolves to a group with proxies, rotate
-// round-robin within it; otherwise fall back to the same-origin proxy route.
+// Build a request URL. If groupId resolves to a group with URL-template
+// proxies, rotate round-robin within those; otherwise fall back to the
+// same-origin proxy route. Raw `host:port` entries are ignored here.
 function proxied(targetUrl: string, groupId?: string | null): string {
   const direct = `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
   if (!groupId) return direct;
   const group = __proxyGroups.find((g) => g.id === groupId);
-  if (!group || group.proxies.length === 0) return direct;
-  const i = (__rotIdx[group.id] ?? 0) % group.proxies.length;
-  __rotIdx[group.id] = (i + 1) % group.proxies.length;
-  return group.proxies[i].replace("{url}", encodeURIComponent(targetUrl));
+  const templates = group?.proxies.filter((s) => s.includes("{url}")) ?? [];
+  if (templates.length === 0) return direct;
+  const i = (__rotIdx[group!.id] ?? 0) % templates.length;
+  __rotIdx[group!.id] = (i + 1) % templates.length;
+  return templates[i].replace("{url}", encodeURIComponent(targetUrl));
+}
+
+// Pick the next raw `user:pass:ip:port` proxy from a group, round-robin.
+// Returns null if the group has no raw entries. Used by the captcha
+// harvester (and later: the in-app browser checkout) so a single group can
+// supply both the solver IP and the checkout IP — guaranteeing the
+// harvested token is valid against the same exit IP that submits it.
+function pickRawProxy(groupId: string | null | undefined): string | null {
+  if (!groupId) return null;
+  const group = __proxyGroups.find((g) => g.id === groupId);
+  const raw = group?.proxies.filter((s) => !s.includes("{url}")) ?? [];
+  if (raw.length === 0) return null;
+  const i = (__rawRotIdx[group!.id] ?? 0) % raw.length;
+  __rawRotIdx[group!.id] = (i + 1) % raw.length;
+  return raw[i];
 }
 
 
@@ -2180,12 +2200,22 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
   const [type, setType] = useState<CaptchaType>("turnstile");
   const [sitekey, setSitekey] = useState("");
   const [pageUrl, setPageUrl] = useState("");
+  const [proxyGroupId, setProxyGroupId] = useState<string>("__manual");
   const [proxy, setProxy] = useState("");
   const [action, setAction] = useState("verify");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [bal, setBal] = useState<number | null>(null);
   const [tokens, setTokens] = useState<HarvestEntry[]>([]);
+  const [lastUsedProxy, setLastUsedProxy] = useState<string | null>(null);
+
+  // Count raw proxies per group (entries without `{url}`) — those are the
+  // ones eligible for 2Captcha / future in-app checkout swapping.
+  const rawCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const g of proxyGroups) m[g.id] = g.proxies.filter((s) => !s.includes("{url}")).length;
+    return m;
+  }, [proxyGroups]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2204,12 +2234,25 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
   const harvest = async () => {
     setErr(null);
     if (!sitekey.trim() || !pageUrl.trim()) { setErr("Sitekey and page URL required"); return; }
+    // Resolve proxy: group rotation wins if a group is selected, else manual field
+    let useProxy = proxy.trim() || null;
+    if (proxyGroupId !== "__manual" && proxyGroupId !== "__direct") {
+      const picked = pickRawProxy(proxyGroupId);
+      if (!picked) {
+        setErr("Selected group has no raw proxies (user:pass:ip:port). Add some in the Proxies tab.");
+        return;
+      }
+      useProxy = picked;
+    } else if (proxyGroupId === "__direct") {
+      useProxy = null;
+    }
+    setLastUsedProxy(useProxy);
     setBusy(true);
     try {
       const res = await solve({
         data: {
           type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
-          proxy: proxy.trim() || null,
+          proxy: useProxy,
           action: type === "recaptchaV3" ? action.trim() : null,
           minScore: null, timeoutSec: 120,
         },
@@ -2217,7 +2260,7 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
       if (!res.ok) { setErr(res.error); return; }
       const entry: HarvestEntry = {
         id: makeId(), type, sitekey: sitekey.trim(), pageUrl: pageUrl.trim(),
-        proxy: proxy.trim(), token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
+        proxy: useProxy ?? "", token: res.token, elapsedMs: res.elapsedMs, ts: Date.now(),
       };
       persist([entry, ...tokens].slice(0, 30));
       balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
@@ -2278,17 +2321,38 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
           </div>
 
           <div>
-            <Label className="text-xs">
-              Proxy <span className="text-muted-foreground">(user:pass:ip:port — must match checkout IP)</span>
-            </Label>
-            <Input
-              value={proxy} onChange={(e) => setProxy(e.target.value)}
-              placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
-            />
+            <Label className="text-xs">Proxy source</Label>
+            <Select value={proxyGroupId} onValueChange={setProxyGroupId}>
+              <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__manual">Manual (paste below)</SelectItem>
+                <SelectItem value="__direct">Direct — no proxy (proxyless solve)</SelectItem>
+                {proxyGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id} disabled={(rawCounts[g.id] ?? 0) === 0}>
+                    {g.name} ({rawCounts[g.id] ?? 0} raw)
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <div className="mt-1 text-[10px] text-muted-foreground">
-              Leave blank for proxyless solve. Token will be IP-bound to whoever submits it — paste the same proxy your checkout will use, or the site will reject the token.
+              Group rotates raw <code>user:pass:ip:port</code> entries round-robin. When the in-app browser checkout lands, the same group will swap to that proxy for submit — so the harvested token's IP matches the checkout IP.
             </div>
           </div>
+
+          {proxyGroupId === "__manual" && (
+            <div>
+              <Label className="text-xs">
+                Proxy <span className="text-muted-foreground">(user:pass:ip:port)</span>
+              </Label>
+              <Input
+                value={proxy} onChange={(e) => setProxy(e.target.value)}
+                placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
+              />
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                Leave blank for proxyless solve. Token is IP-bound — paste the same proxy your checkout will use.
+              </div>
+            </div>
+          )}
 
           {type === "recaptchaV3" && (
             <div>
@@ -2314,9 +2378,9 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
             )}
           </Button>
 
-          {proxyGroups.length > 0 && (
-            <div className="text-[10px] text-muted-foreground">
-              Tip: copy a proxy from a Proxy group above (Proxies tab) and paste here.
+          {lastUsedProxy && (
+            <div className="text-[10px] text-muted-foreground font-mono truncate">
+              Last solve via: {lastUsedProxy}
             </div>
           )}
         </div>
