@@ -112,7 +112,9 @@ function collectCookies(res: Response, jar: Map<string, string>): void {
   }
 }
 function cookieHeader(jar: Map<string, string>): string {
-  return Array.from(jar.entries()).map(([k, v]) => `${k}=${v}`).join("; ");
+  return Array.from(jar.entries())
+    .map(([k, v]) => `${k}=${v}`)
+    .join("; ");
 }
 function pickScript(html: string, id: string): string | null {
   // <script id="X" type="application/json">...</script>
@@ -121,6 +123,21 @@ function pickScript(html: string, id: string): string | null {
 }
 function firstMatch(html: string, re: RegExp): string | null {
   return html.match(re)?.[1] ?? null;
+}
+function checkoutProtectionBlock(
+  status: number,
+  html: string,
+  proxy?: string | null,
+): string | null {
+  const preview = html.slice(0, 180).replace(/\s+/g, " ").trim();
+  if (
+    status === 403 ||
+    /Request Forbidden|Access Denied|Cloudflare|cf-ray|Attention Required/i.test(html)
+  ) {
+    const proxyNote = proxy ? " Server fetch cannot use the supplied proxy here." : "";
+    return `checkout protection returned HTTP ${status}${proxyNote} Body: ${preview}`;
+  }
+  return null;
 }
 
 // 2Captcha solver — hCaptcha invisible / checkbox
@@ -158,11 +175,22 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       referer: `${base}/`,
       origin: base,
     };
-    const record = (step: C1Step, ok: boolean, status: number | null, ms: number, note?: string) => {
+    const record = (
+      step: C1Step,
+      ok: boolean,
+      status: number | null,
+      ms: number,
+      note?: string,
+    ) => {
       steps.push({ step, ok, status, ms, note });
     };
     const fail = (failedStep: C1Step, error: string): C1Result => ({
-      ok: false, taskId: data.taskId, failedStep, error, steps, elapsedMs: Date.now() - t0,
+      ok: false,
+      taskId: data.taskId,
+      failedStep,
+      error,
+      steps,
+      elapsedMs: Date.now() - t0,
     });
 
     // ── 1. cart/add ────────────────────────────────────────────────────────
@@ -172,13 +200,21 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       const res = await fetch(`${base}/cart/add.js`, {
         method: "POST",
         headers: { ...baseHeaders, "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ id: String(data.variantId), quantity: String(data.qty) }).toString(),
+        body: new URLSearchParams({
+          id: String(data.variantId),
+          quantity: String(data.qty),
+        }).toString(),
       });
       collectCookies(res, jar);
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         let desc = `HTTP ${res.status}`;
-        try { const j = JSON.parse(body) as { description?: string; message?: string }; desc = j.description ?? j.message ?? desc; } catch {}
+        try {
+          const j = JSON.parse(body) as { description?: string; message?: string };
+          desc = j.description ?? j.message ?? desc;
+        } catch {
+          desc = body.slice(0, 160) || desc;
+        }
         record("cart_add", false, res.status, Date.now() - s, desc);
         return fail("cart_add", desc);
       }
@@ -210,8 +246,16 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       // Capture HTML from the same response — the _r queue token is single-use,
       // re-GETting the URL invalidates the session.
       html = await res.text();
-      record("cart_redirect", landed, res.status, Date.now() - s, `${checkoutUrl} (${html.length}b)`);
+      const blocked = checkoutProtectionBlock(res.status, html, data.proxy);
+      record(
+        "cart_redirect",
+        landed && !blocked,
+        res.status,
+        Date.now() - s,
+        blocked ?? `${checkoutUrl} (${html.length}b)`,
+      );
       if (!landed) return fail("cart_redirect", `bad redirect: ${res.status} ${checkoutUrl}`);
+      if (blocked) return fail("cart_redirect", blocked);
     } catch (e) {
       return fail(lastStep, (e as Error).message);
     }
@@ -219,11 +263,18 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
     // ── 3. checkout_page (already loaded above, just sanity-check) ────────
     {
       const s = Date.now();
-      const looksLikeCheckout = /checkout-web|serialized-session-token|shopify-checkout/i.test(html);
-      record("checkout_page", looksLikeCheckout, null, Date.now() - s, looksLikeCheckout ? "OK" : html.slice(0, 200));
+      const looksLikeCheckout = /checkout-web|serialized-session-token|shopify-checkout/i.test(
+        html,
+      );
+      record(
+        "checkout_page",
+        looksLikeCheckout,
+        null,
+        Date.now() - s,
+        looksLikeCheckout ? "OK" : html.slice(0, 200),
+      );
       if (!looksLikeCheckout) return fail("checkout_page", "response is not a checkout page");
     }
-
 
     // ── 4. Scrape Checkout One tokens ─────────────────────────────────────
     // Checkout One embeds its bootstrap as several <script> JSON blobs:
@@ -248,8 +299,10 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       if (sessionJson) {
         try {
           const parsed = JSON.parse(sessionJson) as string | { sessionToken?: string };
-          sessionToken = typeof parsed === "string" ? parsed : parsed.sessionToken ?? null;
-        } catch { sessionToken = sessionJson.replace(/^"|"$/g, ""); }
+          sessionToken = typeof parsed === "string" ? parsed : (parsed.sessionToken ?? null);
+        } catch {
+          sessionToken = sessionJson.replace(/^"|"$/g, "");
+        }
       }
       sessionToken ??= firstMatch(html, /"sessionToken":"([^"]+)"/);
 
@@ -257,11 +310,14 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       try {
         const u = new URL(checkoutUrl!);
         queueToken = u.searchParams.get("_r");
-      } catch {}
+      } catch {
+        queueToken = null;
+      }
       queueToken ??= firstMatch(html, /"queueToken":"([^"]+)"/);
 
-      buildId = firstMatch(html, /\/cdn\/shopifycloud\/checkout-web\/assets\/[^"']*?-([a-f0-9]{8,})\./i)
-        ?? firstMatch(html, /"buildId":"([^"]+)"/);
+      buildId =
+        firstMatch(html, /\/cdn\/shopifycloud\/checkout-web\/assets\/[^"']*?-([a-f0-9]{8,})\./i) ??
+        firstMatch(html, /"buildId":"([^"]+)"/);
 
       shopId = firstMatch(html, /"shopId":(\d+)/) ?? firstMatch(html, /shop-id="(\d+)"/);
 
@@ -269,8 +325,9 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
       const m = checkoutUrl!.match(/\/checkouts\/cn\/([^/?#]+)/);
       checkoutToken = m?.[1] ?? null;
 
-      hcaptchaSiteKey = firstMatch(html, /data-hcaptcha-sitekey="([^"]+)"/)
-        ?? firstMatch(html, /"hcaptchaSiteKey":"([^"]+)"/);
+      hcaptchaSiteKey =
+        firstMatch(html, /data-hcaptcha-sitekey="([^"]+)"/) ??
+        firstMatch(html, /"hcaptchaSiteKey":"([^"]+)"/);
 
       // GraphQL endpoint. Modern stores use:
       //   {storeOrigin}/checkouts/unstable/graphql?operationName=...
@@ -297,8 +354,14 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
 
     if (data.dryRun) {
       return {
-        ok: true, taskId: data.taskId, checkoutUrl, orderId: null, receiptId: null,
-        steps, elapsedMs: Date.now() - t0, dryRun: true,
+        ok: true,
+        taskId: data.taskId,
+        checkoutUrl,
+        orderId: null,
+        receiptId: null,
+        steps,
+        elapsedMs: Date.now() - t0,
+        dryRun: true,
       };
     }
 
@@ -324,7 +387,13 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
         });
         const j = (await res.json().catch(() => ({}))) as { id?: string };
         cardSessionId = j.id ?? null;
-        record("card_vault", !!cardSessionId, res.status, Date.now() - s, cardSessionId ? "vaulted" : "no id");
+        record(
+          "card_vault",
+          !!cardSessionId,
+          res.status,
+          Date.now() - s,
+          cardSessionId ? "vaulted" : "no id",
+        );
         if (!cardSessionId) return fail("card_vault", "vault returned no session id");
       } catch (e) {
         return fail(lastStep, (e as Error).message);
@@ -392,7 +461,11 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
           },
         ],
       },
-      buyerIdentity: { email: data.profile.email, phone: data.profile.phone, countryCode: data.profile.country },
+      buyerIdentity: {
+        email: data.profile.email,
+        phone: data.profile.phone,
+        countryCode: data.profile.country,
+      },
       captchaV3Tokens: [] as string[],
       hcaptchaToken: captchaToken ?? null,
     });
@@ -462,22 +535,40 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
           res = await callSubmit(token);
           body = (await res.json().catch(() => ({}))) as typeof body;
           node = body.data?.submitForCompletion as Record<string, unknown> | undefined;
-          record("submit_for_completion", res.ok, res.status, Date.now() - rs, JSON.stringify(node).slice(0, 200));
+          record(
+            "submit_for_completion",
+            res.ok,
+            res.status,
+            Date.now() - rs,
+            JSON.stringify(node).slice(0, 200),
+          );
         } catch (e) {
           return fail("captcha_solve", (e as Error).message);
         }
       } else {
-        record("submit_for_completion", res.ok, res.status, Date.now() - s, JSON.stringify(node ?? body).slice(0, 200));
+        record(
+          "submit_for_completion",
+          res.ok,
+          res.status,
+          Date.now() - s,
+          JSON.stringify(node ?? body).slice(0, 200),
+        );
       }
 
-      if (body.errors?.length) return fail("submit_for_completion", body.errors.map((e) => e.message).join("; "));
+      if (body.errors?.length)
+        return fail("submit_for_completion", body.errors.map((e) => e.message).join("; "));
       const finalType = (node?.__typename as string | undefined) ?? "";
-      if (finalType === "SubmitFailed") return fail("submit_for_completion", String(node?.reason ?? "SubmitFailed"));
+      if (finalType === "SubmitFailed")
+        return fail("submit_for_completion", String(node?.reason ?? "SubmitFailed"));
       if (finalType === "SubmitRejected") {
         const errs = node?.buyerErrors as { code: string; message: string }[] | undefined;
-        return fail("submit_for_completion", errs?.map((e) => `${e.code}:${e.message}`).join("; ") ?? "SubmitRejected");
+        return fail(
+          "submit_for_completion",
+          errs?.map((e) => `${e.code}:${e.message}`).join("; ") ?? "SubmitRejected",
+        );
       }
-      if (finalType === "Throttled") return fail("submit_for_completion", `throttled, retry after ${node?.pollAfter}`);
+      if (finalType === "Throttled")
+        return fail("submit_for_completion", `throttled, retry after ${node?.pollAfter}`);
       const receipt = (node?.receipt ?? {}) as { id?: string };
       receiptId = receipt.id ?? null;
       if (!receiptId) return fail("submit_for_completion", `unexpected node: ${finalType}`);
@@ -528,7 +619,13 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
         }
         if (t === "FailedReceipt") {
           const err = r?.processingError as { code?: string; messageHtml?: string } | undefined;
-          record("poll_receipt", false, res.status, Date.now() - s, `${err?.code}: ${err?.messageHtml}`);
+          record(
+            "poll_receipt",
+            false,
+            res.status,
+            Date.now() - s,
+            `${err?.code}: ${err?.messageHtml}`,
+          );
           return fail("poll_receipt", `${err?.code ?? "FailedReceipt"}: ${err?.messageHtml ?? ""}`);
         }
         await new Promise((rr) => setTimeout(rr, 1500));
@@ -540,7 +637,13 @@ export const runCheckoutOne = createServerFn({ method: "POST" })
     }
 
     return {
-      ok: true, taskId: data.taskId, checkoutUrl, orderId, receiptId,
-      steps, elapsedMs: Date.now() - t0, dryRun: false,
+      ok: true,
+      taskId: data.taskId,
+      checkoutUrl,
+      orderId,
+      receiptId,
+      steps,
+      elapsedMs: Date.now() - t0,
+      dryRun: false,
     };
   });
