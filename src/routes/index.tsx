@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
@@ -702,6 +703,12 @@ function Index() {
 
   const allStores = useMemo<StoreEntry[]>(() => [...PRESET_STORES, ...customStores], [customStores]);
 
+  // Pre-harvest captcha pool — runs across all tabs so tokens are ready
+  // before a drop, not solved on-demand at checkout time.
+  const solveFn = useServerFn(solveCaptcha);
+  const detectFn = useServerFn(detectCaptcha);
+  const poolApi = usePool(allStores, solveFn, detectFn);
+
   // ─── Profile helpers ───
   const persistProfiles = (next: Profile[], nextActive?: string[]) => {
     const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
@@ -987,7 +994,7 @@ function Index() {
             onResetTips={resetTips}
           />
         )}
-        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} />}
+        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
         {tab === "help" && <HelpView />}
       </main>
 
@@ -2210,13 +2217,224 @@ function saveDetectedCache(c: Record<string, DetectedCaptcha>) {
   try { localStorage.setItem(CAPTCHA_CACHE_KEY, JSON.stringify(c)); } catch {}
 }
 
-function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; stores: StoreEntry[] }) {
+// ─────────────── Pre-harvest pool ───────────────
+// Tokens for Turnstile/hCaptcha expire ~120s after issue, so we keep a small
+// rolling pool per store: harvest N in the background, evict expired, replace.
+// This way when a drop hits we already have a fresh token sitting in memory
+// instead of waiting 15-60s for 2Captcha.
+
+type PoolToken = {
+  id: string;
+  storeId: string;
+  type: CaptchaType;
+  sitekey: string;
+  pageUrl: string;
+  proxy: string;     // proxy that solved it (token is IP-bound to this)
+  token: string;
+  ts: number;        // issued at
+  expiresAt: number; // best-effort expiry (issue + 110s)
+};
+
+type PoolConfig = {
+  desired: number;              // 0 = pool off
+  proxyGroupId: string;         // "__direct" | "__manual" | group id
+  manualProxy?: string | null;  // used when proxyGroupId === "__manual"
+};
+
+const POOL_TOKENS_KEY = "aio:pool-tokens";   // Record<storeId, PoolToken[]>
+const POOL_CONFIG_KEY = "aio:pool-config";   // Record<storeId, PoolConfig>
+const POOL_TICK_MS = 8000;
+const TOKEN_LIFETIME_MS = 110_000;
+
+function loadPoolTokens(): Record<string, PoolToken[]> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(localStorage.getItem(POOL_TOKENS_KEY) ?? "{}"); } catch { return {}; }
+}
+function savePoolTokens(t: Record<string, PoolToken[]>) {
+  try { localStorage.setItem(POOL_TOKENS_KEY, JSON.stringify(t)); } catch {}
+}
+function loadPoolConfig(): Record<string, PoolConfig> {
+  if (typeof window === "undefined") return {};
+  try { return JSON.parse(localStorage.getItem(POOL_CONFIG_KEY) ?? "{}"); } catch { return {}; }
+}
+function savePoolConfig(c: Record<string, PoolConfig>) {
+  try { localStorage.setItem(POOL_CONFIG_KEY, JSON.stringify(c)); } catch {}
+}
+
+function freshOf(tokens: PoolToken[] | undefined): PoolToken[] {
+  const now = Date.now();
+  return (tokens ?? []).filter((t) => t.expiresAt > now);
+}
+
+type PoolApi = {
+  pool: Record<string, PoolToken[]>;
+  config: Record<string, PoolConfig>;
+  detected: Record<string, DetectedCaptcha>;
+  harvesting: Set<string>;
+  errors: Record<string, string | null>;
+  setStoreConfig: (storeId: string, patch: Partial<PoolConfig>) => void;
+  cacheDetected: (storeId: string, d: DetectedCaptcha) => void;
+  takeToken: (storeId: string) => PoolToken | null;
+};
+
+type SolveFn = (args: { data: { type: CaptchaType; sitekey: string; pageUrl: string; proxy: string | null; action: string | null; minScore: number | null; timeoutSec: number } }) => Promise<{ ok: true; token: string; captchaId: string; elapsedMs: number } | { ok: false; error: string }>;
+type DetectFn = (args: { data: { storeUrl: string } }) => Promise<{ ok: true; type: CaptchaType; sitekey: string; pageUrl: string } | { ok: false; error: string }>;
+
+function usePool(
+  stores: StoreEntry[],
+  solveFn: SolveFn,
+  detectFn: DetectFn,
+): PoolApi {
+  const [pool, setPool] = useState<Record<string, PoolToken[]>>({});
+  const [config, setConfig] = useState<Record<string, PoolConfig>>({});
+  const [detected, setDetected] = useState<Record<string, DetectedCaptcha>>({});
+  const [harvesting, setHarvesting] = useState<Set<string>>(new Set());
+  const [errors, setErrors] = useState<Record<string, string | null>>({});
+
+  // Refs so the interval reads the latest values without restarting.
+  const poolRef = useRef(pool); poolRef.current = pool;
+  const cfgRef = useRef(config); cfgRef.current = config;
+  const detRef = useRef(detected); detRef.current = detected;
+  const harvRef = useRef(harvesting); harvRef.current = harvesting;
+  const storesRef = useRef(stores); storesRef.current = stores;
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setPool(loadPoolTokens());
+    setConfig(loadPoolConfig());
+    setDetected(loadDetectedCache());
+  }, []);
+
+  const persistPool = (next: Record<string, PoolToken[]>) => {
+    setPool(next); savePoolTokens(next);
+  };
+
+  const cacheDetected = (storeId: string, d: DetectedCaptcha) => {
+    const next = { ...detRef.current, [storeId]: d };
+    setDetected(next); saveDetectedCache(next);
+  };
+
+  const setStoreConfig: PoolApi["setStoreConfig"] = (storeId, patch) => {
+    const prev = cfgRef.current[storeId] ?? { desired: 0, proxyGroupId: "__direct" };
+    const next = { ...cfgRef.current, [storeId]: { ...prev, ...patch } };
+    setConfig(next); savePoolConfig(next);
+  };
+
+  const takeToken: PoolApi["takeToken"] = (storeId) => {
+    const fresh = freshOf(poolRef.current[storeId]);
+    if (fresh.length === 0) return null;
+    const [head, ...rest] = fresh;
+    persistPool({ ...poolRef.current, [storeId]: rest });
+    return head;
+  };
+
+  // Worker loop — runs as long as the app is open.
+  useEffect(() => {
+    const tick = async () => {
+      // GC expired tokens across all stores
+      const now = Date.now();
+      let changed = false;
+      const cleaned: Record<string, PoolToken[]> = {};
+      for (const [sid, arr] of Object.entries(poolRef.current)) {
+        const fresh = arr.filter((t) => t.expiresAt > now);
+        if (fresh.length !== arr.length) changed = true;
+        cleaned[sid] = fresh;
+      }
+      if (changed) persistPool(cleaned);
+
+      // Refill loop — one harvest per tick per store at most
+      for (const store of storesRef.current) {
+        const cfg = cfgRef.current[store.id];
+        if (!cfg || cfg.desired <= 0) continue;
+        const have = freshOf(poolRef.current[store.id]).length;
+        if (have >= cfg.desired) continue;
+        if (harvRef.current.has(store.id)) continue;
+
+        // Need detected config — auto-run detect if missing
+        let det = detRef.current[store.id];
+        if (!det) {
+          setHarvesting((s) => new Set(s).add(store.id));
+          try {
+            const r = await detectFn({ data: { storeUrl: store.url } });
+            if (r.ok) {
+              det = { type: r.type, sitekey: r.sitekey, pageUrl: r.pageUrl, detectedAt: Date.now() };
+              cacheDetected(store.id, det);
+            } else {
+              setErrors((e) => ({ ...e, [store.id]: r.error }));
+            }
+          } catch (e) {
+            setErrors((e2) => ({ ...e2, [store.id]: (e as Error).message }));
+          } finally {
+            setHarvesting((s) => { const n = new Set(s); n.delete(store.id); return n; });
+          }
+          if (!det) continue;
+        }
+
+        // Resolve proxy for this harvest
+        let useProxy: string | null = null;
+        if (cfg.proxyGroupId === "__manual") {
+          useProxy = (cfg.manualProxy ?? "").trim() || null;
+        } else if (cfg.proxyGroupId !== "__direct") {
+          useProxy = pickRawProxy(cfg.proxyGroupId);
+          if (!useProxy) {
+            setErrors((e) => ({ ...e, [store.id]: "Selected proxy group has no raw entries" }));
+            continue;
+          }
+        }
+
+        // Fire and forget — don't await so other stores can start too
+        setHarvesting((s) => new Set(s).add(store.id));
+        setErrors((e) => ({ ...e, [store.id]: null }));
+        const detSnap = det;
+        void (async () => {
+          try {
+            const res = await solveFn({
+              data: {
+                type: detSnap.type, sitekey: detSnap.sitekey, pageUrl: detSnap.pageUrl,
+                proxy: useProxy, action: null, minScore: null, timeoutSec: 120,
+              },
+            });
+            if (!res.ok) {
+              setErrors((e) => ({ ...e, [store.id]: res.error }));
+              return;
+            }
+            const issuedAt = Date.now();
+            const entry: PoolToken = {
+              id: makeId(), storeId: store.id, type: detSnap.type,
+              sitekey: detSnap.sitekey, pageUrl: detSnap.pageUrl,
+              proxy: useProxy ?? "", token: res.token,
+              ts: issuedAt, expiresAt: issuedAt + TOKEN_LIFETIME_MS,
+            };
+            const cur = poolRef.current[store.id] ?? [];
+            persistPool({ ...poolRef.current, [store.id]: [...freshOf(cur), entry] });
+          } catch (e) {
+            setErrors((er) => ({ ...er, [store.id]: (e as Error).message }));
+          } finally {
+            setHarvesting((s) => { const n = new Set(s); n.delete(store.id); return n; });
+          }
+        })();
+      }
+    };
+
+    const id = window.setInterval(tick, POOL_TICK_MS);
+    // Run once shortly after mount so user sees movement
+    const t0 = window.setTimeout(tick, 500);
+    return () => { window.clearInterval(id); window.clearTimeout(t0); };
+  }, [solveFn, detectFn]);
+
+  return { pool, config, detected, harvesting, errors, setStoreConfig, cacheDetected, takeToken };
+}
+
+
+
+function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup[]; stores: StoreEntry[]; poolApi: PoolApi }) {
   const solve = useServerFn(solveCaptcha);
   const balance = useServerFn(getCaptchaBalance);
   const detect = useServerFn(detectCaptcha);
 
   const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
-  const [detected, setDetected] = useState<Record<string, DetectedCaptcha>>({});
+  // Detected configs come from poolApi (single source of truth).
+  const detected = poolApi.detected;
   const [detecting, setDetecting] = useState(false);
 
   const [proxyGroupId, setProxyGroupId] = useState<string>("__direct");
@@ -2242,7 +2460,6 @@ function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; store
       const raw = localStorage.getItem(HARVEST_KEY);
       if (raw) setTokens(JSON.parse(raw) as HarvestEntry[]);
     } catch {}
-    setDetected(loadDetectedCache());
     balance().then((r) => { if (r.ok) setBal(r.balance); }).catch(() => {});
   }, [balance]);
 
@@ -2260,8 +2477,7 @@ function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; store
       const entry: DetectedCaptcha = {
         type: res.type, sitekey: res.sitekey, pageUrl: res.pageUrl, detectedAt: Date.now(),
       };
-      const next = { ...detected, [currentStore.id]: entry };
-      setDetected(next); saveDetectedCache(next);
+      poolApi.cacheDetected(currentStore.id, entry);
       return entry;
     } catch (e) {
       setErr((e as Error).message); return null;
@@ -2416,6 +2632,91 @@ function CaptchaView({ proxyGroups, stores }: { proxyGroups: ProxyGroup[]; store
           )}
         </div>
       </Card>
+
+      {/* Pre-harvest pool for the currently selected store */}
+      {currentStore && (() => {
+        const cfg = poolApi.config[currentStore.id] ?? { desired: 0, proxyGroupId: "__direct" };
+        const fresh = freshOf(poolApi.pool[currentStore.id]);
+        const isHarvesting = poolApi.harvesting.has(currentStore.id);
+        const poolErr = poolApi.errors[currentStore.id];
+        return (
+          <Card className="p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold">Pool · {currentStore.name}</span>
+              <Badge variant={fresh.length >= cfg.desired && cfg.desired > 0 ? "default" : "outline"} className="text-[10px]">
+                {fresh.length}/{cfg.desired} ready{isHarvesting ? " · solving…" : ""}
+              </Badge>
+            </div>
+
+            <div className="space-y-2.5">
+              <div>
+                <Label className="text-xs">
+                  Desired pool size · <span className="font-mono">{cfg.desired}</span>
+                </Label>
+                <Slider
+                  value={[cfg.desired]} min={0} max={5} step={1}
+                  onValueChange={([v]: number[]) => poolApi.setStoreConfig(currentStore.id, { desired: v })}
+                  className="mt-2"
+                />
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  0 = off. Higher = more tokens ready at drop time, more 2Captcha cost (~$0.002 each, refilled every ~110s).
+                </div>
+              </div>
+
+              <div>
+                <Label className="text-xs">Pool proxy source</Label>
+                <Select
+                  value={cfg.proxyGroupId}
+                  onValueChange={(v) => poolApi.setStoreConfig(currentStore.id, { proxyGroupId: v })}
+                >
+                  <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__direct">Direct — no proxy</SelectItem>
+                    {proxyGroups.map((g) => (
+                      <SelectItem key={g.id} value={g.id} disabled={(rawCounts[g.id] ?? 0) === 0}>
+                        {g.name} ({rawCounts[g.id] ?? 0} raw)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  Each refill rotates to the next raw proxy in the group — when checkout submits, it pulls the matching token by proxy.
+                </div>
+              </div>
+
+              {poolErr && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[10px] text-destructive">
+                  {poolErr}
+                </div>
+              )}
+
+              {fresh.length > 0 && (
+                <div className="space-y-1.5">
+                  {fresh.map((t) => {
+                    const remaining = Math.max(0, Math.ceil((t.expiresAt - Date.now()) / 1000));
+                    return (
+                      <div key={t.id} className="flex items-center justify-between gap-2 rounded-md border bg-card p-2">
+                        <div className="min-w-0 text-[10px] leading-tight">
+                          <div className="font-medium">{t.type} · {remaining}s left</div>
+                          <div className="truncate font-mono text-muted-foreground">{t.proxy || "direct"}</div>
+                        </div>
+                        <Button
+                          size="sm" variant="ghost" className="h-7 shrink-0 text-[10px]"
+                          onClick={() => { const tk = poolApi.takeToken(currentStore.id); if (tk) copy(tk.token); }}
+                        >
+                          <Copy className="h-3 w-3" /> Take
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </Card>
+        );
+      })()}
+
+
 
 
       {tokens.length > 0 && (
