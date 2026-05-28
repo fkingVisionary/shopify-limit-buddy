@@ -10,12 +10,14 @@ import { Badge } from "@/components/ui/badge";
 import { Play, Square, Zap } from "lucide-react";
 import { runHttpCheckout, type HttpStepRecord } from "@/lib/shopify-http-checkout.functions";
 
-type Profile = {
+type ProfileLike = {
+  id: string; name: string;
   email: string; first_name: string; last_name: string;
-  address1: string; address2?: string | null; city: string;
+  address1: string; address2?: string; city: string;
   province: string; zip: string; country: string; phone: string;
+  card_number?: string; card_name?: string;
+  card_exp_month?: string; card_exp_year?: string; card_cvv?: string;
 };
-type Card = { number: string; name: string; exp_month: string; exp_year: string; cvv: string };
 
 type TaskRow = {
   id: string;
@@ -29,12 +31,8 @@ type TaskRow = {
 };
 
 export function TaskPoolCard({
-  defaultStoreUrl, profiles, cards,
-}: {
-  defaultStoreUrl?: string;
-  profiles: Array<{ id: string; label: string; value: Profile }>;
-  cards: Array<{ id: string; label: string; value: Card }>;
-}) {
+  defaultStoreUrl, profiles,
+}: { defaultStoreUrl?: string; profiles: ProfileLike[] }) {
   const run = useServerFn(runHttpCheckout);
   const [storeUrl, setStoreUrl] = useState(defaultStoreUrl ?? "");
   const [variantId, setVariantId] = useState("");
@@ -43,7 +41,6 @@ export function TaskPoolCard({
   const [concurrency, setConcurrency] = useState(5);
   const [dryRun, setDryRun] = useState(true);
   const [profileId, setProfileId] = useState(profiles[0]?.id ?? "");
-  const [cardId, setCardId] = useState(cards[0]?.id ?? "");
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [running, setRunning] = useState(false);
   const cancelRef = useRef(false);
@@ -54,8 +51,7 @@ export function TaskPoolCard({
   );
 
   const launch = useCallback(async () => {
-    const profile = profiles.find((p) => p.id === profileId)?.value;
-    const card = cards.find((c) => c.id === cardId)?.value;
+    const profile = profiles.find((p) => p.id === profileId);
     if (!storeUrl || !variantId || !profile) return;
     cancelRef.current = false;
     setRunning(true);
@@ -67,6 +63,23 @@ export function TaskPoolCard({
     }));
     setTasks(seeded);
 
+    const card = profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv
+      ? {
+          number: profile.card_number.replace(/\s+/g, ""),
+          name: profile.card_name || `${profile.first_name} ${profile.last_name}`,
+          exp_month: profile.card_exp_month,
+          exp_year: profile.card_exp_year,
+          cvv: profile.card_cvv,
+        }
+      : null;
+
+    const profileInput = {
+      email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+      address1: profile.address1, address2: profile.address2 ?? null,
+      city: profile.city, province: profile.province, zip: profile.zip,
+      country: profile.country, phone: profile.phone,
+    };
+
     let cursor = 0;
     const worker = async () => {
       while (!cancelRef.current) {
@@ -76,14 +89,9 @@ export function TaskPoolCard({
         try {
           const res = await run({
             data: {
-              taskId: seeded[i].id,
-              storeUrl,
-              variantId: Number(variantId),
-              qty: Number(qty),
-              profile,
-              card: card ?? null,
-              proxy: seeded[i].proxy,
-              dryRun,
+              taskId: seeded[i].id, storeUrl,
+              variantId: Number(variantId), qty: Number(qty),
+              profile: profileInput, card, proxy: seeded[i].proxy, dryRun,
             },
           });
           setTasks((prev) => prev.map((t, idx) => {
@@ -105,7 +113,7 @@ export function TaskPoolCard({
     const n = Math.min(concurrency, seeded.length);
     await Promise.all(Array.from({ length: n }, worker));
     setRunning(false);
-  }, [storeUrl, variantId, qty, proxies, concurrency, dryRun, profileId, cardId, profiles, cards, run]);
+  }, [storeUrl, variantId, qty, proxies, concurrency, dryRun, profileId, profiles, run]);
 
   const stop = () => { cancelRef.current = true; setRunning(false); };
 
@@ -133,21 +141,15 @@ export function TaskPoolCard({
           <Label className="text-xs">Qty</Label>
           <Input value={qty} onChange={(e) => setQty(e.target.value)} className="h-8" />
         </div>
-        <div>
+        <div className="col-span-2">
           <Label className="text-xs">Profile</Label>
           <select className="h-8 w-full rounded-md border bg-background px-2 text-sm" value={profileId} onChange={(e) => setProfileId(e.target.value)}>
-            {profiles.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
-          </select>
-        </div>
-        <div>
-          <Label className="text-xs">Card</Label>
-          <select className="h-8 w-full rounded-md border bg-background px-2 text-sm" value={cardId} onChange={(e) => setCardId(e.target.value)}>
-            <option value="">— none (dry-run) —</option>
-            {cards.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            {profiles.length === 0 && <option value="">— no profiles —</option>}
+            {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
         <div className="col-span-2">
-          <Label className="text-xs">Proxies (one per line, leave empty for direct)</Label>
+          <Label className="text-xs">Proxies (one per line, leave empty for direct from edge)</Label>
           <Textarea value={proxiesText} onChange={(e) => setProxiesText(e.target.value)} rows={3} placeholder="user:pass@1.2.3.4:8000" className="font-mono text-xs" />
         </div>
         <div className="col-span-2">
@@ -162,7 +164,7 @@ export function TaskPoolCard({
 
       <div className="mt-3 flex gap-2">
         {!running ? (
-          <Button size="sm" className="h-9" onClick={launch} disabled={!storeUrl || !variantId}>
+          <Button size="sm" className="h-9" onClick={launch} disabled={!storeUrl || !variantId || !profileId}>
             <Play className="h-4 w-4" /> Launch pool
           </Button>
         ) : (
@@ -183,7 +185,13 @@ export function TaskPoolCard({
         <div className="mt-3 max-h-72 overflow-auto rounded-md border">
           <table className="w-full text-[11px]">
             <thead className="bg-muted/50">
-              <tr><th className="px-2 py-1 text-left">#</th><th className="px-2 py-1 text-left">Proxy</th><th className="px-2 py-1 text-left">Step</th><th className="px-2 py-1 text-left">Status</th><th className="px-2 py-1 text-right">ms</th></tr>
+              <tr>
+                <th className="px-2 py-1 text-left">#</th>
+                <th className="px-2 py-1 text-left">Proxy</th>
+                <th className="px-2 py-1 text-left">Step</th>
+                <th className="px-2 py-1 text-left">Status</th>
+                <th className="px-2 py-1 text-right">ms</th>
+              </tr>
             </thead>
             <tbody>
               {tasks.map((t, i) => (
