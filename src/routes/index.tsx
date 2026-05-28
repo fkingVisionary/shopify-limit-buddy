@@ -993,7 +993,7 @@ function Index() {
             onResetTips={resetTips}
           />
         )}
-        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} />}
+        {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
         {tab === "help" && <HelpView />}
       </main>
 
