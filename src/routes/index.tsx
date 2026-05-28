@@ -56,14 +56,48 @@ function proxied(targetUrl: string): string {
   return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+async function fetchPageWithRetry(url: string, maxAttempts = 5): Promise<Response | null> {
+  let delay = 1000;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url);
+    if (res.ok) return res;
+    if (res.status === 429 || res.status === 503 || res.status >= 500) {
+      if (attempt === maxAttempts) return res;
+      await sleep(delay);
+      delay = Math.min(delay * 2, 8000);
+      continue;
+    }
+    return res;
+  }
+  return null;
+}
+
 async function fetchProducts(
   storeUrl: string,
-  onProgress?: (count: number) => void,
-): Promise<Product[]> {
+  onProgress?: (count: number, note?: string) => void,
+): Promise<{ products: Product[]; partial: boolean; note?: string }> {
   const all: Product[] = [];
+  let partial = false;
+  let note: string | undefined;
   for (let page = 1; page <= 40; page++) {
-    const res = await fetch(proxied(`${storeUrl}/products.json?limit=250&page=${page}`));
-    if (!res.ok) throw new Error(`Store returned ${res.status}. Is this a public Shopify store?`);
+    const res = await fetchPageWithRetry(
+      proxied(`${storeUrl}/products.json?limit=250&page=${page}`),
+    );
+    if (!res) {
+      partial = true;
+      note = `Network failed at page ${page}.`;
+      break;
+    }
+    if (!res.ok) {
+      if (page === 1) {
+        throw new Error(`Store returned ${res.status}. Is this a public Shopify store?`);
+      }
+      partial = true;
+      note = `Store rate-limited at page ${page} (HTTP ${res.status}). Showing ${all.length} products fetched so far.`;
+      break;
+    }
     const data = await res.json();
     const products = (data.products ?? []) as any[];
     if (products.length === 0) break;
@@ -83,8 +117,10 @@ async function fetchProducts(
     }
     onProgress?.(all.length);
     if (products.length < 250) break;
+    // tiny gap between pages to be polite
+    await sleep(150);
   }
-  return all;
+  return { products: all, partial, note };
 }
 
 async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
@@ -159,9 +195,13 @@ function Index() {
     setStoreUrl(normalized);
     setLoading(true);
     try {
-      const list = await fetchProducts(normalized, (n) => setProgress(n));
-      setProducts(list);
-      if (list.length === 0) setError("No products found. The store may be private or empty.");
+      const result = await fetchProducts(normalized, (n) => setProgress(n));
+      setProducts(result.products);
+      if (result.products.length === 0) {
+        setError("No products found. The store may be private or empty.");
+      } else if (result.partial && result.note) {
+        setError(result.note);
+      }
     } catch (err: any) {
       setError(err.message ?? "Failed to fetch products.");
     } finally {
