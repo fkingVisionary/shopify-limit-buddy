@@ -516,16 +516,20 @@ function Index() {
     setProducts([]);
     setLimits({});
     setProgress(0);
+    setCacheAge(null);
     const normalized = normalizeStoreUrl(url);
     if (!normalized) {
       setError("Please enter a valid store URL.");
       return;
     }
     setStoreUrl(normalized);
+    try { localStorage.setItem(STORE_URL_KEY, normalized); } catch {}
     setLoading(true);
     try {
       const result = await fetchProducts(normalized, (n) => setProgress(n));
       setProducts(result.products);
+      saveCatalog(normalized, result.products);
+      setCacheAge(Date.now());
       if (result.products.length === 0) {
         setError("No products found. The store may be private or empty.");
       } else if (result.partial && result.note) {
@@ -537,6 +541,53 @@ function Index() {
       setLoading(false);
     }
   };
+
+  // Quick-add: accepts a product URL (any /products/<handle>) OR a search keyword.
+  // Skips the full catalog scan and appends matches to the list.
+  const handleQuickAdd = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    const raw = quickAdd.trim();
+    if (!raw) return;
+    // Determine target store: URL pasted → derive from it; else current/default
+    let targetStore = storeUrl;
+    if (/^https?:\/\//i.test(raw)) {
+      const norm = normalizeStoreUrl(raw);
+      if (norm) targetStore = norm;
+    }
+    if (!targetStore) {
+      targetStore = normalizeStoreUrl(url) ?? DEFAULT_STORE_URL;
+    }
+    setStoreUrl(targetStore);
+    try { localStorage.setItem(STORE_URL_KEY, targetStore); } catch {}
+    setQuickBusy(true);
+    try {
+      const handle = handleFromUrl(raw);
+      let found: Product[] = [];
+      if (handle) {
+        const p = await fetchProductByHandle(targetStore, handle);
+        if (p) found = [p];
+        else throw new Error("Couldn't load that product. Check the URL.");
+      } else {
+        found = await searchProducts(targetStore, raw, 8);
+        if (found.length === 0) throw new Error(`No matches for "${raw}".`);
+      }
+      // Merge into products (dedupe by id), put new at top
+      setProducts((prev) => {
+        const ids = new Set(prev.map((p) => p.id));
+        const fresh = found.filter((p) => !ids.has(p.id));
+        const next = [...fresh, ...prev];
+        saveCatalog(targetStore!, next);
+        return next;
+      });
+      setQuickAdd("");
+    } catch (err: any) {
+      setError(err.message ?? "Quick add failed.");
+    } finally {
+      setQuickBusy(false);
+    }
+  };
+
 
   const checkLimit = async (product: Product) => {
     if (!storeUrl) return;
