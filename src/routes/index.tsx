@@ -19,7 +19,7 @@ import {
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
-  Check, BookOpen, Sparkles, Package, User as UserIcon,
+  Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle,
 } from "lucide-react";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
@@ -1456,6 +1456,9 @@ function ProfileBuilderDialog({
         </DialogHeader>
 
         <div className="space-y-3">
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            Each variant gets small, safe permutations so checkouts look distinct. Check the Help tab for a full jiggling guide with examples.
+          </p>
           <div>
             <Label className="text-xs text-muted-foreground">How many variants?</Label>
             <Input
@@ -1886,7 +1889,7 @@ function WelcomeWizard({
 }
 
 // ────────────────────────────────────────────
-// Help view — glossary, how-it-works, FAQ
+// Help view — glossary, how-it-works, FAQ, jigging guide
 // ────────────────────────────────────────────
 function HelpView() {
   return (
@@ -1903,6 +1906,75 @@ function HelpView() {
           <li><b className="text-foreground">4. Monitor</b> — the bot polls the product on a fast interval.</li>
           <li><b className="text-foreground">5. Drop</b> — the moment stock appears, the checkout opens, prefilled and ready to pay.</li>
         </ol>
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <Shuffle className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">Address Jiggling — Quick Guide</h2>
+        </div>
+        <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+          Jiggling means making each profile look like a unique person to avoid duplicate order detection, while all deliveries still come to your address.
+        </p>
+
+        <div className="mt-3 space-y-2.5 text-xs">
+          <div>
+            <div className="font-medium text-foreground">Address variations</div>
+            <ul className="mt-1 space-y-1 leading-relaxed text-muted-foreground">
+              {[
+                "123 Main Street — full street name",
+                "123 Main St — abbreviated",
+                "Unit 1/123 Main Street — add unit prefix",
+                "1/123 Main Street — shorter unit format",
+                "A/123 Main Street — letter unit prefix",
+                "123A Main Street — letter suffix on number",
+                "Unit 2/123 Main Street — different unit number",
+              ].map((line) => (
+                <li key={line} className="flex items-start gap-1.5">
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary/60" />
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground">Name variations</div>
+            <ul className="mt-1 space-y-1 leading-relaxed text-muted-foreground">
+              {[
+                "Use full name, initials, middle names",
+                "John Smith → J T Smith → John Thomas Smith",
+                "Use family members names too",
+              ].map((line) => (
+                <li key={line} className="flex items-start gap-1.5">
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary/60" />
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div>
+            <div className="font-medium text-foreground">Key rules</div>
+            <ul className="mt-1 space-y-1 leading-relaxed text-muted-foreground">
+              {[
+                "Address is the most important part — focus there first",
+                "Each profile needs its own unique card ideally",
+                "Fake unit numbers are fine, fake street names are not",
+                "If your area has two valid suburb names use both",
+              ].map((line) => (
+                <li key={line} className="flex items-start gap-1.5">
+                  <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-primary/60" />
+                  {line}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="rounded-md bg-primary/10 p-2.5 text-[11px] font-medium text-primary">
+            The goal — 20 tasks look like 20 different people, 20 parcels arrive at your door.
+          </div>
+        </div>
       </Card>
 
       <Card className="p-4">
