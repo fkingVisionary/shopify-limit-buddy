@@ -2321,17 +2321,38 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
           </div>
 
           <div>
-            <Label className="text-xs">
-              Proxy <span className="text-muted-foreground">(user:pass:ip:port — must match checkout IP)</span>
-            </Label>
-            <Input
-              value={proxy} onChange={(e) => setProxy(e.target.value)}
-              placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
-            />
+            <Label className="text-xs">Proxy source</Label>
+            <Select value={proxyGroupId} onValueChange={setProxyGroupId}>
+              <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__manual">Manual (paste below)</SelectItem>
+                <SelectItem value="__direct">Direct — no proxy (proxyless solve)</SelectItem>
+                {proxyGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id} disabled={(rawCounts[g.id] ?? 0) === 0}>
+                    {g.name} ({rawCounts[g.id] ?? 0} raw)
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <div className="mt-1 text-[10px] text-muted-foreground">
-              Leave blank for proxyless solve. Token will be IP-bound to whoever submits it — paste the same proxy your checkout will use, or the site will reject the token.
+              Group rotates raw <code>user:pass:ip:port</code> entries round-robin. When the in-app browser checkout lands, the same group will swap to that proxy for submit — so the harvested token's IP matches the checkout IP.
             </div>
           </div>
+
+          {proxyGroupId === "__manual" && (
+            <div>
+              <Label className="text-xs">
+                Proxy <span className="text-muted-foreground">(user:pass:ip:port)</span>
+              </Label>
+              <Input
+                value={proxy} onChange={(e) => setProxy(e.target.value)}
+                placeholder="user:pass:1.2.3.4:8080" className="h-9 mt-1 font-mono text-xs"
+              />
+              <div className="mt-1 text-[10px] text-muted-foreground">
+                Leave blank for proxyless solve. Token is IP-bound — paste the same proxy your checkout will use.
+              </div>
+            </div>
+          )}
 
           {type === "recaptchaV3" && (
             <div>
@@ -2357,9 +2378,9 @@ function CaptchaView({ proxyGroups }: { proxyGroups: ProxyGroup[] }) {
             )}
           </Button>
 
-          {proxyGroups.length > 0 && (
-            <div className="text-[10px] text-muted-foreground">
-              Tip: copy a proxy from a Proxy group above (Proxies tab) and paste here.
+          {lastUsedProxy && (
+            <div className="text-[10px] text-muted-foreground font-mono truncate">
+              Last solve via: {lastUsedProxy}
             </div>
           )}
         </div>
