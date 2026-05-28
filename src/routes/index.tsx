@@ -124,51 +124,63 @@ async function fetchProducts(
 }
 
 async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
+  // Primary source: Shopify's /products/{handle}.js exposes per-variant
+  // quantity_rule.max — the merchant-configured per-order limit. Null when
+  // unset, so we only report a limit when it is actually configured.
+  try {
+    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
+    if (res.ok) {
+      const data: any = await res.json();
+      const variants: any[] = data.variants ?? [];
+      const maxes: number[] = [];
+      for (const v of variants) {
+        const m = v?.quantity_rule?.max;
+        if (typeof m === "number" && m > 0) maxes.push(m);
+      }
+      if (maxes.length > 0) {
+        return { status: "done", maxPerOrder: Math.min(...maxes) };
+      }
+    }
+  } catch {
+    // fall through to HTML scrape
+  }
+
+  // Fallback: scan visible HTML for merchant-written notes like
+  // "Limit 2 per customer". Strip <script>/<style> first to avoid matching
+  // theme JSON blobs, and ignore the quantity <input max="..."> attribute
+  // because it usually reflects inventory, not a per-person limit.
   const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
+  const visible = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ");
 
   const hints: string[] = [];
-  // Look for "Limit N per customer" / "N per order" wording
   const patterns: RegExp[] = [
-    /limit(?:ed)?\s+(?:to\s+)?(\d+)\s+per\s+(customer|order|person)/gi,
-    /max(?:imum)?\s+(\d+)\s+per\s+(customer|order|person)/gi,
-    /(\d+)\s+per\s+(customer|order|person)\s+limit/gi,
-    /only\s+(\d+)\s+per\s+(customer|order|person)/gi,
+    /limit(?:ed)?\s+(?:to\s+)?(\d+)\s+per\s+(customer|order|person|household)/gi,
+    /max(?:imum)?\s+(?:of\s+)?(\d+)\s+per\s+(customer|order|person|household)/gi,
+    /(\d+)\s+per\s+(customer|order|person|household)\s+limit/gi,
+    /only\s+(\d+)\s+per\s+(customer|order|person|household)/gi,
   ];
   let maxFromText: number | null = null;
   for (const re of patterns) {
     let m;
-    while ((m = re.exec(html)) !== null) {
+    while ((m = re.exec(visible)) !== null) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n)) {
+      if (!isNaN(n) && n > 0 && n < 1000) {
         maxFromText = maxFromText === null ? n : Math.min(maxFromText, n);
-        hints.push(m[0].trim());
+        hints.push(m[0].trim().replace(/\s+/g, " "));
       }
     }
   }
 
-  // Look for quantity input max attribute
-  let maxFromInput: number | null = null;
-  const inputRe = /<input[^>]*name=["']quantity["'][^>]*>/gi;
-  let im;
-  while ((im = inputRe.exec(html)) !== null) {
-    const tag = im[0];
-    const mAttr = /\bmax=["']?(\d+)["']?/i.exec(tag);
-    if (mAttr) {
-      const n = parseInt(mAttr[1], 10);
-      if (!isNaN(n) && n > 0 && n < 10000) {
-        maxFromInput = maxFromInput === null ? n : Math.min(maxFromInput, n);
-      }
-    }
-  }
-
-  const max =
-    maxFromText !== null && maxFromInput !== null
-      ? Math.min(maxFromText, maxFromInput)
-      : maxFromText ?? maxFromInput;
-
-  return { status: "done", maxPerOrder: max, textHints: Array.from(new Set(hints)).slice(0, 3) };
+  return {
+    status: "done",
+    maxPerOrder: maxFromText,
+    textHints: Array.from(new Set(hints)).slice(0, 3),
+  };
 }
 
 function Index() {
