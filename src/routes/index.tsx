@@ -138,6 +138,7 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
 function Index() {
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [storeUrl, setStoreUrl] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
@@ -149,6 +150,7 @@ function Index() {
     setError(null);
     setProducts([]);
     setLimits({});
+    setProgress(0);
     const normalized = normalizeStoreUrl(url);
     if (!normalized) {
       setError("Please enter a valid store URL.");
@@ -157,7 +159,7 @@ function Index() {
     setStoreUrl(normalized);
     setLoading(true);
     try {
-      const list = await fetchProducts(normalized);
+      const list = await fetchProducts(normalized, (n) => setProgress(n));
       setProducts(list);
       if (list.length === 0) setError("No products found. The store may be private or empty.");
     } catch (err: any) {
