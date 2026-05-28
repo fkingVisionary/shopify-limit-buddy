@@ -1520,8 +1520,8 @@ function ProfileBuilderDialog({
 
   return (
     <Dialog open={!!base} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[90dvh] max-w-md flex-col gap-0 p-0">
+        <DialogHeader className="shrink-0 px-6 pt-6">
           <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
             <Sparkles className="h-6 w-6" />
           </div>
@@ -1531,7 +1531,7 @@ function ProfileBuilderDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-3">
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-6 py-3">
           <p className="text-[11px] leading-relaxed text-muted-foreground">
             Each variant gets small, safe permutations so checkouts look distinct. Check the Help tab for a full jiggling guide with examples.
           </p>
@@ -1674,7 +1674,7 @@ function ProfileBuilderDialog({
           </div>
         </div>
 
-        <DialogFooter className="flex-row gap-2 sm:justify-end">
+        <DialogFooter className="shrink-0 flex-row gap-2 border-t bg-background px-6 py-3 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off" && phoneMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
