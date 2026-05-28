@@ -1017,16 +1017,16 @@ function TasksView({
 // Create Task bottom sheet
 // ────────────────────────────────────────────
 function CreateTaskSheet({
-  stores, profiles, proxyCount, onCreate, onAddCustomStore,
+  stores, profiles, proxyGroups, onCreate, onAddCustomStore,
 }: {
-  stores: StoreEntry[]; profiles: Profile[]; proxyCount: number;
+  stores: StoreEntry[]; profiles: Profile[]; proxyGroups: ProxyGroup[];
   onCreate: (tpl: Omit<Task, "id" | "status" | "running">, n: number) => void;
   onAddCustomStore: (name: string, url: string) => void;
 }) {
   const [storeId, setStoreId] = useState<string>(stores[0]?.id ?? "");
   const [input, setInput] = useState("");
   const [profileId, setProfileId] = useState<string>(profiles[0]?.id ?? "");
-  const [proxyIdx, setProxyIdx] = useState<string>("-1"); // -1 = rotate
+  const [proxyGroupSel, setProxyGroupSel] = useState<string>("__direct"); // __direct = no proxy
   const [qty, setQty] = useState(1);
   const [taskQty, setTaskQty] = useState(1);
   const [addingStore, setAddingStore] = useState(false);
@@ -1036,6 +1036,11 @@ function CreateTaskSheet({
   // Re-sync when stores/profiles change
   useEffect(() => { if (!stores.find((s) => s.id === storeId) && stores[0]) setStoreId(stores[0].id); }, [stores, storeId]);
   useEffect(() => { if (!profiles.find((p) => p.id === profileId) && profiles[0]) setProfileId(profiles[0].id); }, [profiles, profileId]);
+  useEffect(() => {
+    // Default to first group if available
+    if (proxyGroupSel === "__direct" && proxyGroups.length > 0) setProxyGroupSel(proxyGroups[0].id);
+    if (proxyGroupSel !== "__direct" && !proxyGroups.find((g) => g.id === proxyGroupSel)) setProxyGroupSel("__direct");
+  }, [proxyGroups, proxyGroupSel]);
 
   const store = stores.find((s) => s.id === storeId);
   const profile = profiles.find((p) => p.id === profileId);
@@ -1049,7 +1054,7 @@ function CreateTaskSheet({
       storeName: store!.name,
       input: input.trim(),
       profileId: profile!.id,
-      proxyIdx: parseInt(proxyIdx, 10) as -1 | number,
+      proxyGroupId: proxyGroupSel === "__direct" ? null : proxyGroupSel,
       qty: Math.max(1, qty),
     }, Math.max(1, taskQty));
     setInput("");
