@@ -574,7 +574,7 @@ function Index() {
                         >
                           {p.title}
                         </a>
-                        <div className="flex shrink-0 gap-1.5">
+                        <div className="flex shrink-0 flex-wrap gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"
@@ -586,6 +586,15 @@ function Index() {
                             ) : (
                               "Check limit"
                             )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={watched.has(p.id) ? "default" : "secondary"}
+                            onClick={() => toggleWatch(p)}
+                            title={watched.has(p.id) ? "Stop watching" : "Watch for restock"}
+                          >
+                            {watched.has(p.id) ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                            {watched.has(p.id) ? "Watching" : "Watch"}
                           </Button>
                           <Button
                             size="sm"
@@ -605,10 +614,10 @@ function Index() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         {p.variants.length} variant{p.variants.length === 1 ? "" : "s"}
                       </div>
-                      <div className="mt-2">
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
                         {info?.status === "done" && (
                           info.maxPerOrder != null ? (
-                            <div className="flex flex-wrap items-center gap-2">
+                            <>
                               <Badge variant="default" className="gap-1">
                                 <CheckCircle2 className="h-3 w-3" />
                                 Limit: {info.maxPerOrder} per customer/order
@@ -618,7 +627,7 @@ function Index() {
                                   "{h}"
                                 </span>
                               ))}
-                            </div>
+                            </>
                           ) : (
                             <Badge variant="secondary">No per-person limit detected</Badge>
                           )
@@ -626,7 +635,24 @@ function Index() {
                         {info?.status === "error" && (
                           <span className="text-xs text-destructive">{info.error}</span>
                         )}
+                        {watched.has(p.id) && (() => {
+                          const w = watchStatus[p.id];
+                          if (!w) return <Badge variant="outline" className="gap-1"><Bell className="h-3 w-3 animate-pulse" />Polling...</Badge>;
+                          if (w.error) return <Badge variant="destructive">Monitor: {w.error}</Badge>;
+                          if (w.available) return <Badge className="bg-green-600 text-white gap-1"><Bell className="h-3 w-3" />IN STOCK</Badge>;
+                          return <Badge variant="outline" className="gap-1">
+                            <Bell className="h-3 w-3" />
+                            Out · checked {Math.max(0, Math.round((Date.now() - w.lastChecked) / 1000))}s ago
+                          </Badge>;
+                        })()}
                       </div>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </section>
+        )}
                     </div>
                   </Card>
                 );
