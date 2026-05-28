@@ -330,14 +330,49 @@ function Index() {
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b">
         <div className="mx-auto max-w-5xl px-4 py-6">
-          <div className="flex items-center gap-3">
-            <ShoppingBag className="h-6 w-6" />
-            <h1 className="text-2xl font-semibold tracking-tight">Shopify Limit Checker</h1>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <ShoppingBag className="h-6 w-6" />
+              <h1 className="text-2xl font-semibold tracking-tight">Shopify Limit Checker</h1>
+            </div>
+            <Button variant="ghost" size="sm" onClick={() => setShowSettings((s) => !s)}>
+              <Settings className="h-4 w-4" />
+              Checkout info
+            </Button>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">
             Enter any public Shopify store URL to inspect products and detect per-customer purchase quantity limits.
           </p>
-        </div>
+          {showSettings && (
+            <Card className="mt-4 p-4">
+              <div className="mb-2 text-sm font-medium">Pre-fill checkout info (saved locally)</div>
+              <p className="mb-3 text-xs text-muted-foreground">
+                Used to populate Shopify's checkout when you click Quick checkout. Nothing is sent anywhere until you submit on the store.
+              </p>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {([
+                  ["email", "Email"],
+                  ["phone", "Phone"],
+                  ["first_name", "First name"],
+                  ["last_name", "Last name"],
+                  ["address1", "Address"],
+                  ["city", "City"],
+                  ["province", "State / Province"],
+                  ["zip", "Postcode"],
+                  ["country", "Country"],
+                ] as const).map(([k, label]) => (
+                  <div key={k}>
+                    <Label className="text-xs">{label}</Label>
+                    <Input
+                      value={prefill[k]}
+                      onChange={(e) => updatePrefill({ [k]: e.target.value } as Partial<Prefill>)}
+                      className="h-8"
+                    />
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6">
