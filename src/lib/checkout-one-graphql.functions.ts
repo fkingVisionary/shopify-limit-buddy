@@ -60,6 +60,7 @@ const InputSchema = z.object({
 });
 
 export type C1Step =
+  | "akamai_sensor"
   | "cart_add"
   | "cart_redirect"
   | "checkout_page"
@@ -68,6 +69,7 @@ export type C1Step =
   | "submit_for_completion"
   | "captcha_solve"
   | "poll_receipt";
+
 
 export type C1StepRecord = {
   step: C1Step;
