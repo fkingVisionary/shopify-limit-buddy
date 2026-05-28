@@ -69,26 +69,34 @@ function normalizeStoreUrl(input: string): string | null {
   }
 }
 
-const PROXIES_KEY = "shopify-limit-checker:proxies";
+// ─────────────── Proxy groups ───────────────
+const PROXIES_KEY = "shopify-limit-checker:proxies";      // legacy flat list
+const PROXY_GROUPS_KEY = "aio:proxy-groups";              // new: groups
 
-// In-memory proxy list (mirrored to localStorage). A "proxy" is a URL template
-// that contains "{url}" — the request URL is substituted in. Empty/missing
-// means use the same-origin /api/public/shopify route.
-let __proxyList: string[] = [];
-let __proxyIdx = 0;
-function setProxyList(list: string[]) {
-  __proxyList = list.filter((s) => s.includes("{url}"));
-  __proxyIdx = 0;
+type ProxyGroup = { id: string; name: string; proxies: string[] };
+
+// In-memory mirror so the network helpers can rotate without React state.
+let __proxyGroups: ProxyGroup[] = [];
+const __rotIdx: Record<string, number> = {};
+function setProxyGroupsRuntime(groups: ProxyGroup[]) {
+  __proxyGroups = groups.map((g) => ({
+    ...g,
+    proxies: g.proxies.filter((s) => s.includes("{url}")),
+  }));
 }
 
-function proxied(targetUrl: string): string {
-  if (__proxyList.length === 0) {
-    return `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
-  }
-  const tmpl = __proxyList[__proxyIdx % __proxyList.length];
-  __proxyIdx = (__proxyIdx + 1) % __proxyList.length;
-  return tmpl.replace("{url}", encodeURIComponent(targetUrl));
+// Build a request URL. If groupId resolves to a group with proxies, rotate
+// round-robin within it; otherwise fall back to the same-origin proxy route.
+function proxied(targetUrl: string, groupId?: string | null): string {
+  const direct = `/api/public/shopify?url=${encodeURIComponent(targetUrl)}`;
+  if (!groupId) return direct;
+  const group = __proxyGroups.find((g) => g.id === groupId);
+  if (!group || group.proxies.length === 0) return direct;
+  const i = (__rotIdx[group.id] ?? 0) % group.proxies.length;
+  __rotIdx[group.id] = (i + 1) % group.proxies.length;
+  return group.proxies[i].replace("{url}", encodeURIComponent(targetUrl));
 }
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
