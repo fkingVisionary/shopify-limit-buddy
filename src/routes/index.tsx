@@ -1300,39 +1300,208 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn, onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
   autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
+  onShowWizard: () => void; onResetTips: () => void;
 }) {
   return (
     <div className="space-y-3">
       <Card className="p-3">
-        <div className="text-sm font-medium">Monitor</div>
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Monitor <InfoDot text="How often each running task checks its product. Lower = faster detection but more requests, which can trigger rate limits." />
+        </div>
         <div className="mt-2">
           <Label className="text-[11px] text-muted-foreground">Poll interval (ms, min 1500)</Label>
           <Input className="mt-1 h-9" type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} />
+          <p className="mt-1 text-[10px] text-muted-foreground">3000–5000ms is a safe balance for most stores.</p>
         </div>
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
           Auto-open checkout tab on drop
+          <InfoDot text="When stock appears, a new tab opens to Shopify's checkout with your profile pre-filled. Allow popups for this site." />
         </label>
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
           Sound + browser notification
+          <InfoDot text="Plays a beep and (if permitted) shows a browser notification when a task detects stock." />
         </label>
         <p className="mt-2 text-[11px] text-muted-foreground">Keep this tab pinned — browsers throttle background tabs.</p>
       </Card>
 
-      <Card className="p-3 text-[11px] text-muted-foreground">
-        <div className="text-sm font-medium text-foreground">Tips</div>
-        <ul className="mt-2 list-disc space-y-1 pl-4">
-          <li>Each task polls its product on the configured interval and opens the prefilled checkout when a variant becomes available.</li>
-          <li>If multiple proxies are configured, requests rotate round-robin automatically.</li>
-          <li>If a per-customer limit is detected, qty is capped accordingly.</li>
-          <li>Allow popups for this site so auto-open isn't blocked.</li>
-        </ul>
+      <Card className="p-3">
+        <div className="text-sm font-medium">Onboarding & tips</div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Replay the welcome tour or bring back dismissed tip bars.</p>
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" className="h-9" onClick={onShowWizard}>
+            <Sparkles className="h-4 w-4" /> Show welcome tour
+          </Button>
+          <Button size="sm" variant="ghost" className="h-9" onClick={onResetTips}>
+            <Info className="h-4 w-4" /> Restore tips
+          </Button>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// InfoDot — tap to reveal a short explanation
+// ────────────────────────────────────────────
+function InfoDot({ text }: { text: string }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+          aria-label="More info"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <HelpCircle className="h-3.5 w-3.5" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="top" className="w-64 text-xs leading-relaxed">
+        {text}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ────────────────────────────────────────────
+// Welcome wizard — shown once
+// ────────────────────────────────────────────
+function WelcomeWizard({
+  open, onClose, hasProfiles, onGoProfiles, onGoStores: _onGoStores, onCreateTask,
+}: {
+  open: boolean; onClose: () => void;
+  hasProfiles: boolean;
+  onGoProfiles: () => void; onGoStores: () => void; onCreateTask: () => void;
+}) {
+  const [step, setStep] = useState(0);
+  const slides = [
+    {
+      icon: Sparkles,
+      title: "Welcome to J1m's Bot",
+      body: "A pocket-sized shopping bot. Tell it what you want, which store, and which profile — when stock drops it fires the checkout for you.",
+      cta: { label: "Next", action: () => setStep(1) },
+    },
+    {
+      icon: UserIcon,
+      title: "Step 1 — Add a profile",
+      body: "A profile is the shipping + contact info that pre-fills Shopify checkout. Add one profile per checkout you want to fire in parallel.",
+      cta: { label: hasProfiles ? "Next" : "Add a profile", action: hasProfiles ? () => setStep(2) : onGoProfiles },
+    },
+    {
+      icon: Store,
+      title: "Step 2 — Pick a store",
+      body: "Choose from preset Shopify stores (JB Hi-Fi, Kith, Gymshark…) or add any public Shopify store by URL. You can manage stores anytime from the Stores tab.",
+      cta: { label: "Next", action: () => setStep(3) },
+    },
+    {
+      icon: ListChecks,
+      title: "Step 3 — Create your first task",
+      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, the checkout opens automatically.",
+      cta: { label: "Create a task", action: onCreateTask },
+    },
+  ];
+  const s = slides[step];
+  const Icon = s.icon;
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <div className="mx-auto mb-2 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <Icon className="h-6 w-6" />
+          </div>
+          <DialogTitle className="text-center text-lg">{s.title}</DialogTitle>
+          <DialogDescription className="text-center text-sm leading-relaxed">
+            {s.body}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center justify-center gap-1.5 py-1">
+          {slides.map((_, i) => (
+            <div key={i} className={`h-1.5 w-6 rounded-full transition-colors ${i === step ? "bg-primary" : "bg-muted"}`} />
+          ))}
+        </div>
+
+        <DialogFooter className="flex-row gap-2 sm:justify-between">
+          <Button variant="ghost" size="sm" onClick={onClose}>Skip</Button>
+          <div className="flex gap-2">
+            {step > 0 && (
+              <Button variant="secondary" size="sm" onClick={() => setStep((p) => p - 1)}>
+                <ChevronLeft className="h-4 w-4" /> Back
+              </Button>
+            )}
+            <Button size="sm" onClick={s.cta.action}>
+              {s.cta.label} <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────
+// Help view — glossary, how-it-works, FAQ
+// ────────────────────────────────────────────
+function HelpView() {
+  return (
+    <div className="space-y-3">
+      <Card className="p-4">
+        <div className="flex items-center gap-2">
+          <BookOpen className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">How J1m's Bot works</h2>
+        </div>
+        <ol className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
+          <li><b className="text-foreground">1. Profile</b> — your shipping + contact info, used to pre-fill Shopify checkout.</li>
+          <li><b className="text-foreground">2. Store</b> — the Shopify storefront you want to watch.</li>
+          <li><b className="text-foreground">3. Task</b> — links a product on that store to a profile.</li>
+          <li><b className="text-foreground">4. Monitor</b> — the bot polls the product on a fast interval.</li>
+          <li><b className="text-foreground">5. Drop</b> — the moment stock appears, the checkout opens, prefilled and ready to pay.</li>
+        </ol>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="text-sm font-semibold">Glossary</h2>
+        <dl className="mt-3 space-y-2.5 text-xs">
+          {[
+            ["Task", "One product being watched with one profile."],
+            ["Profile", "Saved shipping + contact info used to fill checkout."],
+            ["SKU / handle", "Shopify's product identifier — usually visible in the URL after /products/."],
+            ["Proxy", "An intermediate server requests are routed through. Helps avoid rate limits during drops."],
+            ["Poll interval", "How often the bot rechecks the product (ms). Lower = faster but more requests."],
+            ["Per-customer limit", "Shopify's max-per-order rule. The bot detects and caps quantity automatically."],
+            ["In stock", "At least one variant became available. The bot fires the checkout."],
+          ].map(([term, def]) => (
+            <div key={term}>
+              <dt className="font-medium text-foreground">{term}</dt>
+              <dd className="text-muted-foreground">{def}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="text-sm font-semibold">FAQ</h2>
+        <div className="mt-3 space-y-3 text-xs">
+          {[
+            ["Why didn't the checkout tab open?", "Allow popups for this site in your browser settings — the bot can only auto-open with permission."],
+            ["Why was a task slower than expected?", "Browsers throttle background tabs. Keep J1m's Bot pinned and visible during a drop."],
+            ["What stores work?", "Any public Shopify store. The bot reads each store's /products.json and /products/{handle}.js endpoints."],
+            ["Do I need proxies?", "No — they're optional. They help when a store rate-limits during high traffic drops."],
+            ["Is anything sent off-device?", "Profile data is stored locally in your browser. Product requests go directly to the store (or through your proxies)."],
+          ].map(([q, a]) => (
+            <div key={q}>
+              <div className="font-medium text-foreground">{q}</div>
+              <div className="mt-0.5 text-muted-foreground">{a}</div>
+            </div>
+          ))}
+        </div>
       </Card>
     </div>
   );
