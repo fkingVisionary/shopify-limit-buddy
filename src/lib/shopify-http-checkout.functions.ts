@@ -202,9 +202,13 @@ export const runHttpCheckout = createServerFn({ method: "POST" })
       });
       collectCookies(res, jar);
       checkoutUrl = res.url;
-      record("checkout_redirect", res.ok, res.status, Date.now() - s, checkoutUrl);
-      if (!res.ok || !/checkouts?\//i.test(checkoutUrl)) {
-        return fail("checkout_redirect", `bad redirect: ${checkoutUrl}`);
+      // POST→/checkouts/ redirect: final URL may 405 (doesn't accept POST)
+      // but the URL itself is valid — we'll GET it in the next step.
+      const landedOnCheckout = /\/checkouts?\//i.test(checkoutUrl);
+      const accepted = landedOnCheckout || res.ok;
+      record("checkout_redirect", accepted, res.status, Date.now() - s, checkoutUrl);
+      if (!accepted) {
+        return fail("checkout_redirect", `bad redirect: ${res.status} ${checkoutUrl}`);
       }
     } catch (e) {
       return fail(lastStep, (e as Error).message);
