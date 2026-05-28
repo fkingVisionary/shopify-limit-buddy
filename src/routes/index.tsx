@@ -2219,6 +2219,10 @@ function SettingsView({
         </p>
       </Card>
 
+      <LocalRunnerCard />
+
+
+
 
 
       <Card className="p-3">
