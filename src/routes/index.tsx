@@ -1468,7 +1468,7 @@ function ProfileBuilderDialog({
   const preview = (() => {
     const seed = 1;
     const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
-    const addr = jigAddr ? jigAddress(base.address1, seed) : base.address1;
+    const addr = jigAddress(base.address1, seed, addrMode);
     const email = jigEmail(base.email, seed, emailMode, catchallDomain);
     return { name, addr, email };
   })();
