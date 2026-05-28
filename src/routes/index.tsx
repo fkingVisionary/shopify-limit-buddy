@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings } from "lucide-react";
+import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings, Eye, EyeOff, Bell } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -245,6 +245,13 @@ function Index() {
   const [query, setQuery] = useState("");
   const [prefill, setPrefill] = useState<Prefill>(emptyPrefill);
   const [showSettings, setShowSettings] = useState(false);
+  // Watcher state
+  const [watched, setWatched] = useState<Set<number>>(new Set());
+  const [watchStatus, setWatchStatus] = useState<Record<number, { lastChecked: number; available: boolean; lastVariantId?: number; error?: string }>>({});
+  const [pollMs, setPollMs] = useState(4000);
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [notifyOn, setNotifyOn] = useState(true);
+  const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
   useEffect(() => { setPrefill(loadPrefill()); }, []);
 
@@ -256,15 +263,103 @@ function Index() {
     });
   };
 
-  const quickCheckout = (p: Product) => {
+  // Audio beep using WebAudio (no asset needed)
+  const beep = () => {
+    try {
+      const Ctx = (window as any).AudioContext || (window as any).webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "square"; o.frequency.value = 880;
+      g.gain.value = 0.15;
+      o.connect(g); g.connect(ctx.destination);
+      o.start();
+      setTimeout(() => { o.frequency.value = 1320; }, 150);
+      setTimeout(() => { o.stop(); ctx.close(); }, 450);
+    } catch {}
+  };
+
+  const notifyDrop = (title: string, body: string) => {
+    if (!notifyOn) return;
+    beep();
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(title, { body });
+      }
+    } catch {}
+  };
+
+  const toggleWatch = async (p: Product) => {
+    if ("Notification" in window && Notification.permission === "default") {
+      try { await Notification.requestPermission(); } catch {}
+    }
+    setWatched((prev) => {
+      const next = new Set(prev);
+      if (next.has(p.id)) next.delete(p.id);
+      else next.add(p.id);
+      return next;
+    });
+  };
+
+
+  const quickCheckout = (p: Product, opts?: { variantId?: number; qty?: number }) => {
     if (!storeUrl) return;
-    const variant = p.variants.find((v) => v.available) ?? p.variants[0];
+    const variant = opts?.variantId
+      ? p.variants.find((v) => v.id === opts.variantId) ?? p.variants[0]
+      : p.variants.find((v) => v.available) ?? p.variants[0];
     if (!variant) return;
     const info = limits[p.id];
-    const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
+    const qty = opts?.qty ?? (info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1);
     const url = buildCheckoutUrl(storeUrl, variant.id, qty, prefill);
     window.open(url, "_blank", "noopener,noreferrer");
   };
+
+  // Polling loop for watched products
+  useEffect(() => {
+    if (!storeUrl || watched.size === 0) return;
+    let cancelled = false;
+    const tick = async () => {
+      const ids = Array.from(watched);
+      await Promise.all(ids.map(async (pid) => {
+        const product = products.find((p) => p.id === pid);
+        if (!product) return;
+        try {
+          const res = await fetch(proxied(`${storeUrl}/products/${product.handle}.js`));
+          if (!res.ok) {
+            setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: `HTTP ${res.status}` } }));
+            return;
+          }
+          const data: any = await res.json();
+          const variants: any[] = data.variants ?? [];
+          const availVariant = variants.find((v) => v.available);
+          const isAvail = !!availVariant;
+          setWatchStatus((s) => ({
+            ...s,
+            [pid]: { lastChecked: Date.now(), available: isAvail, lastVariantId: availVariant?.id, error: undefined },
+          }));
+          if (isAvail && !triggeredRef.current.has(pid)) {
+            triggeredRef.current.add(pid);
+            notifyDrop("IN STOCK", product.title);
+            if (autoOpen) {
+              const info = limits[pid];
+              const qty = info?.maxPerOrder && info.maxPerOrder > 0 ? info.maxPerOrder : 1;
+              const url = buildCheckoutUrl(storeUrl, availVariant.id, qty, prefill);
+              window.open(url, "_blank", "noopener,noreferrer");
+            }
+          }
+          if (!isAvail) triggeredRef.current.delete(pid);
+        } catch (e: any) {
+          setWatchStatus((s) => ({ ...s, [pid]: { ...(s[pid] ?? { available: false }), lastChecked: Date.now(), error: e?.message ?? "fetch failed" } }));
+        }
+      }));
+    };
+    tick();
+    const id = setInterval(() => { if (!cancelled) tick(); }, Math.max(1500, pollMs));
+    return () => { cancelled = true; clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeUrl, watched, pollMs, autoOpen, notifyOn, products, prefill, limits]);
+
 
   const handleScan = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -371,6 +466,33 @@ function Index() {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 border-t pt-3">
+                <div className="mb-2 text-sm font-medium">Drop monitor</div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <div>
+                    <Label className="text-xs">Poll interval (ms)</Label>
+                    <Input
+                      type="number"
+                      min={1500}
+                      step={500}
+                      value={pollMs}
+                      onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))}
+                      className="h-8"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-xs mt-5">
+                    <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
+                    Auto-open checkout on drop
+                  </label>
+                  <label className="flex items-center gap-2 text-xs mt-5">
+                    <input type="checkbox" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
+                    Sound + browser notification
+                  </label>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Watching {watched.size} product{watched.size === 1 ? "" : "s"}. Keep this tab open. Browsers throttle background tabs — pin it.
+                </p>
+              </div>
             </Card>
           )}
         </div>
@@ -452,7 +574,7 @@ function Index() {
                         >
                           {p.title}
                         </a>
-                        <div className="flex shrink-0 gap-1.5">
+                        <div className="flex shrink-0 flex-wrap gap-1.5">
                           <Button
                             size="sm"
                             variant="outline"
@@ -464,6 +586,15 @@ function Index() {
                             ) : (
                               "Check limit"
                             )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={watched.has(p.id) ? "default" : "secondary"}
+                            onClick={() => toggleWatch(p)}
+                            title={watched.has(p.id) ? "Stop watching" : "Watch for restock"}
+                          >
+                            {watched.has(p.id) ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                            {watched.has(p.id) ? "Watching" : "Watch"}
                           </Button>
                           <Button
                             size="sm"
@@ -483,10 +614,10 @@ function Index() {
                       <div className="mt-1 text-xs text-muted-foreground">
                         {p.variants.length} variant{p.variants.length === 1 ? "" : "s"}
                       </div>
-                      <div className="mt-2">
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
                         {info?.status === "done" && (
                           info.maxPerOrder != null ? (
-                            <div className="flex flex-wrap items-center gap-2">
+                            <>
                               <Badge variant="default" className="gap-1">
                                 <CheckCircle2 className="h-3 w-3" />
                                 Limit: {info.maxPerOrder} per customer/order
@@ -496,7 +627,7 @@ function Index() {
                                   "{h}"
                                 </span>
                               ))}
-                            </div>
+                            </>
                           ) : (
                             <Badge variant="secondary">No per-person limit detected</Badge>
                           )
@@ -504,6 +635,16 @@ function Index() {
                         {info?.status === "error" && (
                           <span className="text-xs text-destructive">{info.error}</span>
                         )}
+                        {watched.has(p.id) && (() => {
+                          const w = watchStatus[p.id];
+                          if (!w) return <Badge variant="outline" className="gap-1"><Bell className="h-3 w-3 animate-pulse" />Polling...</Badge>;
+                          if (w.error) return <Badge variant="destructive">Monitor: {w.error}</Badge>;
+                          if (w.available) return <Badge className="bg-green-600 text-white gap-1"><Bell className="h-3 w-3" />IN STOCK</Badge>;
+                          return <Badge variant="outline" className="gap-1">
+                            <Bell className="h-3 w-3" />
+                            Out · checked {Math.max(0, Math.round((Date.now() - w.lastChecked) / 1000))}s ago
+                          </Badge>;
+                        })()}
                       </div>
                     </div>
                   </Card>
