@@ -125,8 +125,7 @@ async function fetchProducts(
 
 async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
-  // quantity_rule.max — the merchant-configured per-order limit. Null when
-  // unset, so we only report a limit when it is actually configured.
+  // quantity_rule.max — the merchant-configured per-order limit.
   try {
     const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`));
     if (res.ok) {
@@ -142,38 +141,48 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
       }
     }
   } catch {
-    // fall through to HTML scrape
+    // fall through
   }
 
-  // Fallback: scan visible HTML for merchant-written notes like
-  // "Limit 2 per customer". Strip <script>/<style> first to avoid matching
-  // theme JSON blobs, and ignore the quantity <input max="..."> attribute
-  // because it usually reflects inventory, not a per-person limit.
   const res = await fetch(proxied(`${storeUrl}/products/${handle}`));
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
+
+  let maxFromText: number | null = null;
+  const hints: string[] = [];
+  const consider = (n: number, hint: string) => {
+    if (!isNaN(n) && n > 0 && n < 1000) {
+      maxFromText = maxFromText === null ? n : Math.min(maxFromText, n);
+      hints.push(hint.trim().replace(/\s+/g, " ").slice(0, 120));
+    }
+  };
+
+  // Pass 1: scan raw HTML (incl. scripts) for merchant JSON blobs like
+  // JB Hi-Fi's `"LimitPerOrder":12` or generic `limitPerOrder: 12`.
+  const jsonPatterns: RegExp[] = [
+    /"limit[_ ]?per[_ ]?order"\s*:\s*(\d+)/gi,
+    /"max[_ ]?per[_ ]?(?:customer|order|person)"\s*:\s*(\d+)/gi,
+    /limitPerOrder\s*[:=]\s*(\d+)/gi,
+  ];
+  for (const re of jsonPatterns) {
+    let m;
+    while ((m = re.exec(html)) !== null) consider(parseInt(m[1], 10), m[0]);
+  }
+
+  // Pass 2: visible text patterns.
   const visible = html
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
     .replace(/<[^>]+>/g, " ");
-
-  const hints: string[] = [];
-  const patterns: RegExp[] = [
-    /limit(?:ed)?\s+(?:to\s+)?(\d+)\s+per\s+(customer|order|person|household)/gi,
-    /max(?:imum)?\s+(?:of\s+)?(\d+)\s+per\s+(customer|order|person|household)/gi,
-    /(\d+)\s+per\s+(customer|order|person|household)\s+limit/gi,
+  const textPatterns: RegExp[] = [
+    /limit(?:ed)?\s+(?:to\s+|of\s+)?(\d+)\s+(?:units?\s+)?per\s+(customer|order|person|household)/gi,
+    /max(?:imum)?\s+(?:of\s+)?(\d+)\s+(?:units?\s+)?per\s+(customer|order|person|household)/gi,
+    /(\d+)\s+(?:units?\s+)?per\s+(customer|order|person|household)\s+limit/gi,
     /only\s+(\d+)\s+per\s+(customer|order|person|household)/gi,
   ];
-  let maxFromText: number | null = null;
-  for (const re of patterns) {
+  for (const re of textPatterns) {
     let m;
-    while ((m = re.exec(visible)) !== null) {
-      const n = parseInt(m[1], 10);
-      if (!isNaN(n) && n > 0 && n < 1000) {
-        maxFromText = maxFromText === null ? n : Math.min(maxFromText, n);
-        hints.push(m[0].trim().replace(/\s+/g, " "));
-      }
-    }
+    while ((m = re.exec(visible)) !== null) consider(parseInt(m[1], 10), m[0]);
   }
 
   return {
@@ -181,6 +190,47 @@ async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo>
     maxPerOrder: maxFromText,
     textHints: Array.from(new Set(hints)).slice(0, 3),
   };
+}
+
+type Prefill = {
+  email: string;
+  first_name: string;
+  last_name: string;
+  address1: string;
+  city: string;
+  province: string;
+  zip: string;
+  country: string;
+  phone: string;
+};
+
+const PREFILL_KEY = "shopify-limit-checker:prefill";
+const emptyPrefill: Prefill = {
+  email: "", first_name: "", last_name: "", address1: "",
+  city: "", province: "", zip: "", country: "Australia", phone: "",
+};
+
+function loadPrefill(): Prefill {
+  if (typeof window === "undefined") return emptyPrefill;
+  try {
+    const raw = localStorage.getItem(PREFILL_KEY);
+    return raw ? { ...emptyPrefill, ...JSON.parse(raw) } : emptyPrefill;
+  } catch { return emptyPrefill; }
+}
+
+function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: Prefill): string {
+  const params = new URLSearchParams();
+  if (p.email) params.set("checkout[email]", p.email);
+  if (p.first_name) params.set("checkout[shipping_address][first_name]", p.first_name);
+  if (p.last_name) params.set("checkout[shipping_address][last_name]", p.last_name);
+  if (p.address1) params.set("checkout[shipping_address][address1]", p.address1);
+  if (p.city) params.set("checkout[shipping_address][city]", p.city);
+  if (p.province) params.set("checkout[shipping_address][province]", p.province);
+  if (p.zip) params.set("checkout[shipping_address][zip]", p.zip);
+  if (p.country) params.set("checkout[shipping_address][country]", p.country);
+  if (p.phone) params.set("checkout[shipping_address][phone]", p.phone);
+  const qs = params.toString();
+  return `${storeUrl}/cart/${variantId}:${qty}${qs ? `?${qs}` : ""}`;
 }
 
 function Index() {
