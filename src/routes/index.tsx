@@ -602,6 +602,25 @@ function jigEmail(
 }
 
 
+// Phone jigger — generates a random valid-looking Australian mobile per seed.
+// AU mobile format: 04XX XXX XXX (10 digits, always starts with 04).
+// Deterministic per seed so the same variant always gets the same number.
+export type PhoneJigMode = "off" | "au_mobile";
+function jigPhone(_phone: string, seed: number, mode: PhoneJigMode): string {
+  if (mode === "off") return _phone;
+  // Simple LCG seeded from the variant index for stable, spread-out digits
+  let s = (seed * 2654435761) >>> 0;
+  const next = () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s;
+  };
+  let digits = "";
+  for (let i = 0; i < 8; i++) digits += (next() % 10).toString();
+  // 04 + 8 digits, formatted as "04XX XXX XXX"
+  return `04${digits.slice(0, 2)} ${digits.slice(2, 5)} ${digits.slice(5, 8)}`;
+}
+
+
 function Index() {
   // ─── Config state ───
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -1451,6 +1470,7 @@ function ProfileBuilderDialog({
   const [jigNames, setJigNames] = useState(true);
   const [emailMode, setEmailMode] = useState<"dot" | "catchall" | "off">("dot");
   const [catchallDomain, setCatchallDomain] = useState("");
+  const [phoneMode, setPhoneMode] = useState<PhoneJigMode>("au_mobile");
 
   useEffect(() => {
     if (base) {
@@ -1460,6 +1480,7 @@ function ProfileBuilderDialog({
       const dom = (base.email.split("@")[1] || "").toLowerCase();
       setEmailMode(dom === "gmail.com" || dom === "googlemail.com" ? "dot" : "off");
       setCatchallDomain("");
+      setPhoneMode("au_mobile");
     }
   }, [base]);
 
@@ -1470,7 +1491,8 @@ function ProfileBuilderDialog({
     const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
     const addr = jigAddress(base.address1, seed, addrMode);
     const email = jigEmail(base.email, seed, emailMode, catchallDomain);
-    return { name, addr, email };
+    const phone = jigPhone(base.phone, seed, phoneMode);
+    return { name, addr, email, phone };
   })();
 
   const build = () => {
@@ -1480,6 +1502,7 @@ function ProfileBuilderDialog({
       const name = jigNames ? jigName(base.first_name, base.last_name, seed) : { first: base.first_name, last: base.last_name };
       const addr = jigAddress(base.address1, seed, addrMode);
       const email = jigEmail(base.email, seed, emailMode, catchallDomain);
+      const phone = jigPhone(base.phone, seed, phoneMode);
       variants.push({
         ...base,
         id: makeId(),
@@ -1488,6 +1511,7 @@ function ProfileBuilderDialog({
         last_name: name.last,
         address1: addr,
         email,
+        phone,
       });
     }
     onCreate(variants);
@@ -1608,6 +1632,36 @@ function ProfileBuilderDialog({
             )}
           </div>
 
+          {/* Phone jigger */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <span>Phone jigger</span>
+              <InfoDot text="Replaces the phone with a randomly-generated valid-format Australian mobile (04XX XXX XXX). Same variant always gets the same number." />
+            </div>
+            <div className="grid grid-cols-2 gap-1">
+              {([
+                { v: "au_mobile", label: "Random AU mobile" },
+                { v: "off",       label: "Keep original" },
+              ] as const).map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => setPhoneMode(o.v)}
+                  className={`h-9 rounded-md border text-xs font-medium transition ${
+                    phoneMode === o.v ? "border-primary bg-primary/15 text-primary" : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {phoneMode === "au_mobile"
+                ? "Generates a valid-format AU mobile per variant (always starts with 04). Couriers ignore it for delivery, but it satisfies checkout validation as a unique number."
+                : "Every variant keeps the base profile's phone number."}
+            </p>
+          </div>
+
           {/* Preview */}
           <div className="rounded-lg border bg-background p-3 text-xs">
             <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
@@ -1615,13 +1669,14 @@ function ProfileBuilderDialog({
               <div>{preview.name.first} {preview.name.last}</div>
               <div>{preview.addr || <span className="italic">(no address)</span>}</div>
               <div>{preview.email}</div>
+              <div>{preview.phone || <span className="italic">(no phone)</span>}</div>
             </div>
           </div>
         </div>
 
         <DialogFooter className="flex-row gap-2 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
+          <Button size="sm" onClick={build} disabled={count < 1 || (addrMode === "off" && !jigNames && emailMode === "off" && phoneMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
           </Button>
 
