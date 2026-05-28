@@ -373,6 +373,7 @@ function Index() {
               </div>
             </Card>
           )}
+        </div>
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-6">
