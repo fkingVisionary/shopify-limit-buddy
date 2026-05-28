@@ -860,16 +860,63 @@ function Index() {
               triggeredRef.current.add(t.id);
               const profile = profiles.find((p) => p.id === t.profileId);
               notify("IN STOCK", `${t.productTitle ?? t.input}`);
-              if (autoOpen && profile) {
+              if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
-                const url = buildCheckoutUrl(t.storeUrl, avail.id, qty, profile);
-                window.open(url, `_task_${t.id}`, "noopener,noreferrer");
-                updateTask(t.id, { status: "opened" });
+                // Drive the checkout state machine.
+                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
+                // Pull a captcha token from the pool if one's warm for this store.
+                const pooled = poolApi.takeToken(t.storeId);
+                const rawProxy = pickRawProxy(t.proxyGroupId);
+                (async () => {
+                  try {
+                    const r = await checkoutFn({
+                      data: {
+                        storeUrl: t.storeUrl,
+                        variantId: avail.id,
+                        qty,
+                        profile: {
+                          email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
+                          address1: profile.address1, city: profile.city, province: profile.province,
+                          zip: profile.zip, country: profile.country, phone: profile.phone,
+                        },
+                        proxy: rawProxy,
+                        captchaToken: pooled?.token ?? null,
+                      },
+                    });
+                    if (r.ok) {
+                      updateTask(t.id, {
+                        status: "checkout_ready",
+                        checkoutUrl: r.checkoutUrl,
+                        checkoutTokenUsed: !!pooled,
+                        checkoutElapsedMs: r.elapsedMs,
+                        message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
+                      });
+                      if (autoOpen) {
+                        window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
+                        updateTask(t.id, { status: "opened" });
+                      }
+                    } else {
+                      updateTask(t.id, {
+                        status: "failed",
+                        message: `${r.stage}: ${r.error}`,
+                        checkoutElapsedMs: r.elapsedMs,
+                      });
+                    }
+                  } catch (err: any) {
+                    updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
+                  }
+                })();
               }
             }
           } else {
-            updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
-            triggeredRef.current.delete(t.id);
+            // Don't downgrade once the engine has fired.
+            const cur = tasksRef.current.find((x) => x.id === t.id);
+            if (cur && (cur.status === "checkout_ready" || cur.status === "opened" || cur.status === "failed" || cur.status === "adding_to_cart")) {
+              updateTask(t.id, { lastChecked: Date.now() });
+            } else {
+              updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
+              triggeredRef.current.delete(t.id);
+            }
           }
         } catch (e: any) {
           updateTask(t.id, { lastChecked: Date.now(), message: e?.message ?? "fetch failed" });
