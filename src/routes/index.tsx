@@ -1447,7 +1447,7 @@ function ProfileBuilderDialog({
   onCreate: (variants: Profile[]) => void;
 }) {
   const [count, setCount] = useState(3);
-  const [jigAddr, setJigAddr] = useState(true);
+  const [addrMode, setAddrMode] = useState<AddrJigMode>("mix");
   const [jigNames, setJigNames] = useState(true);
   const [emailMode, setEmailMode] = useState<"dot" | "catchall" | "off">("dot");
   const [catchallDomain, setCatchallDomain] = useState("");
