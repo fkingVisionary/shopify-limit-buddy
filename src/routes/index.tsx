@@ -1151,6 +1151,8 @@ function Index() {
             pollMs={pollMs} setPollMs={setPollMs}
             autoOpen={autoOpen} setAutoOpen={setAutoOpen}
             notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+            browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
+            browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
             onShowWizard={() => setWizardOpen(true)}
             onResetTips={resetTips}
           />
