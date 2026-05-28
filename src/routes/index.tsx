@@ -761,6 +761,7 @@ function Index() {
   const solveFn = useServerFn(solveCaptcha);
   const detectFn = useServerFn(detectCaptcha);
   const checkoutFn = useServerFn(runCheckout);
+  const browserlessFn = useServerFn(runBrowserlessCheckout);
   const poolApi = usePool(allStores, solveFn, detectFn);
 
   // ─── Profile helpers ───
