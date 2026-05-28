@@ -165,7 +165,7 @@ async function fetchProducts(
   return { products: all, partial, note };
 }
 
-async function detectLimit(storeUrl: string, handle: string): Promise<LimitInfo> {
+async function detectLimit(storeUrl: string, handle: string, groupId?: string | null): Promise<LimitInfo> {
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
   // quantity_rule.max — the merchant-configured per-order limit.
   try {
@@ -279,7 +279,7 @@ function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | 
 }
 
 // Fetch a single product by Shopify handle and return it as a Product
-async function fetchProductByHandle(storeUrl: string, handle: string): Promise<Product | null> {
+async function fetchProductByHandle(storeUrl: string, handle: string, groupId?: string | null): Promise<Product | null> {
   const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
   if (!res.ok) return null;
   const p: any = await res.json();
@@ -300,7 +300,7 @@ function handleFromUrl(input: string): string | null {
   return m ? m[1] : null;
 }
 
-async function searchProducts(storeUrl: string, query: string, limit = 8): Promise<Product[]> {
+async function searchProducts(storeUrl: string, query: string, limit = 8, groupId?: string | null): Promise<Product[]> {
   const q = encodeURIComponent(query.trim());
   const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
   const res = await fetch(proxied(url, groupId));
