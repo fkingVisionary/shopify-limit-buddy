@@ -2297,7 +2297,7 @@ function SettingsView({
 // ────────────────────────────────────────────
 // Local runner card — pair an Electron runner and watch its connection.
 // ────────────────────────────────────────────
-function LocalRunnerCard() {
+function LocalRunnerCard({ runnerPreferred, setRunnerPreferred }: { runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void }) {
   const createCode = useServerFn(createRunnerPairingCode);
   const fetchStatus = useServerFn(getRunnerStatus);
   const [code, setCode] = useState<string | null>(null);
