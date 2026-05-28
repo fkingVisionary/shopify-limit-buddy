@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings } from "lucide-react";
+import { Loader2, ShoppingBag, AlertCircle, CheckCircle2, Zap, Settings, Eye, EyeOff, Bell } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
