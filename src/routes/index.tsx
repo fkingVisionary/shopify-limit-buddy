@@ -308,7 +308,7 @@ async function searchProducts(storeUrl: string, query: string, limit = 8, groupI
   const data: any = await res.json();
   const items: any[] = data?.resources?.results?.products ?? [];
   // suggest.json doesn't return variants — fetch each handle in parallel
-  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle)));
+  const results = await Promise.all(items.map((it) => fetchProductByHandle(storeUrl, it.handle, groupId)));
   return results.filter((p): p is Product => !!p);
 }
 
@@ -644,9 +644,9 @@ function Index() {
       try {
         const handle = handleFromUrl(t.input);
         let p: Product | null = null;
-        if (handle) p = await fetchProductByHandle(t.storeUrl, handle);
+        if (handle) p = await fetchProductByHandle(t.storeUrl, handle, t.proxyGroupId);
         else {
-          const results = await searchProducts(t.storeUrl, t.input, 1);
+          const results = await searchProducts(t.storeUrl, t.input, 1, t.proxyGroupId);
           p = results[0] ?? null;
         }
         if (!p) {
@@ -654,7 +654,7 @@ function Index() {
           return;
         }
         // Detect limit
-        const li = await detectLimit(t.storeUrl, p.handle).catch(() => null);
+        const li = await detectLimit(t.storeUrl, p.handle, t.proxyGroupId).catch(() => null);
         updateTask(id, {
           productHandle: p.handle,
           productTitle: p.title,
