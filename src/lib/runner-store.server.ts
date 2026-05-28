@@ -14,6 +14,8 @@ const pairingCodes = new Map<string, { deviceName: string; createdAt: number }>(
 const devicesByToken = new Map<string, Device>();
 const jobsByDevice  = new Map<string, RunnerJob[]>(); // FIFO queue per device
 const resultsByJob  = new Map<string, RunnerResult>();
+type RecentJob = { id: string; storeUrl: string; ok: boolean | null; orderId: string | null; error: string | null; at: number; dryRun: boolean };
+const recentJobs: RecentJob[] = [];
 const activeDeviceRef = { id: null as string | null };
 
 const TEN_MIN = 10 * 60 * 1000;
