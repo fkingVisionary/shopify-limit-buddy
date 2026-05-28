@@ -1694,16 +1694,47 @@ function ProfilesView({
               {([
                 ["email", "Email"], ["phone", "Phone"],
                 ["first_name", "First name"], ["last_name", "Last name"],
-                ["address1", "Address"], ["city", "City"],
+                ["address1", "Address"], ["address2", "Apt / suite"],
+                ["city", "City"],
                 ["province", "State"], ["zip", "Postcode"],
                 ["country", "Country"],
               ] as const).map(([k, label]) => (
                 <div key={k} className={k === "address1" ? "col-span-2" : ""}>
                   <Label className="text-[10px] text-muted-foreground">{label}</Label>
-                  <Input value={p[k]} onChange={(e) => onUpdate(p.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
+                  <Input value={(p[k] ?? "") as string} onChange={(e) => onUpdate(p.id, { [k]: e.target.value } as Partial<Profile>)} className="h-8 text-sm" />
                 </div>
               ))}
             </div>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                Payment card (optional — for full-browser checkout)
+              </summary>
+              <p className="mt-1.5 text-[10px] leading-relaxed text-amber-400/80">
+                Stored only in this browser's localStorage. Sent directly to Browserless when YOU trigger a real checkout. Leave blank to use checkout-only mode (you type the card in the opened tab).
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="col-span-2">
+                  <Label className="text-[10px] text-muted-foreground">Card number</Label>
+                  <Input value={p.card_number ?? ""} onChange={(e) => onUpdate(p.id, { card_number: e.target.value })} className="h-8 font-mono text-sm" placeholder="4242 4242 4242 4242" />
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-[10px] text-muted-foreground">Name on card</Label>
+                  <Input value={p.card_name ?? ""} onChange={(e) => onUpdate(p.id, { card_name: e.target.value })} className="h-8 text-sm" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">Exp month</Label>
+                  <Input value={p.card_exp_month ?? ""} onChange={(e) => onUpdate(p.id, { card_exp_month: e.target.value })} className="h-8 font-mono text-sm" placeholder="12" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">Exp year</Label>
+                  <Input value={p.card_exp_year ?? ""} onChange={(e) => onUpdate(p.id, { card_exp_year: e.target.value })} className="h-8 font-mono text-sm" placeholder="30" />
+                </div>
+                <div>
+                  <Label className="text-[10px] text-muted-foreground">CVV</Label>
+                  <Input value={p.card_cvv ?? ""} onChange={(e) => onUpdate(p.id, { card_cvv: e.target.value })} className="h-8 font-mono text-sm" placeholder="123" />
+                </div>
+              </div>
+            </details>
           </Card>
         );
       })}
