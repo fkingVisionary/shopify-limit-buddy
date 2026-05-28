@@ -1479,22 +1479,68 @@ function ProfileBuilderDialog({
             </label>
           </div>
 
+          {/* Email jigger */}
+          <div className="space-y-2 rounded-lg border bg-muted/30 p-3 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <span>Email jigger</span>
+              <InfoDot text="Generates distinct-looking email addresses per variant that all deliver to your inbox." />
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {[
+                { v: "dot", label: "Gmail dot" },
+                { v: "catchall", label: "Catch-all" },
+                { v: "off", label: "Off" },
+              ].map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  onClick={() => setEmailMode(o.v as any)}
+                  className={`h-9 rounded-md border text-xs font-medium transition ${
+                    emailMode === o.v ? "border-primary bg-primary/15 text-primary" : "border-border bg-background text-muted-foreground"
+                  }`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+            {emailMode === "dot" && (
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Inserts dots into the Gmail local-part (j.ohn@ vs jo.hn@). Gmail ignores them — all mail still lands in your inbox. Gmail/Googlemail only.
+              </p>
+            )}
+            {emailMode === "catchall" && (
+              <>
+                <Label className="text-[11px] text-muted-foreground">Your catch-all domain</Label>
+                <Input
+                  value={catchallDomain}
+                  onChange={(e) => setCatchallDomain(e.target.value)}
+                  placeholder="yourdomain.com"
+                  className="h-9"
+                />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Each variant gets a unique local-part on this domain (e.g. john.4f2@yourdomain.com). Requires catch-all routing on your DNS/mail provider.
+                </p>
+              </>
+            )}
+          </div>
+
           {/* Preview */}
           <div className="rounded-lg border bg-background p-3 text-xs">
             <div className="mb-1 font-medium text-foreground">Preview (variant 1)</div>
             <div className="text-muted-foreground">
               <div>{preview.name.first} {preview.name.last}</div>
               <div>{preview.addr || <span className="italic">(no address)</span>}</div>
-              <div>{base.email}</div>
+              <div>{preview.email}</div>
             </div>
           </div>
         </div>
 
         <DialogFooter className="flex-row gap-2 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames)}>
+          <Button size="sm" onClick={build} disabled={count < 1 || (!jigAddr && !jigNames && emailMode === "off") || (emailMode === "catchall" && !catchallDomain.trim())}>
             Create {count} variant{count > 1 ? "s" : ""}
           </Button>
+
         </DialogFooter>
       </DialogContent>
     </Dialog>
