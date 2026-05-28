@@ -19,7 +19,7 @@ import {
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
-  Check, BookOpen, Sparkles, Package, MapPin, User as UserIcon,
+  Check, BookOpen, Sparkles, Package, User as UserIcon,
 } from "lucide-react";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
