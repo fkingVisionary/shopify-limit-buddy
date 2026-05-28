@@ -343,7 +343,20 @@ function Index() {
     const { profiles, activeIds } = loadProfiles();
     setProfiles(profiles);
     setActiveIds(activeIds);
+    // Restore last store URL
+    try {
+      const savedUrl = localStorage.getItem(STORE_URL_KEY);
+      if (savedUrl) setUrl(savedUrl);
+    } catch {}
+    // Restore cached catalog
+    const cached = loadCatalog();
+    if (cached && Date.now() - cached.ts < CATALOG_TTL_MS) {
+      setStoreUrl(cached.storeUrl);
+      setProducts(cached.products);
+      setCacheAge(cached.ts);
+    }
   }, []);
+
 
   const persistProfiles = (next: Profile[], nextActive?: string[]) => {
     const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
