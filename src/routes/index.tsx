@@ -1022,7 +1022,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, poolApi]);
+  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
