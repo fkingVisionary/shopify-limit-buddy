@@ -270,7 +270,8 @@ function Index() {
   const [products, setProducts] = useState<Product[]>([]);
   const [limits, setLimits] = useState<Record<number, LimitInfo>>({});
   const [query, setQuery] = useState("");
-  const [prefill, setPrefill] = useState<Prefill>(emptyPrefill);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [activeIds, setActiveIds] = useState<string[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   // Watcher state
   const [watched, setWatched] = useState<Set<number>>(new Set());
@@ -280,15 +281,40 @@ function Index() {
   const [notifyOn, setNotifyOn] = useState(true);
   const triggeredRef = (typeof window !== "undefined") ? (window as any).__triggeredRef ?? ((window as any).__triggeredRef = { current: new Set<number>() }) : { current: new Set<number>() };
 
-  useEffect(() => { setPrefill(loadPrefill()); }, []);
+  useEffect(() => {
+    const { profiles, activeIds } = loadProfiles();
+    setProfiles(profiles);
+    setActiveIds(activeIds);
+  }, []);
 
-  const updatePrefill = (patch: Partial<Prefill>) => {
-    setPrefill((prev) => {
-      const next = { ...prev, ...patch };
-      try { localStorage.setItem(PREFILL_KEY, JSON.stringify(next)); } catch {}
-      return next;
-    });
+  const persistProfiles = (next: Profile[], nextActive?: string[]) => {
+    const active = nextActive ?? activeIds.filter((id) => next.some((p) => p.id === id));
+    setProfiles(next);
+    setActiveIds(active);
+    saveProfiles(next, active);
   };
+
+  const addProfile = () => {
+    const p: Profile = { id: makeId(), name: `Profile ${profiles.length + 1}`, ...emptyPrefill };
+    persistProfiles([...profiles, p], [...activeIds, p.id]);
+  };
+
+  const updateProfile = (id: string, patch: Partial<Profile>) => {
+    persistProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
+  const deleteProfile = (id: string) => {
+    persistProfiles(profiles.filter((p) => p.id !== id), activeIds.filter((x) => x !== id));
+  };
+
+  const toggleActive = (id: string) => {
+    const next = activeIds.includes(id) ? activeIds.filter((x) => x !== id) : [...activeIds, id];
+    setActiveIds(next);
+    saveProfiles(profiles, next);
+  };
+
+  const activeProfiles = profiles.filter((p) => activeIds.includes(p.id));
+
 
   // Audio beep using WebAudio (no asset needed)
   const beep = () => {
