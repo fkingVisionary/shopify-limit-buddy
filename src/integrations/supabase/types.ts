@@ -14,6 +14,108 @@ export type Database = {
   }
   public: {
     Tables: {
+      app_settings: {
+        Row: {
+          data: Json
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          data?: Json
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          data?: Json
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "app_settings_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: true
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      checkout_profiles: {
+        Row: {
+          created_at: string
+          data: Json
+          id: string
+          is_active: boolean
+          name: string
+          position: number
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          data?: Json
+          id?: string
+          is_active?: boolean
+          name: string
+          position?: number
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          data?: Json
+          id?: string
+          is_active?: boolean
+          name?: string
+          position?: number
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "checkout_profiles_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      proxy_groups: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          position: number
+          proxies: string[]
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          position?: number
+          proxies?: string[]
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          position?: number
+          proxies?: string[]
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "proxy_groups_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       runner_devices: {
         Row: {
           created_at: string
@@ -22,6 +124,7 @@ export type Database = {
           last_seen_at: string
           name: string
           token: string
+          workspace_id: string | null
         }
         Insert: {
           created_at?: string
@@ -30,6 +133,7 @@ export type Database = {
           last_seen_at?: string
           name?: string
           token: string
+          workspace_id?: string | null
         }
         Update: {
           created_at?: string
@@ -38,8 +142,17 @@ export type Database = {
           last_seen_at?: string
           name?: string
           token?: string
+          workspace_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "runner_devices_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       runner_jobs: {
         Row: {
@@ -84,18 +197,29 @@ export type Database = {
           code: string
           created_at: string
           device_name: string
+          workspace_id: string | null
         }
         Insert: {
           code: string
           created_at?: string
           device_name?: string
+          workspace_id?: string | null
         }
         Update: {
           code?: string
           created_at?: string
           device_name?: string
+          workspace_id?: string | null
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "runner_pairing_codes_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       runner_results: {
         Row: {
@@ -131,6 +255,158 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      stores: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          position: number
+          url: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          position?: number
+          url: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          position?: number
+          url?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "stores_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      tasks: {
+        Row: {
+          created_at: string
+          data: Json
+          id: string
+          status: string
+          updated_at: string
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          data?: Json
+          id?: string
+          status?: string
+          updated_at?: string
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          data?: Json
+          id?: string
+          status?: string
+          updated_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "tasks_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_activation_codes: {
+        Row: {
+          code: string
+          created_at: string
+          workspace_id: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          workspace_id: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_activation_codes_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspace_devices: {
+        Row: {
+          created_at: string
+          id: string
+          last_seen_at: string
+          name: string
+          token_hash: string
+          user_agent: string | null
+          workspace_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          last_seen_at?: string
+          name?: string
+          token_hash: string
+          user_agent?: string | null
+          workspace_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          last_seen_at?: string
+          name?: string
+          token_hash?: string
+          user_agent?: string | null
+          workspace_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "workspace_devices_workspace_id_fkey"
+            columns: ["workspace_id"]
+            isOneToOne: false
+            referencedRelation: "workspaces"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      workspaces: {
+        Row: {
+          created_at: string
+          id: string
+          recovery_code_hash: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          recovery_code_hash: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          recovery_code_hash?: string
+        }
+        Relationships: []
       }
     }
     Views: {
