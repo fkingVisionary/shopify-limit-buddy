@@ -28,6 +28,7 @@ import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
+import { DevicesPanel } from "@/components/DevicesPanel";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
