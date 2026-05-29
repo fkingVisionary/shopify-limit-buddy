@@ -7,7 +7,7 @@ import {
   getResult,
   listRecentJobs,
   disconnectActiveDevice,
-} from "./runner-store.server";
+} from "./runner-store";
 import type { RunnerJob, RunnerResult } from "./runner-protocol";
 
 // ── Pairing ────────────────────────────────────────────────────────────────

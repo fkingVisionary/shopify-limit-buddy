@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
-import { consumePairingCode } from "@/lib/runner-store.server";
+import { consumePairingCode } from "@/lib/runner-store";
 
 const Body = z.object({
   pairingCode: z.string().regex(/^[A-Z2-9]{6}$/),

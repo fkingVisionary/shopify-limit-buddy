@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { authDevice, recordResult } from "@/lib/runner-store.server";
+import { authDevice, recordResult } from "@/lib/runner-store";
 import type { RunnerResult } from "@/lib/runner-protocol";
 
 export const Route = createFileRoute("/api/public/runner/report")({
