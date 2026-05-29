@@ -28,9 +28,10 @@ import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
+import { DevicesPanel } from "@/components/DevicesPanel";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_paired/")({
   head: () => ({
     meta: [
       { title: "J1m's Bot" },
@@ -1184,17 +1185,20 @@ function Index() {
           />
         )}
         {tab === "settings" && (
-          <SettingsView
-            pollMs={pollMs} setPollMs={setPollMs}
-            autoOpen={autoOpen} setAutoOpen={setAutoOpen}
-            notifyOn={notifyOn} setNotifyOn={setNotifyOn}
-            browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
-            browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
-            runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
-            profiles={profiles}
-            onShowWizard={() => setWizardOpen(true)}
-            onResetTips={resetTips}
-          />
+          <div className="space-y-4">
+            <DevicesPanel />
+            <SettingsView
+              pollMs={pollMs} setPollMs={setPollMs}
+              autoOpen={autoOpen} setAutoOpen={setAutoOpen}
+              notifyOn={notifyOn} setNotifyOn={setNotifyOn}
+              browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
+              browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
+              runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
+              profiles={profiles}
+              onShowWizard={() => setWizardOpen(true)}
+              onResetTips={resetTips}
+            />
+          </div>
         )}
         {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
         {tab === "help" && <HelpView />}

@@ -9,16 +9,27 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as PairRouteImport } from './routes/pair'
+import { Route as PairedRouteImport } from './routes/_paired'
+import { Route as PairedIndexRouteImport } from './routes/_paired/index'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
 import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
 import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/runner.pair'
 
-const IndexRoute = IndexRouteImport.update({
+const PairRoute = PairRouteImport.update({
+  id: '/pair',
+  path: '/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PairedRoute = PairedRouteImport.update({
+  id: '/_paired',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PairedIndexRoute = PairedIndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => PairedRoute,
 } as any)
 const ApiPublicShopifyRoute = ApiPublicShopifyRouteImport.update({
   id: '/api/public/shopify',
@@ -42,14 +53,16 @@ const ApiPublicRunnerPairRoute = ApiPublicRunnerPairRouteImport.update({
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof PairedIndexRoute
+  '/pair': typeof PairRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/pair': typeof PairRoute
+  '/': typeof PairedIndexRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
@@ -57,7 +70,9 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_paired': typeof PairedRouteWithChildren
+  '/pair': typeof PairRoute
+  '/_paired/': typeof PairedIndexRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
@@ -67,12 +82,14 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/pair'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/pair'
     | '/'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -80,7 +97,9 @@ export interface FileRouteTypes {
     | '/api/public/runner/report'
   id:
     | '__root__'
-    | '/'
+    | '/_paired'
+    | '/pair'
+    | '/_paired/'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
@@ -88,7 +107,8 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  PairedRoute: typeof PairedRouteWithChildren
+  PairRoute: typeof PairRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
   ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
   ApiPublicRunnerPollRoute: typeof ApiPublicRunnerPollRoute
@@ -97,12 +117,26 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
+    '/pair': {
+      id: '/pair'
+      path: '/pair'
+      fullPath: '/pair'
+      preLoaderRoute: typeof PairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_paired': {
+      id: '/_paired'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof PairedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_paired/': {
+      id: '/_paired/'
       path: '/'
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof PairedIndexRouteImport
+      parentRoute: typeof PairedRoute
     }
     '/api/public/shopify': {
       id: '/api/public/shopify'
@@ -135,8 +169,20 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface PairedRouteChildren {
+  PairedIndexRoute: typeof PairedIndexRoute
+}
+
+const PairedRouteChildren: PairedRouteChildren = {
+  PairedIndexRoute: PairedIndexRoute,
+}
+
+const PairedRouteWithChildren =
+  PairedRoute._addFileChildren(PairedRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  PairedRoute: PairedRouteWithChildren,
+  PairRoute: PairRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
   ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
   ApiPublicRunnerPollRoute: ApiPublicRunnerPollRoute,
@@ -145,13 +191,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
