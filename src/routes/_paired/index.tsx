@@ -1205,7 +1205,10 @@ function Index() {
       </main>
 
       {tab === "tasks" && tasks.length > 0 && (
-        <div className="fixed inset-x-0 bottom-16 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur">
+        <div
+          className="fixed inset-x-0 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur"
+          style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
+        >
           <div className="mx-auto grid max-w-3xl grid-cols-3 gap-2">
             <Button variant="secondary" size="sm" className="h-10" onClick={() => setTab("settings")}>
               <Settings className="h-4 w-4" /> Manage
@@ -1220,7 +1223,10 @@ function Index() {
         </div>
       )}
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur">
+      <nav
+        className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
         <div className="mx-auto grid max-w-3xl grid-cols-7">
           {([
             ["tasks", "Tasks", ListChecks, tasks.length],
@@ -1236,7 +1242,7 @@ function Index() {
               <button
                 key={key}
                 onClick={() => setTab(key)}
-                className={`flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] transition-colors ${active ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+                className={`flex flex-col items-center justify-center gap-0.5 py-2.5 text-[10px] transition-colors active:bg-accent/40 ${active ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
               >
                 <div className="relative">
                   <Icon className="h-5 w-5" />
@@ -1252,6 +1258,7 @@ function Index() {
           })}
         </div>
       </nav>
+
 
       <WelcomeWizard
         open={wizardOpen}
