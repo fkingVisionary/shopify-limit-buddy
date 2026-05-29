@@ -30,7 +30,7 @@ import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunner
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute("/_paired/")({
   head: () => ({
     meta: [
       { title: "J1m's Bot" },
