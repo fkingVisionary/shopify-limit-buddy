@@ -1,116 +1,203 @@
-// In-memory store for the runner control-plane.
-//
-// ⚠️ SCAFFOLD ONLY. Cloudflare Workers run multiple isolates and recycle
-// memory aggressively, so this Map is per-isolate and short-lived. It's
-// enough to validate the end-to-end runner flow during development. Move
-// to a Lovable Cloud table (`runner_devices`, `runner_jobs`) before going
-// to production — the protocol stays identical.
+// Persistent storage for the runner control-plane, backed by Lovable Cloud.
+// All access is through the admin client (service_role); no end-user grants.
+// All functions are async — call sites must await.
 
+import { supabaseAdmin } from "@/integrations/supabase/client.server";
 import type { RunnerJob, RunnerResult } from "./runner-protocol";
 
 type Device = { id: string; token: string; name: string; lastSeenAt: number };
+type RecentJob = {
+  id: string;
+  storeUrl: string;
+  ok: boolean | null;
+  orderId: string | null;
+  error: string | null;
+  at: number;
+  dryRun: boolean;
+};
 
-const pairingCodes = new Map<string, { deviceName: string; createdAt: number }>();
-const devicesByToken = new Map<string, Device>();
-const jobsByDevice  = new Map<string, RunnerJob[]>(); // FIFO queue per device
-const resultsByJob  = new Map<string, RunnerResult>();
-type RecentJob = { id: string; storeUrl: string; ok: boolean | null; orderId: string | null; error: string | null; at: number; dryRun: boolean };
-const recentJobs: RecentJob[] = [];
-const activeDeviceRef = { id: null as string | null };
-
-const TEN_MIN = 10 * 60 * 1000;
+const TEN_MIN_MS = 10 * 60 * 1000;
 
 function rid() {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 24);
 }
 
-export function createPairingCode(deviceName: string) {
-  // 6-char human-friendly code
+export async function createPairingCode(deviceName: string): Promise<string> {
   const code = Array.from({ length: 6 }, () =>
     "ABCDEFGHJKMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 31)]
   ).join("");
-  pairingCodes.set(code, { deviceName, createdAt: Date.now() });
+  const { error } = await supabaseAdmin
+    .from("runner_pairing_codes")
+    .insert({ code, device_name: deviceName || "Runner" });
+  if (error) throw new Error(`createPairingCode: ${error.message}`);
   return code;
 }
 
-export function consumePairingCode(code: string): Device | null {
-  const entry = pairingCodes.get(code);
+export async function consumePairingCode(code: string): Promise<Device | null> {
+  // Look up the code
+  const { data: entry } = await supabaseAdmin
+    .from("runner_pairing_codes")
+    .select("device_name, created_at")
+    .eq("code", code)
+    .maybeSingle();
   if (!entry) return null;
-  if (Date.now() - entry.createdAt > TEN_MIN) {
-    pairingCodes.delete(code);
-    return null;
-  }
-  pairingCodes.delete(code);
-  const device: Device = {
-    id: rid(),
-    token: rid() + rid(),
-    name: entry.deviceName || "Runner",
+
+  // Always delete (single-use)
+  await supabaseAdmin.from("runner_pairing_codes").delete().eq("code", code);
+
+  // Expired?
+  if (Date.now() - new Date(entry.created_at).getTime() > TEN_MIN_MS) return null;
+
+  // Deactivate any existing active devices (single-active-device model)
+  await supabaseAdmin
+    .from("runner_devices")
+    .update({ is_active: false })
+    .eq("is_active", true);
+
+  const token = rid() + rid();
+  const { data: device, error } = await supabaseAdmin
+    .from("runner_devices")
+    .insert({ token, name: entry.device_name, is_active: true })
+    .select("id, token, name, last_seen_at")
+    .single();
+  if (error || !device) throw new Error(`consumePairingCode: ${error?.message}`);
+
+  return {
+    id: device.id,
+    token: device.token,
+    name: device.name,
+    lastSeenAt: new Date(device.last_seen_at).getTime(),
+  };
+}
+
+export async function authDevice(token: string | null | undefined): Promise<Device | null> {
+  if (!token) return null;
+  const { data } = await supabaseAdmin
+    .from("runner_devices")
+    .select("id, token, name, last_seen_at")
+    .eq("token", token)
+    .maybeSingle();
+  if (!data) return null;
+  // Heartbeat
+  await supabaseAdmin
+    .from("runner_devices")
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq("id", data.id);
+  return {
+    id: data.id,
+    token: data.token,
+    name: data.name,
     lastSeenAt: Date.now(),
   };
-  devicesByToken.set(device.token, device);
-  activeDeviceRef.id = device.id;
-  return device;
 }
 
-export function authDevice(token: string | null | undefined): Device | null {
-  if (!token) return null;
-  const d = devicesByToken.get(token);
-  if (d) d.lastSeenAt = Date.now();
-  return d ?? null;
+async function getActiveDeviceId(): Promise<string | null> {
+  const { data } = await supabaseAdmin
+    .from("runner_devices")
+    .select("id")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data?.id ?? null;
 }
 
-export function enqueueJob(job: RunnerJob): { dispatched: boolean; deviceId: string | null } {
-  const deviceId = activeDeviceRef.id;
+export async function enqueueJob(
+  job: RunnerJob
+): Promise<{ dispatched: boolean; deviceId: string | null }> {
+  const deviceId = await getActiveDeviceId();
   if (!deviceId) return { dispatched: false, deviceId: null };
-  const list = jobsByDevice.get(deviceId) ?? [];
-  list.push(job);
-  jobsByDevice.set(deviceId, list);
-  recentJobs.unshift({ id: job.id, storeUrl: job.storeUrl, ok: null, orderId: null, error: null, at: Date.now(), dryRun: job.dryRun });
-  if (recentJobs.length > 25) recentJobs.length = 25;
+  const { error } = await supabaseAdmin.from("runner_jobs").insert({
+    id: job.id,
+    device_id: deviceId,
+    store_url: job.storeUrl,
+    dry_run: job.dryRun,
+    payload: job as never,
+    claimed: false,
+  });
+  if (error) throw new Error(`enqueueJob: ${error.message}`);
   return { dispatched: true, deviceId };
 }
 
-export function dequeueJobFor(deviceId: string): RunnerJob | null {
-  const list = jobsByDevice.get(deviceId);
-  if (!list || list.length === 0) return null;
-  const next = list.shift()!;
-  jobsByDevice.set(deviceId, list);
-  return next;
+export async function dequeueJobFor(deviceId: string): Promise<RunnerJob | null> {
+  const { data: next } = await supabaseAdmin
+    .from("runner_jobs")
+    .select("id, payload")
+    .eq("device_id", deviceId)
+    .eq("claimed", false)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!next) return null;
+  await supabaseAdmin
+    .from("runner_jobs")
+    .update({ claimed: true })
+    .eq("id", next.id);
+  return next.payload as unknown as RunnerJob;
 }
 
-export function recordResult(result: RunnerResult) {
-  resultsByJob.set(result.jobId, result);
-  const r = recentJobs.find((j) => j.id === result.jobId);
-  if (r) {
-    r.ok = result.ok;
-    r.orderId = result.ok ? result.orderId : null;
-    r.error = result.ok ? null : `${result.failedStep}: ${result.error}`;
-  }
+export async function recordResult(result: RunnerResult): Promise<void> {
+  await supabaseAdmin.from("runner_results").upsert({
+    job_id: result.jobId,
+    ok: result.ok,
+    order_id: result.ok ? result.orderId : null,
+    error: result.ok ? null : `${result.failedStep}: ${result.error}`,
+    payload: result as never,
+  });
 }
 
-export function getResult(jobId: string): RunnerResult | null {
-  return resultsByJob.get(jobId) ?? null;
+export async function getResult(jobId: string): Promise<RunnerResult | null> {
+  const { data } = await supabaseAdmin
+    .from("runner_results")
+    .select("payload")
+    .eq("job_id", jobId)
+    .maybeSingle();
+  return (data?.payload as unknown as RunnerResult) ?? null;
 }
 
-export function listRecentJobs(): RecentJob[] {
-  return recentJobs.slice(0, 10);
+export async function listRecentJobs(): Promise<RecentJob[]> {
+  const { data } = await supabaseAdmin
+    .from("runner_jobs")
+    .select(
+      "id, store_url, dry_run, created_at, runner_results(ok, order_id, error)"
+    )
+    .order("created_at", { ascending: false })
+    .limit(10);
+  return (data ?? []).map((row) => {
+    const r = (row as { runner_results: { ok: boolean; order_id: string | null; error: string | null } | null }).runner_results;
+    return {
+      id: row.id,
+      storeUrl: row.store_url,
+      ok: r?.ok ?? null,
+      orderId: r?.order_id ?? null,
+      error: r?.error ?? null,
+      at: new Date(row.created_at).getTime(),
+      dryRun: row.dry_run,
+    };
+  });
 }
 
-export function disconnectActiveDevice(): boolean {
-  const id = activeDeviceRef.id;
-  if (!id) return false;
-  for (const [tok, d] of devicesByToken.entries()) {
-    if (d.id === id) devicesByToken.delete(tok);
-  }
-  jobsByDevice.delete(id);
-  activeDeviceRef.id = null;
+export async function disconnectActiveDevice(): Promise<boolean> {
+  const deviceId = await getActiveDeviceId();
+  if (!deviceId) return false;
+  // Cascade deletes jobs + results for this device
+  await supabaseAdmin.from("runner_devices").delete().eq("id", deviceId);
   return true;
 }
 
-export function getActiveDevice(): Device | null {
-  if (!activeDeviceRef.id) return null;
-  for (const d of devicesByToken.values()) {
-    if (d.id === activeDeviceRef.id) return d;
-  }
-  return null;
+export async function getActiveDevice(): Promise<Device | null> {
+  const { data } = await supabaseAdmin
+    .from("runner_devices")
+    .select("id, token, name, last_seen_at")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    id: data.id,
+    token: data.token,
+    name: data.name,
+    lastSeenAt: new Date(data.last_seen_at).getTime(),
+  };
 }

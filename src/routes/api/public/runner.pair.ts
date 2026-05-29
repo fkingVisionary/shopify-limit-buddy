@@ -17,7 +17,7 @@ export const Route = createFileRoute("/api/public/runner/pair")({
         } catch {
           return new Response("Invalid body", { status: 400 });
         }
-        const device = consumePairingCode(parsed.pairingCode);
+        const device = await consumePairingCode(parsed.pairingCode);
         if (!device) return new Response("Invalid or expired code", { status: 401 });
         return Response.json({ deviceToken: device.token, deviceId: device.id });
       },

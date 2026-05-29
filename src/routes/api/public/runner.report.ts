@@ -7,7 +7,7 @@ export const Route = createFileRoute("/api/public/runner/report")({
     handlers: {
       POST: async ({ request }) => {
         const token = request.headers.get("x-runner-token");
-        const device = authDevice(token);
+        const device = await authDevice(token);
         if (!device) return new Response("Unauthorized", { status: 401 });
         let body: RunnerResult;
         try {
@@ -18,7 +18,7 @@ export const Route = createFileRoute("/api/public/runner/report")({
         if (!body || typeof body !== "object" || !("jobId" in body)) {
           return new Response("Invalid result", { status: 400 });
         }
-        recordResult(body);
+        await recordResult(body);
         return Response.json({ ok: true });
       },
     },
