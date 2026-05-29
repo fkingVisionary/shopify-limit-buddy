@@ -72,14 +72,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "J1ms" },
+      { name: "description", content: "Shopify Limit Checker helps users monitor per-person purchase limits on Shopify stores." },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { property: "og:title", content: "J1ms" },
+      { property: "og:description", content: "Shopify Limit Checker helps users monitor per-person purchase limits on Shopify stores." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
       { name: "twitter:site", content: "@Lovable" },
+      { name: "twitter:title", content: "J1ms" },
+      { name: "twitter:description", content: "Shopify Limit Checker helps users monitor per-person purchase limits on Shopify stores." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8f832dda-b7b1-4da2-9d09-6913fa99c0ae/id-preview-eaf8fde9--90e755b3-e2e0-45db-9f08-79670671b0b4.lovable.app-1780040758287.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/8f832dda-b7b1-4da2-9d09-6913fa99c0ae/id-preview-eaf8fde9--90e755b3-e2e0-45db-9f08-79670671b0b4.lovable.app-1780040758287.png" },
     ],
     links: [
       {
