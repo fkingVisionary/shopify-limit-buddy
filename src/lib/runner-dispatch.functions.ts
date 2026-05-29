@@ -14,12 +14,12 @@ import type { RunnerJob, RunnerResult } from "./runner-protocol";
 export const createRunnerPairingCode = createServerFn({ method: "POST" })
   .inputValidator((d: { deviceName?: string }) => d)
   .handler(async ({ data }) => {
-    const code = createPairingCode(data.deviceName ?? "Runner");
+    const code = await createPairingCode(data.deviceName ?? "Runner");
     return { code, expiresInSec: 10 * 60 };
   });
 
 export const getRunnerStatus = createServerFn({ method: "GET" }).handler(async () => {
-  const d = getActiveDevice();
+  const d = await getActiveDevice();
   if (!d) return { connected: false as const };
   return {
     connected: true as const,
@@ -59,7 +59,7 @@ export const dispatchRunnerJob = createServerFn({ method: "POST" })
       ...data,
       dryRun: data.dryRun ?? true,
     };
-    const r = enqueueJob(job);
+    const r = await enqueueJob(job);
     if (!r.dispatched) {
       return { ok: false as const, error: "No runner connected" };
     }
@@ -69,15 +69,15 @@ export const dispatchRunnerJob = createServerFn({ method: "POST" })
 export const pollRunnerJobResult = createServerFn({ method: "GET" })
   .inputValidator((d: { jobId: string }) => d)
   .handler(async ({ data }): Promise<{ result: RunnerResult | null }> => {
-    return { result: getResult(data.jobId) };
+    return { result: await getResult(data.jobId) };
   });
 
 export const listRunnerRecentJobs = createServerFn({ method: "GET" }).handler(async () => {
-  return { jobs: listRecentJobs() };
+  return { jobs: await listRecentJobs() };
 });
 
 export const disconnectRunner = createServerFn({ method: "POST" }).handler(async () => {
-  return { ok: disconnectActiveDevice() };
+  return { ok: await disconnectActiveDevice() };
 });
 
 // Dispatches a self-contained dry-run job — useful as a one-click smoke test
@@ -98,7 +98,7 @@ export const dispatchRunnerTestJob = createServerFn({ method: "POST" }).handler(
     card: { number: "4242424242424242", name: "Test Runner", exp_month: "12", exp_year: "30", cvv: "123" },
     dryRun: true,
   };
-  const r = enqueueJob(job);
+  const r = await enqueueJob(job);
   if (!r.dispatched) return { ok: false as const, error: "No runner connected" };
   return { ok: true as const, jobId: job.id };
 });
