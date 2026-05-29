@@ -26,6 +26,8 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     if (!url || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
+    // Fall back to PROXY_URL_RESI env if no proxy supplied per-task
+    const payload = { ...data, proxy: data.proxy ?? process.env.PROXY_URL_RESI ?? null };
     const t0 = Date.now();
     try {
       const res = await fetch(`${url.replace(/\/$/, "")}/run`, {
@@ -34,7 +36,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       });
       const body = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: body };
