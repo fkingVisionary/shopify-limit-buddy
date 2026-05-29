@@ -14,7 +14,124 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      runner_devices: {
+        Row: {
+          created_at: string
+          id: string
+          is_active: boolean
+          last_seen_at: string
+          name: string
+          token: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          last_seen_at?: string
+          name?: string
+          token: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          last_seen_at?: string
+          name?: string
+          token?: string
+        }
+        Relationships: []
+      }
+      runner_jobs: {
+        Row: {
+          claimed: boolean
+          created_at: string
+          device_id: string
+          dry_run: boolean
+          id: string
+          payload: Json
+          store_url: string
+        }
+        Insert: {
+          claimed?: boolean
+          created_at?: string
+          device_id: string
+          dry_run?: boolean
+          id: string
+          payload: Json
+          store_url: string
+        }
+        Update: {
+          claimed?: boolean
+          created_at?: string
+          device_id?: string
+          dry_run?: boolean
+          id?: string
+          payload?: Json
+          store_url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "runner_jobs_device_id_fkey"
+            columns: ["device_id"]
+            isOneToOne: false
+            referencedRelation: "runner_devices"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      runner_pairing_codes: {
+        Row: {
+          code: string
+          created_at: string
+          device_name: string
+        }
+        Insert: {
+          code: string
+          created_at?: string
+          device_name?: string
+        }
+        Update: {
+          code?: string
+          created_at?: string
+          device_name?: string
+        }
+        Relationships: []
+      }
+      runner_results: {
+        Row: {
+          created_at: string
+          error: string | null
+          job_id: string
+          ok: boolean
+          order_id: string | null
+          payload: Json
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          job_id: string
+          ok: boolean
+          order_id?: string | null
+          payload: Json
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          job_id?: string
+          ok?: boolean
+          order_id?: string | null
+          payload?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "runner_results_job_id_fkey"
+            columns: ["job_id"]
+            isOneToOne: true
+            referencedRelation: "runner_jobs"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
