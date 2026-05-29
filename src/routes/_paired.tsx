@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { isPaired } from "@/integrations/workspace/client";
+import { useCloudSync } from "@/hooks/use-cloud-sync";
 import { Loader2 } from "lucide-react";
 
 // Pathless layout that gates the entire app: redirects to /pair if no
@@ -13,6 +14,7 @@ export const Route = createFileRoute("/_paired")({
 function PairedLayout() {
   const navigate = useNavigate();
   const [ready, setReady] = useState(false);
+  useCloudSync();
 
   useEffect(() => {
     if (!isPaired()) {
