@@ -1,0 +1,19 @@
+{
+  "name": "j1ms-bot-executor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node executor service — runs checkout HTTP chains through residential proxies (undici + ProxyAgent). Sits behind the Lovable control plane.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "undici": "^6.19.8"
+  }
+}
