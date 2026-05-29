@@ -1,42 +1,59 @@
+## What I'll do
 
-## Why skip Lovable for now
+Create one file on your Desktop: `C:\Users\Administrator\Desktop\script.ps1`
 
-The published Lovable build is returning `Server function info not found`, which means the deployed worker doesn't have the latest `executor.functions.ts` registered yet (publish UI saying "up to date" suggests the change didn't get bundled into the latest deploy). Rather than chase that, we test the executor directly — it's faster and isolates the real question: **does the residential proxy let us reach JB Hi-Fi's checkout page?**
+It will:
 
-## Step 1 — Run this in PowerShell
+1. Use your pairing code `P823AM` (hardcoded, no prompts).
+2. POST to `https://shopify-limit-buddy.lovable.app/api/public/runner/pair` with a properly built JSON body (no here-string variable-expansion traps).
+3. Read `deviceToken` out of the response.
+4. Immediately GET `https://shopify-limit-buddy.lovable.app/api/public/runner/poll` with header `x-runner-token: <deviceToken>`.
+5. Print the HTTP status and response body for both steps so we can see exactly what happened.
+
+## Script contents
 
 ```powershell
-$body = @{
-  taskId = "jbhifi-test-1"
-  storeUrl = "https://www.jbhifi.com.au"
-  variantId = 7336574222537
-  qty = 1
-  proxy = "http://Ac6bcMtTL0:uEPCqFBUL1@103.170.238.156:3956"
-  dryRun = $true
-} | ConvertTo-Json
+$ErrorActionPreference = "Stop"
+$base = "https://shopify-limit-buddy.lovable.app"
+$code = "P823AM"
 
-curl.exe -X POST https://j1ms-bot-executor.fly.dev/run `
-  -H "Authorization: Bearer YOUR_EXECUTOR_TOKEN" `
-  -H "Content-Type: application/json" `
-  -d $body
+# --- Step 1: pair ---
+$pairBody = @{ pairingCode = $code; deviceName = "my-runner" } | ConvertTo-Json -Compress
+Write-Host "Pairing with code $code..."
+$pair = Invoke-WebRequest -Uri "$base/api/public/runner/pair" `
+  -Method POST -ContentType "application/json" -Body $pairBody `
+  -SkipHttpErrorCheck
+Write-Host "Pair HTTP $($pair.StatusCode)"
+Write-Host $pair.Content
+if ($pair.StatusCode -ne 200) { Write-Host "Pairing failed. Generate a fresh code in Settings and update `$code."; exit 1 }
+
+$token = ($pair.Content | ConvertFrom-Json).deviceToken
+Write-Host "Got deviceToken: $($token.Substring(0,8))..."
+
+# --- Step 2: poll ---
+Write-Host "Polling for jobs..."
+$poll = Invoke-WebRequest -Uri "$base/api/public/runner/poll" `
+  -Method GET -Headers @{ "x-runner-token" = $token } `
+  -SkipHttpErrorCheck
+Write-Host "Poll HTTP $($poll.StatusCode)"
+Write-Host $poll.Content
 ```
 
-Replace `YOUR_EXECUTOR_TOKEN` with the token you generated via `flyctl secrets set EXECUTOR_TOKEN=...`. If you lost it, run `flyctl secrets list` (shows hash only, not value) — easiest fix is to regenerate and re-set it.
+## Why this version is safer than the last one
 
-## Step 2 — Paste me the JSON output
+- No here-strings — `ConvertTo-Json` builds the JSON, so there's no chance of `$code` not expanding.
+- `Invoke-WebRequest` with `-SkipHttpErrorCheck` shows status + body even on errors (instead of throwing a red wall of text).
+- `Authorization: Bearer` is gone; we use `x-runner-token`, which is what the server expects.
 
-I'll read the `steps[]` array and tell you:
-- `warm_home` 200 → proxy can reach JB Hi-Fi
-- `cart_add` 200 → can add to cart
-- `cart_redirect` 302 with a `/checkouts/...` Location → cart flow works
-- `checkout_page` **200** → proxy passes Cloudflare ✅
-- `checkout_page` **403** → proxy is being blocked, need to swap to ISP proxy or try IPFist
+## Important reminder
 
-## Step 3 — Then we pick a path
+Pairing codes expire after **10 minutes** and are consumed on first successful use. If `P823AM` was generated more than ~10 min ago, or already used, Step 1 will return 401 "Invalid or expired code" — generate a new one in Settings → Local runner and update the `$code` line.
 
-- If proxy works → switch to build mode, finish the Lovable publish issue, and wire the TaskPoolCard to fire real dry-runs
-- If proxy is blocked → test the IPFist ISP proxy the same way before buying another residential
+## Run it
 
-## Also: try ISP proxy in parallel
+```
+cd C:\Users\Administrator\Desktop
+.\script.ps1
+```
 
-If you want, also run the same command with IPFist's URL as `proxy` so we can compare both in one go. Paste me whatever the IPFist proxy string is (host/port/user/pass) and I'll format it.
+Then paste me the full output and we'll go from there.
