@@ -36,7 +36,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
           authorization: `Bearer ${token}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       });
       const body = await res.json().catch(() => ({}));
       return { ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: body };
