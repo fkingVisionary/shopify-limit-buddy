@@ -112,7 +112,7 @@ export async function enqueueJob(
     device_id: deviceId,
     store_url: job.storeUrl,
     dry_run: job.dryRun,
-    payload: job as unknown as Record<string, unknown>,
+    payload: job as never,
     claimed: false,
   });
   if (error) throw new Error(`enqueueJob: ${error.message}`);
@@ -142,7 +142,7 @@ export async function recordResult(result: RunnerResult): Promise<void> {
     ok: result.ok,
     order_id: result.ok ? result.orderId : null,
     error: result.ok ? null : `${result.failedStep}: ${result.error}`,
-    payload: result as unknown as Record<string, unknown>,
+    payload: result as never,
   });
 }
 
