@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { authDevice, dequeueJobFor } from "@/lib/runner-store.server";
+import { authDevice, dequeueJobFor } from "@/lib/runner-store";
 
 export const Route = createFileRoute("/api/public/runner/poll")({
   server: {
