@@ -1514,6 +1514,7 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 function TasksView({
   tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
+  taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
@@ -1525,7 +1526,23 @@ function TasksView({
   onToggleSelect: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
+  taskGroups: TaskGroup[];
+  activeGroupId: string | null;
+  onSelectGroup: (id: string | null) => void;
+  onAddGroup: (name: string) => TaskGroup | null;
+  onRenameGroup: (id: string, name: string) => void;
+  onDeleteGroup: (id: string) => void;
 }) {
+  const visibleTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
+  const groupChips = useMemo(() => {
+    const counts = new Map<string | null, number>();
+    counts.set(null, tasks.length);
+    for (const g of taskGroups) counts.set(g.id, 0);
+    for (const t of tasks) {
+      if (t.groupId && counts.has(t.groupId)) counts.set(t.groupId, (counts.get(t.groupId) ?? 0) + 1);
+    }
+    return counts;
+  }, [tasks, taskGroups]);
   // Long-press detection for entering select mode (touch only).
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startPress = (id: string) => {
