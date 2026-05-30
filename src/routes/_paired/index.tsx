@@ -22,7 +22,7 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
-  ClipboardList, CheckSquare, Search, Globe,
+  ClipboardList, CheckSquare, Search, Globe, BarChart3,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
@@ -32,6 +32,7 @@ import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { JobsPanel } from "@/components/JobsPanel";
+import { AnalyticsPanel } from "@/components/AnalyticsPanel";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
@@ -722,7 +723,8 @@ function Index() {
   tasksRef.current = tasks;
 
   // ─── UI ───
-  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "jobs" | "settings" | "help">("tasks");
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "analytics" | "settings" | "help">("tasks");
+  const [tasksSubTab, setTasksSubTab] = useState<"active" | "history">("active");
   // Bulk-select state for the Tasks tab
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
@@ -1117,7 +1119,7 @@ function Index() {
   const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
-  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", jobs: "Jobs", settings: "Settings", help: "Help" }[tab];
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
     tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
@@ -1125,7 +1127,7 @@ function Index() {
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
     captcha: { key: "tip-captcha", text: "Harvest captcha tokens via 2Captcha. Paste the same proxy your checkout will use — tokens are IP-bound on most sites." },
-    jobs: { key: "tip-jobs", text: "Every checkout dispatched to your runner shows up here — success, failure, or pending. Tap a row for the full payload." },
+    analytics: { key: "tip-analytics", text: "Live spend & checkout stats across every device in this workspace. Tap a transaction for details." },
     settings: { key: "tip-settings", text: "Lower poll interval = faster detection but more requests. 3000–5000ms is a good balance." },
     help: null,
   };
@@ -1189,29 +1191,49 @@ function Index() {
           </div>
         )}
         {tab === "tasks" && (
-          <TasksView
-            tasks={tasks}
-            profiles={profiles}
-            onStart={startTask}
-            onStop={stopTask}
-            onDelete={deleteTask}
-            onCreate={() => setCreateOpen(true)}
-            onGoProfiles={() => setTab("profiles")}
-            hasProfiles={profiles.length > 0}
-            selectMode={selectMode}
-            selectedIds={selectedTaskIds}
-            onEnterSelectMode={() => setSelectMode(true)}
-            onExitSelectMode={exitSelectMode}
-            onToggleSelect={(id) => {
-              setSelectedTaskIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id); else next.add(id);
-                return next;
-              });
-            }}
-            onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
-            onClearSelection={() => setSelectedTaskIds(new Set())}
-          />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/40 p-1">
+              <button
+                onClick={() => setTasksSubTab("active")}
+                className={`rounded-md py-1.5 text-xs font-medium transition-colors ${tasksSubTab === "active" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              >
+                Active {tasks.length > 0 && <span className="ml-1 opacity-60">{tasks.length}</span>}
+              </button>
+              <button
+                onClick={() => setTasksSubTab("history")}
+                className={`rounded-md py-1.5 text-xs font-medium transition-colors ${tasksSubTab === "history" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              >
+                History
+              </button>
+            </div>
+            {tasksSubTab === "active" ? (
+              <TasksView
+                tasks={tasks}
+                profiles={profiles}
+                onStart={startTask}
+                onStop={stopTask}
+                onDelete={deleteTask}
+                onCreate={() => setCreateOpen(true)}
+                onGoProfiles={() => setTab("profiles")}
+                hasProfiles={profiles.length > 0}
+                selectMode={selectMode}
+                selectedIds={selectedTaskIds}
+                onEnterSelectMode={() => setSelectMode(true)}
+                onExitSelectMode={exitSelectMode}
+                onToggleSelect={(id) => {
+                  setSelectedTaskIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id); else next.add(id);
+                    return next;
+                  });
+                }}
+                onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+                onClearSelection={() => setSelectedTaskIds(new Set())}
+              />
+            ) : (
+              <JobsPanel />
+            )}
+          </div>
         )}
         {tab === "profiles" && (
           <ProfilesView
@@ -1258,7 +1280,7 @@ function Index() {
           </div>
         )}
         {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
-        {tab === "jobs" && <JobsPanel />}
+        {tab === "analytics" && <AnalyticsPanel />}
         {tab === "help" && <HelpView />}
       </main>
 
@@ -1320,7 +1342,7 @@ function Index() {
             ["stores", "Stores", Store, allStores.length],
             ["proxies", "Proxies", Server, totalProxies],
             ["captcha", "Captcha", Shield, 0],
-            ["jobs", "Jobs", ClipboardList, 0],
+            ["analytics", "Analytics", BarChart3, 0],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
