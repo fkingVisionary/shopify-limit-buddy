@@ -22,7 +22,7 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
-  ClipboardList, CheckSquare, Search, Globe, BarChart3,
+  ClipboardList, CheckSquare, Search, Globe, BarChart3, Clock, Bell, Send,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
@@ -33,6 +33,7 @@ import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { JobsPanel } from "@/components/JobsPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
+import { loadNotifyConfig, saveNotifyConfig, notifyWebhook, sendTestWebhook, isValidWebhookUrl, type NotifyConfig, type NotifyEvent, type NotifyTaskShape } from "@/lib/discord";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
@@ -463,6 +464,9 @@ type Task = {
   steps?: CheckoutStepLog[];
   screenshotB64?: string | null;
   browserlessElapsedMs?: number;
+  // Drop scheduler
+  scheduledAt?: number | null;   // ms epoch — auto-start at this time
+  preWarmMs?: number | null;     // how early to warm DNS/proxy (default 2000)
 };
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
@@ -747,6 +751,17 @@ function Index() {
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [dismissedTips, setDismissedTips] = useState<Record<string, boolean>>({});
+  // Discord notifications
+  const [notifyConfig, setNotifyConfigState] = useState<NotifyConfig>(() => loadNotifyConfig());
+  const notifyConfigRef = useRef(notifyConfig);
+  notifyConfigRef.current = notifyConfig;
+  const setNotifyConfig = (cfg: NotifyConfig) => { setNotifyConfigState(cfg); saveNotifyConfig(cfg); };
+  // Schedule editor
+  const [scheduleTaskId, setScheduleTaskId] = useState<string | null>(null);
+  const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
+  // Refs to avoid double-firing webhooks / pre-warm
+  const notifiedRef = useRef<Map<string, Set<NotifyEvent>>>(new Map());
+  const preWarmedRef = useRef<Set<string>>(new Set());
 
   const dismissTip = (key: string) => {
     const next = { ...dismissedTips, [key]: true };
@@ -1039,6 +1054,63 @@ function Index() {
 
 
 
+  // ─── Drop scheduler tick ─── (fast cadence so second-accuracy works)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      for (const t of tasksRef.current) {
+        if (t.running || t.status === "confirmed") continue;
+        const ts = t.scheduledAt;
+        if (!ts) continue;
+        const pre = t.preWarmMs ?? 2000;
+        // Pre-warm window: fire one cheap request to warm DNS / proxy session
+        if (now >= ts - pre && now < ts && !preWarmedRef.current.has(t.id)) {
+          preWarmedRef.current.add(t.id);
+          fetch(proxied(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId)).catch(() => {});
+        }
+        if (now >= ts) {
+          // Clear schedule and fire
+          updateTask(t.id, { scheduledAt: null });
+          preWarmedRef.current.delete(t.id);
+          startTask(t.id);
+        }
+      }
+    }, 500);
+    return () => clearInterval(id);
+    // startTask / updateTask are stable closures over refs; safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ─── Webhook helper ───
+  const fireWebhook = (event: NotifyEvent, task: Task, extras: Partial<NotifyTaskShape> = {}) => {
+    const cfg = notifyConfigRef.current;
+    if (!cfg.webhookUrl || !cfg.events[event]) return;
+    let fired = notifiedRef.current.get(task.id);
+    if (!fired) { fired = new Set(); notifiedRef.current.set(task.id, fired); }
+    if (fired.has(event)) return;
+    fired.add(event);
+    const profile = profiles.find((p) => p.id === task.profileId);
+    const proxyGroupName = proxyGroups.find((g) => g.id === task.proxyGroupId)?.name;
+    const groupName = taskGroups.find((g) => g.id === task.groupId)?.name;
+    notifyWebhook(cfg, event, {
+      id: task.id,
+      productTitle: task.productTitle,
+      input: task.input,
+      storeName: task.storeName,
+      storeUrl: task.storeUrl,
+      qty: task.qty,
+      variantId: task.variantId,
+      orderId: task.orderId ?? null,
+      checkoutElapsedMs: task.checkoutElapsedMs,
+      message: task.message,
+      groupName,
+      profileFirst: profile?.first_name,
+      profileLast: profile?.last_name,
+      proxyGroupName,
+      ...extras,
+    });
+  };
+
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
@@ -1061,6 +1133,7 @@ function Index() {
               triggeredRef.current.add(t.id);
               const profile = profiles.find((p) => p.id === t.profileId);
               notify("IN STOCK", `${t.productTitle ?? t.input}`);
+              fireWebhook("in_stock", { ...t, variantId: avail.id });
               if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
                 // Drive the checkout state machine.
@@ -1084,6 +1157,7 @@ function Index() {
                 }).then((r) => {
                   if (!r.ok) {
                     updateTask(t.id, { status: "failed", message: `${r.stage}: ${r.error}`, checkoutElapsedMs: r.elapsedMs });
+                    fireWebhook("failed", { ...t, checkoutElapsedMs: r.elapsedMs, message: `${r.stage}: ${r.error}` });
                     return;
                   }
                   updateTask(t.id, {
@@ -1093,6 +1167,7 @@ function Index() {
                     checkoutElapsedMs: r.elapsedMs,
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
+                  fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
                   const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
                   const wantFullBrowser = browserlessEnabled || (runnerPreferred && runnerOnlineRef.current);
                   const useRunner = runnerPreferred && runnerOnlineRef.current;
@@ -1140,6 +1215,7 @@ function Index() {
                           message: b.dryRun ? `Dry-run OK · ${transportLabel} · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${transportLabel} · ${elapsed}ms`,
                         });
                         if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
+                        if (!b.dryRun) fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
                       } else {
                         updateTask(t.id, {
                           status: "failed",
@@ -1148,9 +1224,11 @@ function Index() {
                           browserlessElapsedMs: elapsed,
                           message: `${b.failedStep}: ${b.error}`,
                         });
+                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${b.failedStep}: ${b.error}` });
                       }
                     }).catch((err: any) => {
                       updateTask(t.id, { status: "failed", message: err?.message ?? `${transportLabel} error` });
+                      fireWebhook("failed", { ...t, message: err?.message ?? `${transportLabel} error` });
                     });
                   } else if (autoOpen) {
                     window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
@@ -1158,6 +1236,7 @@ function Index() {
                   }
                 }).catch((err: any) => {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
+                  fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
                 });
               }
             }
@@ -1293,6 +1372,7 @@ function Index() {
                 onStart={startTask}
                 onStop={stopTask}
                 onDelete={deleteTask}
+                onSchedule={setScheduleTaskId}
                 onCreate={() => setCreateOpen(true)}
                 onGoProfiles={() => setTab("profiles")}
                 hasProfiles={profiles.length > 0}
@@ -1411,6 +1491,9 @@ function Index() {
               </Button>
               <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkEditOpen(true)} title="Edit">
                 <Settings className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkScheduleOpen(true)} title="Schedule">
+                <Clock className="h-3.5 w-3.5" />
               </Button>
               <Popover>
                 <PopoverTrigger asChild>
@@ -1535,13 +1618,28 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // ────────────────────────────────────────────
 // Tasks view
 // ────────────────────────────────────────────
+function Countdown({ to }: { to: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const ms = Math.max(0, to - now);
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return <span>{h > 0 ? `${h}:${String(m).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`}</span>;
+}
+
 function TasksView({
-  tasks, profiles, stores, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
+  onSchedule: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
   selectedIds: Set<string>;
@@ -1889,14 +1987,25 @@ function TasksView({
                   <Button size="icon" variant="destructive" className="h-10 w-10 rounded-lg" onClick={() => onStop(t.id)}>
                     <Square className="h-4 w-4" />
                   </Button>
+                ) : t.scheduledAt && t.scheduledAt > Date.now() ? (
+                  <button
+                    onClick={() => onSchedule(t.id)}
+                    className="flex h-10 min-w-[4.5rem] items-center justify-center gap-1 rounded-lg border border-primary/40 bg-primary/10 px-2 text-[11px] font-medium tabular-nums text-primary"
+                    title="Edit schedule"
+                  >
+                    <Clock className="h-3 w-3" />
+                    <Countdown to={t.scheduledAt} />
+                  </button>
                 ) : (
                   <Button size="icon" className="h-10 w-10 rounded-lg" onClick={() => onStart(t.id)}>
                     <Play className="h-4 w-4" />
                   </Button>
                 )}
-                <button className="text-[10px] text-muted-foreground hover:text-destructive" onClick={() => onDelete(t.id)}>
-                  delete
-                </button>
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <button className="hover:text-foreground" onClick={() => onSchedule(t.id)}>schedule</button>
+                  <span>·</span>
+                  <button className="hover:text-destructive" onClick={() => onDelete(t.id)}>delete</button>
+                </div>
               </div>
             </div>
           </Card>
