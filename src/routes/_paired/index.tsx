@@ -22,13 +22,16 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
+  ClipboardList, CheckSquare, Search, Globe,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
+import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
+import { JobsPanel } from "@/components/JobsPanel";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
@@ -719,7 +722,11 @@ function Index() {
   tasksRef.current = tasks;
 
   // ─── UI ───
-  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "settings" | "help">("tasks");
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "jobs" | "settings" | "help">("tasks");
+  // Bulk-select state for the Tasks tab
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const exitSelectMode = () => { setSelectMode(false); setSelectedTaskIds(new Set()); };
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
