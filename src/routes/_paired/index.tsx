@@ -1280,7 +1280,7 @@ function Index() {
           </div>
         )}
         {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
-        {tab === "jobs" && <JobsPanel />}
+        {tab === "analytics" && <AnalyticsPanel />}
         {tab === "help" && <HelpView />}
       </main>
 
@@ -1342,7 +1342,7 @@ function Index() {
             ["stores", "Stores", Store, allStores.length],
             ["proxies", "Proxies", Server, totalProxies],
             ["captcha", "Captcha", Shield, 0],
-            ["jobs", "Jobs", ClipboardList, 0],
+            ["analytics", "Analytics", BarChart3, 0],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
