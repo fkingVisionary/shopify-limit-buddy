@@ -467,7 +467,21 @@ type Task = {
   // Drop scheduler
   scheduledAt?: number | null;   // ms epoch — auto-start at this time
   preWarmMs?: number | null;     // how early to warm DNS/proxy (default 2000)
+  // Execution mode — controls checkout speed + captcha preload behavior.
+  //   fast          → hit checkout immediately on stock, no token required
+  //   fast_preload  → fast, but only fire if a warm captcha token is ready
+  //   safe          → small jitter delay before checkout, no token required
+  //   safe_preload  → safe + only fire if a warm captcha token is ready
+  executionMode?: ExecutionMode;
 };
+export type ExecutionMode = "fast" | "fast_preload" | "safe" | "safe_preload";
+export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
+  fast: "Fast",
+  fast_preload: "Fast + Preload",
+  safe: "Safe",
+  safe_preload: "Safe + Preload",
+};
+const EXECUTION_MODE_CYCLE: ExecutionMode[] = ["fast", "fast_preload", "safe", "safe_preload"];
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
 const TASK_GROUPS_KEY = "aio:task-groups";
