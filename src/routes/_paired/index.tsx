@@ -1283,8 +1283,14 @@ function Index() {
                     return next;
                   });
                 }}
-                onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+                onSelectAll={() => setSelectedTaskIds(new Set(tasks.filter((t) => activeGroupId == null || t.groupId === activeGroupId).map((t) => t.id)))}
                 onClearSelection={() => setSelectedTaskIds(new Set())}
+                taskGroups={taskGroups}
+                activeGroupId={activeGroupId}
+                onSelectGroup={setActiveGroupId}
+                onAddGroup={(name) => addTaskGroup(name)}
+                onRenameGroup={renameTaskGroup}
+                onDeleteGroup={deleteTaskGroup}
               />
             ) : (
               <JobsPanel />
