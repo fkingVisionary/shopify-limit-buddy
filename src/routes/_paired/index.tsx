@@ -1215,6 +1215,7 @@ function Index() {
                           message: b.dryRun ? `Dry-run OK · ${transportLabel} · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${transportLabel} · ${elapsed}ms`,
                         });
                         if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
+                        if (!b.dryRun) fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
                       } else {
                         updateTask(t.id, {
                           status: "failed",
@@ -1223,9 +1224,11 @@ function Index() {
                           browserlessElapsedMs: elapsed,
                           message: `${b.failedStep}: ${b.error}`,
                         });
+                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${b.failedStep}: ${b.error}` });
                       }
                     }).catch((err: any) => {
                       updateTask(t.id, { status: "failed", message: err?.message ?? `${transportLabel} error` });
+                      fireWebhook("failed", { ...t, message: err?.message ?? `${transportLabel} error` });
                     });
                   } else if (autoOpen) {
                     window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
@@ -1233,6 +1236,7 @@ function Index() {
                   }
                 }).catch((err: any) => {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
+                  fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
                 });
               }
             }
