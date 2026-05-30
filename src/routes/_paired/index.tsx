@@ -1548,10 +1548,9 @@ function TasksView({
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
 }) {
-  const visibleTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
-  const groupChips = useMemo(() => {
-    const counts = new Map<string | null, number>();
-    counts.set(null, tasks.length);
+  const visibleTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const groupCounts = useMemo(() => {
+    const counts = new Map<string, number>();
     for (const g of taskGroups) counts.set(g.id, 0);
     for (const t of tasks) {
       if (t.groupId && counts.has(t.groupId)) counts.set(t.groupId, (counts.get(t.groupId) ?? 0) + 1);
