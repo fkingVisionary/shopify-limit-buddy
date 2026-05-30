@@ -1247,7 +1247,7 @@ function Index() {
               <StatusPill color="red" label="Errors" count={errorCount} />
               <StatusPill color="blue" label="Running" count={runningCount} />
             </div>
-            <div className="text-sm font-medium text-muted-foreground">{tasks.length} Tasks</div>
+            <div className="text-sm font-medium text-muted-foreground">{groupTasks.length} Tasks</div>
           </div>
         )}
         {error && (
