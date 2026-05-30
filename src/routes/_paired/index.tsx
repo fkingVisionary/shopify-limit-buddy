@@ -775,6 +775,16 @@ function Index() {
     } catch {}
   }, []);
 
+  // Auto-select first group when groups exist but none active
+  useEffect(() => {
+    if (activeGroupId == null && taskGroups.length > 0) {
+      setActiveGroupId(taskGroups[0].id);
+    }
+    if (activeGroupId != null && !taskGroups.some((g) => g.id === activeGroupId)) {
+      setActiveGroupId(taskGroups[0]?.id ?? null);
+    }
+  }, [taskGroups, activeGroupId]);
+
   const completeWizard = () => {
     try { localStorage.setItem(WIZARD_KEY, "1"); } catch {}
     setWizardOpen(false);
