@@ -1609,7 +1609,6 @@ function TasksView({
     if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
   };
 
-  const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
   const groupChipsUI = (
     <div className="flex gap-1.5 overflow-x-auto pb-1">
       {taskGroups.map((g) => (
