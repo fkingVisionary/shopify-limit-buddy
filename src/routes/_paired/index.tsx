@@ -22,13 +22,16 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
+  ClipboardList, CheckSquare, Search, Globe,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
+import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
+import { JobsPanel } from "@/components/JobsPanel";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
@@ -719,7 +722,11 @@ function Index() {
   tasksRef.current = tasks;
 
   // ─── UI ───
-  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "settings" | "help">("tasks");
+  const [tab, setTab] = useState<"tasks" | "profiles" | "proxies" | "stores" | "captcha" | "jobs" | "settings" | "help">("tasks");
+  // Bulk-select state for the Tasks tab
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
+  const exitSelectMode = () => { setSelectMode(false); setSelectedTaskIds(new Set()); };
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -824,6 +831,12 @@ function Index() {
     persistProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const deleteProfile = (id: string) =>
     persistProfiles(profiles.filter((p) => p.id !== id), activeIds.filter((x) => x !== id));
+  const duplicateProfile = (id: string) => {
+    const src = profiles.find((p) => p.id === id);
+    if (!src) return;
+    const copy: Profile = { ...src, id: makeId(), name: `${src.name} (copy)` };
+    persistProfiles([...profiles, copy], [...activeIds, copy.id]);
+  };
   const toggleActive = (id: string) => {
     const next = activeIds.includes(id) ? activeIds.filter((x) => x !== id) : [...activeIds, id];
     setActiveIds(next);
@@ -921,6 +934,35 @@ function Index() {
   const startAll = () => tasksRef.current.forEach((t) => !t.running && startTask(t.id));
   const stopAll = () => tasksRef.current.forEach((t) => t.running && stopTask(t.id));
   const deleteTask = (id: string) => setTasks((prev) => prev.filter((t) => t.id !== id));
+
+  // ─── Bulk task ops (used by select mode) ───
+  const bulkDeleteTasks = (ids: Set<string>) => {
+    setTasks((prev) => prev.filter((t) => !ids.has(t.id)));
+    exitSelectMode();
+  };
+  const bulkDuplicateTasks = (ids: Set<string>) => {
+    const copies: Task[] = [];
+    for (const t of tasksRef.current) {
+      if (!ids.has(t.id)) continue;
+      copies.push({ ...t, id: makeId(), running: false, status: "idle", message: undefined, productHandle: t.productHandle, productTitle: t.productTitle });
+    }
+    setTasks((prev) => [...copies, ...prev]);
+    exitSelectMode();
+  };
+  const bulkStartTasks = (ids: Set<string>) => {
+    ids.forEach((id) => {
+      const t = tasksRef.current.find((x) => x.id === id);
+      if (t && !t.running) startTask(id);
+    });
+    exitSelectMode();
+  };
+  const bulkStopTasks = (ids: Set<string>) => {
+    ids.forEach((id) => {
+      const t = tasksRef.current.find((x) => x.id === id);
+      if (t && t.running) stopTask(id);
+    });
+    exitSelectMode();
+  };
 
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
@@ -1075,7 +1117,7 @@ function Index() {
   const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
-  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", settings: "Settings", help: "Help" }[tab];
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", jobs: "Jobs", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
     tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
@@ -1083,6 +1125,7 @@ function Index() {
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
     captcha: { key: "tip-captcha", text: "Harvest captcha tokens via 2Captcha. Paste the same proxy your checkout will use — tokens are IP-bound on most sites." },
+    jobs: { key: "tip-jobs", text: "Every checkout dispatched to your runner shows up here — success, failure, or pending. Tap a row for the full payload." },
     settings: { key: "tip-settings", text: "Lower poll interval = faster detection but more requests. 3000–5000ms is a good balance." },
     help: null,
   };
@@ -1155,6 +1198,19 @@ function Index() {
             onCreate={() => setCreateOpen(true)}
             onGoProfiles={() => setTab("profiles")}
             hasProfiles={profiles.length > 0}
+            selectMode={selectMode}
+            selectedIds={selectedTaskIds}
+            onEnterSelectMode={() => setSelectMode(true)}
+            onExitSelectMode={exitSelectMode}
+            onToggleSelect={(id) => {
+              setSelectedTaskIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(id)) next.delete(id); else next.add(id);
+                return next;
+              });
+            }}
+            onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+            onClearSelection={() => setSelectedTaskIds(new Set())}
           />
         )}
         {tab === "profiles" && (
@@ -1164,6 +1220,7 @@ function Index() {
             onAdd={addProfile}
             onUpdate={updateProfile}
             onDelete={deleteProfile}
+            onDuplicate={duplicateProfile}
             onToggle={toggleActive}
             onPersistMany={(next, nextActive) => persistProfiles(next, nextActive)}
           />
@@ -1201,10 +1258,11 @@ function Index() {
           </div>
         )}
         {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
+        {tab === "jobs" && <JobsPanel />}
         {tab === "help" && <HelpView />}
       </main>
 
-      {tab === "tasks" && tasks.length > 0 && (
+      {tab === "tasks" && tasks.length > 0 && !selectMode && (
         <div
           className="fixed inset-x-0 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur"
           style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
@@ -1223,17 +1281,46 @@ function Index() {
         </div>
       )}
 
+      {tab === "tasks" && selectMode && (
+        <div
+          className="fixed inset-x-0 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur"
+          style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
+        >
+          <div className="mx-auto max-w-3xl">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="font-medium">{selectedTaskIds.size} selected</span>
+              <button onClick={exitSelectMode} className="text-muted-foreground hover:text-foreground">Cancel</button>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)}>
+                <Play className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)}>
+                <Square className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)}>
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <nav
         className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur"
         style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
       >
-        <div className="mx-auto grid max-w-3xl grid-cols-7">
+        <div className="mx-auto grid max-w-3xl grid-cols-8">
           {([
             ["tasks", "Tasks", ListChecks, tasks.length],
             ["profiles", "Profiles", Users, profiles.length],
             ["stores", "Stores", Store, allStores.length],
             ["proxies", "Proxies", Server, totalProxies],
             ["captcha", "Captcha", Shield, 0],
+            ["jobs", "Jobs", ClipboardList, 0],
             ["settings", "Settings", Settings, 0],
             ["help", "Help", HelpCircle, 0],
           ] as const).map(([key, label, Icon, count]) => {
@@ -1293,11 +1380,32 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // ────────────────────────────────────────────
 function TasksView({
   tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
+  selectMode: boolean;
+  selectedIds: Set<string>;
+  onEnterSelectMode: () => void;
+  onExitSelectMode: () => void;
+  onToggleSelect: (id: string) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
 }) {
+  // Long-press detection for entering select mode (touch only).
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startPress = (id: string) => {
+    if (selectMode) return;
+    pressTimerRef.current = setTimeout(() => {
+      onEnterSelectMode();
+      onToggleSelect(id);
+    }, 450);
+  };
+  const cancelPress = () => {
+    if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
+  };
+
   if (tasks.length === 0) {
     return (
       <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
@@ -1323,10 +1431,29 @@ function TasksView({
       </div>
     );
   }
+  const allSelected = selectMode && selectedIds.size === tasks.length;
   return (
     <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        {selectMode ? (
+          <>
+            <button
+              className="font-medium text-primary"
+              onClick={() => (allSelected ? onClearSelection() : onSelectAll())}
+            >
+              {allSelected ? "Clear" : "Select all"}
+            </button>
+            <button className="text-muted-foreground hover:text-foreground" onClick={onExitSelectMode}>Done</button>
+          </>
+        ) : (
+          <button className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground" onClick={onEnterSelectMode}>
+            <CheckSquare className="h-3.5 w-3.5" /> Select
+          </button>
+        )}
+      </div>
       {tasks.map((t) => {
         const profile = profiles.find((p) => p.id === t.profileId);
+        const selected = selectedIds.has(t.id);
         const statusInfo = (() => {
           switch (t.status) {
             case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
@@ -1352,8 +1479,25 @@ function TasksView({
         const phaseIdx = phases.findIndex((p) => p.key === t.status);
         const showStepper = phaseIdx >= 0 || t.status === "opened" || t.status === "failed";
         return (
-          <Card key={t.id} className="p-3">
+          <Card
+            key={t.id}
+            className={`p-3 ${selectMode ? "cursor-pointer" : ""} ${selected ? "ring-2 ring-primary" : ""}`}
+            onClick={selectMode ? () => onToggleSelect(t.id) : undefined}
+            onTouchStart={() => startPress(t.id)}
+            onTouchEnd={cancelPress}
+            onTouchMove={cancelPress}
+            onTouchCancel={cancelPress}
+          >
             <div className="flex items-start gap-3">
+              {selectMode && (
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 shrink-0"
+                  checked={selected}
+                  onChange={() => onToggleSelect(t.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              )}
               <div className="flex-1 min-w-0">
                 <div className="truncate text-sm font-semibold">
                   {t.productTitle ?? t.input}
@@ -1700,29 +1844,55 @@ function CreateTaskSheet({
 // Profiles view
 // ────────────────────────────────────────────
 function ProfilesView({
-  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle, onPersistMany,
+  profiles, activeIds, onAdd, onUpdate, onDelete, onDuplicate, onToggle, onPersistMany,
 }: {
   profiles: Profile[]; activeIds: string[];
   onAdd: () => void;
   onUpdate: (id: string, patch: Partial<Profile>) => void;
   onDelete: (id: string) => void;
+  onDuplicate: (id: string) => void;
   onToggle: (id: string) => void;
   onPersistMany: (next: Profile[], nextActive?: string[]) => void;
 }) {
   const [builderFor, setBuilderFor] = useState<Profile | null>(null);
+  const [search, setSearch] = useState("");
+  const filtered = search.trim()
+    ? profiles.filter((p) => {
+        const q = search.toLowerCase();
+        return (
+          p.name.toLowerCase().includes(q) ||
+          (p.email ?? "").toLowerCase().includes(q) ||
+          (p.first_name ?? "").toLowerCase().includes(q) ||
+          (p.last_name ?? "").toLowerCase().includes(q) ||
+          (p.city ?? "").toLowerCase().includes(q) ||
+          (p.zip ?? "").toLowerCase().includes(q)
+        );
+      })
+    : profiles;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-muted-foreground">{activeIds.length}/{profiles.length} active</div>
         <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add</Button>
       </div>
+      {profiles.length > 0 && (
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search profiles…"
+            className="h-9 pl-8"
+          />
+        </div>
+      )}
       {profiles.length === 0 && (
         <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
           No profiles. Each profile holds shipping + contact info for prefilled checkout.
         </div>
       )}
-      {profiles.map((p) => {
+      {filtered.map((p) => {
         const isActive = activeIds.includes(p.id);
         return (
           <Card key={p.id} className={`p-3 ${isActive ? "" : "opacity-60"}`}>
@@ -1737,6 +1907,15 @@ function ProfilesView({
                 onClick={() => setBuilderFor(p)}
               >
                 <Sparkles className="h-4 w-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                title="Duplicate this profile"
+                onClick={() => onDuplicate(p.id)}
+              >
+                <Copy className="h-4 w-4" />
               </Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
             </div>
