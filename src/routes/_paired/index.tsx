@@ -1844,29 +1844,55 @@ function CreateTaskSheet({
 // Profiles view
 // ────────────────────────────────────────────
 function ProfilesView({
-  profiles, activeIds, onAdd, onUpdate, onDelete, onToggle, onPersistMany,
+  profiles, activeIds, onAdd, onUpdate, onDelete, onDuplicate, onToggle, onPersistMany,
 }: {
   profiles: Profile[]; activeIds: string[];
   onAdd: () => void;
   onUpdate: (id: string, patch: Partial<Profile>) => void;
   onDelete: (id: string) => void;
+  onDuplicate: (id: string) => void;
   onToggle: (id: string) => void;
   onPersistMany: (next: Profile[], nextActive?: string[]) => void;
 }) {
   const [builderFor, setBuilderFor] = useState<Profile | null>(null);
+  const [search, setSearch] = useState("");
+  const filtered = search.trim()
+    ? profiles.filter((p) => {
+        const q = search.toLowerCase();
+        return (
+          p.name.toLowerCase().includes(q) ||
+          (p.email ?? "").toLowerCase().includes(q) ||
+          (p.first_name ?? "").toLowerCase().includes(q) ||
+          (p.last_name ?? "").toLowerCase().includes(q) ||
+          (p.city ?? "").toLowerCase().includes(q) ||
+          (p.zip ?? "").toLowerCase().includes(q)
+        );
+      })
+    : profiles;
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <div className="text-sm text-muted-foreground">{activeIds.length}/{profiles.length} active</div>
         <Button size="sm" onClick={onAdd}><Plus className="h-3.5 w-3.5" /> Add</Button>
       </div>
+      {profiles.length > 0 && (
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search profiles…"
+            className="h-9 pl-8"
+          />
+        </div>
+      )}
       {profiles.length === 0 && (
         <div className="rounded-lg border border-dashed p-8 text-center text-xs text-muted-foreground">
           No profiles. Each profile holds shipping + contact info for prefilled checkout.
         </div>
       )}
-      {profiles.map((p) => {
+      {filtered.map((p) => {
         const isActive = activeIds.includes(p.id);
         return (
           <Card key={p.id} className={`p-3 ${isActive ? "" : "opacity-60"}`}>
@@ -1881,6 +1907,15 @@ function ProfilesView({
                 onClick={() => setBuilderFor(p)}
               >
                 <Sparkles className="h-4 w-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8"
+                title="Duplicate this profile"
+                onClick={() => onDuplicate(p.id)}
+              >
+                <Copy className="h-4 w-4" />
               </Button>
               <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(p.id)}><Trash2 className="h-4 w-4" /></Button>
             </div>
