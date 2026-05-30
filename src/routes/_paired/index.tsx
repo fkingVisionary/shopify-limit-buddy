@@ -2139,6 +2139,8 @@ function CreateTaskSheet({
   const [qty, setQty] = useState(1);
   const [taskQty, setTaskQty] = useState(1);
   const [execMode, setExecMode] = useState<ExecutionMode>("fast");
+  const [sizes, setSizes] = useState<string[]>([]);
+  const [sizesOpen, setSizesOpen] = useState(false);
   const [addingStore, setAddingStore] = useState(false);
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreUrl, setNewStoreUrl] = useState("");
