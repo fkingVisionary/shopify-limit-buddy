@@ -1191,29 +1191,49 @@ function Index() {
           </div>
         )}
         {tab === "tasks" && (
-          <TasksView
-            tasks={tasks}
-            profiles={profiles}
-            onStart={startTask}
-            onStop={stopTask}
-            onDelete={deleteTask}
-            onCreate={() => setCreateOpen(true)}
-            onGoProfiles={() => setTab("profiles")}
-            hasProfiles={profiles.length > 0}
-            selectMode={selectMode}
-            selectedIds={selectedTaskIds}
-            onEnterSelectMode={() => setSelectMode(true)}
-            onExitSelectMode={exitSelectMode}
-            onToggleSelect={(id) => {
-              setSelectedTaskIds((prev) => {
-                const next = new Set(prev);
-                if (next.has(id)) next.delete(id); else next.add(id);
-                return next;
-              });
-            }}
-            onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
-            onClearSelection={() => setSelectedTaskIds(new Set())}
-          />
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted/40 p-1">
+              <button
+                onClick={() => setTasksSubTab("active")}
+                className={`rounded-md py-1.5 text-xs font-medium transition-colors ${tasksSubTab === "active" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              >
+                Active {tasks.length > 0 && <span className="ml-1 opacity-60">{tasks.length}</span>}
+              </button>
+              <button
+                onClick={() => setTasksSubTab("history")}
+                className={`rounded-md py-1.5 text-xs font-medium transition-colors ${tasksSubTab === "history" ? "bg-background text-foreground shadow-sm" : "text-muted-foreground"}`}
+              >
+                History
+              </button>
+            </div>
+            {tasksSubTab === "active" ? (
+              <TasksView
+                tasks={tasks}
+                profiles={profiles}
+                onStart={startTask}
+                onStop={stopTask}
+                onDelete={deleteTask}
+                onCreate={() => setCreateOpen(true)}
+                onGoProfiles={() => setTab("profiles")}
+                hasProfiles={profiles.length > 0}
+                selectMode={selectMode}
+                selectedIds={selectedTaskIds}
+                onEnterSelectMode={() => setSelectMode(true)}
+                onExitSelectMode={exitSelectMode}
+                onToggleSelect={(id) => {
+                  setSelectedTaskIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id); else next.add(id);
+                    return next;
+                  });
+                }}
+                onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+                onClearSelection={() => setSelectedTaskIds(new Set())}
+              />
+            ) : (
+              <JobsPanel />
+            )}
+          </div>
         )}
         {tab === "profiles" && (
           <ProfilesView
