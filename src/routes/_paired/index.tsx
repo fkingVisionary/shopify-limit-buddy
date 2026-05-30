@@ -2316,6 +2316,20 @@ function CreateTaskSheet({
             />
           </Field>
         </div>
+
+        {/* Row 5: Mode (full width) */}
+        <Field label="Mode">
+          <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
+            <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(EXECUTION_MODE_CYCLE).map((m) => (
+                <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
       </div>
 
       <DrawerFooter className="pt-2">
@@ -2328,7 +2342,127 @@ function CreateTaskSheet({
           Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
         </Button>
       </DrawerFooter>
+
+      <SizesPickerDialog
+        open={sizesOpen}
+        onClose={() => setSizesOpen(false)}
+        value={sizes}
+        onChange={setSizes}
+      />
     </DrawerContent>
+  );
+}
+
+// ────────────────────────────────────────────
+// Sizes picker — bottom-sheet style multi-select with search.
+// Supports clothing letters, US/EU shoe sizes, generic numeric, "One Size",
+// plus free-text custom sizes (press Enter to add what you typed).
+// ────────────────────────────────────────────
+function SizesPickerDialog({
+  open, onClose, value, onChange,
+}: {
+  open: boolean; onClose: () => void;
+  value: string[]; onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState<string[]>(value);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => { if (open) { setDraft(value); setQuery(""); } }, [open, value]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SIZE_PRESETS;
+    return SIZE_PRESETS.filter((s) => s.toLowerCase().includes(q));
+  }, [query]);
+
+  const toggle = (s: string) =>
+    setDraft((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+
+  const addCustom = () => {
+    const v = query.trim();
+    if (!v) return;
+    if (!draft.includes(v)) setDraft([...draft, v]);
+    setQuery("");
+  };
+
+  const done = () => { onChange(draft); onClose(); };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[80vh] gap-0 p-0 sm:max-w-md">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Select Sizes</DialogTitle>
+          <DialogDescription>Choose one or more sizes for this task.</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center justify-between px-4 pt-4 pb-3">
+          <button
+            type="button"
+            className="text-base font-semibold text-rose-400"
+            onClick={() => setDraft([])}
+          >
+            Clear
+          </button>
+          <div className="text-lg font-bold">Select Sizes</div>
+          <button
+            type="button"
+            className="text-base font-semibold text-primary"
+            onClick={done}
+          >
+            Done
+          </button>
+        </div>
+
+        <div className="px-4 pb-3">
+          <div className="flex h-10 items-center gap-2 rounded-md bg-muted/60 px-3">
+            <Search className="h-4 w-4 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+              placeholder="Search…"
+              className="h-full flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
+          </div>
+        </div>
+
+        <div className="max-h-[55vh] space-y-1.5 overflow-y-auto px-3 pb-4">
+          {/* Show selected (not in preset) first so custom sizes are visible */}
+          {draft.filter((s) => !SIZE_PRESETS.includes(s)).map((s) => (
+            <SizeRow key={`c-${s}`} label={s} selected onClick={() => toggle(s)} />
+          ))}
+          {filtered.length === 0 && query.trim() && (
+            <button
+              type="button"
+              onClick={addCustom}
+              className="flex w-full items-center justify-center rounded-md bg-muted/40 px-4 py-3 text-sm text-primary"
+            >
+              ＋ Add &ldquo;{query.trim()}&rdquo;
+            </button>
+          )}
+          {filtered.map((s) => (
+            <SizeRow key={s} label={s} selected={draft.includes(s)} onClick={() => toggle(s)} />
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SizeRow({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between rounded-md px-4 py-3.5 text-left text-base font-semibold transition-colors ${
+        selected ? "bg-primary/15 text-primary" : "bg-muted/40 hover:bg-muted/60"
+      }`}
+    >
+      <span>{label}</span>
+      {selected && <Check className="h-4 w-4" />}
+    </button>
   );
 }
 
