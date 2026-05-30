@@ -33,6 +33,7 @@ import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { JobsPanel } from "@/components/JobsPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
+import { loadNotifyConfig, saveNotifyConfig, notifyWebhook, sendTestWebhook, isValidWebhookUrl, type NotifyConfig, type NotifyEvent, type NotifyTaskShape } from "@/lib/discord";
 import jimsLogo from "@/assets/jims-logo.jpg";
 
 export const Route = createFileRoute("/_paired/")({
