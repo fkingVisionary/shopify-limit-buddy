@@ -2167,6 +2167,7 @@ function CreateTaskSheet({
       proxyGroupId: proxyGroupSel === "__direct" ? null : proxyGroupSel,
       qty: Math.max(1, qty),
       executionMode: execMode,
+      sizes: sizes.length > 0 ? sizes : undefined,
     }, Math.max(1, taskQty));
     setInput("");
   };
