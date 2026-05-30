@@ -1440,6 +1440,7 @@ function Index() {
               browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
               runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
               profiles={profiles}
+              notifyConfig={notifyConfig} setNotifyConfig={setNotifyConfig}
               onShowWizard={() => setWizardOpen(true)}
               onResetTips={resetTips}
             />
@@ -1546,6 +1547,40 @@ function Index() {
         stores={allStores}
         taskGroups={taskGroups}
         onApply={(patch) => { bulkEditTasks(selectedTaskIds, patch); setBulkEditOpen(false); }}
+      />
+
+      <ScheduleDialog
+        open={!!scheduleTaskId}
+        onClose={() => setScheduleTaskId(null)}
+        count={1}
+        initial={(() => {
+          const t = tasks.find((x) => x.id === scheduleTaskId);
+          return t ? { scheduledAt: t.scheduledAt ?? undefined, preWarmMs: t.preWarmMs ?? undefined } : null;
+        })()}
+        onApply={(scheduledAt, preWarmMs) => {
+          if (scheduleTaskId) updateTask(scheduleTaskId, { scheduledAt, preWarmMs });
+        }}
+        onClear={scheduleTaskId ? () => updateTask(scheduleTaskId, { scheduledAt: null, preWarmMs: null }) : undefined}
+      />
+
+      <ScheduleDialog
+        open={bulkScheduleOpen}
+        onClose={() => setBulkScheduleOpen(false)}
+        count={selectedTaskIds.size}
+        initial={null}
+        onApply={(scheduledAt, preWarmMs, staggerMs) => {
+          const ids = Array.from(selectedTaskIds);
+          setTasks((prev) => {
+            let i = 0;
+            const order = new Map(ids.map((id, idx) => [id, idx]));
+            return prev.map((t) => {
+              if (!selectedTaskIds.has(t.id)) return t;
+              const idx = order.get(t.id) ?? i++;
+              return { ...t, scheduledAt: scheduledAt + idx * staggerMs, preWarmMs };
+            });
+          });
+          setBulkScheduleOpen(false);
+        }}
       />
 
 
@@ -2855,6 +2890,7 @@ function SettingsView({
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
   runnerPreferred, setRunnerPreferred,
   profiles,
+  notifyConfig, setNotifyConfig,
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
@@ -2864,8 +2900,17 @@ function SettingsView({
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
   runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void;
   profiles: Profile[];
+  notifyConfig: NotifyConfig; setNotifyConfig: (cfg: NotifyConfig) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
+  const [testing, setTesting] = useState<"idle" | "ok" | "fail" | "sending">("idle");
+  const urlOk = !notifyConfig.webhookUrl || isValidWebhookUrl(notifyConfig.webhookUrl);
+  const sendTest = async () => {
+    setTesting("sending");
+    const ok = await sendTestWebhook(notifyConfig.webhookUrl);
+    setTesting(ok ? "ok" : "fail");
+    setTimeout(() => setTesting("idle"), 2500);
+  };
   return (
     <div className="space-y-3">
       <Card className="p-3">
@@ -2916,8 +2961,53 @@ function SettingsView({
 
       <TaskPoolCard profiles={profiles} />
 
-
-
+      <Card className="p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Discord notifications
+          <InfoDot text="Posts an embed to your Discord webhook on key task events. Profile names are masked. Works whether the tab is open or not on every device that has Discord." />
+        </div>
+        <div className="mt-2">
+          <Label className="text-[11px] text-muted-foreground">Webhook URL</Label>
+          <Input
+            className={`mt-1 h-9 font-mono text-[11px] ${!urlOk ? "border-destructive" : ""}`}
+            placeholder="https://discord.com/api/webhooks/..."
+            value={notifyConfig.webhookUrl}
+            onChange={(e) => setNotifyConfig({ ...notifyConfig, webhookUrl: e.target.value })}
+          />
+          {!urlOk && <p className="mt-1 text-[10px] text-destructive">Doesn't look like a Discord webhook URL.</p>}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-1.5">
+          {([
+            ["in_stock", "In stock"],
+            ["checkout_ready", "Checkout ready"],
+            ["confirmed", "Order confirmed"],
+            ["failed", "Failed"],
+          ] as const).map(([ev, label]) => (
+            <label key={ev} className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={notifyConfig.events[ev]}
+                onChange={(e) => setNotifyConfig({ ...notifyConfig, events: { ...notifyConfig.events, [ev]: e.target.checked } })}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-9"
+            disabled={!isValidWebhookUrl(notifyConfig.webhookUrl) || testing === "sending"}
+            onClick={sendTest}
+          >
+            {testing === "sending" ? "Sending…" : "Send test"}
+          </Button>
+          {testing === "ok" && <span className="text-[11px] text-primary">✓ Sent</span>}
+          {testing === "fail" && <span className="text-[11px] text-destructive">Failed — check URL</span>}
+        </div>
+      </Card>
 
 
       <Card className="p-3">
@@ -4006,6 +4096,86 @@ function BulkEditTasksDialog({
         <DialogFooter className="flex-row gap-2 border-t px-6 py-3 sm:justify-end">
           <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
           <Button size="sm" onClick={apply}>Apply to {count}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ────────────────────────────────────────────
+// Schedule dialog — set scheduledAt + preWarmMs for one or many tasks
+// ────────────────────────────────────────────
+function ScheduleDialog({
+  open, onClose, initial, count, onApply, onClear,
+}: {
+  open: boolean;
+  onClose: () => void;
+  initial: { scheduledAt?: number; preWarmMs?: number } | null;
+  count: number;
+  onApply: (scheduledAt: number, preWarmMs: number, staggerMs: number) => void;
+  onClear?: () => void;
+}) {
+  const toLocalInput = (ms?: number) => {
+    const d = ms ? new Date(ms) : new Date(Date.now() + 5 * 60_000);
+    const tz = d.getTimezoneOffset() * 60_000;
+    return new Date(d.getTime() - tz).toISOString().slice(0, 16);
+  };
+  const [when, setWhen] = useState<string>(() => toLocalInput(initial?.scheduledAt));
+  const [preWarm, setPreWarm] = useState<number>(initial?.preWarmMs ?? 2000);
+  const [stagger, setStagger] = useState<number>(0);
+
+  useEffect(() => {
+    if (open) {
+      setWhen(toLocalInput(initial?.scheduledAt));
+      setPreWarm(initial?.preWarmMs ?? 2000);
+      setStagger(0);
+    }
+  }, [open, initial?.scheduledAt, initial?.preWarmMs]);
+
+  const apply = () => {
+    const ms = new Date(when).getTime();
+    if (!Number.isFinite(ms)) return;
+    onApply(ms, Math.max(0, preWarm), Math.max(0, stagger));
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm gap-0 p-0">
+        <DialogHeader className="border-b px-6 py-3">
+          <DialogTitle className="text-base">
+            Schedule {count > 1 ? `${count} tasks` : "task"}
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            Tasks auto-start at the scheduled time. Pre-warm fires a dummy request to keep the proxy/session hot.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 px-6 py-4">
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Start at (local)</Label>
+            <Input className="mt-1 h-9" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Pre-warm (ms before start)</Label>
+            <Input className="mt-1 h-9" type="number" min={0} step={250} value={preWarm} onChange={(e) => setPreWarm(Number(e.target.value) || 0)} />
+            <p className="mt-1 text-[10px] text-muted-foreground">2000ms is a safe default.</p>
+          </div>
+          {count > 1 && (
+            <div>
+              <Label className="text-[11px] text-muted-foreground">Stagger between tasks (ms)</Label>
+              <Input className="mt-1 h-9" type="number" min={0} step={50} value={stagger} onChange={(e) => setStagger(Number(e.target.value) || 0)} />
+              <p className="mt-1 text-[10px] text-muted-foreground">0 = all fire at once.</p>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="flex-row gap-2 border-t px-6 py-3 sm:justify-between">
+          {onClear ? (
+            <Button variant="ghost" size="sm" onClick={() => { onClear(); onClose(); }}>Clear schedule</Button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button size="sm" onClick={apply}>Schedule</Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
