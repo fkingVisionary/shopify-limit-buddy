@@ -831,6 +831,12 @@ function Index() {
     persistProfiles(profiles.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   const deleteProfile = (id: string) =>
     persistProfiles(profiles.filter((p) => p.id !== id), activeIds.filter((x) => x !== id));
+  const duplicateProfile = (id: string) => {
+    const src = profiles.find((p) => p.id === id);
+    if (!src) return;
+    const copy: Profile = { ...src, id: makeId(), name: `${src.name} (copy)` };
+    persistProfiles([...profiles, copy], [...activeIds, copy.id]);
+  };
   const toggleActive = (id: string) => {
     const next = activeIds.includes(id) ? activeIds.filter((x) => x !== id) : [...activeIds, id];
     setActiveIds(next);
@@ -928,6 +934,35 @@ function Index() {
   const startAll = () => tasksRef.current.forEach((t) => !t.running && startTask(t.id));
   const stopAll = () => tasksRef.current.forEach((t) => t.running && stopTask(t.id));
   const deleteTask = (id: string) => setTasks((prev) => prev.filter((t) => t.id !== id));
+
+  // ─── Bulk task ops (used by select mode) ───
+  const bulkDeleteTasks = (ids: Set<string>) => {
+    setTasks((prev) => prev.filter((t) => !ids.has(t.id)));
+    exitSelectMode();
+  };
+  const bulkDuplicateTasks = (ids: Set<string>) => {
+    const copies: Task[] = [];
+    for (const t of tasksRef.current) {
+      if (!ids.has(t.id)) continue;
+      copies.push({ ...t, id: makeId(), running: false, status: "idle", message: undefined, productHandle: t.productHandle, productTitle: t.productTitle });
+    }
+    setTasks((prev) => [...copies, ...prev]);
+    exitSelectMode();
+  };
+  const bulkStartTasks = (ids: Set<string>) => {
+    ids.forEach((id) => {
+      const t = tasksRef.current.find((x) => x.id === id);
+      if (t && !t.running) startTask(id);
+    });
+    exitSelectMode();
+  };
+  const bulkStopTasks = (ids: Set<string>) => {
+    ids.forEach((id) => {
+      const t = tasksRef.current.find((x) => x.id === id);
+      if (t && t.running) stopTask(id);
+    });
+    exitSelectMode();
+  };
 
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
