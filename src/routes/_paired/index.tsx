@@ -1679,21 +1679,22 @@ function TasksView({
     );
   }
 
-  if (tasks.length === 0) {
+  // Per-group empty state
+  if (groupTasks.length === 0) {
     return (
       <div className="space-y-3">
-        {taskGroups.length > 0 && groupChipsUI}
+        {groupChipsUI}
         <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
           <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
             <ListChecks className="h-6 w-6" />
           </div>
-          <p className="text-base font-semibold text-foreground">No tasks yet</p>
+          <p className="text-base font-semibold text-foreground">No tasks in {activeGroupName} yet</p>
           <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
             A task watches one product and fires a prefilled checkout the moment stock appears.
           </p>
           {hasProfiles ? (
             <Button className="mt-4 h-10" onClick={onCreate}>
-              <Plus className="h-4 w-4" /> Create your first task
+              <Plus className="h-4 w-4" /> New task in {activeGroupName}
             </Button>
           ) : (
             <div className="mt-4 space-y-2">
@@ -1707,15 +1708,46 @@ function TasksView({
       </div>
     );
   }
+
+  const visibleIds = visibleTasks.map((t) => t.id);
+  const allSelected = selectMode && visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const statusChips: { key: typeof statusFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "idle", label: "Idle" },
+    { key: "running", label: "Running" },
+    { key: "in_stock", label: "In stock" },
+    { key: "failed", label: "Failed" },
+  ];
+
   return (
     <div className="space-y-2">
       {groupChipsUI}
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by product or store…"
+          className="h-9 pl-8"
+        />
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {statusChips.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setStatusFilter(c.key)}
+            className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${statusFilter === c.key ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
       <div className="flex items-center justify-between gap-2 text-xs">
         {selectMode ? (
           <>
             <button
               className="font-medium text-primary"
-              onClick={() => (allSelected ? onClearSelection() : onSelectAll())}
+              onClick={() => (allSelected ? onClearSelection() : onSelectAll(visibleIds))}
             >
               {allSelected ? "Clear" : "Select all"}
             </button>
