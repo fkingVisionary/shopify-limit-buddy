@@ -1289,6 +1289,7 @@ function Index() {
               <TasksView
                 tasks={tasks}
                 profiles={profiles}
+                stores={allStores}
                 onStart={startTask}
                 onStop={stopTask}
                 onDelete={deleteTask}
@@ -1306,7 +1307,7 @@ function Index() {
                     return next;
                   });
                 }}
-                onSelectAll={() => setSelectedTaskIds(new Set(tasks.filter((t) => activeGroupId == null || t.groupId === activeGroupId).map((t) => t.id)))}
+                onSelectAll={(ids) => setSelectedTaskIds(new Set(ids))}
                 onClearSelection={() => setSelectedTaskIds(new Set())}
                 taskGroups={taskGroups}
                 activeGroupId={activeGroupId}
