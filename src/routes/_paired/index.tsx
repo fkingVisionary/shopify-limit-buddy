@@ -1380,11 +1380,32 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // ────────────────────────────────────────────
 function TasksView({
   tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
+  selectMode: boolean;
+  selectedIds: Set<string>;
+  onEnterSelectMode: () => void;
+  onExitSelectMode: () => void;
+  onToggleSelect: (id: string) => void;
+  onSelectAll: () => void;
+  onClearSelection: () => void;
 }) {
+  // Long-press detection for entering select mode (touch only).
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startPress = (id: string) => {
+    if (selectMode) return;
+    pressTimerRef.current = setTimeout(() => {
+      onEnterSelectMode();
+      onToggleSelect(id);
+    }, 450);
+  };
+  const cancelPress = () => {
+    if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
+  };
+
   if (tasks.length === 0) {
     return (
       <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
@@ -1410,10 +1431,29 @@ function TasksView({
       </div>
     );
   }
+  const allSelected = selectMode && selectedIds.size === tasks.length;
   return (
     <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        {selectMode ? (
+          <>
+            <button
+              className="font-medium text-primary"
+              onClick={() => (allSelected ? onClearSelection() : onSelectAll())}
+            >
+              {allSelected ? "Clear" : "Select all"}
+            </button>
+            <button className="text-muted-foreground hover:text-foreground" onClick={onExitSelectMode}>Done</button>
+          </>
+        ) : (
+          <button className="ml-auto inline-flex items-center gap-1 text-muted-foreground hover:text-foreground" onClick={onEnterSelectMode}>
+            <CheckSquare className="h-3.5 w-3.5" /> Select
+          </button>
+        )}
+      </div>
       {tasks.map((t) => {
         const profile = profiles.find((p) => p.id === t.profileId);
+        const selected = selectedIds.has(t.id);
         const statusInfo = (() => {
           switch (t.status) {
             case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
@@ -1439,8 +1479,25 @@ function TasksView({
         const phaseIdx = phases.findIndex((p) => p.key === t.status);
         const showStepper = phaseIdx >= 0 || t.status === "opened" || t.status === "failed";
         return (
-          <Card key={t.id} className="p-3">
+          <Card
+            key={t.id}
+            className={`p-3 ${selectMode ? "cursor-pointer" : ""} ${selected ? "ring-2 ring-primary" : ""}`}
+            onClick={selectMode ? () => onToggleSelect(t.id) : undefined}
+            onTouchStart={() => startPress(t.id)}
+            onTouchEnd={cancelPress}
+            onTouchMove={cancelPress}
+            onTouchCancel={cancelPress}
+          >
             <div className="flex items-start gap-3">
+              {selectMode && (
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4 shrink-0"
+                  checked={selected}
+                  onChange={() => onToggleSelect(t.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              )}
               <div className="flex-1 min-w-0">
                 <div className="truncate text-sm font-semibold">
                   {t.productTitle ?? t.input}
