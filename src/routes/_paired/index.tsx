@@ -22,7 +22,7 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
-  ClipboardList, CheckSquare, Search, Globe, BarChart3, Clock, Bell, Send,
+  ClipboardList, CheckSquare, Search, Globe, BarChart3, Clock, Bell, Send, ChevronDown,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
