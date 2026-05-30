@@ -751,6 +751,17 @@ function Index() {
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [dismissedTips, setDismissedTips] = useState<Record<string, boolean>>({});
+  // Discord notifications
+  const [notifyConfig, setNotifyConfigState] = useState<NotifyConfig>(() => loadNotifyConfig());
+  const notifyConfigRef = useRef(notifyConfig);
+  notifyConfigRef.current = notifyConfig;
+  const setNotifyConfig = (cfg: NotifyConfig) => { setNotifyConfigState(cfg); saveNotifyConfig(cfg); };
+  // Schedule editor
+  const [scheduleTaskId, setScheduleTaskId] = useState<string | null>(null);
+  const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
+  // Refs to avoid double-firing webhooks / pre-warm
+  const notifiedRef = useRef<Map<string, Set<NotifyEvent>>>(new Map());
+  const preWarmedRef = useRef<Set<string>>(new Set());
 
   const dismissTip = (key: string) => {
     const next = { ...dismissedTips, [key]: true };
