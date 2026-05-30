@@ -1054,6 +1054,33 @@ function Index() {
 
 
 
+  // ─── Drop scheduler tick ─── (fast cadence so second-accuracy works)
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      for (const t of tasksRef.current) {
+        if (t.running || t.status === "confirmed") continue;
+        const ts = t.scheduledAt;
+        if (!ts) continue;
+        const pre = t.preWarmMs ?? 2000;
+        // Pre-warm window: fire one cheap request to warm DNS / proxy session
+        if (now >= ts - pre && now < ts && !preWarmedRef.current.has(t.id)) {
+          preWarmedRef.current.add(t.id);
+          fetch(proxied(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId)).catch(() => {});
+        }
+        if (now >= ts) {
+          // Clear schedule and fire
+          updateTask(t.id, { scheduledAt: null });
+          preWarmedRef.current.delete(t.id);
+          startTask(t.id);
+        }
+      }
+    }, 500);
+    return () => clearInterval(id);
+    // startTask / updateTask are stable closures over refs; safe to omit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
