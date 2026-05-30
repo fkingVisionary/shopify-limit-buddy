@@ -1559,7 +1559,7 @@ function Index() {
         onApply={(scheduledAt, preWarmMs) => {
           if (scheduleTaskId) updateTask(scheduleTaskId, { scheduledAt, preWarmMs });
         }}
-        onClear={scheduleTaskId ? () => updateTask(scheduleTaskId, { scheduledAt: undefined, preWarmMs: undefined }) : undefined}
+        onClear={scheduleTaskId ? () => updateTask(scheduleTaskId, { scheduledAt: null, preWarmMs: null }) : undefined}
       />
 
       <ScheduleDialog
