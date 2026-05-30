@@ -444,6 +444,7 @@ type Task = {
   qty: number;
   status: TaskStatus;
   running: boolean;
+  groupId?: string | null;   // optional task-group id for filtering/sorting
   productHandle?: string;
   productTitle?: string;
   productImage?: string;
@@ -463,7 +464,16 @@ type Task = {
   screenshotB64?: string | null;
   browserlessElapsedMs?: number;
 };
+type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
+const TASK_GROUPS_KEY = "aio:task-groups";
+function loadTaskGroups(): TaskGroup[] {
+  if (typeof window === "undefined") return [];
+  try { return JSON.parse(localStorage.getItem(TASK_GROUPS_KEY) ?? "[]") as TaskGroup[]; } catch { return []; }
+}
+function saveTaskGroups(g: TaskGroup[]) {
+  try { localStorage.setItem(TASK_GROUPS_KEY, JSON.stringify(g)); } catch {}
+}
 function loadTasks(): Task[] {
   if (typeof window === "undefined") return [];
   try {
