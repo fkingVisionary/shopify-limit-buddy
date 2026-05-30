@@ -1271,6 +1271,7 @@ function Index() {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
                   fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
                 });
+                if (safeDelay > 0) setTimeout(checkoutCall, safeDelay); else checkoutCall();
               }
             }
           } else {
