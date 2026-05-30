@@ -739,6 +739,10 @@ function Index() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const exitSelectMode = () => { setSelectMode(false); setSelectedTaskIds(new Set()); };
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  // Task groups (named buckets for sorting/filtering)
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null); // null = All
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -764,6 +768,7 @@ function Index() {
     setProxyGroups(pg);
     setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
+    setTaskGroups(loadTaskGroups());
     setDismissedTips(loadDismissedTips());
     try {
       if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
@@ -778,6 +783,7 @@ function Index() {
   // Persistence
   useEffect(() => { saveTasks(tasks); }, [tasks]);
   useEffect(() => { saveCustomStores(customStores); }, [customStores]);
+  useEffect(() => { saveTaskGroups(taskGroups); }, [taskGroups]);
 
   const allStores = useMemo<StoreEntry[]>(() => [...PRESET_STORES, ...customStores], [customStores]);
 
