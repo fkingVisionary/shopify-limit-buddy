@@ -1617,13 +1617,28 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // ────────────────────────────────────────────
 // Tasks view
 // ────────────────────────────────────────────
+function Countdown({ to }: { to: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const ms = Math.max(0, to - now);
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return <span>{h > 0 ? `${h}:${String(m).padStart(2, "0")}` : `${m}:${String(ss).padStart(2, "0")}`}</span>;
+}
+
 function TasksView({
-  tasks, profiles, stores, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
+  onSchedule: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
   selectedIds: Set<string>;
