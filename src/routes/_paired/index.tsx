@@ -473,6 +473,9 @@ type Task = {
   //   safe          → small jitter delay before checkout, no token required
   //   safe_preload  → safe + only fire if a warm captcha token is ready
   executionMode?: ExecutionMode;
+  // Optional size filter (clothing letters, shoe sizes, "One Size", etc.).
+  // Empty / undefined means "any size".
+  sizes?: string[];
 };
 export type ExecutionMode = "fast" | "fast_preload" | "safe" | "safe_preload";
 export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
