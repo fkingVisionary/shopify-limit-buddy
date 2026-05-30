@@ -2222,17 +2222,21 @@ function CreateTaskSheet({
               </Select>
             )}
           </Field>
-          <Field label="Mode">
-            <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
-              <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(EXECUTION_MODE_CYCLE).map((m) => (
-                  <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <Field label="Sizes">
+            <button
+              type="button"
+              onClick={() => setSizesOpen(true)}
+              className="flex h-8 w-full items-center justify-between bg-transparent px-0 text-left text-base"
+            >
+              <span className={sizes.length === 0 ? "text-muted-foreground" : ""}>
+                {sizes.length === 0
+                  ? "Select sizes"
+                  : sizes.length <= 2
+                    ? sizes.join(", ")
+                    : `${sizes.length} selected`}
+              </span>
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            </button>
           </Field>
         </div>
 
