@@ -1702,13 +1702,14 @@ function Countdown({ to }: { to: number }) {
 }
 
 function TasksView({
-  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onUpdate, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onSchedule: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<Task>) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
   selectedIds: Set<string>;
