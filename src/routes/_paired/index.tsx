@@ -768,7 +768,14 @@ function Index() {
     setProxyGroups(pg);
     setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
-    setTaskGroups(loadTaskGroups());
+    const loadedGroups = loadTaskGroups();
+    if (loadedGroups.length === 0) {
+      const def: TaskGroup = { id: makeId(), name: "Default" };
+      setTaskGroups([def]);
+      setActiveGroupId(def.id);
+    } else {
+      setTaskGroups(loadedGroups);
+    }
     setDismissedTips(loadDismissedTips());
     try {
       if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
