@@ -444,6 +444,7 @@ type Task = {
   qty: number;
   status: TaskStatus;
   running: boolean;
+  groupId?: string | null;   // optional task-group id for filtering/sorting
   productHandle?: string;
   productTitle?: string;
   productImage?: string;
@@ -463,7 +464,16 @@ type Task = {
   screenshotB64?: string | null;
   browserlessElapsedMs?: number;
 };
+type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
+const TASK_GROUPS_KEY = "aio:task-groups";
+function loadTaskGroups(): TaskGroup[] {
+  if (typeof window === "undefined") return [];
+  try { return JSON.parse(localStorage.getItem(TASK_GROUPS_KEY) ?? "[]") as TaskGroup[]; } catch { return []; }
+}
+function saveTaskGroups(g: TaskGroup[]) {
+  try { localStorage.setItem(TASK_GROUPS_KEY, JSON.stringify(g)); } catch {}
+}
 function loadTasks(): Task[] {
   if (typeof window === "undefined") return [];
   try {
@@ -729,6 +739,10 @@ function Index() {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<Set<string>>(new Set());
   const exitSelectMode = () => { setSelectMode(false); setSelectedTaskIds(new Set()); };
+  const [bulkEditOpen, setBulkEditOpen] = useState(false);
+  // Task groups (named buckets for sorting/filtering)
+  const [taskGroups, setTaskGroups] = useState<TaskGroup[]>([]);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null); // null = All
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -754,6 +768,7 @@ function Index() {
     setProxyGroups(pg);
     setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
+    setTaskGroups(loadTaskGroups());
     setDismissedTips(loadDismissedTips());
     try {
       if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
@@ -768,6 +783,7 @@ function Index() {
   // Persistence
   useEffect(() => { saveTasks(tasks); }, [tasks]);
   useEffect(() => { saveCustomStores(customStores); }, [customStores]);
+  useEffect(() => { saveTaskGroups(taskGroups); }, [taskGroups]);
 
   const allStores = useMemo<StoreEntry[]>(() => [...PRESET_STORES, ...customStores], [customStores]);
 
@@ -965,6 +981,46 @@ function Index() {
     });
     exitSelectMode();
   };
+  type BulkEditPatch = Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">>;
+  const bulkEditTasks = (ids: Set<string>, patch: BulkEditPatch) => {
+    if (Object.keys(patch).length === 0) { exitSelectMode(); return; }
+    setTasks((prev) => prev.map((t) => {
+      if (!ids.has(t.id)) return t;
+      const next: Task = { ...t, ...patch };
+      // Keep storeName in sync if storeId changed
+      if (patch.storeId) {
+        const s = allStores.find((x) => x.id === patch.storeId);
+        if (s) { next.storeUrl = s.url; next.storeName = s.name; }
+      }
+      return next;
+    }));
+    exitSelectMode();
+  };
+  const bulkMoveTasksToGroup = (ids: Set<string>, groupId: string | null) => {
+    setTasks((prev) => prev.map((t) => ids.has(t.id) ? { ...t, groupId } : t));
+    exitSelectMode();
+  };
+
+  // ─── Task-group management ───
+  const addTaskGroup = (name: string): TaskGroup | null => {
+    const n = name.trim();
+    if (!n) return null;
+    const g: TaskGroup = { id: makeId(), name: n };
+    setTaskGroups((prev) => [...prev, g]);
+    return g;
+  };
+  const renameTaskGroup = (id: string, name: string) => {
+    const n = name.trim();
+    if (!n) return;
+    setTaskGroups((prev) => prev.map((g) => g.id === id ? { ...g, name: n } : g));
+  };
+  const deleteTaskGroup = (id: string) => {
+    setTaskGroups((prev) => prev.filter((g) => g.id !== id));
+    setTasks((prev) => prev.map((t) => t.groupId === id ? { ...t, groupId: null } : t));
+    if (activeGroupId === id) setActiveGroupId(null);
+  };
+
+
 
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
@@ -1227,8 +1283,14 @@ function Index() {
                     return next;
                   });
                 }}
-                onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+                onSelectAll={() => setSelectedTaskIds(new Set(tasks.filter((t) => activeGroupId == null || t.groupId === activeGroupId).map((t) => t.id)))}
                 onClearSelection={() => setSelectedTaskIds(new Set())}
+                taskGroups={taskGroups}
+                activeGroupId={activeGroupId}
+                onSelectGroup={setActiveGroupId}
+                onAddGroup={(name) => addTaskGroup(name)}
+                onRenameGroup={renameTaskGroup}
+                onDeleteGroup={deleteTaskGroup}
               />
             ) : (
               <JobsPanel />
@@ -1313,23 +1375,72 @@ function Index() {
               <span className="font-medium">{selectedTaskIds.size} selected</span>
               <button onClick={exitSelectMode} className="text-muted-foreground hover:text-foreground">Cancel</button>
             </div>
-            <div className="grid grid-cols-4 gap-1.5">
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)}>
+            <div className="grid grid-cols-6 gap-1.5">
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)} title="Start">
                 <Play className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)} title="Stop">
                 <Square className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)} title="Duplicate">
                 <Copy className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkEditOpen(true)} title="Edit">
+                <Settings className="h-3.5 w-3.5" />
+              </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} title="Move to group">
+                    <Package className="h-3.5 w-3.5" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-56 p-1">
+                  <button
+                    className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                    onClick={() => bulkMoveTasksToGroup(selectedTaskIds, null)}
+                  >
+                    Ungrouped
+                  </button>
+                  {taskGroups.map((g) => (
+                    <button
+                      key={g.id}
+                      className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                      onClick={() => bulkMoveTasksToGroup(selectedTaskIds, g.id)}
+                    >
+                      {g.name}
+                    </button>
+                  ))}
+                  <button
+                    className="mt-1 block w-full rounded border border-dashed px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent"
+                    onClick={() => {
+                      const name = window.prompt("New group name");
+                      const g = name ? addTaskGroup(name) : null;
+                      if (g) bulkMoveTasksToGroup(selectedTaskIds, g.id);
+                    }}
+                  >
+                    + New group…
+                  </button>
+                </PopoverContent>
+              </Popover>
+              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)} title="Delete">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      <BulkEditTasksDialog
+        open={bulkEditOpen}
+        onClose={() => setBulkEditOpen(false)}
+        count={selectedTaskIds.size}
+        profiles={profiles}
+        proxyGroups={proxyGroups}
+        stores={allStores}
+        taskGroups={taskGroups}
+        onApply={(patch) => { bulkEditTasks(selectedTaskIds, patch); setBulkEditOpen(false); }}
+      />
+
 
       <nav
         className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur"
@@ -1403,6 +1514,7 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 function TasksView({
   tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
+  taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
@@ -1414,7 +1526,23 @@ function TasksView({
   onToggleSelect: (id: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
+  taskGroups: TaskGroup[];
+  activeGroupId: string | null;
+  onSelectGroup: (id: string | null) => void;
+  onAddGroup: (name: string) => TaskGroup | null;
+  onRenameGroup: (id: string, name: string) => void;
+  onDeleteGroup: (id: string) => void;
 }) {
+  const visibleTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
+  const groupChips = useMemo(() => {
+    const counts = new Map<string | null, number>();
+    counts.set(null, tasks.length);
+    for (const g of taskGroups) counts.set(g.id, 0);
+    for (const t of tasks) {
+      if (t.groupId && counts.has(t.groupId)) counts.set(t.groupId, (counts.get(t.groupId) ?? 0) + 1);
+    }
+    return counts;
+  }, [tasks, taskGroups]);
   // Long-press detection for entering select mode (touch only).
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startPress = (id: string) => {
@@ -1428,34 +1556,89 @@ function TasksView({
     if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
   };
 
+  const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
+  const groupChipsUI = (
+    <div className="flex gap-1.5 overflow-x-auto pb-1">
+      <button
+        onClick={() => onSelectGroup(null)}
+        className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId == null ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+      >
+        All <span className="ml-1 opacity-70">{groupChips.get(null) ?? 0}</span>
+      </button>
+      {taskGroups.map((g) => (
+        <Popover key={g.id}>
+          <PopoverTrigger asChild>
+            <button
+              onClick={() => onSelectGroup(g.id)}
+              className={`group/chip shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId === g.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+            >
+              {g.name} <span className="ml-1 opacity-70">{groupChips.get(g.id) ?? 0}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-40 p-1">
+            <button
+              className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+              onClick={() => {
+                const next = window.prompt("Rename group", g.name);
+                if (next) onRenameGroup(g.id, next);
+              }}
+            >
+              Rename
+            </button>
+            <button
+              className="block w-full rounded px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
+              onClick={() => {
+                if (window.confirm(`Delete group "${g.name}"? Tasks won't be deleted.`)) onDeleteGroup(g.id);
+              }}
+            >
+              Delete group
+            </button>
+          </PopoverContent>
+        </Popover>
+      ))}
+      <button
+        onClick={() => {
+          const name = window.prompt("New group name");
+          if (name) onAddGroup(name);
+        }}
+        className="shrink-0 rounded-full border border-dashed px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent"
+      >
+        + Group
+      </button>
+    </div>
+  );
+
   if (tasks.length === 0) {
     return (
-      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
-        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
-          <ListChecks className="h-6 w-6" />
-        </div>
-        <p className="text-base font-semibold text-foreground">No tasks yet</p>
-        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
-          A task watches one product and fires a prefilled checkout the moment stock appears.
-        </p>
-        {hasProfiles ? (
-          <Button className="mt-4 h-10" onClick={onCreate}>
-            <Plus className="h-4 w-4" /> Create your first task
-          </Button>
-        ) : (
-          <div className="mt-4 space-y-2">
-            <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
-            <Button className="h-10" onClick={onGoProfiles}>
-              <Users className="h-4 w-4" /> Add a profile
-            </Button>
+      <div className="space-y-3">
+        {taskGroups.length > 0 && groupChipsUI}
+        <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <ListChecks className="h-6 w-6" />
           </div>
-        )}
+          <p className="text-base font-semibold text-foreground">No tasks yet</p>
+          <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+            A task watches one product and fires a prefilled checkout the moment stock appears.
+          </p>
+          {hasProfiles ? (
+            <Button className="mt-4 h-10" onClick={onCreate}>
+              <Plus className="h-4 w-4" /> Create your first task
+            </Button>
+          ) : (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
+              <Button className="h-10" onClick={onGoProfiles}>
+                <Users className="h-4 w-4" /> Add a profile
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
-  const allSelected = selectMode && selectedIds.size === tasks.length;
   return (
     <div className="space-y-2">
+      {groupChipsUI}
       <div className="flex items-center justify-between gap-2 text-xs">
         {selectMode ? (
           <>
@@ -1473,7 +1656,12 @@ function TasksView({
           </button>
         )}
       </div>
-      {tasks.map((t) => {
+      {visibleTasks.length === 0 && (
+        <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
+          No tasks in this group.
+        </div>
+      )}
+      {visibleTasks.map((t) => {
         const profile = profiles.find((p) => p.id === t.profileId);
         const selected = selectedIds.has(t.id);
         const statusInfo = (() => {
@@ -3472,5 +3660,143 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
         Submits your captcha to 2Captcha's human-solver network and polls for a token (~15–60s). Tokens are short-lived (≈120s for Turnstile/hCaptcha) and most sites bind them to the solver's IP — that's why the proxy field exists. Cost: ~$0.001–0.003 per solve.
       </Card>
     </div>
+  );
+}
+
+// ────────────────────────────────────────────
+// Bulk Edit Tasks — apply optional patches across multi-selection
+// ────────────────────────────────────────────
+function BulkEditTasksDialog({
+  open, onClose, count, profiles, proxyGroups, stores, taskGroups, onApply,
+}: {
+  open: boolean;
+  onClose: () => void;
+  count: number;
+  profiles: Profile[];
+  proxyGroups: ProxyGroup[];
+  stores: StoreEntry[];
+  taskGroups: TaskGroup[];
+  onApply: (patch: Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">>) => void;
+}) {
+  const KEEP = "__keep__";
+  const NONE = "__none__";
+  const [profileId, setProfileId] = useState<string>(KEEP);
+  const [proxyGroupId, setProxyGroupId] = useState<string>(KEEP);
+  const [storeId, setStoreId] = useState<string>(KEEP);
+  const [groupId, setGroupId] = useState<string>(KEEP);
+  const [qtyStr, setQtyStr] = useState<string>("");
+  const [limitStr, setLimitStr] = useState<string>("");
+
+  useEffect(() => {
+    if (open) {
+      setProfileId(KEEP); setProxyGroupId(KEEP); setStoreId(KEEP);
+      setGroupId(KEEP); setQtyStr(""); setLimitStr("");
+    }
+  }, [open]);
+
+  const apply = () => {
+    const patch: Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">> = {};
+    if (profileId !== KEEP) patch.profileId = profileId;
+    if (proxyGroupId !== KEEP) patch.proxyGroupId = proxyGroupId === NONE ? null : proxyGroupId;
+    if (storeId !== KEEP) patch.storeId = storeId;
+    if (groupId !== KEEP) patch.groupId = groupId === NONE ? null : groupId;
+    const q = parseInt(qtyStr, 10);
+    if (Number.isFinite(q) && q > 0) patch.qty = q;
+    if (limitStr.trim() !== "") {
+      const l = parseInt(limitStr, 10);
+      patch.limit = Number.isFinite(l) && l > 0 ? l : null;
+    }
+    onApply(patch);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-md">
+        <DialogHeader className="border-b px-6 py-3">
+          <DialogTitle>Edit {count} task{count === 1 ? "" : "s"}</DialogTitle>
+          <DialogDescription className="text-xs">
+            Only changed fields are applied. Leave a field on "Keep current" to skip it.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 overflow-y-auto px-6 py-4">
+          <div>
+            <Label className="text-xs">Profile</Label>
+            <Select value={profileId} onValueChange={setProfileId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                {profiles.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.first_name} {p.last_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Proxy group</Label>
+            <Select value={proxyGroupId} onValueChange={setProxyGroupId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                <SelectItem value={NONE}>Direct (no proxy)</SelectItem>
+                {proxyGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Store</Label>
+            <Select value={storeId} onValueChange={setStoreId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                {stores.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Task group</Label>
+            <Select value={groupId} onValueChange={setGroupId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                <SelectItem value={NONE}>Ungrouped</SelectItem>
+                {taskGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Quantity</Label>
+              <Input
+                inputMode="numeric"
+                placeholder="Keep"
+                value={qtyStr}
+                onChange={(e) => setQtyStr(e.target.value.replace(/\D/g, ""))}
+                className="h-9"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Limit (0 = none)</Label>
+              <Input
+                inputMode="numeric"
+                placeholder="Keep"
+                value={limitStr}
+                onChange={(e) => setLimitStr(e.target.value.replace(/\D/g, ""))}
+                className="h-9"
+              />
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="flex-row gap-2 border-t px-6 py-3 sm:justify-end">
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={apply}>Apply to {count}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
