@@ -463,6 +463,9 @@ type Task = {
   steps?: CheckoutStepLog[];
   screenshotB64?: string | null;
   browserlessElapsedMs?: number;
+  // Drop scheduler
+  scheduledAt?: number | null;   // ms epoch — auto-start at this time
+  preWarmMs?: number | null;     // how early to warm DNS/proxy (default 2000)
 };
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
