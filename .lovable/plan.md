@@ -1,92 +1,42 @@
-# Pack B — Power-user upgrades
+## Goal
 
-All three features are phone-testable. No PC runner required to validate the UI, selection state, server fns, or the Jobs view (it'll just show "no runner connected" jobs as pending — which is itself a useful test).
+Tighten the Tasks tab so the header reflects what you're actually looking at, every group has a clear way to add its first task, and you can quickly find a task by name or state.
 
----
+## Changes
 
-## 1. Bulk task actions
+### 1. Auto-create "Default" group on first run
+- On bootstrap, if `loadTaskGroups()` returns empty, create one group `{ name: "Default" }`, persist it, and set it as `activeGroupId`.
+- Removes the "Create a task group first" empty wall for new users — they can immediately add tasks, and rename/add more groups later.
 
-Add a multi-select mode to the Tasks tab.
+### 2. Per-group stats in header
+- Replace the workspace-wide `runningCount` / `stockCount` / `errorCount` and `tasks.length` count with values scoped to `activeGroupId`.
+- Derived from `tasks.filter(t => t.groupId === activeGroupId)`.
+- The Analytics tab keeps showing workspace-wide numbers — only the Tasks header pills change.
 
-- **Enter select mode**: long-press a task card (or tap a new "Select" button in the toolbar).
-- **Selection UI**: checkbox overlay on each card, count badge in header, "Select all" / "Clear" buttons.
-- **Bulk action bar** (slides up above the bottom nav when ≥1 selected):
-  - Delete (with confirm)
-  - Duplicate (×N)
-  - Change profile → opens profile picker sheet
-  - Change proxy group → opens proxy picker sheet
-  - Change store → opens store picker sheet
-  - Start / Stop (queues them via existing dispatch)
-- Exit select mode on back gesture or "Done".
-- Works against the existing `aio:tasks` localStorage shape — cloud-sync hook picks up the writes automatically.
+### 3. Quick-add inside an empty group
+- When the active group has 0 tasks, render a centered CTA card inside `TasksView` (below the group chips) with:
+  - Group name + "No tasks in this group yet"
+  - Big `+ New task` button that opens the same Create Task drawer used by the header plus icon.
+- Header plus button stays, but the in-group CTA makes the action obvious on first visit to a group.
 
-## 2. Proxy & profile polish
+### 4. Task search + status filter
+- Add a search input + status filter row at the top of `TasksView` (just below the group chips, above the select bar).
+- Search: case-insensitive match against `productTitle`, `input`, and the resolved store name.
+- Status filter chips: `All · Idle · Running · In stock · Failed`. Single-select, defaults to `All`.
+- Both are local UI state inside `TasksView` (no persistence). Combined with the active group filter to produce `visibleTasks`.
+- Bulk "Select all" continues to operate on the currently visible (filtered) tasks.
 
-**Proxies**
-- New server fn `checkProxyHealth` — runs server-side fetch through the proxy to a small endpoint (e.g. `https://api.ipify.org`), returns `{ ok, latencyMs, exitIp, error }`. No PC needed.
-- "Test" button per proxy + "Test all" per group, with status pill (green/red/grey + latency).
-- Mark dead proxies; "Auto-rotate" toggle on the group skips dead ones during task assignment.
-- Per-proxy last-tested timestamp persisted in `aio:proxy-health`.
+## Files touched
 
-**Profiles**
-- Tag/group support (free-text tags, multi-select filter).
-- Duplicate-profile button (one tap, appends " (copy)").
-- Quick-edit sheet from the task card so you can fix a typo without leaving Tasks.
-- Search bar on the Profiles tab.
+- `src/routes/_paired/index.tsx`
+  - `Index()` bootstrap effect: auto-create Default group.
+  - `Index()` counts block (~L1183-1187): scope to active group; pass into header pills.
+  - `TasksView`: add search + status filter state, empty-group CTA, update `visibleTasks` derivation and `allSelected` / "Select all" to use the filtered list.
 
-## 3. Jobs history tab
+No schema or backend changes. No new dependencies.
 
-New bottom-nav tab **Jobs** built on the existing `listRunnerRecentJobs` + `runner_jobs` / `runner_results` tables.
+## Out of scope (saved for later)
 
-- List of recent attempts (newest first), grouped by day.
-- Each row: store name, variant, profile name, status (pending/success/failed), timing, error reason if any.
-- Tap a row → detail sheet with full payload, raw error, timestamps, device that ran it.
-- Filters: store, date range, outcome (success / failed / pending).
-- Search by order id or error substring.
-- **Re-run** button on each row → calls existing `dispatchRunnerJob` with the same payload (queues if no PC connected — visible feedback that the queue works).
-- Lightweight server fn `listJobsWithResults` that joins `runner_jobs` + `runner_results` for the current workspace, paginated (50/page).
-
----
-
-## Technical details
-
-**Files to add**
-- `src/components/tasks/BulkActionBar.tsx`
-- `src/components/tasks/SelectionContext.tsx` (small context for select-mode + selected IDs)
-- `src/components/proxies/ProxyHealthBadge.tsx`
-- `src/components/profiles/ProfileTagPicker.tsx`
-- `src/components/JobsPanel.tsx` (+ `JobDetailSheet.tsx`)
-- `src/lib/proxy-health.functions.ts` — `checkProxyHealth` server fn (workspace-auth'd).
-- `src/lib/jobs.functions.ts` — `listJobsWithResults` server fn.
-
-**Files to edit**
-- `src/routes/_paired/index.tsx`:
-  - Wire selection context + bulk action bar into the Tasks tab.
-  - Add **Jobs** tab to bottom nav (5th tab) + tab content.
-  - Minor: profile/proxy quick-edit sheets, search inputs.
-
-**Data**
-- New localStorage keys (auto-synced via `aio:*` prefix): `aio:proxy-health`, `aio:profile-tags`, `aio:proxy-group-settings` (for auto-rotate flag).
-- No schema migration needed — `runner_jobs` and `runner_results` already exist and have `workspace_id` linkage via `device_id` → `runner_devices.workspace_id`. The new `listJobsWithResults` fn filters by the caller's workspace.
-
-**Server fn shape**
-```ts
-checkProxyHealth({ proxyUrl }) → { ok, latencyMs, exitIp?, error? }
-listJobsWithResults({ limit, cursor?, filters? }) → { jobs: [...], nextCursor }
-```
-Both use `requireWorkspaceDevice` middleware.
-
-**Out of scope (deferred)**
-- Mobile polish (Pack A) — separate ask.
-- Backup/restore (Pack C) — separate ask.
-- No changes to the runner protocol or executor — purely additive on the server + UI.
-
----
-
-## Testing checklist (all phone-only)
-
-1. Long-press a task → select mode activates, bulk bar slides up.
-2. Select 3 tasks → Duplicate → 3 new tasks appear, cloud-sync mirrors them.
-3. Add a proxy, hit Test → status pill flips green with latency.
-4. Tag a profile "rotation-A", filter by tag.
-5. Open Jobs tab → see prior dispatch attempts (will show "pending — no runner" for new ones, which confirms the join + workspace scoping works).
+- Group reorder / per-group color or emoji
+- Persisting search/filter across reloads
+- Per-group counts on the group chips themselves (currently shown — will stay)
