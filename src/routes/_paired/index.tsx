@@ -2251,7 +2251,7 @@ function ProxiesView({
   );
 }
 
-type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string };
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null; source?: "browser" | "server" };
 
 function ProxyGroupCard({
   group, onUpdate, onDelete,
@@ -2261,21 +2261,21 @@ function ProxyGroupCard({
   onDelete: () => void;
 }) {
   const text = group.proxies.join("\n");
-  const [testing, setTesting] = useState(false);
+  const [testing, setTesting] = useState<"browser" | "server" | null>(null);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
+  const checkExit = useServerFn(checkProxyExit);
 
   const onTextChange = (v: string) => {
     onUpdate({ proxies: v.split("\n").map((s) => s.trim()).filter(Boolean) });
   };
 
-  const testGroup = async () => {
-    setTesting(true);
+  const testGroupBrowser = async () => {
+    setTesting("browser");
     setResults({});
-    // Ping a lightweight, well-known URL through each proxy template
     const probe = "https://www.shopify.com/robots.txt";
     await Promise.all(group.proxies.map(async (tmpl, i) => {
       if (!tmpl.includes("{url}")) {
-        setResults((r) => ({ ...r, [i]: { ok: false, ms: 0, err: "missing {url}" } }));
+        setResults((r) => ({ ...r, [i]: { ok: false, ms: 0, err: "missing {url}", source: "browser" } }));
         return;
       }
       const started = performance.now();
@@ -2283,13 +2283,27 @@ function ProxyGroupCard({
         const url = tmpl.replace("{url}", encodeURIComponent(probe));
         const res = await fetch(url, { method: "GET" });
         const ms = Math.round(performance.now() - started);
-        setResults((r) => ({ ...r, [i]: { ok: res.ok, ms, status: res.status } }));
+        setResults((r) => ({ ...r, [i]: { ok: res.ok, ms, status: res.status, source: "browser" } }));
       } catch (e: any) {
         const ms = Math.round(performance.now() - started);
-        setResults((r) => ({ ...r, [i]: { ok: false, ms, err: e?.message ?? "network" } }));
+        setResults((r) => ({ ...r, [i]: { ok: false, ms, err: e?.message ?? "network", source: "browser" } }));
       }
     }));
-    setTesting(false);
+    setTesting(null);
+  };
+
+  const testGroupServer = async () => {
+    setTesting("server");
+    setResults({});
+    await Promise.all(group.proxies.map(async (tmpl, i) => {
+      try {
+        const r = await checkExit({ data: { proxyUrl: tmpl } });
+        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp, source: "server" } }));
+      } catch (e: any) {
+        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error", source: "server" } }));
+      }
+    }));
+    setTesting(null);
   };
 
   return (
@@ -2319,9 +2333,14 @@ function ProxyGroupCard({
         <p className="text-[10px] text-muted-foreground">
           Use <code className="font-mono">{`{url}`}</code> as the placeholder.
         </p>
-        <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
-          {testing ? "Testing…" : "Test group"}
-        </Button>
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="ghost" className="h-8" disabled={group.proxies.length === 0 || testing !== null} onClick={testGroupBrowser}>
+            {testing === "browser" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Browser"}
+          </Button>
+          <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing !== null} onClick={testGroupServer}>
+            {testing === "server" ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Globe className="h-3 w-3" /> Server test</>}
+          </Button>
+        </div>
       </div>
 
       {Object.keys(results).length > 0 && (
@@ -2333,6 +2352,11 @@ function ProxyGroupCard({
               <li key={i} className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${dotColor}`} />
                 <span className="flex-1 truncate font-mono text-muted-foreground">{p}</span>
+                {r?.exitIp && (
+                  <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {r.exitIp}
+                  </span>
+                )}
                 <span className={r?.ok ? "text-primary" : "text-destructive"}>
                   {r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
                 </span>
@@ -2344,6 +2368,7 @@ function ProxyGroupCard({
     </Card>
   );
 }
+
 
 // ────────────────────────────────────────────
 // Stores view
