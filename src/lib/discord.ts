@@ -60,7 +60,7 @@ export type NotifyTaskShape = {
   qty: number;
   variantId?: number;
   variantTitle?: string;
-  price?: string;        // formatted, e.g. "$67.90"
+  price?: string;
   orderId?: string | null;
   checkoutElapsedMs?: number;
   message?: string;
@@ -68,19 +68,19 @@ export type NotifyTaskShape = {
   profileFirst?: string;
   profileLast?: string;
   profileEmail?: string;
-  paymentMethod?: string; // "Browserless (live)" | "Browserless (dry-run)" | "Tab launch" | "Manual"
-  mode?: string;          // "Live / Monitor: false"
+  paymentMethod?: string;
+  mode?: string;
   proxyGroupName?: string;
 };
 
-// Brand gold matches our --primary token (oklch(0.88 0.18 95) ≈ #EAD24A).
+// Brand gold (matches --primary token).
 const BRAND_GOLD = 0xEAD24A;
 
 const EVENT_META: Record<NotifyEvent, { title: string; subtitle: string; color: number }> = {
-  in_stock:       { title: "Stock Detected",     subtitle: "Variant came in stock.",        color: 0x3B82F6 },
-  checkout_ready: { title: "Checkout Ready",     subtitle: "Cart prepared, awaiting submit.", color: 0xF59E0B },
-  confirmed:      { title: "Successful Checkout!", subtitle: "Your Webhook works!",          color: BRAND_GOLD },
-  failed:         { title: "Checkout Failed",    subtitle: "Task could not complete.",      color: 0xEF4444 },
+  in_stock:       { title: "Stock Detected",       subtitle: "Variant came in stock.",          color: 0x3B82F6 },
+  checkout_ready: { title: "Checkout Ready",       subtitle: "Cart prepared, awaiting submit.", color: 0xF59E0B },
+  confirmed:      { title: "Successful Checkout!", subtitle: "Your Webhook works!",             color: BRAND_GOLD },
+  failed:         { title: "Checkout Failed",      subtitle: "Task could not complete.",        color: 0xEF4444 },
 };
 
 function maskProfile(first?: string, last?: string): string {
@@ -105,50 +105,51 @@ function fmtElapsed(ms?: number): string | null {
   return `${(ms / 1000).toFixed(1)} seconds`;
 }
 
-function code(value: string | number | null | undefined): string {
-  const v = String(value ?? "—");
-  return "```\n" + v + "\n```";
+// Plain value — no code blocks, no boxes. Falls back to em-dash.
+function v(value: string | number | null | undefined): string {
+  const s = String(value ?? "").trim();
+  return s.length > 0 ? s : "—";
 }
 
 function buildEmbed(event: NotifyEvent, t: NotifyTaskShape) {
   const meta = EVENT_META[event];
   const product = t.productTitle ?? t.input;
-  const fields: { name: string; value: string; inline?: boolean }[] = [];
+  const storeLink = t.storeUrl
+    ? (t.storeUrl.startsWith("http") ? t.storeUrl : `https://${t.storeUrl}`)
+    : undefined;
 
-  fields.push({ name: "Store", value: code(t.storeName || t.storeUrl) });
-  fields.push({ name: "Product", value: code(product) });
-  if (t.price) fields.push({ name: "Price", value: code(t.price) });
-  if (t.orderId) fields.push({ name: "Order #", value: code(t.orderId) });
+  const fields: { name: string; value: string; inline?: boolean }[] = [
+    { name: "Store",   value: v(t.storeName || t.storeUrl) },
+    { name: "Product", value: v(product) },
+  ];
+  if (t.price)   fields.push({ name: "Price",    value: v(t.price) });
+  if (t.orderId) fields.push({ name: "Order #",  value: v(t.orderId) });
   const elapsed = fmtElapsed(t.checkoutElapsedMs);
-  if (elapsed) fields.push({ name: "Checkout Time", value: code(elapsed) });
-  fields.push({ name: "QTY", value: code(t.qty) });
+  if (elapsed)   fields.push({ name: "Checkout Time", value: v(elapsed) });
+  fields.push({ name: "QTY", value: v(t.qty) });
   if (t.variantTitle || t.variantId) {
-    fields.push({ name: "Variant", value: code(t.variantTitle ?? String(t.variantId)) });
+    fields.push({ name: "Variant", value: v(t.variantTitle ?? t.variantId) });
   }
   fields.push({
     name: "Profile / Email",
-    value: code(`${maskProfile(t.profileFirst, t.profileLast)} / ${maskEmail(t.profileEmail)}`),
+    value: v(`${maskProfile(t.profileFirst, t.profileLast)} / ${maskEmail(t.profileEmail)}`),
   });
-  if (t.paymentMethod) fields.push({ name: "Payment Method", value: code(t.paymentMethod) });
-  if (t.mode) fields.push({ name: "Mode", value: code(t.mode) });
-  fields.push({ name: "Proxy", value: code(t.proxyGroupName || "Localhost") });
+  if (t.paymentMethod) fields.push({ name: "Payment Method", value: v(t.paymentMethod) });
+  if (t.mode)          fields.push({ name: "Mode",           value: v(t.mode) });
+  fields.push({ name: "Proxy", value: v(t.proxyGroupName || "Localhost") });
   if (t.message && event === "failed") {
-    fields.push({ name: "Reason", value: code(t.message.slice(0, 300)) });
+    fields.push({ name: "Reason", value: v(t.message.slice(0, 300)) });
   }
 
   const icon = logoUrl();
-  const storeLink = t.storeUrl ? (t.storeUrl.startsWith("http") ? t.storeUrl : `https://${t.storeUrl}`) : undefined;
 
   return {
-    author: {
-      name: BOT_NAME,
-      icon_url: icon || undefined,
-      url: storeLink,
-    },
+    // `url` on the title makes Discord render the title in its accent blue
+    // (matches the SecuredBot reference). Color bar still uses `color`.
     title: meta.title,
+    url: storeLink,
     description: meta.subtitle,
     color: meta.color,
-    thumbnail: icon ? { url: icon } : undefined,
     fields,
     footer: {
       text: `${BOT_NAME} — ${BOT_VERSION}${t.groupName ? ` • ${t.groupName}` : ""}`,
@@ -192,22 +193,21 @@ export async function sendTestWebhook(url: string): Promise<boolean> {
         username: BOT_NAME,
         avatar_url: icon || undefined,
         embeds: [{
-          author: { name: BOT_NAME, icon_url: icon || undefined },
           title: "Successful Checkout!",
+          url: "https://j1ms-bot.com",
           description: "Your Webhook works!",
           color: BRAND_GOLD,
-          thumbnail: icon ? { url: icon } : undefined,
           fields: [
-            { name: "Store", value: code("J1m's Bot") },
-            { name: "Product", value: code("J1m's Bot Lifetime Key") },
-            { name: "Price", value: code("$67.90") },
-            { name: "Order #", value: code("J1MS-00001") },
-            { name: "Checkout Time", value: code("6.7 seconds") },
-            { name: "QTY", value: code(1) },
-            { name: "Profile / Email", value: code("Jim S.**** / ji****@j1ms-bot.com") },
-            { name: "Payment Method", value: code("Manual") },
-            { name: "Mode", value: code("Slow / Monitor: false") },
-            { name: "Proxy", value: code("Localhost") },
+            { name: "Store",            value: v("J1m's Bot") },
+            { name: "Product",          value: v("J1m's Bot Lifetime Key") },
+            { name: "Price",            value: v("$67.90") },
+            { name: "Order #",          value: v("J1MS-00001") },
+            { name: "Checkout Time",    value: v("6.7 seconds") },
+            { name: "QTY",              value: v(1) },
+            { name: "Profile / Email",  value: v("Jim S.**** / ji****@j1ms-bot.com") },
+            { name: "Payment Method",   value: v("Manual") },
+            { name: "Mode",             value: v("Safe + Preload") },
+            { name: "Proxy",            value: v("Localhost") },
           ],
           footer: { text: `${BOT_NAME} — ${BOT_VERSION}`, icon_url: icon || undefined },
           timestamp: new Date().toISOString(),

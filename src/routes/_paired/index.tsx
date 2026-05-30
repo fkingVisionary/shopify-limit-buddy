@@ -467,7 +467,21 @@ type Task = {
   // Drop scheduler
   scheduledAt?: number | null;   // ms epoch — auto-start at this time
   preWarmMs?: number | null;     // how early to warm DNS/proxy (default 2000)
+  // Execution mode — controls checkout speed + captcha preload behavior.
+  //   fast          → hit checkout immediately on stock, no token required
+  //   fast_preload  → fast, but only fire if a warm captcha token is ready
+  //   safe          → small jitter delay before checkout, no token required
+  //   safe_preload  → safe + only fire if a warm captcha token is ready
+  executionMode?: ExecutionMode;
 };
+export type ExecutionMode = "fast" | "fast_preload" | "safe" | "safe_preload";
+export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
+  fast: "Fast",
+  fast_preload: "Fast + Preload",
+  safe: "Safe",
+  safe_preload: "Safe + Preload",
+};
+const EXECUTION_MODE_CYCLE: ExecutionMode[] = ["fast", "fast_preload", "safe", "safe_preload"];
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
 const TASK_GROUPS_KEY = "aio:task-groups";
@@ -1095,7 +1109,8 @@ function Index() {
     const paymentMethod = browserlessEnabled
       ? (browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)")
       : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Tab launch");
-    const mode = `${browserlessEnabled ? "Full checkout" : "Tab launch"} / Monitor: ${task.running ? "true" : "false"}`;
+    const execLabel = EXECUTION_MODE_LABEL[task.executionMode ?? "fast"];
+    const mode = `${execLabel} / Monitor: ${task.running ? "true" : "false"}`;
     notifyWebhook(cfg, event, {
       id: task.id,
       productTitle: task.productTitle,
@@ -1143,12 +1158,23 @@ function Index() {
               fireWebhook("in_stock", { ...t, variantId: avail.id }, { variantTitle: avail.title, price: avail.price ? `$${avail.price}` : undefined });
               if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
-                // Drive the checkout state machine.
-                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
+                const execMode: ExecutionMode = t.executionMode ?? "fast";
                 // Pull a captcha token from the pool if one's warm for this store.
                 const pooled = poolApi.takeToken(t.storeId);
+                // Preload modes: wait for a warm captcha token before firing checkout.
+                if ((execMode === "fast_preload" || execMode === "safe_preload") && !pooled) {
+                  // Roll back the trigger so we retry next tick once a token warms.
+                  triggeredRef.current.delete(t.id);
+                  updateTask(t.id, { status: "in_stock", message: "Waiting for captcha token…" });
+                  return;
+                }
+                // Drive the checkout state machine.
+                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
                 const rawProxy = pickRawProxy(t.proxyGroupId);
-                checkoutFn({
+                // Safe modes: small jitter (250–750ms) to avoid burst-detection.
+                const safeDelay = (execMode === "safe" || execMode === "safe_preload")
+                  ? 250 + Math.floor(Math.random() * 500) : 0;
+                const checkoutCall = () => checkoutFn({
                   data: {
                     storeUrl: t.storeUrl,
                     variantId: avail.id,
@@ -1245,6 +1271,7 @@ function Index() {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
                   fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
                 });
+                if (safeDelay > 0) setTimeout(checkoutCall, safeDelay); else checkoutCall();
               }
             }
           } else {
@@ -1380,6 +1407,7 @@ function Index() {
                 onStop={stopTask}
                 onDelete={deleteTask}
                 onSchedule={setScheduleTaskId}
+                onUpdate={updateTask}
                 onCreate={() => setCreateOpen(true)}
                 onGoProfiles={() => setTab("profiles")}
                 hasProfiles={profiles.length > 0}
@@ -1675,13 +1703,14 @@ function Countdown({ to }: { to: number }) {
 }
 
 function TasksView({
-  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onSchedule, onUpdate, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
   tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onSchedule: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<Task>) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
   selectedIds: Set<string>;
@@ -2044,6 +2073,18 @@ function TasksView({
                   </Button>
                 )}
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <button
+                    className="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-foreground/80 hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const cur = t.executionMode ?? "fast";
+                      const next = EXECUTION_MODE_CYCLE[(EXECUTION_MODE_CYCLE.indexOf(cur) + 1) % EXECUTION_MODE_CYCLE.length];
+                      onUpdate(t.id, { executionMode: next });
+                    }}
+                    title="Cycle execution mode"
+                  >
+                    {EXECUTION_MODE_LABEL[t.executionMode ?? "fast"]}
+                  </button>
                   <button className="hover:text-foreground" onClick={() => onSchedule(t.id)}>schedule</button>
                   <span>·</span>
                   <button className="hover:text-destructive" onClick={() => onDelete(t.id)}>delete</button>
