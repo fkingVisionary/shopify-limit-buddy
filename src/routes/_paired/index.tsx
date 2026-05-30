@@ -1372,6 +1372,7 @@ function Index() {
                 onStart={startTask}
                 onStop={stopTask}
                 onDelete={deleteTask}
+                onSchedule={setScheduleTaskId}
                 onCreate={() => setCreateOpen(true)}
                 onGoProfiles={() => setTab("profiles")}
                 hasProfiles={profiles.length > 0}
