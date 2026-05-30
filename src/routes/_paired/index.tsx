@@ -768,7 +768,14 @@ function Index() {
     setProxyGroups(pg);
     setProxyGroupsRuntime(pg);
     setTasks(loadTasks());
-    setTaskGroups(loadTaskGroups());
+    const loadedGroups = loadTaskGroups();
+    if (loadedGroups.length === 0) {
+      const def: TaskGroup = { id: makeId(), name: "Default" };
+      setTaskGroups([def]);
+      setActiveGroupId(def.id);
+    } else {
+      setTaskGroups(loadedGroups);
+    }
     setDismissedTips(loadDismissedTips());
     try {
       if (!localStorage.getItem(WIZARD_KEY)) setWizardOpen(true);
@@ -1180,10 +1187,11 @@ function Index() {
   };
   const deleteCustomStore = (id: string) => setCustomStores((prev) => prev.filter((s) => s.id !== id));
 
-  // ─── Counts ───
-  const runningCount = tasks.filter((t) => t.running).length;
-  const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
-  const errorCount = tasks.filter((t) => t.status === "error").length;
+  // ─── Counts (scoped to the active group for the Tasks header) ───
+  const groupTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
+  const runningCount = groupTasks.filter((t) => t.running).length;
+  const stockCount = groupTasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
+  const errorCount = groupTasks.filter((t) => t.status === "error").length;
 
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
@@ -1239,7 +1247,7 @@ function Index() {
               <StatusPill color="red" label="Errors" count={errorCount} />
               <StatusPill color="blue" label="Running" count={runningCount} />
             </div>
-            <div className="text-sm font-medium text-muted-foreground">{tasks.length} Tasks</div>
+            <div className="text-sm font-medium text-muted-foreground">{groupTasks.length} Tasks</div>
           </div>
         )}
         {error && (
@@ -1281,6 +1289,7 @@ function Index() {
               <TasksView
                 tasks={tasks}
                 profiles={profiles}
+                stores={allStores}
                 onStart={startTask}
                 onStop={stopTask}
                 onDelete={deleteTask}
@@ -1298,7 +1307,7 @@ function Index() {
                     return next;
                   });
                 }}
-                onSelectAll={() => setSelectedTaskIds(new Set(tasks.filter((t) => activeGroupId == null || t.groupId === activeGroupId).map((t) => t.id)))}
+                onSelectAll={(ids) => setSelectedTaskIds(new Set(ids))}
                 onClearSelection={() => setSelectedTaskIds(new Set())}
                 taskGroups={taskGroups}
                 activeGroupId={activeGroupId}
@@ -1527,11 +1536,11 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // Tasks view
 // ────────────────────────────────────────────
 function TasksView({
-  tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
-  tasks: Task[]; profiles: Profile[];
+  tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
@@ -1539,7 +1548,7 @@ function TasksView({
   onEnterSelectMode: () => void;
   onExitSelectMode: () => void;
   onToggleSelect: (id: string) => void;
-  onSelectAll: () => void;
+  onSelectAll: (ids: string[]) => void;
   onClearSelection: () => void;
   taskGroups: TaskGroup[];
   activeGroupId: string | null;
@@ -1548,7 +1557,36 @@ function TasksView({
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
 }) {
-  const visibleTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "idle" | "running" | "in_stock" | "failed">("all");
+
+  const groupTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const storeNameByUrl = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of stores) m.set(s.url, s.name);
+    return m;
+  }, [stores]);
+  const matchesStatus = (t: Task) => {
+    switch (statusFilter) {
+      case "all": return true;
+      case "idle": return !t.running && (t.status === "idle" || !t.status);
+      case "running": return t.running;
+      case "in_stock": return ["in_stock", "adding_to_cart", "checkout_ready", "opened", "checking_out", "confirmed"].includes(t.status);
+      case "failed": return t.status === "failed" || t.status === "error";
+    }
+  };
+  const q = query.trim().toLowerCase();
+  const visibleTasks = groupTasks.filter((t) => {
+    if (!matchesStatus(t)) return false;
+    if (!q) return true;
+    const storeName = storeNameByUrl.get(t.storeUrl) ?? "";
+    return (
+      (t.productTitle ?? "").toLowerCase().includes(q) ||
+      (t.input ?? "").toLowerCase().includes(q) ||
+      storeName.toLowerCase().includes(q)
+    );
+  });
+
   const groupCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const g of taskGroups) counts.set(g.id, 0);
@@ -1557,6 +1595,7 @@ function TasksView({
     }
     return counts;
   }, [tasks, taskGroups]);
+  const activeGroupName = taskGroups.find((g) => g.id === activeGroupId)?.name ?? "this group";
   // Long-press detection for entering select mode (touch only).
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startPress = (id: string) => {
@@ -1570,7 +1609,6 @@ function TasksView({
     if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
   };
 
-  const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
   const groupChipsUI = (
     <div className="flex gap-1.5 overflow-x-auto pb-1">
       {taskGroups.map((g) => (
@@ -1640,21 +1678,22 @@ function TasksView({
     );
   }
 
-  if (tasks.length === 0) {
+  // Per-group empty state
+  if (groupTasks.length === 0) {
     return (
       <div className="space-y-3">
-        {taskGroups.length > 0 && groupChipsUI}
+        {groupChipsUI}
         <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
           <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
             <ListChecks className="h-6 w-6" />
           </div>
-          <p className="text-base font-semibold text-foreground">No tasks yet</p>
+          <p className="text-base font-semibold text-foreground">No tasks in {activeGroupName} yet</p>
           <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
             A task watches one product and fires a prefilled checkout the moment stock appears.
           </p>
           {hasProfiles ? (
             <Button className="mt-4 h-10" onClick={onCreate}>
-              <Plus className="h-4 w-4" /> Create your first task
+              <Plus className="h-4 w-4" /> New task in {activeGroupName}
             </Button>
           ) : (
             <div className="mt-4 space-y-2">
@@ -1668,15 +1707,46 @@ function TasksView({
       </div>
     );
   }
+
+  const visibleIds = visibleTasks.map((t) => t.id);
+  const allSelected = selectMode && visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+  const statusChips: { key: typeof statusFilter; label: string }[] = [
+    { key: "all", label: "All" },
+    { key: "idle", label: "Idle" },
+    { key: "running", label: "Running" },
+    { key: "in_stock", label: "In stock" },
+    { key: "failed", label: "Failed" },
+  ];
+
   return (
     <div className="space-y-2">
       {groupChipsUI}
+      <div className="relative">
+        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search by product or store…"
+          className="h-9 pl-8"
+        />
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto pb-1">
+        {statusChips.map((c) => (
+          <button
+            key={c.key}
+            onClick={() => setStatusFilter(c.key)}
+            className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${statusFilter === c.key ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
       <div className="flex items-center justify-between gap-2 text-xs">
         {selectMode ? (
           <>
             <button
               className="font-medium text-primary"
-              onClick={() => (allSelected ? onClearSelection() : onSelectAll())}
+              onClick={() => (allSelected ? onClearSelection() : onSelectAll(visibleIds))}
             >
               {allSelected ? "Clear" : "Select all"}
             </button>
