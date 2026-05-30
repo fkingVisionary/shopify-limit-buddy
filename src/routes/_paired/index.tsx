@@ -1440,6 +1440,7 @@ function Index() {
               browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
               runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred}
               profiles={profiles}
+              notifyConfig={notifyConfig} setNotifyConfig={setNotifyConfig}
               onShowWizard={() => setWizardOpen(true)}
               onResetTips={resetTips}
             />
