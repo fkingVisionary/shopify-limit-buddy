@@ -2071,6 +2071,18 @@ function TasksView({
                   </Button>
                 )}
                 <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <button
+                    className="rounded border border-border bg-muted/40 px-1.5 py-0.5 text-foreground/80 hover:text-foreground"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const cur = t.executionMode ?? "fast";
+                      const next = EXECUTION_MODE_CYCLE[(EXECUTION_MODE_CYCLE.indexOf(cur) + 1) % EXECUTION_MODE_CYCLE.length];
+                      onUpdate(t.id, { executionMode: next });
+                    }}
+                    title="Cycle execution mode"
+                  >
+                    {EXECUTION_MODE_LABEL[t.executionMode ?? "fast"]}
+                  </button>
                   <button className="hover:text-foreground" onClick={() => onSchedule(t.id)}>schedule</button>
                   <span>·</span>
                   <button className="hover:text-destructive" onClick={() => onDelete(t.id)}>delete</button>
