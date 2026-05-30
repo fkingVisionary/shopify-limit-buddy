@@ -1536,11 +1536,11 @@ function StatusPill({ color, label, count }: { color: "green" | "red" | "blue"; 
 // Tasks view
 // ────────────────────────────────────────────
 function TasksView({
-  tasks, profiles, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
+  tasks, profiles, stores, onStart, onStop, onDelete, onCreate, onGoProfiles, hasProfiles,
   selectMode, selectedIds, onEnterSelectMode, onExitSelectMode, onToggleSelect, onSelectAll, onClearSelection,
   taskGroups, activeGroupId, onSelectGroup, onAddGroup, onRenameGroup, onDeleteGroup,
 }: {
-  tasks: Task[]; profiles: Profile[];
+  tasks: Task[]; profiles: Profile[]; stores: StoreEntry[];
   onStart: (id: string) => void; onStop: (id: string) => void; onDelete: (id: string) => void;
   onCreate: () => void; onGoProfiles: () => void; hasProfiles: boolean;
   selectMode: boolean;
@@ -1548,7 +1548,7 @@ function TasksView({
   onEnterSelectMode: () => void;
   onExitSelectMode: () => void;
   onToggleSelect: (id: string) => void;
-  onSelectAll: () => void;
+  onSelectAll: (ids: string[]) => void;
   onClearSelection: () => void;
   taskGroups: TaskGroup[];
   activeGroupId: string | null;
@@ -1557,7 +1557,36 @@ function TasksView({
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
 }) {
-  const visibleTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "idle" | "running" | "in_stock" | "failed">("all");
+
+  const groupTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const storeNameByUrl = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of stores) m.set(s.url, s.name);
+    return m;
+  }, [stores]);
+  const matchesStatus = (t: Task) => {
+    switch (statusFilter) {
+      case "all": return true;
+      case "idle": return !t.running && (t.status === "idle" || !t.status);
+      case "running": return t.running;
+      case "in_stock": return ["in_stock", "adding_to_cart", "checkout_ready", "opened", "checking_out", "confirmed"].includes(t.status);
+      case "failed": return t.status === "failed" || t.status === "error";
+    }
+  };
+  const q = query.trim().toLowerCase();
+  const visibleTasks = groupTasks.filter((t) => {
+    if (!matchesStatus(t)) return false;
+    if (!q) return true;
+    const storeName = storeNameByUrl.get(t.storeUrl) ?? "";
+    return (
+      (t.productTitle ?? "").toLowerCase().includes(q) ||
+      (t.input ?? "").toLowerCase().includes(q) ||
+      storeName.toLowerCase().includes(q)
+    );
+  });
+
   const groupCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const g of taskGroups) counts.set(g.id, 0);
@@ -1566,6 +1595,7 @@ function TasksView({
     }
     return counts;
   }, [tasks, taskGroups]);
+  const activeGroupName = taskGroups.find((g) => g.id === activeGroupId)?.name ?? "this group";
   // Long-press detection for entering select mode (touch only).
   const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const startPress = (id: string) => {
