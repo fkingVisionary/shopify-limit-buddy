@@ -1198,6 +1198,19 @@ function Index() {
             onCreate={() => setCreateOpen(true)}
             onGoProfiles={() => setTab("profiles")}
             hasProfiles={profiles.length > 0}
+            selectMode={selectMode}
+            selectedIds={selectedTaskIds}
+            onEnterSelectMode={() => setSelectMode(true)}
+            onExitSelectMode={exitSelectMode}
+            onToggleSelect={(id) => {
+              setSelectedTaskIds((prev) => {
+                const next = new Set(prev);
+                if (next.has(id)) next.delete(id); else next.add(id);
+                return next;
+              });
+            }}
+            onSelectAll={() => setSelectedTaskIds(new Set(tasks.map((t) => t.id)))}
+            onClearSelection={() => setSelectedTaskIds(new Set())}
           />
         )}
         {tab === "profiles" && (
@@ -1207,6 +1220,7 @@ function Index() {
             onAdd={addProfile}
             onUpdate={updateProfile}
             onDelete={deleteProfile}
+            onDuplicate={duplicateProfile}
             onToggle={toggleActive}
             onPersistMany={(next, nextActive) => persistProfiles(next, nextActive)}
           />
@@ -1244,10 +1258,11 @@ function Index() {
           </div>
         )}
         {tab === "captcha" && <CaptchaView proxyGroups={proxyGroups} stores={allStores} poolApi={poolApi} />}
+        {tab === "jobs" && <JobsPanel />}
         {tab === "help" && <HelpView />}
       </main>
 
-      {tab === "tasks" && tasks.length > 0 && (
+      {tab === "tasks" && tasks.length > 0 && !selectMode && (
         <div
           className="fixed inset-x-0 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur"
           style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
@@ -1262,6 +1277,34 @@ function Index() {
             <Button size="sm" className="h-10" onClick={startAll} disabled={tasks.every((t) => t.running)}>
               <Play className="h-4 w-4" /> Start All
             </Button>
+          </div>
+        </div>
+      )}
+
+      {tab === "tasks" && selectMode && (
+        <div
+          className="fixed inset-x-0 z-20 border-t bg-background/95 px-4 py-2 backdrop-blur"
+          style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
+        >
+          <div className="mx-auto max-w-3xl">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="font-medium">{selectedTaskIds.size} selected</span>
+              <button onClick={exitSelectMode} className="text-muted-foreground hover:text-foreground">Cancel</button>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)}>
+                <Play className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)}>
+                <Square className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)}>
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            </div>
           </div>
         </div>
       )}
