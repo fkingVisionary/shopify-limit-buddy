@@ -1109,7 +1109,8 @@ function Index() {
     const paymentMethod = browserlessEnabled
       ? (browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)")
       : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Tab launch");
-    const mode = `${browserlessEnabled ? "Full checkout" : "Tab launch"} / Monitor: ${task.running ? "true" : "false"}`;
+    const execLabel = EXECUTION_MODE_LABEL[task.executionMode ?? "fast"];
+    const mode = `${execLabel} / Monitor: ${task.running ? "true" : "false"}`;
     notifyWebhook(cfg, event, {
       id: task.id,
       productTitle: task.productTitle,
