@@ -1573,12 +1573,6 @@ function TasksView({
   const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
   const groupChipsUI = (
     <div className="flex gap-1.5 overflow-x-auto pb-1">
-      <button
-        onClick={() => onSelectGroup(null)}
-        className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId == null ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-      >
-        All <span className="ml-1 opacity-70">{groupChips.get(null) ?? 0}</span>
-      </button>
       {taskGroups.map((g) => (
         <Popover key={g.id}>
           <PopoverTrigger asChild>
@@ -1586,7 +1580,7 @@ function TasksView({
               onClick={() => onSelectGroup(g.id)}
               className={`group/chip shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId === g.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
             >
-              {g.name} <span className="ml-1 opacity-70">{groupChips.get(g.id) ?? 0}</span>
+              {g.name} <span className="ml-1 opacity-70">{groupCounts.get(g.id) ?? 0}</span>
             </button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-40 p-1">
@@ -1621,6 +1615,30 @@ function TasksView({
       </button>
     </div>
   );
+
+  // Require a group before any task can exist
+  if (taskGroups.length === 0) {
+    return (
+      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+          <ListChecks className="h-6 w-6" />
+        </div>
+        <p className="text-base font-semibold text-foreground">Create a task group first</p>
+        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+          Task groups let you organize tasks per drop, store, or release. Every task belongs to a group.
+        </p>
+        <Button
+          className="mt-4 h-10"
+          onClick={() => {
+            const name = window.prompt("New group name (e.g. \"Drop A\", \"Travis\")");
+            if (name) onAddGroup(name);
+          }}
+        >
+          <Plus className="h-4 w-4" /> New group
+        </Button>
+      </div>
+    );
+  }
 
   if (tasks.length === 0) {
     return (
