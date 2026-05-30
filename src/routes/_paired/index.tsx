@@ -485,6 +485,27 @@ export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
   safe_preload: "Safe + Preload",
 };
 const EXECUTION_MODE_CYCLE: ExecutionMode[] = ["fast", "fast_preload", "safe", "safe_preload"];
+
+// Size presets — covers clothing (letters), shoes (US + EU including 1/3 sizes),
+// and generic numeric / one-size items (Pokémon TCG, accessories, etc.).
+const SIZE_PRESETS: string[] = (() => {
+  const letters = ["One Size", "XXSmall", "XSmall", "Small", "Medium", "Large", "XLarge", "XXLarge", "XXXLarge"];
+  const usShoes: string[] = [];
+  for (let n = 4; n <= 15; n += 0.5) usShoes.push(`US ${n}`);
+  const euShoes: string[] = [];
+  for (let n = 35; n <= 48; n++) {
+    euShoes.push(`EU ${n}`);
+    if (n < 48) {
+      euShoes.push(`EU ${n} 1/3`);
+      euShoes.push(`EU ${n}.5`);
+      euShoes.push(`EU ${n} 2/3`);
+    }
+  }
+  const numeric: string[] = [];
+  for (let n = 24; n <= 46; n++) numeric.push(String(n));
+  return [...letters, ...usShoes, ...euShoes, ...numeric];
+})();
+
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
 const TASK_GROUPS_KEY = "aio:task-groups";
