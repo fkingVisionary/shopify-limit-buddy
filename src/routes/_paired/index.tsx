@@ -2890,6 +2890,7 @@ function SettingsView({
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
   runnerPreferred, setRunnerPreferred,
   profiles,
+  notifyConfig, setNotifyConfig,
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
@@ -2899,8 +2900,17 @@ function SettingsView({
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
   runnerPreferred: boolean; setRunnerPreferred: (v: boolean) => void;
   profiles: Profile[];
+  notifyConfig: NotifyConfig; setNotifyConfig: (cfg: NotifyConfig) => void;
   onShowWizard: () => void; onResetTips: () => void;
 }) {
+  const [testing, setTesting] = useState<"idle" | "ok" | "fail" | "sending">("idle");
+  const urlOk = !notifyConfig.webhookUrl || isValidWebhookUrl(notifyConfig.webhookUrl);
+  const sendTest = async () => {
+    setTesting("sending");
+    const ok = await sendTestWebhook(notifyConfig.webhookUrl);
+    setTesting(ok ? "ok" : "fail");
+    setTimeout(() => setTesting("idle"), 2500);
+  };
   return (
     <div className="space-y-3">
       <Card className="p-3">
