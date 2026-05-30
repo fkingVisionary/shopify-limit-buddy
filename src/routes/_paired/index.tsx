@@ -1092,6 +1092,10 @@ function Index() {
     const profile = profiles.find((p) => p.id === task.profileId);
     const proxyGroupName = proxyGroups.find((g) => g.id === task.proxyGroupId)?.name;
     const groupName = taskGroups.find((g) => g.id === task.groupId)?.name;
+    const paymentMethod = browserlessEnabled
+      ? (browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)")
+      : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Tab launch");
+    const mode = `${browserlessEnabled ? "Full checkout" : "Tab launch"} / Monitor: ${task.running ? "true" : "false"}`;
     notifyWebhook(cfg, event, {
       id: task.id,
       productTitle: task.productTitle,
@@ -1106,6 +1110,9 @@ function Index() {
       groupName,
       profileFirst: profile?.first_name,
       profileLast: profile?.last_name,
+      profileEmail: profile?.email,
+      paymentMethod,
+      mode,
       proxyGroupName,
       ...extras,
     });
@@ -1133,7 +1140,7 @@ function Index() {
               triggeredRef.current.add(t.id);
               const profile = profiles.find((p) => p.id === t.profileId);
               notify("IN STOCK", `${t.productTitle ?? t.input}`);
-              fireWebhook("in_stock", { ...t, variantId: avail.id });
+              fireWebhook("in_stock", { ...t, variantId: avail.id }, { variantTitle: avail.title, price: avail.price ? `$${avail.price}` : undefined });
               if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
                 // Drive the checkout state machine.
