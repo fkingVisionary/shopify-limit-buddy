@@ -1556,32 +1556,86 @@ function TasksView({
     if (pressTimerRef.current) { clearTimeout(pressTimerRef.current); pressTimerRef.current = null; }
   };
 
+  const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
+  const groupChipsUI = (
+    <div className="flex gap-1.5 overflow-x-auto pb-1">
+      <button
+        onClick={() => onSelectGroup(null)}
+        className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId == null ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+      >
+        All <span className="ml-1 opacity-70">{groupChips.get(null) ?? 0}</span>
+      </button>
+      {taskGroups.map((g) => (
+        <Popover key={g.id}>
+          <PopoverTrigger asChild>
+            <button
+              onClick={() => onSelectGroup(g.id)}
+              className={`group/chip shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId === g.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
+            >
+              {g.name} <span className="ml-1 opacity-70">{groupChips.get(g.id) ?? 0}</span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-40 p-1">
+            <button
+              className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+              onClick={() => {
+                const next = window.prompt("Rename group", g.name);
+                if (next) onRenameGroup(g.id, next);
+              }}
+            >
+              Rename
+            </button>
+            <button
+              className="block w-full rounded px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
+              onClick={() => {
+                if (window.confirm(`Delete group "${g.name}"? Tasks won't be deleted.`)) onDeleteGroup(g.id);
+              }}
+            >
+              Delete group
+            </button>
+          </PopoverContent>
+        </Popover>
+      ))}
+      <button
+        onClick={() => {
+          const name = window.prompt("New group name");
+          if (name) onAddGroup(name);
+        }}
+        className="shrink-0 rounded-full border border-dashed px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-accent"
+      >
+        + Group
+      </button>
+    </div>
+  );
+
   if (tasks.length === 0) {
     return (
-      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
-        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
-          <ListChecks className="h-6 w-6" />
-        </div>
-        <p className="text-base font-semibold text-foreground">No tasks yet</p>
-        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
-          A task watches one product and fires a prefilled checkout the moment stock appears.
-        </p>
-        {hasProfiles ? (
-          <Button className="mt-4 h-10" onClick={onCreate}>
-            <Plus className="h-4 w-4" /> Create your first task
-          </Button>
-        ) : (
-          <div className="mt-4 space-y-2">
-            <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
-            <Button className="h-10" onClick={onGoProfiles}>
-              <Users className="h-4 w-4" /> Add a profile
-            </Button>
+      <div className="space-y-3">
+        {taskGroups.length > 0 && groupChipsUI}
+        <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+          <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+            <ListChecks className="h-6 w-6" />
           </div>
-        )}
+          <p className="text-base font-semibold text-foreground">No tasks yet</p>
+          <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+            A task watches one product and fires a prefilled checkout the moment stock appears.
+          </p>
+          {hasProfiles ? (
+            <Button className="mt-4 h-10" onClick={onCreate}>
+              <Plus className="h-4 w-4" /> Create your first task
+            </Button>
+          ) : (
+            <div className="mt-4 space-y-2">
+              <p className="text-xs text-muted-foreground">Add a profile first so checkout can be autofilled.</p>
+              <Button className="h-10" onClick={onGoProfiles}>
+                <Users className="h-4 w-4" /> Add a profile
+              </Button>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
-  const allSelected = selectMode && selectedIds.size === tasks.length;
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2 text-xs">
