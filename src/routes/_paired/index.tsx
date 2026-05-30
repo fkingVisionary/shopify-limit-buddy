@@ -1133,6 +1133,7 @@ function Index() {
               triggeredRef.current.add(t.id);
               const profile = profiles.find((p) => p.id === t.profileId);
               notify("IN STOCK", `${t.productTitle ?? t.input}`);
+              fireWebhook("in_stock", { ...t, variantId: avail.id });
               if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
                 // Drive the checkout state machine.
