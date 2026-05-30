@@ -1081,6 +1081,36 @@ function Index() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── Webhook helper ───
+  const fireWebhook = (event: NotifyEvent, task: Task, extras: Partial<NotifyTaskShape> = {}) => {
+    const cfg = notifyConfigRef.current;
+    if (!cfg.webhookUrl || !cfg.events[event]) return;
+    let fired = notifiedRef.current.get(task.id);
+    if (!fired) { fired = new Set(); notifiedRef.current.set(task.id, fired); }
+    if (fired.has(event)) return;
+    fired.add(event);
+    const profile = profiles.find((p) => p.id === task.profileId);
+    const proxyGroupName = proxyGroups.find((g) => g.id === task.proxyGroupId)?.name;
+    const groupName = taskGroups.find((g) => g.id === task.groupId)?.name;
+    notifyWebhook(cfg, event, {
+      id: task.id,
+      productTitle: task.productTitle,
+      input: task.input,
+      storeName: task.storeName,
+      storeUrl: task.storeUrl,
+      qty: task.qty,
+      variantId: task.variantId,
+      orderId: task.orderId ?? null,
+      checkoutElapsedMs: task.checkoutElapsedMs,
+      message: task.message,
+      groupName,
+      profileFirst: profile?.first_name,
+      profileLast: profile?.last_name,
+      proxyGroupName,
+      ...extras,
+    });
+  };
+
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
