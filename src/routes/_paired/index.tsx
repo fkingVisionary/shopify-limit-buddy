@@ -775,6 +775,16 @@ function Index() {
     } catch {}
   }, []);
 
+  // Auto-select first group when groups exist but none active
+  useEffect(() => {
+    if (activeGroupId == null && taskGroups.length > 0) {
+      setActiveGroupId(taskGroups[0].id);
+    }
+    if (activeGroupId != null && !taskGroups.some((g) => g.id === activeGroupId)) {
+      setActiveGroupId(taskGroups[0]?.id ?? null);
+    }
+  }, [taskGroups, activeGroupId]);
+
   const completeWizard = () => {
     try { localStorage.setItem(WIZARD_KEY, "1"); } catch {}
     setWizardOpen(false);
@@ -1203,7 +1213,12 @@ function Index() {
           {tab === "tasks" && (
             <Drawer open={createOpen} onOpenChange={setCreateOpen}>
               <DrawerTrigger asChild>
-                <Button size="icon" className="h-9 w-9 rounded-lg">
+                <Button
+                  size="icon"
+                  className="h-9 w-9 rounded-lg"
+                  disabled={taskGroups.length === 0 || activeGroupId == null}
+                  title={taskGroups.length === 0 ? "Create a task group first" : activeGroupId == null ? "Select a task group first" : "New task"}
+                >
                   <Plus className="h-5 w-5" />
                 </Button>
               </DrawerTrigger>
@@ -1211,7 +1226,7 @@ function Index() {
                 stores={allStores}
                 profiles={profiles}
                 proxyGroups={proxyGroups}
-                onCreate={(tpl, n) => { createTasks(tpl, n); setCreateOpen(false); }}
+                onCreate={(tpl, n) => { createTasks({ ...tpl, groupId: activeGroupId }, n); setCreateOpen(false); }}
                 onAddCustomStore={(name, url) => addCustomStore(name, url)}
               />
             </Drawer>
@@ -1288,7 +1303,7 @@ function Index() {
                 taskGroups={taskGroups}
                 activeGroupId={activeGroupId}
                 onSelectGroup={setActiveGroupId}
-                onAddGroup={(name) => addTaskGroup(name)}
+                onAddGroup={(name) => { const g = addTaskGroup(name); if (g) setActiveGroupId(g.id); return g; }}
                 onRenameGroup={renameTaskGroup}
                 onDeleteGroup={deleteTaskGroup}
               />
@@ -1533,10 +1548,9 @@ function TasksView({
   onRenameGroup: (id: string, name: string) => void;
   onDeleteGroup: (id: string) => void;
 }) {
-  const visibleTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
-  const groupChips = useMemo(() => {
-    const counts = new Map<string | null, number>();
-    counts.set(null, tasks.length);
+  const visibleTasks = activeGroupId == null ? [] : tasks.filter((t) => t.groupId === activeGroupId);
+  const groupCounts = useMemo(() => {
+    const counts = new Map<string, number>();
     for (const g of taskGroups) counts.set(g.id, 0);
     for (const t of tasks) {
       if (t.groupId && counts.has(t.groupId)) counts.set(t.groupId, (counts.get(t.groupId) ?? 0) + 1);
@@ -1559,12 +1573,6 @@ function TasksView({
   const allSelected = selectMode && selectedIds.size === visibleTasks.length && visibleTasks.length > 0;
   const groupChipsUI = (
     <div className="flex gap-1.5 overflow-x-auto pb-1">
-      <button
-        onClick={() => onSelectGroup(null)}
-        className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId == null ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
-      >
-        All <span className="ml-1 opacity-70">{groupChips.get(null) ?? 0}</span>
-      </button>
       {taskGroups.map((g) => (
         <Popover key={g.id}>
           <PopoverTrigger asChild>
@@ -1572,7 +1580,7 @@ function TasksView({
               onClick={() => onSelectGroup(g.id)}
               className={`group/chip shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ${activeGroupId === g.id ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}
             >
-              {g.name} <span className="ml-1 opacity-70">{groupChips.get(g.id) ?? 0}</span>
+              {g.name} <span className="ml-1 opacity-70">{groupCounts.get(g.id) ?? 0}</span>
             </button>
           </PopoverTrigger>
           <PopoverContent align="start" className="w-40 p-1">
@@ -1607,6 +1615,30 @@ function TasksView({
       </button>
     </div>
   );
+
+  // Require a group before any task can exist
+  if (taskGroups.length === 0) {
+    return (
+      <div className="mt-6 rounded-xl border border-dashed p-8 text-center text-sm">
+        <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-full bg-primary/15 text-primary">
+          <ListChecks className="h-6 w-6" />
+        </div>
+        <p className="text-base font-semibold text-foreground">Create a task group first</p>
+        <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
+          Task groups let you organize tasks per drop, store, or release. Every task belongs to a group.
+        </p>
+        <Button
+          className="mt-4 h-10"
+          onClick={() => {
+            const name = window.prompt("New group name (e.g. \"Drop A\", \"Travis\")");
+            if (name) onAddGroup(name);
+          }}
+        >
+          <Plus className="h-4 w-4" /> New group
+        </Button>
+      </div>
+    );
+  }
 
   if (tasks.length === 0) {
     return (
