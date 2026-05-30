@@ -2961,8 +2961,53 @@ function SettingsView({
 
       <TaskPoolCard profiles={profiles} />
 
-
-
+      <Card className="p-3">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          Discord notifications
+          <InfoDot text="Posts an embed to your Discord webhook on key task events. Profile names are masked. Works whether the tab is open or not on every device that has Discord." />
+        </div>
+        <div className="mt-2">
+          <Label className="text-[11px] text-muted-foreground">Webhook URL</Label>
+          <Input
+            className={`mt-1 h-9 font-mono text-[11px] ${!urlOk ? "border-destructive" : ""}`}
+            placeholder="https://discord.com/api/webhooks/..."
+            value={notifyConfig.webhookUrl}
+            onChange={(e) => setNotifyConfig({ ...notifyConfig, webhookUrl: e.target.value })}
+          />
+          {!urlOk && <p className="mt-1 text-[10px] text-destructive">Doesn't look like a Discord webhook URL.</p>}
+        </div>
+        <div className="mt-3 grid grid-cols-2 gap-1.5">
+          {([
+            ["in_stock", "In stock"],
+            ["checkout_ready", "Checkout ready"],
+            ["confirmed", "Order confirmed"],
+            ["failed", "Failed"],
+          ] as const).map(([ev, label]) => (
+            <label key={ev} className="flex items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                className="h-3.5 w-3.5"
+                checked={notifyConfig.events[ev]}
+                onChange={(e) => setNotifyConfig({ ...notifyConfig, events: { ...notifyConfig.events, [ev]: e.target.checked } })}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-9"
+            disabled={!isValidWebhookUrl(notifyConfig.webhookUrl) || testing === "sending"}
+            onClick={sendTest}
+          >
+            {testing === "sending" ? "Sending…" : "Send test"}
+          </Button>
+          {testing === "ok" && <span className="text-[11px] text-primary">✓ Sent</span>}
+          {testing === "fail" && <span className="text-[11px] text-destructive">Failed — check URL</span>}
+        </div>
+      </Card>
 
 
       <Card className="p-3">
