@@ -1303,7 +1303,7 @@ function Index() {
                 taskGroups={taskGroups}
                 activeGroupId={activeGroupId}
                 onSelectGroup={setActiveGroupId}
-                onAddGroup={(name) => addTaskGroup(name)}
+                onAddGroup={(name) => { const g = addTaskGroup(name); if (g) setActiveGroupId(g.id); return g; }}
                 onRenameGroup={renameTaskGroup}
                 onDeleteGroup={deleteTaskGroup}
               />
