@@ -1187,10 +1187,11 @@ function Index() {
   };
   const deleteCustomStore = (id: string) => setCustomStores((prev) => prev.filter((s) => s.id !== id));
 
-  // ─── Counts ───
-  const runningCount = tasks.filter((t) => t.running).length;
-  const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
-  const errorCount = tasks.filter((t) => t.status === "error").length;
+  // ─── Counts (scoped to the active group for the Tasks header) ───
+  const groupTasks = activeGroupId == null ? tasks : tasks.filter((t) => t.groupId === activeGroupId);
+  const runningCount = groupTasks.filter((t) => t.running).length;
+  const stockCount = groupTasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
+  const errorCount = groupTasks.filter((t) => t.status === "error").length;
 
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
