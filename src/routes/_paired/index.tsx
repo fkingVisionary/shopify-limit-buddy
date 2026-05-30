@@ -1369,23 +1369,72 @@ function Index() {
               <span className="font-medium">{selectedTaskIds.size} selected</span>
               <button onClick={exitSelectMode} className="text-muted-foreground hover:text-foreground">Cancel</button>
             </div>
-            <div className="grid grid-cols-4 gap-1.5">
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)}>
+            <div className="grid grid-cols-6 gap-1.5">
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStartTasks(selectedTaskIds)} title="Start">
                 <Play className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkStopTasks(selectedTaskIds)} title="Stop">
                 <Square className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDuplicateTasks(selectedTaskIds)} title="Duplicate">
                 <Copy className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)}>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkEditOpen(true)} title="Edit">
+                <Settings className="h-3.5 w-3.5" />
+              </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} title="Move to group">
+                    <Package className="h-3.5 w-3.5" />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="end" className="w-56 p-1">
+                  <button
+                    className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                    onClick={() => bulkMoveTasksToGroup(selectedTaskIds, null)}
+                  >
+                    Ungrouped
+                  </button>
+                  {taskGroups.map((g) => (
+                    <button
+                      key={g.id}
+                      className="block w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                      onClick={() => bulkMoveTasksToGroup(selectedTaskIds, g.id)}
+                    >
+                      {g.name}
+                    </button>
+                  ))}
+                  <button
+                    className="mt-1 block w-full rounded border border-dashed px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent"
+                    onClick={() => {
+                      const name = window.prompt("New group name");
+                      const g = name ? addTaskGroup(name) : null;
+                      if (g) bulkMoveTasksToGroup(selectedTaskIds, g.id);
+                    }}
+                  >
+                    + New group…
+                  </button>
+                </PopoverContent>
+              </Popover>
+              <Button size="sm" variant="destructive" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => bulkDeleteTasks(selectedTaskIds)} title="Delete">
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>
         </div>
       )}
+
+      <BulkEditTasksDialog
+        open={bulkEditOpen}
+        onClose={() => setBulkEditOpen(false)}
+        count={selectedTaskIds.size}
+        profiles={profiles}
+        proxyGroups={proxyGroups}
+        stores={allStores}
+        taskGroups={taskGroups}
+        onApply={(patch) => { bulkEditTasks(selectedTaskIds, patch); setBulkEditOpen(false); }}
+      />
+
 
       <nav
         className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur"
