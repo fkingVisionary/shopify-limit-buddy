@@ -22,7 +22,7 @@ import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
   Check, BookOpen, Sparkles, Package, User as UserIcon, Shuffle, Shield, Copy, Loader2,
-  ClipboardList, CheckSquare, Search, Globe, BarChart3, Clock, Bell, Send,
+  ClipboardList, CheckSquare, Search, Globe, BarChart3, Clock, Bell, Send, ChevronDown,
 } from "lucide-react";
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
@@ -473,6 +473,9 @@ type Task = {
   //   safe          → small jitter delay before checkout, no token required
   //   safe_preload  → safe + only fire if a warm captcha token is ready
   executionMode?: ExecutionMode;
+  // Optional size filter (clothing letters, shoe sizes, "One Size", etc.).
+  // Empty / undefined means "any size".
+  sizes?: string[];
 };
 export type ExecutionMode = "fast" | "fast_preload" | "safe" | "safe_preload";
 export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
@@ -482,6 +485,27 @@ export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
   safe_preload: "Safe + Preload",
 };
 const EXECUTION_MODE_CYCLE: ExecutionMode[] = ["fast", "fast_preload", "safe", "safe_preload"];
+
+// Size presets — covers clothing (letters), shoes (US + EU including 1/3 sizes),
+// and generic numeric / one-size items (Pokémon TCG, accessories, etc.).
+const SIZE_PRESETS: string[] = (() => {
+  const letters = ["One Size", "XXSmall", "XSmall", "Small", "Medium", "Large", "XLarge", "XXLarge", "XXXLarge"];
+  const usShoes: string[] = [];
+  for (let n = 4; n <= 15; n += 0.5) usShoes.push(`US ${n}`);
+  const euShoes: string[] = [];
+  for (let n = 35; n <= 48; n++) {
+    euShoes.push(`EU ${n}`);
+    if (n < 48) {
+      euShoes.push(`EU ${n} 1/3`);
+      euShoes.push(`EU ${n}.5`);
+      euShoes.push(`EU ${n} 2/3`);
+    }
+  }
+  const numeric: string[] = [];
+  for (let n = 24; n <= 46; n++) numeric.push(String(n));
+  return [...letters, ...usShoes, ...euShoes, ...numeric];
+})();
+
 type TaskGroup = { id: string; name: string; color?: string };
 const TASKS_KEY = "aio:tasks";
 const TASK_GROUPS_KEY = "aio:task-groups";
@@ -2115,6 +2139,8 @@ function CreateTaskSheet({
   const [qty, setQty] = useState(1);
   const [taskQty, setTaskQty] = useState(1);
   const [execMode, setExecMode] = useState<ExecutionMode>("fast");
+  const [sizes, setSizes] = useState<string[]>([]);
+  const [sizesOpen, setSizesOpen] = useState(false);
   const [addingStore, setAddingStore] = useState(false);
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreUrl, setNewStoreUrl] = useState("");
@@ -2141,6 +2167,7 @@ function CreateTaskSheet({
       proxyGroupId: proxyGroupSel === "__direct" ? null : proxyGroupSel,
       qty: Math.max(1, qty),
       executionMode: execMode,
+      sizes: sizes.length > 0 ? sizes : undefined,
     }, Math.max(1, taskQty));
     setInput("");
   };
@@ -2195,17 +2222,21 @@ function CreateTaskSheet({
               </Select>
             )}
           </Field>
-          <Field label="Mode">
-            <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
-              <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {(EXECUTION_MODE_CYCLE).map((m) => (
-                  <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <Field label="Sizes">
+            <button
+              type="button"
+              onClick={() => setSizesOpen(true)}
+              className="flex h-8 w-full items-center justify-between bg-transparent px-0 text-left text-base"
+            >
+              <span className={sizes.length === 0 ? "text-muted-foreground" : ""}>
+                {sizes.length === 0
+                  ? "Select sizes"
+                  : sizes.length <= 2
+                    ? sizes.join(", ")
+                    : `${sizes.length} selected`}
+              </span>
+              <ChevronDown className="h-4 w-4 text-muted-foreground" />
+            </button>
           </Field>
         </div>
 
@@ -2285,6 +2316,20 @@ function CreateTaskSheet({
             />
           </Field>
         </div>
+
+        {/* Row 5: Mode (full width) */}
+        <Field label="Mode">
+          <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
+            <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(EXECUTION_MODE_CYCLE).map((m) => (
+                <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
       </div>
 
       <DrawerFooter className="pt-2">
@@ -2297,7 +2342,127 @@ function CreateTaskSheet({
           Create {taskQty > 1 ? `${taskQty} tasks` : "task"}
         </Button>
       </DrawerFooter>
+
+      <SizesPickerDialog
+        open={sizesOpen}
+        onClose={() => setSizesOpen(false)}
+        value={sizes}
+        onChange={setSizes}
+      />
     </DrawerContent>
+  );
+}
+
+// ────────────────────────────────────────────
+// Sizes picker — bottom-sheet style multi-select with search.
+// Supports clothing letters, US/EU shoe sizes, generic numeric, "One Size",
+// plus free-text custom sizes (press Enter to add what you typed).
+// ────────────────────────────────────────────
+function SizesPickerDialog({
+  open, onClose, value, onChange,
+}: {
+  open: boolean; onClose: () => void;
+  value: string[]; onChange: (next: string[]) => void;
+}) {
+  const [draft, setDraft] = useState<string[]>(value);
+  const [query, setQuery] = useState("");
+
+  useEffect(() => { if (open) { setDraft(value); setQuery(""); } }, [open, value]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return SIZE_PRESETS;
+    return SIZE_PRESETS.filter((s) => s.toLowerCase().includes(q));
+  }, [query]);
+
+  const toggle = (s: string) =>
+    setDraft((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+
+  const addCustom = () => {
+    const v = query.trim();
+    if (!v) return;
+    if (!draft.includes(v)) setDraft([...draft, v]);
+    setQuery("");
+  };
+
+  const done = () => { onChange(draft); onClose(); };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent className="max-h-[80vh] gap-0 p-0 sm:max-w-md">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Select Sizes</DialogTitle>
+          <DialogDescription>Choose one or more sizes for this task.</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex items-center justify-between px-4 pt-4 pb-3">
+          <button
+            type="button"
+            className="text-base font-semibold text-rose-400"
+            onClick={() => setDraft([])}
+          >
+            Clear
+          </button>
+          <div className="text-lg font-bold">Select Sizes</div>
+          <button
+            type="button"
+            className="text-base font-semibold text-primary"
+            onClick={done}
+          >
+            Done
+          </button>
+        </div>
+
+        <div className="px-4 pb-3">
+          <div className="flex h-10 items-center gap-2 rounded-md bg-muted/60 px-3">
+            <Search className="h-4 w-4 text-muted-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustom(); } }}
+              placeholder="Search…"
+              className="h-full flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground"
+              autoCapitalize="none"
+              autoCorrect="off"
+            />
+          </div>
+        </div>
+
+        <div className="max-h-[55vh] space-y-1.5 overflow-y-auto px-3 pb-4">
+          {/* Show selected (not in preset) first so custom sizes are visible */}
+          {draft.filter((s) => !SIZE_PRESETS.includes(s)).map((s) => (
+            <SizeRow key={`c-${s}`} label={s} selected onClick={() => toggle(s)} />
+          ))}
+          {filtered.length === 0 && query.trim() && (
+            <button
+              type="button"
+              onClick={addCustom}
+              className="flex w-full items-center justify-center rounded-md bg-muted/40 px-4 py-3 text-sm text-primary"
+            >
+              ＋ Add &ldquo;{query.trim()}&rdquo;
+            </button>
+          )}
+          {filtered.map((s) => (
+            <SizeRow key={s} label={s} selected={draft.includes(s)} onClick={() => toggle(s)} />
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SizeRow({ label, selected, onClick }: { label: string; selected: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center justify-between rounded-md px-4 py-3.5 text-left text-base font-semibold transition-colors ${
+        selected ? "bg-primary/15 text-primary" : "bg-muted/40 hover:bg-muted/60"
+      }`}
+    >
+      <span>{label}</span>
+      {selected && <Check className="h-4 w-4" />}
+    </button>
   );
 }
 
