@@ -1158,12 +1158,23 @@ function Index() {
               fireWebhook("in_stock", { ...t, variantId: avail.id }, { variantTitle: avail.title, price: avail.price ? `$${avail.price}` : undefined });
               if (profile) {
                 const qty = t.limit && t.limit > 0 ? Math.min(t.qty, t.limit) : t.qty;
-                // Drive the checkout state machine.
-                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
+                const execMode: ExecutionMode = t.executionMode ?? "fast";
                 // Pull a captcha token from the pool if one's warm for this store.
                 const pooled = poolApi.takeToken(t.storeId);
+                // Preload modes: wait for a warm captcha token before firing checkout.
+                if ((execMode === "fast_preload" || execMode === "safe_preload") && !pooled) {
+                  // Roll back the trigger so we retry next tick once a token warms.
+                  triggeredRef.current.delete(t.id);
+                  updateTask(t.id, { status: "in_stock", message: "Waiting for captcha token…" });
+                  return;
+                }
+                // Drive the checkout state machine.
+                updateTask(t.id, { status: "adding_to_cart", checkoutStartedAt: Date.now(), message: "Adding to cart…" });
                 const rawProxy = pickRawProxy(t.proxyGroupId);
-                checkoutFn({
+                // Safe modes: small jitter (250–750ms) to avoid burst-detection.
+                const safeDelay = (execMode === "safe" || execMode === "safe_preload")
+                  ? 250 + Math.floor(Math.random() * 500) : 0;
+                const checkoutCall = () => checkoutFn({
                   data: {
                     storeUrl: t.storeUrl,
                     variantId: avail.id,
