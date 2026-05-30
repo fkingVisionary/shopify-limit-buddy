@@ -1971,14 +1971,25 @@ function TasksView({
                   <Button size="icon" variant="destructive" className="h-10 w-10 rounded-lg" onClick={() => onStop(t.id)}>
                     <Square className="h-4 w-4" />
                   </Button>
+                ) : t.scheduledAt && t.scheduledAt > Date.now() ? (
+                  <button
+                    onClick={() => onSchedule(t.id)}
+                    className="flex h-10 min-w-[4.5rem] items-center justify-center gap-1 rounded-lg border border-primary/40 bg-primary/10 px-2 text-[11px] font-medium tabular-nums text-primary"
+                    title="Edit schedule"
+                  >
+                    <Clock className="h-3 w-3" />
+                    <Countdown to={t.scheduledAt} />
+                  </button>
                 ) : (
                   <Button size="icon" className="h-10 w-10 rounded-lg" onClick={() => onStart(t.id)}>
                     <Play className="h-4 w-4" />
                   </Button>
                 )}
-                <button className="text-[10px] text-muted-foreground hover:text-destructive" onClick={() => onDelete(t.id)}>
-                  delete
-                </button>
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <button className="hover:text-foreground" onClick={() => onSchedule(t.id)}>schedule</button>
+                  <span>·</span>
+                  <button className="hover:text-destructive" onClick={() => onDelete(t.id)}>delete</button>
+                </div>
               </div>
             </div>
           </Card>
