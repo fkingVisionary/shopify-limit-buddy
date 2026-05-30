@@ -1554,7 +1554,7 @@ function Index() {
         count={1}
         initial={(() => {
           const t = tasks.find((x) => x.id === scheduleTaskId);
-          return t ? { scheduledAt: t.scheduledAt, preWarmMs: t.preWarmMs } : null;
+          return t ? { scheduledAt: t.scheduledAt ?? undefined, preWarmMs: t.preWarmMs ?? undefined } : null;
         })()}
         onApply={(scheduledAt, preWarmMs) => {
           if (scheduleTaskId) updateTask(scheduleTaskId, { scheduledAt, preWarmMs });
