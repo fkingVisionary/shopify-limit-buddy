@@ -981,6 +981,46 @@ function Index() {
     });
     exitSelectMode();
   };
+  type BulkEditPatch = Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">>;
+  const bulkEditTasks = (ids: Set<string>, patch: BulkEditPatch) => {
+    if (Object.keys(patch).length === 0) { exitSelectMode(); return; }
+    setTasks((prev) => prev.map((t) => {
+      if (!ids.has(t.id)) return t;
+      const next: Task = { ...t, ...patch };
+      // Keep storeName in sync if storeId changed
+      if (patch.storeId) {
+        const s = allStores.find((x) => x.id === patch.storeId);
+        if (s) { next.storeUrl = s.url; next.storeName = s.name; }
+      }
+      return next;
+    }));
+    exitSelectMode();
+  };
+  const bulkMoveTasksToGroup = (ids: Set<string>, groupId: string | null) => {
+    setTasks((prev) => prev.map((t) => ids.has(t.id) ? { ...t, groupId } : t));
+    exitSelectMode();
+  };
+
+  // ─── Task-group management ───
+  const addTaskGroup = (name: string): TaskGroup | null => {
+    const n = name.trim();
+    if (!n) return null;
+    const g: TaskGroup = { id: makeId(), name: n };
+    setTaskGroups((prev) => [...prev, g]);
+    return g;
+  };
+  const renameTaskGroup = (id: string, name: string) => {
+    const n = name.trim();
+    if (!n) return;
+    setTaskGroups((prev) => prev.map((g) => g.id === id ? { ...g, name: n } : g));
+  };
+  const deleteTaskGroup = (id: string) => {
+    setTaskGroups((prev) => prev.filter((g) => g.id !== id));
+    setTasks((prev) => prev.map((t) => t.groupId === id ? { ...t, groupId: null } : t));
+    if (activeGroupId === id) setActiveGroupId(null);
+  };
+
+
 
   // ─── Poll loop ───
   const triggeredRef = useRef<Set<string>>(new Set());
