@@ -1082,7 +1082,7 @@ function Index() {
   const stockCount = tasks.filter((t) => ["in_stock", "adding_to_cart", "checkout_ready", "opened"].includes(t.status)).length;
   const errorCount = tasks.filter((t) => t.status === "error").length;
 
-  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", settings: "Settings", help: "Help" }[tab];
+  const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", jobs: "Jobs", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
     tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
@@ -1090,6 +1090,7 @@ function Index() {
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
     captcha: { key: "tip-captcha", text: "Harvest captcha tokens via 2Captcha. Paste the same proxy your checkout will use — tokens are IP-bound on most sites." },
+    jobs: { key: "tip-jobs", text: "Every checkout dispatched to your runner shows up here — success, failure, or pending. Tap a row for the full payload." },
     settings: { key: "tip-settings", text: "Lower poll interval = faster detection but more requests. 3000–5000ms is a good balance." },
     help: null,
   };
