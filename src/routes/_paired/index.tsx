@@ -1157,6 +1157,7 @@ function Index() {
                 }).then((r) => {
                   if (!r.ok) {
                     updateTask(t.id, { status: "failed", message: `${r.stage}: ${r.error}`, checkoutElapsedMs: r.elapsedMs });
+                    fireWebhook("failed", { ...t, checkoutElapsedMs: r.elapsedMs, message: `${r.stage}: ${r.error}` });
                     return;
                   }
                   updateTask(t.id, {
@@ -1166,6 +1167,7 @@ function Index() {
                     checkoutElapsedMs: r.elapsedMs,
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
+                  fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
                   const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
                   const wantFullBrowser = browserlessEnabled || (runnerPreferred && runnerOnlineRef.current);
                   const useRunner = runnerPreferred && runnerOnlineRef.current;
