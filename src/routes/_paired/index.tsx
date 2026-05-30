@@ -1638,6 +1638,7 @@ function TasksView({
   }
   return (
     <div className="space-y-2">
+      {groupChipsUI}
       <div className="flex items-center justify-between gap-2 text-xs">
         {selectMode ? (
           <>
@@ -1655,7 +1656,12 @@ function TasksView({
           </button>
         )}
       </div>
-      {tasks.map((t) => {
+      {visibleTasks.length === 0 && (
+        <div className="rounded-lg border border-dashed p-6 text-center text-xs text-muted-foreground">
+          No tasks in this group.
+        </div>
+      )}
+      {visibleTasks.map((t) => {
         const profile = profiles.find((p) => p.id === t.profileId);
         const selected = selectedIds.has(t.id);
         const statusInfo = (() => {
