@@ -3662,3 +3662,141 @@ function CaptchaView({ proxyGroups, stores, poolApi }: { proxyGroups: ProxyGroup
     </div>
   );
 }
+
+// ────────────────────────────────────────────
+// Bulk Edit Tasks — apply optional patches across multi-selection
+// ────────────────────────────────────────────
+function BulkEditTasksDialog({
+  open, onClose, count, profiles, proxyGroups, stores, taskGroups, onApply,
+}: {
+  open: boolean;
+  onClose: () => void;
+  count: number;
+  profiles: Profile[];
+  proxyGroups: ProxyGroup[];
+  stores: StoreEntry[];
+  taskGroups: TaskGroup[];
+  onApply: (patch: Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">>) => void;
+}) {
+  const KEEP = "__keep__";
+  const NONE = "__none__";
+  const [profileId, setProfileId] = useState<string>(KEEP);
+  const [proxyGroupId, setProxyGroupId] = useState<string>(KEEP);
+  const [storeId, setStoreId] = useState<string>(KEEP);
+  const [groupId, setGroupId] = useState<string>(KEEP);
+  const [qtyStr, setQtyStr] = useState<string>("");
+  const [limitStr, setLimitStr] = useState<string>("");
+
+  useEffect(() => {
+    if (open) {
+      setProfileId(KEEP); setProxyGroupId(KEEP); setStoreId(KEEP);
+      setGroupId(KEEP); setQtyStr(""); setLimitStr("");
+    }
+  }, [open]);
+
+  const apply = () => {
+    const patch: Partial<Pick<Task, "profileId" | "proxyGroupId" | "storeId" | "qty" | "limit" | "groupId">> = {};
+    if (profileId !== KEEP) patch.profileId = profileId;
+    if (proxyGroupId !== KEEP) patch.proxyGroupId = proxyGroupId === NONE ? null : proxyGroupId;
+    if (storeId !== KEEP) patch.storeId = storeId;
+    if (groupId !== KEEP) patch.groupId = groupId === NONE ? null : groupId;
+    const q = parseInt(qtyStr, 10);
+    if (Number.isFinite(q) && q > 0) patch.qty = q;
+    if (limitStr.trim() !== "") {
+      const l = parseInt(limitStr, 10);
+      patch.limit = Number.isFinite(l) && l > 0 ? l : null;
+    }
+    onApply(patch);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-h-[90vh] gap-0 overflow-hidden p-0 sm:max-w-md">
+        <DialogHeader className="border-b px-6 py-3">
+          <DialogTitle>Edit {count} task{count === 1 ? "" : "s"}</DialogTitle>
+          <DialogDescription className="text-xs">
+            Only changed fields are applied. Leave a field on "Keep current" to skip it.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 overflow-y-auto px-6 py-4">
+          <div>
+            <Label className="text-xs">Profile</Label>
+            <Select value={profileId} onValueChange={setProfileId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                {profiles.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.first_name} {p.last_name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Proxy group</Label>
+            <Select value={proxyGroupId} onValueChange={setProxyGroupId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                <SelectItem value={NONE}>Direct (no proxy)</SelectItem>
+                {proxyGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Store</Label>
+            <Select value={storeId} onValueChange={setStoreId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                {stores.map((s) => (
+                  <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label className="text-xs">Task group</Label>
+            <Select value={groupId} onValueChange={setGroupId}>
+              <SelectTrigger className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={KEEP}>Keep current</SelectItem>
+                <SelectItem value={NONE}>Ungrouped</SelectItem>
+                {taskGroups.map((g) => (
+                  <SelectItem key={g.id} value={g.id}>{g.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label className="text-xs">Quantity</Label>
+              <Input
+                inputMode="numeric"
+                placeholder="Keep"
+                value={qtyStr}
+                onChange={(e) => setQtyStr(e.target.value.replace(/\D/g, ""))}
+                className="h-9"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Limit (0 = none)</Label>
+              <Input
+                inputMode="numeric"
+                placeholder="Keep"
+                value={limitStr}
+                onChange={(e) => setLimitStr(e.target.value.replace(/\D/g, ""))}
+                className="h-9"
+              />
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="flex-row gap-2 border-t px-6 py-3 sm:justify-end">
+          <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+          <Button size="sm" onClick={apply}>Apply to {count}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
