@@ -1491,6 +1491,9 @@ function Index() {
               <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkEditOpen(true)} title="Edit">
                 <Settings className="h-3.5 w-3.5" />
               </Button>
+              <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} onClick={() => setBulkScheduleOpen(true)} title="Schedule">
+                <Clock className="h-3.5 w-3.5" />
+              </Button>
               <Popover>
                 <PopoverTrigger asChild>
                   <Button size="sm" variant="secondary" className="h-9 px-0" disabled={selectedTaskIds.size === 0} title="Move to group">
