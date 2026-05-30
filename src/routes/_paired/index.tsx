@@ -4011,3 +4011,83 @@ function BulkEditTasksDialog({
     </Dialog>
   );
 }
+
+// ────────────────────────────────────────────
+// Schedule dialog — set scheduledAt + preWarmMs for one or many tasks
+// ────────────────────────────────────────────
+function ScheduleDialog({
+  open, onClose, initial, count, onApply, onClear,
+}: {
+  open: boolean;
+  onClose: () => void;
+  initial: { scheduledAt?: number; preWarmMs?: number } | null;
+  count: number;
+  onApply: (scheduledAt: number, preWarmMs: number, staggerMs: number) => void;
+  onClear?: () => void;
+}) {
+  const toLocalInput = (ms?: number) => {
+    const d = ms ? new Date(ms) : new Date(Date.now() + 5 * 60_000);
+    const tz = d.getTimezoneOffset() * 60_000;
+    return new Date(d.getTime() - tz).toISOString().slice(0, 16);
+  };
+  const [when, setWhen] = useState<string>(() => toLocalInput(initial?.scheduledAt));
+  const [preWarm, setPreWarm] = useState<number>(initial?.preWarmMs ?? 2000);
+  const [stagger, setStagger] = useState<number>(0);
+
+  useEffect(() => {
+    if (open) {
+      setWhen(toLocalInput(initial?.scheduledAt));
+      setPreWarm(initial?.preWarmMs ?? 2000);
+      setStagger(0);
+    }
+  }, [open, initial?.scheduledAt, initial?.preWarmMs]);
+
+  const apply = () => {
+    const ms = new Date(when).getTime();
+    if (!Number.isFinite(ms)) return;
+    onApply(ms, Math.max(0, preWarm), Math.max(0, stagger));
+    onClose();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-sm gap-0 p-0">
+        <DialogHeader className="border-b px-6 py-3">
+          <DialogTitle className="text-base">
+            Schedule {count > 1 ? `${count} tasks` : "task"}
+          </DialogTitle>
+          <DialogDescription className="text-xs">
+            Tasks auto-start at the scheduled time. Pre-warm fires a dummy request to keep the proxy/session hot.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 px-6 py-4">
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Start at (local)</Label>
+            <Input className="mt-1 h-9" type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} />
+          </div>
+          <div>
+            <Label className="text-[11px] text-muted-foreground">Pre-warm (ms before start)</Label>
+            <Input className="mt-1 h-9" type="number" min={0} step={250} value={preWarm} onChange={(e) => setPreWarm(Number(e.target.value) || 0)} />
+            <p className="mt-1 text-[10px] text-muted-foreground">2000ms is a safe default.</p>
+          </div>
+          {count > 1 && (
+            <div>
+              <Label className="text-[11px] text-muted-foreground">Stagger between tasks (ms)</Label>
+              <Input className="mt-1 h-9" type="number" min={0} step={50} value={stagger} onChange={(e) => setStagger(Number(e.target.value) || 0)} />
+              <p className="mt-1 text-[10px] text-muted-foreground">0 = all fire at once.</p>
+            </div>
+          )}
+        </div>
+        <DialogFooter className="flex-row gap-2 border-t px-6 py-3 sm:justify-between">
+          {onClear ? (
+            <Button variant="ghost" size="sm" onClick={() => { onClear(); onClose(); }}>Clear schedule</Button>
+          ) : <span />}
+          <div className="flex gap-2">
+            <Button variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+            <Button size="sm" onClick={apply}>Schedule</Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
