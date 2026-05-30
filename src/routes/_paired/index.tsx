@@ -1548,6 +1548,40 @@ function Index() {
         onApply={(patch) => { bulkEditTasks(selectedTaskIds, patch); setBulkEditOpen(false); }}
       />
 
+      <ScheduleDialog
+        open={!!scheduleTaskId}
+        onClose={() => setScheduleTaskId(null)}
+        count={1}
+        initial={(() => {
+          const t = tasks.find((x) => x.id === scheduleTaskId);
+          return t ? { scheduledAt: t.scheduledAt, preWarmMs: t.preWarmMs } : null;
+        })()}
+        onApply={(scheduledAt, preWarmMs) => {
+          if (scheduleTaskId) updateTask(scheduleTaskId, { scheduledAt, preWarmMs });
+        }}
+        onClear={scheduleTaskId ? () => updateTask(scheduleTaskId, { scheduledAt: undefined, preWarmMs: undefined }) : undefined}
+      />
+
+      <ScheduleDialog
+        open={bulkScheduleOpen}
+        onClose={() => setBulkScheduleOpen(false)}
+        count={selectedTaskIds.size}
+        initial={null}
+        onApply={(scheduledAt, preWarmMs, staggerMs) => {
+          const ids = Array.from(selectedTaskIds);
+          setTasks((prev) => {
+            let i = 0;
+            const order = new Map(ids.map((id, idx) => [id, idx]));
+            return prev.map((t) => {
+              if (!selectedTaskIds.has(t.id)) return t;
+              const idx = order.get(t.id) ?? i++;
+              return { ...t, scheduledAt: scheduledAt + idx * staggerMs, preWarmMs };
+            });
+          });
+          setBulkScheduleOpen(false);
+        }}
+      />
+
 
       <nav
         className="fixed inset-x-0 bottom-0 z-30 border-t bg-background/95 backdrop-blur"
