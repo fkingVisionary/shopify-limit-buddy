@@ -1203,7 +1203,12 @@ function Index() {
           {tab === "tasks" && (
             <Drawer open={createOpen} onOpenChange={setCreateOpen}>
               <DrawerTrigger asChild>
-                <Button size="icon" className="h-9 w-9 rounded-lg">
+                <Button
+                  size="icon"
+                  className="h-9 w-9 rounded-lg"
+                  disabled={taskGroups.length === 0 || activeGroupId == null}
+                  title={taskGroups.length === 0 ? "Create a task group first" : activeGroupId == null ? "Select a task group first" : "New task"}
+                >
                   <Plus className="h-5 w-5" />
                 </Button>
               </DrawerTrigger>
@@ -1211,7 +1216,7 @@ function Index() {
                 stores={allStores}
                 profiles={profiles}
                 proxyGroups={proxyGroups}
-                onCreate={(tpl, n) => { createTasks(tpl, n); setCreateOpen(false); }}
+                onCreate={(tpl, n) => { createTasks({ ...tpl, groupId: activeGroupId }, n); setCreateOpen(false); }}
                 onAddCustomStore={(name, url) => addCustomStore(name, url)}
               />
             </Drawer>
