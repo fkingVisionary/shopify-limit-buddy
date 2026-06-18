@@ -207,6 +207,65 @@ function checkoutScriptSource() {
       await stage("card_fill");
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
+      const selectCreditCardPayment = async () => {
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+          const ok = await page.evaluate(() => {
+            const visible = (el) => {
+              const rect = el.getBoundingClientRect();
+              const style = getComputedStyle(el);
+              return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+            };
+            const clickLikeUser = (el) => {
+              el.scrollIntoView({ block: "center", inline: "center" });
+              el.click();
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+            };
+            const cardField = Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], iframe[src*="card" i], iframe[name*="card" i]')).find(visible);
+            if (cardField) return true;
+
+            const inputs = Array.from(document.querySelectorAll('input[type="radio"], input[name*="payment" i], input[name*="gateway" i]'));
+            for (const input of inputs) {
+              const label = (input.closest("label")?.textContent || document.querySelector('label[for="' + input.id + '"]')?.textContent || input.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || "").trim();
+              const meta = [label, input.value, input.id, input.name].join(" ").toLowerCase();
+              if (/credit\s*card|card|visa|mastercard|american express|amex/.test(meta) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(meta)) {
+                clickLikeUser(input);
+                const lab = input.closest("label") || document.querySelector('label[for="' + input.id + '"]') || input.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row');
+                if (lab) clickLikeUser(lab);
+                return true;
+              }
+            }
+
+            const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row'));
+            for (const row of rows) {
+              if (!visible(row)) continue;
+              const text = (row.textContent || "").trim().toLowerCase();
+              if (/credit\s*card|card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text)) {
+                clickLikeUser(row);
+                const radio = row.querySelector?.('input[type="radio"]');
+                if (radio) clickLikeUser(radio);
+                return true;
+              }
+            }
+            return false;
+          }).catch(() => false);
+          if (ok) {
+            await new Promise((r) => setTimeout(r, 900));
+            const ready = await page.evaluate(() => Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], iframe[src*="card" i], iframe[name*="card" i]')).some((el) => {
+              const rect = el.getBoundingClientRect();
+              const style = getComputedStyle(el);
+              return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+            })).catch(() => false);
+            if (ready) return true;
+          }
+          await new Promise((r) => setTimeout(r, 400));
+        }
+        return false;
+      };
+      const creditCardSelected = await selectCreditCardPayment();
+      if (!creditCardSelected) return await fail("Credit card payment option was not available or could not be selected");
+
       // Ensure "Use shipping address as billing address" is selected. On some
       // themes (Adidas AU) the default is "different billing address" with
       // empty fields, which blocks submit. Click the same-as-shipping radio
