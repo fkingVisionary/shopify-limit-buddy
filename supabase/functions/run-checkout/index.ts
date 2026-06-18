@@ -71,9 +71,27 @@ function checkoutScriptSource() {
       log("checkout_load", true);
 
       const clickContinue = async () => {
-        const sel = 'button[type="submit"], button#continue_button, button.step__footer__continue-btn';
-        await page.waitForSelector(sel, { timeout: 15000 });
-        await page.click(sel);
+        await page.waitForFunction(() => {
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+          return els.some((el) => {
+            const text = ((el instanceof HTMLInputElement ? el.value : el.textContent) ?? "").trim();
+            const id = (el as HTMLElement).id ?? "";
+            const cls = (el as HTMLElement).className?.toString?.() ?? "";
+            return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
+          });
+        }, { timeout: 15000 });
+        const clicked = await page.evaluate(() => {
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"]')) as Array<HTMLButtonElement | HTMLInputElement>;
+          const target = els.find((el) => {
+            const text = ((el instanceof HTMLInputElement ? el.value : el.textContent) ?? "").trim();
+            const id = el.id ?? "";
+            const cls = el.className?.toString?.() ?? "";
+            return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
+          });
+          target?.click();
+          return Boolean(target);
+        });
+        if (!clicked) throw new Error("Could not find checkout continue button");
       };
 
       lastStep = "shipping_continue";
@@ -83,7 +101,7 @@ function checkoutScriptSource() {
 
       lastStep = "shipping_method";
       await stage("shipping_method");
-      try { await page.waitForSelector('input[name="checkout[shipping_rate][id]"]', { timeout: 15000 }); } catch {}
+      try { await page.waitForSelector('input[name="checkout[shipping_rate][id]"], button#continue_button, button.step__footer__continue-btn', { timeout: 2000 }); } catch {}
       log("shipping_method", true);
 
       lastStep = "payment_continue";
@@ -93,7 +111,7 @@ function checkoutScriptSource() {
 
       lastStep = "card_fill";
       await stage("card_fill");
-      await page.waitForTimeout(2500);
+      await new Promise((resolve) => setTimeout(resolve, 2500));
       const frames = page.frames();
       const setIn = async (namePart, value) => {
         for (const f of frames) {
@@ -142,17 +160,26 @@ function checkoutScriptSource() {
       await clickContinue();
       log("submit", true);
 
-      lastStep = "confirm";
-      await stage("confirm");
+      lastStep = "payment_result";
+      await stage("payment_result");
       await page.waitForFunction(
-        () => /\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href),
-        { timeout: 25000 },
+        () => {
+          if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return true;
+          const text = document.body?.innerText ?? "";
+          return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
+        },
+        { timeout: 35000 },
       );
       const finalUrl = page.url();
+      const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
+      if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
+        const paymentMsg = (bodyText.match(/[^\\n]*(?:declined|payment[^\\n]*failed|card[^\\n]*invalid|unable to process|try another card|security code|expired)[^\\n]*/i)?.[0] ?? "Payment was not accepted").trim();
+        return await fail(paymentMsg.slice(0, 240));
+      }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
       const shot = await page.screenshot({ encoding: "base64", fullPage: false });
-      log("confirm", true, orderId ?? finalUrl);
+      log("payment_result", true, orderId ?? finalUrl);
       return { ok: true, orderId, finalUrl, steps, screenshotB64: shot, dryRun: false };
     } catch (e) {
       return await fail(e?.message ?? String(e));
@@ -222,7 +249,10 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  url.searchParams.set("timeout", "90000");
+  // Browserless rejects values above the current plan cap. Keep the request
+  // inside the 60s cap so failures happen inside the checkout script instead
+  // of at the transport layer before Chrome even launches.
+  url.searchParams.set("timeout", "60000");
 
   try {
     const res = await fetch(url.toString(), {
