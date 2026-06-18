@@ -1262,6 +1262,7 @@ function Index() {
                     card_fill: "Entering card details",
                     captcha_inject: "Injecting captcha token",
                     submit: browserlessDryRun ? "Finalising dry-run" : "Submitting payment",
+                    payment_result: "Checking payment result",
                     confirm: "Waiting for order confirmation",
                     dry_run_done: "Dry-run complete",
                     transport: "Transport error",
