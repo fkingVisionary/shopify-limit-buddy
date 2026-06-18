@@ -3137,6 +3137,22 @@ function SettingsView({
         <p className="mt-2 text-[10px] leading-relaxed text-amber-400/90">
           Turn dry-run OFF only when you're ready to place real orders. Each non-dry checkout will charge the card on the assigned profile.
         </p>
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-9"
+            disabled={pingState.status === "pinging"}
+            onClick={runPing}
+          >
+            {pingState.status === "pinging" ? "Testing…" : "Test Browserless"}
+          </Button>
+          {pingState.status === "ok" && <span className="text-[11px] text-primary">✓ {pingState.msg}</span>}
+          {pingState.status === "fail" && <span className="text-[11px] text-destructive">{pingState.msg}</span>}
+        </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+          Free / starter Browserless plans cap each run at 60s. If a real checkout times out, upgrade the plan or switch to the local runner.
+        </p>
       </Card>
 
       <LocalRunnerCard runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred} />
