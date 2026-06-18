@@ -426,7 +426,7 @@ function checkoutScriptSource() {
               const r = el.getBoundingClientRect();
               return { x: r.left + Math.min(32, Math.max(12, r.width * 0.12)), y: r.top + r.height / 2 };
             };
-            const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&"));
+            const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value));
             const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
             const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], .radio-wrapper, [data-select-gateway], [data-gateway-group], .payment-method-list__item, .content-box__row') || el;
             const directTextFor = (el) => [labelFor(el)?.textContent, el.closest("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").trim().toLowerCase();
@@ -481,7 +481,7 @@ function checkoutScriptSource() {
                 const style = getComputedStyle(el);
                 return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
               };
-              const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&"));
+              const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value));
               const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
               const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .payment-method-list__item') || el;
               const directTextFor = (el) => [labelFor(el)?.textContent, el.closest?.("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").toLowerCase();
