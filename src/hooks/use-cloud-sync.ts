@@ -147,5 +147,5 @@ export function useCloudSync() {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("aio:changed", onSameTab);
     };
-  }, [loadFn, saveFn]);
+  }, [loadFn, saveFn, paired]);
 }
