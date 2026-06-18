@@ -1210,7 +1210,17 @@ function Index() {
 
                 // ── Full-browser path: skip cart-warm entirely. Browserless / the
                 // local runner does its own ATC → shipping → payment → submit.
-                if (wantFullBrowser && (hasCard || browserlessDryRun)) {
+                // Never fall back to opening the retailer on the user's device.
+                if (wantFullBrowser && !hasCard && !browserlessDryRun) {
+                  updateTask(t.id, {
+                    status: "failed",
+                    message: "Profile card required for backend checkout; no browser tab was opened.",
+                  });
+                  fireWebhook("failed", { ...t, message: "Profile card required for backend checkout; no browser tab was opened." });
+                  return;
+                }
+
+                if (wantFullBrowser) {
                   const transportLabel = useRunner ? "local runner" : "Browserless";
                   updateTask(t.id, {
                     status: "checking_out",
@@ -1307,7 +1317,7 @@ function Index() {
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
                   fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
-                  if (autoOpen) {
+                  if (autoOpen && !browserlessEnabled && !runnerPreferred) {
                     window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
                     updateTask(t.id, { status: "opened" });
                   }
