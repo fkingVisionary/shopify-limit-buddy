@@ -1307,69 +1307,7 @@ function Index() {
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
                   fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
-                  const hasCard = !!(profile.card_number && profile.card_exp_month && profile.card_exp_year && profile.card_cvv);
-                  const wantFullBrowser = browserlessEnabled || (runnerPreferred && runnerOnlineRef.current);
-                  const useRunner = runnerPreferred && runnerOnlineRef.current;
-                  if (wantFullBrowser && (hasCard || browserlessDryRun)) {
-                    const transportLabel = useRunner ? "local runner" : "Browserless";
-                    updateTask(t.id, {
-                      status: "checking_out",
-                      message: browserlessDryRun ? `Dry-run via ${transportLabel}…` : `Submitting order via ${transportLabel}…`,
-                    });
-                    const bStart = Date.now();
-                    const payload = {
-                      storeUrl: t.storeUrl,
-                      variantId: avail.id,
-                      qty,
-                      profile: {
-                        email: profile.email, first_name: profile.first_name, last_name: profile.last_name,
-                        address1: profile.address1, address2: profile.address2 ?? null,
-                        city: profile.city, province: profile.province,
-                        zip: profile.zip, country: profile.country, phone: profile.phone,
-                      },
-                      card: {
-                        number: (profile.card_number || "4242424242424242").replace(/\s+/g, ""),
-                        name: profile.card_name || `${profile.first_name} ${profile.last_name}`.trim() || "Test",
-                        exp_month: profile.card_exp_month || "12",
-                        exp_year: profile.card_exp_year || "30",
-                        cvv: profile.card_cvv || "123",
-                      },
-                      proxy: rawProxy,
-                      captchaToken: pooled?.token ?? null,
-                      dryRun: browserlessDryRun,
-                    };
-                    const transport = useRunner
-                      ? runViaLocalRunner(payload)
-                      : browserlessFn({ data: payload });
-                    transport.then((b: any) => {
-                      const elapsed = Date.now() - bStart;
-                      if (b.ok) {
-                        updateTask(t.id, {
-                          status: b.dryRun ? "checkout_ready" : "confirmed",
-                          orderId: b.orderId ?? null,
-                          finalUrl: b.finalUrl,
-                          steps: b.steps,
-                          screenshotB64: b.screenshotB64,
-                          browserlessElapsedMs: elapsed,
-                          message: b.dryRun ? `Dry-run OK · ${transportLabel} · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${transportLabel} · ${elapsed}ms`,
-                        });
-                        if (!b.dryRun) notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
-                        if (!b.dryRun) fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
-                      } else {
-                        updateTask(t.id, {
-                          status: "failed",
-                          steps: b.steps,
-                          screenshotB64: b.screenshotB64,
-                          browserlessElapsedMs: elapsed,
-                          message: `${b.failedStep}: ${b.error}`,
-                        });
-                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${b.failedStep}: ${b.error}` });
-                      }
-                    }).catch((err: any) => {
-                      updateTask(t.id, { status: "failed", message: err?.message ?? `${transportLabel} error` });
-                      fireWebhook("failed", { ...t, message: err?.message ?? `${transportLabel} error` });
-                    });
-                  } else if (autoOpen) {
+                  if (autoOpen) {
                     window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
                     updateTask(t.id, { status: "opened" });
                   }
