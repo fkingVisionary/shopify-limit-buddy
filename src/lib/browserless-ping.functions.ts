@@ -15,7 +15,7 @@ export const pingBrowserless = createServerFn({ method: "POST" }).handler(
     url.searchParams.set("token", apiKey);
     url.searchParams.set("timeout", "10000");
 
-    const code = `module.exports = async ({ page }) => {
+    const code = `export default async ({ page }) => {
       await page.goto("about:blank");
       return { ok: true, ua: await page.evaluate(() => navigator.userAgent) };
     }`;
