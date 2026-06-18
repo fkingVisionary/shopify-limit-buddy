@@ -747,7 +747,6 @@ function Index() {
   const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
   const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
   const [pollMs, setPollMs] = useState(4000);
-  const [autoOpen, setAutoOpen] = useState(false);
   const [notifyOn, setNotifyOn] = useState(true);
   // Browserless full-browser checkout
   const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
@@ -1361,7 +1360,7 @@ function Index() {
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
-    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
+    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, checkout progress stays on the task page." },
     profiles: { key: "tip-profiles", text: "Profiles autofill the Shopify checkout. Add one profile per checkout you want fired in parallel." },
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
@@ -1521,7 +1520,6 @@ function Index() {
             <DevicesPanel />
             <SettingsView
               pollMs={pollMs} setPollMs={setPollMs}
-              autoOpen={autoOpen} setAutoOpen={setAutoOpen}
               notifyOn={notifyOn} setNotifyOn={setNotifyOn}
               browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
               browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
@@ -3084,7 +3082,7 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  pollMs, setPollMs, notifyOn, setNotifyOn,
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
   runnerPreferred, setRunnerPreferred,
   profiles,
@@ -3092,7 +3090,6 @@ function SettingsView({
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
-  autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
   browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
