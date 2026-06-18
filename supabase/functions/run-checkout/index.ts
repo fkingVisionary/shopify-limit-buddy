@@ -179,10 +179,12 @@ function checkoutScriptSource() {
 
       lastStep = "shipping_continue";
       await stage("shipping_continue");
-      await clickContinue();
+      if (!(await isPaymentStep())) await clickContinue(false);
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      const contactError = await visibleCheckoutError();
-      if (contactError) return await fail("Checkout validation: " + contactError);
+      if (!(await isPaymentStep())) {
+        const contactError = await visibleCheckoutError();
+        if (contactError) return await fail("Checkout validation: " + contactError);
+      }
       log("shipping_continue", true);
 
       lastStep = "shipping_method";
