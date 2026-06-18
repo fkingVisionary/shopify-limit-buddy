@@ -310,7 +310,7 @@ export const runBrowserlessCheckout = createServerFn({ method: "POST" })
     // Browserless free/starter plans cap /function at 60s. Keep this at the max.
     url.searchParams.set("timeout", "60000");
 
-    const fnSource = `module.exports = ${browserlessScript().toString()}`;
+    const fnSource = `export default ${browserlessScript().toString()}`;
 
     let res: Response;
     try {
