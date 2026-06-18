@@ -1256,6 +1256,7 @@ function Index() {
                     launch: "Launching headless browser",
                     cart_add: "Adding to cart",
                     checkout_load: "Loading checkout",
+                    address_fill: "Entering contact and delivery details",
                     shipping_continue: "Submitting shipping address",
                     shipping_method: "Selecting shipping method",
                     payment_continue: "Continuing to payment",
@@ -1333,7 +1334,10 @@ function Index() {
                       await new Promise((r) => setTimeout(r, 1500));
                       try {
                         const job: any = await getCheckoutJobFn({ data: { jobId } });
-                        if ("error" in job) continue;
+                        // getCheckoutJob's successful payload also has an
+                        // `error` field for checkout failures, so only treat
+                        // it as an RPC error when no job status came back.
+                        if (!job || ("error" in job && !("status" in job))) continue;
                         last = job;
                         const elapsed = Date.now() - bStart;
                         const stageMsg = stageLabels[job.stage] ?? job.stage;
@@ -1397,7 +1401,7 @@ function Index() {
           } else {
             // Don't downgrade once the engine has fired.
             const cur = tasksRef.current.find((x) => x.id === t.id);
-            if (cur && (cur.status === "checkout_ready" || cur.status === "opened" || cur.status === "failed" || cur.status === "adding_to_cart")) {
+            if (cur && (cur.status === "checkout_ready" || cur.status === "opened" || cur.status === "failed" || cur.status === "adding_to_cart" || cur.status === "checking_out" || cur.status === "confirmed")) {
               updateTask(t.id, { lastChecked: Date.now() });
             } else {
               updateTask(t.id, { lastChecked: Date.now(), status: "monitoring", message: undefined });
