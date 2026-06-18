@@ -447,7 +447,6 @@ function checkoutScriptSource() {
             if (checkedCard) return { selected: true };
 
             if (cardRadios[0]) {
-              try { cardRadios[0].input.click(); cardRadios[0].row?.click?.(); } catch {}
               return centerOf(cardRadios[0].input);
             }
 
@@ -457,7 +456,6 @@ function checkoutScriptSource() {
               const text = directTextFor(row);
               if (isCard(text)) {
                 const input = row.querySelector?.('input[type="radio"]');
-                try { input?.click(); row.click?.(); } catch {}
                 return centerOf(input || row);
               }
             }
@@ -587,7 +585,7 @@ function checkoutScriptSource() {
       const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]', 'input[aria-label*="card number" i]']);
       const cardExpiryOk = await setIn("expiry", expiryValue, ['input[name*="exp" i]', 'input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]', 'input[id*="exp" i]', 'input[aria-label*="expiration" i]', 'input[aria-label*="expiry" i]']);
       const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="security" i]', 'input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[placeholder*="CVV" i]', 'input[placeholder*="CVC" i]', 'input[id*="verification" i]', 'input[id*="security" i]', 'input[id*="cvv" i]', 'input[id*="cvc" i]', 'input[aria-label*="security" i]']);
-      const cardNameOk = await setIn("name_on_card", input.card.name, ['input[autocomplete="cc-name"]', 'input[name*="name_on_card" i]', 'input[name*="cardholder" i]', 'input[placeholder*="Name on card" i]', 'input[placeholder*="Cardholder" i]', 'input[id*="name_on_card" i]', 'input[id*="cardholder" i]', 'input[aria-label*="name on card" i]', 'input[aria-label*="cardholder" i]']);
+      const cardNameOk = await setIn("name", input.card.name, ['input[data-current-field="name"]', 'input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[placeholder*="Cardholder" i]', 'input[id="name"]', 'input[name="name"]', 'input[name*="name_on_card" i]', 'input[name*="cardholder" i]', 'input[id*="name_on_card" i]', 'input[id*="cardholder" i]', 'input[aria-label*="name on card" i]', 'input[aria-label*="cardholder" i]']);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
 
