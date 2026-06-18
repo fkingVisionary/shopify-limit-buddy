@@ -110,6 +110,7 @@ function checkoutScriptSource() {
             for (const s of sels) {
               const el = document.querySelector(s);
               const t = ((el && el.textContent) || "").trim();
+              if (/order.?s being processed|processing/i.test(t)) continue;
               if (t) return t.slice(0, 200);
             }
             return null;
@@ -130,7 +131,26 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       log("address_fill", true);
 
-      const clickContinue = async () => {
+      const isPaymentStep = async () => {
+        try {
+          const main = await page.evaluate(() => {
+            const text = document.body?.innerText ?? "";
+            const hasPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
+              return /pay now|complete order|place order/i.test(label);
+            });
+            return /payment/i.test(text) && hasPayButton;
+          });
+          if (main) return true;
+          for (const f of page.frames()) {
+            const card = await f.$('input[name*="number"], input[autocomplete="cc-number"], input[placeholder*="Card number" i]');
+            if (card) return true;
+          }
+        } catch {}
+        return false;
+      };
+
+      const clickContinue = async (allowPaymentSubmit = false) => {
         await page.waitForFunction(() => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           return els.some((el) => {
@@ -140,26 +160,31 @@ function checkoutScriptSource() {
             return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
           });
         }, { timeout: 15000 });
-        const clicked = await page.evaluate(() => {
+        const clicked = await page.evaluate((allowSubmit) => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           const target = els.find((el) => {
             const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
             const id = el.id ?? "";
             const cls = el.className?.toString?.() ?? "";
-            return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
+            if (/apply/i.test(text)) return false;
+            const isSubmit = /pay now|complete order|place order|submit/i.test(text);
+            if (isSubmit && !allowSubmit) return false;
+            return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
           });
           target?.click();
           return Boolean(target);
-        });
+        }, allowPaymentSubmit);
         if (!clicked) throw new Error("Could not find checkout continue button");
       };
 
       lastStep = "shipping_continue";
       await stage("shipping_continue");
-      await clickContinue();
+      if (!(await isPaymentStep())) await clickContinue(false);
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      const contactError = await visibleCheckoutError();
-      if (contactError) return await fail("Checkout validation: " + contactError);
+      if (!(await isPaymentStep())) {
+        const contactError = await visibleCheckoutError();
+        if (contactError) return await fail("Checkout validation: " + contactError);
+      }
       log("shipping_continue", true);
 
       lastStep = "shipping_method";
@@ -169,7 +194,8 @@ function checkoutScriptSource() {
 
       lastStep = "payment_continue";
       await stage("payment_continue");
-      await clickContinue();
+      if (!(await isPaymentStep())) await clickContinue(false);
+      await page.waitForFunction(() => /payment/i.test(document.body?.innerText ?? ""), { timeout: 15000 }).catch(() => null);
       log("payment_continue", true);
 
       lastStep = "card_fill";
@@ -209,20 +235,25 @@ function checkoutScriptSource() {
         await new Promise((r) => setTimeout(r, 600));
       } catch {}
 
-      const frames = page.frames();
-      const setIn = async (namePart, value) => {
-        for (const f of frames) {
+      const setIn = async (namePart, value, selectors = []) => {
+        const frameList = page.frames();
+        for (const f of frameList) {
           try {
-            const el = await f.$('input[name*="' + namePart + '"]');
-            if (el) { await el.type(value, { delay: 25 }); return true; }
+            const query = ['input[name*="' + namePart + '"]', ...selectors].join(', ');
+            const el = await f.$(query);
+            if (el) {
+              await el.click({ clickCount: 3 }).catch(() => null);
+              await el.type(value, { delay: 25 });
+              return true;
+            }
           } catch {}
         }
         return false;
       };
-      const cardNumberOk = await setIn("number", input.card.number);
-      await setIn("name", input.card.name);
-      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2));
-      const cardCvvOk = await setIn("verification_value", input.card.cvv);
+      const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]']);
+      await setIn("name", input.card.name, ['input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[id*="name" i]']);
+      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2), ['input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]']);
+      const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[id*="verification" i]']);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details");
       log("card_fill", true);
 
@@ -255,7 +286,7 @@ function checkoutScriptSource() {
 
       lastStep = "submit";
       await stage("submit");
-      await clickContinue();
+      await clickContinue(true);
       log("submit", true);
 
       lastStep = "payment_result";
