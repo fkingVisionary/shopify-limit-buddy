@@ -427,11 +427,14 @@ function checkoutScriptSource() {
             };
             const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
             const isCard = (text) => /credit\s*card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+            const hasOpenCardFields = Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
+            const activePayPal = Array.from(document.querySelectorAll('[aria-selected="true"], input[type="radio"]:checked, [aria-checked="true"], .radio-wrapper, .content-box__row, [role="radio"]')).some((el) => visible(el) && /paypal/i.test(textFor(el)) && !/credit\s*card|visa|mastercard|american express|amex/.test(textFor(el)));
+            if (hasOpenCardFields && !activePayPal) return { selected: true };
             const cardInputs = Array.from(document.querySelectorAll('input[type="radio"]')).filter((input) => visible(input) && isCard(textFor(input) + " " + input.value + " " + input.id + " " + input.name));
             const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
             if (checkedCard) return { selected: true };
 
-            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
+            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
             const checkedPaymentText = Array.from(document.querySelectorAll('input[type="radio"]'))
               .filter((input) => input.checked || input.getAttribute("aria-checked") === "true")
               .map((input) => textFor(input) + " " + input.value + " " + input.id + " " + input.name)
@@ -472,7 +475,7 @@ function checkoutScriptSource() {
                 .find((text) => /credit\s*card|visa|mastercard|american express|amex|paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text)) || "";
               if (/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(checkedText)) return false;
               if (/credit\s*card|visa|mastercard|american express|amex/.test(checkedText)) return true;
-              return Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
+              return Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
             }).catch(() => false);
             if (selected) return true;
           }
