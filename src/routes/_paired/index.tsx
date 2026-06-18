@@ -1224,7 +1224,7 @@ function Index() {
                   updateTask(t.id, {
                     status: "checking_out",
                     checkoutStartedAt: Date.now(),
-                    message: browserlessDryRun ? `Dry-run via ${transportLabel}…` : `Submitting order via ${transportLabel}…`,
+                    message: `Launching headless browser via ${transportLabel}…`,
                   });
                   const bStart = Date.now();
                   const payload = {
@@ -1248,39 +1248,81 @@ function Index() {
                     captchaToken: pooled?.token ?? null,
                     dryRun: browserlessDryRun,
                   };
+                  // Progressive client-side ticker: the headless run takes
+                  // 20–60s and we can't stream from /function, so we surface
+                  // expected stage labels so the user sees what's happening
+                  // rather than a single "Submitting…" line.
+                  const stageScript: Array<{ at: number; msg: string }> = [
+                    { at: 0,     msg: `Launching headless browser` },
+                    { at: 2500,  msg: `Warming cookies on store` },
+                    { at: 6000,  msg: `Adding to cart` },
+                    { at: 10000, msg: `Loading checkout` },
+                    { at: 15000, msg: `Filling shipping address` },
+                    { at: 22000, msg: `Selecting shipping method` },
+                    { at: 28000, msg: `Entering payment details` },
+                    { at: 36000, msg: browserlessDryRun ? `Finalising dry-run` : `Submitting payment` },
+                    { at: 48000, msg: browserlessDryRun ? `Finalising dry-run` : `Waiting for order confirmation` },
+                  ];
+                  let stageIdx = 0;
+                  const ticker = setInterval(() => {
+                    const e = Date.now() - bStart;
+                    while (stageIdx + 1 < stageScript.length && stageScript[stageIdx + 1].at <= e) stageIdx++;
+                    const cur = stageScript[stageIdx];
+                    updateTask(t.id, { message: `${cur.msg}… · ${transportLabel} · ${Math.round(e / 1000)}s` });
+                  }, 1000);
                   const fire = () => {
                     const transport = useRunner
                       ? runViaLocalRunner(payload)
                       : browserlessFn({ data: payload });
-                    transport.then((b: any) => {
+                    Promise.resolve(transport).then((b: any) => {
+                      clearInterval(ticker);
                       const elapsed = Date.now() - bStart;
+                      // Defensive: if the response was dropped or serialisation
+                      // failed, treat as a transport error rather than crashing
+                      // with "Cannot read properties of undefined".
+                      if (!b || typeof b !== "object") {
+                        const msg = `No response from ${transportLabel} after ${Math.round(elapsed / 1000)}s (likely timeout)`;
+                        updateTask(t.id, { status: "failed", browserlessElapsedMs: elapsed, message: msg });
+                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: msg });
+                        return;
+                      }
+                      const stepsArr = Array.isArray(b.steps) ? b.steps : [];
+                      const lastStep = stepsArr.length ? stepsArr[stepsArr.length - 1] : null;
+                      const stepSummary = lastStep ? ` (reached: ${lastStep.step})` : "";
                       if (b.ok) {
                         updateTask(t.id, {
                           status: b.dryRun ? "checkout_ready" : "confirmed",
                           orderId: b.orderId ?? null,
                           finalUrl: b.finalUrl,
-                          steps: b.steps,
+                          steps: stepsArr,
                           screenshotB64: b.screenshotB64,
                           browserlessElapsedMs: elapsed,
-                          message: b.dryRun ? `Dry-run OK · ${transportLabel} · ${elapsed}ms` : `Order ${b.orderId ?? "?"} · ${transportLabel} · ${elapsed}ms`,
+                          message: b.dryRun
+                            ? `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`
+                            : `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
                         });
                         if (!b.dryRun) {
                           notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                           fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
                         }
                       } else {
+                        const failedAt = b.failedStep ?? lastStep?.step ?? "unknown";
+                        const errText = b.error ?? "unknown error";
                         updateTask(t.id, {
                           status: "failed",
-                          steps: b.steps,
-                          screenshotB64: b.screenshotB64,
+                          steps: stepsArr,
+                          screenshotB64: b.screenshotB64 ?? null,
                           browserlessElapsedMs: elapsed,
-                          message: `${b.failedStep}: ${b.error}`,
+                          message: `Failed at ${failedAt}: ${errText}`,
                         });
-                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${b.failedStep}: ${b.error}` });
+                        fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${failedAt}: ${errText}` });
                       }
                     }).catch((err: any) => {
-                      updateTask(t.id, { status: "failed", message: err?.message ?? `${transportLabel} error` });
-                      fireWebhook("failed", { ...t, message: err?.message ?? `${transportLabel} error` });
+                      clearInterval(ticker);
+                      const elapsed = Date.now() - bStart;
+                      const msg = err?.message ?? `${transportLabel} error`;
+                      updateTask(t.id, { status: "failed", browserlessElapsedMs: elapsed, message: `${transportLabel} error: ${msg}` });
+                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: msg });
                     });
                   };
                   if (safeDelay > 0) setTimeout(fire, safeDelay); else fire();
