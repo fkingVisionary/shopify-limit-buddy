@@ -412,7 +412,7 @@ function checkoutScriptSource() {
       await bringPaymentIntoView();
 
       const selectCreditCardPayment = async () => {
-        const deadline = Date.now() + 10000;
+        const deadline = Date.now() + 12000;
         while (Date.now() < deadline) {
           const target = await page.evaluate(() => {
             const visible = (el) => {
@@ -534,7 +534,7 @@ function checkoutScriptSource() {
       } catch {}
 
       const setIn = async (namePart, value, selectors = []) => {
-        const query = ['input[name*="' + namePart + '" i]', ...selectors].join(', ');
+        const query = ['input[data-current-field="' + namePart + '"], input[id="' + namePart + '"], input[name="' + namePart + '"]', ...selectors, 'input[name*="' + namePart + '" i]'].join(', ');
         const deadline = Date.now() + 10000;
         const expectedDigits = String(value).replace(/\D/g, "");
         const looksFilled = (current) => {
@@ -555,7 +555,7 @@ function checkoutScriptSource() {
                   if (!node) return false;
                   const rect = node.getBoundingClientRect();
                   const style = getComputedStyle(node);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !node.disabled;
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !node.disabled && node.getAttribute("aria-hidden") !== "true" && !node.hasAttribute("data-honeypot-field");
                 }, el).catch(() => false);
                 if (!visible) continue;
 
