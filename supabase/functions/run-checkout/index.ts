@@ -149,6 +149,19 @@ function checkoutScriptSource() {
             const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
             if (visible(addressInput)) return "contact";
 
+            // Some Shopify checkouts keep the selected shipping rates visible above
+            // the payment form. Detect payment before shipping so we do not get
+            // stuck re-processing the already-selected shipping section.
+            const paymentWidget = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], [data-gateway-group], [data-select-gateway], .payment-method-list__item')).find(visible);
+            const finalPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
+              if (!visible(el) || el.disabled) return false;
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+              return /^(pay now|complete order|place order|complete purchase)$/i.test(label);
+            });
+            const visiblePaymentText = Array.from(document.querySelectorAll('h1, h2, h3, legend, label, [role="heading"], .section__title, .radio__label, .payment-method-list__item')).some((el) => visible(el) && /payment|credit\s*card|card number/i.test(el.textContent || ""));
+            const hasCardFields = /card number|expiration date|security code|name on card/i.test(body);
+            if ((paymentWidget || hasCardFields) && (finalPayButton || visiblePaymentText) && /payment|credit card|card number/i.test(body)) return "payment";
+
             const shippingRate = Array.from(document.querySelectorAll('input[name="checkout[shipping_rate][id]"], [data-shipping-method], [data-shipping-method-label-title]')).find(visible);
             const continueToPayment = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn')).some((el) => {
               if (!visible(el) || el.disabled) return false;
@@ -156,14 +169,6 @@ function checkoutScriptSource() {
               return /continue\s+to\s+payment|continue\s+to\s+pay/i.test(label);
             });
             if (shippingRate || (/shipping method/i.test(body) && continueToPayment)) return "shipping_method";
-
-            const paymentWidget = Array.from(document.querySelectorAll('iframe[name^="card-fields"], input[autocomplete="cc-number"], [data-gateway-group], [data-select-gateway]')).find(visible);
-            const finalPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
-              if (!visible(el) || el.disabled) return false;
-              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
-              return /^(pay now|complete order|place order|complete purchase)$/i.test(label);
-            });
-            if (paymentWidget && finalPayButton && /payment|credit card|card number/i.test(body)) return "payment";
             return "unknown";
           });
         } catch {}
@@ -311,6 +316,9 @@ function checkoutScriptSource() {
         for (let i = 0; i < maxAttempts; i++) {
           if (await isPaymentStep()) return true;
           if (!(await selectShippingRate())) return false;
+          // On one-page/accordion checkouts, selecting a shipping rate reveals
+          // payment immediately below it with no intermediate continue button.
+          if (await isPaymentStep()) return true;
           const startUrl = page.url();
           await clickContinue(false, "payment").catch(() => null);
           await page.waitForFunction(
