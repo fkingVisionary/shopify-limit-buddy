@@ -446,7 +446,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      request_checkout_worker: {
+        Args: { p_job_id: string; p_token: string; p_url: string }
+        Returns: number
+      }
     }
     Enums: {
       [_ in never]: never
