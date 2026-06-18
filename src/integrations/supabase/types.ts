@@ -40,6 +40,39 @@ export type Database = {
           },
         ]
       }
+      checkout_jobs: {
+        Row: {
+          created_at: string
+          error: string | null
+          id: string
+          input: Json
+          result: Json | null
+          stage: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          error?: string | null
+          id?: string
+          input?: Json
+          result?: Json | null
+          stage?: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          error?: string | null
+          id?: string
+          input?: Json
+          result?: Json | null
+          stage?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       checkout_profiles: {
         Row: {
           created_at: string
