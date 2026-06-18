@@ -431,6 +431,16 @@ function checkoutScriptSource() {
             const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
             if (checkedCard) return { selected: true };
 
+            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
+            const checkedPaymentText = Array.from(document.querySelectorAll('input[type="radio"]'))
+              .filter((input) => input.checked || input.getAttribute("aria-checked") === "true")
+              .map((input) => textFor(input) + " " + input.value + " " + input.id + " " + input.name)
+              .find((text) => /credit\s*card|visa|mastercard|american express|amex|paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text));
+            if (visibleCardFrame && checkedPaymentText && isCard(checkedPaymentText)) {
+              visibleCardFrame.scrollIntoView({ block: "center", inline: "center" });
+              return { selected: true };
+            }
+
             if (cardInputs[0]) {
               const lab = cardInputs[0].closest("label") || document.querySelector('label[for="' + cardInputs[0].id + '"]') || cardInputs[0].closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row');
               return rectFor(lab || cardInputs[0]);
@@ -442,7 +452,6 @@ function checkoutScriptSource() {
               const text = (row.textContent || "").trim().toLowerCase();
               if (isCard(text)) return rectFor(row);
             }
-            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
             if (visibleCardFrame) visibleCardFrame.scrollIntoView({ block: "center", inline: "center" });
             return null;
           }).catch(() => false);
@@ -457,11 +466,13 @@ function checkoutScriptSource() {
                 return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
               };
               const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
-              const checked = Array.from(document.querySelectorAll('input[type="radio"]')).find((input) => visible(input) && input.checked);
-              const checkedText = checked ? textFor(checked) : "";
-              if (/paypal/.test(checkedText)) return false;
+              const checkedText = Array.from(document.querySelectorAll('input[type="radio"]'))
+                .filter((input) => input.checked || input.getAttribute("aria-checked") === "true")
+                .map((input) => textFor(input) + " " + input.value + " " + input.id + " " + input.name)
+                .find((text) => /credit\s*card|visa|mastercard|american express|amex|paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text)) || "";
+              if (/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(checkedText)) return false;
               if (/credit\s*card|visa|mastercard|american express|amex/.test(checkedText)) return true;
-              return Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
+              return Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
             }).catch(() => false);
             if (selected) return true;
           }
