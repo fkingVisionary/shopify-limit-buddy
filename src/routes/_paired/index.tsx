@@ -747,7 +747,6 @@ function Index() {
   const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
   const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
   const [pollMs, setPollMs] = useState(4000);
-  const [autoOpen, setAutoOpen] = useState(true);
   const [notifyOn, setNotifyOn] = useState(true);
   // Browserless full-browser checkout
   const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
@@ -1133,7 +1132,7 @@ function Index() {
     const groupName = taskGroups.find((g) => g.id === task.groupId)?.name;
     const paymentMethod = browserlessEnabled
       ? (browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)")
-      : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Tab launch");
+      : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Manual checkout");
     const execLabel = EXECUTION_MODE_LABEL[task.executionMode ?? "fast"];
     const mode = `${execLabel} / Monitor: ${task.running ? "true" : "false"}`;
     notifyWebhook(cfg, event, {
@@ -1210,7 +1209,17 @@ function Index() {
 
                 // ── Full-browser path: skip cart-warm entirely. Browserless / the
                 // local runner does its own ATC → shipping → payment → submit.
-                if (wantFullBrowser && (hasCard || browserlessDryRun)) {
+                // Never fall back to opening the retailer on the user's device.
+                if (wantFullBrowser && !hasCard && !browserlessDryRun) {
+                  updateTask(t.id, {
+                    status: "failed",
+                    message: "Profile card required for backend checkout; no browser tab was opened.",
+                  });
+                  fireWebhook("failed", { ...t, message: "Profile card required for backend checkout; no browser tab was opened." });
+                  return;
+                }
+
+                if (wantFullBrowser) {
                   const transportLabel = useRunner ? "local runner" : "Browserless";
                   updateTask(t.id, {
                     status: "checking_out",
@@ -1307,10 +1316,8 @@ function Index() {
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
                   fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
-                  if (autoOpen) {
-                    window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
-                    updateTask(t.id, { status: "opened" });
-                  }
+                  // Stay on the task page. The checkout URL is kept only for
+                  // explicit manual use; never auto-open the retailer on-device.
                 }).catch((err: any) => {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
                   fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
@@ -1334,7 +1341,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
+  }, [pollMs, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
@@ -1353,7 +1360,7 @@ function Index() {
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
-    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, the prefilled checkout opens automatically." },
+    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, checkout progress stays on the task page." },
     profiles: { key: "tip-profiles", text: "Profiles autofill the Shopify checkout. Add one profile per checkout you want fired in parallel." },
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
@@ -1513,7 +1520,6 @@ function Index() {
             <DevicesPanel />
             <SettingsView
               pollMs={pollMs} setPollMs={setPollMs}
-              autoOpen={autoOpen} setAutoOpen={setAutoOpen}
               notifyOn={notifyOn} setNotifyOn={setNotifyOn}
               browserlessEnabled={browserlessEnabled} setBrowserlessEnabled={setBrowserlessEnabled}
               browserlessDryRun={browserlessDryRun} setBrowserlessDryRun={setBrowserlessDryRun}
@@ -3076,7 +3082,7 @@ function StoresView({
 // Settings view
 // ────────────────────────────────────────────
 function SettingsView({
-  pollMs, setPollMs, autoOpen, setAutoOpen, notifyOn, setNotifyOn,
+  pollMs, setPollMs, notifyOn, setNotifyOn,
   browserlessEnabled, setBrowserlessEnabled, browserlessDryRun, setBrowserlessDryRun,
   runnerPreferred, setRunnerPreferred,
   profiles,
@@ -3084,7 +3090,6 @@ function SettingsView({
   onShowWizard, onResetTips,
 }: {
   pollMs: number; setPollMs: (n: number) => void;
-  autoOpen: boolean; setAutoOpen: (v: boolean) => void;
   notifyOn: boolean; setNotifyOn: (v: boolean) => void;
   browserlessEnabled: boolean; setBrowserlessEnabled: (v: boolean) => void;
   browserlessDryRun: boolean; setBrowserlessDryRun: (v: boolean) => void;
@@ -3123,11 +3128,9 @@ function SettingsView({
           <Input className="mt-1 h-9" type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} />
           <p className="mt-1 text-[10px] text-muted-foreground">3000–5000ms is a safe balance for most stores.</p>
         </div>
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" className="h-4 w-4" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
-          Auto-open checkout tab on drop
-          <InfoDot text="When stock appears, a new tab opens to Shopify's checkout with your profile pre-filled. Allow popups for this site." />
-        </label>
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          Checkout runs stay on the task page. Retailer pages are never opened automatically on this device.
+        </p>
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
           Sound + browser notification
@@ -3431,7 +3434,7 @@ function WelcomeWizard({
     {
       icon: ListChecks,
       title: "Step 3 — Create your first task",
-      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, the checkout opens automatically.",
+      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, checkout progress stays on the task page.",
       cta: { label: "Create a task", action: onCreateTask },
     },
   ];
