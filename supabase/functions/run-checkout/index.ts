@@ -110,6 +110,7 @@ function checkoutScriptSource() {
             for (const s of sels) {
               const el = document.querySelector(s);
               const t = ((el && el.textContent) || "").trim();
+              if (/order.?s being processed|processing/i.test(t)) continue;
               if (t) return t.slice(0, 200);
             }
             return null;
@@ -130,7 +131,26 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       log("address_fill", true);
 
-      const clickContinue = async () => {
+      const isPaymentStep = async () => {
+        try {
+          const main = await page.evaluate(() => {
+            const text = document.body?.innerText ?? "";
+            const hasPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
+              return /pay now|complete order|place order/i.test(label);
+            });
+            return /payment/i.test(text) && hasPayButton;
+          });
+          if (main) return true;
+          for (const f of page.frames()) {
+            const card = await f.$('input[name*="number"], input[autocomplete="cc-number"], input[placeholder*="Card number" i]');
+            if (card) return true;
+          }
+        } catch {}
+        return false;
+      };
+
+      const clickContinue = async (allowPaymentSubmit = false) => {
         await page.waitForFunction(() => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           return els.some((el) => {
@@ -140,17 +160,20 @@ function checkoutScriptSource() {
             return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
           });
         }, { timeout: 15000 });
-        const clicked = await page.evaluate(() => {
+        const clicked = await page.evaluate((allowSubmit) => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           const target = els.find((el) => {
             const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
             const id = el.id ?? "";
             const cls = el.className?.toString?.() ?? "";
-            return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
+            if (/apply/i.test(text)) return false;
+            const isSubmit = /pay now|complete order|place order|submit/i.test(text);
+            if (isSubmit && !allowSubmit) return false;
+            return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
           });
           target?.click();
           return Boolean(target);
-        });
+        }, allowPaymentSubmit);
         if (!clicked) throw new Error("Could not find checkout continue button");
       };
 
