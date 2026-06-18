@@ -1256,6 +1256,7 @@ function Index() {
                     launch: "Launching headless browser",
                     cart_add: "Adding to cart",
                     checkout_load: "Loading checkout",
+                    address_fill: "Entering contact and delivery details",
                     shipping_continue: "Submitting shipping address",
                     shipping_method: "Selecting shipping method",
                     payment_continue: "Continuing to payment",
