@@ -1409,7 +1409,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
+  }, [pollMs, notifyOn, profiles, checkoutFn, enqueueCheckoutFn, getCheckoutJobFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
