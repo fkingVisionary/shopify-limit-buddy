@@ -421,10 +421,10 @@ function checkoutScriptSource() {
               const style = getComputedStyle(el);
               return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
             };
-            const rectFor = (el) => {
+            const centerOf = (el) => {
               el.scrollIntoView({ block: "center", inline: "center" });
               const r = el.getBoundingClientRect();
-              return { x: r.left + Math.min(32, Math.max(12, r.width * 0.12)), y: r.top + r.height / 2 };
+              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
             };
             const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value));
             const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
@@ -448,7 +448,7 @@ function checkoutScriptSource() {
 
             if (cardRadios[0]) {
               try { cardRadios[0].input.click(); cardRadios[0].row?.click?.(); } catch {}
-              return rectFor(cardRadios[0].row || cardRadios[0].input);
+              return centerOf(cardRadios[0].input);
             }
 
             const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
@@ -456,8 +456,9 @@ function checkoutScriptSource() {
               if (!visible(row)) continue;
               const text = directTextFor(row);
               if (isCard(text)) {
-                try { row.querySelector?.('input[type="radio"]')?.click(); row.click?.(); } catch {}
-                return rectFor(row);
+                const input = row.querySelector?.('input[type="radio"]');
+                try { input?.click(); row.click?.(); } catch {}
+                return centerOf(input || row);
               }
             }
             return null;
