@@ -208,56 +208,56 @@ function checkoutScriptSource() {
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
       const selectCreditCardPayment = async () => {
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
-          const ok = await page.evaluate(() => {
+          const target = await page.evaluate(() => {
             const visible = (el) => {
               const rect = el.getBoundingClientRect();
               const style = getComputedStyle(el);
               return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
             };
-            const clickLikeUser = (el) => {
+            const rectFor = (el) => {
               el.scrollIntoView({ block: "center", inline: "center" });
-              el.click();
-              el.dispatchEvent(new Event("input", { bubbles: true }));
-              el.dispatchEvent(new Event("change", { bubbles: true }));
+              const r = el.getBoundingClientRect();
+              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
             };
-            const cardField = Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], iframe[src*="card" i], iframe[name*="card" i]')).find(visible);
-            if (cardField) return true;
+            const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
+            const isCard = (text) => /credit\s*card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+            const cardInputs = Array.from(document.querySelectorAll('input[type="radio"]')).filter((input) => visible(input) && isCard(textFor(input) + " " + input.value + " " + input.id + " " + input.name));
+            const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
+            if (checkedCard) return { selected: true };
 
-            const inputs = Array.from(document.querySelectorAll('input[type="radio"], input[name*="payment" i], input[name*="gateway" i]'));
-            for (const input of inputs) {
-              const label = (input.closest("label")?.textContent || document.querySelector('label[for="' + input.id + '"]')?.textContent || input.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || "").trim();
-              const meta = [label, input.value, input.id, input.name].join(" ").toLowerCase();
-              if (/credit\s*card|card|visa|mastercard|american express|amex/.test(meta) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(meta)) {
-                clickLikeUser(input);
-                const lab = input.closest("label") || document.querySelector('label[for="' + input.id + '"]') || input.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row');
-                if (lab) clickLikeUser(lab);
-                return true;
-              }
+            if (cardInputs[0]) {
+              const lab = cardInputs[0].closest("label") || document.querySelector('label[for="' + cardInputs[0].id + '"]') || cardInputs[0].closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row');
+              return rectFor(lab || cardInputs[0]);
             }
 
-            const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row'));
+            const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
             for (const row of rows) {
               if (!visible(row)) continue;
               const text = (row.textContent || "").trim().toLowerCase();
-              if (/credit\s*card|card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text)) {
-                clickLikeUser(row);
-                const radio = row.querySelector?.('input[type="radio"]');
-                if (radio) clickLikeUser(radio);
-                return true;
-              }
+              if (isCard(text)) return rectFor(row);
             }
-            return false;
+            return null;
           }).catch(() => false);
-          if (ok) {
-            await new Promise((r) => setTimeout(r, 900));
-            const ready = await page.evaluate(() => Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], iframe[src*="card" i], iframe[name*="card" i]')).some((el) => {
-              const rect = el.getBoundingClientRect();
-              const style = getComputedStyle(el);
-              return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
-            })).catch(() => false);
-            if (ready) return true;
+          if (target?.selected) return true;
+          if (target?.x != null && target?.y != null) {
+            await page.mouse.click(target.x, target.y).catch(() => null);
+            await new Promise((r) => setTimeout(r, 450));
+            const selected = await page.evaluate(() => {
+              const visible = (el) => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+              };
+              const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
+              const checked = Array.from(document.querySelectorAll('input[type="radio"]')).find((input) => visible(input) && input.checked);
+              const checkedText = checked ? textFor(checked) : "";
+              if (/paypal/.test(checkedText)) return false;
+              if (/credit\s*card|visa|mastercard|american express|amex/.test(checkedText)) return true;
+              return Array.from(document.querySelectorAll('input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
+            }).catch(() => false);
+            if (selected) return true;
           }
           await new Promise((r) => setTimeout(r, 400));
         }
