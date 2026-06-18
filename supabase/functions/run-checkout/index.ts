@@ -74,16 +74,16 @@ function checkoutScriptSource() {
         await page.waitForFunction(() => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           return els.some((el) => {
-            const text = ((el instanceof HTMLInputElement ? el.value : el.textContent) ?? "").trim();
-            const id = (el as HTMLElement).id ?? "";
-            const cls = (el as HTMLElement).className?.toString?.() ?? "";
+            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
+            const id = el.id ?? "";
+            const cls = el.className?.toString?.() ?? "";
             return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
           });
         }, { timeout: 15000 });
         const clicked = await page.evaluate(() => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           const target = els.find((el) => {
-            const text = ((el instanceof HTMLInputElement ? el.value : el.textContent) ?? "").trim();
+            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
             const id = el.id ?? "";
             const cls = el.className?.toString?.() ?? "";
             return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
