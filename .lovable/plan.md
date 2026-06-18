@@ -1,49 +1,59 @@
-## The actual error
+# Fix: Browserless checkout times out
 
-Session replay shows:
+## Root cause
 
-> `transport: Browserless HTTP 400: Timeout must be an integer between 1 and 60,000 seconds based on the limit for your plan`
+`runBrowserlessCheckout` runs inside a TanStack server function on Cloudflare Workers. The Worker has a hard ~30s wall-clock limit for a single request, but a real Shopify checkout via Browserless `/function` takes 30–60s (we even set `timeout=60000`). The Worker kills the fetch before Browserless responds → client sees "timed out" / undefined payload.
 
-Cause: `src/lib/browserless.functions.ts:310` sends `timeout=120000` on the `/function` request. Your Browserless plan caps that at **60,000 ms**, so Browserless rejects the call before our checkout script ever runs. This is why "full Browserless checkout" never executes — it's failing at the HTTP transport layer, not inside the script.
+This is a runtime-limit problem, not a Browserless problem. We need to stop waiting for Browserless inside the page request.
 
-The script itself (ATC → shipping → contact → payment iframe fill → submit / dry-run) is already written and complete in `browserlessScript()`. It just never gets to run.
+## Approach: async job queue + Supabase Edge Function worker
 
-## Plan
+Edge Functions (Deno) have a much longer wall-clock (~150s), which fits a full checkout. We use them only as the long-running worker; the client never calls them directly.
 
-### 1. Fix the timeout (unblocks the entire flow)
+```text
+client ──► serverFn enqueueCheckout ──► insert row in checkout_jobs (pending)
+                                   └──► fire-and-forget invoke edge fn `run-checkout`
+                                                            │
+                                                            ▼
+                                            edge fn calls Browserless /function
+                                            (up to 90s), then updates row
+                                                            │
+client ──► serverFn getCheckoutJob (poll every 1.5s) ◄──────┘
+```
 
-In `src/lib/browserless.functions.ts`:
+No new third-party API needed — same Browserless key, just executed from a runtime that can wait long enough.
 
-- Change `url.searchParams.set("timeout", "120000")` → `"60000"`.
-- Tighten the internal page timeouts so the whole script fits inside the 60s envelope:
-  - `page.goto` 30s → 20s
-  - Variant POST `timeout: 45_000` → 25_000
-  - `waitForNavigation` after shipping 30s → 15s
-  - `waitForSelector` payment iframe 20s → 15s
-  - Final navigation wait `60_000` → 25_000
-- Add a hard `Promise.race` budget of ~55s inside the script so we fail fast with a useful `failedStep` instead of Browserless killing the whole request.
+## Steps
 
-### 2. Make failures observable instead of swallowed
+1. **DB migration** — `public.checkout_jobs`
+   - `id uuid pk`, `user_id uuid` (RLS scoped to `auth.uid()`)
+   - `status text` (`pending` | `running` | `succeeded` | `failed`)
+   - `stage text` (current step label for UI ticker — replaces guessed client ticker)
+   - `input jsonb`, `result jsonb`, `error text`
+   - `created_at`, `updated_at`
+   - RLS: owner SELECT; service_role ALL. GRANTs as per project rules.
 
-- Always return the `steps` array Browserless built so far, plus the last screenshot (`screenshotB64`) even on transport errors — today on HTTP 400 we throw away everything.
-- Surface `failedStep` ("atc" | "shipping" | "payment" | "submit") in the Tasks UI status pill so you can see exactly where it died next time.
+2. **Edge function `run-checkout`** (Deno)
+   - Reads `jobId` from body, loads row with service role.
+   - Sets `status=running`, then calls Browserless `/function` with the existing checkout script (lifted from `browserless.functions.ts`).
+   - Periodically updates `stage` so the UI can show real progress (`cart_add`, `checkout_load`, …) instead of the current fake ticker.
+   - On finish, writes `result` / `error` and final status.
 
-### 3. Settings: Browserless plan note + connectivity check
+3. **Server functions** (`src/lib/checkout-jobs.functions.ts`)
+   - `enqueueCheckout` — auth required, inserts row, fire-and-forget `fetch` to the edge function (no `await` on the body), returns `{ jobId }` immediately. Well under the 30s Worker limit.
+   - `getCheckoutJob({ jobId })` — auth required, returns status/stage/result/error.
 
-- Add a "Test Browserless" button in Settings → Auto-checkout that calls a tiny server fn hitting `/function` with a no-op script and the configured key. Returns OK / plan limit info so you don't have to read replays to know the key works.
+4. **Client wiring** (`src/routes/_paired/index.tsx`)
+   - Replace direct `browserlessFn(...)` call with `enqueueCheckout` → poll `getCheckoutJob` every ~1.5s.
+   - Drive the existing status message off the row's `stage` field (real progress, not the simulated ticker). Keep elapsed-time display.
+   - On `succeeded`/`failed`, render the same success/failure UI as today.
 
-### 4. What this does NOT change
+5. **Retire the now-unused sync path**
+   - Keep `browserlessScript()` (used by the edge fn) but remove the public `runBrowserlessCheckout` server fn so nothing can accidentally invoke the 30s-bound version.
 
-- No edits to Tasks UI form, monitor loop, webhook layout, runner/executor code, or `checkout.functions.ts` cart-warm path. Cart-warm stays as the fallback when Browserless is unavailable.
-- No new dependencies, no DB migration.
+## Notes
 
-## Files touched
-
-- `src/lib/browserless.functions.ts` — timeout fix, tighter internal waits, richer error returns
-- `src/routes/_paired/index.tsx` — show `failedStep` in the status pill
-- `src/routes/_paired/settings.tsx` (or wherever Auto-checkout lives) — "Test Browserless" button
-- new tiny `src/lib/browserless-ping.functions.ts` for the test call
-
-## Honest expectation after the fix
-
-Browserless free/starter (60s cap) is tight for a full Shopify checkout when the store is slow or under load. The script will work on most stores end-to-end, but expect occasional `failedStep: "submit"` timeouts on heavy stores. If that becomes a problem, the next step is either upgrading the Browserless plan (so we can go back to 120s) or moving the full submit to the Fly.io executor path, which has no per-request cap.
+- `BROWSERLESS_API_KEY` already exists; no new secret needed.
+- Edge function needs `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (auto-provisioned) and `BROWSERLESS_API_KEY` (already set).
+- Fire-and-forget invoke is safe because the edge function authorizes via the row's `user_id` written by the authenticated server fn — the edge fn itself doesn't need the user's JWT.
+- No change to retailer detection, in-stock polling, or the manual-assist fallback.
