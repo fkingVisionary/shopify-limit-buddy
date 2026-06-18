@@ -3434,7 +3434,7 @@ function WelcomeWizard({
     {
       icon: ListChecks,
       title: "Step 3 — Create your first task",
-      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, the checkout opens automatically.",
+      body: "A task watches one product. Paste a URL, SKU, or keywords; pick a store and a profile; tap Start. When stock appears, checkout progress stays on the task page.",
       cta: { label: "Create a task", action: onCreateTask },
     },
   ];
