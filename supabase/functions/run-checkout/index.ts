@@ -382,6 +382,35 @@ function checkoutScriptSource() {
       await stage("card_fill");
       await new Promise((resolve) => setTimeout(resolve, 2500));
 
+      const bringPaymentIntoView = async () => {
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          const found = await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const descriptor = (el) => [el.textContent, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id, el.className?.toString?.()].filter(Boolean).join(" ").toLowerCase();
+            const els = Array.from(document.querySelectorAll('iframe, input, label, h1, h2, h3, legend, [role="heading"], [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
+            const target = els.find((el) => visible(el) && /payment|credit\s*card|card number|cc-number|card-fields|name on card|security code/i.test(descriptor(el)) && !/paypal|afterpay|klarna|zip|bitpay|crypto/i.test(descriptor(el)));
+            if (!target) return false;
+            target.scrollIntoView({ block: "center", inline: "center" });
+            return true;
+          }).catch(() => false);
+          if (found) {
+            await new Promise((r) => setTimeout(r, 700));
+            return true;
+          }
+          await page.evaluate(() => window.scrollBy(0, Math.max(420, Math.floor(window.innerHeight * 0.8)))).catch(() => null);
+          await page.keyboard.press("PageDown").catch(() => null);
+          await new Promise((r) => setTimeout(r, 450));
+        }
+        return false;
+      };
+      await bringPaymentIntoView();
+
       const selectCreditCardPayment = async () => {
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
@@ -398,6 +427,11 @@ function checkoutScriptSource() {
             };
             const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
             const isCard = (text) => /credit\s*card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
+            if (visibleCardFrame) {
+              visibleCardFrame.scrollIntoView({ block: "center", inline: "center" });
+              return { selected: true };
+            }
             const cardInputs = Array.from(document.querySelectorAll('input[type="radio"]')).filter((input) => visible(input) && isCard(textFor(input) + " " + input.value + " " + input.id + " " + input.name));
             const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
             if (checkedCard) return { selected: true };
@@ -434,6 +468,7 @@ function checkoutScriptSource() {
             }).catch(() => false);
             if (selected) return true;
           }
+          await bringPaymentIntoView();
           await new Promise((r) => setTimeout(r, 400));
         }
         return false;
