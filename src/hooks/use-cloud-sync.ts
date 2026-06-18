@@ -4,9 +4,10 @@
 //      empty, push local → cloud (first-device migration).
 //   2. Listen to `storage` and a same-tab "aio:changed" event; debounce + push.
 //   3. Poll cloud every 15s to pick up changes from other devices.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { loadSync, saveSync } from "@/lib/sync.functions";
+import { isPaired } from "@/integrations/workspace/client";
 
 const PREFIX = "aio:";
 // Keys we never sync — kept device-local (e.g. card numbers if ever added).
@@ -56,8 +57,20 @@ export function useCloudSync() {
   const lastSnapshot = useRef<Record<string, string>>({});
   const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const applyingRef = useRef(false);
+  const [paired, setPaired] = useState<boolean>(() => isPaired());
 
   useEffect(() => {
+    const check = () => setPaired(isPaired());
+    window.addEventListener("workspace:pairing-changed", check);
+    window.addEventListener("storage", check);
+    return () => {
+      window.removeEventListener("workspace:pairing-changed", check);
+      window.removeEventListener("storage", check);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!paired) return;
     let cancelled = false;
 
     const pull = async () => {
@@ -134,5 +147,5 @@ export function useCloudSync() {
       window.removeEventListener("storage", onStorage);
       window.removeEventListener("aio:changed", onSameTab);
     };
-  }, [loadFn, saveFn]);
+  }, [loadFn, saveFn, paired]);
 }
