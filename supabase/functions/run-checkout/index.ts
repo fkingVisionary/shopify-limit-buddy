@@ -426,14 +426,16 @@ function checkoutScriptSource() {
               const r = el.getBoundingClientRect();
               return { x: r.left + Math.min(32, Math.max(12, r.width * 0.12)), y: r.top + r.height / 2 };
             };
-            const rowFor = (el) => (el.id ? document.querySelector('label[for="' + el.id + '"]') : null) || el.closest('label, [role="radio"], .radio-wrapper, [data-select-gateway], [data-gateway-group], .payment-method-list__item, .content-box__row') || el;
-            const directTextFor = (el) => [el.id ? document.querySelector('label[for="' + el.id + '"]')?.textContent : "", el.closest("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").trim().toLowerCase();
+            const cssEscape = (value) => (window.CSS?.escape ? CSS.escape(value) : String(value).replace(/["\\]/g, "\\$&"));
+            const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
+            const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], .radio-wrapper, [data-select-gateway], [data-gateway-group], .payment-method-list__item, .content-box__row') || el;
+            const directTextFor = (el) => [labelFor(el)?.textContent, el.closest("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").trim().toLowerCase();
             const textFor = (el) => {
               const row = rowFor(el);
               return [row?.textContent, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("data-gateway-group"), el.getAttribute?.("data-select-gateway"), el.value, el.id, el.name, el.className?.toString?.()].filter(Boolean).join(" ").trim().toLowerCase();
             };
-            const isCard = (text) => /credit\s*card|visa|mastercard|american express|amex|shopify payments|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
-            const isOffsite = (text) => /paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text) && !isCard(text);
+            const isCard = (text) => /credit\s*card|debit\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+            const isOffsite = (text) => /paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
             const isSelected = (el) => {
               if (el.checked || el.getAttribute?.("aria-checked") === "true" || el.getAttribute?.("aria-selected") === "true") return true;
               const row = rowFor(el);
@@ -441,37 +443,26 @@ function checkoutScriptSource() {
             };
             const cardFieldSelector = 'iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]';
             const hasOpenCardFields = Array.from(document.querySelectorAll(cardFieldSelector)).some(visible);
-            const selectedPaymentText = Array.from(document.querySelectorAll('input[type="radio"], [role="radio"], [aria-checked="true"], [aria-selected="true"]')).filter(isSelected).map(textFor).find((text) => isCard(text) || isOffsite(text)) || "";
-            if (hasOpenCardFields && selectedPaymentText && isCard(selectedPaymentText)) return { selected: true };
             const radios = Array.from(document.querySelectorAll('input[type="radio"]')).map((input) => {
               const row = rowFor(input);
               const r = row.getBoundingClientRect();
-              return { input, row, text: textFor(input), directText: directTextFor(input), y: r.top, h: r.height, selected: input.checked || input.getAttribute("aria-checked") === "true" };
+              return { input, row, text: textFor(input), directText: directTextFor(input), y: r.top, h: r.height, selected: isSelected(input) };
             }).filter((item) => visible(item.row));
-            const activeOffsite = radios.find((item) => item.selected && isOffsite(item.text));
-            if (activeOffsite) {
-              const previousPaymentRadio = radios
-                .filter((item) => item.y < activeOffsite.y - 2 && !/billing|shipping|delivery|same address|different billing/i.test(item.text))
-                .sort((a, b) => b.y - a.y)[0];
-              if (previousPaymentRadio) {
-                try { previousPaymentRadio.input.click(); previousPaymentRadio.row.click?.(); } catch {}
-                return rectFor(previousPaymentRadio.row || previousPaymentRadio.input);
-              }
-            }
-            const cardInputs = radios.filter((item) => isCard(item.directText) || isCard(item.text.split(/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/i)[0] || "")).map((item) => item.input);
-            const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
-            if (checkedCard) return { selected: true };
+            const cardRadios = radios.filter((item) => isCard(item.directText) || /creditcard|credit-card|credit_card|shopify_payments|card-fields/i.test(item.input.id + " " + item.input.name + " " + item.input.getAttribute("aria-label")));
+            const activeOffsite = radios.find((item) => item.selected && isOffsite(item.directText || item.text));
+            const checkedCard = cardRadios.find((item) => item.selected);
+            if (checkedCard && hasOpenCardFields) return { selected: true };
 
-            if (cardInputs[0]) {
-              const row = rowFor(cardInputs[0]);
-              try { cardInputs[0].click(); row?.click?.(); } catch {}
-              return rectFor(row || cardInputs[0]);
+            if (cardRadios[0]) {
+              try { cardRadios[0].input.click(); cardRadios[0].row?.click?.(); } catch {}
+              return rectFor(cardRadios[0].row || cardRadios[0].input);
             }
 
+            if (hasOpenCardFields && !activeOffsite) return { selected: true };
             const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
             for (const row of rows) {
               if (!visible(row)) continue;
-              const text = textFor(row);
+              const text = directTextFor(row) || textFor(row);
               if (isCard(text)) {
                 try { row.querySelector?.('input[type="radio"]')?.click(); row.click?.(); } catch {}
                 return rectFor(row);
