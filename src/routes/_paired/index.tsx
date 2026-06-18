@@ -1132,7 +1132,7 @@ function Index() {
     const groupName = taskGroups.find((g) => g.id === task.groupId)?.name;
     const paymentMethod = browserlessEnabled
       ? (browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)")
-      : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Tab launch");
+      : (runnerPreferred && runnerOnlineRef.current ? "Local runner" : "Manual checkout");
     const execLabel = EXECUTION_MODE_LABEL[task.executionMode ?? "fast"];
     const mode = `${execLabel} / Monitor: ${task.running ? "true" : "false"}`;
     notifyWebhook(cfg, event, {
