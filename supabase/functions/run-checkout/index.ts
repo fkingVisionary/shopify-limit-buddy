@@ -192,7 +192,8 @@ function checkoutScriptSource() {
 
       lastStep = "payment_continue";
       await stage("payment_continue");
-      await clickContinue();
+      if (!(await isPaymentStep())) await clickContinue(false);
+      await page.waitForFunction(() => /payment/i.test(document.body?.innerText ?? ""), { timeout: 15000 }).catch(() => null);
       log("payment_continue", true);
 
       lastStep = "card_fill";
@@ -232,20 +233,25 @@ function checkoutScriptSource() {
         await new Promise((r) => setTimeout(r, 600));
       } catch {}
 
-      const frames = page.frames();
-      const setIn = async (namePart, value) => {
-        for (const f of frames) {
+      const setIn = async (namePart, value, selectors = []) => {
+        const frameList = page.frames();
+        for (const f of frameList) {
           try {
-            const el = await f.$('input[name*="' + namePart + '"]');
-            if (el) { await el.type(value, { delay: 25 }); return true; }
+            const query = ['input[name*="' + namePart + '"]', ...selectors].join(', ');
+            const el = await f.$(query);
+            if (el) {
+              await el.click({ clickCount: 3 }).catch(() => null);
+              await el.type(value, { delay: 25 });
+              return true;
+            }
           } catch {}
         }
         return false;
       };
-      const cardNumberOk = await setIn("number", input.card.number);
-      await setIn("name", input.card.name);
-      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2));
-      const cardCvvOk = await setIn("verification_value", input.card.cvv);
+      const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]']);
+      await setIn("name", input.card.name, ['input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[id*="name" i]']);
+      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2), ['input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]']);
+      const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[id*="verification" i]']);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details");
       log("card_fill", true);
 
@@ -278,7 +284,7 @@ function checkoutScriptSource() {
 
       lastStep = "submit";
       await stage("submit");
-      await clickContinue();
+      await clickContinue(true);
       log("submit", true);
 
       lastStep = "payment_result";
