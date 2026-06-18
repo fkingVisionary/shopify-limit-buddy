@@ -862,7 +862,8 @@ function Index() {
   const solveFn = useServerFn(solveCaptcha);
   const detectFn = useServerFn(detectCaptcha);
   const checkoutFn = useServerFn(runCheckout);
-  const browserlessFn = useServerFn(runBrowserlessCheckout);
+  const enqueueCheckoutFn = useServerFn(enqueueCheckout);
+  const getCheckoutJobFn = useServerFn(getCheckoutJob);
   const dispatchRunner = useServerFn(dispatchRunnerJob);
   const pollRunnerResult = useServerFn(pollRunnerJobResult);
   const fetchRunnerStatus = useServerFn(getRunnerStatus);
