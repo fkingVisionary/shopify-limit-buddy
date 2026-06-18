@@ -154,7 +154,7 @@ function browserlessScript() {
       lastStep = "checkout_load";
       await page.goto(`${input.storeUrl.replace(/\/$/, "")}/checkout`, {
         waitUntil: "domcontentloaded",
-        timeout: 45_000,
+        timeout: 25_000,
       });
       log("checkout_load", true, page.url());
 
