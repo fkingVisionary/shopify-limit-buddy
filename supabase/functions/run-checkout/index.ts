@@ -175,6 +175,40 @@ function checkoutScriptSource() {
       lastStep = "card_fill";
       await stage("card_fill");
       await new Promise((resolve) => setTimeout(resolve, 2500));
+
+      // Ensure "Use shipping address as billing address" is selected. On some
+      // themes (Adidas AU) the default is "different billing address" with
+      // empty fields, which blocks submit. Click the same-as-shipping radio
+      // and tick any matching checkbox.
+      try {
+        await page.evaluate(() => {
+          const fire = (el) => {
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            el.dispatchEvent(new Event("click", { bubbles: true }));
+          };
+          // Radio: Shopify uses billing_address_same / different_billing_address
+          const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
+          for (const r of radios) {
+            const v = (r.value || "").toLowerCase();
+            const name = (r.name || "").toLowerCase();
+            const label = (r.closest("label")?.textContent || document.querySelector('label[for="' + r.id + '"]')?.textContent || "").toLowerCase();
+            if ((name.includes("billing") || name.includes("different_billing_address")) && (v === "false" || v.includes("same") || label.includes("same as shipping") || label.includes("use shipping"))) {
+              r.checked = true; fire(r);
+            }
+          }
+          // Checkbox variant: "Use shipping address as billing address"
+          const checks = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+          for (const c of checks) {
+            const label = (c.closest("label")?.textContent || document.querySelector('label[for="' + c.id + '"]')?.textContent || "").toLowerCase();
+            if (label.includes("shipping address as billing") || label.includes("billing address is the same") || label.includes("same as shipping")) {
+              if (!c.checked) { c.checked = true; fire(c); }
+            }
+          }
+        });
+        await new Promise((r) => setTimeout(r, 600));
+      } catch {}
+
       const frames = page.frames();
       const setIn = async (namePart, value) => {
         for (const f of frames) {
