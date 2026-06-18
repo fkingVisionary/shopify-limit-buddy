@@ -437,23 +437,20 @@ function checkoutScriptSource() {
               const row = rowFor(el);
               return !!row?.querySelector?.('input[type="radio"]:checked, [aria-checked="true"], [aria-selected="true"]');
             };
-            const hasOpenCardFields = Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
             const radios = Array.from(document.querySelectorAll('input[type="radio"]')).map((input) => {
               const row = rowFor(input);
               const r = row.getBoundingClientRect();
               return { input, row, directText: directTextFor(input), y: r.top, h: r.height, selected: isSelected(input) };
             }).filter((item) => visible(item.row));
-            const cardRadios = radios.filter((item) => isCard(item.directText) || /creditcard|credit-card|credit_card|shopify_payments|card-fields/i.test(item.input.id + " " + item.input.name + " " + item.input.getAttribute("aria-label")));
-            const activeOffsite = radios.find((item) => item.selected && isOffsite(item.directText));
+            const cardRadios = radios.filter((item) => (isCard(item.directText) || /creditcards|creditcard|credit-card|credit_card|shopify_payments|card-fields/i.test(item.input.id + " " + item.input.name + " " + item.input.getAttribute("aria-label"))) && !isOffsite(item.directText));
             const checkedCard = cardRadios.find((item) => item.selected);
-            if (checkedCard && hasOpenCardFields) return { selected: true };
+            if (checkedCard) return { selected: true };
 
             if (cardRadios[0]) {
               try { cardRadios[0].input.click(); cardRadios[0].row?.click?.(); } catch {}
               return rectFor(cardRadios[0].row || cardRadios[0].input);
             }
 
-            if (hasOpenCardFields && !activeOffsite) return { selected: true };
             const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
             for (const row of rows) {
               if (!visible(row)) continue;
