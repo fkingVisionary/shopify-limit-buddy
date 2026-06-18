@@ -430,10 +430,6 @@ function checkoutScriptSource() {
             const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
             const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], .radio-wrapper, [data-select-gateway], [data-gateway-group], .payment-method-list__item, .content-box__row') || el;
             const directTextFor = (el) => [labelFor(el)?.textContent, el.closest("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").trim().toLowerCase();
-            const textFor = (el) => {
-              const row = rowFor(el);
-              return [row?.textContent, el.textContent, el.getAttribute?.("aria-label"), el.getAttribute?.("data-gateway-group"), el.getAttribute?.("data-select-gateway"), el.value, el.id, el.name, el.className?.toString?.()].filter(Boolean).join(" ").trim().toLowerCase();
-            };
             const isCard = (text) => /credit\s*card|debit\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
             const isOffsite = (text) => /paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
             const isSelected = (el) => {
@@ -441,15 +437,14 @@ function checkoutScriptSource() {
               const row = rowFor(el);
               return !!row?.querySelector?.('input[type="radio"]:checked, [aria-checked="true"], [aria-selected="true"]');
             };
-            const cardFieldSelector = 'iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]';
-            const hasOpenCardFields = Array.from(document.querySelectorAll(cardFieldSelector)).some(visible);
+            const hasOpenCardFields = Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
             const radios = Array.from(document.querySelectorAll('input[type="radio"]')).map((input) => {
               const row = rowFor(input);
               const r = row.getBoundingClientRect();
-              return { input, row, text: textFor(input), directText: directTextFor(input), y: r.top, h: r.height, selected: isSelected(input) };
+              return { input, row, directText: directTextFor(input), y: r.top, h: r.height, selected: isSelected(input) };
             }).filter((item) => visible(item.row));
             const cardRadios = radios.filter((item) => isCard(item.directText) || /creditcard|credit-card|credit_card|shopify_payments|card-fields/i.test(item.input.id + " " + item.input.name + " " + item.input.getAttribute("aria-label")));
-            const activeOffsite = radios.find((item) => item.selected && isOffsite(item.directText || item.text));
+            const activeOffsite = radios.find((item) => item.selected && isOffsite(item.directText));
             const checkedCard = cardRadios.find((item) => item.selected);
             if (checkedCard && hasOpenCardFields) return { selected: true };
 
@@ -462,7 +457,7 @@ function checkoutScriptSource() {
             const rows = Array.from(document.querySelectorAll('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
             for (const row of rows) {
               if (!visible(row)) continue;
-              const text = directTextFor(row) || textFor(row);
+              const text = directTextFor(row);
               if (isCard(text)) {
                 try { row.querySelector?.('input[type="radio"]')?.click(); row.click?.(); } catch {}
                 return rectFor(row);
