@@ -131,100 +131,199 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       log("address_fill", true);
 
-      const isPaymentStep = async () => {
+      const checkoutStep = async () => {
         try {
-          // Only trust the main page: shipping step must be gone (no shipping
-          // address form visible) AND a real pay/place-order button must be
-          // present. Preloaded card iframes lie — never rely on them here.
           return await page.evaluate(() => {
-            const hasPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
-              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
-              return /^(pay now|complete order|place order|complete purchase|pay\s*\$)/i.test(label);
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const urlStep = (new URL(location.href).searchParams.get("step") || "").toLowerCase();
+            if (/payment/.test(urlStep)) return "payment";
+            if (/shipping_method|shipping-rate|shipping_rate/.test(urlStep)) return "shipping_method";
+            if (/contact|information|shipping_address/.test(urlStep)) return "contact";
+
+            const body = document.body?.innerText || "";
+            const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
+            if (visible(addressInput)) return "contact";
+
+            const shippingRate = Array.from(document.querySelectorAll('input[name="checkout[shipping_rate][id]"], [data-shipping-method], [data-shipping-method-label-title]')).find(visible);
+            const continueToPayment = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn')).some((el) => {
+              if (!visible(el) || el.disabled) return false;
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+              return /continue\s+to\s+payment|continue\s+to\s+pay/i.test(label);
             });
-            if (!hasPayButton) return false;
-            const shippingInput = document.querySelector(
-              'input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]'
-            );
-            if (shippingInput) {
-              const r = shippingInput.getBoundingClientRect();
-              if (r.width > 0 && r.height > 0) return false;
-            }
-            return true;
+            if (shippingRate || (/shipping method/i.test(body) && continueToPayment)) return "shipping_method";
+
+            const paymentWidget = Array.from(document.querySelectorAll('iframe[name^="card-fields"], input[autocomplete="cc-number"], [data-gateway-group], [data-select-gateway]')).find(visible);
+            const finalPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
+              if (!visible(el) || el.disabled) return false;
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+              return /^(pay now|complete order|place order|complete purchase)$/i.test(label);
+            });
+            if (paymentWidget && finalPayButton && /payment|credit card|card number/i.test(body)) return "payment";
+            return "unknown";
           });
         } catch {}
-        return false;
+        return "unknown";
       };
 
-      const findContinueTarget = async (allowPaymentSubmit) => {
-        return await page.evaluate((allowSubmit) => {
-          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
-          const target = els.find((el) => {
-            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
-            const id = el.id ?? "";
-            const cls = el.className?.toString?.() ?? "";
+      const isPaymentStep = async () => (await checkoutStep()) === "payment";
+
+      const findContinueTarget = async (allowPaymentSubmit, preferredStep = null) => {
+        return await page.evaluate((allowSubmit, preferred) => {
+          const visible = (el) => {
             const r = el.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) return false;
-            if (el.disabled) return false;
-            if (/apply/i.test(text)) return false;
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+          };
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
+          const candidates = els.map((el) => {
+            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+            const id = el.id || "";
+            const cls = el.className?.toString?.() || "";
+            if (!visible(el) || el.disabled || /apply/i.test(text)) return null;
             const isSubmit = /pay now|complete order|place order|complete purchase|submit/i.test(text);
-            if (isSubmit && !allowSubmit) return false;
-            return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
-          });
+            if (isSubmit && !allowSubmit) return null;
+            const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
+            if (!isContinue && !isSubmit) return null;
+            let score = 50;
+            if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
+            if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
+            if (/^continue$/i.test(text)) score += 10;
+            if (isSubmit) score += 100;
+            return { el, score };
+          }).filter(Boolean).sort((a, b) => a.score - b.score);
+          const target = candidates[0]?.el;
           if (!target) return null;
           target.scrollIntoView({ block: "center", inline: "center" });
           const r = target.getBoundingClientRect();
           return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
-        }, allowPaymentSubmit);
+        }, allowPaymentSubmit, preferredStep);
       };
 
-      const clickContinue = async (allowPaymentSubmit = false) => {
-        const deadline = Date.now() + 12000;
+      const clickContinue = async (allowPaymentSubmit = false, preferredStep = null) => {
+        const deadline = Date.now() + 7000;
         let target = null;
         while (Date.now() < deadline) {
-          target = await findContinueTarget(allowPaymentSubmit);
+          target = await findContinueTarget(allowPaymentSubmit, preferredStep);
           if (target) break;
-          await new Promise((r) => setTimeout(r, 300));
+          await new Promise((r) => setTimeout(r, 250));
         }
         if (!target) throw new Error("Could not find checkout continue button");
         try { await page.mouse.click(target.x, target.y, { delay: 40 }); } catch {}
-        await page.evaluate((allowSubmit) => {
-          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
-          const t = els.find((el) => {
-            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
-            const id = el.id ?? "";
-            const cls = el.className?.toString?.() ?? "";
+        await page.evaluate((allowSubmit, preferred) => {
+          const visible = (el) => {
             const r = el.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0 || el.disabled) return false;
-            if (/apply/i.test(text)) return false;
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+          };
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
+          const candidates = els.map((el) => {
+            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+            const id = el.id || "";
+            const cls = el.className?.toString?.() || "";
+            if (!visible(el) || el.disabled || /apply/i.test(text)) return null;
             const isSubmit = /pay now|complete order|place order|complete purchase|submit/i.test(text);
-            if (isSubmit && !allowSubmit) return false;
-            return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
-          });
-          t?.click();
-        }, allowPaymentSubmit);
+            if (isSubmit && !allowSubmit) return null;
+            const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
+            if (!isContinue && !isSubmit) return null;
+            let score = 50;
+            if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
+            if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
+            if (/^continue$/i.test(text)) score += 10;
+            if (isSubmit) score += 100;
+            return { el, score };
+          }).filter(Boolean).sort((a, b) => a.score - b.score);
+          candidates[0]?.el?.click();
+        }, allowPaymentSubmit, preferredStep);
+      };
+
+      const advanceToShipping = async (maxAttempts) => {
+        for (let i = 0; i < maxAttempts; i++) {
+          const step = await checkoutStep();
+          if (step === "shipping_method" || step === "payment") return true;
+          await clickContinue(false, "shipping").catch(() => null);
+          await new Promise((r) => setTimeout(r, 1200));
+          const next = await checkoutStep();
+          if (next === "shipping_method" || next === "payment") return true;
+          const err = await visibleCheckoutError();
+          if (err) throw new Error("Checkout validation: " + err);
+        }
+        const finalStep = await checkoutStep();
+        return finalStep === "shipping_method" || finalStep === "payment";
+      };
+
+      const selectShippingRate = async () => {
+        if (await isPaymentStep()) return true;
+        const deadline = Date.now() + 12000;
+        while (Date.now() < deadline) {
+          if (await isPaymentStep()) return true;
+          const target = await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && !el.disabled;
+            };
+            const rectFor = (el) => {
+              el.scrollIntoView({ block: "center", inline: "center" });
+              const r = el.getBoundingClientRect();
+              return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            };
+            const rates = Array.from(document.querySelectorAll('input[name="checkout[shipping_rate][id]"], input[type="radio"][id*="shipping" i], input[type="radio"][name*="shipping" i]')).filter(visible);
+            const checked = rates.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
+            if (checked) return { selected: true };
+            const first = rates.find((input) => !input.disabled);
+            if (first) {
+              const label = first.closest("label") || document.querySelector('label[for="' + first.id + '"]') || first.closest('.content-box__row, .radio-wrapper, [data-shipping-method]');
+              return rectFor(label || first);
+            }
+            const rows = Array.from(document.querySelectorAll('[data-shipping-method], .content-box__row, .radio-wrapper, label'));
+            for (const row of rows) {
+              if (!visible(row)) continue;
+              const text = (row.textContent || "").trim();
+              if (/shipping|delivery|standard|express|free/i.test(text)) return rectFor(row);
+            }
+            const canContinue = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button')).some((el) => {
+              if (!visible(el) || el.disabled) return false;
+              const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
+              return /continue\s+to\s+payment/i.test(label);
+            });
+            return canContinue ? { selected: true } : null;
+          }).catch(() => null);
+          if (target?.selected) return true;
+          if (target?.x != null && target?.y != null) {
+            await page.mouse.click(target.x, target.y, { delay: 35 }).catch(() => null);
+            await new Promise((r) => setTimeout(r, 550));
+          } else {
+            await new Promise((r) => setTimeout(r, 450));
+          }
+          const err = await visibleCheckoutError();
+          if (err) throw new Error("Checkout validation: " + err);
+        }
+        return false;
       };
 
       const advanceToPayment = async (maxAttempts) => {
         for (let i = 0; i < maxAttempts; i++) {
           if (await isPaymentStep()) return true;
+          if (!(await selectShippingRate())) return false;
           const startUrl = page.url();
-          await clickContinue(false).catch(() => null);
+          await clickContinue(false, "payment").catch(() => null);
           await page.waitForFunction(
             (prevUrl) => {
-              if (location.href !== prevUrl) return true;
-              const shipping = document.querySelector('input[name="checkout[shipping_address][address1]"], input[autocomplete="address-line1"]');
-              if (shipping) {
-                const r = shipping.getBoundingClientRect();
-                if (r.width === 0 && r.height === 0) return true;
-              } else {
-                return true;
-              }
+              const step = (new URL(location.href).searchParams.get("step") || "").toLowerCase();
+              if (/payment/.test(step)) return true;
+              if (location.href !== prevUrl && /payment/.test(location.href)) return true;
               return false;
             },
-            { timeout: 8000 },
+            { timeout: 10000 },
             startUrl,
           ).catch(() => null);
-          await new Promise((r) => setTimeout(r, 600));
+          await new Promise((r) => setTimeout(r, 900));
           if (await isPaymentStep()) return true;
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
