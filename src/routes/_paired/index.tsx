@@ -3131,11 +3131,9 @@ function SettingsView({
           <Input className="mt-1 h-9" type="number" min={1500} step={500} value={pollMs} onChange={(e) => setPollMs(Math.max(1500, Number(e.target.value) || 4000))} />
           <p className="mt-1 text-[10px] text-muted-foreground">3000–5000ms is a safe balance for most stores.</p>
         </div>
-        <label className="mt-3 flex items-center gap-2 text-sm">
-          <input type="checkbox" className="h-4 w-4" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} />
-          Auto-open checkout tab on drop
-          <InfoDot text="When stock appears, a new tab opens to Shopify's checkout with your profile pre-filled. Allow popups for this site." />
-        </label>
+        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          Checkout runs stay on the task page. Retailer pages are never opened automatically on this device.
+        </p>
         <label className="mt-2 flex items-center gap-2 text-sm">
           <input type="checkbox" className="h-4 w-4" checked={notifyOn} onChange={(e) => setNotifyOn(e.target.checked)} />
           Sound + browser notification
