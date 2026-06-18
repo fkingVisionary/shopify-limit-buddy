@@ -236,40 +236,67 @@ function checkoutScriptSource() {
       } catch {}
 
       const setIn = async (namePart, value, selectors = []) => {
-        const query = ['input[name*="' + namePart + '"]', ...selectors].join(', ');
-        const deadline = Date.now() + 8000;
+        const query = ['input[name*="' + namePart + '" i]', ...selectors].join(', ');
+        const deadline = Date.now() + 10000;
+        const expectedDigits = String(value).replace(/\D/g, "");
+        const looksFilled = (current) => {
+          const v = String(current || "").trim();
+          const digits = v.replace(/\D/g, "");
+          if (namePart === "number") return digits.endsWith(expectedDigits.slice(-4));
+          if (namePart === "expiry") return digits.length >= 4;
+          if (namePart === "verification_value") return digits.length >= Math.min(3, expectedDigits.length);
+          if (namePart === "name") return v.length >= 2;
+          return v.length > 0;
+        };
         while (Date.now() < deadline) {
           for (const f of page.frames()) {
             try {
-              const el = await f.$(query);
-              if (!el) continue;
-              const visible = await f.evaluate((node) => {
-                if (!node) return false;
-                const rect = node.getBoundingClientRect();
-                const style = getComputedStyle(node);
-                return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-              }, el).catch(() => false);
-              if (!visible) continue;
-              await el.focus().catch(() => null);
-              await el.click({ clickCount: 3 }).catch(() => null);
-              await f.evaluate((node) => { try { (node).value = ""; } catch {} }, el).catch(() => null);
-              await el.type(value, { delay: 40 });
-              await f.evaluate((node) => {
-                node.dispatchEvent(new Event("input", { bubbles: true }));
-                node.dispatchEvent(new Event("change", { bubbles: true }));
-                node.dispatchEvent(new Event("blur", { bubbles: true }));
-              }, el).catch(() => null);
-              return true;
+              const els = await f.$$(query);
+              for (const el of els) {
+                const visible = await f.evaluate((node) => {
+                  if (!node) return false;
+                  const rect = node.getBoundingClientRect();
+                  const style = getComputedStyle(node);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !node.disabled;
+                }, el).catch(() => false);
+                if (!visible) continue;
+
+                await el.focus().catch(() => null);
+                await el.click({ clickCount: 3 }).catch(() => null);
+                await page.keyboard.press("Backspace").catch(() => null);
+                await el.type(String(value), { delay: 45 }).catch(() => null);
+                const typedValue = await f.evaluate((node) => {
+                  node.dispatchEvent(new Event("input", { bubbles: true }));
+                  node.dispatchEvent(new Event("change", { bubbles: true }));
+                  node.dispatchEvent(new Event("blur", { bubbles: true }));
+                  return node.value || node.getAttribute("value") || "";
+                }, el).catch(() => "");
+                if (looksFilled(typedValue)) return true;
+
+                await el.click({ clickCount: 3 }).catch(() => null);
+                await f.evaluate((node, val) => {
+                  const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                  const desc = Object.getOwnPropertyDescriptor(proto, "value");
+                  if (desc && desc.set) desc.set.call(node, String(val));
+                  else node.value = String(val);
+                  node.dispatchEvent(new Event("input", { bubbles: true }));
+                  node.dispatchEvent(new Event("change", { bubbles: true }));
+                  node.dispatchEvent(new Event("blur", { bubbles: true }));
+                }, el, value).catch(() => null);
+                const setValue = await f.evaluate((node) => node.value || node.getAttribute("value") || "", el).catch(() => "");
+                if (looksFilled(setValue)) return true;
+              }
             } catch {}
           }
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 350));
         }
         return false;
       };
-      const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]']);
-      const cardNameOk = await setIn("name", input.card.name, ['input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[id*="name" i]']);
-      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2), ['input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]']);
-      const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[id*="verification" i]']);
+      const expiryValue = input.card.exp_month.padStart(2, "0") + input.card.exp_year.slice(-2);
+      const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]', 'input[aria-label*="card number" i]']);
+      const cardExpiryOk = await setIn("expiry", expiryValue, ['input[name*="exp" i]', 'input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]', 'input[id*="exp" i]', 'input[aria-label*="expiration" i]', 'input[aria-label*="expiry" i]']);
+      const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="security" i]', 'input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[placeholder*="CVV" i]', 'input[placeholder*="CVC" i]', 'input[id*="verification" i]', 'input[id*="security" i]', 'input[id*="cvv" i]', 'input[id*="cvc" i]', 'input[aria-label*="security" i]']);
+      const cardNameOk = await setIn("name", input.card.name, ['input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[id*="name" i]', 'input[aria-label*="name on card" i]']);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
 
