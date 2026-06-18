@@ -70,6 +70,58 @@ function checkoutScriptSource() {
       await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 30000 });
       log("checkout_load", true);
 
+      const setCheckoutValue = async (selectors, value) => {
+        if (value == null || value === "") return false;
+        for (const sel of selectors) {
+          try {
+            const el = await page.$(sel);
+            if (!el) continue;
+            await el.evaluate((node, val) => {
+              const tag = (node.tagName || "").toLowerCase();
+              const wanted = String(val);
+              node.focus();
+              if (tag === "select") {
+                const lower = wanted.toLowerCase();
+                const options = Array.from(node.options || []);
+                const match = options.find((o) => String(o.value || "").toLowerCase() === lower || String(o.textContent || "").toLowerCase().includes(lower));
+                if (match) node.value = match.value;
+              } else {
+                const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, "value");
+                if (desc && desc.set) desc.set.call(node, wanted);
+                else node.value = wanted;
+              }
+              node.dispatchEvent(new Event("input", { bubbles: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true }));
+              node.blur();
+            }, value);
+            return true;
+          } catch {}
+        }
+        return false;
+      };
+
+      const visibleCheckoutError = async () => {
+        try {
+          const text = await page.evaluate(() => document.body?.innerText ?? "");
+          const m = text.match(/Enter an email|Enter a valid email|email is required|required field|can't be blank|invalid phone|select a delivery|shipping address/i);
+          return m ? m[0] : null;
+        } catch { return null; }
+      };
+
+      lastStep = "address_fill";
+      await stage("address_fill");
+      await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
+      await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
+      await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
+      await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
+      await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
+      await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
+      await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
+      await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
+      await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      log("address_fill", true);
+
       const clickContinue = async () => {
         await page.waitForFunction(() => {
           const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
@@ -97,6 +149,9 @@ function checkoutScriptSource() {
       lastStep = "shipping_continue";
       await stage("shipping_continue");
       await clickContinue();
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const contactError = await visibleCheckoutError();
+      if (contactError) return await fail("Checkout validation: " + contactError);
       log("shipping_continue", true);
 
       lastStep = "shipping_method";
@@ -122,10 +177,11 @@ function checkoutScriptSource() {
         }
         return false;
       };
-      await setIn("number", input.card.number);
+      const cardNumberOk = await setIn("number", input.card.number);
       await setIn("name", input.card.name);
-      await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2));
-      await setIn("verification_value", input.card.cvv);
+      const cardExpiryOk = await setIn("expiry", input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2));
+      const cardCvvOk = await setIn("verification_value", input.card.cvv);
+      if (!cardNumberOk || !cardExpiryOk || !cardCvvOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details");
       log("card_fill", true);
 
       if (input.captchaToken) {
