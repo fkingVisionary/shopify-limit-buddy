@@ -3075,12 +3075,23 @@ function SettingsView({
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   const [testing, setTesting] = useState<"idle" | "ok" | "fail" | "sending">("idle");
+  const [pingState, setPingState] = useState<{ status: "idle" | "pinging" | "ok" | "fail"; msg?: string }>({ status: "idle" });
+  const pingFn = useServerFn(pingBrowserless);
   const urlOk = !notifyConfig.webhookUrl || isValidWebhookUrl(notifyConfig.webhookUrl);
   const sendTest = async () => {
     setTesting("sending");
     const ok = await sendTestWebhook(notifyConfig.webhookUrl);
     setTesting(ok ? "ok" : "fail");
     setTimeout(() => setTesting("idle"), 2500);
+  };
+  const runPing = async () => {
+    setPingState({ status: "pinging" });
+    try {
+      const r = await pingFn();
+      setPingState({ status: r.ok ? "ok" : "fail", msg: r.message });
+    } catch (e) {
+      setPingState({ status: "fail", msg: (e as Error).message });
+    }
   };
   return (
     <div className="space-y-3">
