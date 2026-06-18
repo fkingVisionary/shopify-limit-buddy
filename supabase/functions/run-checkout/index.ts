@@ -334,9 +334,10 @@ function checkoutScriptSource() {
       lastStep = "shipping_continue";
       await stage("shipping_continue");
       try {
-        if (!(await advanceToPayment(3))) {
+        if (!(await advanceToShipping(3))) {
           const err = await visibleCheckoutError();
           if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to shipping method step");
         }
       } catch (e) {
         return await fail(String(e?.message ?? e));
@@ -345,6 +346,15 @@ function checkoutScriptSource() {
 
       lastStep = "shipping_method";
       await stage("shipping_method");
+      try {
+        if (!(await selectShippingRate())) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not select a shipping method");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
       log("shipping_method", true);
 
       lastStep = "payment_continue";
