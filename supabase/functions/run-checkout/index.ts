@@ -133,19 +133,24 @@ function checkoutScriptSource() {
 
       const isPaymentStep = async () => {
         try {
-          const main = await page.evaluate(() => {
-            const text = document.body?.innerText ?? "";
+          // Only trust the main page: shipping step must be gone (no shipping
+          // address form visible) AND a real pay/place-order button must be
+          // present. Preloaded card iframes lie — never rely on them here.
+          return await page.evaluate(() => {
             const hasPayButton = Array.from(document.querySelectorAll('button, input[type="submit"]')).some((el) => {
               const label = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
-              return /pay now|complete order|place order/i.test(label);
+              return /^(pay now|complete order|place order|complete purchase|pay\s*\$)/i.test(label);
             });
-            return /payment/i.test(text) && hasPayButton;
+            if (!hasPayButton) return false;
+            const shippingInput = document.querySelector(
+              'input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]'
+            );
+            if (shippingInput) {
+              const r = shippingInput.getBoundingClientRect();
+              if (r.width > 0 && r.height > 0) return false;
+            }
+            return true;
           });
-          if (main) return true;
-          for (const f of page.frames()) {
-            const card = await f.$('input[name*="number"], input[autocomplete="cc-number"], input[placeholder*="Card number" i]');
-            if (card) return true;
-          }
         } catch {}
         return false;
       };
@@ -296,7 +301,7 @@ function checkoutScriptSource() {
       const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]', 'input[aria-label*="card number" i]']);
       const cardExpiryOk = await setIn("expiry", expiryValue, ['input[name*="exp" i]', 'input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]', 'input[id*="exp" i]', 'input[aria-label*="expiration" i]', 'input[aria-label*="expiry" i]']);
       const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="security" i]', 'input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[placeholder*="CVV" i]', 'input[placeholder*="CVC" i]', 'input[id*="verification" i]', 'input[id*="security" i]', 'input[id*="cvv" i]', 'input[id*="cvc" i]', 'input[aria-label*="security" i]']);
-      const cardNameOk = await setIn("name", input.card.name, ['input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[id*="name" i]', 'input[aria-label*="name on card" i]']);
+      const cardNameOk = await setIn("name_on_card", input.card.name, ['input[autocomplete="cc-name"]', 'input[name*="name_on_card" i]', 'input[name*="cardholder" i]', 'input[placeholder*="Name on card" i]', 'input[placeholder*="Cardholder" i]', 'input[id*="name_on_card" i]', 'input[id*="cardholder" i]', 'input[aria-label*="name on card" i]', 'input[aria-label*="cardholder" i]']);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
 
