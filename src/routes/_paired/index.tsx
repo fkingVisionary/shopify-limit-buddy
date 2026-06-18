@@ -27,6 +27,7 @@ import {
 import { solveCaptcha, getCaptchaBalance, detectCaptcha } from "@/lib/captcha.functions";
 import { runCheckout } from "@/lib/checkout.functions";
 import { runBrowserlessCheckout } from "@/lib/browserless.functions";
+import { pingBrowserless } from "@/lib/browserless-ping.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
@@ -3074,12 +3075,23 @@ function SettingsView({
   onShowWizard: () => void; onResetTips: () => void;
 }) {
   const [testing, setTesting] = useState<"idle" | "ok" | "fail" | "sending">("idle");
+  const [pingState, setPingState] = useState<{ status: "idle" | "pinging" | "ok" | "fail"; msg?: string }>({ status: "idle" });
+  const pingFn = useServerFn(pingBrowserless);
   const urlOk = !notifyConfig.webhookUrl || isValidWebhookUrl(notifyConfig.webhookUrl);
   const sendTest = async () => {
     setTesting("sending");
     const ok = await sendTestWebhook(notifyConfig.webhookUrl);
     setTesting(ok ? "ok" : "fail");
     setTimeout(() => setTesting("idle"), 2500);
+  };
+  const runPing = async () => {
+    setPingState({ status: "pinging" });
+    try {
+      const r = await pingFn();
+      setPingState({ status: r.ok ? "ok" : "fail", msg: r.message });
+    } catch (e) {
+      setPingState({ status: "fail", msg: (e as Error).message });
+    }
   };
   return (
     <div className="space-y-3">
@@ -3124,6 +3136,22 @@ function SettingsView({
         </label>
         <p className="mt-2 text-[10px] leading-relaxed text-amber-400/90">
           Turn dry-run OFF only when you're ready to place real orders. Each non-dry checkout will charge the card on the assigned profile.
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-9"
+            disabled={pingState.status === "pinging"}
+            onClick={runPing}
+          >
+            {pingState.status === "pinging" ? "Testing…" : "Test Browserless"}
+          </Button>
+          {pingState.status === "ok" && <span className="text-[11px] text-primary">✓ {pingState.msg}</span>}
+          {pingState.status === "fail" && <span className="text-[11px] text-destructive">{pingState.msg}</span>}
+        </div>
+        <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+          Free / starter Browserless plans cap each run at 60s. If a real checkout times out, upgrade the plan or switch to the local runner.
         </p>
       </Card>
 

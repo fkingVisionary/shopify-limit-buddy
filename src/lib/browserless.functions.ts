@@ -129,7 +129,7 @@ function browserlessScript() {
 
       // ── 1. Warm cookies + add to cart from within the browser ──
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
       const addRes: { status: number; body: string } = await page.evaluate(
         async (storeUrl: string, vid: number, q: number) => {
           const r = await fetch(`${storeUrl.replace(/\/$/, "")}/cart/add.js`, {
@@ -154,7 +154,7 @@ function browserlessScript() {
       lastStep = "checkout_load";
       await page.goto(`${input.storeUrl.replace(/\/$/, "")}/checkout`, {
         waitUntil: "domcontentloaded",
-        timeout: 45_000,
+        timeout: 25_000,
       });
       log("checkout_load", true, page.url());
 
@@ -200,7 +200,7 @@ function browserlessScript() {
         return false;
       };
       await clickContinue();
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
       log("shipping_continue", true, page.url());
 
       // ── 5. Shipping method (pick first available) → continue to payment ──
@@ -212,12 +212,12 @@ function browserlessScript() {
 
       lastStep = "payment_continue";
       await clickContinue();
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
       log("payment_continue", true, page.url());
 
       // ── 6. Card fill (Stripe iframe) ──
       lastStep = "card_fill";
-      await page.waitForSelector('iframe[name^="card-fields-number"]', { timeout: 20_000 });
+      await page.waitForSelector('iframe[name^="card-fields-number"]', { timeout: 15_000 });
       const frames = page.frames();
       const numFrame = frames.find((f: any) => /card-fields-number/.test(f.name()));
       const expFrame = frames.find((f: any) => /card-fields-expiry/.test(f.name()));
@@ -268,7 +268,7 @@ function browserlessScript() {
       lastStep = "confirm";
       await page.waitForFunction(
         () => /\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href),
-        { timeout: 60_000 },
+        { timeout: 25_000 },
       );
       const finalUrl = page.url();
       const orderMatch = finalUrl.match(/orders\/(\d+)|checkouts\/[^/]+\/([a-z0-9]+)\/thank_you/i);
@@ -307,7 +307,8 @@ export const runBrowserlessCheckout = createServerFn({ method: "POST" })
       url.searchParams.set("proxy", `http://${data.proxy}`);
       url.searchParams.set("proxySticky", "true");
     }
-    url.searchParams.set("timeout", "120000");
+    // Browserless free/starter plans cap /function at 60s. Keep this at the max.
+    url.searchParams.set("timeout", "60000");
 
     const fnSource = `module.exports = ${browserlessScript().toString()}`;
 
