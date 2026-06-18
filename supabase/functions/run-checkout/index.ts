@@ -155,52 +155,110 @@ function checkoutScriptSource() {
         return false;
       };
 
-      const clickContinue = async (allowPaymentSubmit = false) => {
-        await page.waitForFunction(() => {
-          const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
-          return els.some((el) => {
-            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
-            const id = el.id ?? "";
-            const cls = el.className?.toString?.() ?? "";
-            return !/apply/i.test(text) && (/continue|pay now|complete order|place order|submit/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls));
-          });
-        }, { timeout: 15000 });
-        const clicked = await page.evaluate((allowSubmit) => {
-          const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+      const findContinueTarget = async (allowPaymentSubmit) => {
+        return await page.evaluate((allowSubmit) => {
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
           const target = els.find((el) => {
             const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
             const id = el.id ?? "";
             const cls = el.className?.toString?.() ?? "";
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return false;
+            if (el.disabled) return false;
             if (/apply/i.test(text)) return false;
-            const isSubmit = /pay now|complete order|place order|submit/i.test(text);
+            const isSubmit = /pay now|complete order|place order|complete purchase|submit/i.test(text);
             if (isSubmit && !allowSubmit) return false;
             return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
           });
-          target?.click();
-          return Boolean(target);
+          if (!target) return null;
+          target.scrollIntoView({ block: "center", inline: "center" });
+          const r = target.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
         }, allowPaymentSubmit);
-        if (!clicked) throw new Error("Could not find checkout continue button");
+      };
+
+      const clickContinue = async (allowPaymentSubmit = false) => {
+        const deadline = Date.now() + 12000;
+        let target = null;
+        while (Date.now() < deadline) {
+          target = await findContinueTarget(allowPaymentSubmit);
+          if (target) break;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        if (!target) throw new Error("Could not find checkout continue button");
+        try { await page.mouse.click(target.x, target.y, { delay: 40 }); } catch {}
+        await page.evaluate((allowSubmit) => {
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn'));
+          const t = els.find((el) => {
+            const text = ((el.tagName === "INPUT" ? el.value : el.textContent) ?? "").trim();
+            const id = el.id ?? "";
+            const cls = el.className?.toString?.() ?? "";
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0 || el.disabled) return false;
+            if (/apply/i.test(text)) return false;
+            const isSubmit = /pay now|complete order|place order|complete purchase|submit/i.test(text);
+            if (isSubmit && !allowSubmit) return false;
+            return /continue/i.test(text) || isSubmit || /continue_button|step__footer__continue/i.test(id + " " + cls);
+          });
+          t?.click();
+        }, allowPaymentSubmit);
+      };
+
+      const advanceToPayment = async (maxAttempts) => {
+        for (let i = 0; i < maxAttempts; i++) {
+          if (await isPaymentStep()) return true;
+          const startUrl = page.url();
+          await clickContinue(false).catch(() => null);
+          await page.waitForFunction(
+            (prevUrl) => {
+              if (location.href !== prevUrl) return true;
+              const shipping = document.querySelector('input[name="checkout[shipping_address][address1]"], input[autocomplete="address-line1"]');
+              if (shipping) {
+                const r = shipping.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) return true;
+              } else {
+                return true;
+              }
+              return false;
+            },
+            { timeout: 8000 },
+            startUrl,
+          ).catch(() => null);
+          await new Promise((r) => setTimeout(r, 600));
+          if (await isPaymentStep()) return true;
+          const err = await visibleCheckoutError();
+          if (err) throw new Error("Checkout validation: " + err);
+        }
+        return await isPaymentStep();
       };
 
       lastStep = "shipping_continue";
       await stage("shipping_continue");
-      if (!(await isPaymentStep())) await clickContinue(false);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      if (!(await isPaymentStep())) {
-        const contactError = await visibleCheckoutError();
-        if (contactError) return await fail("Checkout validation: " + contactError);
+      try {
+        if (!(await advanceToPayment(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
       }
       log("shipping_continue", true);
 
       lastStep = "shipping_method";
       await stage("shipping_method");
-      try { await page.waitForSelector('input[name="checkout[shipping_rate][id]"], button#continue_button, button.step__footer__continue-btn', { timeout: 2000 }); } catch {}
       log("shipping_method", true);
 
       lastStep = "payment_continue";
       await stage("payment_continue");
-      if (!(await isPaymentStep())) await clickContinue(false);
-      await page.waitForFunction(() => /payment/i.test(document.body?.innerText ?? ""), { timeout: 15000 }).catch(() => null);
+      try {
+        if (!(await advanceToPayment(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to payment step");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
       log("payment_continue", true);
 
       lastStep = "card_fill";
