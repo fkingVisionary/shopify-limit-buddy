@@ -747,7 +747,7 @@ function Index() {
   const [customStores, setCustomStores] = useState<StoreEntry[]>([]);
   const [proxyGroups, setProxyGroups] = useState<ProxyGroup[]>([]);
   const [pollMs, setPollMs] = useState(4000);
-  const [autoOpen, setAutoOpen] = useState(true);
+  const [autoOpen, setAutoOpen] = useState(false);
   const [notifyOn, setNotifyOn] = useState(true);
   // Browserless full-browser checkout
   const [browserlessEnabled, setBrowserlessEnabled] = useState(false);
@@ -1317,10 +1317,8 @@ function Index() {
                     message: `${r.message ?? "Ready"} · ${r.elapsedMs}ms`,
                   });
                   fireWebhook("checkout_ready", { ...t, checkoutElapsedMs: r.elapsedMs });
-                  if (autoOpen && !browserlessEnabled && !runnerPreferred) {
-                    window.open(r.checkoutUrl, `_task_${t.id}`, "noopener,noreferrer");
-                    updateTask(t.id, { status: "opened" });
-                  }
+                  // Stay on the task page. The checkout URL is kept only for
+                  // explicit manual use; never auto-open the retailer on-device.
                 }).catch((err: any) => {
                   updateTask(t.id, { status: "failed", message: err?.message ?? "checkout error" });
                   fireWebhook("failed", { ...t, message: err?.message ?? "checkout error" });
@@ -1344,7 +1342,7 @@ function Index() {
       }));
     }, Math.max(1500, pollMs));
     return () => clearInterval(id);
-  }, [pollMs, autoOpen, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
+  }, [pollMs, notifyOn, profiles, checkoutFn, browserlessFn, browserlessEnabled, browserlessDryRun, runnerPreferred, runViaLocalRunner, poolApi]);
 
   // ─── Add store ───
   const addCustomStore = (name: string, url: string) => {
