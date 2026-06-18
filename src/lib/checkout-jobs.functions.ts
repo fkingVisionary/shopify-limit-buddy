@@ -66,23 +66,17 @@ export const enqueueCheckout = createServerFn({ method: "POST" })
       .single();
     if (error || !row) return { error: error?.message ?? "insert failed" };
 
-    // Fire-and-forget edge function invocation. We deliberately do NOT await
-    // the body — the worker will run for up to ~90s and the CF Worker hosting
-    // this server fn would time out long before then.
+    // Hand the HTTP invocation off to pg_net via an RPC. pg_net queues the
+    // request in the database and a background worker performs the POST, so
+    // the headless run keeps going long after this Cloudflare Worker
+    // returns (a plain fire-and-forget fetch gets cancelled on response).
     const edgeUrl = `${SUPABASE_URL}/functions/v1/run-checkout`;
-    try {
-      // Kick off the request; ignore the promise. `void` keeps lint quiet.
-      void fetch(edgeUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-executor-token": EXECUTOR_TOKEN,
-        },
-        body: JSON.stringify({ jobId: row.id }),
-      }).catch(() => {});
-    } catch {
-      /* ignore */
-    }
+    const { error: rpcErr } = await supabaseAdmin.rpc("request_checkout_worker", {
+      p_job_id: row.id,
+      p_url: edgeUrl,
+      p_token: EXECUTOR_TOKEN,
+    });
+    if (rpcErr) return { error: `dispatch failed: ${rpcErr.message}` };
     return { jobId: row.id as string };
   });
 
