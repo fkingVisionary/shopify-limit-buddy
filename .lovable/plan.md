@@ -1,75 +1,68 @@
-## Goal
 
-Push toward win-rate: tasks fire at exact drop times, and the user gets a Discord ping the moment something happens so they can react (size confirm, captcha solve, share screenshots).
+## Where we're at right now
 
-## 1. Drop scheduler
+**App shell**
+- The whole app is gated behind `/_paired`. On load it checks for a device token in `localStorage` and bounces to `/pair`, where you have to "Create workspace", "Join with code", or "Recover". Until that's done you can't see Tasks, Profiles, Proxies, Settings, etc.
+- `useCloudSync` syncs local data to a workspace row in the backend, keyed off that device token.
 
-**Data model**
-- Add optional `scheduledAt?: number` (ms epoch) to `Task`. Persisted via existing `saveTasks`.
-- Add optional `preWarmMs?: number` per task (default `2000`) — controls how early the warm-up requests start.
+**Create Tasks UI**
+- Single‑page Create Tasks drawer is in place: Store, Input (URL/SKU/keywords), Profile, Proxies, Qty per checkout, Task Quantity, Sizes picker, and Mode (Fast / Fast+Preload / Safe / Safe+Preload).
+- Webhook test layout matches the SecuredBot reference (blue linked title, clean key/value rows, J1m's logo).
 
-**Engine wiring** (in `Index()` poll loop, `src/routes/_paired/index.tsx`)
-- New tick branch BEFORE the normal "running" branch:
-  - For each task with `scheduledAt` set and not yet running:
-    - If `now >= scheduledAt` → call `startTask(t.id)` (clears `scheduledAt` after firing).
-    - If `now >= scheduledAt - preWarmMs` → fire one no-op `fetch(proxied(${storeUrl}/products.json, t.proxyGroupId))` to warm DNS/TLS/proxy session. Don't update task state.
-- Poll-loop interval is already 1.5–4s, fine-grained enough for second-accurate scheduling.
+**Auto‑checkout pipeline — honest status**
+There are four code paths, none of them are a single working push‑button flow yet:
 
-**UI**
-- New `<ClockIcon>` button in task card row → opens a small `ScheduleSheet`:
-  - Date+time picker (defaults to next round 5 min)
-  - "Pre-warm 2s before" toggle
-  - "Clear schedule" button
-- In task card, when `scheduledAt` is set, show a live countdown chip (`Starts in 04:32`) replacing the play button until fire time.
-- **Bulk schedule**: in the bulk-action bar, add a Clock icon. Sheet has:
-  - Start time
-  - Optional stagger ms between tasks (so 50 tasks don't all hit at exact same ms)
+| Path | File | What it actually does today | Gaps |
+|---|---|---|---|
+| Edge cart‑warm | `src/lib/checkout.functions.ts` | POSTs `/cart/add.js`, reads `/cart.js`, builds a prefilled cart‑permalink URL + attaches captcha token. | No proxy support (Workers `fetch` can't proxy), does NOT submit shipping/payment. Only warms the cart and opens checkout. |
+| Shopify HTTP checkout | `shopify-http-checkout.functions.ts`, `checkout-one-graphql.functions.ts` | Scripts the Checkout One GraphQL flow. | Untested end‑to‑end on a live store; no proxy from the edge; will lose against Cloudflare/Kasada fingerprinting without a real browser. |
+| Fly.io executor | `executor.functions.ts` + `runOnExecutor` | Forwards the job to an external Node service that runs the chain through a residential proxy. | Requires you to deploy the `/executor` service and set `EXECUTOR_URL` / `EXECUTOR_TOKEN`. Not deployed. |
+| Paired‑PC runner | `runner-dispatch.functions.ts`, `runner-store.ts`, `runner-protocol.ts` | Enqueues a job for a paired desktop runner to claim, execute locally, and report back. Captcha and Browserless helpers exist. | Needs the user to install + pair a desktop runner. This is the blocker you're calling out.|
 
-## 2. Discord webhooks
+So end‑to‑end "click Start Tasks → card charged" does not work in‑app today. Cart‑warm + prefilled checkout works from the edge; full submission requires one of the runner paths.
 
-**Settings**
-- Settings tab gains a "Notifications" card:
-  - Webhook URL input (validated against `https://discord.com/api/webhooks/...` and `https://discordapp.com/api/webhooks/...`)
-  - Toggles per event: `In stock`, `Checkout ready`, `Order confirmed`, `Failed` (default: confirmed + failed on)
-  - "Send test" button → fires a minimal embed
-- Stored under `aio:notify` in localStorage, mirrored to cloud sync (already in place for other prefs).
+---
 
-**Payload (Discord embed)**
-- Title: e.g. `✅ Order confirmed — Air Jordan 1 Low`
-- Color per event (green/amber/red)
-- Fields: Store, Size/Variant, Profile (masked: `John D.****`), Order ID, Elapsed, Proxy group name
-- Screenshot URL if `t.screenshotB64` is present (uploaded to a temp slot? — see below)
-- Timestamp + group name as footer
+## What this change does
 
-**Screenshots from Browserless**
-- Current `screenshotB64` is data-URL only. Discord can't embed base64. Two options:
-  - **A (no-backend):** strip screenshots from the embed; include a "screenshot available in app" note. Simpler, no infra.
-  - **B (later):** upload the screenshot to a Supabase storage bucket and embed the public URL. Defer to a follow-up — keeps this PR small and avoids storage bucket setup.
-- Plan picks **A** for now.
+1. **Remove the pairing gate** so the dashboard is usable standalone.
+2. **Pick one default checkout path** that runs without any external setup, and clearly label the others as optional upgrades.
+3. **Leave the runner/executor code in place** so we can switch back on later — just not required to use the app.
 
-**Firing**
-- New helper `notifyWebhook(event, task, extras)` in a new file `src/lib/discord.ts`. Pure client-side `fetch` to the webhook URL.
-- Hooked into existing state-transition sites in the poll loop: where `updateTask(id, { status: "in_stock" / "checkout_ready" / "confirmed" / "failed" })` is called, also call `notifyWebhook`.
-- Dedupe via a `notifiedRef = useRef(new Map<string, Set<event>>())` so we don't double-post on flapping states.
+### 1. Drop the pairing requirement
 
-## 3. Push notifications — defer
+- Replace the `/_paired` gate with a passthrough that auto‑provisions a local workspace on first load (generate a device id in `localStorage`, call `createWorkspace` silently in the background for cloud sync, but don't block the UI on it).
+- If cloud sync fails (offline, no backend), fall back to pure local storage — the app keeps working.
+- Keep `/pair` reachable from Settings as "Link another device" for later, but it's no longer the front door.
+- Effect: opening the app lands you straight on Tasks. No code to enter, no "Create workspace" screen.
 
-The PWA / service-worker rules in this stack warn against registering SWs in the preview iframe. Web Push **requires** a service worker, so a full implementation will break the editor preview. The in-page `Notification.requestPermission()` flow is already wired and works while the tab is open.
+### 2. Pin the default checkout path to "Edge cart‑warm + open checkout"
 
-Recommended outcome of this plan:
-- Keep the existing in-tab `Notification` ping.
-- Use Discord webhooks as the "remote" channel (works whether the tab is open or not, on every device, no SW required).
-- Revisit true Web Push later as a production-only feature with explicit SW guards.
+- Hook the Create Tasks "Start" button to `runCheckout` (the edge cart‑warm function).
+- For each task: add to cart through `/cart/add.js`, build the prefilled cart‑permalink URL (with profile + optional captcha token), and open it in a new tab so the user finishes payment manually.
+- Mode selector still passes through (`Fast` / `Fast+Preload` / `Safe` / `Safe+Preload`) — Preload modes call the captcha pool first, non‑Preload modes skip it.
+- This is the only mode that works with zero external setup. It's a "cart sniper", not a full ATC bot, and we'll label it that way in the UI so expectations are right.
 
-## Files touched
+### 3. Surface the upgrade paths clearly, but don't require them
 
-- `src/routes/_paired/index.tsx` — add `scheduledAt` / `preWarmMs` fields, scheduler tick branch, countdown chip, ScheduleSheet, bulk schedule, webhook calls at state transitions, notification settings card in `SettingsView`.
-- New `src/lib/discord.ts` — `notifyWebhook(event, task, extras)` builder + sender, payload types, URL validator, "send test" helper.
-- No schema, no migrations, no new server functions.
+- In Settings → "Auto‑checkout" add three optional toggles:
+  - **Fly.io executor** — paste `EXECUTOR_URL` + `EXECUTOR_TOKEN`, enables full HTTP submission with proxies.
+  - **Desktop runner** — link to `/pair` to install + pair a local runner for browser‑based submission with captcha solving.
+  - **Browserless** — paste a Browserless token to run headed checkout from the cloud.
+- When any of these is configured, the task runner uses it instead of the edge cart‑warm.
 
-## Out of scope (next pass)
+### Technical notes (for me, not the user)
 
-- Real Web Push / PWA install
-- Screenshot upload to storage for Discord embeds
-- Per-group webhook routing (one workspace webhook for now)
-- Discord OAuth for license-role sync
+- Files to edit: `src/routes/_paired.tsx` (remove gate), `src/routes/__root.tsx` if it references pair, `src/routes/_paired/index.tsx` Start‑task handler, Settings page for the optional toggles. Keep `/pair`, `workspace.functions.ts`, runner files, executor file all intact.
+- Cloud sync: change `useCloudSync` to no‑op when not paired instead of throwing.
+- No DB schema changes needed.
+
+---
+
+## What I'm NOT doing in this pass
+
+- Not removing the runner/executor code.
+- Not building a new server‑side full checkout submitter — the edge path can't beat Cloudflare without a real browser or a proxy, and we already have two unfinished paths for that.
+- Not touching webhook layout, Create Tasks form, or Sizes picker.
+
+Want me to go ahead?
