@@ -307,7 +307,8 @@ export const runBrowserlessCheckout = createServerFn({ method: "POST" })
       url.searchParams.set("proxy", `http://${data.proxy}`);
       url.searchParams.set("proxySticky", "true");
     }
-    url.searchParams.set("timeout", "120000");
+    // Browserless free/starter plans cap /function at 60s. Keep this at the max.
+    url.searchParams.set("timeout", "60000");
 
     const fnSource = `module.exports = ${browserlessScript().toString()}`;
 
