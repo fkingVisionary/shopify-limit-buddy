@@ -103,9 +103,17 @@ function checkoutScriptSource() {
 
       const visibleCheckoutError = async () => {
         try {
-          const text = await page.evaluate(() => document.body?.innerText ?? "");
-          const m = text.match(/Enter an email|Enter a valid email|email is required|required field|can't be blank|invalid phone|select a delivery|shipping address/i);
-          return m ? m[0] : null;
+          // Only look inside Shopify's actual error containers, not body text —
+          // labels like "Use shipping address as billing address" caused false positives.
+          return await page.evaluate(() => {
+            const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '.notice--error', '.banner--error'];
+            for (const s of sels) {
+              const el = document.querySelector(s);
+              const t = ((el && el.textContent) || "").trim();
+              if (t) return t.slice(0, 200);
+            }
+            return null;
+          });
         } catch { return null; }
       };
 
