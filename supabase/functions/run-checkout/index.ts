@@ -81,7 +81,7 @@ function checkoutScriptSource() {
           });
         }, { timeout: 15000 });
         const clicked = await page.evaluate(() => {
-          const els = Array.from(document.querySelectorAll('button, input[type="submit"]')) as Array<HTMLButtonElement | HTMLInputElement>;
+          const els = Array.from(document.querySelectorAll('button, input[type="submit"]'));
           const target = els.find((el) => {
             const text = ((el instanceof HTMLInputElement ? el.value : el.textContent) ?? "").trim();
             const id = el.id ?? "";
