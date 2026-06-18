@@ -129,7 +129,7 @@ function browserlessScript() {
 
       // ── 1. Warm cookies + add to cart from within the browser ──
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20_000 });
       const addRes: { status: number; body: string } = await page.evaluate(
         async (storeUrl: string, vid: number, q: number) => {
           const r = await fetch(`${storeUrl.replace(/\/$/, "")}/cart/add.js`, {
