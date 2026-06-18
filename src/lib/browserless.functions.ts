@@ -217,7 +217,7 @@ function browserlessScript() {
 
       // ── 6. Card fill (Stripe iframe) ──
       lastStep = "card_fill";
-      await page.waitForSelector('iframe[name^="card-fields-number"]', { timeout: 20_000 });
+      await page.waitForSelector('iframe[name^="card-fields-number"]', { timeout: 15_000 });
       const frames = page.frames();
       const numFrame = frames.find((f: any) => /card-fields-number/.test(f.name()));
       const expFrame = frames.find((f: any) => /card-fields-expiry/.test(f.name()));
