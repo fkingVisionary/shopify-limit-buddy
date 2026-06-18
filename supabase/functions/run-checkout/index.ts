@@ -427,11 +427,6 @@ function checkoutScriptSource() {
             };
             const textFor = (el) => (el.closest("label")?.textContent || document.querySelector('label[for="' + el.id + '"]')?.textContent || el.closest('[data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row')?.textContent || el.textContent || "").trim().toLowerCase();
             const isCard = (text) => /credit\s*card|visa|mastercard|american express|amex/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
-            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
-            if (visibleCardFrame) {
-              visibleCardFrame.scrollIntoView({ block: "center", inline: "center" });
-              return { selected: true };
-            }
             const cardInputs = Array.from(document.querySelectorAll('input[type="radio"]')).filter((input) => visible(input) && isCard(textFor(input) + " " + input.value + " " + input.id + " " + input.name));
             const checkedCard = cardInputs.find((input) => input.checked || input.getAttribute("aria-checked") === "true");
             if (checkedCard) return { selected: true };
@@ -447,6 +442,8 @@ function checkoutScriptSource() {
               const text = (row.textContent || "").trim().toLowerCase();
               if (isCard(text)) return rectFor(row);
             }
+            const visibleCardFrame = Array.from(document.querySelectorAll('iframe[name^="card-fields"], iframe[id*="card" i], iframe[src*="card" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).find(visible);
+            if (visibleCardFrame) visibleCardFrame.scrollIntoView({ block: "center", inline: "center" });
             return null;
           }).catch(() => false);
           if (target?.selected) return true;
