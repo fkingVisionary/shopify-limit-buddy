@@ -164,6 +164,23 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: cors });
 
+  const reqUrl = new URL(req.url);
+  const action = reqUrl.searchParams.get("action");
+  const supa = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+
+  // Stage callback path — called from the headless browser running inside
+  // Browserless to update the current step label. Auth is the unguessable
+  // jobId UUID; no executor token (the headless page can't attach headers).
+  if (action === "stage") {
+    const jobId = reqUrl.searchParams.get("jobId");
+    if (!jobId) return new Response("missing jobId", { status: 400, headers: cors });
+    let s: { stage?: string } = {};
+    try { s = await req.json(); } catch {}
+    if (s.stage) await supa.from("checkout_jobs").update({ stage: s.stage }).eq("id", jobId);
+    return new Response("ok", { headers: cors });
+  }
+
+  // Main worker path — requires the shared executor token.
   const token = req.headers.get("x-executor-token");
   if (!EXECUTOR_TOKEN || token !== EXECUTOR_TOKEN) {
     return new Response("Unauthorized", { status: 401, headers: cors });
@@ -173,8 +190,6 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch {}
   const jobId = body.jobId;
   if (!jobId) return new Response("missing jobId", { status: 400, headers: cors });
-
-  const supa = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
   const { data: job, error: jobErr } = await supa
     .from("checkout_jobs").select("*").eq("id", jobId).maybeSingle();
@@ -194,18 +209,11 @@ Deno.serve(async (req) => {
     return new Response("no browserless key", { status: 500, headers: cors });
   }
 
-  // Stage callback URL — same edge function, action=stage.
+  // Stage callback URL — same edge function, ?action=stage.
   const selfUrl = new URL(req.url);
+  selfUrl.search = "";
   selfUrl.searchParams.set("action", "stage");
   selfUrl.searchParams.set("jobId", jobId);
-
-  // Handle stage callbacks on the same function for simplicity.
-  if (req.headers.get("x-stage-callback") === "1") {
-    let s: { stage?: string } = {};
-    try { s = await req.json(); } catch {}
-    if (s.stage) await supa.from("checkout_jobs").update({ stage: s.stage }).eq("id", jobId);
-    return new Response("ok", { headers: cors });
-  }
 
   const input = job.input as any;
   const url = new URL("https://production-sfo.browserless.io/function");
