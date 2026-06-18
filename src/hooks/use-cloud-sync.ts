@@ -57,8 +57,20 @@ export function useCloudSync() {
   const lastSnapshot = useRef<Record<string, string>>({});
   const pushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const applyingRef = useRef(false);
+  const [paired, setPaired] = useState<boolean>(() => isPaired());
 
   useEffect(() => {
+    const check = () => setPaired(isPaired());
+    window.addEventListener("workspace:pairing-changed", check);
+    window.addEventListener("storage", check);
+    return () => {
+      window.removeEventListener("workspace:pairing-changed", check);
+      window.removeEventListener("storage", check);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!paired) return;
     let cancelled = false;
 
     const pull = async () => {
