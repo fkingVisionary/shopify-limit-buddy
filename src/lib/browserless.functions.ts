@@ -200,7 +200,7 @@ function browserlessScript() {
         return false;
       };
       await clickContinue();
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
       log("shipping_continue", true, page.url());
 
       // ── 5. Shipping method (pick first available) → continue to payment ──
