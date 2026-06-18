@@ -1175,6 +1175,12 @@ function Index() {
           const variants: any[] = data.variants ?? [];
           const avail = variants.find((v) => v.available);
           if (avail) {
+            // Once the engine has fired for this task, don't overwrite the
+            // checkout status on subsequent polls — only bump lastChecked.
+            if (triggeredRef.current.has(t.id)) {
+              updateTask(t.id, { lastChecked: Date.now() });
+              return;
+            }
             updateTask(t.id, { lastChecked: Date.now(), status: "in_stock", variantId: avail.id, message: undefined });
             if (!triggeredRef.current.has(t.id)) {
               triggeredRef.current.add(t.id);
