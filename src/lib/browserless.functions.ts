@@ -212,7 +212,7 @@ function browserlessScript() {
 
       lastStep = "payment_continue";
       await clickContinue();
-      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30_000 }).catch(() => {});
+      await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 15_000 }).catch(() => {});
       log("payment_continue", true, page.url());
 
       // ── 6. Card fill (Stripe iframe) ──
