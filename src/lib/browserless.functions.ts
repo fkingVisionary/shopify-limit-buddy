@@ -268,7 +268,7 @@ function browserlessScript() {
       lastStep = "confirm";
       await page.waitForFunction(
         () => /\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href),
-        { timeout: 60_000 },
+        { timeout: 25_000 },
       );
       const finalUrl = page.url();
       const orderMatch = finalUrl.match(/orders\/(\d+)|checkouts\/[^/]+\/([a-z0-9]+)\/thank_you/i);
