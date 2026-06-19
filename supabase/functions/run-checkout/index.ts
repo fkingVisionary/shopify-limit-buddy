@@ -735,7 +735,7 @@ function checkoutScriptSource() {
       await new Promise((r) => setTimeout(r, 1600));
       const securityCodeRetryNeeded = await page.evaluate(() => {
         const text = document.body?.innerText ?? "";
-        return /security\s*code/i.test(text) && !(/\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href));
+        return /security\\s*code/i.test(text) && !(/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href));
       }).catch(() => false);
       if (securityCodeRetryNeeded) {
         lastStep = "cvv_retry";
