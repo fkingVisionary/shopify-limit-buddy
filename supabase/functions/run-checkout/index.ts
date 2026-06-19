@@ -986,11 +986,11 @@ Deno.serve(async (req) => {
     };
     const proxyUrl = normalizeProxy(input.proxy);
     if (proxyUrl) {
-      // External proxy: pass the full URL. Do NOT set proxyType/proxyCountry —
-      // those only apply to Browserless's built-in residential network and will
-      // override (ignore) the external proxy when combined with `proxy=`.
-      url.searchParams.set("proxy", proxyUrl);
-      url.searchParams.set("proxySticky", "true");
+      // External (third-party) proxy: Browserless expects this as
+      // `externalProxyServer`, NOT `proxy=` (which selects Browserless's
+      // built-in residential/datacenter network and 400s when given a URL).
+      // Stickiness is handled by your provider's session id in the username.
+      url.searchParams.set("externalProxyServer", proxyUrl);
     }
   }
   // Browserless plan supports up to 15-min /function sessions.
