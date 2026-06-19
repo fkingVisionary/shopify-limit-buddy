@@ -24,6 +24,14 @@ const cors = {
 function checkoutScriptSource() {
   return `export default async ({ page, context }) => {
     const { input, stageUrl } = context;
+    const phase = context.phase || "A";
+    const session = context.session || null;
+    // In-script wall-clock budget. Browserless plan caps the /function call
+    // at 60s, so we bail to a partial result well before that and let the
+    // edge function re-enqueue a fresh 60s window for the next phase.
+    const SCRIPT_BUDGET_MS = 45000;
+    const scriptStart = Date.now();
+    const budgetLeft = () => Math.max(0, SCRIPT_BUDGET_MS - (Date.now() - scriptStart));
     const steps = [];
     let lastStep = "launch";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
