@@ -1,59 +1,52 @@
-# Fix: Browserless checkout times out
+## Goal
 
-## Root cause
+The checkout worker hit Browserless's 60s cap (last run: 63s → 408 timeout). Cut wall-clock time in `supabase/functions/run-checkout/index.ts` so a normal run finishes comfortably under 50s, leaving headroom for slow stores.
 
-`runBrowserlessCheckout` runs inside a TanStack server function on Cloudflare Workers. The Worker has a hard ~30s wall-clock limit for a single request, but a real Shopify checkout via Browserless `/function` takes 30–60s (we even set `timeout=60000`). The Worker kills the fetch before Browserless responds → client sees "timed out" / undefined payload.
+## Where the time goes today
 
-This is a runtime-limit problem, not a Browserless problem. We need to stop waiting for Browserless inside the page request.
+Cumulative worst-case waits per stage:
 
-## Approach: async job queue + Supabase Edge Function worker
+- Card field fill: 22s deadline × 4 fields = up to 88s alone. Per attempt loop types each char with `delay:110` + an extra `setTimeout(35)`, so a 16-digit card = ~2.3s per attempt, × 5 attempts × 4 fields.
+- Post-card settle: `Tab` + `waitForNetworkIdle(idle 900, timeout 6000)` + extra 900ms = up to ~7.8s.
+- CVV-retry block: same 6s idle + 900ms after re-submit.
+- Shipping advance: 12s rate-select deadline + 10s `waitForFunction` per attempt.
+- Payment-result: 35s `waitForFunction`.
+- Multiple 1.6s / 900ms / 600ms `setTimeout` "let the page breathe" pauses scattered through select-payment, billing-same-as-shipping, and submit.
 
-Edge Functions (Deno) have a much longer wall-clock (~150s), which fits a full checkout. We use them only as the long-running worker; the client never calls them directly.
+## Trims (concrete numbers)
 
-```text
-client ──► serverFn enqueueCheckout ──► insert row in checkout_jobs (pending)
-                                   └──► fire-and-forget invoke edge fn `run-checkout`
-                                                            │
-                                                            ▼
-                                            edge fn calls Browserless /function
-                                            (up to 90s), then updates row
-                                                            │
-client ──► serverFn getCheckoutJob (poll every 1.5s) ◄──────┘
-```
+1. **Card fill loop** (`fillCardField`, ~line 548)
+   - Per-field deadline: 22000 → 12000 ms.
+   - Per-attempt char delay: `el.type(..., {delay: 110})` → 55, drop the extra `setTimeout(35)` between chars.
+   - Tail-retype delay: 140 → 70, drop the 45ms gap.
+   - Attempts: 5 → 3.
+   - Outer loop poll: 350 → 200 ms.
 
-No new third-party API needed — same Browserless key, just executed from a runtime that can wait long enough.
+2. **Post-card settle** (~line 700)
+   - `waitForNetworkIdle({idleTime: 900, timeout: 6000})` → `{idleTime: 400, timeout: 2500}`.
+   - Trailing `setTimeout(900)` → 300.
 
-## Steps
+3. **CVV-retry settle** (~line 745): same numbers as #2.
 
-1. **DB migration** — `public.checkout_jobs`
-   - `id uuid pk`, `user_id uuid` (RLS scoped to `auth.uid()`)
-   - `status text` (`pending` | `running` | `succeeded` | `failed`)
-   - `stage text` (current step label for UI ticker — replaces guessed client ticker)
-   - `input jsonb`, `result jsonb`, `error text`
-   - `created_at`, `updated_at`
-   - RLS: owner SELECT; service_role ALL. GRANTs as per project rules.
+4. **Shipping advance** (`advanceToPayment`, ~line 306)
+   - `waitForFunction` timeout: 10000 → 5000.
+   - Post-continue `setTimeout(900)` → 400.
+   - `selectShippingRate` deadline: 12000 → 7000; inner sleeps 550/450 → 300/250.
 
-2. **Edge function `run-checkout`** (Deno)
-   - Reads `jobId` from body, loads row with service role.
-   - Sets `status=running`, then calls Browserless `/function` with the existing checkout script (lifted from `browserless.functions.ts`).
-   - Periodically updates `stage` so the UI can show real progress (`cart_add`, `checkout_load`, …) instead of the current fake ticker.
-   - On finish, writes `result` / `error` and final status.
+5. **Submit + payment-result** (~line 735, 756)
+   - Post-submit `setTimeout(1600)` → 600.
+   - `waitForFunction` for thank-you/decline: 35000 → 25000 (still covers slow gateways; total budget already shrunk elsewhere).
 
-3. **Server functions** (`src/lib/checkout-jobs.functions.ts`)
-   - `enqueueCheckout` — auth required, inserts row, fire-and-forget `fetch` to the edge function (no `await` on the body), returns `{ jobId }` immediately. Well under the 30s Worker limit.
-   - `getCheckoutJob({ jobId })` — auth required, returns status/stage/result/error.
+6. **Billing-same-as-shipping pause** (~line 539): 600 → 200 ms.
 
-4. **Client wiring** (`src/routes/_paired/index.tsx`)
-   - Replace direct `browserlessFn(...)` call with `enqueueCheckout` → poll `getCheckoutJob` every ~1.5s.
-   - Drive the existing status message off the row's `stage` field (real progress, not the simulated ticker). Keep elapsed-time display.
-   - On `succeeded`/`failed`, render the same success/failure UI as today.
+7. **Browserless URL `timeout`** (~line 846): keep at 60000 (don't raise). With the trims above, a healthy run lands ~30-40s.
 
-5. **Retire the now-unused sync path**
-   - Keep `browserlessScript()` (used by the edge fn) but remove the public `runBrowserlessCheckout` server fn so nothing can accidentally invoke the 30s-bound version.
+## Out of scope
 
-## Notes
+No logic changes (selectors, retry semantics, error messages stay the same). No plan-tier change. No splitting the script across multiple Browserless calls.
 
-- `BROWSERLESS_API_KEY` already exists; no new secret needed.
-- Edge function needs `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (auto-provisioned) and `BROWSERLESS_API_KEY` (already set).
-- Fire-and-forget invoke is safe because the edge function authorizes via the row's `user_id` written by the authenticated server fn — the edge fn itself doesn't need the user's JWT.
-- No change to retailer detection, in-stock polling, or the manual-assist fallback.
+## Verification
+
+After edit:
+- `node --check` parity (template-literal evaluated) to confirm no regex/escape regressions.
+- Re-run a checkout from the UI; query `checkout_jobs` for the new `updated_at - created_at` and confirm it lands under 50s on a successful run, and that failures still surface the same `stage` values.
