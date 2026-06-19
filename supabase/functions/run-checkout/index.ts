@@ -557,10 +557,10 @@ function checkoutScriptSource() {
           return v.length > 0;
         };
         const nameRe = {
-          number: /card\s*number|^number$|\/number/i,
-          expiry: /expiration|expiry|\/expiry/i,
-          cvv: /security\s*code|verification[_\s-]?value|cvv|cvc|\/verification/i,
-          name: /name\s*on\s*card|\/name(?:[?#/]|$)/i,
+          number: /card\\s*number|^number$|\\/number/i,
+          expiry: /expiration|expiry|\\/expiry/i,
+          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification/i,
+          name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)/i,
         }[kind];
         const deadline = Date.now() + 18000;
         while (Date.now() < deadline) {
