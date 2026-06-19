@@ -43,6 +43,15 @@ function checkoutScriptSource() {
     try {
       await stage("launch");
 
+      // Authenticate against an upstream proxy (host:port set via launch args).
+      try {
+        if (input && input.__proxyUser) {
+          await page.authenticate({ username: input.__proxyUser, password: input.__proxyPass || "" });
+        }
+      } catch {}
+
+
+
       // Aggressive resource blocking — biggest single speedup. Block images,
       // fonts, media, non-essential stylesheets, and known trackers/wallets.
       // Keep documents, XHR/fetch, scripts, and Shopify card-field iframes.
