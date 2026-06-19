@@ -641,10 +641,10 @@ function checkoutScriptSource() {
           return v.length > 0;
         };
         const nameRe = {
-          number: /card\\s*number|^number$|\\/number|card-fields-number/i,
-          expiry: /expiration|expiry|\\/expiry|card-fields-expiry/i,
-          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification/i,
-          name: /name\\s*on\\s*card|card-fields-name|cardholder|holder.?name/i,
+          number: /card\\s*number|^number$|\\/number|card-fields-number|fieldType=number/i,
+          expiry: /expiration|expiry|\\/expiry|card-fields-expiry|fieldType=expiry/i,
+          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification|fieldType=verification/i,
+          name: /name(?!.*(number|expiry|expiration|verification|cvv|cvc|security))/i,
         }[kind];
         // For "name" we must NEVER fall through to a number/expiry/cvv field.
         // looksFilled for name only checks length>=2, so it would silently
