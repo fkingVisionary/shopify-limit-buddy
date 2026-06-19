@@ -395,10 +395,10 @@ function checkoutScriptSource() {
 
       lastStep = "card_fill";
       await stage("card_fill");
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
       const bringPaymentIntoView = async () => {
-        const deadline = Date.now() + 8000;
+        const deadline = Date.now() + 4500;
         while (Date.now() < deadline) {
           const found = await page.evaluate(() => {
             const visible = (el) => {
@@ -415,19 +415,19 @@ function checkoutScriptSource() {
             return true;
           }).catch(() => false);
           if (found) {
-            await new Promise((r) => setTimeout(r, 700));
+            await new Promise((r) => setTimeout(r, 200));
             return true;
           }
           await page.evaluate(() => window.scrollBy(0, Math.max(420, Math.floor(window.innerHeight * 0.8)))).catch(() => null);
           await page.keyboard.press("PageDown").catch(() => null);
-          await new Promise((r) => setTimeout(r, 450));
+          await new Promise((r) => setTimeout(r, 200));
         }
         return false;
       };
       await bringPaymentIntoView();
 
       const selectCreditCardPayment = async () => {
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           const target = await page.evaluate(() => {
             const visible = (el) => {
@@ -479,7 +479,7 @@ function checkoutScriptSource() {
           if (target?.selected) return true;
           if (target?.x != null && target?.y != null) {
             await page.mouse.click(target.x, target.y).catch(() => null);
-            await new Promise((r) => setTimeout(r, 900));
+            await new Promise((r) => setTimeout(r, 250));
             const selected = await page.evaluate(() => {
               const visible = (el) => {
                 if (!el) return false;
@@ -499,7 +499,7 @@ function checkoutScriptSource() {
             if (selected) return true;
           }
           await bringPaymentIntoView();
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 200));
         }
         return false;
       };
