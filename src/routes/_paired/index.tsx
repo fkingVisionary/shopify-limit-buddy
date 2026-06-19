@@ -2980,7 +2980,7 @@ function ProxiesView({
   );
 }
 
-type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null };
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null; targetStatus?: number | null };
 
 function ProxyGroupCard({
   group, onUpdate, onDelete,
