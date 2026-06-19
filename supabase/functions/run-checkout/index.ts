@@ -130,7 +130,7 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 700, timeout: 5000 }).catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1500 }).catch(() => null);
       log("address_fill", true);
 
       const checkoutStep = async () => {
@@ -212,15 +212,15 @@ function checkoutScriptSource() {
       };
 
       const clickContinue = async (allowPaymentSubmit = false, preferredStep = null) => {
-        const deadline = Date.now() + 7000;
+        const deadline = Date.now() + 3500;
         let target = null;
         while (Date.now() < deadline) {
           target = await findContinueTarget(allowPaymentSubmit, preferredStep);
           if (target) break;
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 150));
         }
         if (!target) throw new Error("Could not find checkout continue button");
-        try { await page.mouse.click(target.x, target.y, { delay: 40 }); } catch {}
+        try { await page.mouse.click(target.x, target.y, { delay: 20 }); } catch {}
         await page.evaluate((allowSubmit, preferred) => {
           const visible = (el) => {
             const r = el.getBoundingClientRect();
@@ -254,7 +254,7 @@ function checkoutScriptSource() {
           const step = await checkoutStep();
           if (step === "shipping_method" || step === "payment") return true;
           await clickContinue(false, "shipping").catch(() => null);
-          await new Promise((r) => setTimeout(r, 1200));
+          await new Promise((r) => setTimeout(r, 450));
           const next = await checkoutStep();
           if (next === "shipping_method" || next === "payment") return true;
           const err = await visibleCheckoutError();
@@ -278,7 +278,7 @@ function checkoutScriptSource() {
       };
 
       const selectShippingRate = async () => {
-        const deadline = Date.now() + 7000;
+        const deadline = Date.now() + 4500;
         while (Date.now() < deadline) {
           if (await hasSelectedShippingRate()) return true;
           const target = await page.evaluate(() => {
@@ -316,10 +316,10 @@ function checkoutScriptSource() {
           }).catch(() => null);
           if (target?.selected) return true;
           if (target?.x != null && target?.y != null) {
-            await page.mouse.click(target.x, target.y, { delay: 35 }).catch(() => null);
-            await new Promise((r) => setTimeout(r, 300));
+            await page.mouse.click(target.x, target.y, { delay: 20 }).catch(() => null);
+            await new Promise((r) => setTimeout(r, 160));
           } else {
-            await new Promise((r) => setTimeout(r, 250));
+            await new Promise((r) => setTimeout(r, 150));
           }
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
@@ -343,10 +343,10 @@ function checkoutScriptSource() {
               if (location.href !== prevUrl && /payment/.test(location.href)) return true;
               return false;
             },
-            { timeout: 5000 },
+            { timeout: 3000 },
             startUrl,
           ).catch(() => null);
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 100));
           if (await isPaymentStep()) return true;
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
@@ -395,10 +395,10 @@ function checkoutScriptSource() {
 
       lastStep = "card_fill";
       await stage("card_fill");
-      await new Promise((resolve) => setTimeout(resolve, 2500));
+      await new Promise((resolve) => setTimeout(resolve, 600));
 
       const bringPaymentIntoView = async () => {
-        const deadline = Date.now() + 8000;
+        const deadline = Date.now() + 4500;
         while (Date.now() < deadline) {
           const found = await page.evaluate(() => {
             const visible = (el) => {
@@ -415,19 +415,19 @@ function checkoutScriptSource() {
             return true;
           }).catch(() => false);
           if (found) {
-            await new Promise((r) => setTimeout(r, 700));
+            await new Promise((r) => setTimeout(r, 200));
             return true;
           }
           await page.evaluate(() => window.scrollBy(0, Math.max(420, Math.floor(window.innerHeight * 0.8)))).catch(() => null);
           await page.keyboard.press("PageDown").catch(() => null);
-          await new Promise((r) => setTimeout(r, 450));
+          await new Promise((r) => setTimeout(r, 200));
         }
         return false;
       };
       await bringPaymentIntoView();
 
       const selectCreditCardPayment = async () => {
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
           const target = await page.evaluate(() => {
             const visible = (el) => {
@@ -479,7 +479,7 @@ function checkoutScriptSource() {
           if (target?.selected) return true;
           if (target?.x != null && target?.y != null) {
             await page.mouse.click(target.x, target.y).catch(() => null);
-            await new Promise((r) => setTimeout(r, 900));
+            await new Promise((r) => setTimeout(r, 250));
             const selected = await page.evaluate(() => {
               const visible = (el) => {
                 if (!el) return false;
@@ -499,7 +499,7 @@ function checkoutScriptSource() {
             if (selected) return true;
           }
           await bringPaymentIntoView();
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 200));
         }
         return false;
       };
@@ -585,7 +585,7 @@ function checkoutScriptSource() {
             await el.focus().catch(() => null);
             await el.click({ clickCount: 3 }).catch(() => null);
             await page.keyboard.press("Backspace").catch(() => null);
-            await el.type(typeText, { delay: kind === "name" ? 35 : 120 }).catch(() => null);
+          await el.type(typeText, { delay: kind === "name" ? 20 : 30 }).catch(() => null);
             await page.evaluate((node) => {
               node.dispatchEvent(new Event("input", { bubbles: true }));
               node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -607,7 +607,7 @@ function checkoutScriptSource() {
           return false;
         };
         if (kind === "name" && await fillTopLevelInput()) return true;
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
           // Find candidate frames first via parent <iframe> name attribute
           // (some Shopify builds expose the human label there), then by URL.
@@ -639,7 +639,7 @@ function checkoutScriptSource() {
                 for (let attempt = 0; attempt < 3; attempt++) {
                   await el.focus().catch(() => null);
                   await el.click().catch(() => null);
-                  await el.type(typeText, { delay: 55 }).catch(() => null);
+                  await el.type(typeText, { delay: 25 }).catch(() => null);
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
                     node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -656,7 +656,7 @@ function checkoutScriptSource() {
                     const tail = wantDigits.slice(haveLen);
                     await el.focus().catch(() => null);
                     await el.click().catch(() => null);
-                    await el.type(tail, { delay: 70 }).catch(() => null);
+                    await el.type(tail, { delay: 35 }).catch(() => null);
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
                       await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
@@ -692,8 +692,8 @@ function checkoutScriptSource() {
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 400, timeout: 2500 }).catch(() => null);
-      await new Promise((r) => setTimeout(r, 300));
+      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
+      await new Promise((r) => setTimeout(r, 150));
 
       if (input.captchaToken) {
         lastStep = "captcha_inject";
@@ -726,7 +726,7 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 250));
       const securityCodeRetryNeeded = await page.evaluate(() => {
         const text = document.body?.innerText ?? "";
         return /security\\s*code/i.test(text) && !(/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href));
@@ -737,8 +737,8 @@ function checkoutScriptSource() {
         const retryCvvOk = await fillCardField("cvv", input.card.cvv);
         if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
         await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 400, timeout: 2500 }).catch(() => null);
-        await new Promise((r) => setTimeout(r, 300));
+        await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
+        await new Promise((r) => setTimeout(r, 150));
         lastStep = "submit";
         await stage("submit");
         await clickContinue(true);
@@ -753,7 +753,7 @@ function checkoutScriptSource() {
           const text = document.body?.innerText ?? "";
           return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
         },
-        { timeout: 25000 },
+        { timeout: 15000 },
       );
       const finalUrl = page.url();
       const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
