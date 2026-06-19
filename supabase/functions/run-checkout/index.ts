@@ -669,7 +669,7 @@ function checkoutScriptSource() {
               ? 'input[autocomplete="cc-exp"], input[placeholder*="Expiration" i], input[placeholder*="Expiry" i], input[aria-label*="expiration" i], input[name*="expiry" i]'
               : kind === "cvv"
                 ? 'input[autocomplete="cc-csc"], input[placeholder*="Security" i], input[placeholder*="CVV" i], input[placeholder*="CVC" i], input[aria-label*="security" i], input[name*="verification" i]'
-                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[placeholder*="Cardholder" i], input[aria-label*="cardholder" i], input[name*="cardholder" i], input[id*="cardholder" i]';
+                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[placeholder*="Cardholder" i], input[aria-label*="cardholder" i], input[name*="cardholder" i], input[id*="cardholder" i], input[name="name"], input[id*="name_on_card" i]';
           const handles = await page.$$(selector).catch(() => []);
           for (const el of handles) {
             const visible = await page.evaluate((node) => {
@@ -680,27 +680,34 @@ function checkoutScriptSource() {
             }, el).catch(() => false);
             if (!visible) continue;
             if (await elementLooksLikeWrongField(el, null)) continue;
+            // DOM-set first — avoids cross-iframe keystroke leaks (the bug
+            // where "M edwards" ended up inside the Card number iframe).
+            // Legacy Shopify checkouts process card data server-side, so
+            // DOM-set is accepted; Checkout One uses iframes handled below.
+            await page.evaluate((node, val) => {
+              const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+              node.focus();
+              if (desc && desc.set) desc.set.call(node, String(val));
+              else node.value = String(val);
+              node.dispatchEvent(new Event("input", { bubbles: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true }));
+              node.dispatchEvent(new Event("blur", { bubbles: true }));
+            }, el, raw).catch(() => null);
+            if (looksFilled(await readTopLevelValue(el))) return true;
+            // Fallback: real keystrokes for sites whose tokenizer ignores
+            // programmatic value sets. Tab off afterwards to commit + move
+            // focus, instead of clicking the next field.
             await el.focus().catch(() => null);
             await el.click({ clickCount: 3 }).catch(() => null);
             await page.keyboard.press("Backspace").catch(() => null);
-          await el.type(typeText, { delay: kind === "name" ? 20 : 30 }).catch(() => null);
+            await el.type(typeText, { delay: kind === "name" ? 20 : 30 }).catch(() => null);
             await page.evaluate((node) => {
               node.dispatchEvent(new Event("input", { bubbles: true }));
               node.dispatchEvent(new Event("change", { bubbles: true }));
               node.dispatchEvent(new Event("blur", { bubbles: true }));
             }, el).catch(() => null);
+            await page.keyboard.press("Tab").catch(() => null);
             if (looksFilled(await readTopLevelValue(el))) return true;
-            if (kind === "name") {
-              await page.evaluate((node, val) => {
-                const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-                if (desc && desc.set) desc.set.call(node, String(val));
-                else node.value = String(val);
-                node.dispatchEvent(new Event("input", { bubbles: true }));
-                node.dispatchEvent(new Event("change", { bubbles: true }));
-                node.dispatchEvent(new Event("blur", { bubbles: true }));
-              }, el, raw).catch(() => null);
-              if (looksFilled(await readTopLevelValue(el))) return true;
-            }
           }
           return false;
         };
