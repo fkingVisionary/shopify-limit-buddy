@@ -671,21 +671,21 @@ function checkoutScriptSource() {
                   }
                   await clearIt();
                 }
-                // Last resort: native setter (rarely accepted by card-fields, but try)
-                await frame.evaluate((node, val) => {
-                  const proto = HTMLInputElement.prototype;
-                  const desc = Object.getOwnPropertyDescriptor(proto, "value");
-                  if (desc && desc.set) desc.set.call(node, String(val));
-                  else node.value = String(val);
-                  node.dispatchEvent(new Event("input", { bubbles: true }));
-                  node.dispatchEvent(new Event("change", { bubbles: true }));
-                  node.dispatchEvent(new Event("blur", { bubbles: true }));
-                }, el, value).catch(() => null);
-                const vFinal = await readVal();
-                if (looksFilled(vFinal)) return true;
+                if (kind === "name") {
+                  await frame.evaluate((node, val) => {
+                    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                    if (desc && desc.set) desc.set.call(node, String(val));
+                    else node.value = String(val);
+                    node.dispatchEvent(new Event("input", { bubbles: true }));
+                    node.dispatchEvent(new Event("change", { bubbles: true }));
+                    node.dispatchEvent(new Event("blur", { bubbles: true }));
+                  }, el, raw).catch(() => null);
+                  if (looksFilled(await readVal())) return true;
+                }
               }
             } catch {}
           }
+          if (kind !== "name" && await fillTopLevelInput()) return true;
           await new Promise((r) => setTimeout(r, 350));
         }
         return false;
