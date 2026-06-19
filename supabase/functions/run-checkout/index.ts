@@ -115,7 +115,7 @@ function checkoutScriptSource() {
           });
           if (clicked) {
             await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-            if (/\/checkout/i.test(page.url())) checkoutLoaded = true;
+            if (/\\/checkout/i.test(page.url())) checkoutLoaded = true;
           }
         } catch {}
       }
