@@ -449,7 +449,7 @@ function checkoutScriptSource() {
 
       lastStep = "card_fill";
       await stage("card_fill");
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       const bringPaymentIntoView = async () => {
         const deadline = Date.now() + 4500;
