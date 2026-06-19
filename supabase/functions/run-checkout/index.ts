@@ -993,38 +993,20 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      // Detect a 3-D Secure / bank challenge in any frame OR popup window:
-      // stripe 3DS, adyen, braintree, revolut, checkout.com, worldpay, generic
-      // "challenge" / "authenticate" URLs, or visible body text indicating a
-      // bank-app approval flow. Banks like Revolut open the 3DS step in a
-      // SEPARATE popup window, so we must scan every page on the browser, not
-      // just frames of the checkout page.
-      const url3dsRe = /three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authenticate|challenge|revolut\\.com|adyen\\.com|braintreegateway|checkout\\.com\\/3ds|worldpay|barclaycard|nuvei|cybersource|pay\\.gocardless|secure\\.payway/i;
-      const text3dsRe = /3-?D\\s*Secure|verify(?:\\s+your)?\\s+(?:identity|payment|purchase)|authenticate\\s+your\\s+card|approve.*?(?:bank|app)|authoris[ea](?:\\s+this)?\\s+payment|check\\s+your\\s+\\w+\\s+app|open\\s+your\\s+\\w+\\s+app|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i;
+      // Detect a 3-D Secure / bank challenge in any frame: stripe 3DS, adyen,
+      // braintree, generic "challenge" / "authenticate" URLs, or visible
+      // body text on the top frame.
       const detect3DS = async () => {
         try {
-          // Check all pages (popups). Browserless/puppeteer exposes
-          // browser.pages(); fall back to single-page frames if not available.
-          const pages = (page.browser && typeof page.browser === "function")
-            ? await page.browser().pages().catch(() => [page])
-            : [page];
-          for (const pg of pages) {
-            try {
-              const pu = (pg.url && pg.url()) || "";
-              if (url3dsRe.test(pu)) return true;
-              for (const f of pg.frames ? pg.frames() : []) {
-                const u = (f.url && f.url()) || "";
-                if (url3dsRe.test(u)) return true;
-              }
-              const matched = await pg.evaluate((reSrc) => {
-                const re = new RegExp(reSrc, "i");
-                const txt = (document.body && document.body.innerText) || "";
-                return re.test(txt);
-              }, text3dsRe.source).catch(() => false);
-              if (matched) return true;
-            } catch { /* skip closed/cross-origin page */ }
+          const frames = page.frames();
+          for (const f of frames) {
+            const u = (f.url && f.url()) || "";
+            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authenticate|challenge/i.test(u)) return true;
           }
-          return false;
+          return await page.evaluate(() => {
+            const txt = (document.body && document.body.innerText) || "";
+            return /3-?D\\s*Secure|verify(?:\\s+your)?\\s+(?:identity|payment|purchase)|authenticate your card|approve.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i.test(txt);
+          });
         } catch { return false; }
       };
       // Initial short window for instant outcomes (no 3DS path).
