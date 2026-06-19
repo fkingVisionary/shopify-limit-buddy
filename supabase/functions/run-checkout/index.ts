@@ -681,6 +681,20 @@ function checkoutScriptSource() {
                   return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
                 }, el).catch(() => false);
                 if (!visible) continue;
+                if (excludeRe) {
+                  const wrong = await frame.evaluate((node, reSrc) => {
+                    const re = new RegExp(reSrc, "i");
+                    const attrs = [
+                      node.getAttribute("name") || "",
+                      node.getAttribute("id") || "",
+                      node.getAttribute("placeholder") || "",
+                      node.getAttribute("aria-label") || "",
+                      node.getAttribute("autocomplete") || "",
+                    ].join(" ");
+                    return re.test(attrs);
+                  }, el, excludeRe.source).catch(() => false);
+                  if (wrong) continue;
+                }
                 const readVal = async () => await frame.evaluate((n) => n.value || "", el).catch(() => "");
                 const clearIt = async () => {
                   await el.focus().catch(() => null);
