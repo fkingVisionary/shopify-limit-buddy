@@ -93,7 +93,7 @@ function checkoutScriptSource() {
         "checkout[shipping_address][country]": input.profile.country,
         "checkout[shipping_address][phone]": input.profile.phone,
       });
-      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
       log("checkout_load", true);
 
       const setCheckoutValue = async (selectors, value) => {
