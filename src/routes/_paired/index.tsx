@@ -390,7 +390,7 @@ function handleFromUrl(input: string): string | null {
 async function searchProducts(storeUrl: string, query: string, limit = 8, groupId?: string | null): Promise<Product[]> {
   const q = encodeURIComponent(query.trim());
   const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
-  const res = await fetch(proxied(url, groupId));
+  const res = await fetchShopify(url, groupId);
   if (!res.ok) return [];
   const data: any = await res.json();
   const items: any[] = data?.resources?.results?.products ?? [];
