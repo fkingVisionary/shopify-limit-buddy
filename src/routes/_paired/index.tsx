@@ -1298,6 +1298,9 @@ function Index() {
                   const stageLabels: Record<string, string> = {
                     queued: "Queued",
                     launch: "Launching headless browser",
+                    proxy_auth: "Authenticating with upstream proxy",
+                    intercept_setup: "Setting up request interception",
+                    store_goto: "Loading store homepage",
                     cart_add: "Adding to cart",
                     checkout_load: "Loading checkout",
                     address_fill: "Entering contact and delivery details",
