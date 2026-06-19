@@ -1147,7 +1147,7 @@ function Index() {
         // Pre-warm window: fire one cheap request to warm DNS / proxy session
         if (now >= ts - pre && now < ts && !preWarmedRef.current.has(t.id)) {
           preWarmedRef.current.add(t.id);
-          fetch(proxied(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId)).catch(() => {});
+          fetchShopify(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId, 8000).catch(() => {});
         }
         if (now >= ts) {
           // Clear schedule and fire
