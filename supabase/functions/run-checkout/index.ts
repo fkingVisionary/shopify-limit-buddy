@@ -317,9 +317,9 @@ function checkoutScriptSource() {
           if (target?.selected) return true;
           if (target?.x != null && target?.y != null) {
             await page.mouse.click(target.x, target.y, { delay: 35 }).catch(() => null);
-            await new Promise((r) => setTimeout(r, 550));
+            await new Promise((r) => setTimeout(r, 300));
           } else {
-            await new Promise((r) => setTimeout(r, 450));
+            await new Promise((r) => setTimeout(r, 250));
           }
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
