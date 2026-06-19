@@ -3058,6 +3058,16 @@ function ProxyGroupCard({
         placeholder={"One proxy per line. Any of these formats works:\nhost:port:user:pass\nuser:pass:host:port\nhost:port\nhttp://user:pass@host:port\nhttps://gateway.example.com/fetch?url={url}"}
         autoCapitalize="none" autoCorrect="off" spellCheck={false}
       />
+      <div className="mt-2">
+        <Label className="text-[10px] text-muted-foreground">Test against store (optional)</Label>
+        <Input
+          value={targetUrl}
+          onChange={(e) => setTargetUrl(e.target.value)}
+          className="mt-1 h-8 font-mono text-[11px]"
+          placeholder="https://culturekings.com.au"
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        />
+      </div>
       <div className="mt-2 flex items-center justify-between gap-2">
         <p className="text-[10px] text-muted-foreground">
           {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
@@ -3066,7 +3076,7 @@ function ProxyGroupCard({
           {testing ? (
             <><Loader2 className="h-3 w-3 animate-spin" /> {progress ? `Testing ${progress.i}/${progress.n}` : "Testing"}</>
           ) : (
-            <><Globe className="h-3 w-3" /> Test proxies</>
+            <><Globe className="h-3 w-3" /> {targetUrl.trim() ? "Test on store" : "Test proxies"}</>
           )}
         </Button>
 
