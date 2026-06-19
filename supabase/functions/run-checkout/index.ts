@@ -783,8 +783,7 @@ function checkoutScriptSource() {
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
-      await new Promise((r) => setTimeout(r, 150));
+      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
 
       if (input.captchaToken) {
         lastStep = "captcha_inject";
