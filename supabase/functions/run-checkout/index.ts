@@ -844,89 +844,117 @@ function checkoutScriptSource() {
       };
 
       const detectCaptchaOnPage = async () => {
-        // Scan all frames for sitekey + provider
+        // Scan every frame: read sitekey from data-attributes / URL params /
+        // window.hcaptcha config. Returns first match or null.
         for (const frame of page.frames()) {
           const url = (frame.url && frame.url()) || "";
           let kind = null;
-          if (/hcaptcha\\.com/i.test(url)) kind = "hcaptcha";
+          if (/hcaptcha\\.com|newassets\\.hcaptcha\\.com/i.test(url)) kind = "hcaptcha";
           else if (/challenges\\.cloudflare\\.com|turnstile/i.test(url)) kind = "turnstile";
           else if (/google\\.com\\/recaptcha/i.test(url)) kind = "recaptchaV2";
-          if (!kind) continue;
-          // sitekey is in URL query (?sitekey=) or in the parent doc
-          const m = url.match(/[?&](?:sitekey|k)=([^&]+)/);
-          if (m && m[1]) return { kind, sitekey: decodeURIComponent(m[1]) };
+          if (kind) {
+            const m = url.match(/[?&](?:sitekey|k)=([^&]+)/);
+            if (m && m[1]) return { kind, sitekey: decodeURIComponent(m[1]) };
+          }
+          // Per-frame DOM scan for data-sitekey on any container.
+          try {
+            const found = await frame.evaluate(() => {
+              const el = document.querySelector("[data-sitekey], [data-hcaptcha-sitekey], .h-captcha, .g-recaptcha, .cf-turnstile");
+              if (!el) return null;
+              const sk = el.getAttribute("data-sitekey") || el.getAttribute("data-hcaptcha-sitekey");
+              if (!sk) return null;
+              const cls = (el.className || "") + " " + (el.id || "");
+              let kind = "recaptchaV2";
+              if (/h-captcha|hcaptcha/i.test(cls)) kind = "hcaptcha";
+              else if (/turnstile|cf-/i.test(cls)) kind = "turnstile";
+              return { kind, sitekey: sk };
+            });
+            if (found && found.sitekey) return found;
+          } catch {}
         }
-        // Fall back: scan top-level DOM for data-sitekey
-        return await page.evaluate(() => {
-          const el = document.querySelector("[data-sitekey]");
-          if (!el) return null;
-          const sk = el.getAttribute("data-sitekey");
-          if (!sk) return null;
-          const cls = (el.className || "") + " " + (el.id || "");
-          let kind = "recaptchaV2";
-          if (/h-captcha|hcaptcha/i.test(cls)) kind = "hcaptcha";
-          else if (/turnstile|cf-/i.test(cls)) kind = "turnstile";
-          return { kind, sitekey: sk };
-        }).catch(() => null);
+        return null;
       };
 
-      let captchaToken = input.captchaToken || null;
-      if (!captchaToken) {
-        const det = await detectCaptchaOnPage();
-        if (det && det.sitekey && twoCaptchaKey) {
-          lastStep = "captcha_solve";
-          await stage("captcha_solve");
-          const typeMap = { hcaptcha: "HCaptchaTaskProxyless", turnstile: "TurnstileTaskProxyless", recaptchaV2: "RecaptchaV2TaskProxyless" };
-          try {
-            const createRes = await fetch("https://api.2captcha.com/createTask", {
-              method: "POST", headers: { "content-type": "application/json" },
-              body: JSON.stringify({ clientKey: twoCaptchaKey, task: { type: typeMap[det.kind], websiteURL: page.url(), websiteKey: det.sitekey } }),
-            });
-            const createJson = await createRes.json().catch(() => ({}));
-            if (createJson.errorId && createJson.errorId !== 0) {
-              return await fail("2Captcha submit failed: " + (createJson.errorDescription || createJson.errorCode || "unknown"));
-            }
-            const taskId = createJson.taskId;
-            if (!taskId) return await fail("2Captcha returned no taskId");
-            const deadline = Date.now() + 140000;
-            await new Promise((r) => setTimeout(r, 8000));
-            while (Date.now() < deadline) {
-              const pollRes = await fetch("https://api.2captcha.com/getTaskResult", {
-                method: "POST", headers: { "content-type": "application/json" },
-                body: JSON.stringify({ clientKey: twoCaptchaKey, taskId }),
-              });
-              const pj = await pollRes.json().catch(() => ({}));
-              if (pj.errorId && pj.errorId !== 0) return await fail("2Captcha poll failed: " + (pj.errorDescription || pj.errorCode));
-              if (pj.status === "ready") {
-                captchaToken = (pj.solution && (pj.solution.token || pj.solution.gRecaptchaResponse)) || null;
-                break;
-              }
-              await new Promise((r) => setTimeout(r, 5000));
-            }
-            if (!captchaToken) return await fail("2Captcha timed out solving " + det.kind);
-            log("captcha_solve", true, det.kind);
-          } catch (e) {
-            return await fail("Captcha solve error: " + (e && e.message ? e.message : String(e)));
+      const solveAndInjectCaptcha = async (det) => {
+        if (!det || !det.sitekey) return false;
+        if (!twoCaptchaKey) {
+          lastStep = "captcha_blocked";
+          await stage("captcha_blocked");
+          return { blocked: "Captcha shown by store and TWOCAPTCHA_API_KEY is not configured" };
+        }
+        lastStep = "captcha_solve";
+        await stage("captcha_solve");
+        const typeMap = { hcaptcha: "HCaptchaTaskProxyless", turnstile: "TurnstileTaskProxyless", recaptchaV2: "RecaptchaV2TaskProxyless" };
+        try {
+          const createRes = await fetch("https://api.2captcha.com/createTask", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ clientKey: twoCaptchaKey, task: { type: typeMap[det.kind], websiteURL: page.url(), websiteKey: det.sitekey } }),
+          });
+          const createJson = await createRes.json().catch(() => ({}));
+          if (createJson.errorId && createJson.errorId !== 0) {
+            return { blocked: "2Captcha submit failed: " + (createJson.errorDescription || createJson.errorCode || "unknown") };
           }
-        } else if (det && det.sitekey && !twoCaptchaKey) {
-          return await fail("Captcha detected (" + det.kind + ") but TWOCAPTCHA_API_KEY is not configured");
+          const taskId = createJson.taskId;
+          if (!taskId) return { blocked: "2Captcha returned no taskId" };
+          const deadline = Date.now() + 140000;
+          await new Promise((r) => setTimeout(r, 8000));
+          let token = null;
+          while (Date.now() < deadline) {
+            const pollRes = await fetch("https://api.2captcha.com/getTaskResult", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ clientKey: twoCaptchaKey, taskId }),
+            });
+            const pj = await pollRes.json().catch(() => ({}));
+            if (pj.errorId && pj.errorId !== 0) return { blocked: "2Captcha poll failed: " + (pj.errorDescription || pj.errorCode) };
+            if (pj.status === "ready") {
+              token = (pj.solution && (pj.solution.token || pj.solution.gRecaptchaResponse)) || null;
+              break;
+            }
+            await new Promise((r) => setTimeout(r, 5000));
+          }
+          if (!token) return { blocked: "2Captcha timed out solving " + det.kind };
+          lastStep = "captcha_inject";
+          await stage("captcha_inject");
+          await injectToken(token);
+          await page.evaluate(() => {
+            const checks = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+            for (const c of checks) {
+              const lbl = (c.closest('label')?.textContent || '').toLowerCase();
+              if (lbl.includes('i am human') && !c.checked) { c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); }
+            }
+          }).catch(() => null);
+          log("captcha_inject", true, det.kind);
+          return { token };
+        } catch (e) {
+          return { blocked: "Captcha solve error: " + (e && e.message ? e.message : String(e)) };
+        }
+      };
+
+      // ─── Pre-submit captcha sweep (up to 2 attempts) ─────────────────
+      if (input.captchaToken) {
+        lastStep = "captcha_inject";
+        await stage("captcha_inject");
+        await injectToken(input.captchaToken);
+        log("captcha_inject", true, "pre-supplied token");
+      } else {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const det = await detectCaptchaOnPage();
+          if (!det) break;
+          if (attempt === 0) { lastStep = "captcha_detect"; await stage("captcha_detect"); }
+          else { lastStep = "captcha_retry"; await stage("captcha_retry"); }
+          const res = await solveAndInjectCaptcha(det);
+          if (res && res.blocked) return await fail(res.blocked);
+          await new Promise((r) => setTimeout(r, 800));
+          const still = await detectCaptchaOnPage();
+          if (!still) break;
+          if (attempt === 1) {
+            lastStep = "captcha_blocked";
+            await stage("captcha_blocked");
+            return await fail("Captcha kept reappearing after solve — proxy/IP is likely flagged. Try rotating proxies.");
+          }
         }
       }
 
-      if (captchaToken) {
-        lastStep = "captcha_inject";
-        await stage("captcha_inject");
-        await injectToken(captchaToken);
-        // Tick the "I am human" checkbox if present so its UI reflects success.
-        await page.evaluate(() => {
-          const checks = Array.from(document.querySelectorAll('input[type="checkbox"]'));
-          for (const c of checks) {
-            const lbl = (c.closest('label')?.textContent || '').toLowerCase();
-            if (lbl.includes('i am human') && !c.checked) { c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); }
-          }
-        }).catch(() => null);
-        log("captcha_inject", true);
-      }
 
       if (input.dryRun) {
         await stage("dry_run_done");
@@ -1001,6 +1029,18 @@ function checkoutScriptSource() {
           // Extend wait to 4 minutes for user/bank to approve.
           resultDeadline = Date.now() + 240000;
         }
+        // Post-submit captcha re-challenge: solve, inject, re-click Pay-now.
+        if (!threeDsActive) {
+          const postDet = await detectCaptchaOnPage();
+          if (postDet) {
+            lastStep = "captcha_retry";
+            await stage("captcha_retry");
+            const res = await solveAndInjectCaptcha(postDet);
+            if (res && res.blocked) return await fail(res.blocked);
+            await clickContinue(true).catch(() => null);
+            resultDeadline = Date.now() + 20000;
+          }
+        }
         await new Promise((r) => setTimeout(r, threeDsActive ? 1000 : 200));
       }
       if (earlyReject) return await paymentRejected(earlyReject);
@@ -1009,7 +1049,10 @@ function checkoutScriptSource() {
         const paymentMsg = await visiblePaymentError();
         if (paymentMsg) return await paymentRejected(paymentMsg.slice(0, 240));
         if (threeDsActive) return await paymentRejected("3-D Secure verification timed out or was not completed");
-        return await paymentRejected("Payment was not accepted");
+        // If a captcha is still on screen, this is a captcha block — not a payment decline.
+        const stillCaptcha = await detectCaptchaOnPage();
+        if (stillCaptcha) return await fail("Captcha could not be bypassed — proxy/IP is likely flagged. Try rotating proxies.");
+        return await paymentRejected("Payment did not complete — store may be silently blocking this proxy/IP");
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
