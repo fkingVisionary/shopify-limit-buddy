@@ -965,9 +965,26 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      // Race: thank-you URL OR visible payment error, polled tightly.
-      const resultDeadline = Date.now() + 15000;
+      // Detect a 3-D Secure / bank challenge in any frame: stripe 3DS, adyen,
+      // braintree, generic "challenge" / "authenticate" URLs, or visible
+      // body text on the top frame.
+      const detect3DS = async () => {
+        try {
+          const frames = page.frames();
+          for (const f of frames) {
+            const u = (f.url && f.url()) || "";
+            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authenticate|challenge/i.test(u)) return true;
+          }
+          return await page.evaluate(() => {
+            const txt = (document.body && document.body.innerText) || "";
+            return /3-?D\\s*Secure|verify(?:\\s+your)?\\s+(?:identity|payment|purchase)|authenticate your card|approve.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i.test(txt);
+          });
+        } catch { return false; }
+      };
+      // Initial short window for instant outcomes (no 3DS path).
+      let resultDeadline = Date.now() + 15000;
       let earlyReject = null;
+      let threeDsActive = false;
       while (Date.now() < resultDeadline) {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
         const paymentErr = await visiblePaymentError();
@@ -976,13 +993,23 @@ function checkoutScriptSource() {
           earlyReject = paymentErr;
           break;
         }
-        await new Promise((r) => setTimeout(r, 200));
+        if (!threeDsActive && await detect3DS()) {
+          threeDsActive = true;
+          lastStep = "three_d_secure";
+          await stage("three_d_secure");
+          log("three_d_secure", true, "challenge detected");
+          // Extend wait to 4 minutes for user/bank to approve.
+          resultDeadline = Date.now() + 240000;
+        }
+        await new Promise((r) => setTimeout(r, threeDsActive ? 1000 : 200));
       }
       if (earlyReject) return await paymentRejected(earlyReject);
       const finalUrl = page.url();
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
-        const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
-        return await paymentRejected(paymentMsg.slice(0, 240));
+        const paymentMsg = await visiblePaymentError();
+        if (paymentMsg) return await paymentRejected(paymentMsg.slice(0, 240));
+        if (threeDsActive) return await paymentRejected("3-D Secure verification timed out or was not completed");
+        return await paymentRejected("Payment was not accepted");
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
@@ -1128,8 +1155,8 @@ Deno.serve(async (req) => {
 
   }
   // Browserless plan supports up to 15-min /function sessions.
-  // 300s gives generous headroom for slow Shopify checkouts.
-  url.searchParams.set("timeout", "300000");
+  // 360s gives generous headroom for slow Shopify checkouts incl. 3-D Secure.
+  url.searchParams.set("timeout", "360000");
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 

@@ -177,20 +177,40 @@ async function runCheckout(job) {
     await clickContinue();
     log("submit", true);
 
-    // 9. Confirm — wait for thank-you OR a decline message, whichever comes first.
+    // 9. Confirm — wait for thank-you OR a decline message. Detect 3-D Secure
+    // challenge and extend the wait window so the user can approve in-bank.
     lastStep = "confirm";
     const paymentTerms = /declined|payment\s*(?:failed|could(?:n['\u2019])?t|cannot|can\s*not)|card\s*(?:invalid|declined|not accepted)|unable to process|try another card|expired|insufficient funds/i;
-    try {
-      await page.waitForFunction(
-        (re) => {
-          if (/\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href)) return true;
-          const txt = (document.body && document.body.innerText) || "";
-          return new RegExp(re, "i").test(txt);
-        },
-        { timeout: 60_000 },
-        paymentTerms.source,
-      );
-    } catch (_) { /* fall through to outcome detection */ }
+    const isThankYou = (u) => /\/thank_you|orders\/|checkouts\/.+\/thank/i.test(u);
+    const detect3DS = async () => {
+      try {
+        for (const f of page.frames()) {
+          const u = f.url() || "";
+          if (/three_d_secure|3d[_-]?secure|3ds|hooks\.stripe\.com\/3d|challenges\.stripe\.com|acs|authenticate|challenge/i.test(u)) return true;
+        }
+        return await page.evaluate(() => {
+          const t = (document.body && document.body.innerText) || "";
+          return /3-?D\s*Secure|verify(?:\s+your)?\s+(?:identity|payment|purchase)|authenticate your card|approve.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i.test(t);
+        });
+      } catch { return false; }
+    };
+    let deadline = Date.now() + 15000;
+    let threeDsActive = false;
+    let declineMsg = null;
+    while (Date.now() < deadline) {
+      if (isThankYou(page.url())) break;
+      let bodyText = "";
+      try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
+      const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
+      if (m) { declineMsg = m[0].trim().slice(0, 240); break; }
+      if (!threeDsActive && await detect3DS()) {
+        threeDsActive = true;
+        lastStep = "three_d_secure";
+        log("three_d_secure", true, "challenge detected");
+        deadline = Date.now() + 240000;
+      }
+      await new Promise((r) => setTimeout(r, threeDsActive ? 1000 : 300));
+    }
 
     const finalUrl = page.url();
     const shot = (await page.screenshot({ type: "png" })).toString("base64");
@@ -206,16 +226,28 @@ async function runCheckout(job) {
       };
     }
 
-    // Look for a decline message in the page body.
-    let bodyText = "";
-    try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
-    const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
-    if (m) {
-      const msg = m[0].trim().slice(0, 240);
-      log("payment_result", true, msg);
+    // Decline detected during loop, or fall back to a final body scan.
+    if (!declineMsg) {
+      let bodyText = "";
+      try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
+      const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
+      if (m) declineMsg = m[0].trim().slice(0, 240);
+    }
+    if (declineMsg) {
+      log("payment_result", true, declineMsg);
       await browser.close();
       return {
-        jobId: job.id, ok: true, paymentRejected: true, paymentMessage: msg,
+        jobId: job.id, ok: true, paymentRejected: true, paymentMessage: declineMsg,
+        orderId: null, finalUrl, steps, screenshotB64: shot,
+        elapsedMs: Date.now() - t0, dryRun: false,
+      };
+    }
+    if (threeDsActive) {
+      log("three_d_secure", false, "timed out");
+      await browser.close();
+      return {
+        jobId: job.id, ok: true, paymentRejected: true,
+        paymentMessage: "3-D Secure verification timed out or was not completed",
         orderId: null, finalUrl, steps, screenshotB64: shot,
         elapsedMs: Date.now() - t0, dryRun: false,
       };
