@@ -12,7 +12,10 @@ import { z } from "zod";
 import { requireWorkspaceDevice } from "@/integrations/workspace/middleware";
 import { classifyProxy, parseProxyParts } from "@/lib/proxy-format";
 
-const Schema = z.object({ proxyUrl: z.string().min(1).max(2000) });
+const Schema = z.object({
+  proxyUrl: z.string().min(1).max(2000),
+  targetUrl: z.string().url().max(2000).optional(),
+});
 
 export type ProxyHealth = {
   ok: boolean;
