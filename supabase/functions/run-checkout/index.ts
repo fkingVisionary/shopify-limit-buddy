@@ -941,9 +941,9 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  // Requires a Browserless plan that allows >60s /function sessions.
-  // 180s gives generous headroom for slow Shopify checkouts.
-  url.searchParams.set("timeout", "180000");
+  // Browserless plan supports up to 15-min /function sessions.
+  // 300s gives generous headroom for slow Shopify checkouts.
+  url.searchParams.set("timeout", "300000");
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
