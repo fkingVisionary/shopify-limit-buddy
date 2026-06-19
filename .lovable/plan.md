@@ -1,49 +1,66 @@
-## Goal
+## Confirmed behaviour
 
-Make success and failure outcomes reflect the **true** result of the checkout (confirmed order vs. payment declined vs. transport/fill failure), and ensure the corresponding webhook fires for each.
+Captcha appears **before** Pay-now (Shopify shows it as soon as the payment step renders, because the proxy IP / fingerprint is flagged). Our pre-submit detector is already running at that point but isn't catching this widget, so we click Pay-now anyway and Shopify silently blocks the submit — surfaced as the misleading "Payment was not accepted".
 
-## Current behaviour (the bug)
+## Why the existing detector misses it
 
-`run-checkout` returns `{ ok: true, paymentRejected: true, paymentMessage }` when Shopify shows a "payment declined" message after submit. Downstream this is treated as a *quasi-success*:
+`detectCaptchaOnPage()` in `supabase/functions/run-checkout/index.ts` (lines 846–871) does two things:
+1. Walks `page.frames()` and only matches when the **frame URL** contains `?sitekey=` or `?k=`.
+2. Falls back to a `[data-sitekey]` query, but only against the **top-level document**.
 
-- DB row (`supabase/functions/run-checkout/index.ts` ~L1166): writes `status: "succeeded"`, `stage: "confirm"` — wrong, the order never went through.
-- UI `finish()` (`src/routes/_paired/index.tsx` ~L1315-1349): sets task status to `"checkout_ready"`, shows "payment declined as expected", and **fires no webhook at all**.
-- A real confirmed order fires `confirmed`; a transport/fill error fires `failed`; a decline silently disappears.
+Shopify's hCaptcha mounts inside a sandboxed iframe whose src is `https://newassets.hcaptcha.com/captcha/v1/...` with no sitekey in the URL, and the `data-sitekey` div lives inside the Shopify checkout iframe — not the top document. So the detector returns `null`, no solve runs, and we proceed to a doomed Pay-now click.
+
+A pure in-house bypass for hCaptcha is not realistic — it's designed to defeat headless automation. 2Captcha (key already in secrets) is the correct path; we just need to actually detect the widget and re-try after solve.
 
 ## Plan
 
-### 1. Treat declines as failures with a distinct sub-type
+### 1. Detection that actually finds the Shopify hCaptcha
 
-In `supabase/functions/run-checkout/index.ts`:
+Rewrite `detectCaptchaOnPage()` to:
 
-- Final DB write: if `result.paymentRejected`, write `status: "failed"`, `stage: "payment_declined"`, `error: result.paymentMessage`. Keep `result` JSON intact so the UI can still surface the screenshot + message.
-- Sanity-check confirmed success: only treat as `"succeeded"` when `result.ok === true && !result.paymentRejected && (result.orderId || /thank_you|orders\//.test(result.finalUrl || ""))`. Otherwise mark `failed` with `stage: "confirm_uncertain"` so we don't fire false-positive `confirmed` webhooks.
+- Iterate every frame (`page.frames()`) and run `frame.evaluate()` to read `data-sitekey` from any element in that frame's document, not just the main one.
+- Also detect by frame URL host: `newassets.hcaptcha.com` / `hcaptcha.com` → hCaptcha; `challenges.cloudflare.com` → Turnstile; `google.com/recaptcha` → reCAPTCHA. When the URL has no query sitekey, pull it from the parent frame's `[data-hcaptcha-widget-id]` / `[data-sitekey]` / inline `window.hcaptcha` config, or from the iframe element's `data-hcaptcha-sitekey` attribute on the parent document.
+- Return the first match with `{ kind, sitekey }`, or `null`.
 
-### 2. UI: fire the correct webhook for every outcome
+### 2. Solve pre-submit, then re-verify before clicking Pay-now
 
-In `src/routes/_paired/index.tsx` `finish()`:
+Extract the existing 2Captcha submit/poll/inject block (lines 873–929) into one helper `solveAndInjectCaptcha(detection)` so it can be called from multiple spots without duplication. Pre-submit flow becomes:
 
-- **Dry-run** (`b.dryRun`): unchanged — `checkout_ready` status, no webhook.
-- **Payment declined** (`b.paymentRejected`): set task `status: "failed"`, message `Payment declined: <paymentMessage>`, and **fire `failed` webhook** with `message: "declined: <paymentMessage>"`. (Reuses existing `failed` event — no new event type or settings UI required.)
-- **Confirmed**: require either an `orderId` or a thank-you URL before firing `confirmed`; otherwise fall through to the failed branch with message "Order outcome uncertain".
-- **Failed** (current path): unchanged.
+- `detect → solve via 2Captcha → injectToken → tick "I am human" checkbox → wait 500ms → re-detect`.
+- If still detected, retry once more (max 2 pre-submit solves). After that, fail fast with a clear message instead of clicking Pay-now into a blocked form.
 
-Apply the same logic in the runner-poll path (`runViaLocalRunner` finish branch already shares the `finish()` function, so this is one change).
+### 3. Post-submit safety net
 
-### 3. Runner parity
+Wrap the submit → result-wait sequence in a small retry loop (max 2 attempts). Inside the result-wait, if a captcha re-appears (Shopify sometimes re-challenges), call the same helper, inject, re-click Pay-now. Existing 3-D Secure and decline detection stay unchanged.
 
-`runner/checkout.cjs` currently has no decline detection — it returns `ok:true` with whatever URL it lands on. Add a post-submit check mirroring the edge function: if the final URL is not a thank-you/orders URL and the page body contains the existing `paymentTerms` regex match, return `{ ok: true, paymentRejected: true, paymentMessage }`. The report endpoint stores the result blob verbatim, so the UI logic from step 2 handles display + webhook uniformly.
+### 4. Honest error messages
 
-### 4. Verification
+- Captcha detected but `TWOCAPTCHA_API_KEY` missing → fail `captcha_blocked`: "Captcha shown by store and TWOCAPTCHA_API_KEY is not configured".
+- Captcha keeps reappearing after 2 solves → fail `captcha_blocked`: "Captcha kept reappearing after solve — proxy/IP is likely flagged. Try rotating proxies.".
+- Result wait ends with no thank-you, no decline, no captcha → keep current behaviour but add hint: "Payment did not complete — store may be silently blocking this proxy/IP".
 
-- Run a Culture Kings task with the known-declining card → expect: task card shows red "Failed — Payment declined: …", Discord `failed` webhook posts with the decline reason, DB row `status=failed, stage=payment_declined`.
-- Run a task with a card that would actually succeed (or a Shopify Bogus Gateway "1" card on a test store) → expect: `confirmed` webhook with `orderId`, status `confirmed`.
-- Force a fill/transport error → expect: existing `failed` webhook still posts.
+### 5. Stage labels
+
+Add to `stageLabels` in `src/routes/_paired/index.tsx` so the task card reflects real progress:
+
+- `captcha_detect` → "Captcha challenge detected"
+- `captcha_solve` → "Solving captcha via 2Captcha (≈30–60s)…"
+- `captcha_retry` → "Captcha reappeared — re-solving…"
+- `captcha_blocked` → "Captcha could not be bypassed"
+
+### 6. About the proxy
+
+We won't add proxy rotation logic in this task (separate concern), but the new `captcha_blocked` message explicitly tells the user the IP is the most likely cause so they know to rotate.
+
+### 7. Verification
+
+- Re-run the Culture Kings task on the same flagged proxy. Expected stage flow: `card_fill → captcha_detect → captcha_solve → captcha_inject → submit → confirm` (or `payment_declined` / `three_d_secure`). The fail mode "Payment was not accepted · 44s" should not occur on a captcha-only block — it should become either a real outcome or the explicit `captcha_blocked` message.
+- Run a store without captcha → flow is unchanged.
+- Temporarily unset `TWOCAPTCHA_API_KEY` and re-run → fast `captcha_blocked` error rather than a misleading payment error.
 
 ## Files to touch
 
-- `supabase/functions/run-checkout/index.ts` — final DB write block (~L1165) + result shape comment.
-- `src/routes/_paired/index.tsx` — `finish()` helper (~L1315-1349).
-- `runner/checkout.cjs` — post-submit decline detection.
+- `supabase/functions/run-checkout/index.ts` — rewrite `detectCaptchaOnPage()`, extract `solveAndInjectCaptcha()` helper, add pre-submit re-verify, add post-submit re-solve loop, improve error messages.
+- `src/routes/_paired/index.tsx` — extend `stageLabels` with the four new keys.
 
-No schema, secret, or webhook-config changes required. The existing `failed` Discord event covers declines; users who already enabled `failed` notifications will start receiving them automatically.
+No new secrets, schema, runner-protocol, or webhook changes. The local-runner path in `runner/checkout.cjs` only injects a token if one is supplied externally; bringing 2Captcha into the local runner is a follow-up — the failing path in your screenshot is the Browserless edge function.
