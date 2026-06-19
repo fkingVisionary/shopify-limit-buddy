@@ -30,6 +30,7 @@ import { enqueueCheckout, getCheckoutJob } from "@/lib/checkout-jobs.functions";
 import { pingBrowserless } from "@/lib/browserless-ping.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { checkProxyExit } from "@/lib/proxy-health.functions";
+import { shopifyFetchViaProxy } from "@/lib/shopify-fetch.functions";
 import { classifyProxy } from "@/lib/proxy-format";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
@@ -132,6 +133,46 @@ function pickRawProxy(groupId: string | null | undefined): string | null {
   return raw[i];
 }
 
+// Unified Shopify fetch that picks the right transport based on the group:
+//   - URL-template proxies → fetch the template URL directly
+//   - Raw `user:pass@host:port` proxies → tunnel via Browserless serverFn so
+//     the request actually exits from the proxy IP (Culture Kings etc. block
+//     the Lovable edge IP, which is why direct resolves hang).
+//   - No group / no usable proxies → fall back to /api/public/shopify.
+// Always wraps the fetch in an AbortSignal.timeout so the resolve step never
+// sits forever — caller sees a clear "timeout" instead.
+async function fetchShopify(url: string, groupId?: string | null, timeoutMs = 12000): Promise<Response> {
+  if (groupId) {
+    const group = __proxyGroups.find((g) => g.id === groupId);
+    const templates = group?.proxies.filter((s) => s.includes("{url}")) ?? [];
+    const raws = group?.proxies.filter((s) => !s.includes("{url}")) ?? [];
+    if (templates.length === 0 && raws.length > 0) {
+      const proxyUrl = pickRawProxy(groupId);
+      if (proxyUrl) {
+        const result = await shopifyFetchViaProxy({ data: { targetUrl: url, proxyUrl } });
+        if (!result.ok) {
+          return new Response(JSON.stringify({ error: result.error ?? "proxy fetch failed" }), {
+            status: result.status > 0 ? result.status : 502,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(result.body, {
+          status: result.status || 200,
+          headers: { "content-type": result.contentType || "text/plain" },
+        });
+      }
+    }
+  }
+  try {
+    return await fetch(proxied(url, groupId), { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: (e as Error).message ?? "fetch failed" }), {
+      status: 599,
+      headers: { "content-type": "application/json" },
+    });
+  }
+}
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -204,7 +245,7 @@ async function detectLimit(storeUrl: string, handle: string, groupId?: string | 
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
   // quantity_rule.max — the merchant-configured per-order limit.
   try {
-    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
+    const res = await fetchShopify(`${storeUrl}/products/${handle}.js`, groupId);
     if (res.ok) {
       const data: any = await res.json();
       const variants: any[] = data.variants ?? [];
@@ -221,7 +262,7 @@ async function detectLimit(storeUrl: string, handle: string, groupId?: string | 
     // fall through
   }
 
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}`, groupId));
+  const res = await fetchShopify(`${storeUrl}/products/${handle}`, groupId, 15000);
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
@@ -326,7 +367,7 @@ function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | 
 
 // Fetch a single product by Shopify handle and return it as a Product
 async function fetchProductByHandle(storeUrl: string, handle: string, groupId?: string | null): Promise<Product | null> {
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
+  const res = await fetchShopify(`${storeUrl}/products/${handle}.js`, groupId);
   if (!res.ok) return null;
   const p: any = await res.json();
   return {
@@ -349,7 +390,7 @@ function handleFromUrl(input: string): string | null {
 async function searchProducts(storeUrl: string, query: string, limit = 8, groupId?: string | null): Promise<Product[]> {
   const q = encodeURIComponent(query.trim());
   const url = `${storeUrl}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=${limit}`;
-  const res = await fetch(proxied(url, groupId));
+  const res = await fetchShopify(url, groupId);
   if (!res.ok) return [];
   const data: any = await res.json();
   const items: any[] = data?.resources?.results?.products ?? [];
@@ -1106,7 +1147,7 @@ function Index() {
         // Pre-warm window: fire one cheap request to warm DNS / proxy session
         if (now >= ts - pre && now < ts && !preWarmedRef.current.has(t.id)) {
           preWarmedRef.current.add(t.id);
-          fetch(proxied(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId)).catch(() => {});
+          fetchShopify(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId, 8000).catch(() => {});
         }
         if (now >= ts) {
           // Clear schedule and fire
@@ -1167,7 +1208,7 @@ function Index() {
       if (running.length === 0) return;
       await Promise.all(running.map(async (t) => {
         try {
-          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId));
+          const res = await fetchShopify(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId, 10000);
           if (!res.ok) {
             updateTask(t.id, { lastChecked: Date.now(), message: `HTTP ${res.status}` });
             return;
