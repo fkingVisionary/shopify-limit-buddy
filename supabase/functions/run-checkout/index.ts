@@ -737,8 +737,8 @@ function checkoutScriptSource() {
         const retryCvvOk = await fillCardField("cvv", input.card.cvv);
         if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
         await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 900, timeout: 6000 }).catch(() => null);
-        await new Promise((r) => setTimeout(r, 900));
+        await page.waitForNetworkIdle?.({ idleTime: 400, timeout: 2500 }).catch(() => null);
+        await new Promise((r) => setTimeout(r, 300));
         lastStep = "submit";
         await stage("submit");
         await clickContinue(true);
