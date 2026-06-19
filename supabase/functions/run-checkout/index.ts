@@ -42,8 +42,29 @@ function checkoutScriptSource() {
       };
     try {
       await stage("launch");
+
+      // Aggressive resource blocking — biggest single speedup. Block images,
+      // fonts, media, non-essential stylesheets, and known trackers/wallets.
+      // Keep documents, XHR/fetch, scripts, and Shopify card-field iframes.
+      try {
+        await page.setRequestInterception(true);
+        const denyHostRe = /(google-analytics|googletagmanager|google\\.com\\/(?:pagead|recaptcha)|doubleclick|facebook\\.(?:net|com)\\/tr|connect\\.facebook|hotjar|clarity\\.ms|segment\\.(?:io|com)|tiktok|pinterest|klaviyo|bing\\.com|bat\\.bing|snap(?:chat)?|twitter\\.com\\/i\\/adsct|criteo|taboola|outbrain|fullstory|datadoghq|sentry\\.io|newrelic|cdn\\.shopify\\.com\\/shopifycloud\\/(?:perf-kit|consent-tracking)|monorail-edge\\.shopifysvc|shop\\.app|pay\\.google|applepay|paypal\\.com|klarna|afterpay|clearpay|bitpay)/i;
+        const keepHostRe = /(shopifycs\\.com|deposit\\.shopifycs|pay\\.shopify\\.com\\/card|checkout\\.shopify)/i;
+        page.on("request", (req) => {
+          try {
+            const url = req.url();
+            const type = req.resourceType();
+            if (keepHostRe.test(url)) return req.continue();
+            if (type === "image" || type === "media" || type === "font") return req.abort();
+            if (type === "stylesheet") return req.abort();
+            if (denyHostRe.test(url)) return req.abort();
+            return req.continue();
+          } catch { try { req.continue(); } catch {} }
+        });
+      } catch {}
+
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
       await stage("cart_add");
       const atc = await page.evaluate(async (variantId, qty) => {
         const r = await fetch("/cart/add.js", {
@@ -72,7 +93,7 @@ function checkoutScriptSource() {
         "checkout[shipping_address][country]": input.profile.country,
         "checkout[shipping_address][phone]": input.profile.phone,
       });
-      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
       log("checkout_load", true);
 
       const setCheckoutValue = async (selectors, value) => {
@@ -163,7 +184,7 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1500 }).catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
       log("address_fill", true);
 
       const checkoutStep = async () => {
@@ -428,7 +449,7 @@ function checkoutScriptSource() {
 
       lastStep = "card_fill";
       await stage("card_fill");
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       const bringPaymentIntoView = async () => {
         const deadline = Date.now() + 4500;
@@ -762,8 +783,7 @@ function checkoutScriptSource() {
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
-      await new Promise((r) => setTimeout(r, 150));
+      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
 
       if (input.captchaToken) {
         lastStep = "captcha_inject";
@@ -796,7 +816,7 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 250));
       const securityCodeRetryNeeded = await page.evaluate(() => {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return false;
         const visible = (el) => {
@@ -814,8 +834,7 @@ function checkoutScriptSource() {
         const retryCvvOk = await fillCardField("cvv", input.card.cvv);
         if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
         await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
-        await new Promise((r) => setTimeout(r, 150));
+        await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
         lastStep = "submit";
         await stage("submit");
         await clickContinue(true);
@@ -824,16 +843,20 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      const resultDeadline = Date.now() + 30000;
+      // Race: thank-you URL OR visible payment error, polled tightly.
+      const resultDeadline = Date.now() + 15000;
+      let earlyReject = null;
       while (Date.now() < resultDeadline) {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
         const paymentErr = await visiblePaymentError();
         if (paymentErr) {
           if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
-          return await paymentRejected(paymentErr);
+          earlyReject = paymentErr;
+          break;
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
       }
+      if (earlyReject) return await paymentRejected(earlyReject);
       const finalUrl = page.url();
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
         const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
@@ -841,9 +864,9 @@ function checkoutScriptSource() {
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
-      const shot = await page.screenshot({ encoding: "base64", fullPage: false });
+      // Skip success screenshot — saves ~500ms-1s and a large b64 payload.
       log("payment_result", true, orderId ?? finalUrl);
-      return { ok: true, orderId, finalUrl, steps, screenshotB64: shot, dryRun: false };
+      return { ok: true, orderId, finalUrl, steps, screenshotB64: null, dryRun: false };
     } catch (e) {
       return await fail(e?.message ?? String(e));
     }
@@ -912,10 +935,12 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  // Browserless rejects values above the current plan cap. Keep the request
-  // inside the 60s cap so failures happen inside the checkout script instead
-  // of at the transport layer before Chrome even launches.
-  url.searchParams.set("timeout", "60000");
+  // Raise transport ceiling so a transient slow page doesn't 408 the entire
+  // job. Target is sub-15s — this is a safety net only. Also enable
+  // Browserless-side ad/tracker blocking on top of our in-script interceptor.
+  url.searchParams.set("timeout", "120000");
+  url.searchParams.set("blockAds", "true");
+  url.searchParams.set("stealth", "true");
 
   try {
     const res = await fetch(url.toString(), {
