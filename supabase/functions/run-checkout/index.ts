@@ -42,8 +42,29 @@ function checkoutScriptSource() {
       };
     try {
       await stage("launch");
+
+      // Aggressive resource blocking — biggest single speedup. Block images,
+      // fonts, media, non-essential stylesheets, and known trackers/wallets.
+      // Keep documents, XHR/fetch, scripts, and Shopify card-field iframes.
+      try {
+        await page.setRequestInterception(true);
+        const denyHostRe = /(google-analytics|googletagmanager|google\\.com\\/(?:pagead|recaptcha)|doubleclick|facebook\\.(?:net|com)\\/tr|connect\\.facebook|hotjar|clarity\\.ms|segment\\.(?:io|com)|tiktok|pinterest|klaviyo|bing\\.com|bat\\.bing|snap(?:chat)?|twitter\\.com\\/i\\/adsct|criteo|taboola|outbrain|fullstory|datadoghq|sentry\\.io|newrelic|cdn\\.shopify\\.com\\/shopifycloud\\/(?:perf-kit|consent-tracking)|monorail-edge\\.shopifysvc|shop\\.app|pay\\.google|applepay|paypal\\.com|klarna|afterpay|clearpay|bitpay)/i;
+        const keepHostRe = /(shopifycs\\.com|deposit\\.shopifycs|pay\\.shopify\\.com\\/card|checkout\\.shopify)/i;
+        page.on("request", (req) => {
+          try {
+            const url = req.url();
+            const type = req.resourceType();
+            if (keepHostRe.test(url)) return req.continue();
+            if (type === "image" || type === "media" || type === "font") return req.abort();
+            if (type === "stylesheet") return req.abort();
+            if (denyHostRe.test(url)) return req.abort();
+            return req.continue();
+          } catch { try { req.continue(); } catch {} }
+        });
+      } catch {}
+
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
       await stage("cart_add");
       const atc = await page.evaluate(async (variantId, qty) => {
         const r = await fetch("/cart/add.js", {
