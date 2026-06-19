@@ -592,10 +592,10 @@ function checkoutScriptSource() {
           return v.length > 0;
         };
         const nameRe = {
-          number: /card\\s*number|^number$|\\/number/i,
-          expiry: /expiration|expiry|\\/expiry/i,
-          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification/i,
-          name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)/i,
+          number: /card\\s*number|^number$|\\/number|card-fields-number/i,
+          expiry: /expiration|expiry|\\/expiry|card-fields-expiry/i,
+          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification/i,
+          name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)|card-fields-name|cardholder|holder.?name/i,
         }[kind];
         const readTopLevelValue = async (el) => await page.evaluate((node) => node.value || "", el).catch(() => "");
         const fillTopLevelInput = async () => {
