@@ -133,6 +133,46 @@ function pickRawProxy(groupId: string | null | undefined): string | null {
   return raw[i];
 }
 
+// Unified Shopify fetch that picks the right transport based on the group:
+//   - URL-template proxies → fetch the template URL directly
+//   - Raw `user:pass@host:port` proxies → tunnel via Browserless serverFn so
+//     the request actually exits from the proxy IP (Culture Kings etc. block
+//     the Lovable edge IP, which is why direct resolves hang).
+//   - No group / no usable proxies → fall back to /api/public/shopify.
+// Always wraps the fetch in an AbortSignal.timeout so the resolve step never
+// sits forever — caller sees a clear "timeout" instead.
+async function fetchShopify(url: string, groupId?: string | null, timeoutMs = 12000): Promise<Response> {
+  if (groupId) {
+    const group = __proxyGroups.find((g) => g.id === groupId);
+    const templates = group?.proxies.filter((s) => s.includes("{url}")) ?? [];
+    const raws = group?.proxies.filter((s) => !s.includes("{url}")) ?? [];
+    if (templates.length === 0 && raws.length > 0) {
+      const proxyUrl = pickRawProxy(groupId);
+      if (proxyUrl) {
+        const result = await shopifyFetchViaProxy({ data: { targetUrl: url, proxyUrl } });
+        if (!result.ok) {
+          return new Response(JSON.stringify({ error: result.error ?? "proxy fetch failed" }), {
+            status: result.status > 0 ? result.status : 502,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(result.body, {
+          status: result.status || 200,
+          headers: { "content-type": result.contentType || "text/plain" },
+        });
+      }
+    }
+  }
+  try {
+    return await fetch(proxied(url, groupId), { signal: AbortSignal.timeout(timeoutMs) });
+  } catch (e) {
+    return new Response(JSON.stringify({ error: (e as Error).message ?? "fetch failed" }), {
+      status: 599,
+      headers: { "content-type": "application/json" },
+    });
+  }
+}
+
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
