@@ -1155,8 +1155,8 @@ Deno.serve(async (req) => {
 
   }
   // Browserless plan supports up to 15-min /function sessions.
-  // 300s gives generous headroom for slow Shopify checkouts.
-  url.searchParams.set("timeout", "300000");
+  // 360s gives generous headroom for slow Shopify checkouts incl. 3-D Secure.
+  url.searchParams.set("timeout", "360000");
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
