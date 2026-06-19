@@ -367,7 +367,7 @@ function loadCatalog(): { storeUrl: string; products: Product[]; ts: number } | 
 
 // Fetch a single product by Shopify handle and return it as a Product
 async function fetchProductByHandle(storeUrl: string, handle: string, groupId?: string | null): Promise<Product | null> {
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
+  const res = await fetchShopify(`${storeUrl}/products/${handle}.js`, groupId);
   if (!res.ok) return null;
   const p: any = await res.json();
   return {
