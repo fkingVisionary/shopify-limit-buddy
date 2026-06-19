@@ -585,7 +585,7 @@ function checkoutScriptSource() {
             await el.focus().catch(() => null);
             await el.click({ clickCount: 3 }).catch(() => null);
             await page.keyboard.press("Backspace").catch(() => null);
-            await el.type(typeText, { delay: kind === "name" ? 35 : 120 }).catch(() => null);
+          await el.type(typeText, { delay: kind === "name" ? 20 : 30 }).catch(() => null);
             await page.evaluate((node) => {
               node.dispatchEvent(new Event("input", { bubbles: true }));
               node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -607,7 +607,7 @@ function checkoutScriptSource() {
           return false;
         };
         if (kind === "name" && await fillTopLevelInput()) return true;
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
           // Find candidate frames first via parent <iframe> name attribute
           // (some Shopify builds expose the human label there), then by URL.
@@ -639,7 +639,7 @@ function checkoutScriptSource() {
                 for (let attempt = 0; attempt < 3; attempt++) {
                   await el.focus().catch(() => null);
                   await el.click().catch(() => null);
-                  await el.type(typeText, { delay: 55 }).catch(() => null);
+                  await el.type(typeText, { delay: 25 }).catch(() => null);
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
                     node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -656,7 +656,7 @@ function checkoutScriptSource() {
                     const tail = wantDigits.slice(haveLen);
                     await el.focus().catch(() => null);
                     await el.click().catch(() => null);
-                    await el.type(tail, { delay: 70 }).catch(() => null);
+                    await el.type(tail, { delay: 35 }).catch(() => null);
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
                       await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
