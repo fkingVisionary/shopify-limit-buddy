@@ -48,8 +48,9 @@ export const Route = createFileRoute("/api/public/shopify")({
           );
         }
 
-        try {
-          const upstream = await fetch(parsed.toString(), {
+        const fetchOnce = async (u: string) =>
+          fetch(u, {
+            redirect: "follow",
             headers: {
               "User-Agent":
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
@@ -59,16 +60,45 @@ export const Route = createFileRoute("/api/public/shopify")({
               "Accept-Language": "en-US,en;q=0.9",
             },
           });
+
+        try {
+          let upstream: Response;
+          try {
+            upstream = await fetchOnce(parsed.toString());
+          } catch {
+            upstream = new Response("", { status: 599 });
+          }
+          // Retry on www. variant if root host was blocked / failed.
+          if (!upstream.ok && !parsed.hostname.startsWith("www.")) {
+            const alt = new URL(parsed.toString());
+            alt.hostname = "www." + parsed.hostname;
+            try {
+              const retry = await fetchOnce(alt.toString());
+              if (retry.ok) upstream = retry;
+            } catch { /* ignore */ }
+          }
+
           const body = await upstream.text();
           const ct = upstream.headers.get("content-type") ?? "text/plain";
+          if (!upstream.ok) {
+            // Return 200 + fallback signal so the client doesn't crash on 5xx.
+            return new Response(
+              JSON.stringify({
+                error: "UPSTREAM_ERROR",
+                fallback: true,
+                upstreamStatus: upstream.status,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json", ...CORS } },
+            );
+          }
           return new Response(body, {
-            status: upstream.status,
+            status: 200,
             headers: { "Content-Type": ct, ...CORS },
           });
         } catch (err: any) {
           return new Response(
-            JSON.stringify({ error: err?.message ?? "Upstream fetch failed" }),
-            { status: 502, headers: { "Content-Type": "application/json", ...CORS } },
+            JSON.stringify({ error: err?.message ?? "Upstream fetch failed", fallback: true }),
+            { status: 200, headers: { "Content-Type": "application/json", ...CORS } },
           );
         }
       },
