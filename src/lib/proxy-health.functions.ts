@@ -148,8 +148,10 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         return { ok: false, latencyMs, exitIp: null, error: `Browserless HTTP ${res.status}: ${cleanProxyError(text)}`, kind: "raw" };
       }
       let exitIp: string | null = null;
+      let targetStatus: number | null = null;
+      let targetError: string | null = null;
       try {
-        const outer = JSON.parse(text) as { ok?: boolean; body?: string; status?: number; error?: string };
+        const outer = JSON.parse(text) as { ok?: boolean; body?: string; status?: number; error?: string; targetStatus?: number | null; targetError?: string | null };
         if (outer.ok === false || outer.error) {
           return { ok: false, latencyMs, exitIp: null, error: cleanProxyError(outer.error ?? "proxy navigation failed"), kind: "raw" };
         }
@@ -160,10 +162,18 @@ export const checkProxyExit = createServerFn({ method: "POST" })
           const inner = JSON.parse(outer.body) as { ip?: string };
           exitIp = inner.ip ?? null;
         }
+        targetStatus = outer.targetStatus ?? null;
+        targetError = outer.targetError ? cleanProxyError(outer.targetError) : null;
       } catch {
         return { ok: false, latencyMs, exitIp: null, error: "could not parse proxy response", kind: "raw" };
       }
-      return { ok: !!exitIp, latencyMs, exitIp, error: exitIp ? null : "no IP in response", kind: "raw" };
+      const ok = !!exitIp && (data.targetUrl ? (targetStatus !== null && targetStatus > 0 && targetStatus < 400 && !targetError) : true);
+      const err = !exitIp
+        ? "no IP in response"
+        : (data.targetUrl && (targetError || !targetStatus || targetStatus >= 400))
+          ? (targetError ?? `store returned HTTP ${targetStatus ?? "?"}`)
+          : null;
+      return { ok, latencyMs, exitIp, error: err, kind: "raw", targetStatus, targetError };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "transport error";
       return { ok: false, latencyMs: Date.now() - started, exitIp: null, error: msg, kind: "raw" };
