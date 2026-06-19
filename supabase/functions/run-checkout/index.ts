@@ -754,10 +754,17 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 500));
       const securityCodeRetryNeeded = await page.evaluate(() => {
-        const text = document.body?.innerText ?? "";
-        return /security\\s*code/i.test(text) && !(/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href));
+        if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return false;
+        const visible = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const s = getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+        };
+        const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '[id*="error" i]'];
+        return sels.some((s) => Array.from(document.querySelectorAll(s)).some((el) => visible(el) && /security\\s*code|cvv|cvc/i.test(el.textContent || "")));
       }).catch(() => false);
       if (securityCodeRetryNeeded) {
         lastStep = "cvv_retry";
