@@ -12,7 +12,10 @@ import { z } from "zod";
 import { requireWorkspaceDevice } from "@/integrations/workspace/middleware";
 import { classifyProxy, parseProxyParts } from "@/lib/proxy-format";
 
-const Schema = z.object({ proxyUrl: z.string().min(1).max(2000) });
+const Schema = z.object({
+  proxyUrl: z.string().min(1).max(2000),
+  targetUrl: z.string().url().max(2000).optional(),
+});
 
 export type ProxyHealth = {
   ok: boolean;
@@ -20,6 +23,8 @@ export type ProxyHealth = {
   exitIp: string | null;
   error: string | null;
   kind?: "template" | "raw";
+  targetStatus?: number | null;
+  targetError?: string | null;
 };
 
 function cleanProxyError(message: string): string {
@@ -54,12 +59,25 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         const latencyMs = Date.now() - started;
         if (!res.ok) return { ok: false, latencyMs, exitIp: null, error: `HTTP ${res.status}`, kind: "template" };
         const json = (await res.json()) as { ip?: string };
-        return { ok: true, latencyMs, exitIp: json.ip ?? null, error: null, kind: "template" };
+        let targetStatus: number | null = null;
+        let targetError: string | null = null;
+        if (data.targetUrl) {
+          try {
+            const turl = data.proxyUrl.replace("{url}", encodeURIComponent(data.targetUrl));
+            const tres = await fetch(turl, { method: "GET", signal: AbortSignal.timeout(15000) });
+            targetStatus = tres.status;
+            if (!tres.ok) targetError = `HTTP ${tres.status}`;
+          } catch (e) {
+            targetError = e instanceof Error ? e.message : "target fetch failed";
+          }
+        }
+        return { ok: true, latencyMs, exitIp: json.ip ?? null, error: null, kind: "template", targetStatus, targetError };
       } catch (e) {
         const msg = e instanceof Error ? e.message : "network error";
         return { ok: false, latencyMs: Date.now() - started, exitIp: null, error: msg, kind: "template" };
       }
     }
+
 
     // ── Raw proxy → Browserless tunnel ────────────────────────────────────
     const apiKey = process.env.BROWSERLESS_API_KEY;
@@ -91,7 +109,17 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 15000 });
         const status = res ? res.status() : 0;
         const body = await page.evaluate(() => document.body && document.body.innerText);
-        return { ok: true, status, body };
+        let targetStatus = null;
+        let targetError = null;
+        if (context && context.targetUrl) {
+          try {
+            const tres = await page.goto(context.targetUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+            targetStatus = tres ? tres.status() : 0;
+          } catch (e) {
+            targetError = e instanceof Error ? e.message : String(e);
+          }
+        }
+        return { ok: true, status, body, targetStatus, targetError };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -104,10 +132,15 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           code,
-          context: { username: parts.username ?? "", password: parts.password ?? "" },
+          context: {
+            username: parts.username ?? "",
+            password: parts.password ?? "",
+            targetUrl: data.targetUrl ?? "",
+          },
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(45000),
       });
+
 
       const latencyMs = Date.now() - started;
       const text = await res.text().catch(() => "");
@@ -115,8 +148,10 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         return { ok: false, latencyMs, exitIp: null, error: `Browserless HTTP ${res.status}: ${cleanProxyError(text)}`, kind: "raw" };
       }
       let exitIp: string | null = null;
+      let targetStatus: number | null = null;
+      let targetError: string | null = null;
       try {
-        const outer = JSON.parse(text) as { ok?: boolean; body?: string; status?: number; error?: string };
+        const outer = JSON.parse(text) as { ok?: boolean; body?: string; status?: number; error?: string; targetStatus?: number | null; targetError?: string | null };
         if (outer.ok === false || outer.error) {
           return { ok: false, latencyMs, exitIp: null, error: cleanProxyError(outer.error ?? "proxy navigation failed"), kind: "raw" };
         }
@@ -127,10 +162,18 @@ export const checkProxyExit = createServerFn({ method: "POST" })
           const inner = JSON.parse(outer.body) as { ip?: string };
           exitIp = inner.ip ?? null;
         }
+        targetStatus = outer.targetStatus ?? null;
+        targetError = outer.targetError ? cleanProxyError(outer.targetError) : null;
       } catch {
         return { ok: false, latencyMs, exitIp: null, error: "could not parse proxy response", kind: "raw" };
       }
-      return { ok: !!exitIp, latencyMs, exitIp, error: exitIp ? null : "no IP in response", kind: "raw" };
+      const ok = !!exitIp && (data.targetUrl ? (targetStatus !== null && targetStatus > 0 && targetStatus < 400 && !targetError) : true);
+      const err = !exitIp
+        ? "no IP in response"
+        : (data.targetUrl && (targetError || !targetStatus || targetStatus >= 400))
+          ? (targetError ?? `store returned HTTP ${targetStatus ?? "?"}`)
+          : null;
+      return { ok, latencyMs, exitIp, error: err, kind: "raw", targetStatus, targetError };
     } catch (e) {
       const msg = e instanceof Error ? e.message : "transport error";
       return { ok: false, latencyMs: Date.now() - started, exitIp: null, error: msg, kind: "raw" };

@@ -2980,7 +2980,7 @@ function ProxiesView({
   );
 }
 
-type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null };
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null; targetStatus?: number | null };
 
 function ProxyGroupCard({
   group, onUpdate, onDelete,
@@ -2993,6 +2993,7 @@ function ProxyGroupCard({
   const [testing, setTesting] = useState(false);
   const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
+  const [targetUrl, setTargetUrl] = useState("");
   const checkExit = useServerFn(checkProxyExit);
 
 
@@ -3018,8 +3019,9 @@ function ProxyGroupCard({
         continue;
       }
       try {
-        const r = await checkExit({ data: { proxyUrl: entry } });
-        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp } }));
+        const normalizedTarget = targetUrl.trim() ? (normalizeStoreUrl(targetUrl) ?? undefined) : undefined;
+        const r = await checkExit({ data: { proxyUrl: entry, targetUrl: normalizedTarget } });
+        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp, targetStatus: r.targetStatus ?? null } }));
       } catch (e: any) {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
@@ -3056,6 +3058,16 @@ function ProxyGroupCard({
         placeholder={"One proxy per line. Any of these formats works:\nhost:port:user:pass\nuser:pass:host:port\nhost:port\nhttp://user:pass@host:port\nhttps://gateway.example.com/fetch?url={url}"}
         autoCapitalize="none" autoCorrect="off" spellCheck={false}
       />
+      <div className="mt-2">
+        <Label className="text-[10px] text-muted-foreground">Test against store (optional)</Label>
+        <Input
+          value={targetUrl}
+          onChange={(e) => setTargetUrl(e.target.value)}
+          className="mt-1 h-8 font-mono text-[11px]"
+          placeholder="https://culturekings.com.au"
+          autoCapitalize="none" autoCorrect="off" spellCheck={false}
+        />
+      </div>
       <div className="mt-2 flex items-center justify-between gap-2">
         <p className="text-[10px] text-muted-foreground">
           {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
@@ -3064,7 +3076,7 @@ function ProxyGroupCard({
           {testing ? (
             <><Loader2 className="h-3 w-3 animate-spin" /> {progress ? `Testing ${progress.i}/${progress.n}` : "Testing"}</>
           ) : (
-            <><Globe className="h-3 w-3" /> Test proxies</>
+            <><Globe className="h-3 w-3" /> {targetUrl.trim() ? "Test on store" : "Test proxies"}</>
           )}
         </Button>
 
@@ -3090,6 +3102,11 @@ function ProxyGroupCard({
                 {r?.exitIp && (
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                     {r.exitIp}
+                  </span>
+                )}
+                {typeof r?.targetStatus === "number" && r.targetStatus > 0 && (
+                  <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${r.targetStatus < 400 ? "bg-primary/15 text-primary" : "bg-destructive/15 text-destructive"}`}>
+                    store {r.targetStatus}
                   </span>
                 )}
                 <span className={invalid || (r && !r.ok) ? "text-destructive" : "text-primary"}>
