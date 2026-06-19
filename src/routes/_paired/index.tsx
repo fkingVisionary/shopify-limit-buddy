@@ -245,7 +245,7 @@ async function detectLimit(storeUrl: string, handle: string, groupId?: string | 
   // Primary source: Shopify's /products/{handle}.js exposes per-variant
   // quantity_rule.max — the merchant-configured per-order limit.
   try {
-    const res = await fetch(proxied(`${storeUrl}/products/${handle}.js`, groupId));
+    const res = await fetchShopify(`${storeUrl}/products/${handle}.js`, groupId);
     if (res.ok) {
       const data: any = await res.json();
       const variants: any[] = data.variants ?? [];
