@@ -1316,37 +1316,74 @@ function Index() {
                     const stepsArr = Array.isArray(b?.steps) ? b.steps : [];
                     const lastStep = stepsArr.length ? stepsArr[stepsArr.length - 1] : null;
                     const stepSummary = lastStep ? ` (reached: ${lastStep.step})` : "";
-                    if (b?.ok) {
-                      const paymentRejected = !!b.paymentRejected;
+                    const paymentRejected = !!b?.paymentRejected;
+                    const declineMsg = (b?.paymentMessage as string) || "Payment declined";
+                    const finalUrl: string = typeof b?.finalUrl === "string" ? b.finalUrl : "";
+                    const looksConfirmed = !!b?.orderId || /\/thank_you|orders\//i.test(finalUrl);
+
+                    if (b?.ok && paymentRejected) {
+                      // Real outcome: checkout submitted but Shopify rejected the payment.
                       updateTask(t.id, {
-                        status: b.dryRun ? "checkout_ready" : paymentRejected ? "checkout_ready" : "confirmed",
+                        status: "failed",
+                        steps: stepsArr,
+                        screenshotB64: b.screenshotB64 ?? null,
+                        finalUrl: b.finalUrl,
+                        browserlessElapsedMs: elapsed,
+                        message: `Payment declined: ${declineMsg} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                      });
+                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `declined: ${declineMsg}` });
+                      return;
+                    }
+                    if (b?.ok && b.dryRun) {
+                      updateTask(t.id, {
+                        status: "checkout_ready",
+                        orderId: null,
+                        finalUrl: b.finalUrl,
+                        steps: stepsArr,
+                        screenshotB64: b.screenshotB64,
+                        browserlessElapsedMs: elapsed,
+                        message: `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                      });
+                      return;
+                    }
+                    if (b?.ok && looksConfirmed) {
+                      updateTask(t.id, {
+                        status: "confirmed",
                         orderId: b.orderId ?? null,
                         finalUrl: b.finalUrl,
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: b.dryRun
-                          ? `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`
-                          : paymentRejected
-                            ? `Checkout submitted; payment declined as expected · ${transportLabel} · ${Math.round(elapsed / 1000)}s`
-                          : `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
                       });
-                      if (!b.dryRun && !paymentRejected) {
-                        notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
-                        fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
-                      }
-                    } else {
-                      const failedAt = b?.failedStep ?? lastStep?.step ?? "unknown";
-                      const errText = b?.error ?? "unknown error";
+                      notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
+                      fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
+                      return;
+                    }
+                    if (b?.ok) {
+                      // ok but no confirmation signal — don't false-positive.
                       updateTask(t.id, {
                         status: "failed",
                         steps: stepsArr,
-                        screenshotB64: b?.screenshotB64 ?? null,
+                        screenshotB64: b.screenshotB64 ?? null,
+                        finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Failed at ${failedAt}: ${errText}`,
+                        message: `Outcome uncertain${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
                       });
-                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${failedAt}: ${errText}` });
+                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "outcome uncertain (no order id)" });
+                      return;
                     }
+                    // Hard failure path (transport / fill error).
+                    const failedAt = b?.failedStep ?? lastStep?.step ?? "unknown";
+                    const errText = b?.error ?? "unknown error";
+                    updateTask(t.id, {
+                      status: "failed",
+                      steps: stepsArr,
+                      screenshotB64: b?.screenshotB64 ?? null,
+                      browserlessElapsedMs: elapsed,
+                      message: `Failed at ${failedAt}: ${errText}`,
+                    });
+                    fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${failedAt}: ${errText}` });
                   };
                   const fire = async () => {
                     // Local runner path — keep the existing synchronous flow.

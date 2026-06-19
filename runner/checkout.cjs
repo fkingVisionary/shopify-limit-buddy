@@ -177,21 +177,57 @@ async function runCheckout(job) {
     await clickContinue();
     log("submit", true);
 
-    // 9. Confirm
+    // 9. Confirm — wait for thank-you OR a decline message, whichever comes first.
     lastStep = "confirm";
-    await page.waitForFunction(
-      () => /\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href),
-      null, { timeout: 60_000 },
-    );
+    const paymentTerms = /declined|payment\s*(?:failed|could(?:n['\u2019])?t|cannot|can\s*not)|card\s*(?:invalid|declined|not accepted)|unable to process|try another card|expired|insufficient funds/i;
+    try {
+      await page.waitForFunction(
+        (re) => {
+          if (/\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href)) return true;
+          const txt = (document.body && document.body.innerText) || "";
+          return new RegExp(re, "i").test(txt);
+        },
+        { timeout: 60_000 },
+        paymentTerms.source,
+      );
+    } catch (_) { /* fall through to outcome detection */ }
+
     const finalUrl = page.url();
-    const orderMatch = finalUrl.match(/orders\/(\d+)|checkouts\/[^/]+\/([a-z0-9]+)\/thank_you/i);
-    const orderId = orderMatch ? (orderMatch[1] ?? orderMatch[2] ?? null) : null;
     const shot = (await page.screenshot({ type: "png" })).toString("base64");
-    log("confirm", true, orderId ?? finalUrl);
+
+    if (/\/thank_you|orders\/|checkouts\/.+\/thank/i.test(finalUrl)) {
+      const orderMatch = finalUrl.match(/orders\/(\d+)|checkouts\/[^/]+\/([a-z0-9]+)\/thank_you/i);
+      const orderId = orderMatch ? (orderMatch[1] ?? orderMatch[2] ?? null) : null;
+      log("confirm", true, orderId ?? finalUrl);
+      await browser.close();
+      return {
+        jobId: job.id, ok: true, orderId, finalUrl,
+        steps, screenshotB64: shot, elapsedMs: Date.now() - t0, dryRun: false,
+      };
+    }
+
+    // Look for a decline message in the page body.
+    let bodyText = "";
+    try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
+    const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
+    if (m) {
+      const msg = m[0].trim().slice(0, 240);
+      log("payment_result", true, msg);
+      await browser.close();
+      return {
+        jobId: job.id, ok: true, paymentRejected: true, paymentMessage: msg,
+        orderId: null, finalUrl, steps, screenshotB64: shot,
+        elapsedMs: Date.now() - t0, dryRun: false,
+      };
+    }
+
+    // No confirmation and no decline marker — surface as failure.
+    log("confirm", false, finalUrl);
     await browser.close();
     return {
-      jobId: job.id, ok: true, orderId, finalUrl,
-      steps, screenshotB64: shot, elapsedMs: Date.now() - t0, dryRun: false,
+      jobId: job.id, ok: false, failedStep: "confirm",
+      error: "No thank-you page and no decline marker detected",
+      finalUrl, steps, screenshotB64: shot, elapsedMs: Date.now() - t0,
     };
   } catch (e) {
     return await fail(e.message || String(e));
