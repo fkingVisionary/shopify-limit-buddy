@@ -278,7 +278,7 @@ function checkoutScriptSource() {
       };
 
       const selectShippingRate = async () => {
-        const deadline = Date.now() + 7000;
+        const deadline = Date.now() + 4500;
         while (Date.now() < deadline) {
           if (await hasSelectedShippingRate()) return true;
           const target = await page.evaluate(() => {
@@ -316,10 +316,10 @@ function checkoutScriptSource() {
           }).catch(() => null);
           if (target?.selected) return true;
           if (target?.x != null && target?.y != null) {
-            await page.mouse.click(target.x, target.y, { delay: 35 }).catch(() => null);
-            await new Promise((r) => setTimeout(r, 300));
+            await page.mouse.click(target.x, target.y, { delay: 20 }).catch(() => null);
+            await new Promise((r) => setTimeout(r, 160));
           } else {
-            await new Promise((r) => setTimeout(r, 250));
+            await new Promise((r) => setTimeout(r, 150));
           }
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
@@ -343,10 +343,10 @@ function checkoutScriptSource() {
               if (location.href !== prevUrl && /payment/.test(location.href)) return true;
               return false;
             },
-            { timeout: 5000 },
+            { timeout: 3000 },
             startUrl,
           ).catch(() => null);
-          await new Promise((r) => setTimeout(r, 400));
+          await new Promise((r) => setTimeout(r, 200));
           if (await isPaymentStep()) return true;
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
