@@ -89,7 +89,7 @@ function checkoutScriptSource() {
         await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
       } catch {}
       let checkoutLoaded = false;
-      let lastNavErr: any = null;
+      let lastNavErr = null;
       for (const waitUntil of ["domcontentloaded", "load"]) {
         try {
           await page.goto(origin + "/checkout", { waitUntil, timeout: 45000, referer: origin + "/cart" });
