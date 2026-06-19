@@ -343,10 +343,10 @@ function checkoutScriptSource() {
               if (location.href !== prevUrl && /payment/.test(location.href)) return true;
               return false;
             },
-            { timeout: 10000 },
+            { timeout: 5000 },
             startUrl,
           ).catch(() => null);
-          await new Promise((r) => setTimeout(r, 900));
+          await new Promise((r) => setTimeout(r, 400));
           if (await isPaymentStep()) return true;
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
