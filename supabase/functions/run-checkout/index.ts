@@ -410,63 +410,44 @@ function checkoutScriptSource() {
         return await isPaymentStep();
       };
 
-      if (phase === "A") {
-        lastStep = "shipping_continue";
-        await stage("shipping_continue");
-        try {
-          if (!(await advanceToShipping(3))) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not advance to shipping method step");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
+      lastStep = "shipping_continue";
+      await stage("shipping_continue");
+      try {
+        if (!(await advanceToShipping(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to shipping method step");
         }
-        log("shipping_continue", true);
-
-        lastStep = "shipping_method";
-        await stage("shipping_method");
-        try {
-          if (!(await selectShippingRate())) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not select a shipping method");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
-        }
-        log("shipping_method", true);
-
-        lastStep = "payment_continue";
-        await stage("payment_continue");
-        try {
-          if (!(await advanceToPayment(3))) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not advance to payment step");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
-        }
-        log("payment_continue", true);
-
-        // Phase A complete. Hand off cookies + the payment-step URL so a
-        // fresh Browserless call (with its own 60s budget) can run card_fill
-        // → submit → result. If we have plenty of budget left we could
-        // continue inline, but splitting guarantees we never 408 during the
-        // card iframes which are the most fragile part.
-        let savedCookies = [];
-        try { savedCookies = await page.cookies(); } catch {}
-        await stage("phase_a_done");
-        log("phase_a_done", true, "budgetLeft=" + budgetLeft());
-        return {
-          ok: true,
-          partial: true,
-          nextPhase: "B",
-          session: { cookies: savedCookies, currentUrl: page.url() },
-          steps,
-        };
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
       }
+      log("shipping_continue", true);
+
+      lastStep = "shipping_method";
+      await stage("shipping_method");
+      try {
+        if (!(await selectShippingRate())) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not select a shipping method");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
+      log("shipping_method", true);
+
+      lastStep = "payment_continue";
+      await stage("payment_continue");
+      try {
+        if (!(await advanceToPayment(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to payment step");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
+      log("payment_continue", true);
 
 
       lastStep = "card_fill";
