@@ -262,7 +262,7 @@ async function detectLimit(storeUrl: string, handle: string, groupId?: string | 
     // fall through
   }
 
-  const res = await fetch(proxied(`${storeUrl}/products/${handle}`, groupId));
+  const res = await fetchShopify(`${storeUrl}/products/${handle}`, groupId, 15000);
   if (!res.ok) return { status: "error", error: `Could not load product page (${res.status})` };
   const html = await res.text();
 
