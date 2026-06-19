@@ -10,7 +10,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireWorkspaceDevice } from "@/integrations/workspace/middleware";
-import { classifyProxy } from "@/lib/proxy-format";
+import { classifyProxy, parseProxyParts } from "@/lib/proxy-format";
 
 const Schema = z.object({ proxyUrl: z.string().min(1).max(2000) });
 
