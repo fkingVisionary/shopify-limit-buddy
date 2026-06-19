@@ -935,10 +935,12 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  // Browserless rejects values above the current plan cap. Keep the request
-  // inside the 60s cap so failures happen inside the checkout script instead
-  // of at the transport layer before Chrome even launches.
-  url.searchParams.set("timeout", "60000");
+  // Raise transport ceiling so a transient slow page doesn't 408 the entire
+  // job. Target is sub-15s — this is a safety net only. Also enable
+  // Browserless-side ad/tracker blocking on top of our in-script interceptor.
+  url.searchParams.set("timeout", "120000");
+  url.searchParams.set("blockAds", "true");
+  url.searchParams.set("stealth", "true");
 
   try {
     const res = await fetch(url.toString(), {
