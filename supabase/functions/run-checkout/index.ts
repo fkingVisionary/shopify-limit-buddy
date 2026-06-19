@@ -536,7 +536,7 @@ function checkoutScriptSource() {
             }
           }
         });
-        await new Promise((r) => setTimeout(r, 600));
+        await new Promise((r) => setTimeout(r, 200));
       } catch {}
 
       // Modern Shopify "Checkout One" (/checkouts/cn/...) puts each card field
