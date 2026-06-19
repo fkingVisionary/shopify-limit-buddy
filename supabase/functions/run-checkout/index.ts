@@ -1,6 +1,6 @@
 // Long-running headless checkout worker.
 // Invoked fire-and-forget from `enqueueCheckout` server fn with a job id.
-// Pulls the job row, drives Browserless /function (up to ~90s), and
+// Pulls the job row, drives one Browserless /function session (up to 5 min), and
 // writes status/stage/result back so the client can poll.
 //
 // Auth: x-executor-token must match EXECUTOR_TOKEN env (shared with the
@@ -81,19 +81,10 @@ function checkoutScriptSource() {
       lastStep = "checkout_load";
       await stage("checkout_load");
       const origin = new URL(input.storeUrl).origin;
-      const qs = new URLSearchParams({
-        "checkout[email]": input.profile.email,
-        "checkout[shipping_address][first_name]": input.profile.first_name,
-        "checkout[shipping_address][last_name]": input.profile.last_name,
-        "checkout[shipping_address][address1]": input.profile.address1,
-        "checkout[shipping_address][address2]": input.profile.address2 ?? "",
-        "checkout[shipping_address][city]": input.profile.city,
-        "checkout[shipping_address][province]": input.profile.province,
-        "checkout[shipping_address][zip]": input.profile.zip,
-        "checkout[shipping_address][country]": input.profile.country,
-        "checkout[shipping_address][phone]": input.profile.phone,
-      });
-      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
+      // Use the normal cart → checkout route and fill contact/shipping fields
+      // in-page. Passing checkout[...] fields in the URL has started failing
+      // on some Shopify stores with net::ERR_FAILED at checkout_load.
+      await page.goto(origin + "/checkout", { waitUntil: "domcontentloaded", timeout: 45000 });
       log("checkout_load", true);
 
 
