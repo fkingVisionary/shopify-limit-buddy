@@ -782,18 +782,19 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      await page.waitForFunction(
-        () => {
-          if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return true;
-          const text = document.body?.innerText ?? "";
-          return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
-        },
-        { timeout: 15000 },
-      );
+      const resultDeadline = Date.now() + 30000;
+      while (Date.now() < resultDeadline) {
+        if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
+        const paymentErr = await visiblePaymentError();
+        if (paymentErr) {
+          if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
+          return await fail(paymentErr);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
       const finalUrl = page.url();
-      const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
-        const paymentMsg = (bodyText.match(/[^\\n]*(?:declined|payment[^\\n]*failed|card[^\\n]*invalid|unable to process|try another card|security code|expired)[^\\n]*/i)?.[0] ?? "Payment was not accepted").trim();
+        const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
         return await fail(paymentMsg.slice(0, 240));
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
