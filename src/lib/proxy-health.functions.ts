@@ -24,14 +24,15 @@ export type ProxyHealth = {
 
 function cleanProxyError(message: string): string {
   const compact = message.replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
-  if (/ERR_TUNNEL_CONNECTION_FAILED/i.test(compact)) {
-    return "Proxy tunnel failed: Browserless could not connect through this proxy. Check host, port, credentials, allowlisted IPs, and HTTPS support.";
-  }
-  if (/Proxy authentication failed|ERR_PROXY_AUTH/i.test(compact)) {
+  if (/Proxy authentication failed|ERR_PROXY_AUTH|HTTP\/1\.[01] 407|\b407\b/i.test(compact)) {
     return "Proxy authentication failed: check the username/password order and credentials.";
+  }
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES/i.test(compact)) {
+    return "Proxy tunnel failed: Browserless could not connect through this proxy. Check host, port, allowlisted IPs, and HTTPS support.";
   }
   return compact.slice(0, 240) || "proxy test failed";
 }
+
 
 export const checkProxyExit = createServerFn({ method: "POST" })
   .middleware([requireWorkspaceDevice])
