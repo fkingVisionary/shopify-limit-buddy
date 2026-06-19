@@ -546,11 +546,13 @@ function checkoutScriptSource() {
       // input inside it — this avoids guessing the input's id/name attributes,
       // which vary across Shopify checkout versions.
       const fillCardField = async (kind, value) => {
-        const expectedDigits = String(value).replace(/\\D/g, "");
+        const raw = String(value ?? "");
+        const expectedDigits = raw.replace(/\\D/g, "");
+        const typeText = kind === "name" ? raw : expectedDigits;
         const looksFilled = (current) => {
           const v = String(current || "").trim();
           const digits = v.replace(/\\D/g, "");
-          if (kind === "number") return digits.length >= Math.max(12, expectedDigits.length - 1);
+          if (kind === "number") return digits.length >= expectedDigits.length;
           if (kind === "expiry") return digits.length >= 4;
           if (kind === "cvv") return digits.length >= Math.min(3, expectedDigits.length);
           if (kind === "name") return v.length >= 2;
