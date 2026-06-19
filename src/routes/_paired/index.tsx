@@ -3061,8 +3061,13 @@ function ProxyGroupCard({
           {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
         </p>
         <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
-          {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Globe className="h-3 w-3" /> Test proxies</>}
+          {testing ? (
+            <><Loader2 className="h-3 w-3 animate-spin" /> {progress ? `Testing ${progress.i}/${progress.n}` : "Testing"}</>
+          ) : (
+            <><Globe className="h-3 w-3" /> Test proxies</>
+          )}
         </Button>
+
       </div>
 
       {(invalidCount > 0 || Object.keys(results).length > 0) && (
