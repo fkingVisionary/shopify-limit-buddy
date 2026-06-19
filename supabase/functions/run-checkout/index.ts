@@ -196,10 +196,11 @@ function checkoutScriptSource() {
             const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
             if (!isContinue && !isSubmit) return null;
             let score = 50;
+            if (allowSubmit && isSubmit) score = 0;
             if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
             if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
-            if (isSubmit) score += 100;
+            if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
           }).filter(Boolean).sort((a, b) => a.score - b.score);
           const target = candidates[0]?.el;
@@ -237,10 +238,11 @@ function checkoutScriptSource() {
             const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
             if (!isContinue && !isSubmit) return null;
             let score = 50;
+            if (allowSubmit && isSubmit) score = 0;
             if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
             if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
-            if (isSubmit) score += 100;
+            if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
           }).filter(Boolean).sort((a, b) => a.score - b.score);
           candidates[0]?.el?.click();
