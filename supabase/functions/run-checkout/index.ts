@@ -35,6 +35,11 @@ function checkoutScriptSource() {
       try { shot = await page.screenshot({ encoding: "base64", fullPage: false }); } catch {}
       return { ok: false, failedStep: lastStep, error: msg, steps, screenshotB64: shot };
     };
+      const paymentRejected = async (msg) => {
+        const shot = await page.screenshot({ encoding: "base64", fullPage: false }).catch(() => null);
+        log("payment_result", true, msg);
+        return { ok: true, orderId: null, finalUrl: page.url(), steps, screenshotB64: shot, dryRun: false, paymentRejected: true, paymentMessage: msg };
+      };
     try {
       await stage("launch");
       lastStep = "cart_add";
@@ -788,14 +793,14 @@ function checkoutScriptSource() {
         const paymentErr = await visiblePaymentError();
         if (paymentErr) {
           if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
-          return await fail(paymentErr);
+          return await paymentRejected(paymentErr);
         }
         await new Promise((r) => setTimeout(r, 500));
       }
       const finalUrl = page.url();
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
         const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
-        return await fail(paymentMsg.slice(0, 240));
+        return await paymentRejected(paymentMsg.slice(0, 240));
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
