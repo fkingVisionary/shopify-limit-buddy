@@ -2979,7 +2979,7 @@ function ProxiesView({
   );
 }
 
-type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null; source?: "browser" | "server" };
+type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null };
 
 function ProxyGroupCard({
   group, onUpdate, onDelete,
@@ -2989,49 +2989,36 @@ function ProxyGroupCard({
   onDelete: () => void;
 }) {
   const text = group.proxies.join("\n");
-  const [testing, setTesting] = useState<"browser" | "server" | null>(null);
+  const [testing, setTesting] = useState(false);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
   const checkExit = useServerFn(checkProxyExit);
 
+  const classifications = group.proxies.map((p) => classifyProxy(p));
+  const validCount = classifications.filter((c) => c.kind !== "invalid").length;
+  const invalidCount = classifications.length - validCount;
+
   const onTextChange = (v: string) => {
     onUpdate({ proxies: v.split("\n").map((s) => s.trim()).filter(Boolean) });
+    setResults({});
   };
 
-  const testGroupBrowser = async () => {
-    setTesting("browser");
+  const testGroup = async () => {
+    setTesting(true);
     setResults({});
-    const probe = "https://www.shopify.com/robots.txt";
-    await Promise.all(group.proxies.map(async (tmpl, i) => {
-      if (!tmpl.includes("{url}")) {
-        setResults((r) => ({ ...r, [i]: { ok: false, ms: 0, err: "missing {url}", source: "browser" } }));
+    await Promise.all(group.proxies.map(async (entry, i) => {
+      const c = classifications[i];
+      if (c.kind === "invalid") {
+        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: c.reason ?? "invalid format" } }));
         return;
       }
-      const started = performance.now();
       try {
-        const url = tmpl.replace("{url}", encodeURIComponent(probe));
-        const res = await fetch(url, { method: "GET" });
-        const ms = Math.round(performance.now() - started);
-        setResults((r) => ({ ...r, [i]: { ok: res.ok, ms, status: res.status, source: "browser" } }));
+        const r = await checkExit({ data: { proxyUrl: entry } });
+        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp } }));
       } catch (e: any) {
-        const ms = Math.round(performance.now() - started);
-        setResults((r) => ({ ...r, [i]: { ok: false, ms, err: e?.message ?? "network", source: "browser" } }));
+        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
     }));
-    setTesting(null);
-  };
-
-  const testGroupServer = async () => {
-    setTesting("server");
-    setResults({});
-    await Promise.all(group.proxies.map(async (tmpl, i) => {
-      try {
-        const r = await checkExit({ data: { proxyUrl: tmpl } });
-        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp, source: "server" } }));
-      } catch (e: any) {
-        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error", source: "server" } }));
-      }
-    }));
-    setTesting(null);
+    setTesting(false);
   };
 
   return (
@@ -3054,39 +3041,42 @@ function ProxyGroupCard({
         value={text}
         onChange={(e) => onTextChange(e.target.value)}
         className="mt-2 min-h-[120px] font-mono text-[11px]"
-        placeholder={"One proxy URL template per line, must contain {url}\nhttps://proxy1.example.com/fetch?url={url}"}
+        placeholder={"One proxy per line. Any of these formats works:\nhost:port:user:pass\nuser:pass:host:port\nhost:port\nhttp://user:pass@host:port\nhttps://gateway.example.com/fetch?url={url}"}
         autoCapitalize="none" autoCorrect="off" spellCheck={false}
       />
       <div className="mt-2 flex items-center justify-between gap-2">
         <p className="text-[10px] text-muted-foreground">
-          Use <code className="font-mono">{`{url}`}</code> as the placeholder.
+          {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
         </p>
-        <div className="flex gap-1.5">
-          <Button size="sm" variant="ghost" className="h-8" disabled={group.proxies.length === 0 || testing !== null} onClick={testGroupBrowser}>
-            {testing === "browser" ? <Loader2 className="h-3 w-3 animate-spin" /> : "Browser"}
-          </Button>
-          <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing !== null} onClick={testGroupServer}>
-            {testing === "server" ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Globe className="h-3 w-3" /> Server test</>}
-          </Button>
-        </div>
+        <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
+          {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Globe className="h-3 w-3" /> Test proxies</>}
+        </Button>
       </div>
 
-      {Object.keys(results).length > 0 && (
+      {(invalidCount > 0 || Object.keys(results).length > 0) && (
         <ul className="mt-2 space-y-1 text-[11px]">
           {group.proxies.map((p, i) => {
             const r = results[i];
-            const dotColor = !r ? "bg-muted-foreground/40" : r.ok ? "bg-primary" : "bg-destructive";
+            const c = classifications[i];
+            const invalid = c.kind === "invalid";
+            const dotColor = invalid
+              ? "bg-destructive"
+              : !r ? "bg-muted-foreground/40"
+              : r.ok ? "bg-primary" : "bg-destructive";
             return (
               <li key={i} className="flex items-center gap-2">
                 <span className={`h-2 w-2 rounded-full ${dotColor}`} />
                 <span className="flex-1 truncate font-mono text-muted-foreground">{p}</span>
+                {!invalid && (
+                  <Badge variant="outline" className="px-1 py-0 text-[9px] uppercase">{c.kind}</Badge>
+                )}
                 {r?.exitIp && (
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
                     {r.exitIp}
                   </span>
                 )}
-                <span className={r?.ok ? "text-primary" : "text-destructive"}>
-                  {r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
+                <span className={invalid || (r && !r.ok) ? "text-destructive" : "text-primary"}>
+                  {invalid ? (c.reason ?? "invalid") : r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
                 </span>
               </li>
             );
