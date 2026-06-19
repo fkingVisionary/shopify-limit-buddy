@@ -89,7 +89,7 @@ function checkoutScriptSource() {
         await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
       } catch {}
       let checkoutLoaded = false;
-      let lastNavErr: any = null;
+      let lastNavErr = null;
       for (const waitUntil of ["domcontentloaded", "load"]) {
         try {
           await page.goto(origin + "/checkout", { waitUntil, timeout: 45000, referer: origin + "/cart" });
@@ -109,13 +109,13 @@ function checkoutScriptSource() {
             const sels = ['button[name="checkout"]', 'input[name="checkout"]', 'a[href$="/checkout"]', 'a[href*="/checkout"]'];
             for (const s of sels) {
               const el = document.querySelector(s);
-              if (el) { (el as HTMLElement).click(); return true; }
+              if (el) { el.click(); return true; }
             }
             return false;
           });
           if (clicked) {
             await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-            if (/\/checkout/i.test(page.url())) checkoutLoaded = true;
+            if (/\\/checkout/i.test(page.url())) checkoutLoaded = true;
           }
         } catch {}
       }
