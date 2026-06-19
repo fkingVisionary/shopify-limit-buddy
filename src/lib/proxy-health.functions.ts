@@ -23,6 +23,8 @@ export type ProxyHealth = {
   exitIp: string | null;
   error: string | null;
   kind?: "template" | "raw";
+  targetStatus?: number | null;
+  targetError?: string | null;
 };
 
 function cleanProxyError(message: string): string {
