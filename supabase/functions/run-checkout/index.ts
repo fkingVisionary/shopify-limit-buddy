@@ -961,7 +961,23 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true, note: "already " + job.status }), { headers: { ...cors, "content-type": "application/json" } });
   }
 
-  await supa.from("checkout_jobs").update({ status: "running", stage: "launch" }).eq("id", jobId);
+  // Determine phase. Phase A is the cart→payment-step prep. Phase B (and
+  // beyond) resumes from saved cookies + URL to do card_fill→submit→result.
+  const phase = (job as any).phase ?? "A";
+  const session = (job as any).session ?? null;
+  const phaseAttempts = (job as any).phase_attempts ?? 0;
+  if (phaseAttempts >= 3) {
+    await supa.from("checkout_jobs").update({
+      status: "failed", stage: "phase_limit", error: "Exceeded 3 phase attempts without completion",
+    }).eq("id", jobId);
+    return new Response("phase limit", { status: 200, headers: cors });
+  }
+
+  await supa.from("checkout_jobs").update({
+    status: "running",
+    stage: phase === "A" ? "launch" : "phase_b_start",
+    phase_attempts: phaseAttempts + 1,
+  }).eq("id", jobId);
 
   if (!BROWSERLESS_KEY) {
     await supa.from("checkout_jobs").update({
@@ -983,10 +999,9 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  // Raise transport ceiling so a transient slow page doesn't 408 the entire
-  // job. Target is sub-15s — this is a safety net only. Also enable
-  // Browserless-side ad/tracker blocking on top of our in-script interceptor.
-  url.searchParams.set("timeout", "120000");
+  // Browserless plan caps /function at 60s. Stay under it; the in-script
+  // SCRIPT_BUDGET_MS=45000 returns partial well before this fires.
+  url.searchParams.set("timeout", "60000");
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
@@ -999,6 +1014,8 @@ Deno.serve(async (req) => {
         context: {
           input,
           stageUrl: selfUrl.toString(),
+          phase,
+          session,
         },
       }),
     });
@@ -1016,6 +1033,33 @@ Deno.serve(async (req) => {
       }).eq("id", jobId);
       return new Response("bad json", { status: 502, headers: cors });
     }
+
+    // Partial: save handoff and re-enqueue via the same pg_net RPC used at
+    // initial enqueue. Status returns to 'pending' so the next worker
+    // invocation passes the guard at the top of this handler.
+    if (result.ok && result.partial) {
+      const selfPostUrl = new URL(req.url);
+      selfPostUrl.search = "";
+      await supa.from("checkout_jobs").update({
+        status: "pending",
+        stage: "phase_" + String(result.nextPhase ?? "B").toLowerCase() + "_queued",
+        phase: result.nextPhase ?? "B",
+        session: result.session ?? null,
+      }).eq("id", jobId);
+      const { error: rpcErr } = await supa.rpc("request_checkout_worker", {
+        p_job_id: jobId,
+        p_url: selfPostUrl.toString(),
+        p_token: EXECUTOR_TOKEN,
+      });
+      if (rpcErr) {
+        await supa.from("checkout_jobs").update({
+          status: "failed", stage: "transport", error: "re-enqueue failed: " + rpcErr.message,
+        }).eq("id", jobId);
+        return new Response("re-enqueue failed", { status: 500, headers: cors });
+      }
+      return new Response(JSON.stringify({ ok: true, phase: result.nextPhase }), { headers: { ...cors, "content-type": "application/json" } });
+    }
+
     await supa.from("checkout_jobs").update({
       status: result.ok ? "succeeded" : "failed",
       stage: result.ok ? (result.dryRun ? "dry_run_done" : "confirm") : (result.failedStep ?? "unknown"),
