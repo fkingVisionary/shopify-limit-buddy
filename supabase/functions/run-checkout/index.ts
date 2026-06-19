@@ -1162,11 +1162,35 @@ Deno.serve(async (req) => {
     }
 
 
+    // Translate runner result into the true outcome:
+    // - paymentRejected (Shopify showed a decline message) => failed/payment_declined
+    // - ok + dryRun => succeeded/dry_run_done
+    // - ok + (orderId or thank-you URL) => succeeded/confirm
+    // - ok but no confirmation signal => failed/confirm_uncertain (don't false-positive)
+    // - !ok => failed with the runner's failedStep + error
+    const finalUrlStr: string = typeof result?.finalUrl === "string" ? result.finalUrl : "";
+    const looksConfirmed = !!result?.orderId || /\/thank_you|orders\//i.test(finalUrlStr);
+    let outStatus: string;
+    let outStage: string;
+    let outError: string | null;
+    if (result?.ok && result?.paymentRejected) {
+      outStatus = "failed";
+      outStage = "payment_declined";
+      outError = (result.paymentMessage as string) || "Payment declined";
+    } else if (result?.ok && result?.dryRun) {
+      outStatus = "succeeded"; outStage = "dry_run_done"; outError = null;
+    } else if (result?.ok && looksConfirmed) {
+      outStatus = "succeeded"; outStage = "confirm"; outError = null;
+    } else if (result?.ok) {
+      outStatus = "failed"; outStage = "confirm_uncertain";
+      outError = "Order outcome uncertain (no order id or thank-you URL)";
+    } else {
+      outStatus = "failed";
+      outStage = (result?.failedStep as string) ?? "unknown";
+      outError = (result?.error as string) ?? "unknown";
+    }
     await supa.from("checkout_jobs").update({
-      status: result.ok ? "succeeded" : "failed",
-      stage: result.ok ? (result.dryRun ? "dry_run_done" : "confirm") : (result.failedStep ?? "unknown"),
-      result,
-      error: result.ok ? null : (result.error ?? "unknown"),
+      status: outStatus, stage: outStage, result, error: outError,
     }).eq("id", jobId);
     return new Response(JSON.stringify({ ok: true }), { headers: { ...cors, "content-type": "application/json" } });
   } catch (e) {
