@@ -1314,6 +1314,7 @@ function Index() {
                     submit: browserlessDryRun ? "Finalising dry-run" : "Submitting payment",
                     payment_result: "Checking payment result",
                     three_d_secure: "Waiting for 3-D Secure verification (approve in your bank app)",
+                    three_d_secure_completing: "3-D Secure approved — confirming order…",
                     confirm: "Waiting for order confirmation",
                     payment_declined: "Payment declined",
                     confirm_uncertain: "Order outcome uncertain",
