@@ -130,7 +130,7 @@ function checkoutScriptSource() {
       await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 700, timeout: 5000 }).catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1500 }).catch(() => null);
       log("address_fill", true);
 
       const checkoutStep = async () => {
@@ -212,15 +212,15 @@ function checkoutScriptSource() {
       };
 
       const clickContinue = async (allowPaymentSubmit = false, preferredStep = null) => {
-        const deadline = Date.now() + 7000;
+        const deadline = Date.now() + 3500;
         let target = null;
         while (Date.now() < deadline) {
           target = await findContinueTarget(allowPaymentSubmit, preferredStep);
           if (target) break;
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 150));
         }
         if (!target) throw new Error("Could not find checkout continue button");
-        try { await page.mouse.click(target.x, target.y, { delay: 40 }); } catch {}
+        try { await page.mouse.click(target.x, target.y, { delay: 20 }); } catch {}
         await page.evaluate((allowSubmit, preferred) => {
           const visible = (el) => {
             const r = el.getBoundingClientRect();
@@ -254,7 +254,7 @@ function checkoutScriptSource() {
           const step = await checkoutStep();
           if (step === "shipping_method" || step === "payment") return true;
           await clickContinue(false, "shipping").catch(() => null);
-          await new Promise((r) => setTimeout(r, 1200));
+          await new Promise((r) => setTimeout(r, 450));
           const next = await checkoutStep();
           if (next === "shipping_method" || next === "payment") return true;
           const err = await visibleCheckoutError();
