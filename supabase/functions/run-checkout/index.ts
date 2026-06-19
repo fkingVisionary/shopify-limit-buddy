@@ -712,56 +712,78 @@ function checkoutScriptSource() {
           }
           return false;
         };
-        if (kind === "name" && await fillTopLevelInput()) return true;
-        const deadline = Date.now() + 8000;
-        while (Date.now() < deadline) {
-          // Find candidate frames first via parent <iframe> name attribute
-          // (some Shopify builds expose the human label there), then by URL.
+        // For the cardholder name, prefer the DOM value setter — Shopify's card
+        // tokenizer only needs real keystrokes for number/expiry/cvv. Using
+        // page.keyboard for the name has been observed to leak characters into
+        // the number iframe (cross-iframe OS focus is unreliable), producing
+        // e.g. "M edwards" inside the card-number field.
+        const fillNameByDom = async () => {
+          if (await fillTopLevelInput()) return true;
           for (const frame of page.frames()) {
             const fname = (frame.name && frame.name()) || "";
             const furl = frame.url ? frame.url() : "";
             if (!nameRe.test(fname) && !nameRe.test(furl)) continue;
-            // Hard exclude: a "name" frame must not also be a number/expiry/cvv frame.
             if (excludeRe && (excludeRe.test(fname) || excludeRe.test(furl))) continue;
             try {
-              const inputs = await frame.$$('input:not([type="hidden"])');
-              for (const el of inputs) {
-                const visible = await frame.evaluate((node) => {
-                  if (!node) return false;
+              const ok = await frame.evaluate((val) => {
+                const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+                const visible = (node) => {
                   const r = node.getBoundingClientRect();
                   const s = getComputedStyle(node);
                   return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
-                }, el).catch(() => false);
-                if (!visible) continue;
-                if (excludeRe) {
-                  const wrong = await frame.evaluate((node, reSrc) => {
-                    const re = new RegExp(reSrc, "i");
-                    const attrs = [
-                      node.getAttribute("name") || "",
-                      node.getAttribute("id") || "",
-                      node.getAttribute("placeholder") || "",
-                      node.getAttribute("aria-label") || "",
-                      node.getAttribute("autocomplete") || "",
-                    ].join(" ");
-                    return re.test(attrs);
-                  }, el, excludeRe.source).catch(() => false);
-                  if (wrong) continue;
-                }
+                };
+                const target = inputs.find(visible);
+                if (!target) return false;
+                const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                target.focus();
+                if (desc && desc.set) desc.set.call(target, String(val));
+                else target.value = String(val);
+                target.dispatchEvent(new Event("input", { bubbles: true }));
+                target.dispatchEvent(new Event("change", { bubbles: true }));
+                target.dispatchEvent(new Event("blur", { bubbles: true }));
+                return String(target.value || "").length >= 2;
+              }, raw).catch(() => false);
+              if (ok) return true;
+            } catch {}
+          }
+          return false;
+        };
+        if (kind === "name") {
+          const deadlineName = Date.now() + 8000;
+          while (Date.now() < deadlineName) {
+            if (await fillNameByDom()) return true;
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          return false;
+        }
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          for (const frame of page.frames()) {
+            const fname = (frame.name && frame.name()) || "";
+            const furl = frame.url ? frame.url() : "";
+            if (!nameRe.test(fname) && !nameRe.test(furl)) continue;
+            try {
+              const inputs = await frame.$$('input:not([type="hidden"])');
+              for (const el of inputs) {
+                const box = await el.boundingBox().catch(() => null);
+                if (!box || box.width <= 0 || box.height <= 0) continue;
                 const readVal = async () => await frame.evaluate((n) => n.value || "", el).catch(() => "");
+                // Clear via DOM (not page.keyboard) to avoid mis-targeting another iframe.
                 const clearIt = async () => {
-                  await el.focus().catch(() => null);
-                  await el.click({ clickCount: 3 }).catch(() => null);
-                  await page.keyboard.press("Backspace").catch(() => null);
+                  await frame.evaluate((node) => {
+                    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                    if (desc && desc.set) desc.set.call(node, "");
+                    else node.value = "";
+                    node.dispatchEvent(new Event("input", { bubbles: true }));
+                  }, el).catch(() => null);
                 };
                 await clearIt();
-                // Type through the real focused iframe input only. Do not use a
-                // native value setter for secure Shopify card fields: it can make
-                // node.value look full while Shopify's tokenizer still only has a
-                // partial value (the screenshot showed just "222").
                 for (let attempt = 0; attempt < 3; attempt++) {
+                  // Force OS focus onto this iframe's input by clicking its
+                  // centre from the page level, then type via page.keyboard.
+                  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => null);
                   await el.focus().catch(() => null);
-                  await el.click().catch(() => null);
-                  await el.type(typeText, { delay: 25 }).catch(() => null);
+                  await page.keyboard.type(typeText, { delay: 30 }).catch(() => null);
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
                     node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -771,14 +793,12 @@ function checkoutScriptSource() {
                     await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
                     return true;
                   }
-                  // Append only the missing tail rather than restarting from scratch
-                  const wantDigits = (kind === "name") ? typeText : typeText.replace(/\\D/g, "");
-                  const haveLen = (kind === "name") ? String(cur).length : String(cur).replace(/\\D/g, "").length;
+                  const wantDigits = typeText.replace(/\\D/g, "");
+                  const haveLen = String(cur).replace(/\\D/g, "").length;
                   if (haveLen > 0 && haveLen < wantDigits.length) {
                     const tail = wantDigits.slice(haveLen);
-                    await el.focus().catch(() => null);
-                    await el.click().catch(() => null);
-                    await el.type(tail, { delay: 35 }).catch(() => null);
+                    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => null);
+                    await page.keyboard.type(tail, { delay: 35 }).catch(() => null);
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
                       await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
@@ -787,21 +807,10 @@ function checkoutScriptSource() {
                   }
                   await clearIt();
                 }
-                if (kind === "name") {
-                  await frame.evaluate((node, val) => {
-                    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-                    if (desc && desc.set) desc.set.call(node, String(val));
-                    else node.value = String(val);
-                    node.dispatchEvent(new Event("input", { bubbles: true }));
-                    node.dispatchEvent(new Event("change", { bubbles: true }));
-                    node.dispatchEvent(new Event("blur", { bubbles: true }));
-                  }, el, raw).catch(() => null);
-                  if (looksFilled(await readVal())) return true;
-                }
               }
             } catch {}
           }
-          if (kind !== "name" && await fillTopLevelInput()) return true;
+          if (await fillTopLevelInput()) return true;
           await new Promise((r) => setTimeout(r, 200));
         }
         return false;
