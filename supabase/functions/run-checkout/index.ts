@@ -524,47 +524,61 @@ function checkoutScriptSource() {
         await new Promise((r) => setTimeout(r, 600));
       } catch {}
 
-      const setIn = async (namePart, value, selectors = []) => {
-        const query = ['input[data-current-field="' + namePart + '"], input[id="' + namePart + '"], input[name="' + namePart + '"]', ...selectors, 'input[name*="' + namePart + '" i]'].join(', ');
-        const deadline = Date.now() + 10000;
+      // Modern Shopify "Checkout One" (/checkouts/cn/...) puts each card field
+      // inside its own cross-origin iframe under checkout.shopifycs.com. The
+      // iframes are named e.g. "Field container for: Card number". Find the
+      // right frame by its name (or URL path) and fill the single visible text
+      // input inside it — this avoids guessing the input's id/name attributes,
+      // which vary across Shopify checkout versions.
+      const fillCardField = async (kind, value) => {
         const expectedDigits = String(value).replace(/\D/g, "");
         const looksFilled = (current) => {
           const v = String(current || "").trim();
           const digits = v.replace(/\D/g, "");
-          if (namePart === "number") return digits.endsWith(expectedDigits.slice(-4));
-          if (namePart === "expiry") return digits.length >= 4;
-          if (namePart === "verification_value") return digits.length >= Math.min(3, expectedDigits.length);
-          if (namePart === "name") return v.length >= 2;
+          if (kind === "number") return digits.length >= Math.max(12, expectedDigits.length - 1);
+          if (kind === "expiry") return digits.length >= 4;
+          if (kind === "cvv") return digits.length >= Math.min(3, expectedDigits.length);
+          if (kind === "name") return v.length >= 2;
           return v.length > 0;
         };
+        const nameRe = {
+          number: /card\s*number|^number$|\/number/i,
+          expiry: /expiration|expiry|\/expiry/i,
+          cvv: /security\s*code|verification[_\s-]?value|cvv|cvc|\/verification/i,
+          name: /name\s*on\s*card|\/name(?:[?#/]|$)/i,
+        }[kind];
+        const deadline = Date.now() + 18000;
         while (Date.now() < deadline) {
-          for (const f of page.frames()) {
+          // Find candidate frames first via parent <iframe> name attribute
+          // (some Shopify builds expose the human label there), then by URL.
+          for (const frame of page.frames()) {
+            const fname = (frame.name && frame.name()) || "";
+            const furl = frame.url ? frame.url() : "";
+            if (!nameRe.test(fname) && !nameRe.test(furl)) continue;
             try {
-              const els = await f.$$(query);
-              for (const el of els) {
-                const visible = await f.evaluate((node) => {
+              const inputs = await frame.$$('input:not([type="hidden"])');
+              for (const el of inputs) {
+                const visible = await frame.evaluate((node) => {
                   if (!node) return false;
-                  const rect = node.getBoundingClientRect();
-                  const style = getComputedStyle(node);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none" && !node.disabled && node.getAttribute("aria-hidden") !== "true" && !node.hasAttribute("data-honeypot-field");
+                  const r = node.getBoundingClientRect();
+                  const s = getComputedStyle(node);
+                  return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
                 }, el).catch(() => false);
                 if (!visible) continue;
-
                 await el.focus().catch(() => null);
                 await el.click({ clickCount: 3 }).catch(() => null);
                 await page.keyboard.press("Backspace").catch(() => null);
-                await el.type(String(value), { delay: 45 }).catch(() => null);
-                const typedValue = await f.evaluate((node) => {
+                await el.type(String(value), { delay: 35 }).catch(() => null);
+                const v = await frame.evaluate((node) => {
                   node.dispatchEvent(new Event("input", { bubbles: true }));
                   node.dispatchEvent(new Event("change", { bubbles: true }));
                   node.dispatchEvent(new Event("blur", { bubbles: true }));
-                  return node.value || node.getAttribute("value") || "";
+                  return node.value || "";
                 }, el).catch(() => "");
-                if (looksFilled(typedValue)) return true;
-
-                await el.click({ clickCount: 3 }).catch(() => null);
-                await f.evaluate((node, val) => {
-                  const proto = node instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+                if (looksFilled(v)) return true;
+                // Fallback: native setter
+                await frame.evaluate((node, val) => {
+                  const proto = HTMLInputElement.prototype;
                   const desc = Object.getOwnPropertyDescriptor(proto, "value");
                   if (desc && desc.set) desc.set.call(node, String(val));
                   else node.value = String(val);
@@ -572,8 +586,8 @@ function checkoutScriptSource() {
                   node.dispatchEvent(new Event("change", { bubbles: true }));
                   node.dispatchEvent(new Event("blur", { bubbles: true }));
                 }, el, value).catch(() => null);
-                const setValue = await f.evaluate((node) => node.value || node.getAttribute("value") || "", el).catch(() => "");
-                if (looksFilled(setValue)) return true;
+                const v2 = await frame.evaluate((n) => n.value || "", el).catch(() => "");
+                if (looksFilled(v2)) return true;
               }
             } catch {}
           }
@@ -581,11 +595,11 @@ function checkoutScriptSource() {
         }
         return false;
       };
-      const expiryValue = input.card.exp_month.padStart(2, "0") + input.card.exp_year.slice(-2);
-      const cardNumberOk = await setIn("number", input.card.number, ['input[autocomplete="cc-number"]', 'input[placeholder*="Card number" i]', 'input[id*="number" i]', 'input[aria-label*="card number" i]']);
-      const cardExpiryOk = await setIn("expiry", expiryValue, ['input[name*="exp" i]', 'input[autocomplete="cc-exp"]', 'input[placeholder*="Expiration" i]', 'input[placeholder*="MM" i]', 'input[id*="expiry" i]', 'input[id*="exp" i]', 'input[aria-label*="expiration" i]', 'input[aria-label*="expiry" i]']);
-      const cardCvvOk = await setIn("verification_value", input.card.cvv, ['input[name*="security" i]', 'input[name*="cvv" i]', 'input[name*="cvc" i]', 'input[autocomplete="cc-csc"]', 'input[placeholder*="Security" i]', 'input[placeholder*="CVV" i]', 'input[placeholder*="CVC" i]', 'input[id*="verification" i]', 'input[id*="security" i]', 'input[id*="cvv" i]', 'input[id*="cvc" i]', 'input[aria-label*="security" i]']);
-      const cardNameOk = await setIn("name", input.card.name, ['input[data-current-field="name"]', 'input[autocomplete="cc-name"]', 'input[placeholder*="Name on card" i]', 'input[placeholder*="Cardholder" i]', 'input[id="name"]', 'input[name="name"]', 'input[name*="name_on_card" i]', 'input[name*="cardholder" i]', 'input[id*="name_on_card" i]', 'input[id*="cardholder" i]', 'input[aria-label*="name on card" i]', 'input[aria-label*="cardholder" i]']);
+      const expiryValue = input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2);
+      const cardNumberOk = await fillCardField("number", input.card.number);
+      const cardExpiryOk = await fillCardField("expiry", expiryValue);
+      const cardCvvOk = await fillCardField("cvv", input.card.cvv);
+      const cardNameOk = await fillCardField("name", input.card.name);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
 
