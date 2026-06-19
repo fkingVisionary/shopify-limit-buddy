@@ -262,11 +262,23 @@ function checkoutScriptSource() {
         return finalStep === "shipping_method" || finalStep === "payment";
       };
 
+      const hasSelectedShippingRate = async () => {
+        return await page.evaluate(() => {
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && !el.disabled;
+          };
+          const rates = Array.from(document.querySelectorAll('input[name="checkout[shipping_rate][id]"], input[type="radio"][id*="shipping" i], input[type="radio"][name*="shipping" i]')).filter(visible);
+          return rates.some((input) => input.checked || input.getAttribute("aria-checked") === "true");
+        }).catch(() => false);
+      };
+
       const selectShippingRate = async () => {
-        if (await isPaymentStep()) return true;
         const deadline = Date.now() + 12000;
         while (Date.now() < deadline) {
-          if (await isPaymentStep()) return true;
+          if (await hasSelectedShippingRate()) return true;
           const target = await page.evaluate(() => {
             const visible = (el) => {
               if (!el) return false;
