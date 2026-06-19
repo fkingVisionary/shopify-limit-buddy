@@ -35,6 +35,11 @@ function checkoutScriptSource() {
       try { shot = await page.screenshot({ encoding: "base64", fullPage: false }); } catch {}
       return { ok: false, failedStep: lastStep, error: msg, steps, screenshotB64: shot };
     };
+      const paymentRejected = async (msg) => {
+        const shot = await page.screenshot({ encoding: "base64", fullPage: false }).catch(() => null);
+        log("payment_result", true, msg);
+        return { ok: true, orderId: null, finalUrl: page.url(), steps, screenshotB64: shot, dryRun: false, paymentRejected: true, paymentMessage: msg };
+      };
     try {
       await stage("launch");
       lastStep = "cart_add";
@@ -108,12 +113,40 @@ function checkoutScriptSource() {
           return await page.evaluate(() => {
             const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '.notice--error', '.banner--error'];
             for (const s of sels) {
-              const el = document.querySelector(s);
-              const t = ((el && el.textContent) || "").trim();
-              if (/order.?s being processed|processing/i.test(t)) continue;
-              if (t) return t.slice(0, 200);
+              for (const el of Array.from(document.querySelectorAll(s))) {
+                const t = ((el && el.textContent) || "").trim();
+                if (/order.?s being processed|processing/i.test(t)) continue;
+                if (t) return t.slice(0, 200);
+              }
             }
             return null;
+          });
+        } catch { return null; }
+      };
+
+      const visiblePaymentError = async () => {
+        try {
+          return await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '.notice--error', '.banner--error', '[id*="error" i]'];
+            const paymentTerms = /declined|payment\\s*(?:failed|could(?:n\u2019|')?t|cannot|can\\s*not)|card\\s*(?:invalid|declined|not accepted)|unable to process|try another card|expired|security\\s*code|cvv|cvc/i;
+            for (const s of sels) {
+              for (const el of Array.from(document.querySelectorAll(s))) {
+                if (!visible(el)) continue;
+                const t = ((el && el.textContent) || "").trim();
+                if (t && paymentTerms.test(t)) return t.slice(0, 240);
+              }
+            }
+            const body = document.body?.innerText ?? "";
+            // Do not match the generic "Security code" label in body text; only
+            // body-scan terminal gateway errors like decline/failed/invalid.
+            const m = body.match(/[^\\n]*(?:declined|payment[^\\n]*(?:failed|could(?:n\u2019|')?t|cannot|can\\s*not)|card[^\\n]*(?:invalid|declined|not accepted)|unable to process|try another card|expired)[^\\n]*/i);
+            return m?.[0]?.trim().slice(0, 240) || null;
           });
         } catch { return null; }
       };
@@ -726,10 +759,17 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 500));
       const securityCodeRetryNeeded = await page.evaluate(() => {
-        const text = document.body?.innerText ?? "";
-        return /security\\s*code/i.test(text) && !(/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href));
+        if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return false;
+        const visible = (el) => {
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          const s = getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+        };
+        const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '[id*="error" i]'];
+        return sels.some((s) => Array.from(document.querySelectorAll(s)).some((el) => visible(el) && /security\\s*code|cvv|cvc/i.test(el.textContent || "")));
       }).catch(() => false);
       if (securityCodeRetryNeeded) {
         lastStep = "cvv_retry";
@@ -747,19 +787,20 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      await page.waitForFunction(
-        () => {
-          if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return true;
-          const text = document.body?.innerText ?? "";
-          return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
-        },
-        { timeout: 15000 },
-      );
+      const resultDeadline = Date.now() + 30000;
+      while (Date.now() < resultDeadline) {
+        if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
+        const paymentErr = await visiblePaymentError();
+        if (paymentErr) {
+          if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
+          return await paymentRejected(paymentErr);
+        }
+        await new Promise((r) => setTimeout(r, 500));
+      }
       const finalUrl = page.url();
-      const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
-        const paymentMsg = (bodyText.match(/[^\\n]*(?:declined|payment[^\\n]*failed|card[^\\n]*invalid|unable to process|try another card|security code|expired)[^\\n]*/i)?.[0] ?? "Payment was not accepted").trim();
-        return await fail(paymentMsg.slice(0, 240));
+        const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
+        return await paymentRejected(paymentMsg.slice(0, 240));
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
