@@ -580,18 +580,50 @@ function checkoutScriptSource() {
                   return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
                 }, el).catch(() => false);
                 if (!visible) continue;
-                await el.focus().catch(() => null);
-                await el.click({ clickCount: 3 }).catch(() => null);
-                await page.keyboard.press("Backspace").catch(() => null);
-                await el.type(String(value), { delay: 35 }).catch(() => null);
-                const v = await frame.evaluate((node) => {
-                  node.dispatchEvent(new Event("input", { bubbles: true }));
-                  node.dispatchEvent(new Event("change", { bubbles: true }));
-                  node.dispatchEvent(new Event("blur", { bubbles: true }));
-                  return node.value || "";
-                }, el).catch(() => "");
-                if (looksFilled(v)) return true;
-                // Fallback: native setter
+                const readVal = async () => await frame.evaluate((n) => n.value || "", el).catch(() => "");
+                const clearIt = async () => {
+                  await el.focus().catch(() => null);
+                  await el.click({ clickCount: 3 }).catch(() => null);
+                  await page.keyboard.press("Backspace").catch(() => null);
+                };
+                await clearIt();
+                const str = String(value);
+                // Type char-by-char with delay so masked inputs (Shopify card-fields)
+                // don't drop keystrokes, and retype the missing tail if needed.
+                for (let attempt = 0; attempt < 4; attempt++) {
+                  await el.focus().catch(() => null);
+                  for (let i = 0; i < str.length; i++) {
+                    await page.keyboard.type(str[i], { delay: 0 }).catch(() => null);
+                    await new Promise((r) => setTimeout(r, 70));
+                  }
+                  await frame.evaluate((node) => {
+                    node.dispatchEvent(new Event("input", { bubbles: true }));
+                    node.dispatchEvent(new Event("change", { bubbles: true }));
+                  }, el).catch(() => null);
+                  const cur = await readVal();
+                  if (looksFilled(cur)) {
+                    await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
+                    return true;
+                  }
+                  // Append only the missing tail rather than restarting from scratch
+                  const wantDigits = (kind === "name") ? str : str.replace(/\\D/g, "");
+                  const haveLen = (kind === "name") ? String(cur).length : String(cur).replace(/\\D/g, "").length;
+                  if (haveLen > 0 && haveLen < wantDigits.length) {
+                    const tail = wantDigits.slice(haveLen);
+                    await el.focus().catch(() => null);
+                    for (let i = 0; i < tail.length; i++) {
+                      await page.keyboard.type(tail[i], { delay: 0 }).catch(() => null);
+                      await new Promise((r) => setTimeout(r, 90));
+                    }
+                    const cur2 = await readVal();
+                    if (looksFilled(cur2)) {
+                      await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
+                      return true;
+                    }
+                  }
+                  await clearIt();
+                }
+                // Last resort: native setter (rarely accepted by card-fields, but try)
                 await frame.evaluate((node, val) => {
                   const proto = HTMLInputElement.prototype;
                   const desc = Object.getOwnPropertyDescriptor(proto, "value");
@@ -601,8 +633,8 @@ function checkoutScriptSource() {
                   node.dispatchEvent(new Event("change", { bubbles: true }));
                   node.dispatchEvent(new Event("blur", { bubbles: true }));
                 }, el, value).catch(() => null);
-                const v2 = await frame.evaluate((n) => n.value || "", el).catch(() => "");
-                if (looksFilled(v2)) return true;
+                const vFinal = await readVal();
+                if (looksFilled(vFinal)) return true;
               }
             } catch {}
           }
