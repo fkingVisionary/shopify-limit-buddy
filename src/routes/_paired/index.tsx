@@ -31,6 +31,8 @@ import { pingBrowserless } from "@/lib/browserless-ping.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { shopifyFetchViaProxy } from "@/lib/shopify-fetch.functions";
+import { runCheckoutCompatTest, type CompatReport } from "@/lib/checkout-selftest.functions";
+
 import { classifyProxy } from "@/lib/proxy-format";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
