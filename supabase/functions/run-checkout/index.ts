@@ -129,6 +129,8 @@ function checkoutScriptSource() {
       await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
       await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      await page.keyboard.press("Tab").catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 700, timeout: 5000 }).catch(() => null);
       log("address_fill", true);
 
       const checkoutStep = async () => {
