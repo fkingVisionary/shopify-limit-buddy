@@ -815,13 +815,18 @@ function checkoutScriptSource() {
         return false;
       };
       const expiryValue = input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2);
-      const cardNumberOk = await fillCardField("number", input.card.number);
-      const cardExpiryOk = await fillCardField("expiry", expiryValue);
-      const cardCvvOk = await fillCardField("cvv", input.card.cvv);
+      // Fill name FIRST. Name uses DOM-set (no keystrokes), so it can never
+      // leak into the focused Card-number iframe. After name we type number,
+      // pressing Tab between fields to move focus instead of clicking.
       const cardNameOk = await fillCardField("name", input.card.name);
+      const cardNumberOk = await fillCardField("number", input.card.number);
+      await page.keyboard.press("Tab").catch(() => null);
+      const cardExpiryOk = await fillCardField("expiry", expiryValue);
+      await page.keyboard.press("Tab").catch(() => null);
+      const cardCvvOk = await fillCardField("cvv", input.card.cvv);
+      await page.keyboard.press("Tab").catch(() => null);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
-      await page.keyboard.press("Tab").catch(() => null);
       await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
 
       if (input.captchaToken) {
