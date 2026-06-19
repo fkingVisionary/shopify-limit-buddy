@@ -226,16 +226,28 @@ async function runCheckout(job) {
       };
     }
 
-    // Look for a decline message in the page body.
-    let bodyText = "";
-    try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
-    const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
-    if (m) {
-      const msg = m[0].trim().slice(0, 240);
-      log("payment_result", true, msg);
+    // Decline detected during loop, or fall back to a final body scan.
+    if (!declineMsg) {
+      let bodyText = "";
+      try { bodyText = await page.evaluate(() => (document.body && document.body.innerText) || ""); } catch (_) {}
+      const m = bodyText.match(new RegExp("[^\\n]*(?:" + paymentTerms.source + ")[^\\n]*", "i"));
+      if (m) declineMsg = m[0].trim().slice(0, 240);
+    }
+    if (declineMsg) {
+      log("payment_result", true, declineMsg);
       await browser.close();
       return {
-        jobId: job.id, ok: true, paymentRejected: true, paymentMessage: msg,
+        jobId: job.id, ok: true, paymentRejected: true, paymentMessage: declineMsg,
+        orderId: null, finalUrl, steps, screenshotB64: shot,
+        elapsedMs: Date.now() - t0, dryRun: false,
+      };
+    }
+    if (threeDsActive) {
+      log("three_d_secure", false, "timed out");
+      await browser.close();
+      return {
+        jobId: job.id, ok: true, paymentRejected: true,
+        paymentMessage: "3-D Secure verification timed out or was not completed",
         orderId: null, finalUrl, steps, screenshotB64: shot,
         elapsedMs: Date.now() - t0, dryRun: false,
       };
