@@ -2993,6 +2993,7 @@ function ProxyGroupCard({
   const [testing, setTesting] = useState(false);
   const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
+  const [targetUrl, setTargetUrl] = useState("");
   const checkExit = useServerFn(checkProxyExit);
 
 
