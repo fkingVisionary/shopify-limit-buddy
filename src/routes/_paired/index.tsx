@@ -31,6 +31,8 @@ import { pingBrowserless } from "@/lib/browserless-ping.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
 import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { shopifyFetchViaProxy } from "@/lib/shopify-fetch.functions";
+import { runCheckoutCompatTest, type CompatReport } from "@/lib/checkout-selftest.functions";
+
 import { classifyProxy } from "@/lib/proxy-format";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { DevicesPanel } from "@/components/DevicesPanel";
@@ -3166,6 +3168,57 @@ function ProxyGroupCard({
 // ────────────────────────────────────────────
 // Stores view
 // ────────────────────────────────────────────
+function StoreCompatRow({ store }: { store: StoreEntry }) {
+  const [variantId, setVariantId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<CompatReport | null>(null);
+  const testFn = useServerFn(runCheckoutCompatTest);
+  const run = async () => {
+    const vid = Number(variantId);
+    if (!Number.isFinite(vid) || vid <= 0) {
+      setReport({ storeUrl: store.url, ok: false, version: "unknown", checkoutUrl: null, steps: [], elapsedMs: 0, summary: "Enter a numeric variant id (find one on any product page → 'View source' → variant id)." });
+      return;
+    }
+    setBusy(true);
+    setReport(null);
+    try {
+      const r = await testFn({ data: { storeUrl: store.url, variantId: vid, qty: 1 } });
+      setReport(r);
+    } catch (e) {
+      setReport({ storeUrl: store.url, ok: false, version: "unknown", checkoutUrl: null, steps: [], elapsedMs: 0, summary: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-2 border-t pt-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <Input className="h-8 flex-1 text-xs" placeholder="Variant id (e.g. 44732938616891)" value={variantId} onChange={(e) => setVariantId(e.target.value)} inputMode="numeric" />
+        <Button size="sm" variant="outline" className="h-8" disabled={busy} onClick={run}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Test path"}
+        </Button>
+      </div>
+      {report && (
+        <div className="mt-2 rounded border bg-muted/30 p-2 text-[11px]">
+          <div className={`font-medium ${report.ok ? "text-emerald-600" : "text-destructive"}`}>
+            {report.ok ? "✓ " : "✗ "}{report.summary}
+          </div>
+          <div className="mt-1 text-muted-foreground">version: <code>{report.version}</code> · {report.elapsedMs}ms</div>
+          {report.steps.length > 0 && (
+            <ul className="mt-1 space-y-0.5 font-mono text-[10px]">
+              {report.steps.map((s, i) => (
+                <li key={i} className={s.ok ? "text-emerald-600" : "text-destructive"}>
+                  {s.ok ? "✓" : "✗"} {s.step} {s.status ?? ""} {s.ms}ms {s.note ? `· ${s.note}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StoresView({
   presets, custom, onAdd, onDelete,
 }: { presets: StoreEntry[]; custom: StoreEntry[]; onAdd: (name: string, url: string) => void; onDelete: (id: string) => void }) {
@@ -3180,6 +3233,9 @@ function StoresView({
           <Input className="h-9 flex-1" placeholder="https://store.com" value={url} onChange={(e) => setUrl(e.target.value)} autoCapitalize="none" autoCorrect="off" />
           <Button size="sm" className="h-9" onClick={() => { onAdd(name, url); setName(""); setUrl(""); }}><Plus className="h-4 w-4" /> Add</Button>
         </div>
+        <p className="mt-2 text-[10px] text-muted-foreground">
+          Use “Test path” on each store to verify the standardized checkout flow (cart → address → shipping → card vault) before running a real task.
+        </p>
       </Card>
 
       {custom.length > 0 && (
@@ -3187,13 +3243,16 @@ function StoresView({
           <div className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Custom</div>
           <div className="space-y-1.5">
             {custom.map((s) => (
-              <Card key={s.id} className="flex items-center gap-2 p-3">
-                <Store className="h-4 w-4 text-primary" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium">{s.name}</div>
-                  <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+              <Card key={s.id} className="p-3">
+                <div className="flex items-center gap-2">
+                  <Store className="h-4 w-4 text-primary" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{s.name}</div>
+                    <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+                  </div>
+                  <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(s.id)}><Trash2 className="h-4 w-4" /></Button>
                 </div>
-                <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => onDelete(s.id)}><Trash2 className="h-4 w-4" /></Button>
+                <StoreCompatRow store={s} />
               </Card>
             ))}
           </div>
@@ -3204,13 +3263,16 @@ function StoresView({
         <div className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">Presets</div>
         <div className="space-y-1.5">
           {presets.map((s) => (
-            <Card key={s.id} className="flex items-center gap-2 p-3">
-              <Store className="h-4 w-4 text-muted-foreground" />
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium">{s.name}</div>
-                <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+            <Card key={s.id} className="p-3">
+              <div className="flex items-center gap-2">
+                <Store className="h-4 w-4 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{s.name}</div>
+                  <div className="truncate text-[11px] text-muted-foreground">{s.url}</div>
+                </div>
+                <Badge variant="outline" className="text-[10px]">preset</Badge>
               </div>
-              <Badge variant="outline" className="text-[10px]">preset</Badge>
+              <StoreCompatRow store={s} />
             </Card>
           ))}
         </div>
@@ -3218,6 +3280,7 @@ function StoresView({
     </div>
   );
 }
+
 
 // ────────────────────────────────────────────
 // Settings view

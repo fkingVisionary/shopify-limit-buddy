@@ -1,32 +1,76 @@
 ## Problem
 
-Two symptoms in the Server test:
-1. **`ERR_TUNNEL_CONNECTION_FAILED`** — Browserless's `?externalProxyServer=` query param on the `/function` endpoint does not authenticate the upstream proxy. Chrome receives the proxy via `--proxy-server` but credentials embedded in the URL are ignored by Chromium (it does not parse `user:pass@` from the proxy flag). The CONNECT to `premium-proxy.ipfist.com:1818` is sent without auth, the provider rejects it, and Browserless surfaces it as `ERR_TUNNEL_CONNECTION_FAILED`.
-2. **`429 Too Many Requests`** — Browserless free/low tiers cap concurrent sessions at 1. Even with `sleep(500)` between calls, six `/function` invocations can overlap because each takes several seconds and we're still spawning them faster than they finish.
+From the screenshot: cart → checkout → address → shipping → payment_continue all succeeded, but the card iframe rendered as an unstyled **legacy fallback** ("Issue date / Issue number / Name on card" twice). Our `card_fill` step logged ✓ because the heuristic typed "M edwards" into one of those fallback inputs, but Shopify's real card-fields iframe was never reached and no real tokenisation occurred. This is fragile across stores — every Shopify checkout version (legacy `/checkouts/<token>`, Checkout One `/checkouts/cn/<token>`, Hydrogen, headless) renders different DOM, so DOM scraping will never be reliable.
 
-## Fix
+## Goal
 
-### 1. `src/lib/proxy-health.functions.ts`
-- Stop relying on `externalProxyServer`. Instead, pass only the host:port to Chrome via `?launch={"args":["--proxy-server=http://host:port"]}` and authenticate inside the function body with `page.authenticate({ username, password })` BEFORE `page.goto`.
-- Build the `launch` JSON and url-encode it as a single query param. Keep `token` and `timeout`.
-- Pass `username`/`password` through the `context` object of the `/function` request (Browserless injects context into the handler), so creds never appear in the URL/logs.
-- Tighten the error mapper: also recognise `ERR_NO_SUPPORTED_PROXIES`, `ERR_PROXY_CONNECTION_FAILED`, and `407` → "Proxy authentication failed".
+Stop scraping the payment iframe DOM. Use Shopify's **documented, standardised** path that every store supports:
 
-### 2. `src/routes/_paired/index.tsx`
-- Replace the parallel test loop with a strict serial loop that **awaits each test fully before starting the next** and adds a 1500 ms gap between calls. This avoids the 429 even on single-concurrency Browserless plans.
-- Show a small "Testing 3/6…" progress indicator while running so the user knows it's intentionally slow.
+1. `POST https://deposit.us.shopifycs.com/sessions` → returns a vault `session id` (works for every Shopify store; this is what Cybersole/Wrath/Valor use)
+2. Submit checkout completion via Shopify Checkout One **GraphQL** (`submitForCompletion` / `checkoutComplete`) with that session id as the payment method
 
-### 3. `src/lib/proxy-format.ts`
-- No change needed; the classifier already returns the right `{user, pass, host, port}` shape. Add a small helper `parseProxyParts(url)` that returns those fields so the health checker can pass them to `page.authenticate` without re-parsing.
+This is store-agnostic and avoids the iframe entirely.
 
-### 4. Apply the same auth-via-`page.authenticate` change to `supabase/functions/run-checkout/index.ts`
-- The checkout runner has the same bug — `externalProxyServer` with embedded creds will silently drop auth in Chromium. Switch it to `--proxy-server=host:port` + `page.authenticate` so a green Server test result actually reflects what checkout will do.
-- Redeploy `run-checkout`.
+## Plan
 
-### 5. Verify
-- Run the Server test on the six ipfist proxies one at a time and confirm each returns an AU exit IP. If one still fails, the error message will now correctly say "Proxy authentication failed" vs "tunnel failed" so the user can tell creds vs network.
-- Run a checkout job and confirm Browserless no longer 400s on the proxy.
+### 1. New vault helper (already partially exists)
+- Promote the `payment_vault` block from `src/lib/shopify-http-checkout.functions.ts` into a shared helper `vaultCard(card, hostname) → sessionId` in `src/lib/shopify-vault.functions.ts`.
+- Add response validation + retries (deposit.us, deposit.eu fallback by store region).
 
-## Out of scope
+### 2. Replace browser-based card_fill with vault + GraphQL submit
+In `supabase/functions/run-checkout/index.ts`:
+- After `payment_continue`, instead of `fillCardField(...)`:
+  - Read `checkoutToken` from the page URL (`/checkouts/cn/<token>`).
+  - Scrape `x-checkout-one-token` / `_shopify_y` cookies + queue token from the page (available via `page.cookies()` and `document.querySelector('meta[name="shopify-checkout-authorization-token"]')`).
+  - Call `vaultCard()` from inside the page context (so the proxy IP is used) via `page.evaluate(fetch(...))`.
+  - POST the GraphQL `submitForCompletion` mutation to `/checkouts/unstable/graphql` with `paymentMethod: { directPaymentMethod: { sessionId, billingAddress, cardSource } }`.
+  - Poll `pollForReceipt` until `receipt.processing === false`, then read `redirectUrl` → thank-you page.
+- Keep the existing browser flow up to `payment_continue` (it works) — only swap the card-fill + submit steps.
 
-- No UI redesign, no new proxy provider integration, no changes to the `{url}` template path (already works).
+### 3. Legacy checkout fallback
+- If URL is `/checkouts/<token>` (not `/cn/`), fall back to the **classic** flow: vault → POST `previous_step=payment_method&step=&s=<sessionId>&checkout[payment_gateway]=<id>&checkout[total_price]=<cents>` to the checkout URL. Scrape `payment_gateway` id and `total_price` from the rendered payment page (stable selectors: `input[name="checkout[payment_gateway]"]`, `[data-checkout-payment-due-target]`).
+
+### 4. Detection / routing
+Add an early branch at `lastStep = "payment_continue"`:
+```text
+url contains "/checkouts/cn/"  → Checkout One GraphQL path
+url contains "/checkouts/"     → legacy form-POST path
+otherwise                       → fail with "unsupported checkout"
+```
+
+### 5. Cross-store compatibility checklist (codified as a self-test serverFn)
+New `src/lib/checkout-selftest.functions.ts` runs a **dry-run vault-only** test against any store URL + variant id:
+1. cart/add.js → expect 200
+2. POST /cart → follow → expect `/checkouts/`
+3. GET checkout → detect version (cn vs legacy)
+4. POST contact + shipping
+5. Poll shipping_rates.json
+6. POST shipping_method
+7. Scrape `total_price` + `payment_gateway` id (or Checkout One queue token)
+8. Vault a **test card** (`4111 1111 1111 1111`) → expect `id`
+9. Stop before real submit, return a `compat report` with version, total, gateway id, vault ok, elapsed.
+
+Expose a "Test checkout path" button on each store card in `src/components/StoresPanel.tsx` (or wherever stores are listed) that calls this and shows the report inline.
+
+### 6. Verification
+- Run the self-test against Culture Kings (Checkout One) and 2 other stores from the user's store list (legacy + cn).
+- Run one real task with the new path, confirm card_fill is removed from the timeline and replaced by `vault` + `graphql_submit`.
+
+## Technical details
+
+- Card vault endpoint: `https://deposit.{region}.shopifycs.com/sessions`, JSON body `{ credit_card: { number, name, month, year, verification_value }, payment_session_scope: "<store-hostname>" }`. Returns `{ id }`. No auth, no CORS issue from the browser context.
+- Checkout One GraphQL endpoint: `https://<store>/checkouts/unstable/graphql?operationName=SubmitForCompletion`, headers `x-checkout-one-token`, `x-checkout-web-source-id`. Body schema follows Shopify's `NegotiationInput`. We will store the mutation as a constant string in `src/lib/checkout-one-graphql.functions.ts` (already exists — extend it).
+- Legacy submit: standard URL-encoded POST that Shopify has supported since 2015; `s=` is the vault session id, `checkout[payment_gateway]` is the gateway id from the payment-method page.
+- Proxy: every fetch runs inside `page.evaluate` so it goes out through Browserless's authenticated proxy session (already configured).
+
+## Out of scope (this turn)
+
+- Shop Pay / Apple Pay / wallet payments.
+- 3DS challenge flow (will surface as `redirectUrl` to bank — we'll log and stop; future work).
+
+## Files
+
+- new: `src/lib/shopify-vault.functions.ts`, `src/lib/checkout-selftest.functions.ts`
+- edit: `supabase/functions/run-checkout/index.ts` (replace card_fill block, add version routing)
+- edit: `src/lib/checkout-one-graphql.functions.ts` (extend with submit mutation)
+- edit: store list UI (add "Test path" button + report)

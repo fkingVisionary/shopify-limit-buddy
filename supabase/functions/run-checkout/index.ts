@@ -69,18 +69,17 @@ function checkoutScriptSource() {
             const isMainDoc = type === "document" && req.frame() === page.mainFrame();
             if (isMainDoc) return req.continue();
             if (keepHostRe.test(url)) return req.continue();
-            // Allow stylesheets from the card-field / checkout iframes — without
-            // them, Shopify's payment iframe renders unstyled and exposes the
-            // legacy "Issue date / Issue number / Name on card" fallback fields,
-            // which then steal focus from the real Card number input.
-            const frameUrl = (req.frame && req.frame()?.url && req.frame().url()) || "";
-            const inPaymentFrame = keepHostRe.test(frameUrl);
+            // Never block stylesheets. Blocking even one CSS for the card
+            // iframe causes Shopify to render its unstyled <noscript> fallback
+            // (the "Issue date / Issue number / duplicate Name on card" form
+            // seen in the screenshots), which then steals focus from the real
+            // card inputs. The CSS savings are not worth that failure mode.
             if (type === "image" || type === "media" || type === "font") return req.abort();
-            if (type === "stylesheet" && !inPaymentFrame) return req.abort();
             if (denyHostRe.test(url)) return req.abort();
             return req.continue();
           } catch { try { req.continue(); } catch {} }
         });
+
       } catch {}
 
       lastStep = "cart_add";
@@ -820,7 +819,21 @@ function checkoutScriptSource() {
         }
         return false;
       };
+      // Hard guard: the unstyled <noscript> fallback contains "Issue date" and
+      // "Issue number" — fields that do NOT exist on a properly-loaded card
+      // iframe. If we see them on the top-level document, the card iframe
+      // never rendered (CSS was blocked, network race, etc.) and any input
+      // we type ends up in fake fields. Fail loudly instead of silently
+      // submitting garbage to Shopify.
+      const fallbackVisible = await page.evaluate(() => {
+        const txt = (document.body && document.body.innerText) || "";
+        return /Issue date/i.test(txt) && /Issue number/i.test(txt);
+      }).catch(() => false);
+      if (fallbackVisible) {
+        return await fail("Legacy card-form fallback detected (Issue date / Issue number visible) — Shopify card iframe failed to load. This usually means stylesheets were blocked or the iframe was racing with submit. Aborting before sending invalid card data.");
+      }
       const expiryValue = input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2);
+
       // Fill name FIRST. Name uses DOM-set (no keystrokes), so it can never
       // leak into the focused Card-number iframe. After name we type number,
       // pressing Tab between fields to move focus instead of clicking.
