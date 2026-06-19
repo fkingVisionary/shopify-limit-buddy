@@ -554,7 +554,7 @@ function checkoutScriptSource() {
           const digits = v.replace(/\\D/g, "");
           if (kind === "number") return digits.length >= expectedDigits.length;
           if (kind === "expiry") return digits.length >= 4;
-          if (kind === "cvv") return digits.length >= Math.min(3, expectedDigits.length);
+          if (kind === "cvv") return expectedDigits.length > 0 ? digits.length >= expectedDigits.length : digits.length >= 3;
           if (kind === "name") return v.length >= 2;
           return v.length > 0;
         };
@@ -697,6 +697,9 @@ function checkoutScriptSource() {
       const cardNameOk = await fillCardField("name", input.card.name);
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
+      await page.keyboard.press("Tab").catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 900, timeout: 6000 }).catch(() => null);
+      await new Promise((r) => setTimeout(r, 900));
 
       if (input.captchaToken) {
         lastStep = "captcha_inject";
@@ -729,6 +732,24 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
+      await new Promise((r) => setTimeout(r, 1600));
+      const securityCodeRetryNeeded = await page.evaluate(() => {
+        const text = document.body?.innerText ?? "";
+        return /security\s*code/i.test(text) && !(/\/thank_you|orders\/|checkouts\/.+\/thank/i.test(location.href));
+      }).catch(() => false);
+      if (securityCodeRetryNeeded) {
+        lastStep = "cvv_retry";
+        await stage("cvv_retry");
+        const retryCvvOk = await fillCardField("cvv", input.card.cvv);
+        if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
+        await page.keyboard.press("Tab").catch(() => null);
+        await page.waitForNetworkIdle?.({ idleTime: 900, timeout: 6000 }).catch(() => null);
+        await new Promise((r) => setTimeout(r, 900));
+        lastStep = "submit";
+        await stage("submit");
+        await clickContinue(true);
+        log("submit_retry", true);
+      }
 
       lastStep = "payment_result";
       await stage("payment_result");
