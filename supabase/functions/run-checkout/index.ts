@@ -632,14 +632,16 @@ function checkoutScriptSource() {
                   await page.keyboard.press("Backspace").catch(() => null);
                 };
                 await clearIt();
-                const str = String(value);
-                // Type char-by-char with delay so masked inputs (Shopify card-fields)
-                // don't drop keystrokes, and retype the missing tail if needed.
-                for (let attempt = 0; attempt < 4; attempt++) {
+                // Type through the real focused iframe input only. Do not use a
+                // native value setter for secure Shopify card fields: it can make
+                // node.value look full while Shopify's tokenizer still only has a
+                // partial value (the screenshot showed just "222").
+                for (let attempt = 0; attempt < 5; attempt++) {
                   await el.focus().catch(() => null);
-                  for (let i = 0; i < str.length; i++) {
-                    await page.keyboard.type(str[i], { delay: 0 }).catch(() => null);
-                    await new Promise((r) => setTimeout(r, 70));
+                  await el.click().catch(() => null);
+                  for (let i = 0; i < typeText.length; i++) {
+                    await el.type(typeText[i], { delay: 110 }).catch(() => null);
+                    await new Promise((r) => setTimeout(r, 35));
                   }
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
@@ -651,14 +653,15 @@ function checkoutScriptSource() {
                     return true;
                   }
                   // Append only the missing tail rather than restarting from scratch
-                  const wantDigits = (kind === "name") ? str : str.replace(/\\D/g, "");
+                  const wantDigits = (kind === "name") ? typeText : typeText.replace(/\\D/g, "");
                   const haveLen = (kind === "name") ? String(cur).length : String(cur).replace(/\\D/g, "").length;
                   if (haveLen > 0 && haveLen < wantDigits.length) {
                     const tail = wantDigits.slice(haveLen);
                     await el.focus().catch(() => null);
+                    await el.click().catch(() => null);
                     for (let i = 0; i < tail.length; i++) {
-                      await page.keyboard.type(tail[i], { delay: 0 }).catch(() => null);
-                      await new Promise((r) => setTimeout(r, 90));
+                      await el.type(tail[i], { delay: 140 }).catch(() => null);
+                      await new Promise((r) => setTimeout(r, 45));
                     }
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
