@@ -22,6 +22,17 @@ export type ProxyHealth = {
   kind?: "template" | "raw";
 };
 
+function cleanProxyError(message: string): string {
+  const compact = message.replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
+  if (/ERR_TUNNEL_CONNECTION_FAILED/i.test(compact)) {
+    return "Proxy tunnel failed: Browserless could not connect through this proxy. Check host, port, credentials, allowlisted IPs, and HTTPS support.";
+  }
+  if (/Proxy authentication failed|ERR_PROXY_AUTH/i.test(compact)) {
+    return "Proxy authentication failed: check the username/password order and credentials.";
+  }
+  return compact.slice(0, 240) || "proxy test failed";
+}
+
 export const checkProxyExit = createServerFn({ method: "POST" })
   .middleware([requireWorkspaceDevice])
   .inputValidator((d: unknown) => Schema.parse(d))
@@ -61,10 +72,14 @@ export const checkProxyExit = createServerFn({ method: "POST" })
     url.searchParams.set("externalProxyServer", proxyUrl);
 
     const code = `export default async ({ page }) => {
-      const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 12000 });
-      const status = res ? res.status() : 0;
-      const body = await page.evaluate(() => document.body && document.body.innerText);
-      return { status, body };
+      try {
+        const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 12000 });
+        const status = res ? res.status() : 0;
+        const body = await page.evaluate(() => document.body && document.body.innerText);
+        return { ok: true, status, body };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
     }`;
 
     const started = Date.now();
@@ -78,11 +93,14 @@ export const checkProxyExit = createServerFn({ method: "POST" })
       const latencyMs = Date.now() - started;
       const text = await res.text().catch(() => "");
       if (!res.ok) {
-        return { ok: false, latencyMs, exitIp: null, error: `Browserless HTTP ${res.status}: ${text.slice(0, 200)}`, kind: "raw" };
+        return { ok: false, latencyMs, exitIp: null, error: `Browserless HTTP ${res.status}: ${cleanProxyError(text)}`, kind: "raw" };
       }
       let exitIp: string | null = null;
       try {
-        const outer = JSON.parse(text) as { body?: string; status?: number };
+        const outer = JSON.parse(text) as { ok?: boolean; body?: string; status?: number; error?: string };
+        if (outer.ok === false || outer.error) {
+          return { ok: false, latencyMs, exitIp: null, error: cleanProxyError(outer.error ?? "proxy navigation failed"), kind: "raw" };
+        }
         if (outer.status && outer.status >= 400) {
           return { ok: false, latencyMs, exitIp: null, error: `proxy returned HTTP ${outer.status}`, kind: "raw" };
         }
