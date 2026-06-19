@@ -753,7 +753,7 @@ function checkoutScriptSource() {
           const text = document.body?.innerText ?? "";
           return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
         },
-        { timeout: 35000 },
+        { timeout: 25000 },
       );
       const finalUrl = page.url();
       const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
