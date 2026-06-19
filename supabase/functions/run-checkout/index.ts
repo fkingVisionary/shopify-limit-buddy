@@ -63,6 +63,11 @@ function checkoutScriptSource() {
           try {
             const url = req.url();
             const type = req.resourceType();
+            // Never block top-level document navigations — Shopify checkouts
+            // commonly redirect the main frame to shop.app / pay.shopify.com,
+            // and aborting that causes net::ERR_FAILED on checkout_load.
+            const isMainDoc = type === "document" && req.frame() === page.mainFrame();
+            if (isMainDoc) return req.continue();
             if (keepHostRe.test(url)) return req.continue();
             if (type === "image" || type === "media" || type === "font") return req.abort();
             if (type === "stylesheet") return req.abort();
