@@ -988,6 +988,9 @@ Deno.serve(async (req) => {
     if (proxyUrl) {
       url.searchParams.set("proxy", proxyUrl);
       url.searchParams.set("proxySticky", "true");
+      // Browserless requires declaring proxy type; external residential proxies
+      // must be tagged as "residential" or the request is rejected with HTTP 400.
+      url.searchParams.set("proxyType", "residential");
     }
   }
   // Browserless plan supports up to 15-min /function sessions.
