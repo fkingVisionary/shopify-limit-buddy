@@ -605,7 +605,7 @@ function checkoutScriptSource() {
               ? 'input[autocomplete="cc-exp"], input[placeholder*="Expiration" i], input[placeholder*="Expiry" i], input[aria-label*="expiration" i], input[name*="expiry" i]'
               : kind === "cvv"
                 ? 'input[autocomplete="cc-csc"], input[placeholder*="Security" i], input[placeholder*="CVV" i], input[placeholder*="CVC" i], input[aria-label*="security" i], input[name*="verification" i]'
-                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[name*="name" i]';
+                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[placeholder*="Cardholder" i], input[aria-label*="cardholder" i], input[name*="cardholder" i], input[id*="cardholder" i]';
           const handles = await page.$$(selector).catch(() => []);
           for (const el of handles) {
             const visible = await page.evaluate((node) => {
