@@ -197,20 +197,23 @@ function checkoutScriptSource() {
         } catch { return null; }
       };
 
-      lastStep = "address_fill";
-      await stage("address_fill");
-      await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
-      await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
-      await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
-      await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
-      await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
-      await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
-      await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
-      log("address_fill", true);
+      if (phase === "A") {
+        lastStep = "address_fill";
+        await stage("address_fill");
+        await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
+        await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
+        await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
+        await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
+        await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
+        await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
+        await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
+        await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
+        await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+        await page.keyboard.press("Tab").catch(() => null);
+        await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
+        log("address_fill", true);
+      }
+
 
       const checkoutStep = async () => {
         try {
