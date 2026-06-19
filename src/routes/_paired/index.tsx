@@ -2991,8 +2991,10 @@ function ProxyGroupCard({
 }) {
   const text = group.proxies.join("\n");
   const [testing, setTesting] = useState(false);
+  const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
   const checkExit = useServerFn(checkProxyExit);
+
 
   const classifications = group.proxies.map((p) => classifyProxy(p));
   const validCount = classifications.filter((c) => c.kind !== "invalid").length;
