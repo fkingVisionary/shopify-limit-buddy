@@ -278,7 +278,7 @@ function checkoutScriptSource() {
       };
 
       const selectShippingRate = async () => {
-        const deadline = Date.now() + 12000;
+        const deadline = Date.now() + 7000;
         while (Date.now() < deadline) {
           if (await hasSelectedShippingRate()) return true;
           const target = await page.evaluate(() => {
