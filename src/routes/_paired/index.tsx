@@ -1273,8 +1273,9 @@ function Index() {
                     const lastStep = stepsArr.length ? stepsArr[stepsArr.length - 1] : null;
                     const stepSummary = lastStep ? ` (reached: ${lastStep.step})` : "";
                     if (b?.ok) {
+                      const paymentRejected = !!b.paymentRejected;
                       updateTask(t.id, {
-                        status: b.dryRun ? "checkout_ready" : "confirmed",
+                        status: b.dryRun ? "checkout_ready" : paymentRejected ? "checkout_ready" : "confirmed",
                         orderId: b.orderId ?? null,
                         finalUrl: b.finalUrl,
                         steps: stepsArr,
@@ -1282,9 +1283,11 @@ function Index() {
                         browserlessElapsedMs: elapsed,
                         message: b.dryRun
                           ? `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`
+                          : paymentRejected
+                            ? `Checkout submitted; payment declined as expected · ${transportLabel} · ${Math.round(elapsed / 1000)}s`
                           : `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
                       });
-                      if (!b.dryRun) {
+                      if (!b.dryRun && !paymentRejected) {
                         notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                         fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
                       }
