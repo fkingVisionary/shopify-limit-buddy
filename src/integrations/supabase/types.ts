@@ -46,7 +46,10 @@ export type Database = {
           error: string | null
           id: string
           input: Json
+          phase: string
+          phase_attempts: number
           result: Json | null
+          session: Json | null
           stage: string
           status: string
           updated_at: string
@@ -56,7 +59,10 @@ export type Database = {
           error?: string | null
           id?: string
           input?: Json
+          phase?: string
+          phase_attempts?: number
           result?: Json | null
+          session?: Json | null
           stage?: string
           status?: string
           updated_at?: string
@@ -66,7 +72,10 @@ export type Database = {
           error?: string | null
           id?: string
           input?: Json
+          phase?: string
+          phase_attempts?: number
           result?: Json | null
+          session?: Json | null
           stage?: string
           status?: string
           updated_at?: string
