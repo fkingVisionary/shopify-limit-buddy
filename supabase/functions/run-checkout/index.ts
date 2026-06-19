@@ -148,9 +148,6 @@ function checkoutScriptSource() {
             if (/contact|information|shipping_address/.test(urlStep)) return "contact";
 
             const body = document.body?.innerText || "";
-            const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
-            if (visible(addressInput)) return "contact";
-
             // Some Shopify checkouts keep the selected shipping rates visible above
             // the payment form. Detect payment before shipping so we do not get
             // stuck re-processing the already-selected shipping section.
@@ -171,6 +168,8 @@ function checkoutScriptSource() {
               return /continue\s+to\s+payment|continue\s+to\s+pay/i.test(label);
             });
             if (shippingRate || (/shipping method/i.test(body) && continueToPayment)) return "shipping_method";
+            const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
+            if (visible(addressInput)) return "contact";
             return "unknown";
           });
         } catch {}
