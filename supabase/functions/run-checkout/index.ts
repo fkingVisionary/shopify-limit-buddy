@@ -674,7 +674,7 @@ function checkoutScriptSource() {
               ? 'input[autocomplete="cc-exp"], input[placeholder*="Expiration" i], input[placeholder*="Expiry" i], input[aria-label*="expiration" i], input[name*="expiry" i]'
               : kind === "cvv"
                 ? 'input[autocomplete="cc-csc"], input[placeholder*="Security" i], input[placeholder*="CVV" i], input[placeholder*="CVC" i], input[aria-label*="security" i], input[name*="verification" i]'
-                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[placeholder*="Cardholder" i], input[aria-label*="cardholder" i], input[name*="cardholder" i], input[id*="cardholder" i], input[name="name"], input[id*="name_on_card" i]';
+                : 'input[autocomplete="cc-name"], input[autocomplete="ccname"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[placeholder*="Cardholder" i], input[aria-label*="cardholder" i], input[name*="cardholder" i], input[id*="cardholder" i], input[id*="name_on_card" i], input[name*="name_on_card" i], input[name="checkout[credit_card][name]" i]';
           const handles = await page.$$(selector).catch(() => []);
           for (const el of handles) {
             const visible = await page.evaluate((node) => {
@@ -834,16 +834,25 @@ function checkoutScriptSource() {
       }
       const expiryValue = input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2);
 
-      // Fill name FIRST. Name uses DOM-set (no keystrokes), so it can never
-      // leak into the focused Card-number iframe. After name we type number,
-      // pressing Tab between fields to move focus instead of clicking.
-      const cardNameOk = await fillCardField("name", input.card.name);
+      // Fill number/expiry/cvv first — those are inside cross-origin iframes
+      // and need real keystrokes. Name is a top-level input that Shopify
+      // renders alongside the card iframes; fill it LAST after the card
+      // section is fully rendered, so the tightened cc-name selectors find
+      // the real cardholder input (not a stale shipping "name" field).
       const cardNumberOk = await fillCardField("number", input.card.number);
       await page.keyboard.press("Tab").catch(() => null);
       const cardExpiryOk = await fillCardField("expiry", expiryValue);
       await page.keyboard.press("Tab").catch(() => null);
       const cardCvvOk = await fillCardField("cvv", input.card.cvv);
       await page.keyboard.press("Tab").catch(() => null);
+      // Small settle so the cardholder-name input (rendered by Shopify after
+      // the card iframes mount) is in the DOM before we look for it.
+      await new Promise((r) => setTimeout(r, 400));
+      let cardNameOk = await fillCardField("name", input.card.name);
+      if (!cardNameOk) {
+        await new Promise((r) => setTimeout(r, 600));
+        cardNameOk = await fillCardField("name", input.card.name);
+      }
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
       await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
