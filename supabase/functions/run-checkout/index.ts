@@ -641,10 +641,10 @@ function checkoutScriptSource() {
           return v.length > 0;
         };
         const nameRe = {
-          number: /card\\s*number|^number$|\\/number|card-fields-number/i,
-          expiry: /expiration|expiry|\\/expiry|card-fields-expiry/i,
-          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification/i,
-          name: /name\\s*on\\s*card|card-fields-name|cardholder|holder.?name/i,
+          number: /card\\s*number|^number$|\\/number|card-fields-number|fieldType=number/i,
+          expiry: /expiration|expiry|\\/expiry|card-fields-expiry|fieldType=expiry/i,
+          cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification|fieldType=verification/i,
+          name: /name(?!.*(number|expiry|expiration|verification|cvv|cvc|security))/i,
         }[kind];
         // For "name" we must NEVER fall through to a number/expiry/cvv field.
         // looksFilled for name only checks length>=2, so it would silently
@@ -716,50 +716,10 @@ function checkoutScriptSource() {
           }
           return false;
         };
-        // For the cardholder name, prefer the DOM value setter — Shopify's card
-        // tokenizer only needs real keystrokes for number/expiry/cvv. Using
-        // page.keyboard for the name has been observed to leak characters into
-        // the number iframe (cross-iframe OS focus is unreliable), producing
-        // e.g. "M edwards" inside the card-number field.
-        const fillNameByDom = async () => {
-          if (await fillTopLevelInput()) return true;
-          for (const frame of page.frames()) {
-            const fname = (frame.name && frame.name()) || "";
-            const furl = frame.url ? frame.url() : "";
-            if (!nameRe.test(fname) && !nameRe.test(furl)) continue;
-            if (excludeRe && (excludeRe.test(fname) || excludeRe.test(furl))) continue;
-            try {
-              const ok = await frame.evaluate((val) => {
-                const inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
-                const visible = (node) => {
-                  const r = node.getBoundingClientRect();
-                  const s = getComputedStyle(node);
-                  return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
-                };
-                const target = inputs.find(visible);
-                if (!target) return false;
-                const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-                target.focus();
-                if (desc && desc.set) desc.set.call(target, String(val));
-                else target.value = String(val);
-                target.dispatchEvent(new Event("input", { bubbles: true }));
-                target.dispatchEvent(new Event("change", { bubbles: true }));
-                target.dispatchEvent(new Event("blur", { bubbles: true }));
-                return String(target.value || "").length >= 2;
-              }, raw).catch(() => false);
-              if (ok) return true;
-            } catch {}
-          }
-          return false;
-        };
-        if (kind === "name") {
-          const deadlineName = Date.now() + 8000;
-          while (Date.now() < deadlineName) {
-            if (await fillNameByDom()) return true;
-            await new Promise((r) => setTimeout(r, 200));
-          }
-          return false;
-        }
+        // Name field on Checkout One lives in its own card-fields iframe just
+        // like number/expiry/cvv. Use the same iframe-aware keystroke flow.
+        // Legacy checkouts have it as a top-level input — fillTopLevelInput
+        // (called inside the loop below) handles that case.
         const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
           for (const frame of page.frames()) {
