@@ -564,7 +564,50 @@ function checkoutScriptSource() {
           cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification/i,
           name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)/i,
         }[kind];
-        const deadline = Date.now() + 18000;
+        const readTopLevelValue = async (el) => await page.evaluate((node) => node.value || "", el).catch(() => "");
+        const fillTopLevelInput = async () => {
+          const selector = kind === "number"
+            ? 'input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], input[name*="number" i]'
+            : kind === "expiry"
+              ? 'input[autocomplete="cc-exp"], input[placeholder*="Expiration" i], input[placeholder*="Expiry" i], input[aria-label*="expiration" i], input[name*="expiry" i]'
+              : kind === "cvv"
+                ? 'input[autocomplete="cc-csc"], input[placeholder*="Security" i], input[placeholder*="CVV" i], input[placeholder*="CVC" i], input[aria-label*="security" i], input[name*="verification" i]'
+                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[name*="name" i]';
+          const handles = await page.$$(selector).catch(() => []);
+          for (const el of handles) {
+            const visible = await page.evaluate((node) => {
+              if (!node) return false;
+              const r = node.getBoundingClientRect();
+              const s = getComputedStyle(node);
+              return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
+            }, el).catch(() => false);
+            if (!visible) continue;
+            await el.focus().catch(() => null);
+            await el.click({ clickCount: 3 }).catch(() => null);
+            await page.keyboard.press("Backspace").catch(() => null);
+            await el.type(typeText, { delay: kind === "name" ? 35 : 120 }).catch(() => null);
+            await page.evaluate((node) => {
+              node.dispatchEvent(new Event("input", { bubbles: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true }));
+              node.dispatchEvent(new Event("blur", { bubbles: true }));
+            }, el).catch(() => null);
+            if (looksFilled(await readTopLevelValue(el))) return true;
+            if (kind === "name") {
+              await page.evaluate((node, val) => {
+                const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                if (desc && desc.set) desc.set.call(node, String(val));
+                else node.value = String(val);
+                node.dispatchEvent(new Event("input", { bubbles: true }));
+                node.dispatchEvent(new Event("change", { bubbles: true }));
+                node.dispatchEvent(new Event("blur", { bubbles: true }));
+              }, el, raw).catch(() => null);
+              if (looksFilled(await readTopLevelValue(el))) return true;
+            }
+          }
+          return false;
+        };
+        if (kind === "name" && await fillTopLevelInput()) return true;
+        const deadline = Date.now() + 22000;
         while (Date.now() < deadline) {
           // Find candidate frames first via parent <iframe> name attribute
           // (some Shopify builds expose the human label there), then by URL.
