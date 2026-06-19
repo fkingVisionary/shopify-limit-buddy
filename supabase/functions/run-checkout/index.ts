@@ -953,8 +953,42 @@ Deno.serve(async (req) => {
   const url = new URL("https://production-sfo.browserless.io/function");
   url.searchParams.set("token", BROWSERLESS_KEY);
   if (input.proxy) {
-    url.searchParams.set("proxy", "http://" + input.proxy);
-    url.searchParams.set("proxySticky", "true");
+    // Accept several common proxy notations and normalise to a Browserless
+    // proxy URL (`http://user:pass@host:port`). Without this, formats like
+    // `host:port:user:pass` get sent as `http://host:port:user:pass`, which
+    // is invalid and silently fails the upstream navigation.
+    const normalizeProxy = (raw: string): string => {
+      let p = String(raw || "").trim();
+      if (!p) return "";
+      // Strip an existing scheme to inspect the body uniformly.
+      const schemeMatch = p.match(/^(https?|socks5?):\/\//i);
+      const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : "http";
+      if (schemeMatch) p = p.slice(schemeMatch[0].length);
+      // Already in user:pass@host:port form.
+      if (p.includes("@")) return scheme + "://" + p;
+      const parts = p.split(":");
+      if (parts.length === 2) {
+        // host:port (no auth)
+        return scheme + "://" + parts[0] + ":" + parts[1];
+      }
+      if (parts.length === 4) {
+        const looksHostPortFirst = /^\d{1,5}$/.test(parts[1]);
+        const looksHostPortLast = /^\d{1,5}$/.test(parts[3]);
+        // Prefer `host:port:user:pass` when the 2nd segment looks like a port.
+        if (looksHostPortFirst && !looksHostPortLast) {
+          return scheme + "://" + parts[2] + ":" + parts[3] + "@" + parts[0] + ":" + parts[1];
+        }
+        // Otherwise assume `user:pass:host:port`.
+        return scheme + "://" + parts[0] + ":" + parts[1] + "@" + parts[2] + ":" + parts[3];
+      }
+      // Unknown — pass through with scheme so Browserless surfaces the error.
+      return scheme + "://" + p;
+    };
+    const proxyUrl = normalizeProxy(input.proxy);
+    if (proxyUrl) {
+      url.searchParams.set("proxy", proxyUrl);
+      url.searchParams.set("proxySticky", "true");
+    }
   }
   // Browserless plan supports up to 15-min /function sessions.
   // 300s gives generous headroom for slow Shopify checkouts.
