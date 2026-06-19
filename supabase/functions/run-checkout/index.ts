@@ -346,7 +346,7 @@ function checkoutScriptSource() {
             { timeout: 3000 },
             startUrl,
           ).catch(() => null);
-          await new Promise((r) => setTimeout(r, 200));
+          await new Promise((r) => setTimeout(r, 100));
           if (await isPaymentStep()) return true;
           const err = await visibleCheckoutError();
           if (err) throw new Error("Checkout validation: " + err);
@@ -692,8 +692,8 @@ function checkoutScriptSource() {
       if (!cardNumberOk || !cardExpiryOk || !cardCvvOk || !cardNameOk) return await fail("Card form was not available; checkout is likely still waiting on contact or shipping details (number=" + cardNumberOk + " name=" + cardNameOk + " expiry=" + cardExpiryOk + " cvv=" + cardCvvOk + ")");
       log("card_fill", true);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 400, timeout: 2500 }).catch(() => null);
-      await new Promise((r) => setTimeout(r, 300));
+      await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
+      await new Promise((r) => setTimeout(r, 150));
 
       if (input.captchaToken) {
         lastStep = "captcha_inject";
@@ -726,7 +726,7 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 600));
+      await new Promise((r) => setTimeout(r, 250));
       const securityCodeRetryNeeded = await page.evaluate(() => {
         const text = document.body?.innerText ?? "";
         return /security\\s*code/i.test(text) && !(/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href));
@@ -737,8 +737,8 @@ function checkoutScriptSource() {
         const retryCvvOk = await fillCardField("cvv", input.card.cvv);
         if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
         await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 400, timeout: 2500 }).catch(() => null);
-        await new Promise((r) => setTimeout(r, 300));
+        await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
+        await new Promise((r) => setTimeout(r, 150));
         lastStep = "submit";
         await stage("submit");
         await clickContinue(true);
@@ -753,7 +753,7 @@ function checkoutScriptSource() {
           const text = document.body?.innerText ?? "";
           return /declined|payment.*failed|card.*invalid|unable to process|try another card|security code|expired/i.test(text);
         },
-        { timeout: 25000 },
+        { timeout: 15000 },
       );
       const finalUrl = page.url();
       const bodyText = await page.evaluate(() => document.body?.innerText ?? "").catch(() => "");
