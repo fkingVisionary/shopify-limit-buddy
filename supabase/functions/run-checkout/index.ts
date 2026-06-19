@@ -817,10 +817,14 @@ function checkoutScriptSource() {
       log("card_fill", true);
       await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
 
-      if (input.captchaToken) {
-        lastStep = "captcha_inject";
-        await stage("captcha_inject");
-        await page.evaluate((tok) => {
+      // ─── Captcha handling ─────────────────────────────────────────────
+      // Detect any visible hCaptcha / Turnstile / reCAPTCHA on the checkout
+      // page (Shopify shows these between card_fill and submit on some
+      // stores — Culture Kings, JB Hi-Fi, etc.). If a pre-solved token was
+      // passed in (input.captchaToken), inject it. Otherwise auto-solve via
+      // 2Captcha using TWOCAPTCHA_API_KEY.
+      const injectToken = async (tok) => {
+        await page.evaluate((t) => {
           const set = (name) => {
             let el = document.querySelector('[name="' + name + '"]');
             if (!el) {
@@ -829,12 +833,98 @@ function checkoutScriptSource() {
               el.style.display = "none";
               document.body.appendChild(el);
             }
-            el.value = tok;
+            el.value = t;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
           };
           set("cf-turnstile-response");
           set("g-recaptcha-response");
           set("h-captcha-response");
-        }, input.captchaToken);
+        }, tok);
+      };
+
+      const detectCaptchaOnPage = async () => {
+        // Scan all frames for sitekey + provider
+        for (const frame of page.frames()) {
+          const url = (frame.url && frame.url()) || "";
+          let kind = null;
+          if (/hcaptcha\\.com/i.test(url)) kind = "hcaptcha";
+          else if (/challenges\\.cloudflare\\.com|turnstile/i.test(url)) kind = "turnstile";
+          else if (/google\\.com\\/recaptcha/i.test(url)) kind = "recaptchaV2";
+          if (!kind) continue;
+          // sitekey is in URL query (?sitekey=) or in the parent doc
+          const m = url.match(/[?&](?:sitekey|k)=([^&]+)/);
+          if (m && m[1]) return { kind, sitekey: decodeURIComponent(m[1]) };
+        }
+        // Fall back: scan top-level DOM for data-sitekey
+        return await page.evaluate(() => {
+          const el = document.querySelector("[data-sitekey]");
+          if (!el) return null;
+          const sk = el.getAttribute("data-sitekey");
+          if (!sk) return null;
+          const cls = (el.className || "") + " " + (el.id || "");
+          let kind = "recaptchaV2";
+          if (/h-captcha|hcaptcha/i.test(cls)) kind = "hcaptcha";
+          else if (/turnstile|cf-/i.test(cls)) kind = "turnstile";
+          return { kind, sitekey: sk };
+        }).catch(() => null);
+      };
+
+      let captchaToken = input.captchaToken || null;
+      if (!captchaToken) {
+        const det = await detectCaptchaOnPage();
+        if (det && det.sitekey && twoCaptchaKey) {
+          lastStep = "captcha_solve";
+          await stage("captcha_solve");
+          const typeMap = { hcaptcha: "HCaptchaTaskProxyless", turnstile: "TurnstileTaskProxyless", recaptchaV2: "RecaptchaV2TaskProxyless" };
+          try {
+            const createRes = await fetch("https://api.2captcha.com/createTask", {
+              method: "POST", headers: { "content-type": "application/json" },
+              body: JSON.stringify({ clientKey: twoCaptchaKey, task: { type: typeMap[det.kind], websiteURL: page.url(), websiteKey: det.sitekey } }),
+            });
+            const createJson = await createRes.json().catch(() => ({}));
+            if (createJson.errorId && createJson.errorId !== 0) {
+              return await fail("2Captcha submit failed: " + (createJson.errorDescription || createJson.errorCode || "unknown"));
+            }
+            const taskId = createJson.taskId;
+            if (!taskId) return await fail("2Captcha returned no taskId");
+            const deadline = Date.now() + 140000;
+            await new Promise((r) => setTimeout(r, 8000));
+            while (Date.now() < deadline) {
+              const pollRes = await fetch("https://api.2captcha.com/getTaskResult", {
+                method: "POST", headers: { "content-type": "application/json" },
+                body: JSON.stringify({ clientKey: twoCaptchaKey, taskId }),
+              });
+              const pj = await pollRes.json().catch(() => ({}));
+              if (pj.errorId && pj.errorId !== 0) return await fail("2Captcha poll failed: " + (pj.errorDescription || pj.errorCode));
+              if (pj.status === "ready") {
+                captchaToken = (pj.solution && (pj.solution.token || pj.solution.gRecaptchaResponse)) || null;
+                break;
+              }
+              await new Promise((r) => setTimeout(r, 5000));
+            }
+            if (!captchaToken) return await fail("2Captcha timed out solving " + det.kind);
+            log("captcha_solve", true, det.kind);
+          } catch (e) {
+            return await fail("Captcha solve error: " + (e && e.message ? e.message : String(e)));
+          }
+        } else if (det && det.sitekey && !twoCaptchaKey) {
+          return await fail("Captcha detected (" + det.kind + ") but TWOCAPTCHA_API_KEY is not configured");
+        }
+      }
+
+      if (captchaToken) {
+        lastStep = "captcha_inject";
+        await stage("captcha_inject");
+        await injectToken(captchaToken);
+        // Tick the "I am human" checkbox if present so its UI reflects success.
+        await page.evaluate(() => {
+          const checks = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+          for (const c of checks) {
+            const lbl = (c.closest('label')?.textContent || '').toLowerCase();
+            if (lbl.includes('i am human') && !c.checked) { c.checked = true; c.dispatchEvent(new Event('change', { bubbles: true })); }
+          }
+        }).catch(() => null);
         log("captcha_inject", true);
       }
 
