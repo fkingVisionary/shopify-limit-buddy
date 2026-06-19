@@ -816,7 +816,7 @@ function checkoutScriptSource() {
       await stage("submit");
       await clickContinue(true);
       log("submit", true);
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((r) => setTimeout(r, 250));
       const securityCodeRetryNeeded = await page.evaluate(() => {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(location.href)) return false;
         const visible = (el) => {
@@ -834,8 +834,7 @@ function checkoutScriptSource() {
         const retryCvvOk = await fillCardField("cvv", input.card.cvv);
         if (!retryCvvOk) return await fail("Security code was not accepted by the payment form");
         await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 250, timeout: 1200 }).catch(() => null);
-        await new Promise((r) => setTimeout(r, 150));
+        await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
         lastStep = "submit";
         await stage("submit");
         await clickContinue(true);
@@ -844,16 +843,20 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      const resultDeadline = Date.now() + 30000;
+      // Race: thank-you URL OR visible payment error, polled tightly.
+      const resultDeadline = Date.now() + 15000;
+      let earlyReject = null;
       while (Date.now() < resultDeadline) {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
         const paymentErr = await visiblePaymentError();
         if (paymentErr) {
           if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
-          return await paymentRejected(paymentErr);
+          earlyReject = paymentErr;
+          break;
         }
-        await new Promise((r) => setTimeout(r, 500));
+        await new Promise((r) => setTimeout(r, 200));
       }
+      if (earlyReject) return await paymentRejected(earlyReject);
       const finalUrl = page.url();
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
         const paymentMsg = (await visiblePaymentError()) ?? "Payment was not accepted";
@@ -861,9 +864,9 @@ function checkoutScriptSource() {
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
-      const shot = await page.screenshot({ encoding: "base64", fullPage: false });
+      // Skip success screenshot — saves ~500ms-1s and a large b64 payload.
       log("payment_result", true, orderId ?? finalUrl);
-      return { ok: true, orderId, finalUrl, steps, screenshotB64: shot, dryRun: false };
+      return { ok: true, orderId, finalUrl, steps, screenshotB64: null, dryRun: false };
     } catch (e) {
       return await fail(e?.message ?? String(e));
     }
