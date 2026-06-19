@@ -607,7 +607,7 @@ function checkoutScriptSource() {
           return false;
         };
         if (kind === "name" && await fillTopLevelInput()) return true;
-        const deadline = Date.now() + 22000;
+        const deadline = Date.now() + 12000;
         while (Date.now() < deadline) {
           // Find candidate frames first via parent <iframe> name attribute
           // (some Shopify builds expose the human label there), then by URL.
@@ -636,13 +636,10 @@ function checkoutScriptSource() {
                 // native value setter for secure Shopify card fields: it can make
                 // node.value look full while Shopify's tokenizer still only has a
                 // partial value (the screenshot showed just "222").
-                for (let attempt = 0; attempt < 5; attempt++) {
+                for (let attempt = 0; attempt < 3; attempt++) {
                   await el.focus().catch(() => null);
                   await el.click().catch(() => null);
-                  for (let i = 0; i < typeText.length; i++) {
-                    await el.type(typeText[i], { delay: 110 }).catch(() => null);
-                    await new Promise((r) => setTimeout(r, 35));
-                  }
+                  await el.type(typeText, { delay: 55 }).catch(() => null);
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
                     node.dispatchEvent(new Event("change", { bubbles: true }));
@@ -659,10 +656,7 @@ function checkoutScriptSource() {
                     const tail = wantDigits.slice(haveLen);
                     await el.focus().catch(() => null);
                     await el.click().catch(() => null);
-                    for (let i = 0; i < tail.length; i++) {
-                      await el.type(tail[i], { delay: 140 }).catch(() => null);
-                      await new Promise((r) => setTimeout(r, 45));
-                    }
+                    await el.type(tail, { delay: 70 }).catch(() => null);
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
                       await frame.evaluate((node) => node.dispatchEvent(new Event("blur", { bubbles: true })), el).catch(() => null);
@@ -686,7 +680,7 @@ function checkoutScriptSource() {
             } catch {}
           }
           if (kind !== "name" && await fillTopLevelInput()) return true;
-          await new Promise((r) => setTimeout(r, 350));
+          await new Promise((r) => setTimeout(r, 200));
         }
         return false;
       };
