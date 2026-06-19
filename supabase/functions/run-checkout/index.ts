@@ -157,7 +157,7 @@ function checkoutScriptSource() {
               const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
               return /^(pay now|complete order|place order|complete purchase)$/i.test(label);
             });
-            const visiblePaymentText = Array.from(document.querySelectorAll('h1, h2, h3, legend, label, [role="heading"], .section__title, .radio__label, .payment-method-list__item')).some((el) => visible(el) && /payment|credit\s*card|card number/i.test(el.textContent || ""));
+            const visiblePaymentText = Array.from(document.querySelectorAll('h1, h2, h3, legend, label, [role="heading"], .section__title, .radio__label, .payment-method-list__item')).some((el) => visible(el) && /payment|credit\\s*card|card number/i.test(el.textContent || ""));
             const hasCardFields = /card number|expiration date|security code|name on card/i.test(body);
             if ((paymentWidget || hasCardFields) && (finalPayButton || visiblePaymentText) && /payment|credit card|card number/i.test(body)) return "payment";
 
@@ -165,7 +165,7 @@ function checkoutScriptSource() {
             const continueToPayment = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button, .step__footer__continue-btn')).some((el) => {
               if (!visible(el) || el.disabled) return false;
               const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
-              return /continue\s+to\s+payment|continue\s+to\s+pay/i.test(label);
+              return /continue\\s+to\\s+payment|continue\\s+to\\s+pay/i.test(label);
             });
             if (shippingRate || (/shipping method/i.test(body) && continueToPayment)) return "shipping_method";
             const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
@@ -197,8 +197,8 @@ function checkoutScriptSource() {
             if (!isContinue && !isSubmit) return null;
             let score = 50;
             if (allowSubmit && isSubmit) score = 0;
-            if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
-            if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
+            if (preferred === "shipping" && /continue\\s+to\\s+shipping|shipping method/i.test(text)) score = 0;
+            if (preferred === "payment" && /continue\\s+to\\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
             if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
@@ -239,8 +239,8 @@ function checkoutScriptSource() {
             if (!isContinue && !isSubmit) return null;
             let score = 50;
             if (allowSubmit && isSubmit) score = 0;
-            if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
-            if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
+            if (preferred === "shipping" && /continue\\s+to\\s+shipping|shipping method/i.test(text)) score = 0;
+            if (preferred === "payment" && /continue\\s+to\\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
             if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
@@ -310,7 +310,7 @@ function checkoutScriptSource() {
             const canContinue = Array.from(document.querySelectorAll('button, input[type="submit"], #continue_button')).some((el) => {
               if (!visible(el) || el.disabled) return false;
               const label = ((el.tagName === "INPUT" ? el.value : el.textContent) || "").trim();
-              return /continue\s+to\s+payment/i.test(label);
+              return /continue\\s+to\\s+payment/i.test(label);
             });
             return canContinue ? { selected: true } : null;
           }).catch(() => null);
@@ -409,7 +409,7 @@ function checkoutScriptSource() {
             };
             const descriptor = (el) => [el.textContent, el.getAttribute("aria-label"), el.getAttribute("placeholder"), el.getAttribute("name"), el.id, el.className?.toString?.()].filter(Boolean).join(" ").toLowerCase();
             const els = Array.from(document.querySelectorAll('iframe, input, label, h1, h2, h3, legend, [role="heading"], [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .radio__label, .payment-method-list__item'));
-            const target = els.find((el) => visible(el) && /payment|credit\s*card|card number|cc-number|card-fields|name on card|security code/i.test(descriptor(el)) && !/paypal|afterpay|klarna|zip|bitpay|crypto/i.test(descriptor(el)));
+            const target = els.find((el) => visible(el) && /payment|credit\\s*card|card number|cc-number|card-fields|name on card|security code/i.test(descriptor(el)) && !/paypal|afterpay|klarna|zip|bitpay|crypto/i.test(descriptor(el)));
             if (!target) return false;
             target.scrollIntoView({ block: "center", inline: "center" });
             return true;
@@ -445,7 +445,7 @@ function checkoutScriptSource() {
             const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
             const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], .radio-wrapper, [data-select-gateway], [data-gateway-group], .payment-method-list__item, .content-box__row') || el;
             const directTextFor = (el) => [labelFor(el)?.textContent, el.closest("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").trim().toLowerCase();
-            const isCard = (text) => /credit\s*card|debit\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+            const isCard = (text) => /credit\\s*card|debit\\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
             const isOffsite = (text) => /paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
             const isSelected = (el) => {
               if (el.checked || el.getAttribute?.("aria-checked") === "true" || el.getAttribute?.("aria-selected") === "true") return true;
@@ -491,7 +491,7 @@ function checkoutScriptSource() {
               const labelFor = (el) => el.id ? document.querySelector('label[for="' + cssEscape(el.id) + '"]') : null;
               const rowFor = (el) => labelFor(el) || el.closest('label, [role="radio"], [data-gateway-group], [data-select-gateway], .radio-wrapper, .content-box__row, .payment-method-list__item') || el;
               const directTextFor = (el) => [labelFor(el)?.textContent, el.closest?.("label")?.textContent, el.getAttribute?.("aria-label"), el.value, el.id, el.name].filter(Boolean).join(" ").toLowerCase();
-              const isCard = (text) => /credit\s*card|debit\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
+              const isCard = (text) => /credit\\s*card|debit\\s*card|visa|mastercard|american express|amex|shopify payments|creditcard|card/.test(text) && !/paypal|afterpay|klarna|zip|bitpay|crypto|apple pay|google pay/.test(text);
               const hasCardFields = Array.from(document.querySelectorAll('iframe[name*="card-fields" i], iframe[id*="card-fields" i], iframe[src*="card-fields" i], input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i]')).some(visible);
               const checkedCard = Array.from(document.querySelectorAll('input[type="radio"]')).some((el) => (el.checked || rowFor(el)?.querySelector?.('input[type="radio"]:checked')) && isCard(directTextFor(el)));
               return hasCardFields && checkedCard;
@@ -546,10 +546,10 @@ function checkoutScriptSource() {
       // input inside it — this avoids guessing the input's id/name attributes,
       // which vary across Shopify checkout versions.
       const fillCardField = async (kind, value) => {
-        const expectedDigits = String(value).replace(/\D/g, "");
+        const expectedDigits = String(value).replace(/\\D/g, "");
         const looksFilled = (current) => {
           const v = String(current || "").trim();
-          const digits = v.replace(/\D/g, "");
+          const digits = v.replace(/\\D/g, "");
           if (kind === "number") return digits.length >= Math.max(12, expectedDigits.length - 1);
           if (kind === "expiry") return digits.length >= 4;
           if (kind === "cvv") return digits.length >= Math.min(3, expectedDigits.length);
