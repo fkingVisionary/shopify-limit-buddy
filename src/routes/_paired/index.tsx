@@ -1208,7 +1208,7 @@ function Index() {
       if (running.length === 0) return;
       await Promise.all(running.map(async (t) => {
         try {
-          const res = await fetch(proxied(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId));
+          const res = await fetchShopify(`${t.storeUrl}/products/${t.productHandle}.js`, t.proxyGroupId, 10000);
           if (!res.ok) {
             updateTask(t.id, { lastChecked: Date.now(), message: `HTTP ${res.status}` });
             return;
