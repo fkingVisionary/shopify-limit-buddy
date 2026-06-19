@@ -69,8 +69,14 @@ function checkoutScriptSource() {
             const isMainDoc = type === "document" && req.frame() === page.mainFrame();
             if (isMainDoc) return req.continue();
             if (keepHostRe.test(url)) return req.continue();
+            // Allow stylesheets from the card-field / checkout iframes — without
+            // them, Shopify's payment iframe renders unstyled and exposes the
+            // legacy "Issue date / Issue number / Name on card" fallback fields,
+            // which then steal focus from the real Card number input.
+            const frameUrl = (req.frame && req.frame()?.url && req.frame().url()) || "";
+            const inPaymentFrame = keepHostRe.test(frameUrl);
             if (type === "image" || type === "media" || type === "font") return req.abort();
-            if (type === "stylesheet") return req.abort();
+            if (type === "stylesheet" && !inPaymentFrame) return req.abort();
             if (denyHostRe.test(url)) return req.abort();
             return req.continue();
           } catch { try { req.continue(); } catch {} }
