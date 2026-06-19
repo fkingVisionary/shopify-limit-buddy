@@ -1,81 +1,71 @@
 ## Goal
 
-- Eliminate Browserless 408/timeout failures.
-- Drive end-to-end checkout time to <15s (currently ~70s).
+Split the checkout into multiple Browserless `/function` calls, each well under the 60s plan cap, with state handed off between calls via cookies + URL stored on the `checkout_jobs` row. No plan upgrade required, no per-call risk of a 408 wiping all progress.
 
-## Why it's slow today
+## Architecture
 
-`supabase/functions/run-checkout/index.ts` drives a full headless browser through every Shopify checkout screen with conservative waits. The biggest costs:
+Today: one `/function` call drives the whole checkout (cart → address → shipping → payment → submit → result). When it stalls, the entire 60s budget is lost.
 
-1. Loading `storeUrl` and `/checkout?...qs` with all images, fonts, third-party scripts (analytics, Shop Pay, Klarna, etc.) — easily 5–15s per nav.
-2. Sequential GET → fill → continue → fill → continue across contact / shipping / payment, each gated by `setTimeout`s (150–600ms) and `waitForNetworkIdle` calls.
-3. `bringPaymentIntoView` / `selectCreditCardPayment` / `selectShippingRate` each have their own 4.5–5s deadlines that often run to the end.
-4. Single Browserless `/function` call with `timeout=60000` — if anything stalls, the whole job 408s and we restart from cart.
+New: the worker runs in up to 3 phases, each its own `/function` call (~15-25s each). The worker re-enqueues itself between phases by calling `request_checkout_worker` (existing RPC) again with the same `jobId`. The job row gets a new `phase` column to track which leg to run next.
 
-## Plan
+```text
+Phase A — prep (≤25s budget)
+  launch → cart_add → checkout_load → address_fill
+  → advance_to_shipping → select_shipping → advance_to_payment
+  Save: cookies[], currentUrl, paymentReached:true
+  Re-enqueue self as phase=B.
 
-### 1. Block heavy resources at the browser (biggest single win)
+Phase B — pay (≤25s budget)
+  launch fresh Chromium → restoreCookies → goto(currentUrl, domcontentloaded)
+  → selectCreditCardPayment → fillCardField (number/expiry/cvv/name)
+  → submit → poll payment_result (≤12s)
+  Final status written.
 
-In the Browserless script, install a request interceptor right after `page` is available:
+Phase C — recovery (optional, ≤25s)
+  Only fires if B times out before result. Restores cookies + goes back to
+  page.url() at time of timeout, re-checks for thank-you / decline, returns
+  paymentRejected or fail.
+```
 
-- Abort: `image`, `font`, `media`, `stylesheet` not on the checkout origin, and any request whose host matches a denylist (`google-analytics`, `googletagmanager`, `facebook`, `hotjar`, `clarity`, `segment`, `tiktok`, `pinterest`, `klaviyo`, `shop.app/pay`, `paypal`, `klarna`, `afterpay`, `bing`, `doubleclick`, `cdn.shopify.com/.../shop_pay`, etc.).
-- Keep: documents, XHR/fetch, scripts on the shop's own origin, and Shopify checkout assets needed to render the card iframe (`*.shopifycs.com`, `pay.shopify.com` card-fields frame).
+## State handoff
 
-Expected: 60–80% faster nav + lower memory.
+New columns on `checkout_jobs`:
 
-### 2. Skip the UI for everything before payment
+- `phase` text default 'A' — which leg the next worker call should run.
+- `session` jsonb null — `{ cookies: SerializedCookie[], currentUrl: string, sourceUserAgent: string }`.
 
-Replace the `/checkout?...qs` GET + UI address fill + "Continue to shipping" + shipping-rate click + "Continue to payment" sequence with direct Shopify endpoints, then jump straight to the payment step in the browser:
+The worker script returns the new state at the end of each phase via the existing JSON result. The edge function writes it to `session` + flips `phase`, then calls `request_checkout_worker(jobId, executorUrl, executorToken)` again (fire-and-forget, same pattern as enqueue).
 
-- `POST /cart/add.js` (already done).
-- `POST /cart/update.js` with shipping address attributes, or `POST /wallets/checkouts.json` to create a checkout with address + email server-side.
-- `GET /cart/shipping_rates.json?...` to pre-compute the rate id.
-- `POST /checkouts/{token}.json` with `shipping_rate.id` and contact info.
-- Then `page.goto(checkoutUrl + '?step=payment_method', { waitUntil: 'domcontentloaded' })` and only run UI code from `card_fill` onward.
+`session.cookies` is captured with `page.cookies()` (Puppeteer) at end of phase A and restored with `page.setCookie(...session.cookies)` at start of phase B, before `page.goto(session.currentUrl)`. The proxy stays sticky (`proxySticky=true`) so the gateway sees the same IP across phases.
 
-The browser is only used for the card iframe + Pay Now click (the parts that genuinely require JS/Stripe-like tokenization). This collapses ~4 navigations into 1.
+## Per-phase budgets
 
-### 3. Trim the remaining browser waits
+Each phase has an in-script `SCRIPT_BUDGET_MS = 45000` (well under Browserless 60s). Transport `timeout` stays at `60000`. Per-step deadlines from last turn are kept. If a phase exhausts its budget, it returns `{ ok: true, partial: true, nextPhase, session }` instead of failing — the edge function re-enqueues so we use a fresh 60s window rather than dying inside one.
 
-Inside the `card_fill` → `submit` → `payment_result` block:
+## Resource blocker
 
-- Replace fixed `setTimeout(600/450/250/150)` with `page.waitForSelector` / `page.waitForFunction` against the actual element we need next, with tight timeouts (≤1500ms) and early-exit.
-- Drop `bringPaymentIntoView` (no longer needed — we navigate to payment step directly).
-- `selectCreditCardPayment` deadline 5000ms → 1500ms; bail to first card radio without polling if it's already selected.
-- `securityCodeRetryNeeded` only runs when the result loop sees a CVV-shaped error; remove the unconditional retry path.
-- `resultDeadline` 30s → 12s; thank-you URL detection via `page.waitForFunction` instead of 500ms poll.
-- Skip the success-path `page.screenshot` (or run it only on failure) — full-page b64 screenshots add ~500ms–1s and a lot of payload.
+The interceptor from last turn stays in every phase (biggest single speedup).
 
-### 4. Browserless transport hardening (kills the 408)
+## UI / status
 
-- Switch from `/function` (60s hard cap on your plan) to a Puppeteer WebSocket connection: `wss://production-sfo.browserless.io?token=…&timeout=120000&stealth=true&blockAds=true`. `blockAds=true` is Browserless-side ad/tracker blocking on top of our interceptor.
-- The edge function still drives the script, but the session can run longer than 60s without 408ing the worker.
-- Add a single retry-on-408: if the first connection 408s before `card_fill`, reconnect once and resume from cart (cart cookie still valid on the same proxy session via `proxySticky`).
-- Keep `timeout=120000` as a safety net only — the goal is to finish in <15s.
+`checkout_jobs.stage` keeps driving the polling UI; `src/routes/_paired/index.tsx` already maps stage names. Two new stages appear naturally: `phase_a_done` and `phase_b_start`. Frontend treats them like any other intermediate stage — no code change needed.
 
-### 5. Status / UX
+## Files touched
 
-- `checkout_jobs.stage` already drives the polling UI; no schema changes needed.
-- Add two new stages so the user sees progress on the new fast path: `prefill_api` (covers cart_add + address + shipping_rate via API) and `payment_open`.
+- `supabase/migrations/<timestamp>_checkout_jobs_phases.sql` — add `phase` text default 'A' and `session` jsonb columns. GRANT not needed (table already grants are in place).
+- `supabase/functions/run-checkout/index.ts`:
+  - Extract `phaseAScript()` and `phaseBScript()` (and small `phaseCScript()` for recovery) — share helpers via a `commonHelpers()` template literal.
+  - Phase A script ends with `return { ok: true, partial: true, nextPhase: "B", session: { cookies: await page.cookies(), currentUrl: page.url() } }` once payment step is reached.
+  - Phase B script starts with `await page.setCookie(...context.session.cookies); await page.goto(context.session.currentUrl, { waitUntil: "domcontentloaded", timeout: 15000 });`.
+  - Edge function reads `job.phase`, picks script + passes `context.session`, then on `partial:true` writes `phase`, `session`, `stage` and re-enqueues itself via `supabase.rpc('request_checkout_worker', { p_job_id, p_url, p_token })`.
+  - Safety: hard cap of 3 phase invocations per job (`phase_attempts` int column) to avoid infinite loops if something keeps timing out.
 
-### Out of scope
+## Risk
 
-- No changes to client polling, auth, or schemas.
-- No changes to product resolution / proxy selection.
-- Keep the existing "decline = success" mapping in `src/routes/_paired/index.tsx`.
+- Some Shopify "Checkout One" pages bind a session token to a specific browser fingerprint. We mitigate by reusing the same proxy IP (sticky) and forwarding the phase-A `userAgent` to phase B's `launch` args. If a store still rejects the resumed session, we fall back to a single-shot path automatically: phase A returns the URL of the payment step *and* also tries to complete inline if budget remains.
+- Adds ~2-4s of overhead per extra phase (Browserless cold start + cookie restore + nav). The blocker keeps the goto under ~2s, so total wall-clock stays around 20-30s even when we split, with zero risk of 408.
 
-## Technical notes
+## Out of scope
 
-Files touched:
-
-- `supabase/functions/run-checkout/index.ts`
-  - Add `page.setRequestInterception(true)` + abort handler with allow/deny lists.
-  - Add `prefillCheckoutViaApi(page, input)` helper that POSTs to `/cart/add.js`, `/cart/update.js`, `/wallets/checkouts.json`, `/cart/shipping_rates.json`, then `PATCH /checkouts/{token}.json` with the chosen rate.
-  - Replace the `/checkout?qs` GET + `address_fill` + `shipping_continue` + `shipping_method` + `payment_continue` block with `prefillCheckoutViaApi` followed by `page.goto(paymentStepUrl)`.
-  - Replace fixed sleeps in `card_fill`/`submit`/`payment_result` with `waitForSelector`/`waitForFunction`.
-  - Swap the Browserless `/function` HTTP call for `puppeteer.connect({ browserWSEndpoint })` (Browserless WS endpoint) with `timeout=120000`, `blockAds=true`, `stealth=true`.
-  - Single retry on 408 / WS close before `card_fill`.
-  - Make success-path screenshot optional (skip by default).
 - No frontend changes.
-
-Risk: Shopify's `wallets/checkouts.json` and `checkouts/{token}.json` shapes vary per store (Checkout Extensibility vs legacy). The plan falls back to today's UI path if the API prefill returns non-2xx, so worst case we match current behavior with the new resource blocker still active (which alone should drop runtime ~50%).
+- No swap to WebSocket/reconnect transport (would need puppeteer-core inside the edge function and is more invasive). Cookie-resume gives us most of the benefit at much lower risk.
