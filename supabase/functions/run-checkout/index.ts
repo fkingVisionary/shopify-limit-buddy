@@ -129,6 +129,8 @@ function checkoutScriptSource() {
       await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
       await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
       await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      await page.keyboard.press("Tab").catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 700, timeout: 5000 }).catch(() => null);
       log("address_fill", true);
 
       const checkoutStep = async () => {
@@ -146,9 +148,6 @@ function checkoutScriptSource() {
             if (/contact|information|shipping_address/.test(urlStep)) return "contact";
 
             const body = document.body?.innerText || "";
-            const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
-            if (visible(addressInput)) return "contact";
-
             // Some Shopify checkouts keep the selected shipping rates visible above
             // the payment form. Detect payment before shipping so we do not get
             // stuck re-processing the already-selected shipping section.
@@ -169,6 +168,8 @@ function checkoutScriptSource() {
               return /continue\s+to\s+payment|continue\s+to\s+pay/i.test(label);
             });
             if (shippingRate || (/shipping method/i.test(body) && continueToPayment)) return "shipping_method";
+            const addressInput = document.querySelector('input[name="checkout[shipping_address][address1]"], input[name="checkout[shipping_address][first_name]"], input[autocomplete="address-line1"], input[autocomplete="given-name"]');
+            if (visible(addressInput)) return "contact";
             return "unknown";
           });
         } catch {}
@@ -195,10 +196,11 @@ function checkoutScriptSource() {
             const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
             if (!isContinue && !isSubmit) return null;
             let score = 50;
+            if (allowSubmit && isSubmit) score = 0;
             if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
             if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
-            if (isSubmit) score += 100;
+            if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
           }).filter(Boolean).sort((a, b) => a.score - b.score);
           const target = candidates[0]?.el;
@@ -236,10 +238,11 @@ function checkoutScriptSource() {
             const isContinue = /continue/i.test(text) || /continue_button|step__footer__continue/i.test(id + " " + cls);
             if (!isContinue && !isSubmit) return null;
             let score = 50;
+            if (allowSubmit && isSubmit) score = 0;
             if (preferred === "shipping" && /continue\s+to\s+shipping|shipping method/i.test(text)) score = 0;
             if (preferred === "payment" && /continue\s+to\s+payment|payment method/i.test(text)) score = 0;
             if (/^continue$/i.test(text)) score += 10;
-            if (isSubmit) score += 100;
+            if (isSubmit && !allowSubmit) score += 100;
             return { el, score };
           }).filter(Boolean).sort((a, b) => a.score - b.score);
           candidates[0]?.el?.click();
@@ -261,11 +264,23 @@ function checkoutScriptSource() {
         return finalStep === "shipping_method" || finalStep === "payment";
       };
 
+      const hasSelectedShippingRate = async () => {
+        return await page.evaluate(() => {
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const s = getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden" && !el.disabled;
+          };
+          const rates = Array.from(document.querySelectorAll('input[name="checkout[shipping_rate][id]"], input[type="radio"][id*="shipping" i], input[type="radio"][name*="shipping" i]')).filter(visible);
+          return rates.some((input) => input.checked || input.getAttribute("aria-checked") === "true");
+        }).catch(() => false);
+      };
+
       const selectShippingRate = async () => {
-        if (await isPaymentStep()) return true;
         const deadline = Date.now() + 12000;
         while (Date.now() < deadline) {
-          if (await isPaymentStep()) return true;
+          if (await hasSelectedShippingRate()) return true;
           const target = await page.evaluate(() => {
             const visible = (el) => {
               if (!el) return false;
