@@ -24,14 +24,6 @@ const cors = {
 function checkoutScriptSource() {
   return `export default async ({ page, context }) => {
     const { input, stageUrl } = context;
-    const phase = context.phase || "A";
-    const session = context.session || null;
-    // In-script wall-clock budget. Browserless plan caps the /function call
-    // at 60s, so we bail to a partial result well before that and let the
-    // edge function re-enqueue a fresh 60s window for the next phase.
-    const SCRIPT_BUDGET_MS = 45000;
-    const scriptStart = Date.now();
-    const budgetLeft = () => Math.max(0, SCRIPT_BUDGET_MS - (Date.now() - scriptStart));
     const steps = [];
     let lastStep = "launch";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
@@ -71,54 +63,38 @@ function checkoutScriptSource() {
         });
       } catch {}
 
-      if (phase === "A") {
-        lastStep = "cart_add";
-        await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-        await stage("cart_add");
-        const atc = await page.evaluate(async (variantId, qty) => {
-          const r = await fetch("/cart/add.js", {
-            method: "POST",
-            headers: { "content-type": "application/json", accept: "application/json" },
-            body: JSON.stringify({ id: variantId, quantity: qty }),
-            credentials: "include",
-          });
-          return { status: r.status, body: await r.text().catch(() => "") };
-        }, input.variantId, input.qty);
-        if (atc.status >= 400) return await fail("cart/add.js " + atc.status + ": " + atc.body.slice(0, 200));
-        log("cart_add", true);
-
-        lastStep = "checkout_load";
-        await stage("checkout_load");
-        const origin = new URL(input.storeUrl).origin;
-        const qs = new URLSearchParams({
-          "checkout[email]": input.profile.email,
-          "checkout[shipping_address][first_name]": input.profile.first_name,
-          "checkout[shipping_address][last_name]": input.profile.last_name,
-          "checkout[shipping_address][address1]": input.profile.address1,
-          "checkout[shipping_address][address2]": input.profile.address2 ?? "",
-          "checkout[shipping_address][city]": input.profile.city,
-          "checkout[shipping_address][province]": input.profile.province,
-          "checkout[shipping_address][zip]": input.profile.zip,
-          "checkout[shipping_address][country]": input.profile.country,
-          "checkout[shipping_address][phone]": input.profile.phone,
+      lastStep = "cart_add";
+      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+      await stage("cart_add");
+      const atc = await page.evaluate(async (variantId, qty) => {
+        const r = await fetch("/cart/add.js", {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "application/json" },
+          body: JSON.stringify({ id: variantId, quantity: qty }),
+          credentials: "include",
         });
-        await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
-        log("checkout_load", true);
-      } else {
-        // Phase B (or later): restore the cookie jar from phase A and jump
-        // straight back to the saved checkout URL. The proxy is sticky on
-        // the edge-function side so the gateway sees the same IP.
-        lastStep = "phase_b_resume";
-        await stage("phase_b_resume");
-        try {
-          if (session && Array.isArray(session.cookies) && session.cookies.length) {
-            await page.setCookie(...session.cookies);
-          }
-        } catch {}
-        const resumeUrl = (session && session.currentUrl) || input.storeUrl;
-        await page.goto(resumeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-        log("phase_b_resume", true);
-      }
+        return { status: r.status, body: await r.text().catch(() => "") };
+      }, input.variantId, input.qty);
+      if (atc.status >= 400) return await fail("cart/add.js " + atc.status + ": " + atc.body.slice(0, 200));
+      log("cart_add", true);
+
+      lastStep = "checkout_load";
+      await stage("checkout_load");
+      const origin = new URL(input.storeUrl).origin;
+      const qs = new URLSearchParams({
+        "checkout[email]": input.profile.email,
+        "checkout[shipping_address][first_name]": input.profile.first_name,
+        "checkout[shipping_address][last_name]": input.profile.last_name,
+        "checkout[shipping_address][address1]": input.profile.address1,
+        "checkout[shipping_address][address2]": input.profile.address2 ?? "",
+        "checkout[shipping_address][city]": input.profile.city,
+        "checkout[shipping_address][province]": input.profile.province,
+        "checkout[shipping_address][zip]": input.profile.zip,
+        "checkout[shipping_address][country]": input.profile.country,
+        "checkout[shipping_address][phone]": input.profile.phone,
+      });
+      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
+      log("checkout_load", true);
 
 
       const setCheckoutValue = async (selectors, value) => {
@@ -197,22 +173,20 @@ function checkoutScriptSource() {
         } catch { return null; }
       };
 
-      if (phase === "A") {
-        lastStep = "address_fill";
-        await stage("address_fill");
-        await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
-        await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
-        await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
-        await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
-        await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
-        await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
-        await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
-        await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
-        await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
-        await page.keyboard.press("Tab").catch(() => null);
-        await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
-        log("address_fill", true);
-      }
+      lastStep = "address_fill";
+      await stage("address_fill");
+      await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
+      await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
+      await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
+      await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
+      await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
+      await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
+      await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
+      await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
+      await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      await page.keyboard.press("Tab").catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
+      log("address_fill", true);
 
 
       const checkoutStep = async () => {
@@ -436,63 +410,44 @@ function checkoutScriptSource() {
         return await isPaymentStep();
       };
 
-      if (phase === "A") {
-        lastStep = "shipping_continue";
-        await stage("shipping_continue");
-        try {
-          if (!(await advanceToShipping(3))) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not advance to shipping method step");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
+      lastStep = "shipping_continue";
+      await stage("shipping_continue");
+      try {
+        if (!(await advanceToShipping(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to shipping method step");
         }
-        log("shipping_continue", true);
-
-        lastStep = "shipping_method";
-        await stage("shipping_method");
-        try {
-          if (!(await selectShippingRate())) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not select a shipping method");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
-        }
-        log("shipping_method", true);
-
-        lastStep = "payment_continue";
-        await stage("payment_continue");
-        try {
-          if (!(await advanceToPayment(3))) {
-            const err = await visibleCheckoutError();
-            if (err) return await fail("Checkout validation: " + err);
-            return await fail("Could not advance to payment step");
-          }
-        } catch (e) {
-          return await fail(String(e?.message ?? e));
-        }
-        log("payment_continue", true);
-
-        // Phase A complete. Hand off cookies + the payment-step URL so a
-        // fresh Browserless call (with its own 60s budget) can run card_fill
-        // → submit → result. If we have plenty of budget left we could
-        // continue inline, but splitting guarantees we never 408 during the
-        // card iframes which are the most fragile part.
-        let savedCookies = [];
-        try { savedCookies = await page.cookies(); } catch {}
-        await stage("phase_a_done");
-        log("phase_a_done", true, "budgetLeft=" + budgetLeft());
-        return {
-          ok: true,
-          partial: true,
-          nextPhase: "B",
-          session: { cookies: savedCookies, currentUrl: page.url() },
-          steps,
-        };
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
       }
+      log("shipping_continue", true);
+
+      lastStep = "shipping_method";
+      await stage("shipping_method");
+      try {
+        if (!(await selectShippingRate())) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not select a shipping method");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
+      log("shipping_method", true);
+
+      lastStep = "payment_continue";
+      await stage("payment_continue");
+      try {
+        if (!(await advanceToPayment(3))) {
+          const err = await visibleCheckoutError();
+          if (err) return await fail("Checkout validation: " + err);
+          return await fail("Could not advance to payment step");
+        }
+      } catch (e) {
+        return await fail(String(e?.message ?? e));
+      }
+      log("payment_continue", true);
 
 
       lastStep = "card_fill";
@@ -961,22 +916,9 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true, note: "already " + job.status }), { headers: { ...cors, "content-type": "application/json" } });
   }
 
-  // Determine phase. Phase A is the cart→payment-step prep. Phase B (and
-  // beyond) resumes from saved cookies + URL to do card_fill→submit→result.
-  const phase = (job as any).phase ?? "A";
-  const session = (job as any).session ?? null;
-  const phaseAttempts = (job as any).phase_attempts ?? 0;
-  if (phaseAttempts >= 3) {
-    await supa.from("checkout_jobs").update({
-      status: "failed", stage: "phase_limit", error: "Exceeded 3 phase attempts without completion",
-    }).eq("id", jobId);
-    return new Response("phase limit", { status: 200, headers: cors });
-  }
-
   await supa.from("checkout_jobs").update({
     status: "running",
-    stage: phase === "A" ? "launch" : "phase_b_start",
-    phase_attempts: phaseAttempts + 1,
+    stage: "launch",
   }).eq("id", jobId);
 
   if (!BROWSERLESS_KEY) {
@@ -999,9 +941,9 @@ Deno.serve(async (req) => {
     url.searchParams.set("proxy", "http://" + input.proxy);
     url.searchParams.set("proxySticky", "true");
   }
-  // Browserless plan caps /function at 60s. Stay under it; the in-script
-  // SCRIPT_BUDGET_MS=45000 returns partial well before this fires.
-  url.searchParams.set("timeout", "60000");
+  // Requires a Browserless plan that allows >60s /function sessions.
+  // 180s gives generous headroom for slow Shopify checkouts.
+  url.searchParams.set("timeout", "180000");
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
@@ -1014,8 +956,6 @@ Deno.serve(async (req) => {
         context: {
           input,
           stageUrl: selfUrl.toString(),
-          phase,
-          session,
         },
       }),
     });
@@ -1034,31 +974,6 @@ Deno.serve(async (req) => {
       return new Response("bad json", { status: 502, headers: cors });
     }
 
-    // Partial: save handoff and re-enqueue via the same pg_net RPC used at
-    // initial enqueue. Status returns to 'pending' so the next worker
-    // invocation passes the guard at the top of this handler.
-    if (result.ok && result.partial) {
-      const selfPostUrl = new URL(req.url);
-      selfPostUrl.search = "";
-      await supa.from("checkout_jobs").update({
-        status: "pending",
-        stage: "phase_" + String(result.nextPhase ?? "B").toLowerCase() + "_queued",
-        phase: result.nextPhase ?? "B",
-        session: result.session ?? null,
-      }).eq("id", jobId);
-      const { error: rpcErr } = await supa.rpc("request_checkout_worker", {
-        p_job_id: jobId,
-        p_url: selfPostUrl.toString(),
-        p_token: EXECUTOR_TOKEN,
-      });
-      if (rpcErr) {
-        await supa.from("checkout_jobs").update({
-          status: "failed", stage: "transport", error: "re-enqueue failed: " + rpcErr.message,
-        }).eq("id", jobId);
-        return new Response("re-enqueue failed", { status: 500, headers: cors });
-      }
-      return new Response(JSON.stringify({ ok: true, phase: result.nextPhase }), { headers: { ...cors, "content-type": "application/json" } });
-    }
 
     await supa.from("checkout_jobs").update({
       status: result.ok ? "succeeded" : "failed",
