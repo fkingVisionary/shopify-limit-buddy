@@ -3019,8 +3019,9 @@ function ProxyGroupCard({
         continue;
       }
       try {
-        const r = await checkExit({ data: { proxyUrl: entry } });
-        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp } }));
+        const normalizedTarget = targetUrl.trim() ? (normalizeStoreUrl(targetUrl) ?? undefined) : undefined;
+        const r = await checkExit({ data: { proxyUrl: entry, targetUrl: normalizedTarget } });
+        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp, targetStatus: r.targetStatus ?? null } }));
       } catch (e: any) {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
