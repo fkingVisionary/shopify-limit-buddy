@@ -109,7 +109,7 @@ function checkoutScriptSource() {
             const sels = ['button[name="checkout"]', 'input[name="checkout"]', 'a[href$="/checkout"]', 'a[href*="/checkout"]'];
             for (const s of sels) {
               const el = document.querySelector(s);
-              if (el) { (el as HTMLElement).click(); return true; }
+              if (el) { el.click(); return true; }
             }
             return false;
           });
