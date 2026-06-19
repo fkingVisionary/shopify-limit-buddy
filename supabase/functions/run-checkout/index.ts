@@ -546,11 +546,13 @@ function checkoutScriptSource() {
       // input inside it — this avoids guessing the input's id/name attributes,
       // which vary across Shopify checkout versions.
       const fillCardField = async (kind, value) => {
-        const expectedDigits = String(value).replace(/\\D/g, "");
+        const raw = String(value ?? "");
+        const expectedDigits = raw.replace(/\\D/g, "");
+        const typeText = kind === "name" ? raw : expectedDigits;
         const looksFilled = (current) => {
           const v = String(current || "").trim();
           const digits = v.replace(/\\D/g, "");
-          if (kind === "number") return digits.length >= Math.max(12, expectedDigits.length - 1);
+          if (kind === "number") return digits.length >= expectedDigits.length;
           if (kind === "expiry") return digits.length >= 4;
           if (kind === "cvv") return digits.length >= Math.min(3, expectedDigits.length);
           if (kind === "name") return v.length >= 2;
@@ -562,7 +564,50 @@ function checkoutScriptSource() {
           cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification/i,
           name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)/i,
         }[kind];
-        const deadline = Date.now() + 18000;
+        const readTopLevelValue = async (el) => await page.evaluate((node) => node.value || "", el).catch(() => "");
+        const fillTopLevelInput = async () => {
+          const selector = kind === "number"
+            ? 'input[autocomplete="cc-number"], input[placeholder*="Card number" i], input[aria-label*="card number" i], input[name*="number" i]'
+            : kind === "expiry"
+              ? 'input[autocomplete="cc-exp"], input[placeholder*="Expiration" i], input[placeholder*="Expiry" i], input[aria-label*="expiration" i], input[name*="expiry" i]'
+              : kind === "cvv"
+                ? 'input[autocomplete="cc-csc"], input[placeholder*="Security" i], input[placeholder*="CVV" i], input[placeholder*="CVC" i], input[aria-label*="security" i], input[name*="verification" i]'
+                : 'input[autocomplete="cc-name"], input[placeholder*="Name on card" i], input[aria-label*="name on card" i], input[name*="name" i]';
+          const handles = await page.$$(selector).catch(() => []);
+          for (const el of handles) {
+            const visible = await page.evaluate((node) => {
+              if (!node) return false;
+              const r = node.getBoundingClientRect();
+              const s = getComputedStyle(node);
+              return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
+            }, el).catch(() => false);
+            if (!visible) continue;
+            await el.focus().catch(() => null);
+            await el.click({ clickCount: 3 }).catch(() => null);
+            await page.keyboard.press("Backspace").catch(() => null);
+            await el.type(typeText, { delay: kind === "name" ? 35 : 120 }).catch(() => null);
+            await page.evaluate((node) => {
+              node.dispatchEvent(new Event("input", { bubbles: true }));
+              node.dispatchEvent(new Event("change", { bubbles: true }));
+              node.dispatchEvent(new Event("blur", { bubbles: true }));
+            }, el).catch(() => null);
+            if (looksFilled(await readTopLevelValue(el))) return true;
+            if (kind === "name") {
+              await page.evaluate((node, val) => {
+                const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                if (desc && desc.set) desc.set.call(node, String(val));
+                else node.value = String(val);
+                node.dispatchEvent(new Event("input", { bubbles: true }));
+                node.dispatchEvent(new Event("change", { bubbles: true }));
+                node.dispatchEvent(new Event("blur", { bubbles: true }));
+              }, el, raw).catch(() => null);
+              if (looksFilled(await readTopLevelValue(el))) return true;
+            }
+          }
+          return false;
+        };
+        if (kind === "name" && await fillTopLevelInput()) return true;
+        const deadline = Date.now() + 22000;
         while (Date.now() < deadline) {
           // Find candidate frames first via parent <iframe> name attribute
           // (some Shopify builds expose the human label there), then by URL.
@@ -587,14 +632,16 @@ function checkoutScriptSource() {
                   await page.keyboard.press("Backspace").catch(() => null);
                 };
                 await clearIt();
-                const str = String(value);
-                // Type char-by-char with delay so masked inputs (Shopify card-fields)
-                // don't drop keystrokes, and retype the missing tail if needed.
-                for (let attempt = 0; attempt < 4; attempt++) {
+                // Type through the real focused iframe input only. Do not use a
+                // native value setter for secure Shopify card fields: it can make
+                // node.value look full while Shopify's tokenizer still only has a
+                // partial value (the screenshot showed just "222").
+                for (let attempt = 0; attempt < 5; attempt++) {
                   await el.focus().catch(() => null);
-                  for (let i = 0; i < str.length; i++) {
-                    await page.keyboard.type(str[i], { delay: 0 }).catch(() => null);
-                    await new Promise((r) => setTimeout(r, 70));
+                  await el.click().catch(() => null);
+                  for (let i = 0; i < typeText.length; i++) {
+                    await el.type(typeText[i], { delay: 110 }).catch(() => null);
+                    await new Promise((r) => setTimeout(r, 35));
                   }
                   await frame.evaluate((node) => {
                     node.dispatchEvent(new Event("input", { bubbles: true }));
@@ -606,14 +653,15 @@ function checkoutScriptSource() {
                     return true;
                   }
                   // Append only the missing tail rather than restarting from scratch
-                  const wantDigits = (kind === "name") ? str : str.replace(/\\D/g, "");
+                  const wantDigits = (kind === "name") ? typeText : typeText.replace(/\\D/g, "");
                   const haveLen = (kind === "name") ? String(cur).length : String(cur).replace(/\\D/g, "").length;
                   if (haveLen > 0 && haveLen < wantDigits.length) {
                     const tail = wantDigits.slice(haveLen);
                     await el.focus().catch(() => null);
+                    await el.click().catch(() => null);
                     for (let i = 0; i < tail.length; i++) {
-                      await page.keyboard.type(tail[i], { delay: 0 }).catch(() => null);
-                      await new Promise((r) => setTimeout(r, 90));
+                      await el.type(tail[i], { delay: 140 }).catch(() => null);
+                      await new Promise((r) => setTimeout(r, 45));
                     }
                     const cur2 = await readVal();
                     if (looksFilled(cur2)) {
@@ -623,21 +671,21 @@ function checkoutScriptSource() {
                   }
                   await clearIt();
                 }
-                // Last resort: native setter (rarely accepted by card-fields, but try)
-                await frame.evaluate((node, val) => {
-                  const proto = HTMLInputElement.prototype;
-                  const desc = Object.getOwnPropertyDescriptor(proto, "value");
-                  if (desc && desc.set) desc.set.call(node, String(val));
-                  else node.value = String(val);
-                  node.dispatchEvent(new Event("input", { bubbles: true }));
-                  node.dispatchEvent(new Event("change", { bubbles: true }));
-                  node.dispatchEvent(new Event("blur", { bubbles: true }));
-                }, el, value).catch(() => null);
-                const vFinal = await readVal();
-                if (looksFilled(vFinal)) return true;
+                if (kind === "name") {
+                  await frame.evaluate((node, val) => {
+                    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+                    if (desc && desc.set) desc.set.call(node, String(val));
+                    else node.value = String(val);
+                    node.dispatchEvent(new Event("input", { bubbles: true }));
+                    node.dispatchEvent(new Event("change", { bubbles: true }));
+                    node.dispatchEvent(new Event("blur", { bubbles: true }));
+                  }, el, raw).catch(() => null);
+                  if (looksFilled(await readVal())) return true;
+                }
               }
             } catch {}
           }
+          if (kind !== "name" && await fillTopLevelInput()) return true;
           await new Promise((r) => setTimeout(r, 350));
         }
         return false;
