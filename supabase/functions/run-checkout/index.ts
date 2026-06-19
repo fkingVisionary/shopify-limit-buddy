@@ -595,8 +595,28 @@ function checkoutScriptSource() {
           number: /card\\s*number|^number$|\\/number|card-fields-number/i,
           expiry: /expiration|expiry|\\/expiry|card-fields-expiry/i,
           cvv: /security\\s*code|verification[_\\s-]?value|cvv|cvc|\\/verification|card-fields-verification/i,
-          name: /name\\s*on\\s*card|\\/name(?:[?#/]|$)|card-fields-name|cardholder|holder.?name/i,
+          name: /name\\s*on\\s*card|card-fields-name|cardholder|holder.?name/i,
         }[kind];
+        // For "name" we must NEVER fall through to a number/expiry/cvv field.
+        // looksFilled for name only checks length>=2, so it would silently
+        // accept typing "M edwards" into the card number input.
+        const excludeRe = kind === "name"
+          ? /number|expiry|expiration|verification|cvv|cvc|security/i
+          : null;
+        const elementLooksLikeWrongField = async (el, ctx) => {
+          if (!excludeRe) return false;
+          return await (ctx || page).evaluate((node, reSrc) => {
+            const re = new RegExp(reSrc, "i");
+            const attrs = [
+              node.getAttribute("name") || "",
+              node.getAttribute("id") || "",
+              node.getAttribute("placeholder") || "",
+              node.getAttribute("aria-label") || "",
+              node.getAttribute("autocomplete") || "",
+            ].join(" ");
+            return re.test(attrs);
+          }, el, excludeRe.source).catch(() => false);
+        };
         const readTopLevelValue = async (el) => await page.evaluate((node) => node.value || "", el).catch(() => "");
         const fillTopLevelInput = async () => {
           const selector = kind === "number"
@@ -615,6 +635,7 @@ function checkoutScriptSource() {
               return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none" && !node.disabled;
             }, el).catch(() => false);
             if (!visible) continue;
+            if (await elementLooksLikeWrongField(el, null)) continue;
             await el.focus().catch(() => null);
             await el.click({ clickCount: 3 }).catch(() => null);
             await page.keyboard.press("Backspace").catch(() => null);
@@ -648,6 +669,8 @@ function checkoutScriptSource() {
             const fname = (frame.name && frame.name()) || "";
             const furl = frame.url ? frame.url() : "";
             if (!nameRe.test(fname) && !nameRe.test(furl)) continue;
+            // Hard exclude: a "name" frame must not also be a number/expiry/cvv frame.
+            if (excludeRe && (excludeRe.test(fname) || excludeRe.test(furl))) continue;
             try {
               const inputs = await frame.$$('input:not([type="hidden"])');
               for (const el of inputs) {
