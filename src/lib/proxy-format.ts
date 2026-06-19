@@ -12,6 +12,31 @@ export type ProxyClassification = {
   reason?: string;
 };
 
+const portPattern = /^\d{1,5}$/;
+
+function validPort(port: string | undefined): boolean {
+  if (!portPattern.test(port || "")) return false;
+  const n = Number(port);
+  return n > 0 && n <= 65535;
+}
+
+function buildProxyUrl(scheme: string, host: string, port: string, user?: string, pass?: string): ProxyClassification {
+  if (!host || !validPort(port)) return { kind: "invalid", reason: "expected host:port with a valid port" };
+  if (user !== undefined || pass !== undefined) {
+    if (!user || pass === undefined || pass === "") return { kind: "invalid", reason: "expected non-empty username and password" };
+    return { kind: "raw", url: `${scheme}://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}` };
+  }
+  return { kind: "raw", url: `${scheme}://${host}:${port}` };
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /**
  * Classify a single proxy entry. Accepts:
  *  - `{url}` templates (e.g. `https://gateway.example.com/fetch?url={url}`)
@@ -44,37 +69,28 @@ export function classifyProxy(entryRaw: string): ProxyClassification {
 
   // user:pass@host:port
   if (p.includes("@")) {
-    const [auth, hostPort] = p.split("@");
+    const at = p.lastIndexOf("@");
+    const auth = p.slice(0, at);
+    const hostPort = p.slice(at + 1);
+    const [user, ...passParts] = auth.split(":");
     const [host, port] = hostPort.split(":");
-    if (!host || !/^\d{1,5}$/.test(port || "")) {
-      return { kind: "invalid", reason: "expected host:port after @" };
-    }
-    return { kind: "raw", url: `${scheme}://${auth}@${host}:${port}` };
+    return buildProxyUrl(scheme, host, port, safeDecode(user || ""), safeDecode(passParts.join(":")));
   }
 
   const parts = p.split(":");
   if (parts.length === 2) {
-    if (!parts[0] || !/^\d{1,5}$/.test(parts[1])) {
-      return { kind: "invalid", reason: "expected host:port" };
-    }
-    return { kind: "raw", url: `${scheme}://${parts[0]}:${parts[1]}` };
+    return buildProxyUrl(scheme, parts[0], parts[1]);
   }
   if (parts.length === 4) {
-    const portFirst = /^\d{1,5}$/.test(parts[1]);
-    const portLast = /^\d{1,5}$/.test(parts[3]);
+    const portFirst = validPort(parts[1]);
+    const portLast = validPort(parts[3]);
     if (portFirst && !portLast) {
       // host:port:user:pass
-      return {
-        kind: "raw",
-        url: `${scheme}://${parts[2]}:${parts[3]}@${parts[0]}:${parts[1]}`,
-      };
+      return buildProxyUrl(scheme, parts[0], parts[1], parts[2], parts[3]);
     }
     if (portLast) {
       // user:pass:host:port
-      return {
-        kind: "raw",
-        url: `${scheme}://${parts[0]}:${parts[1]}@${parts[2]}:${parts[3]}`,
-      };
+      return buildProxyUrl(scheme, parts[2], parts[3], parts[0], parts[1]);
     }
     return { kind: "invalid", reason: "neither segment looks like a port" };
   }

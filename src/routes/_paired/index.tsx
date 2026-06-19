@@ -3006,11 +3006,12 @@ function ProxyGroupCard({
   const testGroup = async () => {
     setTesting(true);
     setResults({});
-    await Promise.all(group.proxies.map(async (entry, i) => {
+    for (let i = 0; i < group.proxies.length; i += 1) {
+      const entry = group.proxies[i];
       const c = classifications[i];
       if (c.kind === "invalid") {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: c.reason ?? "invalid format" } }));
-        return;
+        continue;
       }
       try {
         const r = await checkExit({ data: { proxyUrl: entry } });
@@ -3018,7 +3019,8 @@ function ProxyGroupCard({
       } catch (e: any) {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
-    }));
+      if (i < group.proxies.length - 1) await sleep(500);
+    }
     setTesting(false);
   };
 

@@ -960,26 +960,46 @@ Deno.serve(async (req) => {
     const normalizeProxy = (raw: string): string => {
       let p = String(raw || "").trim();
       if (!p) return "";
+      const validPort = (port: string | undefined): boolean => {
+        if (!/^\d{1,5}$/.test(port || "")) return false;
+        const n = Number(port);
+        return n > 0 && n <= 65535;
+      };
+      const withAuth = (scheme: string, host: string, port: string, user?: string, pass?: string): string => {
+        if (!host || !validPort(port)) return "";
+        if (user !== undefined || pass !== undefined) {
+          if (!user || pass === undefined || pass === "") return "";
+          return scheme + "://" + encodeURIComponent(user) + ":" + encodeURIComponent(pass) + "@" + host + ":" + port;
+        }
+        return scheme + "://" + host + ":" + port;
+      };
       // Strip an existing scheme to inspect the body uniformly.
       const schemeMatch = p.match(/^(https?|socks5?):\/\//i);
       const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : "http";
       if (schemeMatch) p = p.slice(schemeMatch[0].length);
       // Already in user:pass@host:port form.
-      if (p.includes("@")) return scheme + "://" + p;
+      if (p.includes("@")) {
+        const at = p.lastIndexOf("@");
+        const auth = p.slice(0, at);
+        const hostPort = p.slice(at + 1);
+        const [user, ...passParts] = auth.split(":");
+        const [host, port] = hostPort.split(":");
+        return withAuth(scheme, host, port, decodeURIComponent(user || ""), decodeURIComponent(passParts.join(":")));
+      }
       const parts = p.split(":");
       if (parts.length === 2) {
         // host:port (no auth)
-        return scheme + "://" + parts[0] + ":" + parts[1];
+        return withAuth(scheme, parts[0], parts[1]);
       }
       if (parts.length === 4) {
-        const looksHostPortFirst = /^\d{1,5}$/.test(parts[1]);
-        const looksHostPortLast = /^\d{1,5}$/.test(parts[3]);
+        const looksHostPortFirst = validPort(parts[1]);
+        const looksHostPortLast = validPort(parts[3]);
         // Prefer `host:port:user:pass` when the 2nd segment looks like a port.
         if (looksHostPortFirst && !looksHostPortLast) {
-          return scheme + "://" + parts[2] + ":" + parts[3] + "@" + parts[0] + ":" + parts[1];
+          return withAuth(scheme, parts[0], parts[1], parts[2], parts[3]);
         }
         // Otherwise assume `user:pass:host:port`.
-        return scheme + "://" + parts[0] + ":" + parts[1] + "@" + parts[2] + ":" + parts[3];
+        if (looksHostPortLast) return withAuth(scheme, parts[2], parts[3], parts[0], parts[1]);
       }
       // Unknown — pass through with scheme so Browserless surfaces the error.
       return scheme + "://" + p;
