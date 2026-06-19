@@ -81,48 +81,26 @@ function checkoutScriptSource() {
       lastStep = "checkout_load";
       await stage("checkout_load");
       const origin = new URL(input.storeUrl).origin;
-      // Go through /cart first so the checkout navigation looks organic.
-      // Some Shopify stores (esp. behind Cloudflare/bot-managed origins like
-      // culturekings) return net::ERR_FAILED when /checkout is hit directly
-      // as a top-level navigation without a same-origin referer.
-      try {
-        await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
-      } catch {}
+      // Direct navigation to /checkout. Adding a /cart preload or a custom
+      // referer triggered Cloudflare bot-blocking (net::ERR_FAILED) on some
+      // Shopify stores; the simple goto is what works.
       let checkoutLoaded = false;
       let lastNavErr = null;
-      for (const waitUntil of ["domcontentloaded", "load"]) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          await page.goto(origin + "/checkout", { waitUntil, timeout: 45000, referer: origin + "/cart" });
+          await page.goto(origin + "/checkout", { waitUntil: "domcontentloaded", timeout: 45000 });
           checkoutLoaded = true;
           break;
         } catch (e) {
           lastNavErr = e;
-          // Brief backoff then retry with a different waitUntil
-          try { await page.waitForTimeout(1500); } catch {}
+          try { await new Promise((r) => setTimeout(r, 1500)); } catch {}
         }
       }
       if (!checkoutLoaded) {
-        // Fallback: try clicking the checkout button from the cart page.
-        try {
-          await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
-          const clicked = await page.evaluate(() => {
-            const sels = ['button[name="checkout"]', 'input[name="checkout"]', 'a[href$="/checkout"]', 'a[href*="/checkout"]'];
-            for (const s of sels) {
-              const el = document.querySelector(s);
-              if (el) { el.click(); return true; }
-            }
-            return false;
-          });
-          if (clicked) {
-            await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 45000 }).catch(() => {});
-            if (/\\/checkout/i.test(page.url())) checkoutLoaded = true;
-          }
-        } catch {}
-      }
-      if (!checkoutLoaded) {
-        return await fail(String((lastNavErr && lastNavErr.message) || lastNavErr || "checkout navigation failed") + " at " + origin + "/checkout");
+        return await fail(String((lastNavErr && lastNavErr.message) || lastNavErr || "checkout navigation failed"));
       }
       log("checkout_load", true);
+
 
 
       const setCheckoutValue = async (selectors, value) => {
