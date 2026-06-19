@@ -23,7 +23,7 @@ const cors = {
 // Mirrors src/lib/browserless.functions.ts browserlessScript().
 function checkoutScriptSource() {
   return `export default async ({ page, context }) => {
-    const { input, stageUrl } = context;
+    const { input, stageUrl, twoCaptchaKey } = context;
     const steps = [];
     let lastStep = "launch";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
