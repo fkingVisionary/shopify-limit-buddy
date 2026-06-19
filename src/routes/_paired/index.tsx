@@ -2991,8 +2991,10 @@ function ProxyGroupCard({
 }) {
   const text = group.proxies.join("\n");
   const [testing, setTesting] = useState(false);
+  const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
   const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
   const checkExit = useServerFn(checkProxyExit);
+
 
   const classifications = group.proxies.map((p) => classifyProxy(p));
   const validCount = classifications.filter((c) => c.kind !== "invalid").length;
@@ -3006,7 +3008,9 @@ function ProxyGroupCard({
   const testGroup = async () => {
     setTesting(true);
     setResults({});
-    for (let i = 0; i < group.proxies.length; i += 1) {
+    const n = group.proxies.length;
+    for (let i = 0; i < n; i += 1) {
+      setProgress({ i: i + 1, n });
       const entry = group.proxies[i];
       const c = classifications[i];
       if (c.kind === "invalid") {
@@ -3019,10 +3023,15 @@ function ProxyGroupCard({
       } catch (e: any) {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
-      if (i < group.proxies.length - 1) await sleep(500);
+      // Serialise hard: Browserless free/low tiers cap concurrency at 1 and
+      // return 429 if the next /function call starts before the previous one
+      // finishes spinning down. 1500ms gap keeps us comfortably under.
+      if (i < n - 1) await sleep(1500);
     }
+    setProgress(null);
     setTesting(false);
   };
+
 
   return (
     <Card className="p-3">
@@ -3052,8 +3061,13 @@ function ProxyGroupCard({
           {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
         </p>
         <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
-          {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <><Globe className="h-3 w-3" /> Test proxies</>}
+          {testing ? (
+            <><Loader2 className="h-3 w-3 animate-spin" /> {progress ? `Testing ${progress.i}/${progress.n}` : "Testing"}</>
+          ) : (
+            <><Globe className="h-3 w-3" /> Test proxies</>
+          )}
         </Button>
+
       </div>
 
       {(invalidCount > 0 || Object.keys(results).length > 0) && (

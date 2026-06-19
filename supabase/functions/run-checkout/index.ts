@@ -43,6 +43,15 @@ function checkoutScriptSource() {
     try {
       await stage("launch");
 
+      // Authenticate against an upstream proxy (host:port set via launch args).
+      try {
+        if (input && input.__proxyUser) {
+          await page.authenticate({ username: input.__proxyUser, password: input.__proxyPass || "" });
+        }
+      } catch {}
+
+
+
       // Aggressive resource blocking — biggest single speedup. Block images,
       // fonts, media, non-essential stylesheets, and known trackers/wallets.
       // Keep documents, XHR/fetch, scripts, and Shopify card-field iframes.
@@ -1006,12 +1015,22 @@ Deno.serve(async (req) => {
     };
     const proxyUrl = normalizeProxy(input.proxy);
     if (proxyUrl) {
-      // External (third-party) proxy: Browserless expects this as
-      // `externalProxyServer`, NOT `proxy=` (which selects Browserless's
-      // built-in residential/datacenter network and 400s when given a URL).
-      // Stickiness is handled by your provider's session id in the username.
-      url.searchParams.set("externalProxyServer", proxyUrl);
+      // Chromium does NOT parse `user:pass@` from --proxy-server, so we pass
+      // only host:port via Chrome launch args and forward credentials through
+      // context for page.authenticate() inside the script. This is the only
+      // reliable way to use third-party authenticated proxies on Browserless.
+      try {
+        const u = new URL(proxyUrl);
+        const scheme = u.protocol.replace(/:$/, "");
+        const hostPort = `${u.hostname}:${u.port}`;
+        url.searchParams.set("launch", JSON.stringify({ args: [`--proxy-server=${scheme}://${hostPort}`] }));
+        (input as any).__proxyUser = u.username ? decodeURIComponent(u.username) : "";
+        (input as any).__proxyPass = u.password ? decodeURIComponent(u.password) : "";
+      } catch {
+        // fall through; Browserless will surface the error
+      }
     }
+
   }
   // Browserless plan supports up to 15-min /function sessions.
   // 300s gives generous headroom for slow Shopify checkouts.

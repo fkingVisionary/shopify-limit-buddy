@@ -10,7 +10,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireWorkspaceDevice } from "@/integrations/workspace/middleware";
-import { classifyProxy } from "@/lib/proxy-format";
+import { classifyProxy, parseProxyParts } from "@/lib/proxy-format";
 
 const Schema = z.object({ proxyUrl: z.string().min(1).max(2000) });
 
@@ -24,14 +24,15 @@ export type ProxyHealth = {
 
 function cleanProxyError(message: string): string {
   const compact = message.replace(/\\n/g, " ").replace(/\s+/g, " ").trim();
-  if (/ERR_TUNNEL_CONNECTION_FAILED/i.test(compact)) {
-    return "Proxy tunnel failed: Browserless could not connect through this proxy. Check host, port, credentials, allowlisted IPs, and HTTPS support.";
-  }
-  if (/Proxy authentication failed|ERR_PROXY_AUTH/i.test(compact)) {
+  if (/Proxy authentication failed|ERR_PROXY_AUTH|HTTP\/1\.[01] 407|\b407\b/i.test(compact)) {
     return "Proxy authentication failed: check the username/password order and credentials.";
+  }
+  if (/ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_NO_SUPPORTED_PROXIES/i.test(compact)) {
+    return "Proxy tunnel failed: Browserless could not connect through this proxy. Check host, port, allowlisted IPs, and HTTPS support.";
   }
   return compact.slice(0, 240) || "proxy test failed";
 }
+
 
 export const checkProxyExit = createServerFn({ method: "POST" })
   .middleware([requireWorkspaceDevice])
@@ -66,14 +67,28 @@ export const checkProxyExit = createServerFn({ method: "POST" })
       return { ok: false, latencyMs: 0, exitIp: null, error: "BROWSERLESS_API_KEY missing on server", kind: "raw" };
     }
     const proxyUrl = classification.url!;
+    const parts = parseProxyParts(proxyUrl);
+    if (!parts) {
+      return { ok: false, latencyMs: 0, exitIp: null, error: "could not parse proxy URL", kind: "raw" };
+    }
+    const proxyServer = `${parts.scheme}://${parts.host}:${parts.port}`;
     const url = new URL("https://production-sfo.browserless.io/function");
     url.searchParams.set("token", apiKey);
-    url.searchParams.set("timeout", "15000");
-    url.searchParams.set("externalProxyServer", proxyUrl);
+    url.searchParams.set("timeout", "20000");
+    // Pass proxy via Chrome launch arg. Chromium does NOT parse user:pass from
+    // --proxy-server, so credentials are forwarded separately via context and
+    // applied with page.authenticate() before navigation.
+    url.searchParams.set(
+      "launch",
+      JSON.stringify({ args: [`--proxy-server=${proxyServer}`] }),
+    );
 
-    const code = `export default async ({ page }) => {
+    const code = `export default async ({ page, context }) => {
       try {
-        const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 12000 });
+        if (context && context.username) {
+          await page.authenticate({ username: context.username, password: context.password || "" });
+        }
+        const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 15000 });
         const status = res ? res.status() : 0;
         const body = await page.evaluate(() => document.body && document.body.innerText);
         return { ok: true, status, body };
@@ -87,9 +102,13 @@ export const checkProxyExit = createServerFn({ method: "POST" })
       const res = await fetch(url.toString(), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code, context: {} }),
-        signal: AbortSignal.timeout(25000),
+        body: JSON.stringify({
+          code,
+          context: { username: parts.username ?? "", password: parts.password ?? "" },
+        }),
+        signal: AbortSignal.timeout(30000),
       });
+
       const latencyMs = Date.now() - started;
       const text = await res.text().catch(() => "");
       if (!res.ok) {
