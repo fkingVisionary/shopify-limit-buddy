@@ -819,7 +819,21 @@ function checkoutScriptSource() {
         }
         return false;
       };
+      // Hard guard: the unstyled <noscript> fallback contains "Issue date" and
+      // "Issue number" — fields that do NOT exist on a properly-loaded card
+      // iframe. If we see them on the top-level document, the card iframe
+      // never rendered (CSS was blocked, network race, etc.) and any input
+      // we type ends up in fake fields. Fail loudly instead of silently
+      // submitting garbage to Shopify.
+      const fallbackVisible = await page.evaluate(() => {
+        const txt = (document.body && document.body.innerText) || "";
+        return /Issue date/i.test(txt) && /Issue number/i.test(txt);
+      }).catch(() => false);
+      if (fallbackVisible) {
+        return await fail("Legacy card-form fallback detected (Issue date / Issue number visible) — Shopify card iframe failed to load. This usually means stylesheets were blocked or the iframe was racing with submit. Aborting before sending invalid card data.");
+      }
       const expiryValue = input.card.exp_month.padStart(2, "0") + " / " + input.card.exp_year.slice(-2);
+
       // Fill name FIRST. Name uses DOM-set (no keystrokes), so it can never
       // leak into the focused Card-number iframe. After name we type number,
       // pressing Tab between fields to move focus instead of clicking.
