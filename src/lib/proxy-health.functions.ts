@@ -59,12 +59,25 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         const latencyMs = Date.now() - started;
         if (!res.ok) return { ok: false, latencyMs, exitIp: null, error: `HTTP ${res.status}`, kind: "template" };
         const json = (await res.json()) as { ip?: string };
-        return { ok: true, latencyMs, exitIp: json.ip ?? null, error: null, kind: "template" };
+        let targetStatus: number | null = null;
+        let targetError: string | null = null;
+        if (data.targetUrl) {
+          try {
+            const turl = data.proxyUrl.replace("{url}", encodeURIComponent(data.targetUrl));
+            const tres = await fetch(turl, { method: "GET", signal: AbortSignal.timeout(15000) });
+            targetStatus = tres.status;
+            if (!tres.ok) targetError = `HTTP ${tres.status}`;
+          } catch (e) {
+            targetError = e instanceof Error ? e.message : "target fetch failed";
+          }
+        }
+        return { ok: true, latencyMs, exitIp: json.ip ?? null, error: null, kind: "template", targetStatus, targetError };
       } catch (e) {
         const msg = e instanceof Error ? e.message : "network error";
         return { ok: false, latencyMs: Date.now() - started, exitIp: null, error: msg, kind: "template" };
       }
     }
+
 
     // ── Raw proxy → Browserless tunnel ────────────────────────────────────
     const apiKey = process.env.BROWSERLESS_API_KEY;
