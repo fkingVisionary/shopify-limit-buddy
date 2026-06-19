@@ -1013,42 +1013,78 @@ function checkoutScriptSource() {
       let resultDeadline = Date.now() + 15000;
       let earlyReject = null;
       let threeDsActive = false;
+      let threeDsResolvedAt = 0;
       while (Date.now() < resultDeadline) {
         if (/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(page.url())) break;
+        // Always check 3DS BEFORE decline scan — bank challenge pages contain
+        // wording ("expired", "declined", "verify") that would otherwise
+        // false-positive the visiblePaymentError() regex.
+        const has3ds = await detect3DS();
+        if (has3ds) {
+          if (!threeDsActive) {
+            threeDsActive = true;
+            lastStep = "three_d_secure";
+            await stage("three_d_secure");
+            log("three_d_secure", true, "challenge detected");
+            // Extend wait to 4 minutes for user/bank to approve.
+            resultDeadline = Date.now() + 240000;
+          }
+          threeDsResolvedAt = 0;
+          await new Promise((r) => setTimeout(r, 1000));
+          continue;
+        }
+        // 3DS frames disappeared — bank challenge finished. Give the page a
+        // short grace period to redirect to thank-you OR to surface a gateway
+        // decline before deciding the outcome.
+        if (threeDsActive) {
+          if (!threeDsResolvedAt) {
+            threeDsResolvedAt = Date.now();
+            lastStep = "three_d_secure_completing";
+            await stage("three_d_secure_completing");
+            log("three_d_secure", true, "challenge cleared, awaiting result");
+            // Tight 15s window AFTER 3DS clears to confirm final outcome.
+            resultDeadline = Math.max(resultDeadline, Date.now() + 15000);
+          }
+          // Only accept a decline once 3DS has cleared.
+          const paymentErr = await visiblePaymentError();
+          if (paymentErr && !/security\\s*code|cvv|cvc/i.test(paymentErr)) {
+            earlyReject = paymentErr;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 400));
+          continue;
+        }
+        // Pre-3DS: normal decline / captcha scanning.
         const paymentErr = await visiblePaymentError();
         if (paymentErr) {
           if (/security\\s*code|cvv|cvc/i.test(paymentErr)) break;
           earlyReject = paymentErr;
           break;
         }
-        if (!threeDsActive && await detect3DS()) {
-          threeDsActive = true;
-          lastStep = "three_d_secure";
-          await stage("three_d_secure");
-          log("three_d_secure", true, "challenge detected");
-          // Extend wait to 4 minutes for user/bank to approve.
-          resultDeadline = Date.now() + 240000;
-        }
         // Post-submit captcha re-challenge: solve, inject, re-click Pay-now.
-        if (!threeDsActive) {
-          const postDet = await detectCaptchaOnPage();
-          if (postDet) {
-            lastStep = "captcha_retry";
-            await stage("captcha_retry");
-            const res = await solveAndInjectCaptcha(postDet);
-            if (res && res.blocked) return await fail(res.blocked);
-            await clickContinue(true).catch(() => null);
-            resultDeadline = Date.now() + 20000;
-          }
+        const postDet = await detectCaptchaOnPage();
+        if (postDet) {
+          lastStep = "captcha_retry";
+          await stage("captcha_retry");
+          const res = await solveAndInjectCaptcha(postDet);
+          if (res && res.blocked) return await fail(res.blocked);
+          await clickContinue(true).catch(() => null);
+          resultDeadline = Date.now() + 20000;
         }
-        await new Promise((r) => setTimeout(r, threeDsActive ? 1000 : 200));
+        await new Promise((r) => setTimeout(r, 200));
       }
       if (earlyReject) return await paymentRejected(earlyReject);
       const finalUrl = page.url();
       if (!/\\/thank_you|orders\\/|checkouts\\/.+\\/thank/i.test(finalUrl)) {
+        // If 3DS is still up at the deadline, this is a true timeout — the
+        // user/bank did not approve in 4 minutes. Otherwise scan for a final
+        // decline message.
+        if (threeDsActive && !threeDsResolvedAt) {
+          return await paymentRejected("3-D Secure verification timed out — bank challenge was not approved in time");
+        }
         const paymentMsg = await visiblePaymentError();
         if (paymentMsg) return await paymentRejected(paymentMsg.slice(0, 240));
-        if (threeDsActive) return await paymentRejected("3-D Secure verification timed out or was not completed");
+        if (threeDsActive) return await paymentRejected("3-D Secure completed but no order confirmation was returned");
         // If a captcha is still on screen, this is a captcha block — not a payment decline.
         const stillCaptcha = await detectCaptchaOnPage();
         if (stillCaptcha) return await fail("Captcha could not be bypassed — proxy/IP is likely flagged. Try rotating proxies.");
