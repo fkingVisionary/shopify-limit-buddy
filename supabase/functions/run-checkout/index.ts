@@ -1029,6 +1029,18 @@ function checkoutScriptSource() {
           // Extend wait to 4 minutes for user/bank to approve.
           resultDeadline = Date.now() + 240000;
         }
+        // Post-submit captcha re-challenge: solve, inject, re-click Pay-now.
+        if (!threeDsActive) {
+          const postDet = await detectCaptchaOnPage();
+          if (postDet) {
+            lastStep = "captcha_retry";
+            await stage("captcha_retry");
+            const res = await solveAndInjectCaptcha(postDet);
+            if (res && res.blocked) return await fail(res.blocked);
+            await clickContinue(true).catch(() => null);
+            resultDeadline = Date.now() + 20000;
+          }
+        }
         await new Promise((r) => setTimeout(r, threeDsActive ? 1000 : 200));
       }
       if (earlyReject) return await paymentRejected(earlyReject);
@@ -1037,7 +1049,10 @@ function checkoutScriptSource() {
         const paymentMsg = await visiblePaymentError();
         if (paymentMsg) return await paymentRejected(paymentMsg.slice(0, 240));
         if (threeDsActive) return await paymentRejected("3-D Secure verification timed out or was not completed");
-        return await paymentRejected("Payment was not accepted");
+        // If a captcha is still on screen, this is a captcha block — not a payment decline.
+        const stillCaptcha = await detectCaptchaOnPage();
+        if (stillCaptcha) return await fail("Captcha could not be bypassed — proxy/IP is likely flagged. Try rotating proxies.");
+        return await paymentRejected("Payment did not complete — store may be silently blocking this proxy/IP");
       }
       const m = finalUrl.match(/orders\\/(\\d+)|checkouts\\/[^/]+\\/([a-z0-9]+)\\/thank_you/i);
       const orderId = m ? (m[1] ?? m[2] ?? null) : null;
