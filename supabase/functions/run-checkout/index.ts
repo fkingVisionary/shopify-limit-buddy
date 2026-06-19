@@ -108,12 +108,40 @@ function checkoutScriptSource() {
           return await page.evaluate(() => {
             const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '.notice--error', '.banner--error'];
             for (const s of sels) {
-              const el = document.querySelector(s);
-              const t = ((el && el.textContent) || "").trim();
-              if (/order.?s being processed|processing/i.test(t)) continue;
-              if (t) return t.slice(0, 200);
+              for (const el of Array.from(document.querySelectorAll(s))) {
+                const t = ((el && el.textContent) || "").trim();
+                if (/order.?s being processed|processing/i.test(t)) continue;
+                if (t) return t.slice(0, 200);
+              }
             }
             return null;
+          });
+        } catch { return null; }
+      };
+
+      const visiblePaymentError = async () => {
+        try {
+          return await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const sels = ['[data-error-message]', '.field__message--error', '.error-message', '[role="alert"]', '.notice--error', '.banner--error', '[id*="error" i]'];
+            const paymentTerms = /declined|payment\s*(?:failed|could(?:n\u2019|')?t|cannot|can\s*not)|card\s*(?:invalid|declined|not accepted)|unable to process|try another card|expired|security\s*code|cvv|cvc/i;
+            for (const s of sels) {
+              for (const el of Array.from(document.querySelectorAll(s))) {
+                if (!visible(el)) continue;
+                const t = ((el && el.textContent) || "").trim();
+                if (t && paymentTerms.test(t)) return t.slice(0, 240);
+              }
+            }
+            const body = document.body?.innerText ?? "";
+            // Do not match the generic "Security code" label in body text; only
+            // body-scan terminal gateway errors like decline/failed/invalid.
+            const m = body.match(/[^\n]*(?:declined|payment[^\n]*(?:failed|could(?:n\u2019|')?t|cannot|can\s*not)|card[^\n]*(?:invalid|declined|not accepted)|unable to process|try another card|expired)[^\n]*/i);
+            return m?.[0]?.trim().slice(0, 240) || null;
           });
         } catch { return null; }
       };
