@@ -29,6 +29,14 @@ function buildProxyUrl(scheme: string, host: string, port: string, user?: string
   return { kind: "raw", url: `${scheme}://${host}:${port}` };
 }
 
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 /**
  * Classify a single proxy entry. Accepts:
  *  - `{url}` templates (e.g. `https://gateway.example.com/fetch?url={url}`)
@@ -66,7 +74,7 @@ export function classifyProxy(entryRaw: string): ProxyClassification {
     const hostPort = p.slice(at + 1);
     const [user, ...passParts] = auth.split(":");
     const [host, port] = hostPort.split(":");
-    return buildProxyUrl(scheme, host, port, decodeURIComponent(user || ""), decodeURIComponent(passParts.join(":")));
+    return buildProxyUrl(scheme, host, port, safeDecode(user || ""), safeDecode(passParts.join(":")));
   }
 
   const parts = p.split(":");
