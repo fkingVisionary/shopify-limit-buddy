@@ -3008,7 +3008,9 @@ function ProxyGroupCard({
   const testGroup = async () => {
     setTesting(true);
     setResults({});
-    for (let i = 0; i < group.proxies.length; i += 1) {
+    const n = group.proxies.length;
+    for (let i = 0; i < n; i += 1) {
+      setProgress({ i: i + 1, n });
       const entry = group.proxies[i];
       const c = classifications[i];
       if (c.kind === "invalid") {
@@ -3021,10 +3023,15 @@ function ProxyGroupCard({
       } catch (e: any) {
         setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
       }
-      if (i < group.proxies.length - 1) await sleep(500);
+      // Serialise hard: Browserless free/low tiers cap concurrency at 1 and
+      // return 429 if the next /function call starts before the previous one
+      // finishes spinning down. 1500ms gap keeps us comfortably under.
+      if (i < n - 1) await sleep(1500);
     }
+    setProgress(null);
     setTesting(false);
   };
+
 
   return (
     <Card className="p-3">
