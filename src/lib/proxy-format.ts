@@ -99,3 +99,28 @@ export function classifyProxy(entryRaw: string): ProxyClassification {
     reason: "expected host:port, host:port:user:pass, user:pass:host:port, or a {url} template",
   };
 }
+
+export type ProxyParts = {
+  scheme: string;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+};
+
+/** Parse a normalised proxy URL (`http://user:pass@host:port`) into parts. */
+export function parseProxyParts(url: string): ProxyParts | null {
+  try {
+    const u = new URL(url);
+    return {
+      scheme: u.protocol.replace(/:$/, ""),
+      host: u.hostname,
+      port: Number(u.port),
+      username: u.username ? decodeURIComponent(u.username) : undefined,
+      password: u.password ? decodeURIComponent(u.password) : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
