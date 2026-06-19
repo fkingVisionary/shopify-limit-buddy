@@ -3104,6 +3104,11 @@ function ProxyGroupCard({
                     {r.exitIp}
                   </span>
                 )}
+                {typeof r?.targetStatus === "number" && r.targetStatus > 0 && (
+                  <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${r.targetStatus < 400 ? "bg-primary/15 text-primary" : "bg-destructive/15 text-destructive"}`}>
+                    store {r.targetStatus}
+                  </span>
+                )}
                 <span className={invalid || (r && !r.ok) ? "text-destructive" : "text-primary"}>
                   {invalid ? (c.reason ?? "invalid") : r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
                 </span>
