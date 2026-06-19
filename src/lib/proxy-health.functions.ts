@@ -109,7 +109,17 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         const res = await page.goto("https://api.ipify.org?format=json", { waitUntil: "domcontentloaded", timeout: 15000 });
         const status = res ? res.status() : 0;
         const body = await page.evaluate(() => document.body && document.body.innerText);
-        return { ok: true, status, body };
+        let targetStatus = null;
+        let targetError = null;
+        if (context && context.targetUrl) {
+          try {
+            const tres = await page.goto(context.targetUrl, { waitUntil: "domcontentloaded", timeout: 25000 });
+            targetStatus = tres ? tres.status() : 0;
+          } catch (e) {
+            targetError = e instanceof Error ? e.message : String(e);
+          }
+        }
+        return { ok: true, status, body, targetStatus, targetError };
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
@@ -122,10 +132,15 @@ export const checkProxyExit = createServerFn({ method: "POST" })
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           code,
-          context: { username: parts.username ?? "", password: parts.password ?? "" },
+          context: {
+            username: parts.username ?? "",
+            password: parts.password ?? "",
+            targetUrl: data.targetUrl ?? "",
+          },
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(45000),
       });
+
 
       const latencyMs = Date.now() - started;
       const text = await res.text().catch(() => "");
