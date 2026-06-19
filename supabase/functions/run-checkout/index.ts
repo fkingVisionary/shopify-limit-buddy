@@ -1052,6 +1052,7 @@ Deno.serve(async (req) => {
         context: {
           input,
           stageUrl: selfUrl.toString(),
+          twoCaptchaKey: Deno.env.get("TWOCAPTCHA_API_KEY") ?? "",
         },
       }),
     });
