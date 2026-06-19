@@ -71,38 +71,55 @@ function checkoutScriptSource() {
         });
       } catch {}
 
-      lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
-      await stage("cart_add");
-      const atc = await page.evaluate(async (variantId, qty) => {
-        const r = await fetch("/cart/add.js", {
-          method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ id: variantId, quantity: qty }),
-          credentials: "include",
-        });
-        return { status: r.status, body: await r.text().catch(() => "") };
-      }, input.variantId, input.qty);
-      if (atc.status >= 400) return await fail("cart/add.js " + atc.status + ": " + atc.body.slice(0, 200));
-      log("cart_add", true);
+      if (phase === "A") {
+        lastStep = "cart_add";
+        await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await stage("cart_add");
+        const atc = await page.evaluate(async (variantId, qty) => {
+          const r = await fetch("/cart/add.js", {
+            method: "POST",
+            headers: { "content-type": "application/json", accept: "application/json" },
+            body: JSON.stringify({ id: variantId, quantity: qty }),
+            credentials: "include",
+          });
+          return { status: r.status, body: await r.text().catch(() => "") };
+        }, input.variantId, input.qty);
+        if (atc.status >= 400) return await fail("cart/add.js " + atc.status + ": " + atc.body.slice(0, 200));
+        log("cart_add", true);
 
-      lastStep = "checkout_load";
-      await stage("checkout_load");
-      const origin = new URL(input.storeUrl).origin;
-      const qs = new URLSearchParams({
-        "checkout[email]": input.profile.email,
-        "checkout[shipping_address][first_name]": input.profile.first_name,
-        "checkout[shipping_address][last_name]": input.profile.last_name,
-        "checkout[shipping_address][address1]": input.profile.address1,
-        "checkout[shipping_address][address2]": input.profile.address2 ?? "",
-        "checkout[shipping_address][city]": input.profile.city,
-        "checkout[shipping_address][province]": input.profile.province,
-        "checkout[shipping_address][zip]": input.profile.zip,
-        "checkout[shipping_address][country]": input.profile.country,
-        "checkout[shipping_address][phone]": input.profile.phone,
-      });
-      await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
-      log("checkout_load", true);
+        lastStep = "checkout_load";
+        await stage("checkout_load");
+        const origin = new URL(input.storeUrl).origin;
+        const qs = new URLSearchParams({
+          "checkout[email]": input.profile.email,
+          "checkout[shipping_address][first_name]": input.profile.first_name,
+          "checkout[shipping_address][last_name]": input.profile.last_name,
+          "checkout[shipping_address][address1]": input.profile.address1,
+          "checkout[shipping_address][address2]": input.profile.address2 ?? "",
+          "checkout[shipping_address][city]": input.profile.city,
+          "checkout[shipping_address][province]": input.profile.province,
+          "checkout[shipping_address][zip]": input.profile.zip,
+          "checkout[shipping_address][country]": input.profile.country,
+          "checkout[shipping_address][phone]": input.profile.phone,
+        });
+        await page.goto(origin + "/checkout?" + qs.toString(), { waitUntil: "domcontentloaded", timeout: 20000 });
+        log("checkout_load", true);
+      } else {
+        // Phase B (or later): restore the cookie jar from phase A and jump
+        // straight back to the saved checkout URL. The proxy is sticky on
+        // the edge-function side so the gateway sees the same IP.
+        lastStep = "phase_b_resume";
+        await stage("phase_b_resume");
+        try {
+          if (session && Array.isArray(session.cookies) && session.cookies.length) {
+            await page.setCookie(...session.cookies);
+          }
+        } catch {}
+        const resumeUrl = (session && session.currentUrl) || input.storeUrl;
+        await page.goto(resumeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+        log("phase_b_resume", true);
+      }
+
 
       const setCheckoutValue = async (selectors, value) => {
         if (value == null || value === "") return false;
