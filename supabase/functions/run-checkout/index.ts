@@ -44,19 +44,29 @@ function checkoutScriptSource() {
       await stage("launch");
 
       // Authenticate against an upstream proxy (host:port set via launch args).
+      lastStep = "proxy_auth";
+      await stage("proxy_auth");
       try {
         if (input && input.__proxyUser) {
-          await page.authenticate({ username: input.__proxyUser, password: input.__proxyPass || "" });
+          await Promise.race([
+            page.authenticate({ username: input.__proxyUser, password: input.__proxyPass || "" }),
+            new Promise((_, rej) => setTimeout(() => rej(new Error("proxy authenticate timed out after 8s")), 8000)),
+          ]);
         }
-      } catch {}
-
-
+      } catch (e) {
+        return await fail("proxy_auth: " + (e && e.message ? e.message : String(e)));
+      }
 
       // Aggressive resource blocking — biggest single speedup. Block images,
       // fonts, media, non-essential stylesheets, and known trackers/wallets.
       // Keep documents, XHR/fetch, scripts, and Shopify card-field iframes.
+      lastStep = "intercept_setup";
+      await stage("intercept_setup");
       try {
-        await page.setRequestInterception(true);
+        await Promise.race([
+          page.setRequestInterception(true),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("setRequestInterception timed out after 8s")), 8000)),
+        ]);
         const denyHostRe = /(google-analytics|googletagmanager|google\\.com\\/(?:pagead|recaptcha)|doubleclick|facebook\\.(?:net|com)\\/tr|connect\\.facebook|hotjar|clarity\\.ms|segment\\.(?:io|com)|tiktok|pinterest|klaviyo|bing\\.com|bat\\.bing|snap(?:chat)?|twitter\\.com\\/i\\/adsct|criteo|taboola|outbrain|fullstory|datadoghq|sentry\\.io|newrelic|cdn\\.shopify\\.com\\/shopifycloud\\/(?:perf-kit|consent-tracking)|monorail-edge\\.shopifysvc|shop\\.app|pay\\.google|applepay|paypal\\.com|klarna|afterpay|clearpay|bitpay)/i;
         const keepHostRe = /(shopifycs\\.com|deposit\\.shopifycs|pay\\.shopify\\.com\\/card|checkout\\.shopify)/i;
         page.on("request", (req) => {
@@ -79,11 +89,18 @@ function checkoutScriptSource() {
             return req.continue();
           } catch { try { req.continue(); } catch {} }
         });
+      } catch (e) {
+        return await fail("intercept_setup: " + (e && e.message ? e.message : String(e)));
+      }
 
-      } catch {}
-
+      lastStep = "store_goto";
+      await stage("store_goto");
+      try {
+        await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) {
+        return await fail("store_goto: " + (e && e.message ? e.message : String(e)));
+      }
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
       await stage("cart_add");
       const atc = await page.evaluate(async (variantId, qty) => {
         const r = await fetch("/cart/add.js", {
