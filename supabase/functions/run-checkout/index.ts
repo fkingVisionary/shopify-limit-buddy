@@ -1448,6 +1448,16 @@ Deno.serve(async (req) => {
     let rb: { productUrl?: string; proxy?: string } = {};
     try { rb = await req.json(); } catch {}
     if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
+    // Create a recon job row so the caller can poll for the report.
+    const { data: row, error: insErr } = await supa
+      .from("checkout_jobs")
+      .insert({ status: "running", stage: "recon", input: { mode: "recon", productUrl: rb.productUrl } })
+      .select("id")
+      .single();
+    if (insErr || !row) {
+      return new Response(JSON.stringify({ ok: false, error: insErr?.message || "insert failed" }), { status: 500, headers: { ...cors, "content-type": "application/json" } });
+    }
+    const reconJobId = row.id as string;
     const blUrl = new URL("https://production-sfo.browserless.io/function");
     blUrl.searchParams.set("token", BROWSERLESS_KEY);
     blUrl.searchParams.set("timeout", "180000");
@@ -1462,18 +1472,32 @@ Deno.serve(async (req) => {
         }
       } catch {}
     }
-    try {
-      const res = await fetch(blUrl.toString(), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: reconScriptSource(), context: ctx }),
-      });
-      const text = await res.text();
-      return new Response(text, { status: res.status, headers: { ...cors, "content-type": "application/json" } });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: { ...cors, "content-type": "application/json" } });
-    }
+    const reconPromise = (async () => {
+      try {
+        const res = await fetch(blUrl.toString(), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code: reconScriptSource(), context: ctx }),
+        });
+        const text = await res.text();
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 2000) }; }
+        await supa.from("checkout_jobs").update({
+          status: res.ok ? "succeeded" : "failed",
+          stage: "recon_done",
+          result: parsed as any,
+          error: res.ok ? null : `HTTP ${res.status}`,
+        }).eq("id", reconJobId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await supa.from("checkout_jobs").update({
+          status: "failed", stage: "recon_done", error: msg,
+        }).eq("id", reconJobId);
+      }
+    })();
+    const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+    if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(reconPromise);
+    return new Response(JSON.stringify({ ok: true, reconJobId }), { headers: { ...cors, "content-type": "application/json" } });
   }
 
   // Main worker path — requires the shared executor token.
