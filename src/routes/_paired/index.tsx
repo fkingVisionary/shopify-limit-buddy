@@ -1338,7 +1338,7 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Payment declined: ${declineMsg} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Payment declined: ${declineMsg} · ${Math.round(elapsed / 1000)}s`,
                       });
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `declined: ${declineMsg}` });
                       return;
@@ -1351,7 +1351,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Dry-run OK${stepSummary} · ${Math.round(elapsed / 1000)}s`,
                       });
                       return;
                     }
@@ -1363,7 +1363,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Order ${b.orderId ?? "?"} confirmed · ${Math.round(elapsed / 1000)}s`,
                       });
                       notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                       fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
@@ -1377,7 +1377,7 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Outcome uncertain${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Outcome uncertain${stepSummary} · ${Math.round(elapsed / 1000)}s`,
                       });
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "outcome uncertain (no order id)" });
                       return;
