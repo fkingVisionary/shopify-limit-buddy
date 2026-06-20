@@ -1110,15 +1110,26 @@ Deno.serve(async (req) => {
   const action = reqUrl.searchParams.get("action");
   const supa = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
-  // Stage callback path — called from the headless browser running inside
-  // Browserless to update the current step label. Auth is the unguessable
-  // jobId UUID; no executor token (the headless page can't attach headers).
+  // Stage callback path — called from the Browserless function/page to update
+  // the current checkout step label. Auth is the unguessable jobId UUID; no
+  // executor token (the headless page cannot attach headers reliably).
   if (action === "stage") {
     const jobId = reqUrl.searchParams.get("jobId");
     if (!jobId) return new Response("missing jobId", { status: 400, headers: cors });
-    let s: { stage?: string } = {};
-    try { s = await req.json(); } catch {}
-    if (s.stage) await supa.from("checkout_jobs").update({ stage: s.stage }).eq("id", jobId);
+    let s: { stage?: string } = { stage: reqUrl.searchParams.get("stage") ?? undefined };
+    if (!s.stage && req.method !== "GET") {
+      try {
+        const text = await req.text();
+        if (text) s = JSON.parse(text);
+      } catch {}
+    }
+    if (s.stage) {
+      await supa
+        .from("checkout_jobs")
+        .update({ stage: s.stage })
+        .eq("id", jobId)
+        .in("status", ["pending", "running"]);
+    }
     return new Response("ok", { headers: cors });
   }
 
@@ -1145,7 +1156,7 @@ Deno.serve(async (req) => {
   const runWorker = async () => {
   await supa.from("checkout_jobs").update({
     status: "running",
-    stage: "launch",
+    stage: "checkout_start",
   }).eq("id", jobId);
 
   if (!BROWSERLESS_KEY) {
