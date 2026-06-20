@@ -1275,6 +1275,136 @@ function checkoutScriptSource() {
   };`;
 }
 
+// ─── RECON SCRIPT (Phase 1, throwaway) ─────────────────────────────
+// Loads a PDP, adds to cart, navigates to checkout, and dumps the DOM
+// shape of every step (form fields, buttons, iframes) so we can build a
+// store-specific adapter without guessing selectors.
+function reconScriptSource() {
+  return `export default async ({ page, context }) => {
+    const { productUrl } = context;
+    const report = { productUrl, steps: [], screenshots: {}, errors: [] };
+    const snap = async (label) => {
+      try { report.screenshots[label] = await page.screenshot({ encoding: "base64", fullPage: false }); }
+      catch (e) { report.errors.push(label + ":screenshot:" + (e?.message ?? e)); }
+    };
+    const dumpDom = async (label) => {
+      try {
+        const data = await page.evaluate(() => {
+          const visible = (el) => {
+            try {
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            } catch { return false; }
+          };
+          const labelOf = (el) => {
+            try {
+              if (el.labels && el.labels[0]) return (el.labels[0].textContent || "").trim().slice(0, 80);
+              if (el.id) {
+                const l = document.querySelector('label[for="' + el.id + '"]');
+                if (l) return (l.textContent || "").trim().slice(0, 80);
+              }
+              const par = el.closest("label");
+              if (par) return (par.textContent || "").trim().slice(0, 80);
+            } catch {}
+            return null;
+          };
+          const inputs = Array.from(document.querySelectorAll("input, select, textarea"))
+            .filter(visible)
+            .map((el) => ({
+              tag: el.tagName.toLowerCase(),
+              type: el.getAttribute("type") || null,
+              name: el.getAttribute("name") || null,
+              id: el.id || null,
+              placeholder: el.getAttribute("placeholder") || null,
+              aria: el.getAttribute("aria-label") || null,
+              autocomplete: el.getAttribute("autocomplete") || null,
+              dataTest: el.getAttribute("data-testid") || el.getAttribute("data-test") || null,
+              label: labelOf(el),
+            }));
+          const buttons = Array.from(document.querySelectorAll('button, a[role="button"], input[type="submit"]'))
+            .filter(visible)
+            .map((el) => ({
+              tag: el.tagName.toLowerCase(),
+              text: ((el.innerText || el.value || "") + "").trim().slice(0, 80),
+              id: el.id || null,
+              dataTest: el.getAttribute("data-testid") || el.getAttribute("data-test") || null,
+              cls: (el.className || "").toString().slice(0, 120),
+              type: el.getAttribute("type") || null,
+            }))
+            .filter((b) => b.text);
+          const iframes = Array.from(document.querySelectorAll("iframe")).map((el) => ({
+            name: el.getAttribute("name") || null,
+            id: el.id || null,
+            src: el.getAttribute("src") || null,
+            visible: visible(el),
+          }));
+          return {
+            url: location.href,
+            title: document.title,
+            inputs, buttons, iframes,
+            bodyClass: document.body?.className || null,
+            bodyText: (document.body?.innerText || "").slice(0, 4000),
+          };
+        });
+        report.steps.push({ label, ...data });
+      } catch (e) { report.errors.push(label + ":dom:" + (e?.message ?? e)); }
+    };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const clickByText = async (re) => {
+      try {
+        return await page.evaluate((rs) => {
+          const r = new RegExp(rs, "i");
+          const cands = Array.from(document.querySelectorAll('button, a[role="button"], a, input[type="submit"]'));
+          for (const el of cands) {
+            const t = ((el.innerText || el.value || "") + "").trim();
+            if (r.test(t)) {
+              const rc = el.getBoundingClientRect();
+              if (rc.width > 0 && rc.height > 0) { el.click(); return t; }
+            }
+          }
+          return null;
+        }, re.source);
+      } catch { return null; }
+    };
+    try {
+      try {
+        if (context.__proxyUser) {
+          await page.authenticate({ username: context.__proxyUser, password: context.__proxyPass || "" });
+        }
+      } catch {}
+      try { await page.setViewport({ width: 1440, height: 900 }); } catch {}
+      try {
+        await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        await page.setExtraHTTPHeaders({ "accept-language": "en-AU,en;q=0.9" });
+      } catch {}
+
+      await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await wait(3500);
+      await snap("pdp"); await dumpDom("pdp");
+
+      report.atcClicked = await clickByText(/^\\s*(add to cart|add to bag|buy now)\\s*$/);
+      await wait(4000);
+      await snap("after_atc"); await dumpDom("after_atc");
+
+      report.checkoutClicked = await clickByText(/^\\s*(checkout|check out|secure checkout|proceed to checkout|continue to checkout)\\s*$/);
+      try { await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }); }
+      catch (e) { report.errors.push("nav:" + (e?.message ?? e)); }
+      await wait(4500);
+      await snap("checkout_contact"); await dumpDom("checkout_contact");
+      try { report.checkoutHost = new URL(page.url()).host; } catch {}
+
+      report.contactContinueClicked = await clickByText(/continue to shipping|continue|next/);
+      await wait(4000);
+      await snap("checkout_after_continue"); await dumpDom("checkout_after_continue");
+
+      return { ok: true, report };
+    } catch (e) {
+      return { ok: false, error: e?.message ?? String(e), report };
+    }
+  };`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
 
