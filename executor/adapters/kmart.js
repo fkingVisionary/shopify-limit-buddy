@@ -259,6 +259,47 @@ export const kmartAdapter = {
     };
 
 
+    // 4b. Pre-PDP pixel solve. If warm_home embedded a pixel challenge, solve
+    //     it now to upgrade the bot score BEFORE the gated navigation. Pixel
+    //     posts arrive as a `bm_so` cookie that Akamai's risk engine reads on
+    //     the next request. Non-fatal: most warm_home responses don't carry
+    //     a pixel, in which case this is a no-op.
+    try {
+      const warmPixel = await solveAkamaiPixel({
+        jar: ctx.jar,
+        pageUrl: origin + "/",
+        html,
+        userAgent: UA,
+        ip: egressIp,
+        acceptLanguage: ACCEPT_LANG,
+        ctx,
+      });
+      if (warmPixel) {
+        await tStep("akamai_pixel_prepdp", async () => {
+          const res = await request(
+            warmPixel.postUrl,
+            {
+              method: "POST",
+              headers: {
+                "user-agent": UA,
+                "content-type": "application/x-www-form-urlencoded",
+                origin,
+                referer: origin + "/",
+                "accept-language": ACCEPT_LANG,
+              },
+              body: warmPixel.payload,
+            },
+            ctx,
+          );
+          return { status: res.status, note: `pixel posted, bm_so=${ctx.jar.has("bm_so")}` };
+        });
+      } else {
+        steps.push({ step: "akamai_pixel_prepdp", ok: true, note: "no pixel on warm_home" });
+      }
+    } catch (e) {
+      steps.push({ step: "akamai_pixel_prepdp", ok: false, note: e?.message ?? String(e) });
+    }
+
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
     let pdpHtml = "";
