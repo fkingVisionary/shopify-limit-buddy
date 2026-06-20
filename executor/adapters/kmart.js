@@ -806,11 +806,15 @@ fragment LineItemFields on LineItem {
         // 8e. Paydock card vault. Tokenizes the PAN → returns a UUID we feed
         //     into create3DSToken. Public key is scraped from the checkout
         //     page bundle (Paydock client SDK embeds it).
-        const cardNumber = process.env.KMART_CARD_NUMBER ?? "";
-        const cardCcv = process.env.KMART_CARD_CVV ?? "";
-        const cardMonth = process.env.KMART_CARD_EXPIRY_MONTH ?? "";
-        const cardYear = process.env.KMART_CARD_EXPIRY_YEAR ?? "";
-        const cardHolder = process.env.KMART_CARD_HOLDER ?? `${identity.firstName} ${identity.lastName}`;
+        // Prefer per-request card (sent by the control plane) over Fly env.
+        // This keeps the PAN out of the executor's secret store and matches
+        // the future profiles-sourced flow.
+        const reqCard = task.card ?? {};
+        const cardNumber = String(reqCard.number ?? process.env.KMART_CARD_NUMBER ?? "");
+        const cardCcv = String(reqCard.cvv ?? process.env.KMART_CARD_CVV ?? "");
+        const cardMonth = String(reqCard.expMonth ?? process.env.KMART_CARD_EXPIRY_MONTH ?? "");
+        const cardYear = String(reqCard.expYear ?? process.env.KMART_CARD_EXPIRY_YEAR ?? "");
+        const cardHolder = String(reqCard.holder ?? process.env.KMART_CARD_HOLDER ?? `${identity.firstName} ${identity.lastName}`);
         const paydockPublicKey =
           process.env.PAYDOCK_PUBLIC_KEY ||
           checkoutHtml.match(/"(?:publicKey|public_key|paydockPublicKey)"\s*:\s*"([^"]+)"/i)?.[1] ||
