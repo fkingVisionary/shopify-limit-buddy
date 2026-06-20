@@ -119,7 +119,13 @@ export const Route = createFileRoute("/api/public/exec-test")({
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = await res.json().catch(() => ({}));
+          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string }> };
+          // Trim oversized step notes so the full step list survives caller truncation.
+          if (Array.isArray(data?.steps)) {
+            for (const s of data.steps) {
+              if (typeof s?.note === "string" && s.note.length > 180) s.note = s.note.slice(0, 180) + `…(+${s.note.length - 180})`;
+            }
+          }
           return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, cardSent: Boolean(card), proxyUsed });
         } catch (e) {
           return Response.json(
