@@ -172,7 +172,7 @@ export const kmartAdapter = {
           scriptUrl,
           scriptBody,
           prevContext,
-          version: "2",
+          version: "3",
         });
         // Post the sensor payload back to the script URL — Akamai answers
         // with refreshed `_abck`/`bm_sz` cookies via Set-Cookie.
