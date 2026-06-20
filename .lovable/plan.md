@@ -1,25 +1,31 @@
-## Goal
-Stop burning residential proxy data during Kmart/Akamai testing. Run all dry-runs direct from Fly's egress IP until the sensor pipeline is verified, then re-enable the proxy for production runs.
+# Test Kmart PDP through an AU residential proxy
 
-## Why this is safe
-Hyper's `ip` field is already derived dynamically: `resolveEgressIp(ctx)` reads the dispatcher off the task context and asks ipify through that same dispatcher. With no proxy, it returns Fly's egress IP and Hyper fingerprints against that. Nothing in the adapter or antibot layer hardcodes the proxy IP.
+## What we know
+- Hyper sensors clear (`_abck ~0~`).
+- PDP GET still returns 403 because Fly's datacenter IP is on Akamai's deny list for `kmart.com.au`.
+- You supplied 10 sticky AU akamai-tagged sessions on `residential.wealthproxies.com:3128`.
 
-## Changes
+## Constraint
+Don't burn sessions. We test with **one** sticky session and only re-fire if a meaningful variable changed (headers, geo, code path).
 
-1. **`src/routes/api/public/exec-test.ts`**
-   - Default `proxy` to `null` for both `run` and `recon` modes.
-   - Add an optional `useProxy: true` flag in the request body to opt back in (reads `PROXY_URL_RESI` only when set). Default off.
+## Steps
 
-2. **`executor/server.js` `/recon` handler**
-   - Same change: only use `PROXY_URL_RESI` when the request explicitly opts in (`useProxy: true`). Default to direct.
+1. **Store one session as `PROXY_URL_RESI`** (secret), formatted as a proxy URL:
 
-3. **No executor adapter changes.** `kmart.js` already passes `task.proxy` through unchanged; null = direct dispatcher = Fly egress IP, and `resolveEgressIp` follows the dispatcher automatically.
+    ```
+    http://j1mcollects:cz2M462wInWnVvq3-Sbf27c1c92be-akamai-AU@residential.wealthproxies.com:3128
+    ```
 
-## Test plan after build
-- Fire `/api/public/exec-test` with `{ mode: "recon", reconUrl: "https://www.kmart.com.au/" }` (no proxy) → expect 200 + script list so we can find the real Akamai sensor path.
-- Fire dry-run on a Kmart PDP (no proxy) → expect sensor solve to progress further than the proxied attempt, since Fly's IP is clean and ipify will report it correctly to Hyper.
-- When ready for production, send `{ useProxy: true, ... }` to flip back to residential without code changes.
+    Using `update_secret` (it already exists). The other 9 sessions stay in your message history — we rotate to a fresh one only if this one gets flagged.
+
+2. **Tiny exec-test patch** — accept an optional `proxyUrl` in the request body so we can override `PROXY_URL_RESI` per-call without rotating the secret each time. Falls back to env when omitted. ~3 lines.
+
+3. **Single dry-run** with `useProxy: true` against the same Kmart PDP. Expected:
+    - `resolve_ip` → AU residential IP (not 79.127.x)
+    - sensors clear
+    - `pdp_get` → **200**, ~150 KB
+
+4. **Report back, do not iterate.** If 200: plan add-to-cart next. If 403: capture the response body and the egress IP, then decide between (a) header shape fix, (b) try one alternate session, or (c) inspect Hyper docs for missing input.
 
 ## Out of scope
-- No changes to `kmart.js`, `antibot.js`, `http.js`, or `ip-resolve.js`.
-- Production checkout wiring stays on the residential path via the explicit flag.
+Checkout, ATC, payments — gated on getting a clean PDP first.
