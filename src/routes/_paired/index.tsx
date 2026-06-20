@@ -1269,7 +1269,7 @@ function Index() {
                   updateTask(t.id, {
                     status: "checking_out",
                     checkoutStartedAt: Date.now(),
-                    message: `Launching headless browser via ${transportLabel}…`,
+                    message: "Starting checkout…",
                   });
                   const bStart = Date.now();
                   const payload = {
@@ -1297,7 +1297,8 @@ function Index() {
                   // writes back to the job row.
                   const stageLabels: Record<string, string> = {
                     queued: "Queued",
-                    launch: "Launching headless browser",
+                    checkout_start: "Starting checkout",
+                    launch: "Starting checkout",
                     cart_add: "Adding to cart",
                     checkout_load: "Loading checkout",
                     address_fill: "Entering contact and delivery details",
@@ -1311,9 +1312,9 @@ function Index() {
                     captcha_inject: "Injecting captcha token",
                     captcha_retry: "Captcha reappeared — re-solving…",
                     captcha_blocked: "Captcha could not be bypassed",
-                    submit: browserlessDryRun ? "Finalising dry-run" : "Submitting payment",
+                    submit: browserlessDryRun ? "Finalising dry-run" : "Processing payment",
                     payment_result: "Checking payment result",
-                    three_d_secure: "Waiting for 3-D Secure verification (approve in your bank app)",
+                    three_d_secure: "3DS verification required — approve in your bank app",
                     confirm: "Waiting for order confirmation",
                     payment_declined: "Payment declined",
                     confirm_uncertain: "Order outcome uncertain",
