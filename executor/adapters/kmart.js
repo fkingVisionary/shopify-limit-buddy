@@ -135,9 +135,15 @@ export const kmartAdapter = {
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
     await tStep("warm_home", async () => {
+      const warmHeaders = navHeaders({ site: "none" });
+      steps.push({
+        step: "warm_home:hdrs",
+        ok: true,
+        note: JSON.stringify({ url: origin + "/", headers: warmHeaders, cookieHeader: ctx.jar.header() }),
+      });
       const res = await request(
         origin + "/",
-        { method: "GET", headers: navHeaders({ site: "none" }) },
+        { method: "GET", headers: warmHeaders },
         ctx,
       );
       html = await res.text();
