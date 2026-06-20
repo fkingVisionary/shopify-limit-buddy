@@ -332,6 +332,38 @@ export const kmartAdapter = {
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
+      // 7a-introspect. Discover the real schema — we guessed op names wrong.
+      await tStep("gql_introspect", async () => {
+        const res = await gqlPost({
+          operationName: "IntrospectionQuery",
+          variables: {},
+          query: `query IntrospectionQuery {
+            __schema {
+              queryType { fields { name } }
+              mutationType { fields { name args { name type { name kind ofType { name kind } } } } }
+              types { name kind inputFields { name type { name kind ofType { name kind } } } }
+            }
+          }`,
+        });
+        const txt = await res.text();
+        let summary = txt.slice(0, 200);
+        try {
+          const j = JSON.parse(txt);
+          const s = j?.data?.__schema;
+          if (s) {
+            const queries = (s.queryType?.fields ?? []).map((f) => f.name);
+            const mutations = (s.mutationType?.fields ?? []).map((f) => f.name);
+            const cartQ = queries.filter((n) => /cart/i.test(n));
+            const cartM = mutations.filter((n) => /cart|add|item/i.test(n));
+            const cartInputs = (s.types ?? [])
+              .filter((t) => t.kind === "INPUT_OBJECT" && /cart|item|add/i.test(t.name))
+              .map((t) => `${t.name}{${(t.inputFields ?? []).map((f) => f.name).join(",")}}`);
+            summary = `Qs[cart]=${cartQ.join(",")} | Ms[cart]=${cartM.join(",")} | Inputs=${cartInputs.join(" ")}`;
+          }
+        } catch {}
+        return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${summary}` };
+      });
+
       // 7a. getMyActiveCart — sanity check that the BFF accepts our session.
       let cartId = null;
       await tStep("cart_get", async () => {
