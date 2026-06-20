@@ -91,6 +91,18 @@ async function postDiscord(webhookUrl: string, embed: ReturnType<typeof buildEmb
   } catch { return false; }
 }
 
+async function writeStage(supa: any, jobId: string, stage: string) {
+  try {
+    await supa
+      .from("checkout_jobs")
+      .update({ stage })
+      .eq("id", jobId)
+      .in("status", ["pending", "running"]);
+  } catch (e) {
+    console.log("[run-checkout] writeStage failed", jobId, stage, String(e));
+  }
+}
+
 async function fireTerminalWebhook(
   supa: any,
   jobId: string,
@@ -100,9 +112,19 @@ async function fireTerminalWebhook(
 ) {
   const webhookUrl: string | null = job?.notify_webhook ?? null;
   const notify: any = job?.notify_events ?? null;
-  if (!webhookUrl || !notify) return;
   const event: NotifyEvent = outStatus === "succeeded" ? "confirmed" : "failed";
-  if (!notify?.enabled?.[event]) return;
+  if (!webhookUrl) {
+    console.log("[webhook] skip: no webhook url", jobId, event);
+    return;
+  }
+  // Default-on: if the row has a webhook URL but the enabled flag for this
+  // event is missing (older saved config / shape drift), still fire.
+  // Only an explicit `false` opts out.
+  const enabledMap = notify?.enabled ?? {};
+  if (enabledMap[event] === false) {
+    console.log("[webhook] skip: event disabled", jobId, event);
+    return;
+  }
   const { data: claimed, error: claimErr } = await supa
     .from("checkout_jobs")
     .update({ webhook_fired_at: new Date().toISOString() })
@@ -110,9 +132,17 @@ async function fireTerminalWebhook(
     .is("webhook_fired_at", null)
     .select("id")
     .maybeSingle();
-  if (claimErr || !claimed) return;
-  const embed = buildEmbed(event, notify.base ?? {}, dyn);
-  await postDiscord(webhookUrl, embed, notify.base?.logoUrl);
+  if (claimErr) {
+    console.log("[webhook] claim error", jobId, event, claimErr.message);
+    return;
+  }
+  if (!claimed) {
+    console.log("[webhook] skip: already fired", jobId, event);
+    return;
+  }
+  const embed = buildEmbed(event, notify?.base ?? {}, dyn);
+  const ok = await postDiscord(webhookUrl, embed, notify?.base?.logoUrl);
+  console.log("[webhook] posted", jobId, event, "ok=" + ok);
 }
 // ─────────────────────────────────────────────────────────────────────
 
@@ -1405,6 +1435,9 @@ Deno.serve(async (req) => {
   // launch watchdog was killing real checkouts that had already taken money
   // because in-page stage callbacks (cross-origin POSTs from inside Shopify)
   // are unreliable, so `stage` stayed at "launch" while payment completed.
+  // Stage write from Deno-side BEFORE handing off to Browserless. Guarantees
+  // the UI advances off "Starting checkout" even if every in-page beacon dies.
+  await writeStage(supa, jobId, "payment_submitting");
   try {
     const res = await fetch(url.toString(), {
       method: "POST",
@@ -1467,6 +1500,7 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: outStatus, stage: outStage, result, error: outError,
     }).eq("id", jobId);
+    console.log("[run-checkout] terminal", jobId, outStatus, outStage, outError ?? "");
     const elapsedMs = Date.now() - (Date.parse(job?.created_at ?? "") || Date.now());
     await fireTerminalWebhook(supa, jobId, outStatus, job, {
       orderId: (result?.orderId as string) ?? null,

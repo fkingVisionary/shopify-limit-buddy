@@ -1,80 +1,70 @@
-## Goals
+## Goal
 
-1. Cut end-to-end checkout time on base Shopify (Checkout One + legacy) by trimming redundant navigations, parallelizing form fills, and pre-warming the payment vault.
-2. Make Discord webhooks fire **exactly once** for every terminal outcome — even when the user closes the tab, refreshes, or the device that started the task goes offline.
+Two specific fixes on top of the current Browserless checkout flow:
 
-## Part 1 — Shopify checkout speed
+1. Discord webhook reliably fires when Shopify declines the payment.
+2. UI shows "Payment submitted" and "Waiting for 3DS approval" stages before the terminal state, instead of jumping from "Starting checkout" straight to "Payment declined".
 
-Current `supabase/functions/run-checkout/index.ts` per-run cost (rough):
-- `goto(storeUrl)` domcontentloaded: ~1.5–3.0s (only needed for cookies/origin)
-- `goto(/checkout)` w/ up to 3× 45s retries: ~1.5–4.0s typical
-- 9 sequential `setCheckoutValue()` calls, each `page.$` + `evaluate`: ~0.9–1.5s
-- `clickContinue` polling loops (3.5s deadline × up to 3 steps): ~1.0–3.0s
-- Card iframe fill + submit: ~2.0–4.0s
+No other behavior changes.
 
-Changes:
+## What's wrong today
 
-**A. Skip the product-page hop.**
-Replace `page.goto(input.storeUrl)` with `page.goto(origin + "/cart")` (lighter HTML, sets the storefront cookie jar identically). `/cart/add.js` works the same way. Saves one full document load.
+**Webhook on decline isn't firing.** In `supabase/functions/run-checkout/index.ts`, the decline path *does* call `fireTerminalWebhook(... "failed" ...)`. The skip happens inside that helper:
 
-**B. Single-pass address fill.**
-Collapse the 9 `setCheckoutValue()` awaits into one `page.evaluate(fillAll, profile)` that walks a selector map in the page context. One round-trip instead of nine; also lets us dispatch `input`/`change` in the same microtask so Shopify's React state settles in a single render.
+```ts
+if (!webhookUrl || !notify) return;
+if (!notify?.enabled?.[event]) return;   // <- silently drops "failed"
+```
 
-**C. Parallel pre-vault while address fills.**
-Kick off a Node-side `fetch("https://deposit.us.shopifycs.com/sessions", …)` immediately after `cart_add` succeeds (we already know hostname + card). Store the returned `id`. When we reach the payment step, inject the vault id directly into the hidden `s` field on the card-fields iframe form instead of typing into the iframe. Falls back to the current iframe-type path if the vault call fails or the store rejects the session id.
+`notify_events` is written by `enqueueCheckout` as `{ enabled: cfg.events, base }`. If the user's saved `NotifyConfig.events` was created before `"failed"` existed (or is missing the key for any reason), `enabled.failed` is `undefined` and the helper returns without firing — and without logging anything, which is why edge logs are empty. The UI also pre-marks `"failed"` as handled in `notifiedRef` after enqueue, so the client-side fallback can't save it.
 
-**D. Tighter wait budgets.**
-- `clickContinue` deadline 3.5s → 1.8s with 80ms poll (we already retry up).
-- `waitForNetworkIdle({ idleTime: 150, timeout: 600 })` → `{ idleTime: 80, timeout: 350 }` after fills.
-- Drop the per-attempt 1500ms backoff between `/checkout` retries to 600ms.
+**Stages stall at "Starting checkout".** The worker emits `submit` → `payment_result` → `three_d_secure` from inside the Browserless `/function` context via cross-origin `fetch`/`sendBeacon` to `?action=stage`. Browserless function-context `fetch` and in-page beacons are unreliable mid-checkout (navigation tears them down), so the `stage` column often never advances past `launch`/`checkout_start` before the terminal write lands. The UI's `stageLabels` map is fine; it just never sees those stages.
 
-**E. Prefer `networkidle0` only where needed.**
-Audit any remaining `waitUntil: "networkidle*"` and switch to `"domcontentloaded"` plus a targeted `waitForSelector` for the next step's anchor element.
+## Plan
 
-**F. Keep the existing resource blocker** — already aggressive and correct. No change.
+### 1. Fix decline webhook (server-side)
 
-Expected savings on a typical base Shopify Checkout One store: ~3–6s per run (worst case clamped by the bank's authorization step, which we don't control).
+`supabase/functions/run-checkout/index.ts`
 
-## Part 2 — Reliable webhooks
+- In `fireTerminalWebhook`, treat a missing `enabled[event]` as **true** when the webhook URL is present. Rationale: the user explicitly configured a Discord webhook; defaulting "failed" off silently is the bug. Keep the explicit `false` opt-out working.
+- Add `console.log` lines on every early-return path (`no webhook url`, `event disabled`, `already fired`, `discord post non-2xx`) so future debugging shows up in edge logs.
+- After the conditional `webhook_fired_at` claim, log the Discord HTTP status. Don't block on Discord.
 
-Current shape (`src/lib/discord.ts` + `src/routes/_paired/index.tsx`): `fireWebhook` runs **only in the browser**, gated by an in-memory `notifiedRef` Set, triggered when the UI transitions a task to `confirmed`/`failed`/`checkout_ready`/`in_stock`. Failure modes today:
-- User closes tab before the worker finishes → no webhook ever sent.
-- Two devices paired to the same workspace → webhook may fire twice (each has its own `notifiedRef`).
-- Timeout on the UI side fires `failed` while the worker is still running and later writes `succeeded` to the DB → user gets a "failed" webhook for a successful checkout.
+`src/lib/discord.ts` + `src/routes/_paired/index.tsx`
 
-Changes:
+- Make `DEFAULT_NOTIFY_CONFIG.events.failed = true` (if not already) and, when loading from localStorage, merge defaults so older saved configs always have `failed`/`confirmed`/`in_stock`/`checkout_ready` keys defined. Prevents the same `undefined` shape from reaching the server next time.
 
-**G. Move terminal-state webhooks server-side.**
-Add a `notify_webhook` column (text, nullable) and `notify_events` (jsonb) on `checkout_jobs`. `enqueueCheckout` copies the user's Discord config onto the job row at enqueue time. In `run-checkout/index.ts`, the same `try/finally` that writes the terminal row also POSTs the Discord embed for `succeeded` / `payment_declined` / `failed` before returning. This guarantees one fire per terminal write, regardless of tab state.
+### 2. Surface "Payment submitted" + "Waiting for 3DS" in the UI
 
-**H. Idempotency.**
-Add `webhook_fired_at timestamptz` on `checkout_jobs`. Worker uses a conditional update — `UPDATE … SET webhook_fired_at = now() WHERE id = $1 AND webhook_fired_at IS NULL RETURNING 1` — and only POSTs Discord if the update affected one row. Safe against retried invocations.
+The stage callback from inside Browserless is unreliable. Move the stages that matter most to **Deno-side direct DB writes** so they always land:
 
-**I. UI fires only the pre-terminal events.**
-`in_stock` and `checkout_ready` stay client-side (worker doesn't know about them). `confirmed` / `failed` are removed from the UI `fireWebhook` paths; the UI just reflects whatever the worker wrote. Eliminates double-fires and false-failure webhooks from UI timeouts.
+`supabase/functions/run-checkout/index.ts`
 
-**J. Manual / runner / legacy paths.**
-Non-Browserless checkouts (local runner, manual) still terminate in the UI. For those, keep client-side `confirmed`/`failed` webhooks but gate them on a workspace-scoped `localStorage` flag (`aio:notified:<jobId>`) so refreshes don't re-fire.
+- Add a small helper `writeStage(jobId, stage)` that does `supa.from("checkout_jobs").update({ stage }).eq("id", jobId).in("status", ["pending","running"])`.
+- Write `stage = "payment_submitting"` from the Deno worker **immediately before** issuing the Browserless `/function` POST. Guarantees the UI moves off "Starting checkout" within ~1s.
+- The headless script keeps emitting `submit`, `payment_result`, `three_d_secure` via the existing beacon path (best-effort, no change). Those will still update the DB when they make it through.
+- Add a new terminal-shape result field `awaiting3ds: true` already set whenever the script detects 3DS. After the Browserless request returns and the worker writes the terminal row, no further stage write is needed.
+- Extend `stageLabels` in `src/routes/_paired/index.tsx`:
+  - `payment_submitting`: "Payment submitted — awaiting response"
+  - `three_d_secure`: keep "3DS verification required — approve in your bank app"
+  - `submit`: "Submitting payment"
+  - `payment_result`: "Waiting for payment result"
 
-**K. Retry on transient Discord 429/5xx.**
-Worker-side POST: 1 retry after 1s on 429 (respect `retry_after` if present) or 5xx; otherwise fire-and-forget. Never block the terminal DB write on Discord.
+### 3. Light diagnostics so the next regression is visible
 
-## Files to change
+- In the worker's terminal branches, `console.log("[run-checkout]", jobId, outStatus, outStage)` once per job.
+- In `fireTerminalWebhook`, log `jobId`, `event`, and the Discord response status.
 
-- `supabase/functions/run-checkout/index.ts` — A–F speed work + G/H/K server-side webhook fire.
-- `src/lib/checkout-jobs.functions.ts` — `enqueueCheckout` accepts `notifyWebhook` + `notifyEvents`, persists onto the job row.
-- `src/lib/discord.ts` — export the embed builder as a pure function the worker can import-mirror (or duplicate in the edge fn since it's Deno).
-- `src/routes/_paired/index.tsx` — drop `confirmed`/`failed` `fireWebhook` calls on Browserless paths; keep them on runner/manual paths with localStorage dedup; pass current `notifyConfig` into `enqueueCheckout`.
-- SQL migration — add `notify_webhook text`, `notify_events jsonb`, `webhook_fired_at timestamptz` to `public.checkout_jobs` (GRANTs already in place).
+These two lines together make it possible to confirm from `supabase--edge_function_logs` whether a declined job actually reached the webhook path.
 
 ## Out of scope
 
-- Cross-store compatibility test UI button (separate request).
-- Non-Shopify storefronts.
-- 3DS auto-solve.
+- No changes to checkout speed, selectors, captcha, or compat layer.
+- No new tables or columns.
+- No change to the in-page beacon mechanism — just supplementing it with a guaranteed Deno-side write for the one stage the user cares about (payment submitted).
 
-## Verification
+## Files to change
 
-- Time 5 runs against a known Checkout One store before/after; expect ≥3s median reduction.
-- Manually close the tab mid-run; confirm Discord still receives exactly one embed when the worker finishes.
-- Force a Discord 429 (point at an invalid webhook) and confirm one retry then silent drop, with terminal DB row still written.
+- `supabase/functions/run-checkout/index.ts` — webhook fallback, stage writes, logs
+- `src/routes/_paired/index.tsx` — new `stageLabels` entries
+- `src/lib/discord.ts` — defaults merge on load so `enabled.failed` is always defined
