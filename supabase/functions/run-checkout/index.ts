@@ -16,7 +16,7 @@ const EXECUTOR_TOKEN = Deno.env.get("EXECUTOR_TOKEN") ?? "";
 const cors = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "authorization, x-executor-token, content-type",
-  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
 // Self-contained checkout script shipped to Browserless /function.
