@@ -196,10 +196,11 @@ export const kmartAdapter = {
       );
       pdpStatus = res.status;
       pdpHtml = await res.text();
-      const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `${pdpHtml.length}b`;
+      const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200);
       const srv = res.headers.get("server");
       const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
-      return { status: res.status, ok: res.status < 400, note: `${snippet} | server=${srv} ${aka}` };
+      return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b: ${snippet} | server=${srv} ${aka}` };
+
     });
 
     // 5b. PDP 403 = SBSD challenge (script src has `?v=<uuid>`). Solve two
