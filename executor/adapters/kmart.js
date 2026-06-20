@@ -12,22 +12,23 @@
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel } from "../antibot.js";
+import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
 
-function abckSolved(jar) {
-  const v = jar.get("_abck") ?? "";
-  return /~0~/.test(v);
+// Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
+// rotates per page load, so our old `/akam/` regex always missed.
+function findAkamaiScriptPath(html) {
+  return parseAkamaiPath(html);
 }
 
-// Akamai serves the sensor script at a per-deployment path. Hyper's
-// parseAkamaiPath would extract it from HTML, but for Kmart the script tag is
-// embedded in the document head as e.g. `/akam/13/<hash>`. We grep it from the
-// HTML; if missing, fall back to a sane default.
-function findAkamaiScriptPath(html) {
-  const m = html.match(/(\/[A-Za-z0-9_\-./]*akam\/[A-Za-z0-9_\-./]+)/);
-  return m ? m[1] : null;
+// Solved when _abck contains the `~0~` indicator AND survives the SDK's
+// internal validation (count of completed sensor rounds matters).
+function abckSolved(jar, roundCount) {
+  const v = jar.get("_abck") ?? "";
+  return isAkamaiCookieValid(v, roundCount);
 }
+
 
 export const kmartAdapter = {
   id: "kmart",
@@ -145,16 +146,17 @@ export const kmartAdapter = {
         return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…`, _ctx: r.context };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
       prevContext = context;
-      if (abckSolved(ctx.jar)) {
+      if (abckSolved(ctx.jar, i + 1)) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
         break;
       }
     }
 
-    if (!abckSolved(ctx.jar)) {
-      steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never contained ~0~" });
+    if (!abckSolved(ctx.jar, 3)) {
+      steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
+
 
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
