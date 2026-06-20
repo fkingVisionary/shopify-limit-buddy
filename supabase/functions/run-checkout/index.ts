@@ -28,8 +28,17 @@ function checkoutScriptSource() {
     let lastStep = "launch";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
     const stage = async (label) => {
-      try { await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }) }); } catch {}
+      // Best-effort cross-origin POST from inside the headless page. Time-box
+      // it hard so a slow/blocked callback never slows down checkout. We never
+      // gate any control flow on this — it's just a UI nicety.
+      try {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 1500);
+        await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }), signal: ctrl.signal });
+        clearTimeout(to);
+      } catch {}
     };
+
     const fail = async (msg) => {
       let shot = null;
       try { shot = await page.screenshot({ encoding: "base64", fullPage: false }); } catch {}
@@ -1204,25 +1213,16 @@ Deno.serve(async (req) => {
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
-  const browserlessAbort = new AbortController();
-  const launchWatchdog = setTimeout(async () => {
-    try {
-      const { data: current } = await supa
-        .from("checkout_jobs")
-        .select("status,stage")
-        .eq("id", jobId)
-        .maybeSingle();
-      if (current?.status === "running" && current?.stage === "launch") {
-        browserlessAbort.abort("Browserless did not start checkout within 90s");
-      }
-    } catch {}
-  }, 90_000);
-
+  // No external abort. The Browserless `/function` call is bounded by its own
+  // `timeout=360000` query param, and we always write a terminal row in the
+  // try/catch below — even if the call returns garbage or throws. The old 90s
+  // launch watchdog was killing real checkouts that had already taken money
+  // because in-page stage callbacks (cross-origin POSTs from inside Shopify)
+  // are unreliable, so `stage` stayed at "launch" while payment completed.
   try {
     const res = await fetch(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      signal: browserlessAbort.signal,
       body: JSON.stringify({
         code: checkoutScriptSource(),
         context: {
@@ -1232,7 +1232,6 @@ Deno.serve(async (req) => {
         },
       }),
     });
-    clearTimeout(launchWatchdog);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       await supa.from("checkout_jobs").update({
@@ -1270,7 +1269,7 @@ Deno.serve(async (req) => {
       outStatus = "succeeded"; outStage = "confirm"; outError = null;
     } else if (result?.ok) {
       outStatus = "failed"; outStage = "confirm_uncertain";
-      outError = "Order outcome uncertain (no order id or thank-you URL)";
+      outError = "Order outcome uncertain (no order id or thank-you URL). Payment may have completed — verify in bank / Shopify order email.";
     } else {
       outStatus = "failed";
       outStage = (result?.failedStep as string) ?? "unknown";
@@ -1281,19 +1280,30 @@ Deno.serve(async (req) => {
     }).eq("id", jobId);
     return new Response(JSON.stringify({ ok: true }), { headers: { ...cors, "content-type": "application/json" } });
   } catch (e) {
-    clearTimeout(launchWatchdog);
     const errorMessage = e instanceof Error ? e.message : String(e);
-    const timedOutAtLaunch = browserlessAbort.signal.aborted && String(browserlessAbort.signal.reason ?? "").includes("90s");
+    // Only update if still running — never overwrite a terminal row.
     await supa.from("checkout_jobs").update({
-      status: "failed", stage: "transport", error: timedOutAtLaunch
-        ? "Browserless did not start checkout within 90s. This usually means Browserless capacity/queueing, an invalid key, or a proxy that cannot launch."
-        : "transport: " + errorMessage,
-    }).eq("id", jobId).eq("status", "running");
+      status: "failed", stage: "transport",
+      error: "transport: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+    }).eq("id", jobId).in("status", ["pending", "running"]);
     return new Response("transport error", { status: 500, headers: cors });
+
   }
   };
 
-  const workerPromise = runWorker();
+  // Outer safety net: any uncaught throw still marks the row failed instead
+  // of silently leaving it `running` forever.
+  const workerPromise = runWorker().catch(async (e) => {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    try {
+      await supa.from("checkout_jobs").update({
+        status: "failed", stage: "transport",
+        error: "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+      }).eq("id", jobId).in("status", ["pending", "running"]);
+    } catch {}
+    return new Response("worker crashed", { status: 500, headers: cors });
+  });
+
   const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
   if (edgeRuntime?.waitUntil) {
     edgeRuntime.waitUntil(workerPromise);

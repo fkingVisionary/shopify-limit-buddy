@@ -1381,16 +1381,24 @@ function Index() {
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "outcome uncertain (no order id)" });
                       return;
                     }
-                    // Hard failure path (transport / fill error).
+                    // Hard failure path (transport / fill error). Persist
+                    // screenshot + finalUrl too so we always see evidence of
+                    // what actually happened on the bot page — especially
+                    // important when a transport error fires AFTER payment
+                    // has already gone through.
                     const failedAt = b?.failedStep ?? lastStep?.step ?? "unknown";
                     const errText = b?.error ?? "unknown error";
+                    const pastSubmit = /submit|payment_result|three_d_secure|confirm/.test(String(failedAt));
+                    const hint = pastSubmit ? " · Payment may have completed — verify in bank / Shopify order email" : "";
                     updateTask(t.id, {
                       status: "failed",
                       steps: stepsArr,
                       screenshotB64: b?.screenshotB64 ?? null,
+                      finalUrl: b?.finalUrl,
                       browserlessElapsedMs: elapsed,
-                      message: `Failed at ${failedAt}: ${errText}`,
+                      message: `Failed at ${failedAt}: ${errText}${hint}`,
                     });
+
                     fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${failedAt}: ${errText}` });
                   };
                   const fire = async () => {
@@ -1420,7 +1428,11 @@ function Index() {
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: err?.message ?? "enqueue error" });
                       return;
                     }
-                    const deadline = Date.now() + 180_000;
+                    // Match the worker's Browserless `timeout=360000`. The
+                    // previous 180s deadline was prematurely declaring jobs
+                    // dead while the worker was still completing checkout.
+                    const deadline = Date.now() + 360_000;
+
                     let last: any = null;
                     while (Date.now() < deadline) {
                       await new Promise((r) => setTimeout(r, 1500));
