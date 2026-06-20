@@ -1,51 +1,56 @@
-# Plan: Replace `undici` with `node-tls-client` in the executor
 
-Hyper Solutions explicitly recommends `bogdanfinn/tls-client` and rejects native Node clients (axios/node-fetch/undici). Without a Chrome-matching JA3/JA4 + header order, AkamaiGHost 403s before sensor evaluation. This plan rewires `executor/http.js` to use the Node binding of bogdanfinn's tls-client, so every adapter inherits the fix.
+## Context
 
-## What changes
+After the TLS-client switch, `_abck` reaches `~0~` after 3 sensor rounds — sensor passes. But `pdp_get` still 403s with an AkamaiGHost "reference code" page. The script tag in that 403 body is `/8vR.../...?v=` with an **empty `v=` value**, not `?v=<uuid>` — so it is **not** an SBSD challenge (per Hyper §3.4 SBSD requires `?v=<uuid>`).
 
-### 1. Dependencies (`executor/package.json`)
-- Add `node-tls-client` (Node wrapper around bogdanfinn's Go shared lib; ships precompiled binaries for linux-x64/arm64, macOS, Windows).
-- Keep `undici` for now — `src/lib/*` server functions in the TanStack app still use it (they aren't behind Akamai). Remove from executor only after migration is verified.
+That page is Akamai's edge-rejection page that embeds a **fresh sensor script path**. The correct response per Hyper's flow is to fetch that new script and run another sensor solve cycle against it, then retry the PDP. Our current adapter doesn't do that — it falls through to SBSD detection, finds no UUID, logs `sbsd_missing`, and gives up.
 
-### 2. `executor/Dockerfile`
-- Switch base from `node:20-alpine` to `node:20-bookworm-slim`. The bogdanfinn shared library is glibc-built and does not load on Alpine/musl.
-- Add `ca-certificates` apt package (TLS roots for the proxy CONNECT).
+## What to change
 
-### 3. `executor/http.js` — rewrite around `node-tls-client`
-- New module surface (keeps the same exports so adapters don't change):
-  - `makeDispatcher(rawProxy)` → now returns a small `{ proxy, sessionOpts }` descriptor instead of an undici `ProxyAgent`. Each task still gets one descriptor.
-  - `createJar()` → unchanged API (`ingest`, `header`, `has`, `get`, `dump`). Internally we ignore tls-client's built-in jar (it's domain-aware and we currently treat cookies name-globally to handle the api.kmart.com.au scope flip in kmart.js) and continue to drive cookies manually via the existing jar.
-  - `request(url, opts, ctx)` → builds a per-call `Session` from `node-tls-client` with:
-    - `clientIdentifier: "chrome_124"` (matches our UA + sec-ch-ua)
-    - `proxy: ctx.dispatcher?.proxy` (http://user:pass@host:port string)
-    - `headerOrder: [...]` — explicit Chrome 124 nav-request order: `host, connection, cache-control, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform, upgrade-insecure-requests, user-agent, accept, sec-fetch-site, sec-fetch-mode, sec-fetch-user, sec-fetch-dest, accept-encoding, accept-language, cookie`
-    - `followRedirects: false` (we still capture redirects manually)
-    - `insecureSkipVerify: false`
-  - Set-Cookie capture: tls-client returns headers as a plain object — read `res.headers["set-cookie"]` (array) and feed each entry into `jar.ingest(...)` via a small adapter that mimics the `getSetCookie()` shape.
-- Response shape: return a Fetch-Response-like wrapper with `status`, `text()`, `json()`, and a `headers` object exposing `.get(name)` and `.getSetCookie()` so `kmart.js`, `index.js`, `checkout.js` need no changes.
-- Keep `UA` export identical.
+### 1. `executor/adapters/kmart.js` — add an "AkamaiGHost reference page" handler
 
-### 4. `executor/server.js` and adapters
-- No changes required. They consume `request`, `createJar`, `makeDispatcher`, `UA` — surface preserved.
+Before the SBSD branch (around line 244), add a new branch that fires when:
+- `pdpStatus === 403` AND
+- body matches `/Reference\s*#/i` or `/Access Denied/i` AND
+- body matches `/src=["'](\/[A-Za-z0-9_\-\/.]+)\?v=["']/` (script path with empty `v=`).
 
-### 5. `executor/ip-resolve.js`
-- Already calls `request(...)` — inherits the new TLS client. No code change. (Bonus: the egress IP we report to Hyper now comes from a Chrome-fingerprinted handshake too.)
+When matched:
+1. Extract the new sensor script path from the 403 body (the `src="..."` without query).
+2. Fetch that script via `request(origin + path, { GET, referer: pdpUrl })` → `scriptBody`.
+3. Run up to 3 `solveAkamaiSensor` rounds against `scriptBody`, POSTing to `origin + path` exactly like `warm_home`'s sensor loop already does. Break on `_abck` containing `~0~`.
+4. Retry `pdp_get` (reuse existing pdp2 logic). Log as `pdp_get#retry`.
+5. Loop the whole reference-page detect → resolve up to 2 times total (some Akamai installs serve a second reference page).
 
-## Validation
-1. After deploy:
-   - Hit `/exec/test` with `mode=recon` against `https://api.ipify.org?format=json` through a wealthproxies entry → confirm egress IP comes back (proves proxy still works through the new client).
-   - Hit `/exec/test` with the Kmart PDP → expect `pdp_get` to return 200 (or at minimum HTML, not the AkamaiGHost reference-code body).
-2. If `pdp_get` still 403s but with a different/full Akamai challenge HTML (not the bare reference-code page), TLS is no longer the blocker and the next step is sensor/SBSD tuning rather than fingerprint.
+Reuse the existing sensor helper code path that already exists for the warm-home phase rather than duplicating it — extract the sensor-solve loop into a small local function `runSensorLoop(scriptUrl, scriptBody, pageUrl)` at the top of the adapter and call it from both warm-home and the new reference-page handler.
 
-## Out of scope (explicitly)
-- No changes to `src/lib/*` (TanStack server functions, paydock, shopify, browserless ping) — none of those hit Akamai.
-- No Browserless wiring. We're committing to the TLS-client approach end-to-end.
-- No proxy-group/UI changes.
+### 2. Tighten SBSD detection so the empty-`v=` case stops being misclassified
+
+Change `SBSD_RE` in `kmart.js` line 18 from `([0-9a-f-]+)` to `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` — require a real UUID. This prevents future false positives and removes the misleading `sbsd_missing` step from logs when the page is actually a reference-code page.
+
+### 3. Logging
+
+Add steps:
+- `pdp_403_reference` — note: extracted script path + first 200 chars of body.
+- `pdp_sensor_fetch#N` — note: script bytes.
+- `pdp_sensor#N.M` — note: abck state after each round (same shape as existing `akamai_sensor#N`).
+- `pdp_get#retry#N` — note: status + first 400 chars.
+
+### 4. Out of scope
+
+- No SBSD wiring changes (existing code stays for the day it actually fires).
+- No TLS / proxy changes.
+- No `src/lib/*` or UI changes.
 - No new env vars or secrets.
 
-## Risks / things to watch
-- **Docker base change** (alpine → bookworm-slim) increases image size by ~80MB. Acceptable; Fly cold starts are unaffected for a long-running machine.
-- **`node-tls-client` native binary** must match the runtime arch. Fly executor runs linux/amd64 — the package ships that prebuild. If we later add arm64 machines, the postinstall will fetch the right binary automatically.
-- **Header casing**: tls-client preserves lowercase header keys we send (good — matches Chrome). Adapters already lowercase everything. No edge case there.
-- **Cookie jar**: we deliberately keep the name-keyed jar to preserve the current `www.kmart.com.au` → `api.kmart.com.au` `_abck` overwrite behavior. If we later need domain-scoped cookies, that's a separate change.
+## Validation
+
+1. Deploy; rerun the same Kmart PDP dry run.
+2. Expect: warm-home sensor passes → pdp_get 403 → `pdp_403_reference` detected → new sensor loop runs → `pdp_get#retry#0` returns 200 with real HTML (or at least a much larger body than the reference page).
+3. If retry still 403s, the next reference page may carry an actual SBSD `?v=<uuid>` — in which case the existing SBSD branch will handle it.
+4. If we instead see a 429 with `{"t":"<token>"}`, that's Hyper §3.6 territory and a separate follow-up.
+
+## Risks
+
+- The sensor-script POST URL is the same as the GET URL minus query. Confirmed by the warm-home flow already in `kmart.js`. Same pattern reused.
+- Some reference pages emit `defer` attribute or extra attrs around `src=` — the regex uses `["']` delimiters with non-greedy path matching, so it handles both.
+- If Akamai serves >2 consecutive reference pages, we give up after 2 retries to avoid infinite loops; that's deliberate.
