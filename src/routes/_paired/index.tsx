@@ -1446,7 +1446,7 @@ function Index() {
                         last = job;
                         const elapsed = Date.now() - bStart;
                         const stageMsg = stageLabels[job.stage] ?? job.stage;
-                        updateTask(t.id, { message: `${stageMsg}… · ${transportLabel} · ${Math.round(elapsed / 1000)}s` });
+                        updateTask(t.id, { message: `${stageMsg}… · ${Math.round(elapsed / 1000)}s` });
                         if (job.status === "succeeded" || job.status === "failed") {
                           const b = job.status === "succeeded"
                             ? { ok: true, ...(job.result ?? {}) }
