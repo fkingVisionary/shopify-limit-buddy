@@ -16,6 +16,32 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
 
+// Chrome 124 / macOS navigation header shape. Akamai scores requests on the
+// presence + ordering of these client hints; a Chrome UA without matching
+// sec-ch-ua + sec-fetch-* is an instant bot tag.
+const CHROME_CH = {
+  "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"macOS"',
+};
+function navHeaders({ referer, site }) {
+  return {
+    "user-agent": UA,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "accept-language": ACCEPT_LANG,
+    "accept-encoding": "gzip, deflate, br, zstd",
+    "cache-control": "no-cache",
+    pragma: "no-cache",
+    "upgrade-insecure-requests": "1",
+    ...CHROME_CH,
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": site,
+    "sec-fetch-user": "?1",
+    ...(referer ? { referer } : {}),
+  };
+}
+
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
