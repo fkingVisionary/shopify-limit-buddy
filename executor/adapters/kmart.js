@@ -203,6 +203,8 @@ export const kmartAdapter = {
       prevContext = context;
       if (abckSolved(ctx.jar, i + 1)) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
+        steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+        steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
     }
