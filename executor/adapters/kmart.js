@@ -235,7 +235,7 @@ export const kmartAdapter = {
                 method: "POST",
                 headers: {
                   "user-agent": UA,
-                  "content-type": "text/plain;charset=UTF-8",
+                  "content-type": "application/json",
                   accept: "*/*",
                   "accept-language": ACCEPT_LANG,
                   origin,
@@ -245,9 +245,13 @@ export const kmartAdapter = {
               },
               ctx,
             );
-            return { status: res.status, note: `sbsd_o=${(ctx.jar.get("sbsd_o") ?? "").slice(0, 24)}` };
+            const bodyTxt = (await res.text()).slice(0, 200).replace(/\s+/g, " ");
+            const setCk = res.headers.get("set-cookie") ?? "";
+            const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+            return { status: res.status, note: `body="${bodyTxt}" setCk=${setCk.slice(0, 120)} jarSbsd=${sbsdKeys}` };
           });
         }
+
         await tStep("pdp_get#2", async () => {
           const res = await request(
             pdpUrl,
