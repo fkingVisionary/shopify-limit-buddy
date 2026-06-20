@@ -321,11 +321,32 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_pixel_prepdp", ok: false, note: e?.message ?? String(e) });
     }
 
+    // 4c. Intermediate category browse. Real users don't teleport from the
+    //     homepage to a deep PDP — they click into a category first. Hitting
+    //     /category/* gives Akamai a same-origin nav with a sensible referer
+    //     chain (none → home → category → pdp) and an extra 200 to learn from.
+    const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
+    const catUrl = origin + catPath;
+    await sleep(700, 1400); // brief glance at homepage before the click
+    await tStep("category_browse", async () => {
+      const res = await request(
+        catUrl,
+        { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
+        ctx,
+      );
+      const body = await res.text();
+      return { status: res.status, ok: res.status < 400, note: `${catPath} ${body.length}b` };
+    }).catch(() => {});
+    // Human dwell on the category page before clicking through to the PDP.
+    // 1.5–3s is the critical gap — Akamai's risk model is sensitive to the
+    // home→PDP interval being unrealistically short.
+    await sleep(1500, 3000);
+
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
     let pdpHtml = "";
     {
-      const pdpHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
+      const pdpHeaders = navHeaders({ referer: catUrl, site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
       steps.push({
         step: "pdp_get:hdrs",
