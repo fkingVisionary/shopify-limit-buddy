@@ -119,14 +119,12 @@ export const Route = createFileRoute("/api/public/exec-test")({
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string }> };
-          // Trim oversized step notes so the full step list survives caller truncation.
-          if (Array.isArray(data?.steps)) {
-            for (const s of data.steps) {
-              if (typeof s?.note === "string" && s.note.length > 180) s.note = s.note.slice(0, 180) + `…(+${s.note.length - 180})`;
-            }
-          }
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, cardSent: Boolean(card), proxyUsed });
+          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean };
+          // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
+          const compactSteps = Array.isArray(data?.steps)
+            ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 90 ? s.note.slice(0, 90) + `…(+${s.note.length - 90})` : s.note) : undefined }))
+            : [];
+          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed });
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
