@@ -28,8 +28,17 @@ function checkoutScriptSource() {
     let lastStep = "launch";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
     const stage = async (label) => {
-      try { await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }) }); } catch {}
+      // Best-effort cross-origin POST from inside the headless page. Time-box
+      // it hard so a slow/blocked callback never slows down checkout. We never
+      // gate any control flow on this — it's just a UI nicety.
+      try {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 1500);
+        await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }), signal: ctrl.signal });
+        clearTimeout(to);
+      } catch {}
     };
+
     const fail = async (msg) => {
       let shot = null;
       try { shot = await page.screenshot({ encoding: "base64", fullPage: false }); } catch {}
