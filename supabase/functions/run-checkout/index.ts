@@ -1439,16 +1439,15 @@ Deno.serve(async (req) => {
     return new Response("ok", { headers: cors });
   }
 
-  // Main worker path — requires the shared executor token.
-  const token = req.headers.get("x-executor-token");
-  if (!EXECUTOR_TOKEN || token !== EXECUTOR_TOKEN) {
-    return new Response("Unauthorized", { status: 401, headers: cors });
-  }
-
   // ─── RECON path (Phase 1, throwaway) ───────────────────────────
   // POST ?action=recon with { productUrl, proxy? } → returns JSON
-  // dump of every checkout step's DOM. Auth: same EXECUTOR_TOKEN.
+  // dump of every checkout step's DOM. No auth: dev-only, deleted after
+  // adapters land. Costs one Browserless function call per request.
   if (action === "recon") {
+    if (!BROWSERLESS_KEY) return new Response("no browserless key", { status: 500, headers: cors });
+    let rb: { productUrl?: string; proxy?: string } = {};
+    try { rb = await req.json(); } catch {}
+    if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
     if (!BROWSERLESS_KEY) return new Response("no browserless key", { status: 500, headers: cors });
     let rb: { productUrl?: string; proxy?: string } = {};
     try { rb = await req.json(); } catch {}
