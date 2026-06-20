@@ -135,9 +135,15 @@ export const kmartAdapter = {
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
     await tStep("warm_home", async () => {
+      const warmHeaders = navHeaders({ site: "none" });
+      steps.push({
+        step: "warm_home:hdrs",
+        ok: true,
+        note: JSON.stringify({ url: origin + "/", headers: warmHeaders, cookieHeader: ctx.jar.header() }),
+      });
       const res = await request(
         origin + "/",
-        { method: "GET", headers: navHeaders({ site: "none" }) },
+        { method: "GET", headers: warmHeaders },
         ctx,
       );
       html = await res.text();
@@ -197,6 +203,8 @@ export const kmartAdapter = {
       prevContext = context;
       if (abckSolved(ctx.jar, i + 1)) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
+        steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+        steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
     }
@@ -242,6 +250,11 @@ export const kmartAdapter = {
     {
       const pdpHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
+      steps.push({
+        step: "pdp_get:hdrs",
+        ok: true,
+        note: JSON.stringify({ url: pdpUrl, headers: pdpHeaders, cookieHeader: ctx.jar.header() }),
+      });
       await tStep("pdp_get", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
         pdpStatus = res.status;
