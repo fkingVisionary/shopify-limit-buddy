@@ -23,6 +23,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
           reconUrl?: string;
           useProxy?: boolean;
           proxyUrl?: string;
+          dryRun?: boolean;
         };
         const mode = body.mode ?? "run";
         // Default to direct (Fly egress IP) to conserve residential proxy data
@@ -37,6 +38,17 @@ export const Route = createFileRoute("/api/public/exec-test")({
         } catch {
           origin = origin.replace(/\/+$/, "");
         }
+        // Card injected from Lovable Cloud secrets so executor can tokenize.
+        // null if any field missing — adapter then skips paydock_tokenize.
+        const number = process.env.KMART_CARD_NUMBER;
+        const cvv = process.env.KMART_CARD_CVV;
+        const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
+        const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
+        const holder = process.env.KMART_CARD_HOLDER;
+        const card =
+          number && cvv && expMonth && expYear && holder
+            ? { number, cvv, expMonth, expYear, holder }
+            : null;
         const t0 = Date.now();
         try {
           if (mode === "recon") {
@@ -58,8 +70,9 @@ export const Route = createFileRoute("/api/public/exec-test")({
             storeUrl: body.storeUrl,
             variantId: body.variantId ?? 1,
             qty: 1,
-            dryRun: true,
+            dryRun: body.dryRun ?? true,
             proxy,
+            card,
           };
           const res = await fetch(`${origin}/run`, {
             method: "POST",
@@ -67,7 +80,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             body: JSON.stringify(payload),
           });
           const data = await res.json().catch(() => ({}));
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data });
+          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, cardSent: Boolean(card) });
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
