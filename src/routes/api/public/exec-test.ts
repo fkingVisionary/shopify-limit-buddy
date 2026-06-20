@@ -19,19 +19,10 @@ export const Route = createFileRoute("/api/public/exec-test")({
           storeUrl?: string;
           variantId?: number;
           taskId?: string;
+          mode?: "run" | "recon";
+          reconUrl?: string;
         };
-        if (!body.storeUrl) {
-          return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
-        }
-        const payload = {
-          taskId: body.taskId ?? `smoke-${Date.now()}`,
-          storeUrl: body.storeUrl,
-          variantId: body.variantId ?? 1,
-          qty: 1,
-          dryRun: true,
-          proxy: process.env.PROXY_URL_RESI ?? null,
-        };
-        const t0 = Date.now();
+        const mode = body.mode ?? "run";
         // Defensive: strip any path the user accidentally pasted (e.g. /health)
         // so EXECUTOR_URL always resolves to the origin.
         let origin = url.trim();
@@ -40,7 +31,30 @@ export const Route = createFileRoute("/api/public/exec-test")({
         } catch {
           origin = origin.replace(/\/+$/, "");
         }
+        const t0 = Date.now();
         try {
+          if (mode === "recon") {
+            const target = body.reconUrl ?? body.storeUrl;
+            if (!target) return Response.json({ ok: false, error: "reconUrl or storeUrl required" }, { status: 400 });
+            const res = await fetch(`${origin}/recon`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify({ url: target }),
+            });
+            const data = await res.json().catch(() => ({}));
+            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data });
+          }
+          if (!body.storeUrl) {
+            return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
+          }
+          const payload = {
+            taskId: body.taskId ?? `smoke-${Date.now()}`,
+            storeUrl: body.storeUrl,
+            variantId: body.variantId ?? 1,
+            qty: 1,
+            dryRun: true,
+            proxy: process.env.PROXY_URL_RESI ?? null,
+          };
           const res = await fetch(`${origin}/run`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
