@@ -1,5 +1,11 @@
 
-# Hyper Solutions integration — HTTP-first, browser as recon only
+# Hyper Solutions integration — Kmart-only, HTTP-first
+
+**Pivot 2026-06-20**: Hyper account is whitelisted for **Kmart AU only**. Shopify
+not yet approved (likely because most Shopify stores aren't Akamai-fronted —
+they're CF or unprotected, so Hyper has nothing to solve). Scope narrowed to
+Kmart for this batch; Shopify generic + JB Hi-Fi are deferred until Hyper
+greenlights those domains.
 
 ## Goal
 
