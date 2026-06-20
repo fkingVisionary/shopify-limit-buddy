@@ -2257,7 +2257,7 @@ function TasksView({
                 {t.screenshotB64 && (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
-                      Browserless screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
+                      Checkout screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
                     </summary>
                     <img
                       src={`data:image/png;base64,${t.screenshotB64}`}
