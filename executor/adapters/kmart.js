@@ -185,23 +185,61 @@ export const kmartAdapter = {
     }
 
 
+    // Recon helper: dump exact request headers + cookie-jar snapshot at the
+    // moment of a request. Used to compare against a real browser when
+    // Akamai 403s after a clean sensor solve.
+    const dumpRequestState = (label, url, headers) => {
+      const jarDump = ctx.jar.dump();
+      const cookies = Object.fromEntries(
+        Object.entries(jarDump).map(([k, v]) => {
+          const s = String(v ?? "");
+          // Truncate long values; preserve _abck/bm_sz fully (we need to verify ~0~ etc).
+          if (/_abck|bm_sz|bm_so|sbsd|ak_bmsc|bm_sv/.test(k)) return [k, s.slice(0, 200)];
+          return [k, s.length > 80 ? `${s.slice(0, 60)}…(${s.length})` : s];
+        }),
+      );
+      steps.push({
+        step: label,
+        ok: true,
+        note: JSON.stringify({
+          url,
+          headerOrder: Object.keys(headers),
+          headers,
+          cookieNames: Object.keys(jarDump),
+          cookieCount: Object.keys(jarDump).length,
+          cookies,
+          abckRaw: jarDump._abck ?? null,
+        }),
+      });
+    };
+
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
     let pdpHtml = "";
-    await tStep("pdp_get", async () => {
-      const res = await request(
-        pdpUrl,
-        { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
-        ctx,
-      );
-      pdpStatus = res.status;
-      pdpHtml = await res.text();
-      const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200);
-      const srv = res.headers.get("server");
-      const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
-      return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b: ${snippet} | server=${srv} ${aka}` };
-
-    });
+    {
+      const pdpHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
+      dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
+      await tStep("pdp_get", async () => {
+        const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
+        const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200);
+        const srv = res.headers.get("server");
+        const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
+        const respHeaders = {
+          server: srv,
+          "content-type": res.headers.get("content-type"),
+          "akamai-grn": res.headers.get("akamai-grn"),
+          "x-akamai-transformed": res.headers.get("x-akamai-transformed"),
+          "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+        };
+        return {
+          status: res.status,
+          ok: res.status < 400,
+          note: `${pdpHtml.length}b | resp=${JSON.stringify(respHeaders)} | snippet=${snippet}`,
+        };
+      });
+    }
 
     // 5b. SBSD challenge — fires on ANY response carrying the `?v=<uuid>`
     //     script tag (Kmart serves it inline on 200s too, not just 403s).
@@ -255,17 +293,22 @@ export const kmartAdapter = {
           });
         }
 
-        await tStep("pdp_get#2", async () => {
-          const res = await request(
-            pdpUrl,
-            { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
-            ctx,
-          );
-          pdpStatus = res.status;
-          pdpHtml = await res.text();
-          const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
-          return { status: res.status, ok: res.status < 400, note: snippet };
-        });
+        {
+          const pdp2Headers = navHeaders({ referer: origin + "/", site: "same-origin" });
+          dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+          await tStep("pdp_get#2", async () => {
+            const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
+            pdpStatus = res.status;
+            pdpHtml = await res.text();
+            const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
+            const respHeaders = {
+              server: res.headers.get("server"),
+              "akamai-grn": res.headers.get("akamai-grn"),
+              "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+            };
+            return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+          });
+        }
       } else {
         steps.push({ step: "sbsd_missing", ok: false, note: "403 body had no ?v=<uuid> script tag" });
       }
