@@ -1275,6 +1275,166 @@ function checkoutScriptSource() {
   };`;
 }
 
+// ─── RECON SCRIPT (Phase 1, throwaway) ─────────────────────────────
+// Loads a PDP, adds to cart, navigates to checkout, and dumps the DOM
+// shape of every step (form fields, buttons, iframes) so we can build a
+// store-specific adapter without guessing selectors.
+function reconScriptSource() {
+  return `export default async ({ page, context }) => {
+    const { productUrl } = context;
+    const report = { productUrl, steps: [], screenshots: {}, errors: [] };
+    const snap = async (label) => {
+      try { report.screenshots[label] = await page.screenshot({ encoding: "base64", fullPage: false }); }
+      catch (e) { report.errors.push(label + ":screenshot:" + (e?.message ?? e)); }
+    };
+    const dumpDom = async (label) => {
+      try {
+        const data = await page.evaluate(() => {
+          const visible = (el) => {
+            try {
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            } catch { return false; }
+          };
+          const labelOf = (el) => {
+            try {
+              if (el.labels && el.labels[0]) return (el.labels[0].textContent || "").trim().slice(0, 80);
+              if (el.id) {
+                const l = document.querySelector('label[for="' + el.id + '"]');
+                if (l) return (l.textContent || "").trim().slice(0, 80);
+              }
+              const par = el.closest("label");
+              if (par) return (par.textContent || "").trim().slice(0, 80);
+            } catch {}
+            return null;
+          };
+          const inputs = Array.from(document.querySelectorAll("input, select, textarea"))
+            .filter(visible)
+            .map((el) => ({
+              tag: el.tagName.toLowerCase(),
+              type: el.getAttribute("type") || null,
+              name: el.getAttribute("name") || null,
+              id: el.id || null,
+              placeholder: el.getAttribute("placeholder") || null,
+              aria: el.getAttribute("aria-label") || null,
+              autocomplete: el.getAttribute("autocomplete") || null,
+              dataTest: el.getAttribute("data-testid") || el.getAttribute("data-test") || null,
+              label: labelOf(el),
+            }));
+          const buttons = Array.from(document.querySelectorAll('button, a[role="button"], input[type="submit"]'))
+            .filter(visible)
+            .map((el) => ({
+              tag: el.tagName.toLowerCase(),
+              text: ((el.innerText || el.value || "") + "").trim().slice(0, 80),
+              id: el.id || null,
+              dataTest: el.getAttribute("data-testid") || el.getAttribute("data-test") || null,
+              cls: (el.className || "").toString().slice(0, 120),
+              type: el.getAttribute("type") || null,
+            }))
+            .filter((b) => b.text);
+          const iframes = Array.from(document.querySelectorAll("iframe")).map((el) => ({
+            name: el.getAttribute("name") || null,
+            id: el.id || null,
+            src: el.getAttribute("src") || null,
+            visible: visible(el),
+          }));
+          return {
+            url: location.href,
+            title: document.title,
+            inputs, buttons, iframes,
+            bodyClass: document.body?.className || null,
+            bodyText: (document.body?.innerText || "").slice(0, 4000),
+          };
+        });
+        report.steps.push({ label, ...data });
+      } catch (e) { report.errors.push(label + ":dom:" + (e?.message ?? e)); }
+    };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const clickByText = async (re) => {
+      try {
+        return await page.evaluate((rs) => {
+          const r = new RegExp(rs, "i");
+          const cands = Array.from(document.querySelectorAll('button, a[role="button"], a, input[type="submit"]'));
+          for (const el of cands) {
+            const t = ((el.innerText || el.value || "") + "").trim();
+            if (r.test(t)) {
+              const rc = el.getBoundingClientRect();
+              if (rc.width > 0 && rc.height > 0) { el.click(); return t; }
+            }
+          }
+          return null;
+        }, re.source);
+      } catch { return null; }
+    };
+    try {
+      try {
+        if (context.__proxyUser) {
+          await page.authenticate({ username: context.__proxyUser, password: context.__proxyPass || "" });
+        }
+      } catch {}
+      try { await page.setViewport({ width: 1440, height: 900 }); } catch {}
+      try {
+        await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        await page.setExtraHTTPHeaders({ "accept-language": "en-AU,en;q=0.9" });
+      } catch {}
+
+      await page.goto(productUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+      await wait(3500);
+      await snap("pdp"); await dumpDom("pdp");
+
+      // JB Hi-Fi: ATC is a React button identified by data-testid, not text.
+      report.atcClicked = await page.evaluate(() => {
+        const sels = ['[data-testid="add-to-cart-button"]', '[data-test="add-to-cart-button"]'];
+        for (const s of sels) {
+          const el = document.querySelector(s);
+          if (el) { el.click(); return s; }
+        }
+        return null;
+      }).catch(() => null);
+      await wait(3000);
+      await snap("after_atc"); await dumpDom("after_atc");
+
+      // Navigate to /cart directly — JB Hi-Fi's "Cart" header doesn't open
+      // an in-page drawer in a reliable way; the /cart route is server-rendered.
+      try {
+        const origin = new URL(productUrl).origin;
+        await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) { report.errors.push("cart-nav:" + (e?.message ?? e)); }
+      await wait(3000);
+      await snap("cart_page"); await dumpDom("cart_page");
+
+      // Try /checkout direct nav too (in case JB serves it without intermediary).
+      try {
+        const origin = new URL(productUrl).origin;
+        await page.goto(origin + "/checkout", { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) { report.errors.push("checkout-nav:" + (e?.message ?? e)); }
+      await wait(5000);
+      await snap("checkout_contact"); await dumpDom("checkout_contact");
+      try { report.checkoutHost = new URL(page.url()).host; } catch {}
+      try { report.checkoutUrl = page.url(); } catch {}
+
+      report.contactContinueClicked = await page.evaluate(() => {
+        const cands = Array.from(document.querySelectorAll('button, input[type="submit"], [data-testid*="continue" i], [data-test*="continue" i]'));
+        for (const el of cands) {
+          const t = ((el.innerText || el.value || "") + "").trim();
+          if (/continue to shipping|continue to delivery|continue|next/i.test(t)) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { el.click(); return t; }
+          }
+        }
+        return null;
+      }).catch(() => null);
+      await wait(5000);
+      await snap("checkout_after_continue"); await dumpDom("checkout_after_continue");
+
+      return { ok: true, report };
+    } catch (e) {
+      return { ok: false, error: e?.message ?? String(e), report };
+    }
+  };`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
 
@@ -1309,11 +1469,75 @@ Deno.serve(async (req) => {
     return new Response("ok", { headers: cors });
   }
 
+  // ─── RECON path (Phase 1, throwaway) ───────────────────────────
+  // POST ?action=recon with { productUrl, proxy? } → returns JSON
+  // dump of every checkout step's DOM. No auth: dev-only, deleted after
+  // adapters land. Costs one Browserless function call per request.
+  if (action === "recon") {
+    if (!BROWSERLESS_KEY) return new Response("no browserless key", { status: 500, headers: cors });
+    let rb: { productUrl?: string; proxy?: string } = {};
+    try { rb = await req.json(); } catch {}
+    if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
+    // Create a recon job row so the caller can poll for the report.
+    const { data: row, error: insErr } = await supa
+      .from("checkout_jobs")
+      .insert({ status: "running", stage: "recon", input: { mode: "recon", productUrl: rb.productUrl } })
+      .select("id")
+      .single();
+    if (insErr || !row) {
+      return new Response(JSON.stringify({ ok: false, error: insErr?.message || "insert failed" }), { status: 500, headers: { ...cors, "content-type": "application/json" } });
+    }
+    const reconJobId = row.id as string;
+    const blUrl = new URL("https://production-sfo.browserless.io/function");
+    blUrl.searchParams.set("token", BROWSERLESS_KEY);
+    blUrl.searchParams.set("timeout", "180000");
+    blUrl.searchParams.set("stealth", "true");
+    const ctx: Record<string, unknown> = { productUrl: rb.productUrl };
+    if (rb.proxy) {
+      try {
+        const m = String(rb.proxy).match(/^(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$/);
+        if (m) {
+          blUrl.searchParams.set("launch", JSON.stringify({ args: [`--proxy-server=http://${m[3]}:${m[4]}`] }));
+          if (m[1]) { ctx.__proxyUser = m[1]; ctx.__proxyPass = m[2] || ""; }
+        }
+      } catch {}
+    }
+    const reconPromise = (async () => {
+      try {
+        const res = await fetch(blUrl.toString(), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ code: reconScriptSource(), context: ctx }),
+        });
+        const text = await res.text();
+        let parsed: unknown = null;
+        try { parsed = JSON.parse(text); } catch { parsed = { raw: text.slice(0, 2000) }; }
+        await supa.from("checkout_jobs").update({
+          status: res.ok ? "succeeded" : "failed",
+          stage: "recon_done",
+          result: parsed as any,
+          error: res.ok ? null : `HTTP ${res.status}`,
+        }).eq("id", reconJobId);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await supa.from("checkout_jobs").update({
+          status: "failed", stage: "recon_done", error: msg,
+        }).eq("id", reconJobId);
+      }
+    })();
+    const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+    if (edgeRuntime?.waitUntil) edgeRuntime.waitUntil(reconPromise);
+    return new Response(JSON.stringify({ ok: true, reconJobId }), { headers: { ...cors, "content-type": "application/json" } });
+  }
+
   // Main worker path — requires the shared executor token.
   const token = req.headers.get("x-executor-token");
   if (!EXECUTOR_TOKEN || token !== EXECUTOR_TOKEN) {
     return new Response("Unauthorized", { status: 401, headers: cors });
   }
+
+
+
 
   let body: { jobId?: string } = {};
   try { body = await req.json(); } catch {}

@@ -1,70 +1,81 @@
-## Goal
+# JB Hi-Fi checkout support (Browserless)
 
-Two specific fixes on top of the current Browserless checkout flow:
+JB Hi-Fi is **Shopify Plus** but everything user-facing is custom: the cart is a React app mounted at `#cart-services`, the PDP is a `theme-jbhifi` Liquid template, and checkout runs on a JB-branded host (not `*.myshopify.com`). Standard selectors from the generic Browserless script will not work. Akamai (`_abck`, `bm_sz`) sits in front of every page, so the bot has to behave like a real browser from page one — no raw `fetch('/cart/add.js')` from a cold context.
 
-1. Discord webhook reliably fires when Shopify declines the payment.
-2. UI shows "Payment submitted" and "Waiting for 3DS approval" stages before the terminal state, instead of jumping from "Starting checkout" straight to "Payment declined".
+The plan is three small phases: a one-off recon pass to capture real selectors/endpoints, a per-store "adapter" abstraction so JB Hi-Fi doesn't pollute the generic Shopify path, then the JB Hi-Fi adapter itself.
 
-No other behavior changes.
+## Phase 1 — Recon (one Browserless run, no commit yet)
 
-## What's wrong today
+Add a temporary `recon` mode to `supabase/functions/run-checkout/index.ts` that, given a JB Hi-Fi product URL:
 
-**Webhook on decline isn't firing.** In `supabase/functions/run-checkout/index.ts`, the decline path *does* call `fireTerminalWebhook(... "failed" ...)`. The skip happens inside that helper:
+1. Loads the PDP with a real UA + viewport, waits for `#cart-services` React to mount, screenshots.
+2. Clicks the real "Add to cart" button (not `/cart/add.js`) and screenshots the resulting cart drawer.
+3. Clicks "Checkout", follows redirects, and records: final checkout host, whether it's classic Shopify `/checkouts/cn/<token>` or Shopify's new one-page checkout, and the DOM structure of each step.
+4. For each step (contact, shipping address, shipping method, payment), dumps: every visible `<input>`/`<select>` with its `name`, `id`, `aria-label`, and the surrounding label text; every `<button>` with its text and `data-*` attributes; every `<iframe>` `name`/`src`.
+5. Detects payment provider iframes (Stripe `card-fields-*`, Adyen `adyen-checkout`, Braintree `braintree-hosted-field`) and BNPL tiles (Afterpay/Zip/humm/PayPal/Apple Pay).
 
-```ts
-if (!webhookUrl || !notify) return;
-if (!notify?.enabled?.[event]) return;   // <- silently drops "failed"
+Output is a JSON blob written to the job's `result` column and screenshots base64'd in `session`. We read it once and throw the recon code away.
+
+## Phase 2 — Store-adapter abstraction
+
+Right now `run-checkout/index.ts` hardcodes the generic Shopify flow. Refactor so the worker picks an **adapter** by hostname:
+
+```text
+adapters/
+  shopify-generic.ts   // current behavior, default
+  jbhifi.ts            // new
 ```
 
-`notify_events` is written by `enqueueCheckout` as `{ enabled: cfg.events, base }`. If the user's saved `NotifyConfig.events` was created before `"failed"` existed (or is missing the key for any reason), `enabled.failed` is `undefined` and the helper returns without firing — and without logging anything, which is why edge logs are empty. The UI also pre-marks `"failed"` as handled in `notifiedRef` after enqueue, so the client-side fallback can't save it.
+Each adapter exports the same interface:
 
-**Stages stall at "Starting checkout".** The worker emits `submit` → `payment_result` → `three_d_secure` from inside the Browserless `/function` context via cross-origin `fetch`/`sendBeacon` to `?action=stage`. Browserless function-context `fetch` and in-page beacons are unreliable mid-checkout (navigation tears them down), so the `stage` column often never advances past `launch`/`checkout_start` before the terminal write lands. The UI's `stageLabels` map is fine; it just never sees those stages.
+```ts
+type Adapter = {
+  matches: (storeUrl: string) => boolean
+  addToCart: (page, job) => Promise<void>
+  gotoCheckout: (page, job) => Promise<void>
+  fillContact: (page, profile) => Promise<void>
+  fillAddress: (page, profile) => Promise<void>
+  selectShipping: (page) => Promise<void>
+  fillPayment: (page, card) => Promise<void>
+  submit: (page) => Promise<void>
+  detect3DS: (page) => Promise<boolean>
+  detectDecline: (page) => Promise<string | null>
+  detectSuccess: (page) => { ok: boolean; orderId?: string }
+}
+```
 
-## Plan
+The worker calls `writeStage()` between steps (`cart_add`, `checkout_load`, `address`, `shipping`, `payment_submitting`, `three_d_secure`, `confirm`) so the UI stage labels already added last turn light up uniformly across adapters. No UI changes this turn.
 
-### 1. Fix decline webhook (server-side)
+## Phase 3 — JB Hi-Fi adapter
 
-`supabase/functions/run-checkout/index.ts`
+Built from Phase 1 recon output. Expected shape (will be verified, not assumed):
 
-- In `fireTerminalWebhook`, treat a missing `enabled[event]` as **true** when the webhook URL is present. Rationale: the user explicitly configured a Discord webhook; defaulting "failed" off silently is the bug. Keep the explicit `false` opt-out working.
-- Add `console.log` lines on every early-return path (`no webhook url`, `event disabled`, `already fired`, `discord post non-2xx`) so future debugging shows up in edge logs.
-- After the conditional `webhook_fired_at` claim, log the Discord HTTP status. Don't block on Discord.
+- **addToCart**: navigate to PDP, wait for `#cart-services` mount, click the in-page add-to-cart button via Playwright/Puppeteer click (not XHR) so Akamai sees a real user gesture. Wait for cart drawer state.
+- **gotoCheckout**: click the cart's "Checkout" button, wait for navigation to the JB-branded checkout host, capture the checkout token from the URL.
+- **fillContact / fillAddress**: single-pass `page.evaluate` (same pattern as last turn's optimization) using JB-specific selectors discovered in recon. AU address: `country=AU` preselected, `province` is state code (`NSW`/`VIC`/etc.), `zip` is 4 digits.
+- **selectShipping**: pick first available rate; JB usually offers Standard + Express + Click & Collect — default to Standard.
+- **fillPayment**: detect provider from recon. If Stripe iframes, reuse existing card-iframe fill; otherwise branch (Adyen/Braintree).
+- **submit + detect3DS**: same loop as today but with 3DS frame URL patterns confirmed for JB's PSP, and decline phrases tuned to JB's actual error copy.
 
-`src/lib/discord.ts` + `src/routes/_paired/index.tsx`
+## Anti-bot hardening (applies to both adapters)
 
-- Make `DEFAULT_NOTIFY_CONFIG.events.failed = true` (if not already) and, when loading from localStorage, merge defaults so older saved configs always have `failed`/`confirmed`/`in_stock`/`checkout_ready` keys defined. Prevents the same `undefined` shape from reaching the server next time.
+- Set UA + `sec-ch-ua` + `accept-language: en-AU` and viewport `1440x900`.
+- Use `--disable-blink-features=AutomationControlled` (already set) and add `navigator.webdriver=false` + plausible `navigator.languages` via `evaluateOnNewDocument`.
+- Always load the PDP first (warms `_abck`) before touching cart — never POST `/cart/add.js` from a cold context against JB.
+- Route the Browserless session through the AU residential proxy (`PROXY_URL_RESI`) if it's AU-exit; if it isn't, flag that we need an AU proxy before JB will be reliable.
 
-### 2. Surface "Payment submitted" + "Waiting for 3DS" in the UI
+## Webhooks + stages
 
-The stage callback from inside Browserless is unreliable. Move the stages that matter most to **Deno-side direct DB writes** so they always land:
+No changes — `fireTerminalWebhook` and the `writeStage` calls added last turn already cover the new adapter as long as it emits the same stage strings.
 
-`supabase/functions/run-checkout/index.ts`
+## Files to change (Phase 2 + 3)
 
-- Add a small helper `writeStage(jobId, stage)` that does `supa.from("checkout_jobs").update({ stage }).eq("id", jobId).in("status", ["pending","running"])`.
-- Write `stage = "payment_submitting"` from the Deno worker **immediately before** issuing the Browserless `/function` POST. Guarantees the UI moves off "Starting checkout" within ~1s.
-- The headless script keeps emitting `submit`, `payment_result`, `three_d_secure` via the existing beacon path (best-effort, no change). Those will still update the DB when they make it through.
-- Add a new terminal-shape result field `awaiting3ds: true` already set whenever the script detects 3DS. After the Browserless request returns and the worker writes the terminal row, no further stage write is needed.
-- Extend `stageLabels` in `src/routes/_paired/index.tsx`:
-  - `payment_submitting`: "Payment submitted — awaiting response"
-  - `three_d_secure`: keep "3DS verification required — approve in your bank app"
-  - `submit`: "Submitting payment"
-  - `payment_result`: "Waiting for payment result"
+- `supabase/functions/run-checkout/index.ts` — switch to adapter dispatch.
+- `supabase/functions/run-checkout/adapters/shopify-generic.ts` — extract current logic verbatim.
+- `supabase/functions/run-checkout/adapters/jbhifi.ts` — new, built from Phase 1 output.
 
-### 3. Light diagnostics so the next regression is visible
+## Open questions for you
 
-- In the worker's terminal branches, `console.log("[run-checkout]", jobId, outStatus, outStage)` once per job.
-- In `fireTerminalWebhook`, log `jobId`, `event`, and the Discord response status.
-
-These two lines together make it possible to confirm from `supabase--edge_function_logs` whether a declined job actually reached the webhook path.
-
-## Out of scope
-
-- No changes to checkout speed, selectors, captcha, or compat layer.
-- No new tables or columns.
-- No change to the in-page beacon mechanism — just supplementing it with a guaranteed Deno-side write for the one stage the user cares about (payment submitted).
-
-## Files to change
-
-- `supabase/functions/run-checkout/index.ts` — webhook fallback, stage writes, logs
-- `src/routes/_paired/index.tsx` — new `stageLabels` entries
-- `src/lib/discord.ts` — defaults merge on load so `enabled.failed` is always defined
+1. **Proxy**: is `PROXY_URL_RESI` an AU exit? JB will geo-fence / Akamai-flag non-AU IPs quickly.
+2. **BNPL**: do you only care about card checkout, or do you also want Afterpay/Zip flows?
+3. **Recon run**: OK for me to ship Phase 1 first as a throwaway `mode: "recon"` job, run it once against the Pokemon URL, then build Phases 2–3 from the captured DOM? That's far more reliable than guessing selectors.
