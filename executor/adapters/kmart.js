@@ -348,9 +348,12 @@ export const kmartAdapter = {
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
-      // 7a. Warm api.kmart.com.au — seeds any per-host cookies the API
-      //     edge sets. If this 403s with a vendor challenge body we'll
-      //     need an Incapsula/Akamai solver on the API host next batch.
+      // 7a. Solve Akamai for api.kmart.com.au — separate _abck scope.
+      //     Cookie jar is name-keyed (not domain-keyed), so the api-host
+      //     sensor responses will overwrite the www host's _abck. That's
+      //     fine: we're done with www after pdp_get#2.
+      let apiSeedHtml = "";
+      let apiScriptPath = null;
       await tStep("api_warm", async () => {
         const res = await request(
           apiOrigin + "/",
@@ -358,7 +361,7 @@ export const kmartAdapter = {
             method: "GET",
             headers: {
               "user-agent": UA,
-              accept: "*/*",
+              accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
               "accept-language": ACCEPT_LANG,
               referer: pdpUrl,
               ...CHROME_CH,
@@ -369,9 +372,127 @@ export const kmartAdapter = {
           },
           ctx,
         );
-        const txt = (await res.text()).slice(0, 160).replace(/\s+/g, " ");
-        return { status: res.status, ok: res.status < 500, note: `${txt}` };
+        apiSeedHtml = await res.text();
+        apiScriptPath = findAkamaiScriptPath(apiSeedHtml);
+        return {
+          status: res.status,
+          ok: Boolean(apiScriptPath),
+          note: `${apiSeedHtml.length}b script=${apiScriptPath ?? "(none)"}`,
+        };
       });
+
+      if (apiScriptPath) {
+        const apiScriptUrl = apiOrigin + apiScriptPath;
+        let apiScriptBody = "";
+        await tStep("api_script_fetch", async () => {
+          const r = await request(
+            apiScriptUrl,
+            { method: "GET", headers: { "user-agent": UA, referer: apiOrigin + "/", "accept-language": ACCEPT_LANG } },
+            ctx,
+          );
+          apiScriptBody = await r.text();
+          return { status: r.status, note: `${apiScriptBody.length}b` };
+        });
+
+        let apiPrev = null;
+        let apiSolved = false;
+        for (let i = 0; i < 3; i++) {
+          await tStep(`api_sensor#${i + 1}`, async () => {
+            const r = await solveAkamaiSensor({
+              jar: ctx.jar,
+              pageUrl: apiOrigin + "/",
+              userAgent: UA,
+              ip: egressIp,
+              acceptLanguage: ACCEPT_LANG,
+              scriptUrl: apiScriptUrl,
+              scriptBody: apiScriptBody,
+              prevContext: apiPrev,
+            });
+            apiPrev = r.context;
+            const res = await request(
+              r.postUrl,
+              {
+                method: "POST",
+                headers: {
+                  "user-agent": UA,
+                  "content-type": "text/plain;charset=UTF-8",
+                  accept: "*/*",
+                  "accept-language": ACCEPT_LANG,
+                  origin: apiOrigin,
+                  referer: apiOrigin + "/",
+                },
+                body: JSON.stringify({ sensor_data: r.payload }),
+              },
+              ctx,
+            );
+            return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
+          });
+          if (abckSolved(ctx.jar, i + 1)) {
+            apiSolved = true;
+            steps.push({ step: "api_akamai_solved", ok: true, note: `rounds=${i + 1}` });
+            break;
+          }
+        }
+        if (!apiSolved) {
+          steps.push({ step: "api_akamai_unsolved", ok: false, note: "_abck not ~0~ after 3 rounds on api host" });
+        }
+
+        // SBSD on the api host, if present.
+        const apiSbsd = parseSbsd(apiSeedHtml);
+        if (apiSbsd) {
+          const sbsdScriptUrl =
+            apiOrigin + (apiSbsd.path.startsWith("/") ? apiSbsd.path : "/" + apiSbsd.path) +
+            `?v=${apiSbsd.uuid}${apiSbsd.t ? `&t=${apiSbsd.t}` : ""}`;
+          const sbsdPostUrl =
+            apiOrigin + (apiSbsd.path.startsWith("/") ? apiSbsd.path : "/" + apiSbsd.path) +
+            (apiSbsd.t ? `?t=${apiSbsd.t}` : "");
+          let apiSbsdBody = "";
+          await tStep("api_sbsd_script_fetch", async () => {
+            const r = await request(
+              sbsdScriptUrl,
+              { method: "GET", headers: { "user-agent": UA, referer: apiOrigin + "/", "accept-language": ACCEPT_LANG } },
+              ctx,
+            );
+            apiSbsdBody = await r.text();
+            return { status: r.status, note: `uuid=${apiSbsd.uuid.slice(0, 8)} ${apiSbsdBody.length}b t=${apiSbsd.t || "-"}` };
+          });
+          const apiRounds = apiSbsd.t ? 1 : 2;
+          for (let i = 0; i < apiRounds; i++) {
+            await tStep(`api_sbsd_round#${i}`, async () => {
+              const payload = await solveAkamaiSbsd({
+                jar: ctx.jar,
+                pageUrl: apiOrigin + "/",
+                scriptBody: apiSbsdBody,
+                uuid: apiSbsd.uuid,
+                oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+                index: i,
+                userAgent: UA,
+                ip: egressIp,
+                acceptLanguage: ACCEPT_LANG,
+              });
+              const res = await request(
+                sbsdPostUrl,
+                {
+                  method: "POST",
+                  headers: {
+                    "user-agent": UA,
+                    "content-type": "application/json",
+                    accept: "*/*",
+                    "accept-language": ACCEPT_LANG,
+                    origin: apiOrigin,
+                    referer: apiOrigin + "/",
+                  },
+                  body: JSON.stringify({ body: payload }),
+                },
+                ctx,
+              );
+              const bodyTxt = (await res.text()).slice(0, 160).replace(/\s+/g, " ");
+              return { status: res.status, note: `body="${bodyTxt}"` };
+            });
+          }
+        }
+      }
+
 
       // 7b. getActiveBag — me.activeCart may be null on first run.
       let cartId = null;
