@@ -157,5 +157,7 @@ export async function runCheckout(task) {
       elapsedMs: now() - t0,
       steps,
     };
+  } finally {
+    await closeDispatcher();
   }
 }
