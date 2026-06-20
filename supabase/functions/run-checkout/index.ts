@@ -241,17 +241,48 @@ function checkoutScriptSource() {
 
       lastStep = "address_fill";
       await stage("address_fill");
-      await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
-      await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
-      await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
-      await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
-      await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
-      await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      // Single round-trip address fill. Walking a selector map inside one
+      // page.evaluate is dramatically faster than 9 sequential page.$ calls
+      // (each was ~100-200ms) and lets React's checkout state settle in a
+      // single render pass instead of nine.
+      await page.evaluate((p) => {
+        const setVal = (sels, value) => {
+          if (value == null || value === "") return;
+          for (const sel of sels) {
+            const node = document.querySelector(sel);
+            if (!node) continue;
+            const tag = (node.tagName || "").toLowerCase();
+            const wanted = String(value);
+            try { node.focus(); } catch {}
+            if (tag === "select") {
+              const lower = wanted.toLowerCase();
+              const options = Array.from(node.options || []);
+              const match = options.find((o) => String(o.value || "").toLowerCase() === lower || String(o.textContent || "").toLowerCase().includes(lower));
+              if (match) node.value = match.value;
+            } else {
+              const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const desc = Object.getOwnPropertyDescriptor(proto, "value");
+              if (desc && desc.set) desc.set.call(node, wanted);
+              else node.value = wanted;
+            }
+            node.dispatchEvent(new Event("input", { bubbles: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true }));
+            try { node.blur(); } catch {}
+            return;
+          }
+        };
+        setVal(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], p.email);
+        setVal(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], p.first_name);
+        setVal(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], p.last_name);
+        setVal(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], p.address1);
+        setVal(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], p.address2 ?? "");
+        setVal(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], p.city);
+        setVal(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], p.province);
+        setVal(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], p.zip);
+        setVal(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], p.phone);
+      }, input.profile);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 80, timeout: 350 }).catch(() => null);
       log("address_fill", true);
 
 
