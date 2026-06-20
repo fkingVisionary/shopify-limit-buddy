@@ -264,6 +264,16 @@ export const kmartAdapter = {
       });
     }
 
+    // Verify the proxy session held the same egress IP from warm_home through
+    // pdp_get. If the IP drifted, Akamai will hard-block because `_abck` was
+    // solved on a different IP than the one making the PDP request.
+    await tStep("verify_ip", async () => {
+      const ipNow = await resolveEgressIp(ctx, { force: true });
+      const same = ipNow && egressIp && ipNow === egressIp;
+      return { ok: Boolean(same), note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${Boolean(same)}` };
+    });
+
+
 
     // 5a. AkamaiGHost reference-code recovery. When the PDP 403s with an
     //     "Access Denied / Reference #..." page that embeds a NEW sensor
