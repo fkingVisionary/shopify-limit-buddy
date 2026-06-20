@@ -1269,7 +1269,7 @@ function Index() {
                   updateTask(t.id, {
                     status: "checking_out",
                     checkoutStartedAt: Date.now(),
-                    message: `Launching headless browser via ${transportLabel}…`,
+                    message: "Starting checkout…",
                   });
                   const bStart = Date.now();
                   const payload = {
@@ -1297,7 +1297,8 @@ function Index() {
                   // writes back to the job row.
                   const stageLabels: Record<string, string> = {
                     queued: "Queued",
-                    launch: "Launching headless browser",
+                    checkout_start: "Starting checkout",
+                    launch: "Starting checkout",
                     cart_add: "Adding to cart",
                     checkout_load: "Loading checkout",
                     address_fill: "Entering contact and delivery details",
@@ -1311,9 +1312,9 @@ function Index() {
                     captcha_inject: "Injecting captcha token",
                     captcha_retry: "Captcha reappeared — re-solving…",
                     captcha_blocked: "Captcha could not be bypassed",
-                    submit: browserlessDryRun ? "Finalising dry-run" : "Submitting payment",
+                    submit: browserlessDryRun ? "Finalising dry-run" : "Processing payment",
                     payment_result: "Checking payment result",
-                    three_d_secure: "Waiting for 3-D Secure verification (approve in your bank app)",
+                    three_d_secure: "3DS verification required — approve in your bank app",
                     confirm: "Waiting for order confirmation",
                     payment_declined: "Payment declined",
                     confirm_uncertain: "Order outcome uncertain",
@@ -1337,7 +1338,7 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Payment declined: ${declineMsg} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Payment declined: ${declineMsg} · ${Math.round(elapsed / 1000)}s`,
                       });
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `declined: ${declineMsg}` });
                       return;
@@ -1350,7 +1351,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Dry-run OK${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Dry-run OK${stepSummary} · ${Math.round(elapsed / 1000)}s`,
                       });
                       return;
                     }
@@ -1362,7 +1363,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Order ${b.orderId ?? "?"} confirmed · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Order ${b.orderId ?? "?"} confirmed · ${Math.round(elapsed / 1000)}s`,
                       });
                       notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                       fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
@@ -1376,7 +1377,7 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Outcome uncertain${stepSummary} · ${transportLabel} · ${Math.round(elapsed / 1000)}s`,
+                        message: `Outcome uncertain${stepSummary} · ${Math.round(elapsed / 1000)}s`,
                       });
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "outcome uncertain (no order id)" });
                       return;
@@ -1445,7 +1446,7 @@ function Index() {
                         last = job;
                         const elapsed = Date.now() - bStart;
                         const stageMsg = stageLabels[job.stage] ?? job.stage;
-                        updateTask(t.id, { message: `${stageMsg}… · ${transportLabel} · ${Math.round(elapsed / 1000)}s` });
+                        updateTask(t.id, { message: `${stageMsg}… · ${Math.round(elapsed / 1000)}s` });
                         if (job.status === "succeeded" || job.status === "failed") {
                           const b = job.status === "succeeded"
                             ? { ok: true, ...(job.result ?? {}) }
@@ -2256,7 +2257,7 @@ function TasksView({
                 {t.screenshotB64 && (
                   <details className="mt-2">
                     <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
-                      Browserless screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
+                      Checkout screenshot {t.browserlessElapsedMs ? `· ${t.browserlessElapsedMs}ms` : ""}
                     </summary>
                     <img
                       src={`data:image/png;base64,${t.screenshotB64}`}

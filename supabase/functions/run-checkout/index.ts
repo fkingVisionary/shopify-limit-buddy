@@ -16,7 +16,7 @@ const EXECUTOR_TOKEN = Deno.env.get("EXECUTOR_TOKEN") ?? "";
 const cors = {
   "access-control-allow-origin": "*",
   "access-control-allow-headers": "authorization, x-executor-token, content-type",
-  "access-control-allow-methods": "POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
 // Self-contained checkout script shipped to Browserless /function.
@@ -25,18 +25,44 @@ function checkoutScriptSource() {
   return `export default async ({ page, context }) => {
     const { input, stageUrl, twoCaptchaKey } = context;
     const steps = [];
-    let lastStep = "launch";
+    let lastStep = "checkout_start";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
     const stage = async (label) => {
-      // Best-effort cross-origin POST from inside the headless page. Time-box
-      // it hard so a slow/blocked callback never slows down checkout. We never
-      // gate any control flow on this — it's just a UI nicety.
-      try {
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 1500);
-        await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }), signal: ctrl.signal });
-        clearTimeout(to);
-      } catch {}
+      // Best-effort live progress. Send from the Browserless function context
+      // first, then fire a no-CORS page beacon as a fallback. Never let this
+      // slow or block checkout; final result remains the source of truth.
+      lastStep = label;
+      const stageEndpoint = stageUrl + "&stage=" + encodeURIComponent(label);
+      const payload = JSON.stringify({ stage: label });
+      const sendFromFunction = async () => {
+        try {
+          if (typeof fetch !== "function") return false;
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 700);
+          try {
+            await fetch(stageEndpoint, { method: "POST", headers: { "content-type": "text/plain" }, body: payload, signal: ctrl.signal });
+            return true;
+          } finally {
+            clearTimeout(to);
+          }
+        } catch { return false; }
+      };
+      const sendFromPage = async () => {
+        try {
+          await page.evaluate((url, body) => {
+            try {
+              if (navigator.sendBeacon) {
+                const ok = navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
+                if (ok) return;
+              }
+            } catch {}
+            try { fetch(url, { method: "POST", body, mode: "no-cors", keepalive: true }).catch(() => {}); } catch {}
+            try { const img = new Image(); img.src = url + "&_=" + Date.now(); } catch {}
+          }, stageEndpoint, payload);
+        } catch {}
+      };
+      await Promise.race([sendFromFunction(), new Promise((r) => setTimeout(() => r(false), 800))]);
+      void sendFromPage();
     };
 
     const fail = async (msg) => {
@@ -45,12 +71,14 @@ function checkoutScriptSource() {
       return { ok: false, failedStep: lastStep, error: msg, steps, screenshotB64: shot };
     };
       const paymentRejected = async (msg) => {
+        lastStep = "payment_declined";
+        await stage("payment_declined");
         const shot = await page.screenshot({ encoding: "base64", fullPage: false }).catch(() => null);
         log("payment_result", true, msg);
         return { ok: true, orderId: null, finalUrl: page.url(), steps, screenshotB64: shot, dryRun: false, paymentRejected: true, paymentMessage: msg };
       };
     try {
-      await stage("launch");
+      await stage("checkout_start");
 
       // Authenticate against an upstream proxy (host:port set via launch args).
       try {
@@ -1002,19 +1030,30 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      // Detect a 3-D Secure / bank challenge in any frame: stripe 3DS, adyen,
-      // braintree, generic "challenge" / "authenticate" URLs, or visible
-      // body text on the top frame.
+      // Detect a 3-D Secure / bank challenge in any frame: Stripe 3DS, Adyen,
+      // Braintree, Shopify/payment app verification, bank ACS pages, generic
+      // "challenge" / "authenticate" URLs, or visible body text.
       const detect3DS = async () => {
         try {
           const frames = page.frames();
           for (const f of frames) {
             const u = (f.url && f.url()) || "";
-            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authenticate|challenge/i.test(u)) return true;
+            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authentication|authenticate|challenge|cardinalcommerce|emv3ds|adyen|braintree|checkout\\.shopifycs\\.com\\/verify|pay\\.shopify\\.com.*(?:verify|challenge)/i.test(u)) return true;
           }
           return await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const frameHit = Array.from(document.querySelectorAll('iframe')).some((el) => {
+              const u = el.getAttribute('src') || el.getAttribute('name') || el.id || '';
+              return visible(el) && /three_d_secure|3d[_-]?secure|3ds|acs|authentication|authenticate|challenge|cardinalcommerce|emv3ds|adyen|braintree|verify/i.test(u);
+            });
+            if (frameHit) return true;
             const txt = (document.body && document.body.innerText) || "";
-            return /3-?D\\s*Secure|verify(?:\\s+your)?\\s+(?:identity|payment|purchase)|authenticate your card|approve.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i.test(txt);
+            return /3-?D\\s*Secure|secure checkout|verify(?:\\s+your)?\\s+(?:identity|payment|purchase|card)|verification required|authenticate(?:\\s+your)?\\s+(?:card|payment)|approve.*?(?:bank|app|purchase|payment)|open.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp|one-time|one time)|one-time passcode|one time passcode|bank app/i.test(txt);
           });
         } catch { return false; }
       };
@@ -1076,21 +1115,35 @@ function checkoutScriptSource() {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: cors });
 
   const reqUrl = new URL(req.url);
   const action = reqUrl.searchParams.get("action");
   const supa = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
-  // Stage callback path — called from the headless browser running inside
-  // Browserless to update the current step label. Auth is the unguessable
-  // jobId UUID; no executor token (the headless page can't attach headers).
+  if (req.method !== "POST" && !(req.method === "GET" && action === "stage")) {
+    return new Response("Method not allowed", { status: 405, headers: cors });
+  }
+
+  // Stage callback path — called from the Browserless function/page to update
+  // the current checkout step label. Auth is the unguessable jobId UUID; no
+  // executor token (the headless page cannot attach headers reliably).
   if (action === "stage") {
     const jobId = reqUrl.searchParams.get("jobId");
     if (!jobId) return new Response("missing jobId", { status: 400, headers: cors });
-    let s: { stage?: string } = {};
-    try { s = await req.json(); } catch {}
-    if (s.stage) await supa.from("checkout_jobs").update({ stage: s.stage }).eq("id", jobId);
+    let s: { stage?: string } = { stage: reqUrl.searchParams.get("stage") ?? undefined };
+    if (!s.stage && req.method !== "GET") {
+      try {
+        const text = await req.text();
+        if (text) s = JSON.parse(text);
+      } catch {}
+    }
+    if (s.stage) {
+      await supa
+        .from("checkout_jobs")
+        .update({ stage: s.stage })
+        .eq("id", jobId)
+        .in("status", ["pending", "running"]);
+    }
     return new Response("ok", { headers: cors });
   }
 
@@ -1117,7 +1170,7 @@ Deno.serve(async (req) => {
   const runWorker = async () => {
   await supa.from("checkout_jobs").update({
     status: "running",
-    stage: "launch",
+    stage: "checkout_start",
   }).eq("id", jobId);
 
   if (!BROWSERLESS_KEY) {
