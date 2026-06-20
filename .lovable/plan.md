@@ -1,81 +1,84 @@
-# JB Hi-Fi checkout support (Browserless)
+# Hyper Solutions integration plan
 
-JB Hi-Fi is **Shopify Plus** but everything user-facing is custom: the cart is a React app mounted at `#cart-services`, the PDP is a `theme-jbhifi` Liquid template, and checkout runs on a JB-branded host (not `*.myshopify.com`). Standard selectors from the generic Browserless script will not work. Akamai (`_abck`, `bm_sz`) sits in front of every page, so the bot has to behave like a real browser from page one — no raw `fetch('/cart/add.js')` from a cold context.
+Goal: solve Akamai (and later Datadome / Kasada / PerimeterX / Incapsula / Akamai SBSD) for JB Hi-Fi and any future protected store, so the checkout bot can run a fast HTTP path first and fall back to Browserless only when needed.
 
-The plan is three small phases: a one-off recon pass to capture real selectors/endpoints, a per-store "adapter" abstraction so JB Hi-Fi doesn't pollute the generic Shopify path, then the JB Hi-Fi adapter itself.
+## Architecture
 
-## Phase 1 — Recon (one Browserless run, no commit yet)
-
-Add a temporary `recon` mode to `supabase/functions/run-checkout/index.ts` that, given a JB Hi-Fi product URL:
-
-1. Loads the PDP with a real UA + viewport, waits for `#cart-services` React to mount, screenshots.
-2. Clicks the real "Add to cart" button (not `/cart/add.js`) and screenshots the resulting cart drawer.
-3. Clicks "Checkout", follows redirects, and records: final checkout host, whether it's classic Shopify `/checkouts/cn/<token>` or Shopify's new one-page checkout, and the DOM structure of each step.
-4. For each step (contact, shipping address, shipping method, payment), dumps: every visible `<input>`/`<select>` with its `name`, `id`, `aria-label`, and the surrounding label text; every `<button>` with its text and `data-*` attributes; every `<iframe>` `name`/`src`.
-5. Detects payment provider iframes (Stripe `card-fields-*`, Adyen `adyen-checkout`, Braintree `braintree-hosted-field`) and BNPL tiles (Afterpay/Zip/humm/PayPal/Apple Pay).
-
-Output is a JSON blob written to the job's `result` column and screenshots base64'd in `session`. We read it once and throw the recon code away.
-
-## Phase 2 — Store-adapter abstraction
-
-Right now `run-checkout/index.ts` hardcodes the generic Shopify flow. Refactor so the worker picks an **adapter** by hostname:
-
-```text
-adapters/
-  shopify-generic.ts   // current behavior, default
-  jbhifi.ts            // new
+```
+checkout job
+  └─ adapter (jbhifi, shopify-generic, …)
+       ├─ try HTTP path (Fly executor + undici)
+       │     └─ AntibotProvider.solve({ kind: "akamai", url, … })
+       │            → Hyper /v2/akamai/sensor → POST sensor → _abck cookie
+       │            → Hyper /v2/akamai/pixel  → POST pixel  → bm_sz cookie
+       └─ on block / 403 / challenge → Browserless fallback
+              └─ same AntibotProvider, intercepts sensor POSTs in-page
 ```
 
-Each adapter exports the same interface:
+One `AntibotProvider` interface, one Hyper client, two call sites (HTTP runner + Browserless script). Adapters never talk to Hyper directly.
+
+## Secrets
+
+Add via `add_secret` after approval:
+- `HYPER_API_KEY` — Hyper Solutions API token
+- `HYPER_BASE_URL` (optional, default `https://akm.hypersolutions.co`) — lets us swap regions / vendors without code changes
+
+## New files
+
+1. `src/lib/antibot/hyper-client.ts`
+   - `solveAkamaiSensor({ pageUrl, userAgent, abck, bmsz, scriptHash })`
+   - `solveAkamaiPixel({ pageUrl, userAgent, html })`
+   - `solveSbsd(...)`, `solveDatadome(...)`, `solveKasada(...)`, `solvePx(...)`, `solveIncapsula(...)` — stubs that throw `not_implemented` until enabled
+   - Thin `fetch` wrapper; reads `HYPER_API_KEY` from `process.env` inside the call (never at module scope); 10s timeout; structured errors `{ vendor, code, status, body }`
+2. `src/lib/antibot/types.ts` — shared `AntibotProvider` interface + `Challenge` discriminated union
+3. `executor/antibot.js` — mirror of the client for the Fly Node executor (uses `undici`, same env var `HYPER_API_KEY` injected via Fly secrets)
+4. `supabase/functions/run-checkout/antibot.ts` — Deno mirror for the Browserless orchestrator side
+
+## Changes to existing files
+
+- `executor/checkout.js`
+  - After `warm_home`, parse response for Akamai script tag → if present, call `solveAkamaiSensor` → POST sensor to the script URL → store `_abck` in jar
+  - Repeat on `cart_add` / `cart_redirect` if response sets a new `_abck` (Akamai rotates)
+  - Add `steps` entries: `akamai_sensor`, `akamai_pixel` with `ok/ms/status`
+- `supabase/functions/run-checkout/index.ts`
+  - Pass `HYPER_API_KEY` into the Browserless `code` payload as an arg
+  - Browserless script: `page.route('**/akam/*', …)` to intercept sensor POSTs, call Hyper, replace body
+  - New `detectChallenge(page)` helper that fingerprints vendor (Akamai/DD/Kasada/PX) from response headers/body and routes to the right Hyper endpoint
+- `src/lib/checkout-jobs.functions.ts` — no schema change; surface antibot step results in the existing `result` JSON so the UI panel can show "Akamai solved 1.2s"
+- `supabase/migrations/<new>.sql` — add `antibot_events` JSONB column to `checkout_jobs` (nullable) for richer per-step diagnostics; GRANTs + RLS mirror existing table
+
+## Adapter flow (JB Hi-Fi)
+
+1. HTTP path on Fly:
+   - GET PDP via AU residential proxy → solve Akamai sensor + pixel
+   - POST `/cart/add.js` (or JB's React cart microservice once recon confirms endpoint)
+   - GET checkout token URL → solve Akamai again if rotated
+   - If any step returns 403 / challenge HTML → mark `failedStep`, return to orchestrator
+2. Browserless fallback (only on HTTP failure):
+   - Same Hyper provider, but Playwright drives the page; Hyper supplies sensor payloads via route interception
+   - Existing recon-style stage screenshots kept for debugging
+
+## Provider abstraction (future-proofing)
+
+`AntibotProvider` interface so we can later swap Hyper for another vendor or run multiple in parallel per vendor:
 
 ```ts
-type Adapter = {
-  matches: (storeUrl: string) => boolean
-  addToCart: (page, job) => Promise<void>
-  gotoCheckout: (page, job) => Promise<void>
-  fillContact: (page, profile) => Promise<void>
-  fillAddress: (page, profile) => Promise<void>
-  selectShipping: (page) => Promise<void>
-  fillPayment: (page, card) => Promise<void>
-  submit: (page) => Promise<void>
-  detect3DS: (page) => Promise<boolean>
-  detectDecline: (page) => Promise<string | null>
-  detectSuccess: (page) => { ok: boolean; orderId?: string }
+interface AntibotProvider {
+  supports(vendor: "akamai"|"akamai-sbsd"|"datadome"|"kasada"|"perimeterx"|"incapsula"): boolean
+  solve(challenge: Challenge): Promise<Solution>
 }
 ```
 
-The worker calls `writeStage()` between steps (`cart_add`, `checkout_load`, `address`, `shipping`, `payment_submitting`, `three_d_secure`, `confirm`) so the UI stage labels already added last turn light up uniformly across adapters. No UI changes this turn.
+Only `HyperProvider` ships now; Akamai sensor+pixel fully wired, the other vendors return `not_implemented` with a clear error so we can light them up incrementally.
 
-## Phase 3 — JB Hi-Fi adapter
+## Out of scope (this plan)
 
-Built from Phase 1 recon output. Expected shape (will be verified, not assumed):
+- Actual JB cart/checkout XHR endpoints — still need recon round 2 to capture them; Hyper integration is independent and unblocks that work
+- Datadome/Kasada/PX/SBSD live implementations — interface + stubs only; turn on per-store when a real target appears
+- UI changes beyond surfacing antibot step timings in the existing job result viewer
 
-- **addToCart**: navigate to PDP, wait for `#cart-services` mount, click the in-page add-to-cart button via Playwright/Puppeteer click (not XHR) so Akamai sees a real user gesture. Wait for cart drawer state.
-- **gotoCheckout**: click the cart's "Checkout" button, wait for navigation to the JB-branded checkout host, capture the checkout token from the URL.
-- **fillContact / fillAddress**: single-pass `page.evaluate` (same pattern as last turn's optimization) using JB-specific selectors discovered in recon. AU address: `country=AU` preselected, `province` is state code (`NSW`/`VIC`/etc.), `zip` is 4 digits.
-- **selectShipping**: pick first available rate; JB usually offers Standard + Express + Click & Collect — default to Standard.
-- **fillPayment**: detect provider from recon. If Stripe iframes, reuse existing card-iframe fill; otherwise branch (Adyen/Braintree).
-- **submit + detect3DS**: same loop as today but with 3DS frame URL patterns confirmed for JB's PSP, and decline phrases tuned to JB's actual error copy.
+## Acceptance
 
-## Anti-bot hardening (applies to both adapters)
-
-- Set UA + `sec-ch-ua` + `accept-language: en-AU` and viewport `1440x900`.
-- Use `--disable-blink-features=AutomationControlled` (already set) and add `navigator.webdriver=false` + plausible `navigator.languages` via `evaluateOnNewDocument`.
-- Always load the PDP first (warms `_abck`) before touching cart — never POST `/cart/add.js` from a cold context against JB.
-- Route the Browserless session through the AU residential proxy (`PROXY_URL_RESI`) if it's AU-exit; if it isn't, flag that we need an AU proxy before JB will be reliable.
-
-## Webhooks + stages
-
-No changes — `fireTerminalWebhook` and the `writeStage` calls added last turn already cover the new adapter as long as it emits the same stage strings.
-
-## Files to change (Phase 2 + 3)
-
-- `supabase/functions/run-checkout/index.ts` — switch to adapter dispatch.
-- `supabase/functions/run-checkout/adapters/shopify-generic.ts` — extract current logic verbatim.
-- `supabase/functions/run-checkout/adapters/jbhifi.ts` — new, built from Phase 1 output.
-
-## Open questions for you
-
-1. **Proxy**: is `PROXY_URL_RESI` an AU exit? JB will geo-fence / Akamai-flag non-AU IPs quickly.
-2. **BNPL**: do you only care about card checkout, or do you also want Afterpay/Zip flows?
-3. **Recon run**: OK for me to ship Phase 1 first as a throwaway `mode: "recon"` job, run it once against the Pokemon URL, then build Phases 2–3 from the captured DOM? That's far more reliable than guessing selectors.
+- `executor/checkout.js` dry-run against `jbhifi.com.au` returns `ok: true` with `akamai_sensor` + `akamai_pixel` steps recorded and `_abck` cookie present in `jar.dump()`
+- Browserless recon against JB no longer 403s on `/cart` after Hyper interception is enabled
+- `HYPER_API_KEY` missing → adapters fail with a clear `antibot_misconfigured` error, no silent fallback
