@@ -1,8 +1,8 @@
 {
   "name": "j1ms-bot-executor",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Node executor service — runs checkout HTTP chains through residential proxies (undici + ProxyAgent), with Hyper Solutions for Akamai antibot. Sits behind the Lovable control plane.",
+  "description": "Node executor service — runs checkout HTTP chains through residential proxies with Chrome-impersonated TLS (node-tls-client) + Hyper Solutions for Akamai antibot. Sits behind the Lovable control plane.",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -15,6 +15,6 @@
   "dependencies": {
     "fastify": "^4.28.1",
     "hyper-sdk-js": "^2.12.2",
-    "undici": "^6.19.8"
+    "node-tls-client": "^2.1.0"
   }
 }

@@ -132,6 +132,8 @@ app.post("/recon", async (req, reply) => {
     };
   } catch (e) {
     return { ok: false, error: e?.message ?? String(e), elapsedMs: Date.now() - t0 };
+  } finally {
+    try { await dispatcher?.close?.(); } catch { /* ignore */ }
   }
 });
 
