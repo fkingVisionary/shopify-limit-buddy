@@ -1480,6 +1480,14 @@ Deno.serve(async (req) => {
     }
   }
 
+  // Main worker path — requires the shared executor token.
+  const token = req.headers.get("x-executor-token");
+  if (!EXECUTOR_TOKEN || token !== EXECUTOR_TOKEN) {
+    return new Response("Unauthorized", { status: 401, headers: cors });
+  }
+
+
+
 
   let body: { jobId?: string } = {};
   try { body = await req.json(); } catch {}
