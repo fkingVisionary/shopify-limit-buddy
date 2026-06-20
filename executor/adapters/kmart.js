@@ -337,10 +337,11 @@ export const kmartAdapter = {
             return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
           });
         }
-      } else {
-        steps.push({ step: "sbsd_missing", ok: false, note: "403 body had no ?v=<uuid> script tag" });
       }
+    } else if (pdpStatus >= 400) {
+      steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
+
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
