@@ -5,6 +5,7 @@
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
+import { makeDispatcher, createJar, request, UA } from "./http.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.EXECUTOR_TOKEN;
@@ -18,12 +19,17 @@ const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
 app.get("/health", async () => ({ ok: true, ts: Date.now() }));
 
-app.post("/run", async (req, reply) => {
+function checkAuth(req, reply) {
   const auth = req.headers.authorization ?? "";
   if (auth !== `Bearer ${TOKEN}`) {
     reply.code(401);
-    return { ok: false, error: "unauthorized" };
+    return false;
   }
+  return true;
+}
+
+app.post("/run", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const task = req.body;
   if (!task?.taskId || !task?.storeUrl || !task?.variantId) {
     reply.code(400);
@@ -40,6 +46,72 @@ app.post("/run", async (req, reply) => {
     dryRun: task.dryRun !== false,
   });
   return result;
+});
+
+// ─── Recon endpoint ──────────────────────────────────────────────────
+// Fetches a URL through the residential proxy and returns metadata about
+// the response: status, Set-Cookie summary, all <script src> values,
+// snippets of inline scripts that mention Akamai keywords, and a head
+// slice of the HTML. Used by the agent to figure out the current sensor
+// script URL pattern when an adapter's regex fails.
+app.post("/recon", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const { url, proxy, maxBytes = 80_000 } = req.body ?? {};
+  if (!url) {
+    reply.code(400);
+    return { ok: false, error: "url required" };
+  }
+  const jar = createJar();
+  const dispatcher = makeDispatcher(proxy ?? process.env.PROXY_URL_RESI ?? null);
+  const ctx = { dispatcher, jar };
+  const t0 = Date.now();
+  try {
+    const res = await request(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "user-agent": UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "en-AU,en;q=0.9",
+          "upgrade-insecure-requests": "1",
+        },
+      },
+      ctx,
+    );
+    const html = await res.text();
+    const scriptSrcs = [...html.matchAll(/<script[^>]+src=["']([^"']+)["']/g)].map((m) => m[1]).slice(0, 40);
+    const inlineHits = [];
+    const inlineRe = /<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;
+    let m;
+    let scanned = 0;
+    while ((m = inlineRe.exec(html)) && scanned < 30) {
+      scanned++;
+      const body = m[1];
+      if (/akamai|_abck|bm_sz|sensor_data|bm_so|bmak|sbsd/i.test(body)) {
+        const idx = body.search(/akamai|_abck|bm_sz|sensor_data|bm_so|bmak|sbsd/i);
+        inlineHits.push(body.slice(Math.max(0, idx - 40), idx + 200));
+      }
+    }
+    return {
+      ok: res.ok,
+      status: res.status,
+      elapsedMs: Date.now() - t0,
+      finalUrl: res.url ?? url,
+      headers: {
+        server: res.headers.get("server"),
+        "content-type": res.headers.get("content-type"),
+        "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+      },
+      cookies: Object.keys(jar.dump()),
+      htmlBytes: html.length,
+      scriptSrcs,
+      inlineAkamaiHits: inlineHits,
+      htmlHead: html.slice(0, maxBytes),
+    };
+  } catch (e) {
+    return { ok: false, error: e?.message ?? String(e), elapsedMs: Date.now() - t0 };
+  }
 });
 
 app
