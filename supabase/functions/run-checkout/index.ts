@@ -120,7 +120,12 @@ function checkoutScriptSource() {
       } catch {}
 
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+      const origin = new URL(input.storeUrl).origin;
+      // Skip the product page entirely — navigate straight to /cart. It serves
+      // a minimal HTML doc on every Shopify store, establishes the storefront
+      // cookie jar, and is the same origin /cart/add.js expects. Saves a full
+      // document load vs going to the product page first.
+      await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 15000 });
       await stage("cart_add");
       const atc = await page.evaluate(async (variantId, qty) => {
         const r = await fetch("/cart/add.js", {
@@ -136,7 +141,6 @@ function checkoutScriptSource() {
 
       lastStep = "checkout_load";
       await stage("checkout_load");
-      const origin = new URL(input.storeUrl).origin;
       // Direct navigation to /checkout. Adding a /cart preload or a custom
       // referer triggered Cloudflare bot-blocking (net::ERR_FAILED) on some
       // Shopify stores; the simple goto is what works.
@@ -149,7 +153,7 @@ function checkoutScriptSource() {
           break;
         } catch (e) {
           lastNavErr = e;
-          try { await new Promise((r) => setTimeout(r, 1500)); } catch {}
+          try { await new Promise((r) => setTimeout(r, 600)); } catch {}
         }
       }
       if (!checkoutLoaded) {
