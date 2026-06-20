@@ -120,7 +120,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             body: JSON.stringify(payload),
           });
           const data = await res.json().catch(() => ({}));
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, cardSent: Boolean(card) });
+          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, cardSent: Boolean(card), proxyUsed });
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
