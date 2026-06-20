@@ -219,28 +219,29 @@ export const kmartAdapter = {
     // Akamai 403s after a clean sensor solve.
     const dumpRequestState = (label, url, headers) => {
       const jarDump = ctx.jar.dump();
-      const cookies = Object.fromEntries(
-        Object.entries(jarDump).map(([k, v]) => {
-          const s = String(v ?? "");
-          // Truncate long values; preserve _abck/bm_sz fully (we need to verify ~0~ etc).
-          if (/_abck|bm_sz|bm_so|sbsd|ak_bmsc|bm_sv/.test(k)) return [k, s.slice(0, 200)];
-          return [k, s.length > 80 ? `${s.slice(0, 60)}…(${s.length})` : s];
-        }),
-      );
+      // Minimal recon: URL, header order, cookie names + abck/bm_sz markers only.
+      // Full cookie/header dump was bloating step notes and getting our
+      // post-pdp steps cut off by upstream truncation. Trim aggressively.
+      const abck = String(jarDump._abck ?? "");
+      const bmsz = String(jarDump.bm_sz ?? "");
+      const marker = (v) => {
+        if (!v) return "(none)";
+        const m = v.match(/~(-?\d+)~/);
+        return `${v.length}b ind=${m?.[1] ?? "?"}`;
+      };
       steps.push({
         step: label,
         ok: true,
         note: JSON.stringify({
           url,
-          headerOrder: Object.keys(headers),
-          headers,
-          cookieNames: Object.keys(jarDump),
-          cookieCount: Object.keys(jarDump).length,
-          cookies,
-          abckRaw: jarDump._abck ?? null,
+          hdrs: Object.keys(headers).length,
+          ck: Object.keys(jarDump),
+          abck: marker(abck),
+          bmsz: marker(bmsz),
         }),
       });
     };
+
 
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
