@@ -10,10 +10,15 @@ import { request } from "./http.js";
 const TTL_MS = 5 * 60 * 1000;
 const cache = new Map(); // key = proxy string ("" for direct) → { ip, ts }
 
-export async function resolveEgressIp(ctx) {
-  const key = ctx?.dispatcher ? ctx.dispatcher[Symbol.for("proxy-uri")] ?? "proxied" : "";
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.ts < TTL_MS) return hit.ip;
+export async function resolveEgressIp(ctx, { force = false } = {}) {
+  // Key by the actual proxy URL so each proxy session gets its own cached IP.
+  // Previously every proxied task shared one "proxied" bucket, which mixed
+  // IPs across sessions and made drift detection useless.
+  const key = ctx?.dispatcher?.proxy ?? "";
+  if (!force) {
+    const hit = cache.get(key);
+    if (hit && Date.now() - hit.ts < TTL_MS) return hit.ip;
+  }
 
   try {
     const res = await request("https://api.ipify.org?format=json", { method: "GET" }, ctx);
@@ -26,3 +31,4 @@ export async function resolveEgressIp(ctx) {
     return null;
   }
 }
+
