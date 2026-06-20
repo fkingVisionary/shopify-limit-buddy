@@ -56,13 +56,15 @@ app.post("/run", async (req, reply) => {
 // script URL pattern when an adapter's regex fails.
 app.post("/recon", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
-  const { url, proxy, maxBytes = 80_000 } = req.body ?? {};
+  const { url, proxy, useProxy, maxBytes = 80_000 } = req.body ?? {};
   if (!url) {
     reply.code(400);
     return { ok: false, error: "url required" };
   }
   const jar = createJar();
-  const dispatcher = makeDispatcher(proxy ?? process.env.PROXY_URL_RESI ?? null);
+  // Default to direct (Fly egress). Only use residential when explicitly opted in.
+  const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const dispatcher = makeDispatcher(resolvedProxy);
   const ctx = { dispatcher, jar };
   const t0 = Date.now();
   try {

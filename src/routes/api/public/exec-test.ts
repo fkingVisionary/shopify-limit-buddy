@@ -21,8 +21,12 @@ export const Route = createFileRoute("/api/public/exec-test")({
           taskId?: string;
           mode?: "run" | "recon";
           reconUrl?: string;
+          useProxy?: boolean;
         };
         const mode = body.mode ?? "run";
+        // Default to direct (Fly egress IP) to conserve residential proxy data
+        // during testing. Set useProxy:true to opt into PROXY_URL_RESI.
+        const proxy = body.useProxy ? process.env.PROXY_URL_RESI ?? null : null;
         // Defensive: strip any path the user accidentally pasted (e.g. /health)
         // so EXECUTOR_URL always resolves to the origin.
         let origin = url.trim();
@@ -39,10 +43,10 @@ export const Route = createFileRoute("/api/public/exec-test")({
             const res = await fetch(`${origin}/recon`, {
               method: "POST",
               headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-              body: JSON.stringify({ url: target }),
+              body: JSON.stringify({ url: target, proxy }),
             });
             const data = await res.json().catch(() => ({}));
-            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data });
+            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, usedProxy: Boolean(proxy) });
           }
           if (!body.storeUrl) {
             return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
@@ -53,7 +57,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             variantId: body.variantId ?? 1,
             qty: 1,
             dryRun: true,
-            proxy: process.env.PROXY_URL_RESI ?? null,
+            proxy,
           };
           const res = await fetch(`${origin}/run`, {
             method: "POST",
