@@ -1445,6 +1445,43 @@ Deno.serve(async (req) => {
     return new Response("Unauthorized", { status: 401, headers: cors });
   }
 
+  // ─── RECON path (Phase 1, throwaway) ───────────────────────────
+  // POST ?action=recon with { productUrl, proxy? } → returns JSON
+  // dump of every checkout step's DOM. Auth: same EXECUTOR_TOKEN.
+  if (action === "recon") {
+    if (!BROWSERLESS_KEY) return new Response("no browserless key", { status: 500, headers: cors });
+    let rb: { productUrl?: string; proxy?: string } = {};
+    try { rb = await req.json(); } catch {}
+    if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
+    const blUrl = new URL("https://production-sfo.browserless.io/function");
+    blUrl.searchParams.set("token", BROWSERLESS_KEY);
+    blUrl.searchParams.set("timeout", "180000");
+    blUrl.searchParams.set("stealth", "true");
+    const ctx: Record<string, unknown> = { productUrl: rb.productUrl };
+    if (rb.proxy) {
+      try {
+        const m = String(rb.proxy).match(/^(?:([^:]+):([^@]+)@)?([^:]+):(\d+)$/);
+        if (m) {
+          blUrl.searchParams.set("launch", JSON.stringify({ args: [`--proxy-server=http://${m[3]}:${m[4]}`] }));
+          if (m[1]) { ctx.__proxyUser = m[1]; ctx.__proxyPass = m[2] || ""; }
+        }
+      } catch {}
+    }
+    try {
+      const res = await fetch(blUrl.toString(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: reconScriptSource(), context: ctx }),
+      });
+      const text = await res.text();
+      return new Response(text, { status: res.status, headers: { ...cors, "content-type": "application/json" } });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return new Response(JSON.stringify({ ok: false, error: msg }), { status: 500, headers: { ...cors, "content-type": "application/json" } });
+    }
+  }
+
+
   let body: { jobId?: string } = {};
   try { body = await req.json(); } catch {}
   const jobId = body.jobId;
