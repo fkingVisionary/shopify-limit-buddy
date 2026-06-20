@@ -95,12 +95,26 @@ export const kmartAdapter = {
         steps.push({ step: name, ok: out.ok !== false, status: out.status ?? null, ms: Date.now() - t0, note: out.note });
         return out;
       } catch (e) {
+        const detail = (() => {
+          if (e?.code === "antibot_misconfigured") return "HYPER_API_KEY missing on executor";
+          const parts = [e?.message ?? String(e)];
+          if (e?.cause) parts.push(`cause=${e.cause?.message ?? JSON.stringify(e.cause)}`);
+          if (e?.response) {
+            try {
+              parts.push(`resp=${JSON.stringify({ status: e.response.status, data: e.response.data })}`);
+            } catch {}
+          }
+          if (e?.data) {
+            try { parts.push(`data=${JSON.stringify(e.data)}`); } catch {}
+          }
+          return parts.join(" | ").slice(0, 800);
+        })();
         steps.push({
           step: name,
           ok: false,
           status: null,
           ms: Date.now() - t0,
-          note: e?.code === "antibot_misconfigured" ? "HYPER_API_KEY missing on executor" : e?.message ?? String(e),
+          note: detail,
         });
         throw e;
       }
