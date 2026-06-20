@@ -1395,46 +1395,24 @@ function reconScriptSource() {
       await wait(3000);
       await snap("after_atc"); await dumpDom("after_atc");
 
-      // Open the cart drawer by clicking the header Cart control.
-      report.cartOpened = await page.evaluate(() => {
-        const cands = Array.from(document.querySelectorAll('[data-testid*="cart" i], [data-test*="cart" i], a[href="/cart"], button, a'));
-        for (const el of cands) {
-          const t = (el.innerText || "").trim();
-          const href = el.getAttribute("href") || "";
-          if (/^\\s*cart\\s*$/i.test(t) || href === "/cart") {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { el.click(); return t || href; }
-          }
-        }
-        return null;
-      }).catch(() => null);
-      await wait(2500);
-      await snap("cart_drawer"); await dumpDom("cart_drawer");
+      // Navigate to /cart directly — JB Hi-Fi's "Cart" header doesn't open
+      // an in-page drawer in a reliable way; the /cart route is server-rendered.
+      try {
+        const origin = new URL(productUrl).origin;
+        await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) { report.errors.push("cart-nav:" + (e?.message ?? e)); }
+      await wait(3000);
+      await snap("cart_page"); await dumpDom("cart_page");
 
-      // Click Checkout from drawer or cart page.
-      report.checkoutClicked = await page.evaluate(() => {
-        const sels = ['[data-testid*="checkout" i]', '[data-test*="checkout" i]', 'a[href*="/checkout"]'];
-        for (const s of sels) {
-          for (const el of Array.from(document.querySelectorAll(s))) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { el.click(); return s; }
-          }
-        }
-        const cands = Array.from(document.querySelectorAll('button, a'));
-        for (const el of cands) {
-          const t = (el.innerText || "").trim();
-          if (/^(checkout|secure checkout|proceed to checkout|continue to checkout)$/i.test(t)) {
-            const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { el.click(); return t; }
-          }
-        }
-        return null;
-      }).catch(() => null);
-      try { await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }); }
-      catch (e) { report.errors.push("nav:" + (e?.message ?? e)); }
+      // Try /checkout direct nav too (in case JB serves it without intermediary).
+      try {
+        const origin = new URL(productUrl).origin;
+        await page.goto(origin + "/checkout", { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) { report.errors.push("checkout-nav:" + (e?.message ?? e)); }
       await wait(5000);
       await snap("checkout_contact"); await dumpDom("checkout_contact");
       try { report.checkoutHost = new URL(page.url()).host; } catch {}
+      try { report.checkoutUrl = page.url(); } catch {}
 
       report.contactContinueClicked = await page.evaluate(() => {
         const cands = Array.from(document.querySelectorAll('button, input[type="submit"], [data-testid*="continue" i], [data-test*="continue" i]'));
