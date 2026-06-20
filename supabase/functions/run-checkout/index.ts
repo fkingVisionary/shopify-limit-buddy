@@ -1448,10 +1448,6 @@ Deno.serve(async (req) => {
     let rb: { productUrl?: string; proxy?: string } = {};
     try { rb = await req.json(); } catch {}
     if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
-    if (!BROWSERLESS_KEY) return new Response("no browserless key", { status: 500, headers: cors });
-    let rb: { productUrl?: string; proxy?: string } = {};
-    try { rb = await req.json(); } catch {}
-    if (!rb.productUrl) return new Response("missing productUrl", { status: 400, headers: cors });
     const blUrl = new URL("https://production-sfo.browserless.io/function");
     blUrl.searchParams.set("token", BROWSERLESS_KEY);
     blUrl.searchParams.set("timeout", "180000");
