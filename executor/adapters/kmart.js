@@ -13,29 +13,21 @@ import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 
-// Detects the SBSD script tag served inside Akamai 403 challenge HTML.
-// Pattern (per Hyper docs §3.4): /<path>?v=<uuid>[&t=<token>]. The uuid
-// MUST look like a real UUID — Akamai's edge "reference code" page also
-// embeds a `?v=` script tag but with an EMPTY v value; that page is a
-// sensor re-challenge, not SBSD. The previous loose `[0-9a-f-]+` matcher
-// matched on the empty value and mis-routed the flow.
-const SBSD_RE = /src=["']([a-z0-9\/\-_.]+)\?v=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:&[^"']*?t=([^"'&]+))?["']/i;
+// Detects the SBSD script tag served inside Akamai SBSD challenge HTML
+// (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
+//   <script src="/path?v=<token>[&t=<token>]">
+// `v` is an opaque token (NOT necessarily UUID-shaped), and the presence
+// of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
+// passive SBSD (2 submissions). The previous UUID-strict matcher missed
+// all real Kmart challenges because their `v` value is not UUID-formatted.
+const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
   return { path: m[1], uuid: m[2], t: m[3] ?? "" };
 }
 
-// AkamaiGHost reference-code page: 403 body containing "Reference #..."
-// (or "Access Denied") that embeds a fresh sensor script path with an
-// empty `?v=` query. The documented recovery (Hyper §1.4) is to fetch the
-// new script and run another sensor solve cycle against it, then retry.
-const REFERENCE_SCRIPT_RE = /src=["'](\/[A-Za-z0-9_\-\/.]+)\?v=["']/i;
-function parseReferenceScript(html) {
-  if (!/Reference\s*#|Access\s+Denied/i.test(html)) return null;
-  const m = REFERENCE_SCRIPT_RE.exec(html);
-  return m ? m[1] : null;
-}
+
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
