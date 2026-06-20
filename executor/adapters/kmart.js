@@ -44,7 +44,7 @@ const ACCEPT_LANG = "en-AU,en;q=0.9";
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
 const CHROME_CH = {
-  "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"macOS"',
 };
