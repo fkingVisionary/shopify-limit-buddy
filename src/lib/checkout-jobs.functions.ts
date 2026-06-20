@@ -27,6 +27,17 @@ const CardSchema = z.object({
   exp_year: z.string().regex(/^\d{2,4}$/),
   cvv: z.string().regex(/^\d{3,4}$/),
 });
+const NotifySchema = z.object({
+  webhookUrl: z.string().url().max(500),
+  enabled: z.object({
+    in_stock: z.boolean(),
+    checkout_ready: z.boolean(),
+    confirmed: z.boolean(),
+    failed: z.boolean(),
+  }),
+  base: z.record(z.string(), z.any()),
+}).optional().nullable();
+
 const EnqueueSchema = z.object({
   storeUrl: z.string().url().max(500),
   variantId: z.number().int().positive(),
@@ -36,6 +47,7 @@ const EnqueueSchema = z.object({
   proxy: z.string().min(7).max(200).optional().nullable(),
   captchaToken: z.string().min(10).max(4000).optional().nullable(),
   dryRun: z.boolean().optional(),
+  notify: NotifySchema,
 });
 
 export type CheckoutJobStatus = "pending" | "running" | "succeeded" | "failed";
