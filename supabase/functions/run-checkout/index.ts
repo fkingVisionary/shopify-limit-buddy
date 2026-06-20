@@ -1309,6 +1309,7 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: "failed", stage: "transport", error: "BROWSERLESS_API_KEY missing on server",
     }).eq("id", jobId);
+    await fireTerminalWebhook(supa, jobId, "failed", job, { message: "BROWSERLESS_API_KEY missing on server" });
     return new Response("no browserless key", { status: 500, headers: cors });
   }
 
