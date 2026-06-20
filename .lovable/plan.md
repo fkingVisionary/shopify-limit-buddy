@@ -1,80 +1,50 @@
-# Pass card per-request from Lovable to the executor
 
-## Context
+## Goal
 
-Fly deploys via GitHub Actions have been working all along — the Fly UI's "unable to detect runtime" error happened because its launcher scans the repo root, but our Dockerfile lives in `executor/`. That path was never the intended one.
+Stop hardcoding any proxy at the executor or in code. For testing, store the proxy pool in the existing `proxy_groups` table and have `/api/public/exec-test` pick one at random per call. Keep Fly's `PROXY_URL_RESI` as a last-resort fallback so nothing breaks mid-transition.
 
-`PAYDOCK_PUBLIC_KEY` is now set on Fly, so the executor can read it from `process.env`. The remaining gap is **card details**: they live in Lovable Cloud and should be sent to the executor per-request (so the PAN never sits in Fly's secret store). This also lines up with the future plan to source card data from user profiles instead of env vars.
+## Why reuse `proxy_groups`
 
-## What changes
+The table already exists with `workspace_id`, `name`, `proxies text[]`. The eventual "proxy group attached to a task" flow will read from this same table, so the testing path and the production path stay on one schema — no throwaway work.
 
-### 1. Control plane (Lovable Cloud) — `src/lib/executor.functions.ts`
+## Changes
 
-Extend `runOnExecutor` so the server-side handler reads card fields from `process.env` and includes them in the `/run` payload sent to Fly:
+### 1. Seed a test proxy group (migration)
 
-- `KMART_CARD_NUMBER`
-- `KMART_CARD_CVV`
-- `KMART_CARD_EXPIRY_MONTH`
-- `KMART_CARD_EXPIRY_YEAR`
-- `KMART_CARD_HOLDER`
+Insert one `proxy_groups` row named `Test Pool` containing the 10 `residential.wealthproxies.com:3128:...` lines. Workspace: the existing single workspace in `workspaces` (if multiple exist, I'll ask before seeding).
 
-`PAYDOCK_PUBLIC_KEY` is **not** included — executor reads it from its own Fly env.
+Format stored in `proxies[]`: keep the raw `host:port:user:pass` lines exactly as provided. A small `toProxyUrl()` helper converts each to `http://user:pass@host:port` at request time.
 
-Payload shape (new optional `card` block; omitted entirely when any required field is missing, so dry-runs still work):
+### 2. `src/routes/api/public/exec-test.ts`
 
-```json
-{
-  "taskId": "...",
-  "storeUrl": "...",
-  "variantId": 123,
-  "qty": 1,
-  "proxy": "...",
-  "dryRun": false,
-  "card": {
-    "number": "...",
-    "cvv": "...",
-    "expMonth": "04",
-    "expYear": "28",
-    "holder": "morgan edwards"
-  }
-}
-```
+- Accept new optional body fields:
+  - `proxyGroupId?: string` — pick random from this group
+  - `proxyGroupName?: string` — pick random from group with this name (default: `"Test Pool"`)
+  - `proxyUrl?: string` — explicit override, wins over group
+- Resolution order per call:
+  1. `proxyUrl` (explicit) → use it
+  2. Look up group → pick random proxy from `proxies[]`, convert to URL
+  3. If group empty/missing → omit proxy from payload (executor falls back to its env)
+- Use `supabaseAdmin` server-side to read `proxy_groups` (read is server-only, no client exposure).
+- Echo the chosen proxy's host + session tag (last segment after `-S`) in the response under `proxyUsed` so we can see which one ran without leaking creds.
 
-Validation: extend the Zod `InputSchema` with an optional `card` object (string fields, length-bounded). If the caller passes a `card` we use it as-is (this is the seam future profile-sourced cards plug into); otherwise we fall back to the env-injected one.
+### 3. `executor/server.js` + `executor/adapters/kmart.js`
 
-Same change applied to `src/routes/api/public/exec-test.ts` so smoke tests forward the card too.
+Already accept `proxyUrl` per request. No behavior change needed beyond confirming that when `proxyUrl` is absent, the executor still falls back to `process.env.PROXY_URL_RESI`. (Current code already does — keeping as fallback per your choice.)
 
-### 2. Executor (Fly) — `executor/server.js` + `executor/adapters/kmart.js`
+### 4. No Fly redeploy required
 
-- `server.js`: accept the optional `card` field on `/run`, validate shape, pass it through to the kmart adapter on the task object. Logging masks the number to last 4 and never logs the CVV.
-- `executor/adapters/kmart.js`: in the `paydock_tokenize` step, prefer `task.card.*` over `process.env.KMART_*`. `PAYDOCK_PUBLIC_KEY` continues to come from `process.env`. Existing skip-with-reason logic remains as the fallback when neither source has a value.
+All swapping happens by editing the `Test Pool` row in the DB (or passing `proxyUrl` directly). `PROXY_URL_RESI` on Fly is untouched.
 
-No Fly secrets need to change. The existing `EXECUTOR_TOKEN` bearer already authenticates the POST, so the card travels over TLS inside an already-authenticated request.
+## Out of scope (for the eventual main flow)
 
-### 3. Verification
+- Wiring `proxy_groups` to `tasks` (task → group → random proxy per checkout).
+- UI to manage proxy groups.
+- Health/burn tracking per proxy.
 
-After the executor redeploy:
-1. Hit `POST /api/public/exec-test` with the Fisher-Price URL.
-2. Expect the chain to advance past `paydock_tokenize` (real `oneTimeToken` returned) and into `create_3ds_token`.
-3. Confirm executor logs show only `card: { last4: "XXXX", holder: "..." }` — never full PAN or CVV.
+Those land when we move past testing.
 
-Final `placeOrder` mutation stays gated behind `task.placeOrder: true` (Gap B from the plan — out of scope here).
+## Confirmation needed before I build
 
-## Future hook (not built now)
-
-When card data moves to user profiles, the only change is in `runOnExecutor`: replace the `process.env.KMART_CARD_*` reads with a Supabase lookup for the calling user's profile card. The wire format, executor code, and adapter logic stay identical.
-
-## Out of scope
-
-- Capturing the `placeOrder` GraphQL mutation (Gap B).
-- Profile-based card storage UI/schema.
-- Any change to Fly secrets, the GitHub Actions workflow, or the Dockerfile.
-
-## Files touched
-
-- `src/lib/executor.functions.ts` — add card injection + schema
-- `src/routes/api/public/exec-test.ts` — forward `card` field
-- `executor/server.js` — accept + validate `card`, masked logging
-- `executor/adapters/kmart.js` — prefer `task.card.*` over env in tokenize step
-
-After the executor file changes you'll re-run the **Deploy executor** workflow once so Fly picks up the new code.
+1. There's one workspace, right? If multiple, which `workspace_id` should own `Test Pool`?
+2. Confirm the proxy line format — `host:port:user:pass` where `pass` contains `-Sxxxx-akamai-AU` as the sticky session tag (so user=`j1mcollects`, pass=`cz2M462wInWnVvq3-Sacfd102e5e0-akamai-AU`). Correct?
