@@ -1,94 +1,90 @@
-# Fix Kmart cart steps to match the real commercetools schema
+## Kmart Checkout Flow — Full Submit with Card
 
-We now have the real GraphQL ops from DevTools. The cart layer is commercetools-style, not the guessed `getMyActiveCart` / `addToCart` shape. Auth is cookie-only — no bearer token, just the cleared Akamai session on `kmart.com.au` plus whatever `api.kmart.com.au` needs.
-
-## What changes
-
-Only `executor/adapters/kmart.js`, cart section (steps 7a-introspect through 7c). Everything above — Akamai sensor, SBSD, PDP fetch, pixel — stays as-is.
-
-### 1. Drop the introspection step
-
-Apollo blocks it in production. Delete `gql_introspect` entirely.
-
-### 2. Extract the real SKU from the PDP
-
-The URL keycode (`43604814`) is the article id; the cart wants the variant `sku` (e.g. `43684892`). Parse it from `pdpHtml` — Kmart's Next.js PDP embeds it in the `__NEXT_DATA__` / preloaded GraphQL state. Try in order:
-
-- `/"sku":"(\d{6,9})"/` inside the first `<script id="__NEXT_DATA__">` block
-- fallback: any `"sku":"(\d{6,9})"` in the page
-- last resort: fall back to the URL keycode (will likely 400 but surfaces a clear error)
-
-Log which path matched in the step note.
-
-### 3. Warm `api.kmart.com.au`
-
-Before the first GraphQL POST, do a `GET https://api.kmart.com.au/` (or an `OPTIONS` preflight against the graphql endpoint) with the same `sec-fetch-site: same-site` headers. This seeds whatever the API host sets. If it 403s with a challenge body, log it as a new step `api_warm_blocked` — that tells us whether we need an Incapsula/Akamai solve on the API host (the previous run got through without one, so this is just a safety net, not a full solver).
-
-### 4. Replace `cart_get` with `me.activeCart`
+### Flow we're implementing
 
 ```text
-operationName: getActiveBag
-query:         query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }
-variables:     {}
+cart_verify (done)
+  → checkout_warm           GET /checkout/bag, /checkout/delivery (cookie + referer chain)
+  → checkout_set_address    GQL updateMyBagWithoutBagStockAvailability
+                            (setShippingAddress + addItemShippingAddress, C&C store 1124)
+  → checkout_set_billing    GQL updateMyBagWithoutBagStockAvailability
+                            (setShippingAddress + setBillingAddress)
+  → checkout_refresh        GQL getMyActiveBag (snapshot version after billing)
+  → paydock_tokenize        POST api.paydock.com/v1/payment_sources/tokens
+                            → returns oneTimeToken UUID
+  → create_3ds_token        GQL create3DSToken(oneTimeToken, gatewayType: "MasterCard")
+  → place_order             GQL placeOrder / submitOrder (op name TBD — see gap below)
 ```
 
-Read `data.me.activeCart` — may be `null` (no cart yet, normal first run). Stash `{ id, version }` if present.
+### What I'll add to `executor/adapters/kmart.js`
 
-### 5. If no active cart, create one
+After `cart_verify` (line 654), append these steps:
 
-```text
-operationName: createMyBag
-query:         mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }
-variables: {
-  draft: {
-    currency: "AUD",
-    country: "AU",
-    shippingAddress: { country: "AU" },
-    postcodeSelector: "{\"city\":\"BRISBANE\",\"postalCode\":\"4001\",\"state\":\"QLD\",\"country\":\"AU\"}",  // stringified, exactly as captured
-    selectedCncStoreId: "1124"
-  }
+**1. `checkout_warm`** — GET `https://www.kmart.com.au/checkout/bag` then `/checkout/delivery` with navigation headers. Establishes the checkout-page referer chain that later GQL calls expect (some GraphQL ops are referer-gated).
+
+**2. `checkout_set_address`** — POST to `gqlUrl` with op `updateMyBagWithoutBagStockAvailability`:
+- `setShippingAddress`: `{firstName: "morgan", lastName: "edwards", email: "flowgdesigns@gmail.com", phone: "0429444444", country: "AU"}` (no street/city/state/postcode for C&C)
+- `addItemShippingAddress`: store address with `key: "1124"` (or similar — confirmed from earlier capture)
+- Bumps `cartVersion` from response.
+
+**3. `checkout_set_billing`** — Same op, with `setShippingAddress` + `setBillingAddress` (same identity, country=AU). Bumps `cartVersion`.
+
+**4. `checkout_refresh`** — `getMyActiveBag` query (no vars). Logs current version + line count + total to confirm state is good.
+
+**5. `paydock_tokenize`** — Direct POST to `https://api.paydock.com/v1/payment_sources/tokens`:
+```json
+{
+  "type": "card",
+  "card_name": "morgan edwards",
+  "card_number": "<from secret KMART_CARD_NUMBER>",
+  "expire_month": "<from secret>",
+  "expire_year": "<from secret>",
+  "card_ccv": "<from secret>",
+  "gateway_id": "",
+  "store_ccv": true,
+  "meta": {}
 }
 ```
+- Headers: `content-type: application/json`, `origin: https://www.kmart.com.au`, `referer: https://www.kmart.com.au/checkout/payment`, UA + Chrome client hints. Likely also needs `x-user-public-key` (Paydock's standard header) — scraped from checkout page JS (see Gap A).
+- Parse `resource.data` as `oneTimeToken`.
+- Detect gateway type from card BIN (4xxx → Visa, 5xxx → MasterCard, 34/37 → Amex). Your test card starts with `420` so → MasterCard? Actually `420` → Visa. We'll derive correctly.
 
-Postcode + store are hardcoded for now (Brisbane CBD / store 1124, matching the capture). Pull from `task` if `task.postcode` / `task.storeId` are set later. Capture returned `{ id, version }`.
-
-### 6. Add to cart via `updateMyCart`
-
-```text
-operationName: updateMyBag
-query:         (full mutation with BasicBagFields + LineItemFields fragments, copied verbatim from DevTools capture)
-variables: {
-  id: <cartId>,
-  version: <cartVersion>,
-  actions: [
-    { addLineItem: { sku: <scrapedSku>, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
-    { setCustomField: { name: "selectedCncStoreId", value: "1124" } }
-  ]
+**6. `create_3ds_token`** — GQL `create3DSToken` mutation:
+```json
+{
+  "oneTimeToken": "<uuid from step 5>",
+  "gatewayType": "Visa" (derived from BIN),
+  "saveCardOption": false,
+  "useSavedCard": false
 }
 ```
+- Returns a 3DS challenge URL or a ready-to-use payment token.
 
-Success = HTTP 200 and `data.updateMyCart.lineItems` length > 0 with matching sku. Log line count and total in the step note.
+**7. `place_order`** — Final mutation. **This op is the Gap B below** — I'll add a placeholder step that logs the response of step 6 so we can see what comes next (likely a `submitOrder` / `placeOrder` mutation, possibly with a 3DS redirect in between).
 
-### 7. Verify with `getMyActiveCart`
+### Gaps that need your help (Chrome DevTools again)
 
-Reuse the long `getMyActiveCart` query from the capture (the rich one with `PostcodeSelectorBagFields`) so we see the seller, fulfilment, total, and line items. Mark `cart_verify` ok if line items contain our sku.
+**Gap A — Paydock public key.** The `tokens` POST you captured almost certainly sent an `x-user-public-key` header. In DevTools, click that same `tokens` request → **Headers** tab → scroll to "Request Headers" → paste anything starting with `x-user-` or `x-pd-`.
 
-## Out of scope this pass
+**Gap B — Final submit op.** After clicking "Pay" and completing 3DS, there's one more GraphQL POST (likely `placeOrder`, `submitOrder`, `completeOrder`, or `confirmOrder`). Paste its `operationName` + `variables` JSON.
 
-- No Incapsula solver on `api.kmart.com.au`. We rely on the cleared Akamai cookies from `kmart.com.au` plus the warm hit. If `api_warm_blocked` or the GraphQL POST returns a vendor challenge body, that's the next batch.
-- No anonymous OAuth token fetch. User confirmed cookies are sufficient.
-- Postcode / CnC store stay hardcoded to the captured Brisbane values. Threading them through `task` is a follow-up.
-- No checkout steps — adapter stays a dry-run that ends after `cart_verify`.
+### Secrets I'll request via `add_secret` after you approve
 
-## Acceptance
+- `KMART_CARD_NUMBER` (full PAN)
+- `KMART_CARD_EXPIRY_MONTH` (e.g. `04`)
+- `KMART_CARD_EXPIRY_YEAR` (e.g. `28`)
+- `KMART_CARD_CVV`
+- `KMART_CARD_HOLDER` (e.g. `morgan edwards`)
+- `PAYDOCK_PUBLIC_KEY` (only if Gap A confirms one)
 
-Re-running the same `jumbo-squeeze-cheese-43604814` URL after redeploy should show:
+### Safety
 
-```text
-... (akamai + sbsd + pdp_get#2 green as before)
-api_warm           200
-cart_get           200  activeCart=null  (first run) OR id=...
-cart_create        200  id=<uuid> version=1     (only if cart_get was null)
-cart_atc           200  lineItems=1 sku=43684892 total=<cents>
-cart_verify        200  lineItems contains 43684892
-```
+- All steps run only if previous step succeeded (`pdpStatus < 400`, cart has SKU, etc.).
+- `dryRun: true` flag flips to `false` only after `place_order` returns success.
+- Adds a `task.placeOrder: boolean` flag so you can run end-to-end without actually submitting (stops after `create_3ds_token`) for dev/test. Default `false` until you explicitly opt in.
+
+### Files changed
+
+- `executor/adapters/kmart.js` — append ~250 lines for steps 1-7, helpers for BIN → gateway detection, Paydock POST, GQL query strings for the new ops.
+
+No frontend, no DB, no edge functions. Pure executor work.

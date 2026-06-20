@@ -652,6 +652,278 @@ fragment LineItemFields on LineItem {
           note: `skipped: cartId=${cartId ?? "null"} sku=${sku ?? "null"}`,
         });
       }
+
+      // ===================================================================
+      // 8. CHECKOUT FLOW
+      //    Address → billing → Paydock card vault → create3DSToken.
+      //    Stops short of placeOrder until task.placeOrder === true AND we
+      //    have the final mutation captured.
+      // ===================================================================
+      const wantCheckout = task.checkout !== false && cartId && sku;
+      if (wantCheckout) {
+        // 8a. Warm the checkout pages — establishes the referer chain that
+        //     later GraphQL calls expect (some ops are referer-gated).
+        let checkoutHtml = "";
+        await tStep("checkout_warm", async () => {
+          const r1 = await request(
+            origin + "/checkout/bag",
+            { method: "GET", headers: navHeaders({ referer: pdpUrl, site: "same-origin" }) },
+            ctx,
+          );
+          const b1 = await r1.text();
+          const r2 = await request(
+            origin + "/checkout/delivery",
+            { method: "GET", headers: navHeaders({ referer: origin + "/checkout/bag", site: "same-origin" }) },
+            ctx,
+          );
+          const b2 = await r2.text();
+          const r3 = await request(
+            origin + "/checkout/payment",
+            { method: "GET", headers: navHeaders({ referer: origin + "/checkout/delivery", site: "same-origin" }) },
+            ctx,
+          );
+          checkoutHtml = await r3.text();
+          return {
+            status: r3.status,
+            ok: r3.status < 400,
+            note: `bag=${r1.status}/${b1.length}b delivery=${r2.status}/${b2.length}b payment=${r3.status}/${checkoutHtml.length}b`,
+          };
+        });
+
+        // Identity (hardcoded for now — wire to task.identity in a later batch).
+        const identity = {
+          firstName: task.firstName ?? "morgan",
+          lastName: task.lastName ?? "edwards",
+          email: task.email ?? "flowgdesigns@gmail.com",
+          phone: task.phone ?? "0429444444",
+        };
+        const cncStoreId = "1124";
+
+        // 8b. setShippingAddress (contact) + addItemShippingAddress (C&C store).
+        const updateNoStockQuery = `mutation updateMyBagWithoutBagStockAvailability($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
+  updateMyCart(id: $id, version: $version, actions: $actions) {
+    id version
+    totalPrice { centAmount __typename }
+    shippingAddress { firstName lastName email phone country __typename }
+    billingAddress { firstName lastName email phone country __typename }
+    itemShippingAddresses { key country __typename }
+    __typename
+  }
+}`;
+
+        const contactAddress = {
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          email: identity.email,
+          phone: identity.phone,
+          country: "AU",
+        };
+        // C&C store address — uses key=storeId so commercetools can tie line
+        // items to a pickup destination via shippingDetails.
+        const storeAddress = {
+          key: cncStoreId,
+          firstName: "Kmart",
+          lastName: cncStoreId,
+          country: "AU",
+        };
+
+        await tStep("checkout_set_address", async () => {
+          const res = await gqlPost({
+            operationName: "updateMyBagWithoutBagStockAvailability",
+            variables: {
+              id: cartId,
+              version: cartVersion,
+              actions: [
+                { setShippingAddress: { address: contactAddress } },
+                { addItemShippingAddress: { address: storeAddress } },
+              ],
+            },
+            query: updateNoStockQuery,
+          });
+          const txt = await res.text();
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.updateMyCart;
+            if (c?.version) cartVersion = c.version;
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400,
+            note: `v=${cartVersion} : ${txt.slice(0, 350)}`,
+          };
+        });
+
+        // 8c. setShippingAddress + setBillingAddress.
+        await tStep("checkout_set_billing", async () => {
+          const res = await gqlPost({
+            operationName: "updateMyBagWithoutBagStockAvailability",
+            variables: {
+              id: cartId,
+              version: cartVersion,
+              actions: [
+                { setShippingAddress: { address: contactAddress } },
+                { setBillingAddress: { address: contactAddress } },
+              ],
+            },
+            query: updateNoStockQuery,
+          });
+          const txt = await res.text();
+          let hasBilling = false;
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.updateMyCart;
+            if (c?.version) cartVersion = c.version;
+            hasBilling = Boolean(c?.billingAddress?.email);
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && hasBilling,
+            note: `v=${cartVersion} hasBilling=${hasBilling} : ${txt.slice(0, 350)}`,
+          };
+        });
+
+        // 8d. Refresh — snapshot version + totals before payment.
+        await tStep("checkout_refresh", async () => {
+          const res = await gqlPost({
+            operationName: "getMyActiveBag",
+            variables: {},
+            query:
+              "query getMyActiveBag { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity variant { sku __typename } __typename } billingAddress { email __typename } shippingAddress { email __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.me?.activeCart;
+            if (c?.version) cartVersion = c.version;
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400,
+            note: `v=${cartVersion} : ${txt.slice(0, 300)}`,
+          };
+        });
+
+        // 8e. Paydock card vault. Tokenizes the PAN → returns a UUID we feed
+        //     into create3DSToken. Public key is scraped from the checkout
+        //     page bundle (Paydock client SDK embeds it).
+        const cardNumber = process.env.KMART_CARD_NUMBER ?? "";
+        const cardCcv = process.env.KMART_CARD_CVV ?? "";
+        const cardMonth = process.env.KMART_CARD_EXPIRY_MONTH ?? "";
+        const cardYear = process.env.KMART_CARD_EXPIRY_YEAR ?? "";
+        const cardHolder = process.env.KMART_CARD_HOLDER ?? `${identity.firstName} ${identity.lastName}`;
+        const paydockPublicKey =
+          process.env.PAYDOCK_PUBLIC_KEY ||
+          checkoutHtml.match(/"(?:publicKey|public_key|paydockPublicKey)"\s*:\s*"([^"]+)"/i)?.[1] ||
+          checkoutHtml.match(/public[-_]?key["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{20,})/)?.[1] ||
+          "";
+
+        // Derive Paydock gateway type from card BIN.
+        const firstDigit = cardNumber.charAt(0);
+        const first2 = cardNumber.slice(0, 2);
+        let gatewayType = "Visa";
+        if (firstDigit === "5" || (first2 >= "22" && first2 <= "27")) gatewayType = "MasterCard";
+        else if (first2 === "34" || first2 === "37") gatewayType = "Amex";
+
+        let oneTimeToken = null;
+        if (!cardNumber || !cardCcv) {
+          steps.push({
+            step: "paydock_tokenize",
+            ok: false,
+            note: "skipped: KMART_CARD_NUMBER / KMART_CARD_CVV not set",
+          });
+        } else {
+          await tStep("paydock_tokenize", async () => {
+            const headers = {
+              "user-agent": UA,
+              "content-type": "application/json",
+              accept: "application/json",
+              "accept-language": ACCEPT_LANG,
+              origin,
+              referer: origin + "/checkout/payment",
+              ...CHROME_CH,
+              "sec-fetch-site": "cross-site",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-dest": "empty",
+            };
+            if (paydockPublicKey) headers["x-user-public-key"] = paydockPublicKey;
+            const res = await request(
+              "https://api.paydock.com/v1/payment_sources/tokens",
+              {
+                method: "POST",
+                headers,
+                body: JSON.stringify({
+                  type: "card",
+                  card_name: cardHolder,
+                  card_number: cardNumber,
+                  expire_month: cardMonth,
+                  expire_year: cardYear,
+                  card_ccv: cardCcv,
+                  gateway_id: "",
+                  store_ccv: true,
+                  meta: {},
+                }),
+              },
+              ctx,
+            );
+            const txt = await res.text();
+            try {
+              const j = JSON.parse(txt);
+              oneTimeToken = j?.resource?.data ?? null;
+            } catch {}
+            return {
+              status: res.status,
+              ok: res.status < 400 && Boolean(oneTimeToken),
+              note: `gateway=${gatewayType} pk=${paydockPublicKey ? paydockPublicKey.slice(0, 12) + "…" : "(none)"} token=${oneTimeToken ? oneTimeToken.slice(0, 12) + "…" : "null"} : ${txt.slice(0, 250)}`,
+            };
+          });
+        }
+
+        // 8f. create3DSToken — hands the Paydock UUID to Kmart's payment
+        //     orchestrator. Returns a payment token or a 3DS challenge URL.
+        if (oneTimeToken) {
+          await tStep("create_3ds_token", async () => {
+            const res = await gqlPost({
+              operationName: "create3DSToken",
+              variables: {
+                oneTimeToken,
+                gatewayType,
+                saveCardOption: false,
+                useSavedCard: false,
+              },
+              query:
+                "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String!, $saveCardOption: Boolean!, $useSavedCard: Boolean!) { create3DSToken(oneTimeToken: $oneTimeToken, gatewayType: $gatewayType, saveCardOption: $saveCardOption, useSavedCard: $useSavedCard) { token acsUrl sessionData status __typename } }",
+            });
+            const txt = await res.text();
+            return {
+              status: res.status,
+              ok: res.status < 400,
+              note: `${txt.slice(0, 500)}`,
+            };
+          });
+        } else {
+          steps.push({
+            step: "create_3ds_token",
+            ok: false,
+            note: "skipped: no oneTimeToken from Paydock",
+          });
+        }
+
+        // 8g. placeOrder — gated behind task.placeOrder AND requires the
+        //     final mutation op name (not yet captured). Logs a recon stub.
+        if (task.placeOrder === true) {
+          steps.push({
+            step: "place_order",
+            ok: false,
+            note: "NOT IMPLEMENTED: capture final placeOrder/submitOrder mutation from DevTools first",
+          });
+        } else {
+          steps.push({
+            step: "place_order",
+            ok: true,
+            note: "skipped: task.placeOrder !== true (dry-run stop)",
+          });
+        }
+      }
     }
 
     return {
@@ -659,8 +931,7 @@ fragment LineItemFields on LineItem {
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
-
-      dryRun: true,
+      dryRun: task.placeOrder !== true,
     };
   },
 };
