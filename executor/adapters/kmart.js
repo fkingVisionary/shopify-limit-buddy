@@ -12,22 +12,23 @@
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel } from "../antibot.js";
+import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
 
-function abckSolved(jar) {
-  const v = jar.get("_abck") ?? "";
-  return /~0~/.test(v);
+// Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
+// rotates per page load, so our old `/akam/` regex always missed.
+function findAkamaiScriptPath(html) {
+  return parseAkamaiPath(html);
 }
 
-// Akamai serves the sensor script at a per-deployment path. Hyper's
-// parseAkamaiPath would extract it from HTML, but for Kmart the script tag is
-// embedded in the document head as e.g. `/akam/13/<hash>`. We grep it from the
-// HTML; if missing, fall back to a sane default.
-function findAkamaiScriptPath(html) {
-  const m = html.match(/(\/[A-Za-z0-9_\-./]*akam\/[A-Za-z0-9_\-./]+)/);
-  return m ? m[1] : null;
+// Solved when _abck contains the `~0~` indicator AND survives the SDK's
+// internal validation (count of completed sensor rounds matters).
+function abckSolved(jar, roundCount) {
+  const v = jar.get("_abck") ?? "";
+  return isAkamaiCookieValid(v, roundCount);
 }
+
 
 export const kmartAdapter = {
   id: "kmart",
