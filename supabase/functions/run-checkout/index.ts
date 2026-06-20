@@ -1030,19 +1030,30 @@ function checkoutScriptSource() {
 
       lastStep = "payment_result";
       await stage("payment_result");
-      // Detect a 3-D Secure / bank challenge in any frame: stripe 3DS, adyen,
-      // braintree, generic "challenge" / "authenticate" URLs, or visible
-      // body text on the top frame.
+      // Detect a 3-D Secure / bank challenge in any frame: Stripe 3DS, Adyen,
+      // Braintree, Shopify/payment app verification, bank ACS pages, generic
+      // "challenge" / "authenticate" URLs, or visible body text.
       const detect3DS = async () => {
         try {
           const frames = page.frames();
           for (const f of frames) {
             const u = (f.url && f.url()) || "";
-            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authenticate|challenge/i.test(u)) return true;
+            if (/three_d_secure|3d[_-]?secure|3ds|hooks\\.stripe\\.com\\/3d|challenges\\.stripe\\.com|acs|authentication|authenticate|challenge|cardinalcommerce|emv3ds|adyen|braintree|checkout\\.shopifycs\\.com\\/verify|pay\\.shopify\\.com.*(?:verify|challenge)/i.test(u)) return true;
           }
           return await page.evaluate(() => {
+            const visible = (el) => {
+              if (!el) return false;
+              const r = el.getBoundingClientRect();
+              const s = getComputedStyle(el);
+              return r.width > 0 && r.height > 0 && s.display !== "none" && s.visibility !== "hidden";
+            };
+            const frameHit = Array.from(document.querySelectorAll('iframe')).some((el) => {
+              const u = el.getAttribute('src') || el.getAttribute('name') || el.id || '';
+              return visible(el) && /three_d_secure|3d[_-]?secure|3ds|acs|authentication|authenticate|challenge|cardinalcommerce|emv3ds|adyen|braintree|verify/i.test(u);
+            });
+            if (frameHit) return true;
             const txt = (document.body && document.body.innerText) || "";
-            return /3-?D\\s*Secure|verify(?:\\s+your)?\\s+(?:identity|payment|purchase)|authenticate your card|approve.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp)/i.test(txt);
+            return /3-?D\\s*Secure|secure checkout|verify(?:\\s+your)?\\s+(?:identity|payment|purchase|card)|verification required|authenticate(?:\\s+your)?\\s+(?:card|payment)|approve.*?(?:bank|app|purchase|payment)|open.*?(?:bank|app)|sent (?:a|you) (?:code|notification)|enter (?:the )?(?:code|otp|one-time|one time)|one-time passcode|one time passcode|bank app/i.test(txt);
           });
         } catch { return false; }
       };
