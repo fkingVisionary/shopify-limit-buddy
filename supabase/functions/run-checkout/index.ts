@@ -1435,6 +1435,9 @@ Deno.serve(async (req) => {
   // launch watchdog was killing real checkouts that had already taken money
   // because in-page stage callbacks (cross-origin POSTs from inside Shopify)
   // are unreliable, so `stage` stayed at "launch" while payment completed.
+  // Stage write from Deno-side BEFORE handing off to Browserless. Guarantees
+  // the UI advances off "Starting checkout" even if every in-page beacon dies.
+  await writeStage(supa, jobId, "payment_submitting");
   try {
     const res = await fetch(url.toString(), {
       method: "POST",
