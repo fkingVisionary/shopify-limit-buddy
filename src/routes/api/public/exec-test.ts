@@ -23,13 +23,53 @@ export const Route = createFileRoute("/api/public/exec-test")({
           reconUrl?: string;
           useProxy?: boolean;
           proxyUrl?: string;
+          proxyGroupId?: string;
+          proxyGroupName?: string;
           dryRun?: boolean;
         };
         const mode = body.mode ?? "run";
-        // Default to direct (Fly egress IP) to conserve residential proxy data
-        // during testing. `proxyUrl` lets the caller override per-request; else
-        // `useProxy:true` falls back to PROXY_URL_RESI.
-        const proxy = body.proxyUrl ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+        // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
+        // group in `proxy_groups`; else (only when useProxy:true) fall back to
+        // Fly's PROXY_URL_RESI; else direct (null).
+        let proxy: string | null = null;
+        let proxyUsed: { source: string; host?: string; session?: string } = { source: "none" };
+        if (body.proxyUrl) {
+          proxy = body.proxyUrl;
+          proxyUsed = { source: "explicit" };
+        } else if (body.proxyGroupId || body.proxyGroupName || body.useProxy) {
+          const groupName = body.proxyGroupName ?? "Test Pool";
+          try {
+            const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+            const q = supabaseAdmin.from("proxy_groups").select("id,name,proxies").limit(1);
+            const { data: groups } = body.proxyGroupId
+              ? await q.eq("id", body.proxyGroupId)
+              : await q.eq("name", groupName);
+            const group = groups?.[0];
+            const list = (group?.proxies ?? []) as string[];
+            if (list.length > 0) {
+              const raw = list[Math.floor(Math.random() * list.length)];
+              const parts = raw.split(":");
+              if (parts.length >= 4) {
+                const [host, port, user, ...passParts] = parts;
+                const pass = passParts.join(":");
+                proxy = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+                const sessionMatch = pass.match(/-S([a-f0-9]+)/i);
+                proxyUsed = { source: `group:${group?.name}`, host, session: sessionMatch?.[1] };
+              } else {
+                proxy = raw;
+                proxyUsed = { source: `group:${group?.name}` };
+              }
+            } else if (body.useProxy) {
+              proxy = process.env.PROXY_URL_RESI ?? null;
+              proxyUsed = { source: proxy ? "env:PROXY_URL_RESI" : "none" };
+            }
+          } catch (e) {
+            if (body.useProxy) {
+              proxy = process.env.PROXY_URL_RESI ?? null;
+              proxyUsed = { source: proxy ? "env:PROXY_URL_RESI(fallback)" : "none", host: e instanceof Error ? e.message : undefined };
+            }
+          }
+        }
         // Defensive: strip any path the user accidentally pasted (e.g. /health)
         // so EXECUTOR_URL always resolves to the origin.
         let origin = url.trim();
