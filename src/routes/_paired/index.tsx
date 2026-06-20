@@ -1428,7 +1428,11 @@ function Index() {
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: err?.message ?? "enqueue error" });
                       return;
                     }
-                    const deadline = Date.now() + 180_000;
+                    // Match the worker's Browserless `timeout=360000`. The
+                    // previous 180s deadline was prematurely declaring jobs
+                    // dead while the worker was still completing checkout.
+                    const deadline = Date.now() + 360_000;
+
                     let last: any = null;
                     while (Date.now() < deadline) {
                       await new Promise((r) => setTimeout(r, 1500));
