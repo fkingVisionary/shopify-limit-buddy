@@ -253,23 +253,17 @@ export const kmartAdapter = {
         const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
         pdpStatus = res.status;
         pdpHtml = await res.text();
-        const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200);
-        const srv = res.headers.get("server");
-        const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
-        const respHeaders = {
-          server: srv,
-          "content-type": res.headers.get("content-type"),
-          "akamai-grn": res.headers.get("akamai-grn"),
-          "x-akamai-transformed": res.headers.get("x-akamai-transformed"),
-          "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
-        };
+        const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
+        const hasRefScript = /<script[^>]+src=["'][^"']*\?v=/i.test(pdpHtml);
+        const hasRefMarker = /Reference\s*#|Access\s+Denied/i.test(pdpHtml);
         return {
           status: res.status,
           ok: res.status < 400,
-          note: `${pdpHtml.length}b | resp=${JSON.stringify(respHeaders)} | snippet=${snippet}`,
+          note: `${pdpHtml.length}b srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} refMk=${hasRefMarker} refScr=${hasRefScript} | ${snippet}`,
         };
       });
     }
+
 
     // 5a. AkamaiGHost reference-code recovery. When the PDP 403s with an
     //     "Access Denied / Reference #..." page that embeds a NEW sensor
