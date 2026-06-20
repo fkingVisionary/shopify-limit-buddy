@@ -37,7 +37,7 @@ export const kmartAdapter = {
   },
 
   async run(task, ctx) {
-    const steps = [];
+    const steps = ctx.steps ?? (ctx.steps = []);
     const tStep = async (name, fn) => {
       const t0 = Date.now();
       try {

@@ -23,6 +23,9 @@ export async function runCheckout(task) {
 
   const adapter = pickAdapter(store);
   if (adapter) {
+    // Expose a shared steps array so the catch path can return partial
+    // progress instead of swallowing it.
+    ctx.steps = [];
     try {
       const out = await adapter.run(task, ctx);
       return {
@@ -30,7 +33,7 @@ export async function runCheckout(task) {
         taskId: task.taskId,
         adapter: adapter.id,
         elapsedMs: now() - t0,
-        steps: out.steps,
+        steps: out.steps ?? ctx.steps,
         finalUrl: out.finalUrl,
         cookies: out.cookies,
         dryRun: Boolean(out.dryRun ?? task.dryRun),
@@ -43,7 +46,8 @@ export async function runCheckout(task) {
         error: e?.message ?? String(e),
         failedStep: e?.code ?? "adapter_error",
         elapsedMs: now() - t0,
-        steps: [],
+        steps: ctx.steps,
+        cookies: ctx.jar?.dump?.() ?? {},
       };
     }
   }
