@@ -189,6 +189,9 @@ export const kmartAdapter = {
     }
     const scriptUrl = origin + scriptPath;
 
+    // Human pause: glance at homepage before the browser pulls the sensor script.
+    await sleep(800, 1500);
+
     // 3. Fetch the Akamai sensor script (first sensor needs the script body).
     await tStep("akamai_script_fetch", async () => {
       const res = await request(scriptUrl, { method: "GET", headers: { "user-agent": UA, referer: origin + "/", "accept-language": ACCEPT_LANG } }, ctx);
