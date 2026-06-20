@@ -309,13 +309,29 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_pixel", ok: false, note: e?.message ?? String(e) });
     }
 
-    // 7. Cart steps — reuse the cleared session against the GraphQL BFF.
-    //    Per recon: api.kmart.com.au/gateway/graphql, CORS shape, same cookies.
-    //    Read query `getMyActiveCart` is publicly documented; the ATC mutation
-    //    name is inferred — first run will surface the real schema via errors.
+    // 7. Cart steps — commercetools-style GraphQL on api.kmart.com.au.
+    //    Auth is cookie-only (Akamai session from kmart.com.au). Real ops
+    //    captured from DevTools: getActiveBag / createMyBag / updateMyBag.
     const gqlUrl = "https://api.kmart.com.au/gateway/graphql";
+    const apiOrigin = "https://api.kmart.com.au";
     const keycodeMatch = pdpUrl.match(/-(\d{6,9})\/?(?:\?|$)/);
-    const keycode = task.keycode ?? keycodeMatch?.[1] ?? null;
+    const urlKeycode = task.keycode ?? keycodeMatch?.[1] ?? null;
+
+    // SKU != URL keycode. Scrape the variant sku from the PDP HTML (Next.js
+    // embeds it inside __NEXT_DATA__ / Apollo preloaded state).
+    let sku = null;
+    let skuSource = "none";
+    if (pdpHtml) {
+      const nextBlock = pdpHtml.match(/<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+      const blob = nextBlock?.[1] ?? pdpHtml;
+      const m1 = nextBlock && /"sku":"(\d{6,9})"/.exec(nextBlock[1]);
+      const m2 = !m1 && /"sku":"(\d{6,9})"/.exec(pdpHtml);
+      if (m1) { sku = m1[1]; skuSource = "__NEXT_DATA__"; }
+      else if (m2) { sku = m2[1]; skuSource = "html"; }
+    }
+    if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
+    steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
+
     const gqlHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
@@ -332,85 +348,188 @@ export const kmartAdapter = {
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
-      // 7a-introspect. Discover the real schema — we guessed op names wrong.
-      await tStep("gql_introspect", async () => {
-        const res = await gqlPost({
-          operationName: "IntrospectionQuery",
-          variables: {},
-          query: `query IntrospectionQuery {
-            __schema {
-              queryType { fields { name } }
-              mutationType { fields { name args { name type { name kind ofType { name kind } } } } }
-              types { name kind inputFields { name type { name kind ofType { name kind } } } }
-            }
-          }`,
-        });
-        const txt = await res.text();
-        let summary = txt.slice(0, 200);
-        try {
-          const j = JSON.parse(txt);
-          const s = j?.data?.__schema;
-          if (s) {
-            const queries = (s.queryType?.fields ?? []).map((f) => f.name);
-            const mutations = (s.mutationType?.fields ?? []).map((f) => f.name);
-            const cartQ = queries.filter((n) => /cart/i.test(n));
-            const cartM = mutations.filter((n) => /cart|add|item/i.test(n));
-            const cartInputs = (s.types ?? [])
-              .filter((t) => t.kind === "INPUT_OBJECT" && /cart|item|add/i.test(t.name))
-              .map((t) => `${t.name}{${(t.inputFields ?? []).map((f) => f.name).join(",")}}`);
-            summary = `Qs[cart]=${cartQ.join(",")} | Ms[cart]=${cartM.join(",")} | Inputs=${cartInputs.join(" ")}`;
-          }
-        } catch {}
-        return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${summary}` };
+      // 7a. Warm api.kmart.com.au — seeds any per-host cookies the API
+      //     edge sets. If this 403s with a vendor challenge body we'll
+      //     need an Incapsula/Akamai solver on the API host next batch.
+      await tStep("api_warm", async () => {
+        const res = await request(
+          apiOrigin + "/",
+          {
+            method: "GET",
+            headers: {
+              "user-agent": UA,
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              referer: pdpUrl,
+              ...CHROME_CH,
+              "sec-fetch-site": "same-site",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-dest": "empty",
+            },
+          },
+          ctx,
+        );
+        const txt = (await res.text()).slice(0, 160).replace(/\s+/g, " ");
+        return { status: res.status, ok: res.status < 500, note: `${txt}` };
       });
 
-      // 7a. getMyActiveCart — sanity check that the BFF accepts our session.
+      // 7b. getActiveBag — me.activeCart may be null on first run.
       let cartId = null;
+      let cartVersion = null;
       await tStep("cart_get", async () => {
         const res = await gqlPost({
-          operationName: "getMyActiveCart",
+          operationName: "getActiveBag",
           variables: {},
-          query: "query getMyActiveCart { getMyActiveCart { id lineItems { id quantity } __typename } }",
+          query:
+            "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
         });
         const txt = await res.text();
         try {
           const j = JSON.parse(txt);
-          cartId = j?.data?.getMyActiveCart?.id ?? null;
+          const ac = j?.data?.me?.activeCart;
+          if (ac) { cartId = ac.id; cartVersion = ac.version; }
         } catch {}
-        return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${txt.slice(0, 400)}` };
+        return {
+          status: res.status,
+          ok: res.status < 400,
+          note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"} : ${txt.slice(0, 300)}`,
+        };
       });
 
-      // 7b. addToCart mutation — inferred. Response body will reveal real shape.
-      if (keycode) {
-        await tStep("cart_atc", async () => {
+      // 7c. createMyBag — only if no active cart.
+      if (!cartId) {
+        await tStep("cart_create", async () => {
           const res = await gqlPost({
-            operationName: "addToCart",
+            operationName: "createMyBag",
             variables: {
-              input: {
-                keycode,
-                quantity: task.qty ?? 1,
-                fulfilmentMethod: "HOME_DELIVERY",
+              draft: {
+                currency: "AUD",
+                country: "AU",
+                shippingAddress: { country: "AU" },
+                postcodeSelector:
+                  '{"city":"BRISBANE","postalCode":"4001","state":"QLD","country":"AU"}',
+                selectedCncStoreId: "1124",
               },
             },
             query:
-              "mutation addToCart($input: AddToCartInput!) { addToCart(input: $input) { cart { id lineItems { keycode quantity __typename } __typename } __typename } }",
+              "mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }",
           });
           const txt = await res.text();
-          return { status: res.status, ok: res.status < 400, note: `keycode=${keycode} ${txt.length}b: ${txt.slice(0, 600)}` };
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.createMyCart;
+            if (c) { cartId = c.id; cartVersion = c.version; }
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && Boolean(cartId),
+            note: `id=${cartId ?? "null"} v=${cartVersion ?? "?"} : ${txt.slice(0, 400)}`,
+          };
+        });
+      }
+
+      // 7d. updateMyBag — addLineItem(sku) + setCustomField(selectedCncStoreId).
+      if (cartId && sku) {
+        const updateQuery = `mutation updateMyBag($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
+  updateMyCart(id: $id, version: $version, actions: $actions) {
+    ...BasicBagFields
+    lineItems { ...LineItemFields __typename }
+    __typename
+  }
+}
+fragment BasicBagFields on Cart {
+  id version
+  postcodeSelector { postalCode state city country __typename }
+  totalPrice { centAmount __typename }
+  shippingDiscount { FreeShippingThreshold __typename }
+  __typename
+}
+fragment LineItemFields on LineItem {
+  id name(locale: "en") quantity
+  price { value { centAmount __typename } __typename }
+  totalPrice { centAmount __typename }
+  variant { id sku image(input: {preset: thumbnail}) imageKey attributes { name value __typename } __typename }
+  custom { fields { offerId __typename } __typename }
+  __typename
+}`;
+        await tStep("cart_atc", async () => {
+          const res = await gqlPost({
+            operationName: "updateMyBag",
+            variables: {
+              id: cartId,
+              version: cartVersion,
+              actions: [
+                { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                { setCustomField: { name: "selectedCncStoreId", value: "1124" } },
+              ],
+            },
+            query: updateQuery,
+          });
+          const txt = await res.text();
+          let lineCount = 0;
+          let total = null;
+          let hasSku = false;
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.updateMyCart;
+            if (c) {
+              cartVersion = c.version ?? cartVersion;
+              lineCount = c.lineItems?.length ?? 0;
+              total = c.totalPrice?.centAmount ?? null;
+              hasSku = (c.lineItems ?? []).some((li) => li.variant?.sku === sku);
+            }
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && hasSku,
+            note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
+          };
         });
 
-        // 7c. Verify by re-reading the cart.
+        // 7e. Verify with the rich getMyActiveCart query.
         await tStep("cart_verify", async () => {
+          const verifyQuery = `query getMyActiveCart {
+  me {
+    activeCart {
+      id version
+      totalPrice { centAmount __typename }
+      lineItems {
+        id quantity
+        totalPrice { centAmount __typename }
+        variant { sku __typename }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}`;
           const res = await gqlPost({
             operationName: "getMyActiveCart",
             variables: {},
-            query: "query getMyActiveCart { getMyActiveCart { id lineItems { id quantity } __typename } }",
+            query: verifyQuery,
           });
           const txt = await res.text();
-          return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${txt.slice(0, 400)}` };
+          let hasSku = false;
+          let lineCount = 0;
+          try {
+            const j = JSON.parse(txt);
+            const lis = j?.data?.me?.activeCart?.lineItems ?? [];
+            lineCount = lis.length;
+            hasSku = lis.some((li) => li.variant?.sku === sku);
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && hasSku,
+            note: `lines=${lineCount} hasSku=${hasSku} : ${txt.slice(0, 400)}`,
+          };
         });
       } else {
-        steps.push({ step: "cart_atc", ok: false, note: "no keycode parseable from storeUrl" });
+        steps.push({
+          step: "cart_atc",
+          ok: false,
+          note: `skipped: cartId=${cartId ?? "null"} sku=${sku ?? "null"}`,
+        });
       }
     }
 
