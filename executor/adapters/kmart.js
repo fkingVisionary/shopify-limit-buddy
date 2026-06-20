@@ -44,7 +44,7 @@ const ACCEPT_LANG = "en-AU,en;q=0.9";
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
 const CHROME_CH = {
-  "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-platform": '"macOS"',
 };
@@ -271,87 +271,31 @@ export const kmartAdapter = {
     //     against that script. Run up to 3 sensor rounds and retry the PDP;
     //     loop the whole thing up to 2 times in case a second reference
     //     page is served.
-    const runSensorRound = async (label, refScriptUrl, refScriptBody, pageUrl, prevCtx) => {
-      let pc = prevCtx;
-      const out = await tStep(label, async () => {
-        const r = await solveAkamaiSensor({
-          jar: ctx.jar,
-          pageUrl,
-          userAgent: UA,
-          ip: egressIp,
-          acceptLanguage: ACCEPT_LANG,
-          scriptUrl: refScriptUrl,
-          scriptBody: refScriptBody,
-          prevContext: pc,
-        });
-        const res = await request(
-          r.postUrl,
-          {
-            method: "POST",
-            headers: {
-              "user-agent": UA,
-              "content-type": "text/plain;charset=UTF-8",
-              accept: "*/*",
-              "accept-language": ACCEPT_LANG,
-              origin,
-              referer: pageUrl,
-            },
-            body: JSON.stringify({ sensor_data: r.payload }),
-          },
-          ctx,
-        );
-        pc = r.context;
-        return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
-      });
-      return { ctx: pc, ok: out.ok !== false };
-    };
-
-    for (let attempt = 0; attempt < 2 && pdpStatus === 403; attempt++) {
-      const refPath = parseReferenceScript(pdpHtml);
-      if (!refPath) break;
+    // 5a. AkamaiGHost reference-page retry. The hard "Access Denied / Reference #…"
+    //     page is NOT a recoverable sensor challenge — the script it embeds is
+    //     BMP telemetry, not a sensor script (Hyper rejects it with
+    //     "failed to generate sensor data"). Our only useful move is to retry
+    //     the PDP once with a `cross-site` sec-fetch-site (simulating the user
+    //     pasting the URL from elsewhere, e.g. a Google result), which often
+    //     bypasses the bot score when same-origin nav is being flagged.
+    if (pdpStatus === 403 && /Reference\s*#|Access\s+Denied/i.test(pdpHtml)) {
       steps.push({
-        step: `pdp_403_reference#${attempt}`,
-        ok: true,
-        note: `path=${refPath} body=${pdpHtml.replace(/\s+/g, " ").slice(0, 200)}`,
+        step: "pdp_403_hardblock",
+        ok: false,
+        note: `body=${pdpHtml.replace(/\s+/g, " ").slice(0, 200)}`,
       });
-      const refScriptUrl = origin + refPath;
-      let refScriptBody = "";
-      await tStep(`pdp_sensor_fetch#${attempt}`, async () => {
-        const r = await request(
-          refScriptUrl,
-          { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } },
-          ctx,
-        );
-        refScriptBody = await r.text();
-        const head = refScriptBody.slice(0, 200).replace(/\s+/g, " ");
-        const hasBmak = /bmak|window\.bmak|_bmak/i.test(refScriptBody);
-        const looksLikeAkamai = /sensor_data|telemetry|_acf|akamai/i.test(refScriptBody);
-        return { status: r.status, note: `${refScriptBody.length}b bmak=${hasBmak} aka=${looksLikeAkamai} head="${head}"` };
-      });
-      let refCtx = null;
-      for (let i = 0; i < 3; i++) {
-        const { ctx: nextCtx } = await runSensorRound(
-          `pdp_sensor#${attempt}.${i + 1}`,
-          refScriptUrl,
-          refScriptBody,
-          pdpUrl,
-          refCtx,
-        );
-        refCtx = nextCtx;
-        if (abckSolved(ctx.jar, i + 1)) {
-          steps.push({ step: `pdp_sensor_solved#${attempt}`, ok: true, note: `rounds=${i + 1}` });
-          break;
-        }
-      }
-      const retryHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
-      await tStep(`pdp_get#retry#${attempt}`, async () => {
-        const res = await request(pdpUrl, { method: "GET", headers: retryHeaders }, ctx);
+      const crossSiteHeaders = navHeaders({ referer: "https://www.google.com/", site: "cross-site" });
+      await tStep("pdp_get#retry_xsite", async () => {
+        const res = await request(pdpUrl, { method: "GET", headers: crossSiteHeaders }, ctx);
         pdpStatus = res.status;
         pdpHtml = await res.text();
-        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 400) : `ok ${pdpHtml.length}b`;
+        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300) : `ok ${pdpHtml.length}b`;
         return { status: res.status, ok: res.status < 400, note: snippet };
       });
     }
+
+
+
 
 
 
