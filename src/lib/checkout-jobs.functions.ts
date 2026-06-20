@@ -71,9 +71,19 @@ export const enqueueCheckout = createServerFn({ method: "POST" })
     if (!SUPABASE_URL) return { error: "SUPABASE_URL missing" };
     if (!EXECUTOR_TOKEN) return { error: "EXECUTOR_TOKEN missing" };
 
+    const notify = (data as any).notify ?? null;
+    const jobInput: any = { ...data };
+    delete jobInput.notify;
+
     const { data: row, error } = await supabaseAdmin
       .from("checkout_jobs")
-      .insert({ status: "pending", stage: "queued", input: data as any })
+      .insert({
+        status: "pending",
+        stage: "queued",
+        input: jobInput,
+        notify_webhook: notify?.webhookUrl ?? null,
+        notify_events: notify ? { enabled: notify.enabled, base: notify.base } : null,
+      })
       .select("id")
       .single();
     if (error || !row) return { error: error?.message ?? "insert failed" };
