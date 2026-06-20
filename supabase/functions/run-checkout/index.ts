@@ -1291,7 +1291,19 @@ Deno.serve(async (req) => {
   }
   };
 
-  const workerPromise = runWorker();
+  // Outer safety net: any uncaught throw still marks the row failed instead
+  // of silently leaving it `running` forever.
+  const workerPromise = runWorker().catch(async (e) => {
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    try {
+      await supa.from("checkout_jobs").update({
+        status: "failed", stage: "transport",
+        error: "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+      }).eq("id", jobId).in("status", ["pending", "running"]);
+    } catch {}
+    return new Response("worker crashed", { status: 500, headers: cors });
+  });
+
   const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
   if (edgeRuntime?.waitUntil) {
     edgeRuntime.waitUntil(workerPromise);
