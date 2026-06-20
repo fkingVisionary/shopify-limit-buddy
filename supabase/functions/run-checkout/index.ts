@@ -1115,11 +1115,14 @@ function checkoutScriptSource() {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") return new Response("Method not allowed", { status: 405, headers: cors });
 
   const reqUrl = new URL(req.url);
   const action = reqUrl.searchParams.get("action");
   const supa = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
+
+  if (req.method !== "POST" && !(req.method === "GET" && action === "stage")) {
+    return new Response("Method not allowed", { status: 405, headers: cors });
+  }
 
   // Stage callback path — called from the Browserless function/page to update
   // the current checkout step label. Auth is the unguessable jobId UUID; no
