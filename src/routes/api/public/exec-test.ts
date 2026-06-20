@@ -32,8 +32,16 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxy: process.env.PROXY_URL_RESI ?? null,
         };
         const t0 = Date.now();
+        // Defensive: strip any path the user accidentally pasted (e.g. /health)
+        // so EXECUTOR_URL always resolves to the origin.
+        let origin = url.trim();
         try {
-          const res = await fetch(`${url.replace(/\/$/, "")}/run`, {
+          origin = new URL(origin).origin;
+        } catch {
+          origin = origin.replace(/\/+$/, "");
+        }
+        try {
+          const res = await fetch(`${origin}/run`, {
             method: "POST",
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
