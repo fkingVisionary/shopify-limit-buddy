@@ -328,7 +328,10 @@ export const kmartAdapter = {
           ctx,
         );
         refScriptBody = await r.text();
-        return { status: r.status, note: `${refScriptBody.length}b` };
+        const head = refScriptBody.slice(0, 200).replace(/\s+/g, " ");
+        const hasBmak = /bmak|window\.bmak|_bmak/i.test(refScriptBody);
+        const looksLikeAkamai = /sensor_data|telemetry|_acf|akamai/i.test(refScriptBody);
+        return { status: r.status, note: `${refScriptBody.length}b bmak=${hasBmak} aka=${looksLikeAkamai} head="${head}"` };
       });
       let refCtx = null;
       for (let i = 0; i < 3; i++) {
