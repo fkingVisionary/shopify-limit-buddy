@@ -35,13 +35,32 @@ app.post("/run", async (req, reply) => {
     reply.code(400);
     return { ok: false, error: "missing required fields: taskId, storeUrl, variantId" };
   }
+  // Normalise + validate optional card. Never log full PAN or CVV.
+  let card = null;
+  if (task.card && typeof task.card === "object") {
+    const c = task.card;
+    const num = typeof c.number === "string" ? c.number.replace(/\s+/g, "") : "";
+    const cvv = typeof c.cvv === "string" ? c.cvv : "";
+    if (num.length >= 12 && num.length <= 19 && /^\d+$/.test(num) && cvv.length >= 3 && cvv.length <= 4) {
+      card = {
+        number: num,
+        cvv,
+        expMonth: String(c.expMonth ?? "").padStart(2, "0").slice(-2),
+        expYear: String(c.expYear ?? "").slice(-2),
+        holder: typeof c.holder === "string" ? c.holder.slice(0, 100) : "",
+      };
+      req.log.info({ card: { last4: num.slice(-4), holder: card.holder, exp: `${card.expMonth}/${card.expYear}` } }, "card received");
+    } else {
+      req.log.warn("card field present but invalid shape — ignoring");
+    }
+  }
   const result = await runCheckout({
     taskId: String(task.taskId),
     storeUrl: String(task.storeUrl),
     variantId: Number(task.variantId),
     qty: Number(task.qty ?? 1),
     profile: task.profile ?? null,
-    card: task.card ?? null,
+    card,
     proxy: task.proxy ?? null,
     dryRun: task.dryRun !== false,
   });
