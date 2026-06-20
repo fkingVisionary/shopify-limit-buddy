@@ -35,8 +35,14 @@ const CHROME_HEADER_ORDER = [
   "connection",
   "cache-control",
   "sec-ch-ua",
+  "sec-ch-ua-arch",
+  "sec-ch-ua-bitness",
+  "sec-ch-ua-full-version",
+  "sec-ch-ua-full-version-list",
   "sec-ch-ua-mobile",
+  "sec-ch-ua-model",
   "sec-ch-ua-platform",
+  "sec-ch-ua-platform-version",
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
@@ -48,6 +54,7 @@ const CHROME_HEADER_ORDER = [
   "referer",
   "accept-encoding",
   "accept-language",
+  "priority",
   "cookie",
 ];
 
