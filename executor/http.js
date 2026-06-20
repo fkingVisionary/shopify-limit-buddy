@@ -75,7 +75,7 @@ class Dispatcher {
     if (this._session) return this._session;
     await ensureTls();
     this._session = new Session({
-      clientIdentifier: ClientIdentifier.chrome_124,
+      clientIdentifier: ClientIdentifier.chrome_133,
       timeout: 30_000,
       headerOrder: CHROME_HEADER_ORDER,
       ...(this.proxy ? { proxy: this.proxy } : {}),
