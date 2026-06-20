@@ -1,29 +1,44 @@
-# Get the Kmart/Hyper executor running on your own Fly.io account
+# Phone-only Fly deploy via GitHub Actions
 
-I can't create a Fly account or log in for you — Fly accounts must be created and owned by you (billing + 2FA are tied to your email). What I can do is walk you through it command-by-command and wire the Lovable app to whatever URL/token you end up with. The existing `SETUP.md` covers the basics but predates the Hyper Solutions work, so we'll follow this updated flow instead.
+You don't need a computer. We'll deploy the `executor/` folder to Fly using a GitHub Actions workflow you trigger from the GitHub mobile app (or mobile browser). Fly account creation, secrets, and "Run workflow" all work from a phone.
 
-## What you'll end up with
+## What I'll add to the repo
 
-- A Fly.io account in your name, with billing card attached
-- An app named `j1ms-bot-executor` in region `syd`, running `executor/`
-- Three secrets set on that app: `EXECUTOR_TOKEN`, `HYPER_API_KEY`, and your residential proxy URL
-- Two secrets set in Lovable (`EXECUTOR_URL`, `EXECUTOR_TOKEN`) so `runOnExecutor` can reach it
+**`.github/workflows/deploy-executor.yml`** — manually-triggered workflow that:
+1. Checks out the repo
+2. Installs `flyctl` (`superfly/flyctl-actions/setup-flyctl@master`)
+3. Runs `flyctl deploy --remote-only --config executor/fly.toml --dockerfile executor/Dockerfile` from the repo root
+4. Authenticates with `FLY_API_TOKEN` from GitHub repo secrets
 
-## Checkpoints (we stop at each one)
+A second workflow step (gated behind a `workflow_dispatch` input `create_app: true`) runs `flyctl apps create j1ms-bot-executor --org personal` first time only, so you don't need to run `flyctl launch` locally.
 
-1. **Account + CLI** — you sign up at fly.io, add a card, install `flyctl` on Windows, run `flyctl auth login`. Reply "logged in" and paste the output of `flyctl auth whoami`.
-2. **Get the code locally** — clone the repo (or download the ZIP from Lovable) and `cd` into the `executor/` folder. Reply "in executor folder".
-3. **Launch the app (no deploy)** — `flyctl launch --no-deploy --copy-config --name j1ms-bot-executor --region syd`. Reply with any prompt you're unsure about.
-4. **Generate + set secrets** — I'll give you the exact PowerShell to mint a random `EXECUTOR_TOKEN`, then `flyctl secrets set` for `EXECUTOR_TOKEN`, `HYPER_API_KEY` (your Kmart key), and `PROXY_URL_RESI` (your AU residential proxy in `http://user:pass@host:port` form).
-5. **Deploy** — `flyctl deploy`. We watch `flyctl logs` together. Reply with `flyctl status` output so I can confirm the hostname.
-6. **Health check** — `curl https://<your-host>/health` should return `{"ok":true}`.
-7. **Wire Lovable** — once you confirm the hostname and token, I'll request `EXECUTOR_URL` and `EXECUTOR_TOKEN` via the secure secret form in this chat. Lovable's `runOnExecutor` server function already reads both.
-8. **Dry-run** — I trigger `runOnExecutor` against a Kmart PDP URL. Success = chain ends with `akamai_solved` + `pdp_get 200`.
+## What you do from your phone
 
-## Doc update (in parallel)
+1. **Connect repo to GitHub** — in Lovable, + menu → GitHub → Connect project (one tap, OAuth in mobile browser).
+2. **Make a Fly account** — fly.io/app/sign-up in mobile browser, add card.
+3. **Mint a deploy token** — Fly dashboard → Tokens → Create deploy token (scope: this org). Copy it.
+4. **Add GitHub repo secrets** (Settings → Secrets and variables → Actions on github.com mobile site):
+   - `FLY_API_TOKEN` — from step 3
+   - `HYPER_API_KEY` — your Kmart Hyper key
+   - `PROXY_URL_RESI` — `http://user:pass@host:port` for your AU residential proxy
+   - `EXECUTOR_TOKEN` — any random string (use a password manager to generate)
+5. **Run workflow** — GitHub mobile app → Actions tab → "Deploy executor" → Run workflow → tick `create_app` (first time only).
+6. **Get the URL** — workflow logs print the hostname (`j1ms-bot-executor.fly.dev`). I confirm it with a `/health` curl from the Lovable backend.
+7. **Wire Lovable** — I trigger the `add_secret` form here for `EXECUTOR_URL` + `EXECUTOR_TOKEN`; you paste in the chat.
+8. **Dry-run Kmart** — I call `runOnExecutor` against a Kmart PDP and we read the chain output.
 
-Once we finish, I'll rewrite `SETUP.md` so it reflects the Hyper-only Kmart flow (drop the 2Captcha section, add the `HYPER_API_KEY` step, and note that Browserless is recon-only now). No code changes needed for this plan — purely setup + one doc refresh at the end.
+## Secrets sync to Fly
 
-## What I need from you to start step 1
+The workflow also runs `flyctl secrets set EXECUTOR_TOKEN=... HYPER_API_KEY=... PROXY_URL_RESI=... --app j1ms-bot-executor --stage` before deploy, so the Fly app picks them up from the same GitHub secrets — you never have to run `flyctl secrets` from a terminal.
 
-Just confirm you've created the Fly account and run `flyctl auth login`. I'll hand you the exact next command each time you reply.
+## Doc update
+
+I'll rewrite `SETUP.md` for the phone-only path (drop PowerShell/flyctl-local sections, add GitHub Actions screenshots-style steps, drop 2Captcha, add Hyper).
+
+## What I need before building
+
+Confirm:
+- (a) The project is already connected to GitHub, or you're happy to connect it now.
+- (b) You have (or will create) a Fly account before I add the workflow — the workflow itself doesn't need the account to exist, but step 5 does.
+
+Reply "go" and I'll add the workflow + updated SETUP.md in one batch.

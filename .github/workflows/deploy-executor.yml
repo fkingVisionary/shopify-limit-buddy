@@ -1,0 +1,96 @@
+name: Deploy executor
+
+# Manually triggered from the GitHub mobile app or web UI:
+#   Actions tab -> "Deploy executor" -> Run workflow.
+# First run: tick `create_app` so the Fly app gets created before deploy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_app:
+        description: "Create the Fly app first (tick on the very first run only)"
+        type: boolean
+        default: false
+      app_name:
+        description: "Fly app name"
+        type: string
+        default: "j1ms-bot-executor"
+      region:
+        description: "Fly region"
+        type: string
+        default: "syd"
+
+concurrency:
+  group: deploy-executor
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & deploy executor to Fly.io
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP: ${{ inputs.app_name }}
+      REGION: ${{ inputs.region }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Verify FLY_API_TOKEN is set
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN is not set. Add it in Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Install flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create Fly app (first run only)
+        if: ${{ inputs.create_app }}
+        run: |
+          if flyctl status --app "$APP" >/dev/null 2>&1; then
+            echo "App $APP already exists, skipping create."
+          else
+            flyctl apps create "$APP" --org personal
+          fi
+
+      - name: Stage runtime secrets on Fly
+        env:
+          EXECUTOR_TOKEN: ${{ secrets.EXECUTOR_TOKEN }}
+          HYPER_API_KEY: ${{ secrets.HYPER_API_KEY }}
+          PROXY_URL_RESI: ${{ secrets.PROXY_URL_RESI }}
+        run: |
+          missing=0
+          for var in EXECUTOR_TOKEN HYPER_API_KEY PROXY_URL_RESI; do
+            if [ -z "${!var}" ]; then
+              echo "::error::Repo secret $var is not set."
+              missing=1
+            fi
+          done
+          if [ "$missing" = "1" ]; then exit 1; fi
+
+          flyctl secrets set \
+            EXECUTOR_TOKEN="$EXECUTOR_TOKEN" \
+            HYPER_API_KEY="$HYPER_API_KEY" \
+            PROXY_URL_RESI="$PROXY_URL_RESI" \
+            --app "$APP" --stage
+
+      - name: Deploy executor
+        working-directory: executor
+        run: |
+          flyctl deploy \
+            --remote-only \
+            --app "$APP" \
+            --config fly.toml \
+            --dockerfile Dockerfile \
+            --primary-region "$REGION"
+
+      - name: Print app hostname
+        run: |
+          echo "Executor hostname:"
+          flyctl status --app "$APP" --json | jq -r '.Hostname'
+          echo ""
+          echo "Health check:"
+          HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
+          curl -sSf "https://$HOST/health" || echo "(health check failed - check flyctl logs --app $APP)"

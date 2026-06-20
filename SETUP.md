@@ -1,167 +1,100 @@
-# Executor Setup — Windows Beginner Guide
+# Executor Setup — Phone-Only via GitHub Actions
 
-This guide walks you through everything you need to **buy, install, and configure** to get the Node executor service running on Fly.io from a Windows PC.
+You can deploy the Kmart/Hyper executor to Fly.io entirely from your phone — no laptop, no PowerShell, no `flyctl` install. A GitHub Actions workflow does the build and deploy; you just tap "Run workflow" in the GitHub mobile app.
 
-You will end up with:
+Final state:
+- Fly.io app `j1ms-bot-executor` in Sydney running `executor/`
+- 3 secrets on Fly: `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `PROXY_URL_RESI`
+- 2 secrets in Lovable: `EXECUTOR_URL`, `EXECUTOR_TOKEN`
 
-- A residential proxy plan (so requests don't come from a datacenter IP)
-- A 2Captcha account (for the rare Akamai sensor step)
-- A Fly.io account hosting the executor (small Linux VM in Sydney)
-- Your Lovable app pointed at the executor via 2 secrets
-
-Total cost to get going: **~$5–$30/month** depending on proxy plan.
+Cost: Fly small VM (~$0–3/mo, free tier covers most usage) + your residential proxy + Hyper Solutions usage.
 
 ---
 
-## 1. What you need to purchase
+## 1. Connect this project to GitHub
 
-| Service | Why | Cost | Link |
-|---|---|---|---|
-| **Residential proxy** (e.g. IPRoyal, Bright Data, Smartproxy, Oxylabs) | Australian residential IP so Cloudflare/Akamai don't 403 you | from ~$7/GB pay‑as‑you‑go, or ~$15–30/mo small plan | iproyal.com / brightdata.com |
-| **2Captcha account** | Solves Akamai sensor when stores require it | Pre‑pay $5–10 to start. ~$2.99 per 1,000 solves | 2captcha.com |
-| **Fly.io account** | Hosts the executor (Linux VM, no Mac required) | Free tier covers 1 small VM; add a card for safety | fly.io |
+In Lovable: **+ menu → GitHub → Connect project** → authorize on github.com (works in mobile browser) → Create repository.
 
-> You already have an IPFist proxy configured (`premium-proxy.ipfist.com:1818`). If that's residential AU, you can skip buying a new proxy. If it's datacenter, replace it.
+Once synced, install the **GitHub mobile app** (iOS / Android). You'll use it to trigger deploys.
 
 ---
 
-## 2. Install the tools on Windows
+## 2. Create a Fly.io account
 
-You only need **two** things installed locally:
-
-### 2a. Install flyctl (Fly.io CLI)
-
-Open **PowerShell** (Start menu → type "PowerShell" → Enter) and run:
-
-```powershell
-iwr https://fly.io/install.ps1 -useb | iex
-```
-
-Close and reopen PowerShell, then verify:
-
-```powershell
-flyctl version
-```
-
-You should see a version number. If "command not found", restart your PC so PATH updates.
-
-### 2b. (Optional) Install Node.js — only if you want to test locally
-
-Download the LTS installer from <https://nodejs.org> and run it. Click Next through everything. Verify:
-
-```powershell
-node --version
-```
-
-You can skip this if you're going straight to Fly.io.
-
-> **Git, WSL, Docker, Mac — none required.** Fly.io builds the container in the cloud.
+In your mobile browser:
+1. Go to <https://fly.io/app/sign-up>
+2. Sign up and add a payment card (Hobby tier; small VM is free)
+3. Go to **Account → Access Tokens → Create deploy token**
+   - Name: `github-actions`
+   - Scope: your default org (usually `personal`)
+   - Copy the token (you only see it once)
 
 ---
 
-## 3. Create the Fly.io account
+## 3. Add GitHub repo secrets
 
-1. Go to <https://fly.io/app/sign-up> and sign up
-2. Add a payment card (Hobby plan; small VM is free, card is just required)
-3. In PowerShell, log in:
+On github.com mobile site (the mobile app doesn't expose secrets UI):
 
-```powershell
-flyctl auth login
-```
+Repo → **Settings → Secrets and variables → Actions → New repository secret**
 
-A browser opens — approve the login.
+Add all four:
 
----
-
-## 4. Get the executor code onto your PC
-
-You need the `executor/` folder from this Lovable project on your local disk.
-
-Easiest way: click **GitHub** in the top right of Lovable → connect your repo → then on your PC:
-
-```powershell
-cd $HOME\Documents
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>\executor
-```
-
-(If you don't want GitHub, download the project as a ZIP from Lovable, unzip it, and `cd` into the `executor` folder.)
+| Name | Value |
+|---|---|
+| `FLY_API_TOKEN` | Deploy token from step 2 |
+| `EXECUTOR_TOKEN` | Any random 32+ char string (use your password manager's generator) |
+| `HYPER_API_KEY` | Your Hyper Solutions key (Kmart-whitelisted) |
+| `PROXY_URL_RESI` | `http://user:pass@host:port` — your AU residential proxy |
 
 ---
 
-## 5. Deploy the executor to Fly.io
+## 4. Run the deploy workflow
 
-From inside the `executor` folder:
+GitHub mobile app → your repo → **Actions** tab → **Deploy executor** → **Run workflow**.
 
-```powershell
-flyctl launch --no-deploy --copy-config --name j1ms-bot-executor --region syd
+**First time only:** toggle `create_app` ON. Subsequent deploys: leave it off.
+
+Tap **Run workflow**. ~2 minutes later the job finishes and the logs print:
+
+```
+Executor hostname:
+j1ms-bot-executor.fly.dev
+
+Health check:
+{"ok":true}
 ```
 
-Answer prompts:
-- Postgres? **No**
-- Redis? **No**
-- Deploy now? **No**
-
-Generate a shared secret (any random string works; this command makes one):
-
-```powershell
-$token = -join ((48..57) + (97..122) | Get-Random -Count 48 | % {[char]$_})
-echo $token
-```
-
-Copy the printed token — you'll need it twice. Then set it on Fly:
-
-```powershell
-flyctl secrets set EXECUTOR_TOKEN=$token
-```
-
-Deploy:
-
-```powershell
-flyctl deploy
-```
-
-Wait ~2 minutes. When it finishes, get your URL:
-
-```powershell
-flyctl status
-```
-
-Look for `Hostname` — something like `j1ms-bot-executor.fly.dev`. That's your `EXECUTOR_URL`.
-
-Sanity check it's alive:
-
-```powershell
-curl https://j1ms-bot-executor.fly.dev/health
-```
-
-Should return `{"ok":true}`.
+If the health check fails, open the job log and look for the failing step.
 
 ---
 
-## 6. Wire the executor into Lovable
+## 5. Wire the executor into Lovable
 
-Back in this chat, tell me:
+Back in Lovable chat, say:
 
 > "Add the executor secrets"
 
-I'll open a secure form for you to paste:
+Lovable will open a secure form. Paste:
 - `EXECUTOR_URL` → `https://j1ms-bot-executor.fly.dev`
-- `EXECUTOR_TOKEN` → the token you generated in step 5
+- `EXECUTOR_TOKEN` → the same value you put in GitHub secrets in step 3
 
 ---
 
-## 7. Smoke test
+## 6. Smoke test
 
-After secrets are saved, ask me:
+In Lovable chat:
 
-> "Ping the executor"
+> "Dry-run a Kmart product URL through the executor"
 
-then:
+Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. A 403 means the proxy isn't residential AU — swap providers.
 
-> "Run a dry-run JB Hi-Fi task through the executor"
+---
 
-If `checkout_page` returns **200** instead of **403**, the proxy is working and you're done.
+## Updating later
+
+- **Executor code changes** (anything under `executor/`): re-run the **Deploy executor** workflow from the GitHub app. `create_app` stays OFF.
+- **Rotate a secret** (e.g. new Hyper key): update the GitHub repo secret, then re-run the workflow — the workflow restages secrets on Fly every deploy.
+- **Check executor logs**: Fly dashboard → your app → Live logs (works in mobile browser).
 
 ---
 
@@ -169,18 +102,16 @@ If `checkout_page` returns **200** instead of **403**, the proxy is working and 
 
 | Symptom | Fix |
 |---|---|
-| `flyctl: command not found` | Restart PowerShell or reboot — PATH didn't refresh |
-| `flyctl deploy` fails on build | Run `flyctl logs` and paste output here |
-| `/health` returns 404 | Wrong URL — re‑run `flyctl status` |
-| `checkout_page` still 403 | Proxy isn't residential AU — swap proxy provider |
-| 2Captcha "ERROR_ZERO_BALANCE" | Top up at 2captcha.com/enterpage |
+| Workflow fails on "Verify FLY_API_TOKEN" | Secret not set or misnamed — check repo Settings |
+| Workflow fails on "Create Fly app" | App name taken globally — pick a unique name and pass it as the `app_name` workflow input |
+| `pdp_get` returns 403 | Proxy isn't residential AU — swap proxy provider |
+| `antibot_misconfigured` in chain output | `HYPER_API_KEY` missing or rejected on Fly — re-check the GitHub secret and re-run workflow |
+| Want to scale down / stop spending | Fly dashboard → app → Scale → set min machines to 0 (already the default) |
 
 ---
 
-## Monthly cost estimate
+## Notes on scope
 
-- Fly.io small VM: **~$0–3** (free allowance covers most usage)
-- Residential proxy starter: **~$15**
-- 2Captcha top‑up: **~$10** (lasts thousands of solves)
-
-**≈ $25/month** to run continuously.
+- **Kmart AU only** for now — that's the only domain whitelisted on the current Hyper key.
+- **Browserless** stays in the codebase but is recon-only; it is NOT in the checkout path.
+- **JB Hi-Fi / Shopify** flows are paused until Hyper whitelists those Akamai/Shopify profiles.
