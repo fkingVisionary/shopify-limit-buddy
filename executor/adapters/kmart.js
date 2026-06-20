@@ -187,7 +187,10 @@ export const kmartAdapter = {
       );
       pdpStatus = res.status;
       pdpHtml = await res.text();
-      return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b` };
+      const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `${pdpHtml.length}b`;
+      const srv = res.headers.get("server");
+      const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
+      return { status: res.status, ok: res.status < 400, note: `${snippet} | server=${srv} ${aka}` };
     });
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
