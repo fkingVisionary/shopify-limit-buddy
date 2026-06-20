@@ -32,6 +32,22 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
 
+// Human-pace jitter. Fixed delays are themselves a bot signature; always
+// randomise within a range. Min/max in ms.
+const sleep = (min, max) =>
+  new Promise((r) => setTimeout(r, Math.floor(min + Math.random() * (max - min))));
+
+// Realistic intermediate browsing pages — pick one at random to fetch
+// between warm_home and pdp_get so the nav path is home → category → PDP
+// instead of a straight home → PDP jump.
+const CATEGORY_PATHS = [
+  "/category/toys/D110000",
+  "/category/home/D100000",
+  "/category/kids-clothing/D170000",
+  "/category/sale/D310000",
+  "/category/kitchen-dining/D250000",
+];
+
 // Chrome 124 / macOS navigation header shape. Akamai scores requests on the
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
@@ -173,6 +189,9 @@ export const kmartAdapter = {
     }
     const scriptUrl = origin + scriptPath;
 
+    // Human pause: glance at homepage before the browser pulls the sensor script.
+    await sleep(800, 1500);
+
     // 3. Fetch the Akamai sensor script (first sensor needs the script body).
     await tStep("akamai_script_fetch", async () => {
       const res = await request(scriptUrl, { method: "GET", headers: { "user-agent": UA, referer: origin + "/", "accept-language": ACCEPT_LANG } }, ctx);
@@ -222,6 +241,8 @@ export const kmartAdapter = {
         steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
+      // Sensors are JS-scheduled; back-to-back posts with zero gap are a tell.
+      await sleep(200, 400);
     }
 
     if (!abckSolved(ctx.jar, 3)) {
@@ -300,11 +321,32 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_pixel_prepdp", ok: false, note: e?.message ?? String(e) });
     }
 
+    // 4c. Intermediate category browse. Real users don't teleport from the
+    //     homepage to a deep PDP — they click into a category first. Hitting
+    //     /category/* gives Akamai a same-origin nav with a sensible referer
+    //     chain (none → home → category → pdp) and an extra 200 to learn from.
+    const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
+    const catUrl = origin + catPath;
+    await sleep(700, 1400); // brief glance at homepage before the click
+    await tStep("category_browse", async () => {
+      const res = await request(
+        catUrl,
+        { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
+        ctx,
+      );
+      const body = await res.text();
+      return { status: res.status, ok: res.status < 400, note: `${catPath} ${body.length}b` };
+    }).catch(() => {});
+    // Human dwell on the category page before clicking through to the PDP.
+    // 1.5–3s is the critical gap — Akamai's risk model is sensitive to the
+    // home→PDP interval being unrealistically short.
+    await sleep(1500, 3000);
+
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
     let pdpHtml = "";
     {
-      const pdpHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
+      const pdpHeaders = navHeaders({ referer: catUrl, site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
       steps.push({
         step: "pdp_get:hdrs",
