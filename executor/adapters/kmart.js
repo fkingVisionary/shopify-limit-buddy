@@ -256,6 +256,93 @@ export const kmartAdapter = {
       });
     }
 
+    // 5a. AkamaiGHost reference-code recovery. When the PDP 403s with an
+    //     "Access Denied / Reference #..." page that embeds a NEW sensor
+    //     script (empty `?v=`), Akamai is asking us to re-solve the sensor
+    //     against that script. Run up to 3 sensor rounds and retry the PDP;
+    //     loop the whole thing up to 2 times in case a second reference
+    //     page is served.
+    const runSensorRound = async (label, refScriptUrl, refScriptBody, pageUrl, prevCtx) => {
+      let pc = prevCtx;
+      const out = await tStep(label, async () => {
+        const r = await solveAkamaiSensor({
+          jar: ctx.jar,
+          pageUrl,
+          userAgent: UA,
+          ip: egressIp,
+          acceptLanguage: ACCEPT_LANG,
+          scriptUrl: refScriptUrl,
+          scriptBody: refScriptBody,
+          prevContext: pc,
+        });
+        const res = await request(
+          r.postUrl,
+          {
+            method: "POST",
+            headers: {
+              "user-agent": UA,
+              "content-type": "text/plain;charset=UTF-8",
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              origin,
+              referer: pageUrl,
+            },
+            body: JSON.stringify({ sensor_data: r.payload }),
+          },
+          ctx,
+        );
+        pc = r.context;
+        return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
+      });
+      return { ctx: pc, ok: out.ok !== false };
+    };
+
+    for (let attempt = 0; attempt < 2 && pdpStatus === 403; attempt++) {
+      const refPath = parseReferenceScript(pdpHtml);
+      if (!refPath) break;
+      steps.push({
+        step: `pdp_403_reference#${attempt}`,
+        ok: true,
+        note: `path=${refPath} body=${pdpHtml.replace(/\s+/g, " ").slice(0, 200)}`,
+      });
+      const refScriptUrl = origin + refPath;
+      let refScriptBody = "";
+      await tStep(`pdp_sensor_fetch#${attempt}`, async () => {
+        const r = await request(
+          refScriptUrl,
+          { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } },
+          ctx,
+        );
+        refScriptBody = await r.text();
+        return { status: r.status, note: `${refScriptBody.length}b` };
+      });
+      let refCtx = null;
+      for (let i = 0; i < 3; i++) {
+        const { ctx: nextCtx } = await runSensorRound(
+          `pdp_sensor#${attempt}.${i + 1}`,
+          refScriptUrl,
+          refScriptBody,
+          pdpUrl,
+          refCtx,
+        );
+        refCtx = nextCtx;
+        if (abckSolved(ctx.jar, i + 1)) {
+          steps.push({ step: `pdp_sensor_solved#${attempt}`, ok: true, note: `rounds=${i + 1}` });
+          break;
+        }
+      }
+      const retryHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
+      await tStep(`pdp_get#retry#${attempt}`, async () => {
+        const res = await request(pdpUrl, { method: "GET", headers: retryHeaders }, ctx);
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
+        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 400) : `ok ${pdpHtml.length}b`;
+        return { status: res.status, ok: res.status < 400, note: snippet };
+      });
+    }
+
+
+
     // 5b. SBSD challenge — fires on ANY response carrying the `?v=<uuid>`
     //     script tag (Kmart serves it inline on 200s too, not just 403s).
     //     Solve two SBSD rounds (index 0, 1) per Hyper docs §3.3, then retry PDP.
