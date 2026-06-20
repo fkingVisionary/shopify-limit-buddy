@@ -19,6 +19,103 @@ const cors = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
+// ─── Discord webhook ─────────────────────────────────────────────────
+// Fired here (server-side) so the user always gets a notification, even if
+// they closed the tab. Idempotency is enforced via a conditional UPDATE on
+// checkout_jobs.webhook_fired_at — only the first writer fires.
+
+const BOT_NAME = "J1m's Bot";
+const BOT_VERSION = "v1.0";
+const BRAND_GOLD = 0xEAD24A;
+
+type NotifyEvent = "in_stock" | "checkout_ready" | "confirmed" | "failed";
+
+const EVENT_META: Record<NotifyEvent, { title: string; subtitle: string; color: number }> = {
+  in_stock:       { title: "Stock Detected",       subtitle: "Variant came in stock.",          color: 0x3B82F6 },
+  checkout_ready: { title: "Checkout Ready",       subtitle: "Cart prepared, awaiting submit.", color: 0xF59E0B },
+  confirmed:      { title: "Successful Checkout!", subtitle: "Your Webhook works!",             color: BRAND_GOLD },
+  failed:         { title: "Checkout Failed",      subtitle: "Task could not complete.",        color: 0xEF4444 },
+};
+
+function v(value: unknown): string {
+  const s = String(value ?? "").trim();
+  return s.length > 0 ? s : "—";
+}
+
+function buildEmbed(event: NotifyEvent, base: any, dyn: { orderId?: string | null; elapsedMs?: number | null; message?: string | null }) {
+  const meta = EVENT_META[event];
+  const storeLink = base?.storeUrl
+    ? (String(base.storeUrl).startsWith("http") ? base.storeUrl : `https://${base.storeUrl}`)
+    : undefined;
+  const fields: { name: string; value: string; inline?: boolean }[] = [
+    { name: "Store",   value: v(base?.storeName || base?.storeUrl) },
+    { name: "Product", value: v(base?.productTitle ?? base?.input) },
+  ];
+  if (base?.price)   fields.push({ name: "Price",   value: v(base.price) });
+  if (dyn.orderId)   fields.push({ name: "Order #", value: v(dyn.orderId) });
+  if (dyn.elapsedMs) fields.push({ name: "Checkout Time", value: `${(dyn.elapsedMs / 1000).toFixed(1)} seconds` });
+  fields.push({ name: "QTY", value: v(base?.qty) });
+  if (base?.variantTitle || base?.variantId) fields.push({ name: "Variant", value: v(base.variantTitle ?? base.variantId) });
+  fields.push({ name: "Profile / Email", value: v(`${base?.profileMasked ?? "—"} / ${base?.emailMasked ?? "—"}`) });
+  if (base?.paymentMethod) fields.push({ name: "Payment Method", value: v(base.paymentMethod) });
+  if (base?.mode)          fields.push({ name: "Mode",           value: v(base.mode) });
+  fields.push({ name: "Proxy", value: v(base?.proxyGroupName || "Localhost") });
+  if (dyn.message && event === "failed") fields.push({ name: "Reason", value: v(String(dyn.message).slice(0, 300)) });
+
+  return {
+    title: meta.title,
+    url: storeLink,
+    description: meta.subtitle,
+    color: meta.color,
+    fields,
+    footer: { text: `${BOT_NAME} — ${BOT_VERSION}${base?.groupName ? ` • ${base.groupName}` : ""}`, icon_url: base?.logoUrl || undefined },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function postDiscord(webhookUrl: string, embed: ReturnType<typeof buildEmbed>, logoUrl?: string) {
+  const body = JSON.stringify({ username: BOT_NAME, avatar_url: logoUrl || undefined, embeds: [embed] });
+  const send = () => fetch(webhookUrl, { method: "POST", headers: { "content-type": "application/json" }, body });
+  try {
+    let res = await send();
+    if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+      let waitMs = 1000;
+      try {
+        const j: any = await res.clone().json();
+        if (j?.retry_after) waitMs = Math.min(5000, Math.max(500, Math.floor(Number(j.retry_after) * 1000)));
+      } catch {}
+      await new Promise((r) => setTimeout(r, waitMs));
+      res = await send();
+    }
+    return res.ok;
+  } catch { return false; }
+}
+
+async function fireTerminalWebhook(
+  supa: any,
+  jobId: string,
+  outStatus: "succeeded" | "failed",
+  job: any,
+  dyn: { orderId?: string | null; elapsedMs?: number | null; message?: string | null },
+) {
+  const webhookUrl: string | null = job?.notify_webhook ?? null;
+  const notify: any = job?.notify_events ?? null;
+  if (!webhookUrl || !notify) return;
+  const event: NotifyEvent = outStatus === "succeeded" ? "confirmed" : "failed";
+  if (!notify?.enabled?.[event]) return;
+  const { data: claimed, error: claimErr } = await supa
+    .from("checkout_jobs")
+    .update({ webhook_fired_at: new Date().toISOString() })
+    .eq("id", jobId)
+    .is("webhook_fired_at", null)
+    .select("id")
+    .maybeSingle();
+  if (claimErr || !claimed) return;
+  const embed = buildEmbed(event, notify.base ?? {}, dyn);
+  await postDiscord(webhookUrl, embed, notify.base?.logoUrl);
+}
+// ─────────────────────────────────────────────────────────────────────
+
 // Self-contained checkout script shipped to Browserless /function.
 // Mirrors src/lib/browserless.functions.ts browserlessScript().
 function checkoutScriptSource() {
