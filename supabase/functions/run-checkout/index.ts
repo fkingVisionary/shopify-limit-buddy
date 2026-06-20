@@ -1500,6 +1500,7 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: outStatus, stage: outStage, result, error: outError,
     }).eq("id", jobId);
+    console.log("[run-checkout] terminal", jobId, outStatus, outStage, outError ?? "");
     const elapsedMs = Date.now() - (Date.parse(job?.created_at ?? "") || Date.now());
     await fireTerminalWebhook(supa, jobId, outStatus, job, {
       orderId: (result?.orderId as string) ?? null,
