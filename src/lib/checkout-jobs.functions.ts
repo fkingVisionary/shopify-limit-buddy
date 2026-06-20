@@ -84,24 +84,16 @@ export const getCheckoutJob = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => z.object({ jobId: z.string().uuid() }).parse(input))
   .handler(async ({ data }): Promise<CheckoutJobView | { error: string }> => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-    let { data: row, error } = await supabaseAdmin
+    // Read-only. The edge worker is the single source of truth and always
+    // writes a terminal row in its try/catch. We never overwrite status here:
+    // the previous 90s "stuck in launch -> failed" self-healer was racing
+    // real successful checkouts and marking them failed AFTER money moved.
+    const { data: row, error } = await supabaseAdmin
       .from("checkout_jobs")
       .select("id,status,stage,error,result,created_at,updated_at")
       .eq("id", data.jobId)
       .maybeSingle();
     if (error || !row) return { error: error?.message ?? "not found" };
-    const ageMs = Date.now() - new Date(row.updated_at as string).getTime();
-    if (row.status === "running" && row.stage === "launch" && ageMs > 90_000) {
-      const staleError = "Browserless launch timed out before the checkout page loaded. Check Browserless capacity/key and try again.";
-      const { data: healed } = await supabaseAdmin
-        .from("checkout_jobs")
-        .update({ status: "failed", stage: "transport", error: staleError })
-        .eq("id", data.jobId)
-        .eq("status", "running")
-        .select("id,status,stage,error,result,created_at,updated_at")
-        .maybeSingle();
-      if (healed) row = healed;
-    }
     return {
       id: row.id as string,
       status: row.status as CheckoutJobStatus,
@@ -112,3 +104,4 @@ export const getCheckoutJob = createServerFn({ method: "POST" })
       updatedAt: row.updated_at as string,
     };
   });
+
