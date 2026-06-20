@@ -1383,19 +1383,71 @@ function reconScriptSource() {
       await wait(3500);
       await snap("pdp"); await dumpDom("pdp");
 
-      report.atcClicked = await clickByText(/^\\s*(add to cart|add to bag|buy now)\\s*$/);
-      await wait(4000);
+      // JB Hi-Fi: ATC is a React button identified by data-testid, not text.
+      report.atcClicked = await page.evaluate(() => {
+        const sels = ['[data-testid="add-to-cart-button"]', '[data-test="add-to-cart-button"]'];
+        for (const s of sels) {
+          const el = document.querySelector(s);
+          if (el) { (el as HTMLElement).click(); return s; }
+        }
+        return null;
+      }).catch(() => null);
+      await wait(3000);
       await snap("after_atc"); await dumpDom("after_atc");
 
-      report.checkoutClicked = await clickByText(/^\\s*(checkout|check out|secure checkout|proceed to checkout|continue to checkout)\\s*$/);
+      // Open the cart drawer by clicking the header Cart control.
+      report.cartOpened = await page.evaluate(() => {
+        const cands = Array.from(document.querySelectorAll('[data-testid*="cart" i], [data-test*="cart" i], a[href="/cart"], button, a'));
+        for (const el of cands) {
+          const t = ((el as HTMLElement).innerText || "").trim();
+          const href = el.getAttribute("href") || "";
+          if (/^\\s*cart\\s*$/i.test(t) || href === "/cart") {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t || href; }
+          }
+        }
+        return null;
+      }).catch(() => null);
+      await wait(2500);
+      await snap("cart_drawer"); await dumpDom("cart_drawer");
+
+      // Click Checkout from drawer or cart page.
+      report.checkoutClicked = await page.evaluate(() => {
+        const sels = ['[data-testid*="checkout" i]', '[data-test*="checkout" i]', 'a[href*="/checkout"]'];
+        for (const s of sels) {
+          for (const el of Array.from(document.querySelectorAll(s))) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return s; }
+          }
+        }
+        const cands = Array.from(document.querySelectorAll('button, a'));
+        for (const el of cands) {
+          const t = ((el as HTMLElement).innerText || "").trim();
+          if (/^(checkout|secure checkout|proceed to checkout|continue to checkout)$/i.test(t)) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t; }
+          }
+        }
+        return null;
+      }).catch(() => null);
       try { await page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }); }
       catch (e) { report.errors.push("nav:" + (e?.message ?? e)); }
-      await wait(4500);
+      await wait(5000);
       await snap("checkout_contact"); await dumpDom("checkout_contact");
       try { report.checkoutHost = new URL(page.url()).host; } catch {}
 
-      report.contactContinueClicked = await clickByText(/continue to shipping|continue|next/);
-      await wait(4000);
+      report.contactContinueClicked = await page.evaluate(() => {
+        const cands = Array.from(document.querySelectorAll('button, input[type="submit"], [data-testid*="continue" i], [data-test*="continue" i]'));
+        for (const el of cands) {
+          const t = (((el as HTMLElement).innerText || (el as HTMLInputElement).value || "") + "").trim();
+          if (/continue to shipping|continue to delivery|continue|next/i.test(t)) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t; }
+          }
+        }
+        return null;
+      }).catch(() => null);
+      await wait(5000);
       await snap("checkout_after_continue"); await dumpDom("checkout_after_continue");
 
       return { ok: true, report };
