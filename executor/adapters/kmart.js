@@ -241,6 +241,8 @@ export const kmartAdapter = {
         steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
+      // Sensors are JS-scheduled; back-to-back posts with zero gap are a tell.
+      await sleep(200, 400);
     }
 
     if (!abckSolved(ctx.jar, 3)) {
