@@ -1,56 +1,51 @@
+## Root cause
 
-## Context
+The 403 we're getting on `pdp_get` is a **hard SBSD challenge page**, not an AkamaiGHost terminal block. It contains a `<script src="/path?v=<token>&t=<token>">` tag, and Hyper supports solving it. Our current detection misses it because:
 
-After the TLS-client switch, `_abck` reaches `~0~` after 3 sensor rounds — sensor passes. But `pdp_get` still 403s with an AkamaiGHost "reference code" page. The script tag in that 403 body is `/8vR.../...?v=` with an **empty `v=` value**, not `?v=<uuid>` — so it is **not** an SBSD challenge (per Hyper §3.4 SBSD requires `?v=<uuid>`).
+1. `SBSD_RE` (kmart.js:22) requires `v` to be a **strict UUID** (`[0-9a-f]{8}-...`). The `v` value Akamai actually sends on these challenges is some other token format, so the regex never matches.
+2. The `sbsdDetected` precondition on kmart.js:316 has the same UUID-shape gate (`\?v=[0-9a-f-]{8,}`), so even a loosened `SBSD_RE` would still be gated out.
+3. The previously-added "reference-page recovery" and "cross-site retry" branches consume the 403 first and produce noise. They should be removed — the 403 body IS the SBSD challenge, no recovery needed.
 
-That page is Akamai's edge-rejection page that embeds a **fresh sensor script path**. The correct response per Hyper's flow is to fetch that new script and run another sensor solve cycle against it, then retry the PDP. Our current adapter doesn't do that — it falls through to SBSD detection, finds no UUID, logs `sbsd_missing`, and gives up.
+The downstream SBSD code (script fetch → Hyper `/sbsd` POST → POST payload → retry PDP) is already correct and already handles the hard-challenge case (`rounds = sbsd.t ? 1 : 2`).
 
-## What to change
+## Changes to `executor/adapters/kmart.js`
 
-### 1. `executor/adapters/kmart.js` — add an "AkamaiGHost reference page" handler
+1. **Loosen `SBSD_RE`** to match the Hyper-documented pattern:
+   ```
+   src=["']([a-z\d/\-_.]+)\?v=(.*?)(?:&.*?t=(.*?))?["']
+   ```
+   Captures `path`, `v` (any token), optional `t` (any token).
 
-Before the SBSD branch (around line 244), add a new branch that fires when:
-- `pdpStatus === 403` AND
-- body matches `/Reference\s*#/i` or `/Access Denied/i` AND
-- body matches `/src=["'](\/[A-Za-z0-9_\-\/.]+)\?v=["']/` (script path with empty `v=`).
+2. **Loosen the `sbsdDetected` precondition** (line 316) so it doesn't gate on UUID shape. Trigger SBSD flow whenever:
+   - `pdpStatus === 403`, OR
+   - `parseSbsd(pdpHtml)` returns a hit (any 200/403 with the script tag).
 
-When matched:
-1. Extract the new sensor script path from the 403 body (the `src="..."` without query).
-2. Fetch that script via `request(origin + path, { GET, referer: pdpUrl })` → `scriptBody`.
-3. Run up to 3 `solveAkamaiSensor` rounds against `scriptBody`, POSTing to `origin + path` exactly like `warm_home`'s sensor loop already does. Break on `_abck` containing `~0~`.
-4. Retry `pdp_get` (reuse existing pdp2 logic). Log as `pdp_get#retry`.
-5. Loop the whole reference-page detect → resolve up to 2 times total (some Akamai installs serve a second reference page).
+3. **Delete the dead reference-script branch**: `REFERENCE_SCRIPT_RE`, `parseReferenceScript()`, and the `if (pdpStatus === 403 && /Reference\s*#.../) { pdp_403_hardblock + pdp_get#retry_xsite }` block. Both turned out to be misdiagnoses.
 
-Reuse the existing sensor helper code path that already exists for the warm-home phase rather than duplicating it — extract the sensor-solve loop into a small local function `runSensorLoop(scriptUrl, scriptBody, pageUrl)` at the top of the adapter and call it from both warm-home and the new reference-page handler.
+4. **Keep `verify_ip` step** — it's useful diagnostics now that IP-pinning is verified.
 
-### 2. Tighten SBSD detection so the empty-`v=` case stops being misclassified
+5. **Comment update** above `SBSD_RE` to reflect that `v` is NOT necessarily a UUID — it's an opaque token, and the presence of `t=` is what distinguishes hard challenge (1 round) from passive (2 rounds), per Hyper docs §3.3 / §3.4.
 
-Change `SBSD_RE` in `kmart.js` line 18 from `([0-9a-f-]+)` to `([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` — require a real UUID. This prevents future false positives and removes the misleading `sbsd_missing` step from logs when the page is actually a reference-code page.
+## Expected new dry-run trace
 
-### 3. Logging
+```
+resolve_ip            → IP
+warm_home             → 200
+akamai_script_fetch   → 200
+akamai_sensor#1..3    → _abck=~0~
+akamai_solved
+pdp_get               → 403, body has ?v=…&t=…
+verify_ip             → same=true
+sbsd_script_fetch     → 200, NNNNNNb
+sbsd_round#0          → 200 (hard challenge = single round because t is set)
+pdp_get#2             → 200, ~1.6MB PDP HTML
+sku_extract           → sku=NNNNNNN
+```
 
-Add steps:
-- `pdp_403_reference` — note: extracted script path + first 200 chars of body.
-- `pdp_sensor_fetch#N` — note: script bytes.
-- `pdp_sensor#N.M` — note: abck state after each round (same shape as existing `akamai_sensor#N`).
-- `pdp_get#retry#N` — note: status + first 400 chars.
+If `pdp_get#2` still 403s with the new flow, the next step is to inspect the Hyper `/sbsd` response body and the `sbsd_o`/`bm_so` cookie state — but per your note, this is the documented happy path and should work.
 
-### 4. Out of scope
+## Files touched
 
-- No SBSD wiring changes (existing code stays for the day it actually fires).
-- No TLS / proxy changes.
-- No `src/lib/*` or UI changes.
-- No new env vars or secrets.
+- `executor/adapters/kmart.js` — regex, detection gate, removal of two dead branches, comment.
 
-## Validation
-
-1. Deploy; rerun the same Kmart PDP dry run.
-2. Expect: warm-home sensor passes → pdp_get 403 → `pdp_403_reference` detected → new sensor loop runs → `pdp_get#retry#0` returns 200 with real HTML (or at least a much larger body than the reference page).
-3. If retry still 403s, the next reference page may carry an actual SBSD `?v=<uuid>` — in which case the existing SBSD branch will handle it.
-4. If we instead see a 429 with `{"t":"<token>"}`, that's Hyper §3.6 territory and a separate follow-up.
-
-## Risks
-
-- The sensor-script POST URL is the same as the GET URL minus query. Confirmed by the warm-home flow already in `kmart.js`. Same pattern reused.
-- Some reference pages emit `defer` attribute or extra attrs around `src=` — the regex uses `["']` delimiters with non-greedy path matching, so it handles both.
-- If Akamai serves >2 consecutive reference pages, we give up after 2 retries to avoid infinite loops; that's deliberate.
+No other files change.
