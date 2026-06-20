@@ -468,6 +468,7 @@ export const kmartAdapter = {
           note: `${apiSeedHtml.length}b script=${apiScriptPath ?? "(none)"}`,
         };
       });
+      steps.push({ step: "api_warm_body_full", ok: true, note: apiSeedHtml.slice(0, 5000) });
 
       if (apiScriptPath) {
         const apiScriptUrl = apiOrigin + apiScriptPath;
