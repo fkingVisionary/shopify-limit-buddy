@@ -32,6 +32,22 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
 
+// Human-pace jitter. Fixed delays are themselves a bot signature; always
+// randomise within a range. Min/max in ms.
+const sleep = (min, max) =>
+  new Promise((r) => setTimeout(r, Math.floor(min + Math.random() * (max - min))));
+
+// Realistic intermediate browsing pages — pick one at random to fetch
+// between warm_home and pdp_get so the nav path is home → category → PDP
+// instead of a straight home → PDP jump.
+const CATEGORY_PATHS = [
+  "/category/toys/D110000",
+  "/category/home/D100000",
+  "/category/kids-clothing/D170000",
+  "/category/sale/D310000",
+  "/category/kitchen-dining/D250000",
+];
+
 // Chrome 124 / macOS navigation header shape. Akamai scores requests on the
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
