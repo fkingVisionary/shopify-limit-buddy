@@ -11,7 +11,16 @@
 
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
-import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel } from "../antibot.js";
+import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+
+// Detects the SBSD script tag served inside Akamai 403 challenge HTML.
+// Pattern (per Hyper docs §3.4): /<path>?v=<uuid>[&t=<token>]
+const SBSD_RE = /src=["']([a-z0-9\/\-_.]+)\?v=([0-9a-f-]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
+function parseSbsd(html) {
+  const m = SBSD_RE.exec(html);
+  if (!m) return null;
+  return { path: m[1], uuid: m[2], t: m[3] ?? "" };
+}
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
