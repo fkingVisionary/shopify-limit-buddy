@@ -1105,6 +1105,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true, note: "already " + job.status }), { headers: { ...cors, "content-type": "application/json" } });
   }
 
+  const runWorker = async () => {
   await supa.from("checkout_jobs").update({
     status: "running",
     stage: "launch",
@@ -1266,7 +1267,19 @@ Deno.serve(async (req) => {
   } catch (e) {
     await supa.from("checkout_jobs").update({
       status: "failed", stage: "transport", error: "transport: " + (e instanceof Error ? e.message : String(e)),
-    }).eq("id", jobId);
+    }).eq("id", jobId).eq("status", "running");
     return new Response("transport error", { status: 500, headers: cors });
   }
+  };
+
+  const workerPromise = runWorker();
+  const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) {
+    edgeRuntime.waitUntil(workerPromise);
+    return new Response(JSON.stringify({ ok: true, accepted: true }), {
+      status: 202,
+      headers: { ...cors, "content-type": "application/json" },
+    });
+  }
+  return await workerPromise;
 });
