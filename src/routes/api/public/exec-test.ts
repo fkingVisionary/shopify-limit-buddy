@@ -22,11 +22,13 @@ export const Route = createFileRoute("/api/public/exec-test")({
           mode?: "run" | "recon";
           reconUrl?: string;
           useProxy?: boolean;
+          proxyUrl?: string;
         };
         const mode = body.mode ?? "run";
         // Default to direct (Fly egress IP) to conserve residential proxy data
-        // during testing. Set useProxy:true to opt into PROXY_URL_RESI.
-        const proxy = body.useProxy ? process.env.PROXY_URL_RESI ?? null : null;
+        // during testing. `proxyUrl` lets the caller override per-request; else
+        // `useProxy:true` falls back to PROXY_URL_RESI.
+        const proxy = body.proxyUrl ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
         // Defensive: strip any path the user accidentally pasted (e.g. /health)
         // so EXECUTOR_URL always resolves to the origin.
         let origin = url.trim();
