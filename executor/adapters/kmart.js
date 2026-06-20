@@ -13,29 +13,21 @@ import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 
-// Detects the SBSD script tag served inside Akamai 403 challenge HTML.
-// Pattern (per Hyper docs §3.4): /<path>?v=<uuid>[&t=<token>]. The uuid
-// MUST look like a real UUID — Akamai's edge "reference code" page also
-// embeds a `?v=` script tag but with an EMPTY v value; that page is a
-// sensor re-challenge, not SBSD. The previous loose `[0-9a-f-]+` matcher
-// matched on the empty value and mis-routed the flow.
-const SBSD_RE = /src=["']([a-z0-9\/\-_.]+)\?v=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:&[^"']*?t=([^"'&]+))?["']/i;
+// Detects the SBSD script tag served inside Akamai SBSD challenge HTML
+// (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
+//   <script src="/path?v=<token>[&t=<token>]">
+// `v` is an opaque token (NOT necessarily UUID-shaped), and the presence
+// of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
+// passive SBSD (2 submissions). The previous UUID-strict matcher missed
+// all real Kmart challenges because their `v` value is not UUID-formatted.
+const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
   return { path: m[1], uuid: m[2], t: m[3] ?? "" };
 }
 
-// AkamaiGHost reference-code page: 403 body containing "Reference #..."
-// (or "Access Denied") that embeds a fresh sensor script path with an
-// empty `?v=` query. The documented recovery (Hyper §1.4) is to fetch the
-// new script and run another sensor solve cycle against it, then retry.
-const REFERENCE_SCRIPT_RE = /src=["'](\/[A-Za-z0-9_\-\/.]+)\?v=["']/i;
-function parseReferenceScript(html) {
-  if (!/Reference\s*#|Access\s+Denied/i.test(html)) return null;
-  const m = REFERENCE_SCRIPT_RE.exec(html);
-  return m ? m[1] : null;
-}
+
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
@@ -276,48 +268,15 @@ export const kmartAdapter = {
 
 
 
-    // 5a. AkamaiGHost reference-code recovery. When the PDP 403s with an
-    //     "Access Denied / Reference #..." page that embeds a NEW sensor
-    //     script (empty `?v=`), Akamai is asking us to re-solve the sensor
-    //     against that script. Run up to 3 sensor rounds and retry the PDP;
-    //     loop the whole thing up to 2 times in case a second reference
-    //     page is served.
-    // 5a. AkamaiGHost reference-page retry. The hard "Access Denied / Reference #…"
-    //     page is NOT a recoverable sensor challenge — the script it embeds is
-    //     BMP telemetry, not a sensor script (Hyper rejects it with
-    //     "failed to generate sensor data"). Our only useful move is to retry
-    //     the PDP once with a `cross-site` sec-fetch-site (simulating the user
-    //     pasting the URL from elsewhere, e.g. a Google result), which often
-    //     bypasses the bot score when same-origin nav is being flagged.
-    if (pdpStatus === 403 && /Reference\s*#|Access\s+Denied/i.test(pdpHtml)) {
-      steps.push({
-        step: "pdp_403_hardblock",
-        ok: false,
-        note: `body=${pdpHtml.replace(/\s+/g, " ").slice(0, 200)}`,
-      });
-      const crossSiteHeaders = navHeaders({ referer: "https://www.google.com/", site: "cross-site" });
-      await tStep("pdp_get#retry_xsite", async () => {
-        const res = await request(pdpUrl, { method: "GET", headers: crossSiteHeaders }, ctx);
-        pdpStatus = res.status;
-        pdpHtml = await res.text();
-        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300) : `ok ${pdpHtml.length}b`;
-        return { status: res.status, ok: res.status < 400, note: snippet };
-      });
-    }
-
-
-
-
-
-
-    // 5b. SBSD challenge — fires on ANY response carrying the `?v=<uuid>`
-    //     script tag (Kmart serves it inline on 200s too, not just 403s).
-    //     Solve two SBSD rounds (index 0, 1) per Hyper docs §3.3, then retry PDP.
-    const sbsdDetected = /sec-if-cpt-container|sbsd_o|\?v=[0-9a-f-]{8,}[^"']*?(?:&t=|["'])/i.test(pdpHtml) && parseSbsd(pdpHtml);
-    if (pdpStatus === 403 || sbsdDetected) {
-      const sbsd = parseSbsd(pdpHtml);
-      if (sbsd) {
+    // 5b. SBSD challenge — the PDP response (200 OR 403/429) carries a
+    //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
+    //     fetch the script, POST to /sbsd, then POST the payload to
+    //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
+    const sbsd = parseSbsd(pdpHtml);
+    if (sbsd) {
+      {
         const sbsdScriptUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + `?v=${sbsd.uuid}${sbsd.t ? `&t=${sbsd.t}` : ""}`;
+
         const sbsdPostUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + (sbsd.t ? `?t=${sbsd.t}` : "");
         let sbsdScriptBody = "";
         await tStep("sbsd_script_fetch", async () => {
@@ -378,10 +337,11 @@ export const kmartAdapter = {
             return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
           });
         }
-      } else {
-        steps.push({ step: "sbsd_missing", ok: false, note: "403 body had no ?v=<uuid> script tag" });
       }
+    } else if (pdpStatus >= 400) {
+      steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
+
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
