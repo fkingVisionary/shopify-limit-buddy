@@ -9,6 +9,14 @@ import { z } from "zod";
 //   EXECUTOR_URL    e.g. https://j1ms-bot-executor.fly.dev
 //   EXECUTOR_TOKEN  shared secret matching the executor's EXECUTOR_TOKEN
 
+const CardSchema = z.object({
+  number: z.string().min(12).max(25),
+  cvv: z.string().min(3).max(4),
+  expMonth: z.string().min(1).max(2),
+  expYear: z.string().min(2).max(4),
+  holder: z.string().min(1).max(100),
+});
+
 const InputSchema = z.object({
   taskId: z.string().min(1).max(100),
   storeUrl: z.string().url().max(500),
@@ -16,7 +24,22 @@ const InputSchema = z.object({
   qty: z.number().int().min(1).max(20).default(1),
   proxy: z.string().min(7).max(200).optional().nullable(),
   dryRun: z.boolean().default(true),
+  // Optional caller-supplied card. When omitted, falls back to env-injected
+  // card on the server. Future: comes from the calling user's profile row.
+  card: CardSchema.optional().nullable(),
 });
+
+// Read card fields from Lovable Cloud secrets server-side. Returns null when
+// any required field is missing (lets dry-runs work without card configured).
+function cardFromEnv() {
+  const number = process.env.KMART_CARD_NUMBER;
+  const cvv = process.env.KMART_CARD_CVV;
+  const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
+  const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
+  const holder = process.env.KMART_CARD_HOLDER;
+  if (!number || !cvv || !expMonth || !expYear || !holder) return null;
+  return { number, cvv, expMonth, expYear, holder };
+}
 
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
@@ -26,8 +49,13 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     if (!url || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
-    // Fall back to PROXY_URL_RESI env if no proxy supplied per-task
-    const payload = { ...data, proxy: data.proxy ?? process.env.PROXY_URL_RESI ?? null };
+    // Fall back to PROXY_URL_RESI env if no proxy supplied per-task.
+    // Prefer caller-supplied card (future: profile-sourced); else inject from env.
+    const payload = {
+      ...data,
+      proxy: data.proxy ?? process.env.PROXY_URL_RESI ?? null,
+      card: data.card ?? cardFromEnv(),
+    };
     const t0 = Date.now();
     try {
       const res = await fetch(`${url.replace(/\/$/, "")}/run`, {
