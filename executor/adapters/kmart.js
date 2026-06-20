@@ -203,9 +203,11 @@ export const kmartAdapter = {
 
     });
 
-    // 5b. PDP 403 = SBSD challenge (script src has `?v=<uuid>`). Solve two
-    //     SBSD rounds (index 0, 1) per Hyper docs §3.3, then retry PDP.
-    if (pdpStatus === 403) {
+    // 5b. SBSD challenge — fires on ANY response carrying the `?v=<uuid>`
+    //     script tag (Kmart serves it inline on 200s too, not just 403s).
+    //     Solve two SBSD rounds (index 0, 1) per Hyper docs §3.3, then retry PDP.
+    const sbsdDetected = /sec-if-cpt-container|sbsd_o|\?v=[0-9a-f-]{8,}[^"']*?(?:&t=|["'])/i.test(pdpHtml) && parseSbsd(pdpHtml);
+    if (pdpStatus === 403 || sbsdDetected) {
       const sbsd = parseSbsd(pdpHtml);
       if (sbsd) {
         const sbsdScriptUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + `?v=${sbsd.uuid}${sbsd.t ? `&t=${sbsd.t}` : ""}`;
