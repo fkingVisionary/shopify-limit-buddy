@@ -196,10 +196,11 @@ export const kmartAdapter = {
       );
       pdpStatus = res.status;
       pdpHtml = await res.text();
-      const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `${pdpHtml.length}b`;
+      const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200);
       const srv = res.headers.get("server");
       const aka = res.headers.get("x-akamai-transformed") ?? res.headers.get("akamai-grn") ?? "";
-      return { status: res.status, ok: res.status < 400, note: `${snippet} | server=${srv} ${aka}` };
+      return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b: ${snippet} | server=${srv} ${aka}` };
+
     });
 
     // 5b. PDP 403 = SBSD challenge (script src has `?v=<uuid>`). Solve two
@@ -306,11 +307,85 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_pixel", ok: false, note: e?.message ?? String(e) });
     }
 
+    // 7. Cart steps — reuse the cleared session against the GraphQL BFF.
+    //    Per recon: api.kmart.com.au/gateway/graphql, CORS shape, same cookies.
+    //    Read query `getMyActiveCart` is publicly documented; the ATC mutation
+    //    name is inferred — first run will surface the real schema via errors.
+    const gqlUrl = "https://api.kmart.com.au/gateway/graphql";
+    const keycodeMatch = pdpUrl.match(/-(\d{6,9})\/?(?:\?|$)/);
+    const keycode = task.keycode ?? keycodeMatch?.[1] ?? null;
+    const gqlHeaders = {
+      "user-agent": UA,
+      "content-type": "application/json",
+      accept: "*/*",
+      "accept-language": ACCEPT_LANG,
+      origin,
+      referer: pdpUrl,
+      ...CHROME_CH,
+      "sec-fetch-site": "same-site",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+    };
+    const gqlPost = async (body) =>
+      request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
+
+    if (pdpStatus > 0 && pdpStatus < 400) {
+      // 7a. getMyActiveCart — sanity check that the BFF accepts our session.
+      let cartId = null;
+      await tStep("cart_get", async () => {
+        const res = await gqlPost({
+          operationName: "getMyActiveCart",
+          variables: {},
+          query: "query getMyActiveCart { getMyActiveCart { id lineItems { id quantity } __typename } }",
+        });
+        const txt = await res.text();
+        try {
+          const j = JSON.parse(txt);
+          cartId = j?.data?.getMyActiveCart?.id ?? null;
+        } catch {}
+        return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${txt.slice(0, 400)}` };
+      });
+
+      // 7b. addToCart mutation — inferred. Response body will reveal real shape.
+      if (keycode) {
+        await tStep("cart_atc", async () => {
+          const res = await gqlPost({
+            operationName: "addToCart",
+            variables: {
+              input: {
+                keycode,
+                quantity: task.qty ?? 1,
+                fulfilmentMethod: "HOME_DELIVERY",
+              },
+            },
+            query:
+              "mutation addToCart($input: AddToCartInput!) { addToCart(input: $input) { cart { id lineItems { keycode quantity __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `keycode=${keycode} ${txt.length}b: ${txt.slice(0, 600)}` };
+        });
+
+        // 7c. Verify by re-reading the cart.
+        await tStep("cart_verify", async () => {
+          const res = await gqlPost({
+            operationName: "getMyActiveCart",
+            variables: {},
+            query: "query getMyActiveCart { getMyActiveCart { id lineItems { id quantity } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${txt.length}b: ${txt.slice(0, 400)}` };
+        });
+      } else {
+        steps.push({ step: "cart_atc", ok: false, note: "no keycode parseable from storeUrl" });
+      }
+    }
+
     return {
       ok: pdpStatus > 0 && pdpStatus < 400,
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
+
       dryRun: true,
     };
   },
