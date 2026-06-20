@@ -11,7 +11,16 @@
 
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
-import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel } from "../antibot.js";
+import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+
+// Detects the SBSD script tag served inside Akamai 403 challenge HTML.
+// Pattern (per Hyper docs §3.4): /<path>?v=<uuid>[&t=<token>]
+const SBSD_RE = /src=["']([a-z0-9\/\-_.]+)\?v=([0-9a-f-]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
+function parseSbsd(html) {
+  const m = SBSD_RE.exec(html);
+  if (!m) return null;
+  return { path: m[1], uuid: m[2], t: m[3] ?? "" };
+}
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 
 const ACCEPT_LANG = "en-AU,en;q=0.9";
@@ -193,49 +202,52 @@ export const kmartAdapter = {
       return { status: res.status, ok: res.status < 400, note: `${snippet} | server=${srv} ${aka}` };
     });
 
-    // 5b. If PDP 403'd with an embedded fresh sensor script, do one more
-    //     sensor round bound to the PDP URL, then retry the PDP. This is
-    //     Akamai's standard stage-2 dance ("you solved for /, now solve for
-    //     this URL"). Cap at one retry.
+    // 5b. PDP 403 = SBSD challenge (script src has `?v=<uuid>`). Solve two
+    //     SBSD rounds (index 0, 1) per Hyper docs §3.3, then retry PDP.
     if (pdpStatus === 403) {
-      const pdpScriptPath = findAkamaiScriptPath(pdpHtml);
-      if (pdpScriptPath) {
-        const pdpScriptUrl = origin + pdpScriptPath;
-        let pdpScriptBody = "";
-        await tStep("pdp_script_fetch", async () => {
-          const r = await request(pdpScriptUrl, { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } }, ctx);
-          pdpScriptBody = await r.text();
-          return { status: r.status, note: `${pdpScriptBody.length}b` };
+      const sbsd = parseSbsd(pdpHtml);
+      if (sbsd) {
+        const sbsdScriptUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + `?v=${sbsd.uuid}${sbsd.t ? `&t=${sbsd.t}` : ""}`;
+        const sbsdPostUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + (sbsd.t ? `?t=${sbsd.t}` : "");
+        let sbsdScriptBody = "";
+        await tStep("sbsd_script_fetch", async () => {
+          const r = await request(sbsdScriptUrl, { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } }, ctx);
+          sbsdScriptBody = await r.text();
+          return { status: r.status, note: `uuid=${sbsd.uuid.slice(0, 8)} ${sbsdScriptBody.length}b t=${sbsd.t || "-"}` };
         });
-        await tStep("akamai_sensor_pdp", async () => {
-          const r = await solveAkamaiSensor({
-            jar: ctx.jar,
-            pageUrl: pdpUrl,
-            userAgent: UA,
-            ip: egressIp,
-            acceptLanguage: ACCEPT_LANG,
-            scriptUrl: pdpScriptUrl,
-            scriptBody: pdpScriptBody,
-            prevContext: null,
-          });
-          const res = await request(
-            r.postUrl,
-            {
-              method: "POST",
-              headers: {
-                "user-agent": UA,
-                "content-type": "text/plain;charset=UTF-8",
-                accept: "*/*",
-                "accept-language": ACCEPT_LANG,
-                origin,
-                referer: pdpUrl,
+        const rounds = sbsd.t ? 1 : 2; // hard challenge = 1 round, passive = 2
+        for (let i = 0; i < rounds; i++) {
+          await tStep(`sbsd_round#${i}`, async () => {
+            const payload = await solveAkamaiSbsd({
+              jar: ctx.jar,
+              pageUrl: pdpUrl,
+              scriptBody: sbsdScriptBody,
+              uuid: sbsd.uuid,
+              oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+              index: i,
+              userAgent: UA,
+              ip: egressIp,
+              acceptLanguage: ACCEPT_LANG,
+            });
+            const res = await request(
+              sbsdPostUrl,
+              {
+                method: "POST",
+                headers: {
+                  "user-agent": UA,
+                  "content-type": "text/plain;charset=UTF-8",
+                  accept: "*/*",
+                  "accept-language": ACCEPT_LANG,
+                  origin,
+                  referer: pdpUrl,
+                },
+                body: JSON.stringify({ body: payload }),
               },
-              body: JSON.stringify({ sensor_data: r.payload }),
-            },
-            ctx,
-          );
-          return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
-        });
+              ctx,
+            );
+            return { status: res.status, note: `sbsd_o=${(ctx.jar.get("sbsd_o") ?? "").slice(0, 24)}` };
+          });
+        }
         await tStep("pdp_get#2", async () => {
           const res = await request(
             pdpUrl,
@@ -244,11 +256,11 @@ export const kmartAdapter = {
           );
           pdpStatus = res.status;
           pdpHtml = await res.text();
-          const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `${pdpHtml.length}b`;
+          const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
           return { status: res.status, ok: res.status < 400, note: snippet };
         });
       } else {
-        steps.push({ step: "pdp_script_missing", ok: false, note: "403 body had no akamai script path" });
+        steps.push({ step: "sbsd_missing", ok: false, note: "403 body had no ?v=<uuid> script tag" });
       }
     }
 
