@@ -1418,11 +1418,59 @@ function Index() {
                     // Browserless path — enqueue a job and poll until the
                     // backend worker finishes. The headless run lives well
                     // beyond the 30s Worker timeout that killed the sync path.
+                    // Pass the Discord webhook config so the server fires the
+                    // terminal notification — guarantees one webhook per job
+                    // even if the user closes the tab mid-run.
                     let jobId: string;
                     try {
-                      const res = await enqueueCheckoutFn({ data: payload });
+                      const cfg = notifyConfigRef.current;
+                      const maskProfileStr = (() => {
+                        const f = (profile.first_name ?? "").trim();
+                        const l = (profile.last_name ?? "").trim();
+                        if (!f && !l) return "—";
+                        return `${f} ${l ? `${l[0]}.****` : "****"}`.trim();
+                      })();
+                      const maskEmailStr = (() => {
+                        const e = (profile.email ?? "").trim();
+                        if (!e) return "—";
+                        const [u, d] = e.split("@");
+                        if (!d) return "—";
+                        const m = u.length <= 2 ? `${u[0] ?? "*"}*` : `${u.slice(0, 2)}${"*".repeat(Math.max(2, u.length - 2))}`;
+                        return `${m}@${d}`;
+                      })();
+                      const notifyPayload = cfg.webhookUrl && isValidWebhookUrl(cfg.webhookUrl)
+                        ? {
+                            webhookUrl: cfg.webhookUrl,
+                            enabled: cfg.events,
+                            base: {
+                              productTitle: t.productTitle,
+                              input: t.input,
+                              storeName: t.storeName,
+                              storeUrl: t.storeUrl,
+                              qty,
+                              variantId: avail.id,
+                              variantTitle: avail.title,
+                              price: avail.price ? `$${avail.price}` : undefined,
+                              groupName: taskGroups.find((g) => g.id === t.groupId)?.name,
+                              profileMasked: maskProfileStr,
+                              emailMasked: maskEmailStr,
+                              paymentMethod: browserlessDryRun ? "Browserless (dry-run)" : "Browserless (live)",
+                              mode: `${EXECUTION_MODE_LABEL[t.executionMode ?? "fast"]} / Monitor: ${t.running ? "true" : "false"}`,
+                              proxyGroupName: proxyGroups.find((g) => g.id === t.proxyGroupId)?.name,
+                              logoUrl: typeof window !== "undefined" ? `${window.location.origin}/jims-logo.jpg` : undefined,
+                            },
+                          }
+                        : null;
+                      const res = await enqueueCheckoutFn({ data: { ...payload, notify: notifyPayload } as any });
                       if ("error" in res) throw new Error(res.error);
                       jobId = res.jobId;
+                      // Mark these terminal events as already-handled in the
+                      // UI dedup map so the local fireWebhook calls below skip
+                      // them — the server is the source of truth now.
+                      let fired = notifiedRef.current.get(t.id);
+                      if (!fired) { fired = new Set(); notifiedRef.current.set(t.id, fired); }
+                      fired.add("confirmed");
+                      fired.add("failed");
                     } catch (err: any) {
                       const elapsed = Date.now() - bStart;
                       updateTask(t.id, { status: "failed", browserlessElapsedMs: elapsed, message: `Could not enqueue: ${err?.message ?? "error"}` });

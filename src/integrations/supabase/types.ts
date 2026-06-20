@@ -46,6 +46,8 @@ export type Database = {
           error: string | null
           id: string
           input: Json
+          notify_events: Json | null
+          notify_webhook: string | null
           phase: string
           phase_attempts: number
           result: Json | null
@@ -53,12 +55,15 @@ export type Database = {
           stage: string
           status: string
           updated_at: string
+          webhook_fired_at: string | null
         }
         Insert: {
           created_at?: string
           error?: string | null
           id?: string
           input?: Json
+          notify_events?: Json | null
+          notify_webhook?: string | null
           phase?: string
           phase_attempts?: number
           result?: Json | null
@@ -66,12 +71,15 @@ export type Database = {
           stage?: string
           status?: string
           updated_at?: string
+          webhook_fired_at?: string | null
         }
         Update: {
           created_at?: string
           error?: string | null
           id?: string
           input?: Json
+          notify_events?: Json | null
+          notify_webhook?: string | null
           phase?: string
           phase_attempts?: number
           result?: Json | null
@@ -79,6 +87,7 @@ export type Database = {
           stage?: string
           status?: string
           updated_at?: string
+          webhook_fired_at?: string | null
         }
         Relationships: []
       }

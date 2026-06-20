@@ -19,6 +19,103 @@ const cors = {
   "access-control-allow-methods": "GET, POST, OPTIONS",
 };
 
+// ─── Discord webhook ─────────────────────────────────────────────────
+// Fired here (server-side) so the user always gets a notification, even if
+// they closed the tab. Idempotency is enforced via a conditional UPDATE on
+// checkout_jobs.webhook_fired_at — only the first writer fires.
+
+const BOT_NAME = "J1m's Bot";
+const BOT_VERSION = "v1.0";
+const BRAND_GOLD = 0xEAD24A;
+
+type NotifyEvent = "in_stock" | "checkout_ready" | "confirmed" | "failed";
+
+const EVENT_META: Record<NotifyEvent, { title: string; subtitle: string; color: number }> = {
+  in_stock:       { title: "Stock Detected",       subtitle: "Variant came in stock.",          color: 0x3B82F6 },
+  checkout_ready: { title: "Checkout Ready",       subtitle: "Cart prepared, awaiting submit.", color: 0xF59E0B },
+  confirmed:      { title: "Successful Checkout!", subtitle: "Your Webhook works!",             color: BRAND_GOLD },
+  failed:         { title: "Checkout Failed",      subtitle: "Task could not complete.",        color: 0xEF4444 },
+};
+
+function v(value: unknown): string {
+  const s = String(value ?? "").trim();
+  return s.length > 0 ? s : "—";
+}
+
+function buildEmbed(event: NotifyEvent, base: any, dyn: { orderId?: string | null; elapsedMs?: number | null; message?: string | null }) {
+  const meta = EVENT_META[event];
+  const storeLink = base?.storeUrl
+    ? (String(base.storeUrl).startsWith("http") ? base.storeUrl : `https://${base.storeUrl}`)
+    : undefined;
+  const fields: { name: string; value: string; inline?: boolean }[] = [
+    { name: "Store",   value: v(base?.storeName || base?.storeUrl) },
+    { name: "Product", value: v(base?.productTitle ?? base?.input) },
+  ];
+  if (base?.price)   fields.push({ name: "Price",   value: v(base.price) });
+  if (dyn.orderId)   fields.push({ name: "Order #", value: v(dyn.orderId) });
+  if (dyn.elapsedMs) fields.push({ name: "Checkout Time", value: `${(dyn.elapsedMs / 1000).toFixed(1)} seconds` });
+  fields.push({ name: "QTY", value: v(base?.qty) });
+  if (base?.variantTitle || base?.variantId) fields.push({ name: "Variant", value: v(base.variantTitle ?? base.variantId) });
+  fields.push({ name: "Profile / Email", value: v(`${base?.profileMasked ?? "—"} / ${base?.emailMasked ?? "—"}`) });
+  if (base?.paymentMethod) fields.push({ name: "Payment Method", value: v(base.paymentMethod) });
+  if (base?.mode)          fields.push({ name: "Mode",           value: v(base.mode) });
+  fields.push({ name: "Proxy", value: v(base?.proxyGroupName || "Localhost") });
+  if (dyn.message && event === "failed") fields.push({ name: "Reason", value: v(String(dyn.message).slice(0, 300)) });
+
+  return {
+    title: meta.title,
+    url: storeLink,
+    description: meta.subtitle,
+    color: meta.color,
+    fields,
+    footer: { text: `${BOT_NAME} — ${BOT_VERSION}${base?.groupName ? ` • ${base.groupName}` : ""}`, icon_url: base?.logoUrl || undefined },
+    timestamp: new Date().toISOString(),
+  };
+}
+
+async function postDiscord(webhookUrl: string, embed: ReturnType<typeof buildEmbed>, logoUrl?: string) {
+  const body = JSON.stringify({ username: BOT_NAME, avatar_url: logoUrl || undefined, embeds: [embed] });
+  const send = () => fetch(webhookUrl, { method: "POST", headers: { "content-type": "application/json" }, body });
+  try {
+    let res = await send();
+    if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+      let waitMs = 1000;
+      try {
+        const j: any = await res.clone().json();
+        if (j?.retry_after) waitMs = Math.min(5000, Math.max(500, Math.floor(Number(j.retry_after) * 1000)));
+      } catch {}
+      await new Promise((r) => setTimeout(r, waitMs));
+      res = await send();
+    }
+    return res.ok;
+  } catch { return false; }
+}
+
+async function fireTerminalWebhook(
+  supa: any,
+  jobId: string,
+  outStatus: "succeeded" | "failed",
+  job: any,
+  dyn: { orderId?: string | null; elapsedMs?: number | null; message?: string | null },
+) {
+  const webhookUrl: string | null = job?.notify_webhook ?? null;
+  const notify: any = job?.notify_events ?? null;
+  if (!webhookUrl || !notify) return;
+  const event: NotifyEvent = outStatus === "succeeded" ? "confirmed" : "failed";
+  if (!notify?.enabled?.[event]) return;
+  const { data: claimed, error: claimErr } = await supa
+    .from("checkout_jobs")
+    .update({ webhook_fired_at: new Date().toISOString() })
+    .eq("id", jobId)
+    .is("webhook_fired_at", null)
+    .select("id")
+    .maybeSingle();
+  if (claimErr || !claimed) return;
+  const embed = buildEmbed(event, notify.base ?? {}, dyn);
+  await postDiscord(webhookUrl, embed, notify.base?.logoUrl);
+}
+// ─────────────────────────────────────────────────────────────────────
+
 // Self-contained checkout script shipped to Browserless /function.
 // Mirrors src/lib/browserless.functions.ts browserlessScript().
 function checkoutScriptSource() {
@@ -120,7 +217,12 @@ function checkoutScriptSource() {
       } catch {}
 
       lastStep = "cart_add";
-      await page.goto(input.storeUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+      const origin = new URL(input.storeUrl).origin;
+      // Skip the product page entirely — navigate straight to /cart. It serves
+      // a minimal HTML doc on every Shopify store, establishes the storefront
+      // cookie jar, and is the same origin /cart/add.js expects. Saves a full
+      // document load vs going to the product page first.
+      await page.goto(origin + "/cart", { waitUntil: "domcontentloaded", timeout: 15000 });
       await stage("cart_add");
       const atc = await page.evaluate(async (variantId, qty) => {
         const r = await fetch("/cart/add.js", {
@@ -136,7 +238,6 @@ function checkoutScriptSource() {
 
       lastStep = "checkout_load";
       await stage("checkout_load");
-      const origin = new URL(input.storeUrl).origin;
       // Direct navigation to /checkout. Adding a /cart preload or a custom
       // referer triggered Cloudflare bot-blocking (net::ERR_FAILED) on some
       // Shopify stores; the simple goto is what works.
@@ -149,7 +250,7 @@ function checkoutScriptSource() {
           break;
         } catch (e) {
           lastNavErr = e;
-          try { await new Promise((r) => setTimeout(r, 1500)); } catch {}
+          try { await new Promise((r) => setTimeout(r, 600)); } catch {}
         }
       }
       if (!checkoutLoaded) {
@@ -237,17 +338,48 @@ function checkoutScriptSource() {
 
       lastStep = "address_fill";
       await stage("address_fill");
-      await setCheckoutValue(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], input.profile.email);
-      await setCheckoutValue(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], input.profile.first_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], input.profile.last_name);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], input.profile.address1);
-      await setCheckoutValue(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], input.profile.address2 ?? "");
-      await setCheckoutValue(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], input.profile.city);
-      await setCheckoutValue(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], input.profile.province);
-      await setCheckoutValue(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], input.profile.zip);
-      await setCheckoutValue(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], input.profile.phone);
+      // Single round-trip address fill. Walking a selector map inside one
+      // page.evaluate is dramatically faster than 9 sequential page.$ calls
+      // (each was ~100-200ms) and lets React's checkout state settle in a
+      // single render pass instead of nine.
+      await page.evaluate((p) => {
+        const setVal = (sels, value) => {
+          if (value == null || value === "") return;
+          for (const sel of sels) {
+            const node = document.querySelector(sel);
+            if (!node) continue;
+            const tag = (node.tagName || "").toLowerCase();
+            const wanted = String(value);
+            try { node.focus(); } catch {}
+            if (tag === "select") {
+              const lower = wanted.toLowerCase();
+              const options = Array.from(node.options || []);
+              const match = options.find((o) => String(o.value || "").toLowerCase() === lower || String(o.textContent || "").toLowerCase().includes(lower));
+              if (match) node.value = match.value;
+            } else {
+              const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+              const desc = Object.getOwnPropertyDescriptor(proto, "value");
+              if (desc && desc.set) desc.set.call(node, wanted);
+              else node.value = wanted;
+            }
+            node.dispatchEvent(new Event("input", { bubbles: true }));
+            node.dispatchEvent(new Event("change", { bubbles: true }));
+            try { node.blur(); } catch {}
+            return;
+          }
+        };
+        setVal(['input[type="email"]', 'input[name="checkout[email]"]', 'input[name="email"]', 'input[autocomplete="email"]', '#email'], p.email);
+        setVal(['input[name="checkout[shipping_address][first_name]"]', 'input[autocomplete="given-name"]', 'input[name="firstName"]', 'input[name*="first" i]'], p.first_name);
+        setVal(['input[name="checkout[shipping_address][last_name]"]', 'input[autocomplete="family-name"]', 'input[name="lastName"]', 'input[name*="last" i]'], p.last_name);
+        setVal(['input[name="checkout[shipping_address][address1]"]', 'input[autocomplete="address-line1"]', 'input[name="address1"]', 'input[name*="address" i]'], p.address1);
+        setVal(['input[name="checkout[shipping_address][address2]"]', 'input[autocomplete="address-line2"]', 'input[name="address2"]'], p.address2 ?? "");
+        setVal(['input[name="checkout[shipping_address][city]"]', 'input[autocomplete="address-level2"]', 'input[name="city"]'], p.city);
+        setVal(['select[name="checkout[shipping_address][province]"], input[name="checkout[shipping_address][province]"]', 'select[autocomplete="address-level1"], input[autocomplete="address-level1"]', 'select[name="province"], input[name="province"]'], p.province);
+        setVal(['input[name="checkout[shipping_address][zip]"]', 'input[autocomplete="postal-code"]', 'input[name="postalCode"]', 'input[name="zip"]'], p.zip);
+        setVal(['input[name="checkout[shipping_address][phone]"]', 'input[type="tel"]', 'input[autocomplete="tel"]', 'input[name="phone"]'], p.phone);
+      }, input.profile);
       await page.keyboard.press("Tab").catch(() => null);
-      await page.waitForNetworkIdle?.({ idleTime: 150, timeout: 600 }).catch(() => null);
+      await page.waitForNetworkIdle?.({ idleTime: 80, timeout: 350 }).catch(() => null);
       log("address_fill", true);
 
 
@@ -330,12 +462,12 @@ function checkoutScriptSource() {
       };
 
       const clickContinue = async (allowPaymentSubmit = false, preferredStep = null) => {
-        const deadline = Date.now() + 3500;
+        const deadline = Date.now() + 1800;
         let target = null;
         while (Date.now() < deadline) {
           target = await findContinueTarget(allowPaymentSubmit, preferredStep);
           if (target) break;
-          await new Promise((r) => setTimeout(r, 150));
+          await new Promise((r) => setTimeout(r, 80));
         }
         if (!target) throw new Error("Could not find checkout continue button");
         try { await page.mouse.click(target.x, target.y, { delay: 20 }); } catch {}
@@ -1177,6 +1309,7 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: "failed", stage: "transport", error: "BROWSERLESS_API_KEY missing on server",
     }).eq("id", jobId);
+    await fireTerminalWebhook(supa, jobId, "failed", job, { message: "BROWSERLESS_API_KEY missing on server" });
     return new Response("no browserless key", { status: 500, headers: cors });
   }
 
@@ -1287,9 +1420,11 @@ Deno.serve(async (req) => {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      const errMsg = "Browserless HTTP " + res.status + ": " + text.slice(0, 400);
       await supa.from("checkout_jobs").update({
-        status: "failed", stage: "transport", error: "Browserless HTTP " + res.status + ": " + text.slice(0, 400),
+        status: "failed", stage: "transport", error: errMsg,
       }).eq("id", jobId);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: errMsg });
       return new Response("browserless error", { status: 502, headers: cors });
     }
     const result = await res.json().catch(() => null);
@@ -1297,6 +1432,7 @@ Deno.serve(async (req) => {
       await supa.from("checkout_jobs").update({
         status: "failed", stage: "transport", error: "Browserless returned non-JSON",
       }).eq("id", jobId);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: "Browserless returned non-JSON" });
       return new Response("bad json", { status: 502, headers: cors });
     }
 
@@ -1309,7 +1445,7 @@ Deno.serve(async (req) => {
     // - !ok => failed with the runner's failedStep + error
     const finalUrlStr: string = typeof result?.finalUrl === "string" ? result.finalUrl : "";
     const looksConfirmed = !!result?.orderId || /\/thank_you|orders\//i.test(finalUrlStr);
-    let outStatus: string;
+    let outStatus: "succeeded" | "failed";
     let outStage: string;
     let outError: string | null;
     if (result?.ok && result?.paymentRejected) {
@@ -1331,14 +1467,21 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: outStatus, stage: outStage, result, error: outError,
     }).eq("id", jobId);
+    const elapsedMs = Date.now() - (Date.parse(job?.created_at ?? "") || Date.now());
+    await fireTerminalWebhook(supa, jobId, outStatus, job, {
+      orderId: (result?.orderId as string) ?? null,
+      elapsedMs,
+      message: outError,
+    });
     return new Response(JSON.stringify({ ok: true }), { headers: { ...cors, "content-type": "application/json" } });
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);
     // Only update if still running — never overwrite a terminal row.
+    const transportErr = "transport: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)";
     await supa.from("checkout_jobs").update({
-      status: "failed", stage: "transport",
-      error: "transport: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+      status: "failed", stage: "transport", error: transportErr,
     }).eq("id", jobId).in("status", ["pending", "running"]);
+    await fireTerminalWebhook(supa, jobId, "failed", job, { message: transportErr });
     return new Response("transport error", { status: 500, headers: cors });
 
   }
@@ -1348,11 +1491,12 @@ Deno.serve(async (req) => {
   // of silently leaving it `running` forever.
   const workerPromise = runWorker().catch(async (e) => {
     const errorMessage = e instanceof Error ? e.message : String(e);
+    const crashErr = "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)";
     try {
       await supa.from("checkout_jobs").update({
-        status: "failed", stage: "transport",
-        error: "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+        status: "failed", stage: "transport", error: crashErr,
       }).eq("id", jobId).in("status", ["pending", "running"]);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: crashErr });
     } catch {}
     return new Response("worker crashed", { status: 500, headers: cors });
   });
