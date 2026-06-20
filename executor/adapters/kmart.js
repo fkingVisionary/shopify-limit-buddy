@@ -146,16 +146,17 @@ export const kmartAdapter = {
         return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…`, _ctx: r.context };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
       prevContext = context;
-      if (abckSolved(ctx.jar)) {
+      if (abckSolved(ctx.jar, i + 1)) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
         break;
       }
     }
 
-    if (!abckSolved(ctx.jar)) {
-      steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never contained ~0~" });
+    if (!abckSolved(ctx.jar, 3)) {
+      steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
+
 
     // 5. Hit the PDP — this is the gated request and the real success signal.
     let pdpStatus = 0;
