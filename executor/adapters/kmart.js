@@ -586,6 +586,11 @@ export const kmartAdapter = {
       // 7b. getActiveBag — me.activeCart may be null on first run.
       let cartId = null;
       let cartVersion = null;
+      steps.push({
+        step: "cart_get:hdrs",
+        ok: true,
+        note: JSON.stringify({ url: gqlUrl, headers: gqlHeaders, cookieHeader: ctx.jar.header() }),
+      });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
           operationName: "getActiveBag",
@@ -599,10 +604,11 @@ export const kmartAdapter = {
           const ac = j?.data?.me?.activeCart;
           if (ac) { cartId = ac.id; cartVersion = ac.version; }
         } catch {}
+        steps.push({ step: "cart_get_body_full", ok: true, note: `srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} | ${txt.slice(0, 4500)}` });
         return {
           status: res.status,
           ok: res.status < 400,
-          note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"} : ${txt.slice(0, 300)}`,
+          note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"}`,
         };
       });
 
