@@ -1419,9 +1419,11 @@ Deno.serve(async (req) => {
     });
     if (!res.ok) {
       const text = await res.text().catch(() => "");
+      const errMsg = "Browserless HTTP " + res.status + ": " + text.slice(0, 400);
       await supa.from("checkout_jobs").update({
-        status: "failed", stage: "transport", error: "Browserless HTTP " + res.status + ": " + text.slice(0, 400),
+        status: "failed", stage: "transport", error: errMsg,
       }).eq("id", jobId);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: errMsg });
       return new Response("browserless error", { status: 502, headers: cors });
     }
     const result = await res.json().catch(() => null);
@@ -1429,6 +1431,7 @@ Deno.serve(async (req) => {
       await supa.from("checkout_jobs").update({
         status: "failed", stage: "transport", error: "Browserless returned non-JSON",
       }).eq("id", jobId);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: "Browserless returned non-JSON" });
       return new Response("bad json", { status: 502, headers: cors });
     }
 
@@ -1441,7 +1444,7 @@ Deno.serve(async (req) => {
     // - !ok => failed with the runner's failedStep + error
     const finalUrlStr: string = typeof result?.finalUrl === "string" ? result.finalUrl : "";
     const looksConfirmed = !!result?.orderId || /\/thank_you|orders\//i.test(finalUrlStr);
-    let outStatus: string;
+    let outStatus: "succeeded" | "failed";
     let outStage: string;
     let outError: string | null;
     if (result?.ok && result?.paymentRejected) {
@@ -1463,14 +1466,21 @@ Deno.serve(async (req) => {
     await supa.from("checkout_jobs").update({
       status: outStatus, stage: outStage, result, error: outError,
     }).eq("id", jobId);
+    const elapsedMs = Date.now() - (Date.parse(job?.created_at ?? "") || Date.now());
+    await fireTerminalWebhook(supa, jobId, outStatus, job, {
+      orderId: (result?.orderId as string) ?? null,
+      elapsedMs,
+      message: outError,
+    });
     return new Response(JSON.stringify({ ok: true }), { headers: { ...cors, "content-type": "application/json" } });
   } catch (e) {
     const errorMessage = e instanceof Error ? e.message : String(e);
     // Only update if still running — never overwrite a terminal row.
+    const transportErr = "transport: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)";
     await supa.from("checkout_jobs").update({
-      status: "failed", stage: "transport",
-      error: "transport: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+      status: "failed", stage: "transport", error: transportErr,
     }).eq("id", jobId).in("status", ["pending", "running"]);
+    await fireTerminalWebhook(supa, jobId, "failed", job, { message: transportErr });
     return new Response("transport error", { status: 500, headers: cors });
 
   }
@@ -1480,11 +1490,12 @@ Deno.serve(async (req) => {
   // of silently leaving it `running` forever.
   const workerPromise = runWorker().catch(async (e) => {
     const errorMessage = e instanceof Error ? e.message : String(e);
+    const crashErr = "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)";
     try {
       await supa.from("checkout_jobs").update({
-        status: "failed", stage: "transport",
-        error: "worker crashed: " + errorMessage + " (Payment status uncertain — verify in bank / Shopify order email.)",
+        status: "failed", stage: "transport", error: crashErr,
       }).eq("id", jobId).in("status", ["pending", "running"]);
+      await fireTerminalWebhook(supa, jobId, "failed", job, { message: crashErr });
     } catch {}
     return new Response("worker crashed", { status: 500, headers: cors });
   });
