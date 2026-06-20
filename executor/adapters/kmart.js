@@ -250,6 +250,11 @@ export const kmartAdapter = {
     {
       const pdpHeaders = navHeaders({ referer: origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
+      steps.push({
+        step: "pdp_get:hdrs",
+        ok: true,
+        note: JSON.stringify({ url: pdpUrl, headers: pdpHeaders, cookieHeader: ctx.jar.header() }),
+      });
       await tStep("pdp_get", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
         pdpStatus = res.status;
