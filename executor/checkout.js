@@ -21,6 +21,10 @@ export async function runCheckout(task) {
   const ctx = { dispatcher, jar };
   const store = task.storeUrl.replace(/\/$/, "");
 
+  const closeDispatcher = async () => {
+    try { await dispatcher?.close?.(); } catch { /* ignore */ }
+  };
+
   const adapter = pickAdapter(store);
   if (adapter) {
     // Expose a shared steps array so the catch path can return partial
@@ -49,6 +53,8 @@ export async function runCheckout(task) {
         steps: ctx.steps,
         cookies: ctx.jar?.dump?.() ?? {},
       };
+    } finally {
+      await closeDispatcher();
     }
   }
 
