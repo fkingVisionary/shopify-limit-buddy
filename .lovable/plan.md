@@ -1,63 +1,80 @@
-## Root cause (revised)
+## Goals
 
-Real money is leaving your account, Shopify is completing the order, and Browserless finishes the run — but the task on the bot page never reflects any of it. That means the problem is the **whole status pipeline**, not just the 90s timeout. Three independent breakages overlap right now:
+1. Cut end-to-end checkout time on base Shopify (Checkout One + legacy) by trimming redundant navigations, parallelizing form fills, and pre-warming the payment vault.
+2. Make Discord webhooks fire **exactly once** for every terminal outcome — even when the user closes the tab, refreshes, or the device that started the task goes offline.
 
-1. **Stage callbacks are silently lost.** The headless page POSTs `?action=stage&jobId=…` cross-origin to our edge function from inside the Shopify page context. Request interception, CORS preflights, and the fact that the page is mid-navigation all cause many of these to drop. The DB column `stage` therefore lies — it can stay on `launch` while checkout actually reaches `payment_result`.
-2. **Final result write races the watchdog/self-healer.** The launch watchdog aborts the Browserless fetch at 90s based on the (lying) `stage` value. The UI's `getCheckoutJob` does the same. Whichever wins overwrites the row to `failed`, and the worker's later `update({status:'succeeded', result, screenshotB64})` either never fires (fetch was aborted) or fires against a row that's already been mislabeled.
-3. **The UI doesn't reconcile.** Once a task is marked failed locally, we never re-read the job from the DB. So even if the worker eventually writes the truth, the bot page keeps showing the stale failure with no screenshot.
+## Part 1 — Shopify checkout speed
 
-## Plan
+Current `supabase/functions/run-checkout/index.ts` per-run cost (rough):
+- `goto(storeUrl)` domcontentloaded: ~1.5–3.0s (only needed for cookies/origin)
+- `goto(/checkout)` w/ up to 3× 45s retries: ~1.5–4.0s typical
+- 9 sequential `setCheckoutValue()` calls, each `page.$` + `evaluate`: ~0.9–1.5s
+- `clickContinue` polling loops (3.5s deadline × up to 3 steps): ~1.0–3.0s
+- Card iframe fill + submit: ~2.0–4.0s
 
-### A. Make the worker the single source of truth
+Changes:
 
-- The Browserless `/function` call's return value is authoritative. Do not interrupt it from outside.
-  - Remove the 90s launch watchdog / AbortController in `supabase/functions/run-checkout/index.ts`.
-  - Bound runs only by Browserless's own `timeout=360000` and our `EdgeRuntime.waitUntil`.
-- Wrap the entire run in a `try/finally` that **always** writes a terminal row: `succeeded`, `failed`, or a new `unknown_result` with whatever evidence we have (last stage, last URL, screenshot if available).
-- On any caught error, also try to grab a final screenshot via a tiny separate Browserless call using the same session id when possible; otherwise fall back to no screenshot but write the failure with the real error message.
+**A. Skip the product-page hop.**
+Replace `page.goto(input.storeUrl)` with `page.goto(origin + "/cart")` (lighter HTML, sets the storefront cookie jar identically). `/cart/add.js` works the same way. Saves one full document load.
 
-### B. Stop the UI from poisoning the row
+**B. Single-pass address fill.**
+Collapse the 9 `setCheckoutValue()` awaits into one `page.evaluate(fillAll, profile)` that walks a selector map in the page context. One round-trip instead of nine; also lets us dispatch `input`/`change` in the same microtask so Shopify's React state settles in a single render.
 
-- Delete the 90s "stuck in launch → failed" self-healer in `src/lib/checkout-jobs.functions.ts`.
-- `getCheckoutJob` only reads; it never writes status.
-- Replace the safety net with one server-side timeout: a single scheduled re-check at 8 minutes that flips only rows still in `pending`/`running` with no `updated_at` movement, and marks them `failed` with `transport_stalled` — never overwrites a `succeeded`/`failed`/`payment_declined` row. Gate the update with `.in('status', ['pending','running'])`.
+**C. Parallel pre-vault while address fills.**
+Kick off a Node-side `fetch("https://deposit.us.shopifycs.com/sessions", …)` immediately after `cart_add` succeeds (we already know hostname + card). Store the returned `id`. When we reach the payment step, inject the vault id directly into the hidden `s` field on the card-fields iframe form instead of typing into the iframe. Falls back to the current iframe-type path if the vault call fails or the store rejects the session id.
 
-### C. Reliable progress signal that isn't a cross-origin POST
+**D. Tighter wait budgets.**
+- `clickContinue` deadline 3.5s → 1.8s with 80ms poll (we already retry up).
+- `waitForNetworkIdle({ idleTime: 150, timeout: 600 })` → `{ idleTime: 80, timeout: 350 }` after fills.
+- Drop the per-attempt 1500ms backoff between `/checkout` retries to 600ms.
 
-- Add a `phase` heartbeat written by the worker itself (Deno side) instead of from the headless page:
-  - The worker calls `supa.from('checkout_jobs').update({stage, updated_at: now()})` at key checkpoints in the script handshake (we already pass these back inside `result.steps`).
-  - Stream them by switching the Browserless call from one big `/function` to a small step protocol: the script returns an array of step events at the end, but we also keep a lightweight ping pattern using the existing pg_net infrastructure for mid-run updates. For now: the script returns its `steps` log, and the worker writes a final consolidated stage based on the last step before writing the terminal row.
-- Keep the existing `?action=stage` callback as a best-effort nice-to-have only; never read it for control flow. Add a 1.5s timeout on the in-page `fetch(stageUrl)` so callback failures cannot slow the run.
+**E. Prefer `networkidle0` only where needed.**
+Audit any remaining `waitUntil: "networkidle*"` and switch to `"domcontentloaded"` plus a targeted `waitForSelector` for the next step's anchor element.
 
-### D. Always persist evidence
+**F. Keep the existing resource blocker** — already aggressive and correct. No change.
 
-- Worker writes `result` containing `screenshotB64`, `finalUrl`, `orderId`, `paymentMessage`, `steps[]` for every terminal outcome including failures and "uncertain".
-- For `confirm_uncertain`, also record `lastStage`, `lastUrlBeforeAbort`, and any `paymentMessage` we caught — these are the cases that mask successful payments.
+Expected savings on a typical base Shopify Checkout One store: ~3–6s per run (worst case clamped by the bank's authorization step, which we don't control).
 
-### E. UI reconciliation
+## Part 2 — Reliable webhooks
 
-- `src/routes/_paired/index.tsx`:
-  - When a task ends in `failed` *and* the last known `stage` is `submit`, `payment_result`, `three_d_secure`, or `confirm`, render an amber "Payment may have completed — verify in bank / Shopify order email" badge plus the screenshot, instead of red "transport error".
-  - Always render `screenshotB64` if present on any outcome (success or failure), not just on success/dry-run.
-  - On the bot page, add a "Re-sync from server" button per task that re-calls `getCheckoutJob` and overwrites the local task status with the DB truth.
-  - Increase the polling deadline in the task loop from 180s to 360s to match the worker's Browserless `timeout`.
+Current shape (`src/lib/discord.ts` + `src/routes/_paired/index.tsx`): `fireWebhook` runs **only in the browser**, gated by an in-memory `notifiedRef` Set, triggered when the UI transitions a task to `confirmed`/`failed`/`checkout_ready`/`in_stock`. Failure modes today:
+- User closes tab before the worker finishes → no webhook ever sent.
+- Two devices paired to the same workspace → webhook may fire twice (each has its own `notifiedRef`).
+- Timeout on the UI side fires `failed` while the worker is still running and later writes `succeeded` to the DB → user gets a "failed" webhook for a successful checkout.
 
-### F. One-time cleanup
+Changes:
 
-- A small SQL update to relabel the recent batch of "Browserless launch timed out within 90s" rows whose `updated_at` is older than 5 minutes and `result` is null: set `stage = 'transport_stalled'` and `error = 'Worker timed out before writing result — payment status uncertain. Check bank / Shopify order email.'` so the bot page reflects the correct ambiguity for the rows that already misled you.
+**G. Move terminal-state webhooks server-side.**
+Add a `notify_webhook` column (text, nullable) and `notify_events` (jsonb) on `checkout_jobs`. `enqueueCheckout` copies the user's Discord config onto the job row at enqueue time. In `run-checkout/index.ts`, the same `try/finally` that writes the terminal row also POSTs the Discord embed for `succeeded` / `payment_declined` / `failed` before returning. This guarantees one fire per terminal write, regardless of tab state.
+
+**H. Idempotency.**
+Add `webhook_fired_at timestamptz` on `checkout_jobs`. Worker uses a conditional update — `UPDATE … SET webhook_fired_at = now() WHERE id = $1 AND webhook_fired_at IS NULL RETURNING 1` — and only POSTs Discord if the update affected one row. Safe against retried invocations.
+
+**I. UI fires only the pre-terminal events.**
+`in_stock` and `checkout_ready` stay client-side (worker doesn't know about them). `confirmed` / `failed` are removed from the UI `fireWebhook` paths; the UI just reflects whatever the worker wrote. Eliminates double-fires and false-failure webhooks from UI timeouts.
+
+**J. Manual / runner / legacy paths.**
+Non-Browserless checkouts (local runner, manual) still terminate in the UI. For those, keep client-side `confirmed`/`failed` webhooks but gate them on a workspace-scoped `localStorage` flag (`aio:notified:<jobId>`) so refreshes don't re-fire.
+
+**K. Retry on transient Discord 429/5xx.**
+Worker-side POST: 1 retry after 1s on 429 (respect `retry_after` if present) or 5xx; otherwise fire-and-forget. Never block the terminal DB write on Discord.
 
 ## Files to change
 
-- `supabase/functions/run-checkout/index.ts` — remove watchdog, always write terminal row with evidence, time-bound in-page stage callbacks, worker-side stage updates.
-- `src/lib/checkout-jobs.functions.ts` — remove 90s self-healer; read-only.
-- `src/routes/_paired/index.tsx` — render screenshots on failures, "may have completed" badge, manual re-sync button, longer poll deadline.
-- One-time data fix on `public.checkout_jobs` for the false-positive rows.
+- `supabase/functions/run-checkout/index.ts` — A–F speed work + G/H/K server-side webhook fire.
+- `src/lib/checkout-jobs.functions.ts` — `enqueueCheckout` accepts `notifyWebhook` + `notifyEvents`, persists onto the job row.
+- `src/lib/discord.ts` — export the embed builder as a pure function the worker can import-mirror (or duplicate in the edge fn since it's Deno).
+- `src/routes/_paired/index.tsx` — drop `confirmed`/`failed` `fireWebhook` calls on Browserless paths; keep them on runner/manual paths with localStorage dedup; pass current `notifyConfig` into `enqueueCheckout`.
+- SQL migration — add `notify_webhook text`, `notify_events jsonb`, `webhook_fired_at timestamptz` to `public.checkout_jobs` (GRANTs already in place).
 
-## Validation
+## Out of scope
 
-- Run one real checkout. Expect:
-  - The task ends in `confirmed` / `payment_declined` / `confirm_uncertain` with a screenshot and `finalUrl` matching what your bank shows.
-  - No row remains in `running` past 8 minutes.
-  - The bot page never shows "Browserless launch timed out within 90s" again when money actually moves.
-- Run a deliberately broken proxy. Expect `failed` with a real proxy error, not a generic launch timeout.
-- Run a 3DS checkout and approve in Revolut. Expect `confirmed` with order id captured and screenshot of the thank-you page.
+- Cross-store compatibility test UI button (separate request).
+- Non-Shopify storefronts.
+- 3DS auto-solve.
+
+## Verification
+
+- Time 5 runs against a known Checkout One store before/after; expect ≥3s median reduction.
+- Manually close the tab mid-run; confirm Discord still receives exactly one embed when the worker finishes.
+- Force a Discord 429 (point at an invalid webhook) and confirm one retry then silent drop, with terminal DB row still written.
