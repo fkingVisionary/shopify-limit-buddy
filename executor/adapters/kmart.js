@@ -268,6 +268,9 @@ export const kmartAdapter = {
           note: `${pdpHtml.length}b srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} refMk=${hasRefMarker} refScr=${hasRefScript} | ${snippet}`,
         };
       });
+      if (pdpHtml && pdpHtml.length < 10000) {
+        steps.push({ step: "pdp_body_full", ok: true, note: pdpHtml });
+      }
     }
 
     // Verify the proxy session held the same egress IP from warm_home through
