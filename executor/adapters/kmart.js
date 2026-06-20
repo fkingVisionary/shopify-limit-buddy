@@ -35,25 +35,40 @@ const ACCEPT_LANG = "en-AU,en;q=0.9";
 // Chrome 124 / macOS navigation header shape. Akamai scores requests on the
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
+// Chrome 133 macOS client hints — basic (low entropy) + high entropy.
+// Real Chrome sends the high-entropy hints (arch/bitness/full-version-list/
+// model/platform-version) on navigation requests whenever the origin has
+// previously responded with Accept-CH (Kmart does). Sending only the low-
+// entropy trio is a classic headless-Chrome tell.
 const CHROME_CH = {
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+  "sec-ch-ua-arch": '"arm"',
+  "sec-ch-ua-bitness": '"64"',
+  "sec-ch-ua-full-version": '"133.0.6943.99"',
+  "sec-ch-ua-full-version-list":
+    '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="133.0.6943.99", "Chromium";v="133.0.6943.99"',
   "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-model": '""',
   "sec-ch-ua-platform": '"macOS"',
+  "sec-ch-ua-platform-version": '"14.6.1"',
 };
+// Real Chrome 133 link-click navigation header set. Notable absences:
+//   - NO `cache-control` / `pragma` — those only appear on a hard reload
+//     (CMD+SHIFT+R). Sending them on every nav is a strong bot signal.
+//   - `priority: u=0, i` is sent on every top-level navigation.
 function navHeaders({ referer, site }) {
   return {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
     "accept-language": ACCEPT_LANG,
     "accept-encoding": "gzip, deflate, br, zstd",
-    "cache-control": "no-cache",
-    pragma: "no-cache",
     "upgrade-insecure-requests": "1",
     ...CHROME_CH,
     "sec-fetch-dest": "document",
     "sec-fetch-mode": "navigate",
     "sec-fetch-site": site,
     "sec-fetch-user": "?1",
+    priority: "u=0, i",
     ...(referer ? { referer } : {}),
   };
 }
