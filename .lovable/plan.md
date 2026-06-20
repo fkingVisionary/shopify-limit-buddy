@@ -1,37 +1,25 @@
-## Smoke-test the Kmart dry-run
+## Goal
+Stop burning residential proxy data during Kmart/Akamai testing. Run all dry-runs direct from Fly's egress IP until the sensor pipeline is verified, then re-enable the proxy for production runs.
 
-Add a minimal internal test endpoint so I can fire the dry-run from here and show you the result.
+## Why this is safe
+Hyper's `ip` field is already derived dynamically: `resolveEgressIp(ctx)` reads the dispatcher off the task context and asks ipify through that same dispatcher. With no proxy, it returns Fly's egress IP and Hyper fingerprints against that. Nothing in the adapter or antibot layer hardcodes the proxy IP.
 
-### One new file: `src/routes/api/public/exec-test.ts`
+## Changes
 
-A `POST /api/public/exec-test` route that:
-- Reads `EXECUTOR_URL` + `EXECUTOR_TOKEN` from Lovable secrets
-- Forwards `{ storeUrl, variantId }` to `https://j1ms-bot-executor.fly.dev/run` with `dryRun: true`
-- Returns the executor's step chain + final status
+1. **`src/routes/api/public/exec-test.ts`**
+   - Default `proxy` to `null` for both `run` and `recon` modes.
+   - Add an optional `useProxy: true` flag in the request body to opt back in (reads `PROXY_URL_RESI` only when set). Default off.
 
-That's it. ~30 lines, no other code touched.
+2. **`executor/server.js` `/recon` handler**
+   - Same change: only use `PROXY_URL_RESI` when the request explicitly opts in (`useProxy: true`). Default to direct.
 
-### What I'll run after approval
+3. **No executor adapter changes.** `kmart.js` already passes `task.proxy` through unchanged; null = direct dispatcher = Fly egress IP, and `resolveEgressIp` follows the dispatcher automatically.
 
-```
-POST /api/public/exec-test
-{
-  "storeUrl": "https://www.kmart.com.au/product/18cm-disney-and-pixar-toy-story-action-figures-assorted-43726646/",
-  "variantId": 43726646
-}
-```
+## Test plan after build
+- Fire `/api/public/exec-test` with `{ mode: "recon", reconUrl: "https://www.kmart.com.au/" }` (no proxy) → expect 200 + script list so we can find the real Akamai sensor path.
+- Fire dry-run on a Kmart PDP (no proxy) → expect sensor solve to progress further than the proxied attempt, since Fly's IP is clean and ipify will report it correctly to Hyper.
+- When ready for production, send `{ useProxy: true, ... }` to flip back to residential without code changes.
 
-### What success looks like
-
-Step chain ending with:
-- `akamai_solved` ✅
-- `pdp_get` status `200`
-
-### Failure modes I'll diagnose for you
-
-- `antibot_misconfigured` → `HYPER_API_KEY` not set on Fly (re-run workflow)
-- `pdp_get` 403 → proxy isn't residential AU (swap provider)
-- `akamai_unsolved` → sensor pipeline needs tuning (next batch of work)
-- 401 / network error → executor not reachable, check Fly Machines
-
-After the test works I can leave the route in (handy for future spot-checks) or delete it — your call.
+## Out of scope
+- No changes to `kmart.js`, `antibot.js`, `http.js`, or `ip-resolve.js`.
+- Production checkout wiring stays on the residential path via the explicit flag.
