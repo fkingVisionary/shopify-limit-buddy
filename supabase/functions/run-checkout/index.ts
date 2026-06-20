@@ -1105,6 +1105,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ ok: true, note: "already " + job.status }), { headers: { ...cors, "content-type": "application/json" } });
   }
 
+  const runWorker = async () => {
   await supa.from("checkout_jobs").update({
     status: "running",
     stage: "launch",
@@ -1203,10 +1204,25 @@ Deno.serve(async (req) => {
   url.searchParams.set("blockAds", "true");
   url.searchParams.set("stealth", "true");
 
+  const browserlessAbort = new AbortController();
+  const launchWatchdog = setTimeout(async () => {
+    try {
+      const { data: current } = await supa
+        .from("checkout_jobs")
+        .select("status,stage")
+        .eq("id", jobId)
+        .maybeSingle();
+      if (current?.status === "running" && current?.stage === "launch") {
+        browserlessAbort.abort("Browserless did not start checkout within 90s");
+      }
+    } catch {}
+  }, 90_000);
+
   try {
     const res = await fetch(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
+      signal: browserlessAbort.signal,
       body: JSON.stringify({
         code: checkoutScriptSource(),
         context: {
@@ -1216,6 +1232,7 @@ Deno.serve(async (req) => {
         },
       }),
     });
+    clearTimeout(launchWatchdog);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       await supa.from("checkout_jobs").update({
@@ -1264,9 +1281,26 @@ Deno.serve(async (req) => {
     }).eq("id", jobId);
     return new Response(JSON.stringify({ ok: true }), { headers: { ...cors, "content-type": "application/json" } });
   } catch (e) {
+    clearTimeout(launchWatchdog);
+    const errorMessage = e instanceof Error ? e.message : String(e);
+    const timedOutAtLaunch = browserlessAbort.signal.aborted && String(browserlessAbort.signal.reason ?? "").includes("90s");
     await supa.from("checkout_jobs").update({
-      status: "failed", stage: "transport", error: "transport: " + (e instanceof Error ? e.message : String(e)),
-    }).eq("id", jobId);
+      status: "failed", stage: "transport", error: timedOutAtLaunch
+        ? "Browserless did not start checkout within 90s. This usually means Browserless capacity/queueing, an invalid key, or a proxy that cannot launch."
+        : "transport: " + errorMessage,
+    }).eq("id", jobId).eq("status", "running");
     return new Response("transport error", { status: 500, headers: cors });
   }
+  };
+
+  const workerPromise = runWorker();
+  const edgeRuntime = (globalThis as unknown as { EdgeRuntime?: { waitUntil?: (promise: Promise<unknown>) => void } }).EdgeRuntime;
+  if (edgeRuntime?.waitUntil) {
+    edgeRuntime.waitUntil(workerPromise);
+    return new Response(JSON.stringify({ ok: true, accepted: true }), {
+      status: 202,
+      headers: { ...cors, "content-type": "application/json" },
+    });
+  }
+  return await workerPromise;
 });
