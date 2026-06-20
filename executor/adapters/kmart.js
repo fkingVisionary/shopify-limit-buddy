@@ -293,17 +293,22 @@ export const kmartAdapter = {
           });
         }
 
-        await tStep("pdp_get#2", async () => {
-          const res = await request(
-            pdpUrl,
-            { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
-            ctx,
-          );
-          pdpStatus = res.status;
-          pdpHtml = await res.text();
-          const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
-          return { status: res.status, ok: res.status < 400, note: snippet };
-        });
+        {
+          const pdp2Headers = navHeaders({ referer: origin + "/", site: "same-origin" });
+          dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+          await tStep("pdp_get#2", async () => {
+            const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
+            pdpStatus = res.status;
+            pdpHtml = await res.text();
+            const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
+            const respHeaders = {
+              server: res.headers.get("server"),
+              "akamai-grn": res.headers.get("akamai-grn"),
+              "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+            };
+            return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+          });
+        }
       } else {
         steps.push({ step: "sbsd_missing", ok: false, note: "403 body had no ?v=<uuid> script tag" });
       }
