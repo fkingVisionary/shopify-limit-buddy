@@ -365,12 +365,12 @@ function checkoutScriptSource() {
       };
 
       const clickContinue = async (allowPaymentSubmit = false, preferredStep = null) => {
-        const deadline = Date.now() + 3500;
+        const deadline = Date.now() + 1800;
         let target = null;
         while (Date.now() < deadline) {
           target = await findContinueTarget(allowPaymentSubmit, preferredStep);
           if (target) break;
-          await new Promise((r) => setTimeout(r, 150));
+          await new Promise((r) => setTimeout(r, 80));
         }
         if (!target) throw new Error("Could not find checkout continue button");
         try { await page.mouse.click(target.x, target.y, { delay: 20 }); } catch {}
