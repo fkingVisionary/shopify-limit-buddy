@@ -107,15 +107,7 @@ export const kmartAdapter = {
     await tStep("warm_home", async () => {
       const res = await request(
         origin + "/",
-        {
-          method: "GET",
-          headers: {
-            "user-agent": UA,
-            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "accept-language": ACCEPT_LANG,
-            "upgrade-insecure-requests": "1",
-          },
-        },
+        { method: "GET", headers: navHeaders({ site: "none" }) },
         ctx,
       );
       html = await res.text();
