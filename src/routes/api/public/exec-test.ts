@@ -122,7 +122,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
           const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean };
           // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
           const compactSteps = Array.isArray(data?.steps)
-            ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 90 ? s.note.slice(0, 90) + `…(+${s.note.length - 90})` : s.note) : undefined }))
+            ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 2000 ? s.note.slice(0, 2000) + `…(+${s.note.length - 2000})` : s.note) : undefined }))
             : [];
           return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed });
         } catch (e) {
