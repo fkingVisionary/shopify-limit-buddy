@@ -25,18 +25,44 @@ function checkoutScriptSource() {
   return `export default async ({ page, context }) => {
     const { input, stageUrl, twoCaptchaKey } = context;
     const steps = [];
-    let lastStep = "launch";
+    let lastStep = "checkout_start";
     const log = (s, ok, note) => { steps.push({ step: s, t: Date.now(), ok, note }); };
     const stage = async (label) => {
-      // Best-effort cross-origin POST from inside the headless page. Time-box
-      // it hard so a slow/blocked callback never slows down checkout. We never
-      // gate any control flow on this — it's just a UI nicety.
-      try {
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 1500);
-        await fetch(stageUrl, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stage: label }), signal: ctrl.signal });
-        clearTimeout(to);
-      } catch {}
+      // Best-effort live progress. Send from the Browserless function context
+      // first, then fire a no-CORS page beacon as a fallback. Never let this
+      // slow or block checkout; final result remains the source of truth.
+      lastStep = label;
+      const stageEndpoint = stageUrl + "&stage=" + encodeURIComponent(label);
+      const payload = JSON.stringify({ stage: label });
+      const sendFromFunction = async () => {
+        try {
+          if (typeof fetch !== "function") return false;
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 700);
+          try {
+            await fetch(stageEndpoint, { method: "POST", headers: { "content-type": "text/plain" }, body: payload, signal: ctrl.signal });
+            return true;
+          } finally {
+            clearTimeout(to);
+          }
+        } catch { return false; }
+      };
+      const sendFromPage = async () => {
+        try {
+          await page.evaluate((url, body) => {
+            try {
+              if (navigator.sendBeacon) {
+                const ok = navigator.sendBeacon(url, new Blob([body], { type: "text/plain" }));
+                if (ok) return;
+              }
+            } catch {}
+            try { fetch(url, { method: "POST", body, mode: "no-cors", keepalive: true }).catch(() => {}); } catch {}
+            try { const img = new Image(); img.src = url + "&_=" + Date.now(); } catch {}
+          }, stageEndpoint, payload);
+        } catch {}
+      };
+      await Promise.race([sendFromFunction(), new Promise((r) => setTimeout(() => r(false), 800))]);
+      void sendFromPage();
     };
 
     const fail = async (msg) => {
@@ -45,12 +71,14 @@ function checkoutScriptSource() {
       return { ok: false, failedStep: lastStep, error: msg, steps, screenshotB64: shot };
     };
       const paymentRejected = async (msg) => {
+        lastStep = "payment_declined";
+        await stage("payment_declined");
         const shot = await page.screenshot({ encoding: "base64", fullPage: false }).catch(() => null);
         log("payment_result", true, msg);
         return { ok: true, orderId: null, finalUrl: page.url(), steps, screenshotB64: shot, dryRun: false, paymentRejected: true, paymentMessage: msg };
       };
     try {
-      await stage("launch");
+      await stage("checkout_start");
 
       // Authenticate against an upstream proxy (host:port set via launch args).
       try {
