@@ -1388,7 +1388,7 @@ function reconScriptSource() {
         const sels = ['[data-testid="add-to-cart-button"]', '[data-test="add-to-cart-button"]'];
         for (const s of sels) {
           const el = document.querySelector(s);
-          if (el) { (el as HTMLElement).click(); return s; }
+          if (el) { el.click(); return s; }
         }
         return null;
       }).catch(() => null);
@@ -1399,11 +1399,11 @@ function reconScriptSource() {
       report.cartOpened = await page.evaluate(() => {
         const cands = Array.from(document.querySelectorAll('[data-testid*="cart" i], [data-test*="cart" i], a[href="/cart"], button, a'));
         for (const el of cands) {
-          const t = ((el as HTMLElement).innerText || "").trim();
+          const t = (el.innerText || "").trim();
           const href = el.getAttribute("href") || "";
           if (/^\\s*cart\\s*$/i.test(t) || href === "/cart") {
             const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t || href; }
+            if (r.width > 0 && r.height > 0) { el.click(); return t || href; }
           }
         }
         return null;
@@ -1417,15 +1417,15 @@ function reconScriptSource() {
         for (const s of sels) {
           for (const el of Array.from(document.querySelectorAll(s))) {
             const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return s; }
+            if (r.width > 0 && r.height > 0) { el.click(); return s; }
           }
         }
         const cands = Array.from(document.querySelectorAll('button, a'));
         for (const el of cands) {
-          const t = ((el as HTMLElement).innerText || "").trim();
+          const t = (el.innerText || "").trim();
           if (/^(checkout|secure checkout|proceed to checkout|continue to checkout)$/i.test(t)) {
             const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t; }
+            if (r.width > 0 && r.height > 0) { el.click(); return t; }
           }
         }
         return null;
@@ -1439,10 +1439,10 @@ function reconScriptSource() {
       report.contactContinueClicked = await page.evaluate(() => {
         const cands = Array.from(document.querySelectorAll('button, input[type="submit"], [data-testid*="continue" i], [data-test*="continue" i]'));
         for (const el of cands) {
-          const t = (((el as HTMLElement).innerText || (el as HTMLInputElement).value || "") + "").trim();
+          const t = ((el.innerText || el.value || "") + "").trim();
           if (/continue to shipping|continue to delivery|continue|next/i.test(t)) {
             const r = el.getBoundingClientRect();
-            if (r.width > 0 && r.height > 0) { (el as HTMLElement).click(); return t; }
+            if (r.width > 0 && r.height > 0) { el.click(); return t; }
           }
         }
         return null;
