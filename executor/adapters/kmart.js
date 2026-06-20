@@ -193,6 +193,66 @@ export const kmartAdapter = {
       return { status: res.status, ok: res.status < 400, note: `${snippet} | server=${srv} ${aka}` };
     });
 
+    // 5b. If PDP 403'd with an embedded fresh sensor script, do one more
+    //     sensor round bound to the PDP URL, then retry the PDP. This is
+    //     Akamai's standard stage-2 dance ("you solved for /, now solve for
+    //     this URL"). Cap at one retry.
+    if (pdpStatus === 403) {
+      const pdpScriptPath = findAkamaiScriptPath(pdpHtml);
+      if (pdpScriptPath) {
+        const pdpScriptUrl = origin + pdpScriptPath;
+        let pdpScriptBody = "";
+        await tStep("pdp_script_fetch", async () => {
+          const r = await request(pdpScriptUrl, { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } }, ctx);
+          pdpScriptBody = await r.text();
+          return { status: r.status, note: `${pdpScriptBody.length}b` };
+        });
+        await tStep("akamai_sensor_pdp", async () => {
+          const r = await solveAkamaiSensor({
+            jar: ctx.jar,
+            pageUrl: pdpUrl,
+            userAgent: UA,
+            ip: egressIp,
+            acceptLanguage: ACCEPT_LANG,
+            scriptUrl: pdpScriptUrl,
+            scriptBody: pdpScriptBody,
+            prevContext: null,
+          });
+          const res = await request(
+            r.postUrl,
+            {
+              method: "POST",
+              headers: {
+                "user-agent": UA,
+                "content-type": "text/plain;charset=UTF-8",
+                accept: "*/*",
+                "accept-language": ACCEPT_LANG,
+                origin,
+                referer: pdpUrl,
+              },
+              body: JSON.stringify({ sensor_data: r.payload }),
+            },
+            ctx,
+          );
+          return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
+        });
+        await tStep("pdp_get#2", async () => {
+          const res = await request(
+            pdpUrl,
+            { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
+            ctx,
+          );
+          pdpStatus = res.status;
+          pdpHtml = await res.text();
+          const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `${pdpHtml.length}b`;
+          return { status: res.status, ok: res.status < 400, note: snippet };
+        });
+      } else {
+        steps.push({ step: "pdp_script_missing", ok: false, note: "403 body had no akamai script path" });
+      }
+    }
+
+
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
     try {
       const pixel = await solveAkamaiPixel({
