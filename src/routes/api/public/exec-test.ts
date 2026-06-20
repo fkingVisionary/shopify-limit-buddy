@@ -100,7 +100,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
               body: JSON.stringify({ url: target, proxy }),
             });
             const data = await res.json().catch(() => ({}));
-            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, usedProxy: Boolean(proxy) });
+            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, usedProxy: Boolean(proxy), proxyUsed });
           }
           if (!body.storeUrl) {
             return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
