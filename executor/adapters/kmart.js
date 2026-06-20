@@ -182,15 +182,7 @@ export const kmartAdapter = {
     await tStep("pdp_get", async () => {
       const res = await request(
         pdpUrl,
-        {
-          method: "GET",
-          headers: {
-            "user-agent": UA,
-            accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "accept-language": ACCEPT_LANG,
-            referer: origin + "/",
-          },
-        },
+        { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
         ctx,
       );
       pdpStatus = res.status;
