@@ -359,9 +359,16 @@ export async function runJbhifiProbe(opts = {}) {
       elapsedMs: Date.now() - t0,
       stats: {
         skus: list.length,
-        endpointsPerSku: list[0] ? endpointsFor(list[0]).length : 0,
+        endpointsPerSku: (list[0] ? endpointsFor(list[0]).length : 0),
         uniqueHandlesFound: uniqueHandles.length,
         confirmed: matches.filter((m) => m.product).length,
+      },
+      algolia: {
+        appId: algolia.appId,
+        apiKey: algolia.apiKey ? `${algolia.apiKey.slice(0, 6)}…${algolia.apiKey.slice(-4)}` : null,
+        indexName: algolia.indexName,
+        discovered: !!(algolia.appId && algolia.apiKey),
+        sources: algolia.sourceUrls,
       },
       matches,
       bySku, // full endpoint matrix — the actual recon output
