@@ -7,6 +7,7 @@ import { z } from "zod";
 
 const InputSchema = z.object({
   query: z.string().max(200).nullable().optional(),
+  skus: z.array(z.string().min(1).max(64)).max(200).nullable().optional(),
   limit: z.number().int().min(1).max(1000).default(200),
   hiddenOnly: z.boolean().default(false),
   refresh: z.boolean().default(false),
