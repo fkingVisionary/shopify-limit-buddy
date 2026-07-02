@@ -76,6 +76,7 @@ function fmtPrice(min: number | null, max: number | null) {
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
   const [query, setQuery] = useState("");
+  const [skusText, setSkusText] = useState("");
   const [proxy, setProxy] = useState("");
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -88,9 +89,14 @@ function JbhifiReconPage() {
     setError(null);
     try {
       const trimmedProxy = proxy.trim();
+      const skus = skusText
+        .split(/[\s,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
       const res = await runFn({
         data: {
           query: query.trim() || null,
+          skus: skus.length ? skus : null,
           hiddenOnly,
           refresh: !!opts.refresh,
           limit: 300,
