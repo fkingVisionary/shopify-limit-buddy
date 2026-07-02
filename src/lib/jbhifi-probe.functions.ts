@@ -9,6 +9,8 @@ const InputSchema = z.object({
   skus: z.array(z.string().min(1).max(64)).min(1).max(50),
   proxy: z.string().min(7).max(300).nullable().optional(),
   concurrency: z.number().int().min(1).max(16).default(6),
+  refreshKeys: z.boolean().optional(),
+  skipShopify: z.boolean().optional(),
 });
 
 export const runJbhifiProbe = createServerFn({ method: "POST" })
