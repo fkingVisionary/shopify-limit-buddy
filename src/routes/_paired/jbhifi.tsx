@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -76,6 +76,7 @@ function fmtPrice(min: number | null, max: number | null) {
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
   const [query, setQuery] = useState("");
+  const [proxy, setProxy] = useState("");
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,14 +87,16 @@ function JbhifiReconPage() {
     setLoading(true);
     setError(null);
     try {
+      const trimmedProxy = proxy.trim();
       const res = await runFn({
         data: {
           query: query.trim() || null,
           hiddenOnly,
           refresh: !!opts.refresh,
           limit: 300,
-          hydrateAll: hiddenOnly, // hidden needs hydration to match
+          hydrateAll: hiddenOnly,
           useProxy: false,
+          proxy: trimmedProxy || null,
         },
       });
       if (!res.ok) {
@@ -108,11 +111,6 @@ function JbhifiReconPage() {
     }
   }
 
-  // Initial sweep on mount.
-  useEffect(() => {
-    void run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const stats = result?.stats;
   const products = result?.products ?? [];
@@ -144,6 +142,19 @@ function JbhifiReconPage() {
         </div>
 
         <Card className="mb-4 p-4">
+          <div className="mb-3">
+            <Label className="text-xs">Proxy (optional)</Label>
+            <Input
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              placeholder="user:pass@host:port  or  http://user:pass@host:port"
+              className="font-mono text-xs"
+              autoFocus
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Leave blank to use the executor&apos;s default egress. Paste one proxy to test without touching your groups.
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
             <div>
               <Label className="text-xs">Search</Label>
@@ -177,6 +188,7 @@ function JbhifiReconPage() {
             </div>
           </div>
         </Card>
+
 
         {error && (
           <Card className="mb-4 border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
