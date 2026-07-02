@@ -262,30 +262,67 @@ export async function runJbhifiProbe(opts = {}) {
     .slice(0, 50);
 
   try {
+    // Discover Algolia credentials ONCE per run (shared across all SKUs).
+    const algolia = await discoverAlgolia(ctx);
+
     const bySku = [];
     const allHandles = new Set();
 
     for (const sku of list) {
       const eps = endpointsFor(sku);
-      const results = await Promise.all(
-        eps.map(async (ep) => {
-          const r = ep.kind === "json" ? await fetchJson(ep.url, ctx) : await fetchText(ep.url, ctx);
-          let handles = [];
-          try { handles = ep.extract(r) ?? []; } catch { /* ignore */ }
-          for (const h of handles) allHandles.add(h);
-          return {
-            key: ep.key,
-            url: ep.url.replace(HOST, ""),
-            status: r.status,
-            ok: r.ok,
-            elapsedMs: r.elapsedMs,
-            bytes: r.bytes,
-            handles,
-            snippet: r.body ? String(r.body).slice(0, 240) : null,
-            error: r.error ?? null,
-          };
-        }),
-      );
+      const [shopifyResults, algoliaResult] = await Promise.all([
+        Promise.all(
+          eps.map(async (ep) => {
+            const r = ep.kind === "json" ? await fetchJson(ep.url, ctx) : await fetchText(ep.url, ctx);
+            let handles = [];
+            try { handles = ep.extract(r) ?? []; } catch { /* ignore */ }
+            for (const h of handles) allHandles.add(h);
+            return {
+              key: ep.key,
+              url: ep.url.replace(HOST, ""),
+              status: r.status,
+              ok: r.ok,
+              elapsedMs: r.elapsedMs,
+              bytes: r.bytes,
+              handles,
+              snippet: r.body ? String(r.body).slice(0, 240) : null,
+              error: r.error ?? null,
+            };
+          }),
+        ),
+        queryAlgolia(algolia, sku, ctx),
+      ]);
+
+      // Fold Algolia attempts into the same endpoint matrix so the UI shows them.
+      const algoliaRows = (algoliaResult.attempts ?? []).map((a) => {
+        for (const h of a.handles) allHandles.add(h);
+        return {
+          key: `algolia:${a.indexName}`,
+          url: `algolia.net/1/indexes/${a.indexName}/query`,
+          status: a.status,
+          ok: a.ok,
+          elapsedMs: a.elapsedMs,
+          bytes: (a.snippet ?? "").length,
+          handles: a.handles,
+          snippet: a.firstHit ? `nbHits=${a.nbHits} first=${JSON.stringify(a.firstHit)}` : a.snippet,
+          error: a.error ?? null,
+        };
+      });
+      if (algoliaResult.skipped) {
+        algoliaRows.push({
+          key: "algolia:skipped",
+          url: "-",
+          status: 0,
+          ok: false,
+          elapsedMs: 0,
+          bytes: 0,
+          handles: [],
+          snippet: algoliaResult.reason,
+          error: null,
+        });
+      }
+
+      const results = [...shopifyResults, ...algoliaRows];
       bySku.push({ sku, endpoints: results, handlesFound: [...new Set(results.flatMap((r) => r.handles))] });
     }
 
