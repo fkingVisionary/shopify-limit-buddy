@@ -7,6 +7,7 @@ import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
 import { makeDispatcher, createJar, request, UA } from "./http.js";
 import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
+import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.EXECUTOR_TOKEN;
@@ -161,6 +162,29 @@ app.post("/jbhifi/recon", async (req, reply) => {
     return { ok: false, error: e?.message ?? String(e) };
   }
 });
+
+// ─── JB Hi-Fi per-SKU endpoint probe ─────────────────────────────────
+// Body: { skus: string[], proxy?, useProxy?, concurrency? }
+// Fans out ~8 public Shopify surfaces per SKU and reports which leaked
+// data. Used for endpoint discovery, not routine search.
+app.post("/jbhifi/probe", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  try {
+    const result = await runJbhifiProbe({
+      skus: Array.isArray(body.skus) ? body.skus : [],
+      concurrency: Number(body.concurrency ?? 6),
+      proxy,
+    });
+    return result;
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+});
+
+
 
 
 
