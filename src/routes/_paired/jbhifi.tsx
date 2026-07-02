@@ -194,8 +194,9 @@ function JbhifiReconPage() {
 
   async function runProbe(opts: { refreshKeys?: boolean; skipShopify?: boolean } = {}) {
     const skus = skusText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    if (!skus.length) {
-      setError("Paste at least one SKU to probe endpoints.");
+    const queries = keywordsText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!skus.length && !queries.length) {
+      setError("Paste at least one SKU or keyword to probe.");
       return;
     }
     setLoading(true);
@@ -203,7 +204,7 @@ function JbhifiReconPage() {
     setResult(null);
     try {
       const res = await probeFn({
-        data: { skus, proxy: proxy.trim() || null, concurrency: 6, refreshKeys: !!opts.refreshKeys, skipShopify: !!opts.skipShopify },
+        data: { skus, queries, proxy: proxy.trim() || null, concurrency: 6, refreshKeys: !!opts.refreshKeys, skipShopify: !!opts.skipShopify },
       });
       if (!res.ok) {
         setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
@@ -216,6 +217,7 @@ function JbhifiReconPage() {
       setLoading(false);
     }
   }
+
 
 
   const stats = result?.stats;
