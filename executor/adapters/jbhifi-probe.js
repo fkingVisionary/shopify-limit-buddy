@@ -355,10 +355,13 @@ export async function runJbhifiProbe(opts = {}) {
       budgetExceeded: Date.now() > deadline,
       stats: {
         skus: list.length,
+        queries: queryList.length,
         uniqueHandlesFound: uniqueHandles.length,
         confirmed: matches.filter((m) => m.product).length,
         algoliaHits: matches.filter((m) => m.algolia).length,
         hiddenFound: matches.filter((m) => m.algolia?.isHidden).length,
+        queryHits: byQuery.reduce((s, q) => s + q.hits.length, 0),
+        queryHiddenHits: byQuery.reduce((s, q) => s + q.hits.filter((h) => h?.isHidden).length, 0),
       },
       algolia: {
         appId: algolia.appId,
@@ -371,8 +374,10 @@ export async function runJbhifiProbe(opts = {}) {
       },
       matches,
       bySku,
+      byQuery,
       hydrated: [...hydrated.values()],
     };
+
   } finally {
     try { await dispatcher?.close?.(); } catch { /* ignore */ }
   }
