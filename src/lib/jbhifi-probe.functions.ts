@@ -26,11 +26,14 @@ export const runJbhifiProbe = createServerFn({ method: "POST" })
       let origin = url.trim();
       try { origin = new URL(origin).origin; }
       catch { origin = origin.replace(/\/+$/, ""); }
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 26_000);
       const res = await fetch(`${origin}/jbhifi/probe`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
         body: JSON.stringify(data),
-      });
+        signal: ac.signal,
+      }).finally(() => clearTimeout(timer));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const body = (await res.json().catch(() => ({}))) as any;
       return {
