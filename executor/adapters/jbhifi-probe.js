@@ -176,7 +176,7 @@ function endpointsFor(sku) {
     },
     {
       key: "suggest.broad",
-      url: `${HOST}/search/suggest.json?q=${q}&resources[type]=product,collection,page,article&resources[limit]=10&resources[options][unavailable_products]=last&resources[options][fields]=title,product_type,variants.sku,vendor,tag,handle`,
+      url: `${HOST}/search/suggest.json?q=${q}&resources[type]=product,collection,page,article&resources[limit]=10&resources[options][unavailable_products]=last`,
       kind: "json",
       extract: (r) => handlesFromSuggest(r.json),
     },
@@ -188,7 +188,7 @@ function endpointsFor(sku) {
     },
     {
       key: "search.section",
-      url: `${HOST}/search?q=${q}&section_id=predictive-search`,
+      url: `${HOST}/search?q=${q}&type=product&section_id=predictive-search`,
       kind: "text",
       extract: (r) => handlesFromHtml(r.body),
     },
