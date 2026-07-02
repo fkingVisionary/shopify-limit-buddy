@@ -296,6 +296,28 @@ export async function runJbhifiProbe(opts = {}) {
       bySku.push({ sku, endpoints: rows, handlesFound: [...new Set(rows.flatMap((r) => r.handles))], algoliaSummary });
     }
 
+    // 2b. Keyword queries — free-text Algolia searches for discovery.
+    const byQuery = [];
+    for (const q of queryList) {
+      if (Date.now() > deadline) {
+        byQuery.push({ query: q, nbHits: 0, elapsedMs: 0, status: 0, ok: false, hits: [], error: "time budget exceeded" });
+        continue;
+      }
+      const r = await algoliaQuery(algolia, `query=${encodeURIComponent(q)}&hitsPerPage=${hitsPerQuery}`, ctx);
+      const rawHits = r.json?.hits ?? [];
+      const hits = rawHits.map(summarizeHit).filter(Boolean);
+      byQuery.push({
+        query: q,
+        nbHits: r.json?.nbHits ?? hits.length,
+        elapsedMs: r.elapsedMs,
+        status: r.status,
+        ok: r.ok,
+        error: r.error ?? null,
+        hits,
+      });
+    }
+
+
     // 4. Hydrate every unique handle in parallel (bounded), respecting deadline.
     const uniqueHandles = [...allHandles];
     const hydrated = new Map();
