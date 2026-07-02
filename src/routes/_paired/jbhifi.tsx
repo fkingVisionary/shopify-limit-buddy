@@ -285,6 +285,66 @@ function JbhifiReconPage() {
           </Card>
         )}
 
+        {probe && (
+          <Card className="mb-4 p-4">
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
+              <span className="font-medium">Endpoint probe</span>
+              <Badge variant="outline">{probe.stats.skus} SKUs</Badge>
+              <Badge variant="outline">{probe.stats.endpointsPerSku} endpoints/SKU</Badge>
+              <Badge variant="outline">{probe.stats.uniqueHandlesFound} handles found</Badge>
+              <Badge variant={probe.stats.confirmed > 0 ? "default" : "secondary"}>
+                {probe.stats.confirmed} confirmed
+              </Badge>
+              <span className="text-muted-foreground">· {probe.elapsedMs}ms</span>
+            </div>
+            <div className="space-y-3">
+              {probe.bySku.map((row) => (
+                <details key={row.sku} className="rounded-md border" open>
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-mono">
+                    <span className="font-semibold">{row.sku}</span>
+                    <span className="ml-2 text-muted-foreground">
+                      {row.handlesFound.length} handle{row.handlesFound.length === 1 ? "" : "s"}:
+                      {" "}{row.handlesFound.slice(0, 3).join(", ") || "—"}
+                    </span>
+                  </summary>
+                  <div className="border-t overflow-x-auto">
+                    <table className="w-full text-[11px]">
+                      <thead className="bg-muted/50 text-left">
+                        <tr>
+                          <th className="px-2 py-1">✓</th>
+                          <th className="px-2 py-1">endpoint</th>
+                          <th className="px-2 py-1 text-right">status</th>
+                          <th className="px-2 py-1 text-right">ms</th>
+                          <th className="px-2 py-1 text-right">bytes</th>
+                          <th className="px-2 py-1">handles</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono">
+                        {row.endpoints.map((ep) => (
+                          <tr key={ep.key} className="border-t">
+                            <td className="px-2 py-1">
+                              <span className={ep.handles.length > 0 ? "text-green-600" : ep.ok ? "text-muted-foreground" : "text-destructive"}>
+                                {ep.handles.length > 0 ? "★" : ep.ok ? "·" : "✗"}
+                              </span>
+                            </td>
+                            <td className="px-2 py-1"><span title={ep.url}>{ep.key}</span></td>
+                            <td className="px-2 py-1 text-right">{ep.status || "—"}</td>
+                            <td className="px-2 py-1 text-right">{ep.elapsedMs}</td>
+                            <td className="px-2 py-1 text-right tabular-nums">{ep.bytes}</td>
+                            <td className="px-2 py-1 truncate max-w-[200px]">{ep.handles.slice(0, 2).join(", ")}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              ))}
+            </div>
+          </Card>
+        )}
+
+
+
         {stats && (
           <Card className="mb-4 p-4">
             <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-6">
