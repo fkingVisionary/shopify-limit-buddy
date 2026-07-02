@@ -153,12 +153,24 @@ function JbhifiReconPage() {
             <Input
               value={proxy}
               onChange={(e) => setProxy(e.target.value)}
-              placeholder="user:pass@host:port  or  http://user:pass@host:port"
+              placeholder="user:pass@host:port  or  host:port:user:pass"
               className="font-mono text-xs"
               autoFocus
             />
             <p className="mt-1 text-[11px] text-muted-foreground">
               Leave blank to use the executor&apos;s default egress. Paste one proxy to test without touching your groups.
+            </p>
+          </div>
+          <div className="mb-3">
+            <Label className="text-xs">SKUs (optional — bypasses full sweep)</Label>
+            <Input
+              value={skusText}
+              onChange={(e) => setSkusText(e.target.value)}
+              placeholder="900805, 900807, 900810…"
+              className="font-mono text-xs"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Paste comma/space separated SKUs. Uses Shopify predictive search + per-handle hydration — fast and safe from 502s.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
