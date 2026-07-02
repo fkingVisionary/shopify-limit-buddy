@@ -275,6 +275,20 @@ function JbhifiReconPage() {
               Paste comma/space separated SKUs. Uses Shopify predictive search + per-handle hydration — fast and safe from 502s.
             </p>
           </div>
+          <div className="mb-3">
+            <Label className="text-xs">Keywords (one per line — Algolia direct)</Label>
+            <textarea
+              value={keywordsText}
+              onChange={(e) => setKeywordsText(e.target.value)}
+              placeholder={"pokemon 30th celebration elite trainer\nswitch 2\nps5 pro"}
+              rows={3}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Each line is one Algolia keyword search. Returns hidden/embargoed hits (button=DoNotDisplay) too — the fastest way to reverse-engineer discovery.
+            </p>
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
             <div>
               <Label className="text-xs">Search</Label>
