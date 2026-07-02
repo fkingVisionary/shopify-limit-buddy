@@ -101,6 +101,13 @@ type ProbeResult = {
     uniqueHandlesFound: number;
     confirmed: number;
   };
+  algolia?: {
+    appId: string | null;
+    apiKey: string | null;
+    indexName: string | null;
+    discovered: boolean;
+    sources: { url: string; status: number; bytes: number }[];
+  };
   matches: ProbeMatch[];
   bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[] }[];
 };
