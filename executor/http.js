@@ -62,6 +62,18 @@ const CHROME_HEADER_ORDER = [
 function parseProxy(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
+
+  // Common proxy-list format: host:port:user:pass. Convert it before URL
+  // parsing; otherwise URL treats the third segment as part of an invalid port
+  // and the request silently falls back to direct egress.
+  if (!/^https?:\/\//i.test(s) && !/^socks5?:\/\//i.test(s) && !s.includes("@")) {
+    const parts = s.split(":");
+    if (parts.length >= 4 && /^\d{1,5}$/.test(parts[1])) {
+      const [host, port, user, ...passParts] = parts;
+      const pass = passParts.join(":");
+      s = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
+    }
+  }
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
   try {
     return new URL(s).toString();
