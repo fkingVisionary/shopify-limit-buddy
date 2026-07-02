@@ -1,30 +1,45 @@
-// JB Hi-Fi per-SKU endpoint probe.
+// JB Hi-Fi per-SKU endpoint probe — Algolia-first.
 //
-// Given one or more SKUs, fan out across every public Shopify surface that
-// might leak a handle/variant/inventory for that SKU, in parallel. Each
-// endpoint's outcome is recorded in a matrix so we can see WHICH surfaces
-// leak data the public PDP hides.
+// JB Hi-Fi's storefront search runs client-side against Algolia. Their
+// app id, public search key, and index name are hard-coded in a theme
+// bundle asset:
+//   https://www.jbhifi.com.au/cdn/shop/t/506/assets/bundle.<hash>.js
+// The exact fragment (as of 2026-07):
+//   {app_id:"VTVKM5URPX",search_api_key:"a0c0108d737ad5ab54a0e2da900bf040",
+//    index_prefix:"shopify_",index_products:"shopify_products_families", ...}
 //
-// Endpoints probed per SKU:
-//   1. /search/suggest.json                (predictive - product only)
-//   2. /search/suggest.json                (broad: product+collection+page+article, unavailable_products=last)
-//   3. /search?q={sku}&type=product&view=json    (theme JSON view template)
-//   4. /search?q={sku}&section_id=predictive-search  (section rendering API)
-//   5. /search?q={sku}&type=product        (HTML - grep for /products/{handle})
-//   6. /products/{sku}.json                (handle == sku guess)
-//   7. /products/{sku}.js                  (alt serializer)
-//   8. /recommendations/products.json?product_id=…&intent=complementary  (only if we have an id)
-//   9. /collections/all/products.json?limit=250 filter (skipped here - too heavy for probe)
-//  10. Search-Console-style probe via HTML grep of any /products/... URLs on
-//      the site search HTML page.
+// The Algolia index exposes EVERY product family — including entries the
+// storefront hides (`button:"DoNotDisplay"`, `product_published:true`,
+// unreleased/embargoed SKUs). This is the single highest-leverage
+// endpoint for JB Hi-Fi hidden-product recon.
 //
-// Then: for every UNIQUE handle any probe surfaced, hydrate via
-// /products/{handle}.json and confirm the SKU appears in one of its variants.
+// Strategy per run:
+//   1. Load Algolia creds. Try hard-coded first; if a request fails or
+//      the user forces `refreshKeys`, scrape the current theme bundles.
+//   2. For each SKU, fire 3 Algolia queries in parallel:
+//        a. plain query=<sku>            (fuzzy, handles typos)
+//        b. filters=sku:"<sku>"          (exact match on sku attribute)
+//        c. filters=variant_id=<sku>     (in case caller passed a variant id)
+//   3. Also run a small set of Shopify-native probes (kept for
+//      cross-checks / comparison), bounded by a shared time budget.
+//   4. Hydrate every unique handle via /products/{handle}.json to confirm.
 
 import { makeDispatcher, createJar, request } from "../http.js";
 
 const HOST = "https://www.jbhifi.com.au";
 
+// Hard-coded from theme bundle inspection (see file header).
+const ALGOLIA_FALLBACK = {
+  appId: "VTVKM5URPX",
+  apiKey: "a0c0108d737ad5ab54a0e2da900bf040",
+  indexName: "shopify_products_families",
+  indexPrefix: "shopify_",
+  productFamiliesKey: "1d989f0839a992bbece9099e1b091f07",
+};
+
+const TIME_BUDGET_MS = 40_000;
+
+// ─── HTTP helpers ─────────────────────────────────────────────────────
 async function fetchJson(url, ctx, extraHeaders = {}) {
   const t0 = Date.now();
   try {
@@ -49,106 +64,67 @@ async function fetchText(url, ctx, extraHeaders = {}) {
   }
 }
 
-async function postJson(url, ctx, headers, body) {
+async function algoliaQuery({ appId, apiKey, indexName }, params, ctx) {
+  const url = `https://${appId.toLowerCase()}-dsn.algolia.net/1/indexes/${encodeURIComponent(indexName)}/query`;
   const t0 = Date.now();
   try {
-    const res = await request(url, { method: "POST", headers: { referer: HOST + "/", accept: "application/json,*/*", "content-type": "application/x-www-form-urlencoded", ...headers }, body }, ctx);
+    const res = await request(url, {
+      method: "POST",
+      headers: {
+        "x-algolia-application-id": appId,
+        "x-algolia-api-key": apiKey,
+        "content-type": "application/json",
+        accept: "application/json",
+        origin: HOST,
+        referer: HOST + "/",
+      },
+      body: JSON.stringify({ params }),
+    }, ctx);
     const text = await res.text();
-    let json = null;
-    try { json = JSON.parse(text); } catch { /* not json */ }
+    let json = null; try { json = JSON.parse(text); } catch { /* ignore */ }
     return { url, status: res.status, ok: res.ok, elapsedMs: Date.now() - t0, bytes: text.length, body: text, json };
   } catch (e) {
     return { url, status: 0, ok: false, elapsedMs: Date.now() - t0, bytes: 0, body: "", json: null, error: e?.message ?? String(e) };
   }
 }
 
-// ─── Algolia key discovery ──────────────────────────────────────────
-// JB Hi-Fi's search runs client-side against Algolia. The app id + public
-// search-only key are embedded in the storefront JS (window.__STORE__ or a
-// script that calls algoliasearch(...)). Scan the homepage + search page +
-// any script it references to extract them.
-const ALGOLIA_APP_RE = /["']?(?:appId|app_id|application_id|algolia_app_id|algoliaAppId)["']?\s*[:=]\s*["']([A-Z0-9]{6,20})["']/i;
-const ALGOLIA_KEY_RE = /["']?(?:apiKey|api_key|search_api_key|algolia_api_key|algoliaApiKey|searchApiKey)["']?\s*[:=]\s*["']([a-f0-9]{20,40})["']/i;
-const ALGOLIA_INDEX_RE = /["']([a-z0-9_\-]*(?:shopify_products|products)[a-z0-9_\-]*)["']/i;
-const ALGOLIA_INLINE_APP_RE = /algoliasearch\(\s*["']([A-Z0-9]{6,20})["']\s*,\s*["']([a-f0-9]{20,40})["']/i;
+// ─── Algolia key discovery (fallback for when hard-coded creds rotate)
+async function discoverAlgoliaFromBundles(ctx, budgetMs = 15_000) {
+  const deadline = Date.now() + budgetMs;
+  const home = await fetchText(HOST + "/", ctx);
+  if (!home.ok) return { discovered: false, reason: `home ${home.status}`, sourceUrls: [] };
+  const srcs = [...home.body.matchAll(/<script[^>]+src=["']([^"']+bundle\.[^"']+\.js[^"']*)["']/g)].map((m) => m[1]);
+  const absolute = srcs
+    .map((s) => (s.startsWith("http") ? s : s.startsWith("//") ? "https:" + s : HOST + s))
+    .slice(0, 20);
+  const sourceUrls = [];
 
-async function discoverAlgolia(ctx) {
-  const hits = { appId: null, apiKey: null, indexName: null, sourceUrls: [] };
+  // Config-shaped regex: {app_id:"XXX",search_api_key:"HEX",...}
+  const CONFIG_RE = /app_id\s*:\s*"([A-Z0-9]{6,20})"\s*,\s*search_api_key\s*:\s*"([a-f0-9]{20,64})"[^}]{0,600}?(?:index_products\s*:\s*"([a-z0-9_\-]+)")?/i;
 
-  async function scan(url) {
+  const found = { appId: null, apiKey: null, indexName: null };
+  // Scan up to 6 bundles in parallel with per-file cap
+  const chunk = absolute.slice(0, 6);
+  const results = await Promise.all(chunk.map(async (url) => {
+    if (Date.now() > deadline) return null;
     const r = await fetchText(url, ctx);
-    if (!r.ok || !r.body) return;
-    hits.sourceUrls.push({ url: url.replace(HOST, ""), status: r.status, bytes: r.bytes });
-    // Inline algoliasearch("APPID", "KEY", ...) → both at once
-    const inline = r.body.match(ALGOLIA_INLINE_APP_RE);
-    if (inline) { hits.appId ??= inline[1]; hits.apiKey ??= inline[2]; }
-    const a = r.body.match(ALGOLIA_APP_RE); if (a) hits.appId ??= a[1];
-    const k = r.body.match(ALGOLIA_KEY_RE); if (k) hits.apiKey ??= k[1];
-    const i = r.body.match(ALGOLIA_INDEX_RE); if (i) hits.indexName ??= i[1];
-    // Follow up to 5 script srcs that look interesting.
-    if (!hits.appId || !hits.apiKey) {
-      const scripts = [...r.body.matchAll(/<script[^>]+src=["']([^"']+)["']/g)].map((m) => m[1]);
-      const interesting = scripts.filter((s) => /algolia|search|instantsearch|theme|app\.|main\./i.test(s)).slice(0, 5);
-      for (const s of interesting) {
-        if (hits.appId && hits.apiKey && hits.indexName) break;
-        const abs = s.startsWith("http") ? s : s.startsWith("//") ? "https:" + s : HOST + s;
-        const rr = await fetchText(abs, ctx);
-        hits.sourceUrls.push({ url: abs.slice(0, 120), status: rr.status, bytes: rr.bytes });
-        if (!rr.body) continue;
-        const inline2 = rr.body.match(ALGOLIA_INLINE_APP_RE);
-        if (inline2) { hits.appId ??= inline2[1]; hits.apiKey ??= inline2[2]; }
-        const a2 = rr.body.match(ALGOLIA_APP_RE); if (a2) hits.appId ??= a2[1];
-        const k2 = rr.body.match(ALGOLIA_KEY_RE); if (k2) hits.apiKey ??= k2[1];
-        const i2 = rr.body.match(ALGOLIA_INDEX_RE); if (i2) hits.indexName ??= i2[1];
-      }
+    sourceUrls.push({ url: url.slice(0, 140), status: r.status, bytes: r.bytes });
+    if (!r.ok) return null;
+    const m = r.body.match(CONFIG_RE);
+    if (m) return { appId: m[1], apiKey: m[2], indexName: m[3] ?? null };
+    return null;
+  }));
+  for (const r of results) {
+    if (r) {
+      found.appId ??= r.appId;
+      found.apiKey ??= r.apiKey;
+      found.indexName ??= r.indexName;
     }
   }
-
-  await scan(HOST + "/");
-  if (!hits.appId || !hits.apiKey || !hits.indexName) await scan(HOST + "/search?q=test");
-  return hits;
+  return { discovered: !!(found.appId && found.apiKey), ...found, sourceUrls };
 }
 
-async function queryAlgolia(algolia, sku, ctx) {
-  if (!algolia?.appId || !algolia?.apiKey) {
-    return { skipped: true, reason: "no algolia keys discovered" };
-  }
-  // Try common JB Hi-Fi index name patterns if discovery didn't find one.
-  const indexes = algolia.indexName
-    ? [algolia.indexName]
-    : ["shopify_products", "shopify_products_price_asc", "jbhifi_products", "products"];
-
-  const attempts = [];
-  for (const indexName of indexes) {
-    const url = `https://${algolia.appId.toLowerCase()}-dsn.algolia.net/1/indexes/${encodeURIComponent(indexName)}/query`;
-    const body = JSON.stringify({ params: `query=${encodeURIComponent(sku)}&hitsPerPage=10` });
-    const r = await postJson(url, ctx, {
-      "x-algolia-application-id": algolia.appId,
-      "x-algolia-api-key": algolia.apiKey,
-      "content-type": "application/json",
-    }, body);
-    const hits = r.json?.hits ?? [];
-    const handles = hits
-      .map((h) => h.handle || h.product_handle || h.slug || (h.url ? String(h.url).match(/\/products\/([a-z0-9-]+)/)?.[1] : null))
-      .filter(Boolean)
-      .map((h) => String(h).toLowerCase());
-    attempts.push({
-      indexName,
-      status: r.status,
-      ok: r.ok,
-      elapsedMs: r.elapsedMs,
-      nbHits: r.json?.nbHits ?? null,
-      handles: [...new Set(handles)],
-      firstHit: hits[0] ? { objectID: hits[0].objectID, title: hits[0].title ?? hits[0].name, sku: hits[0].sku ?? hits[0].variant_sku } : null,
-      snippet: r.body ? r.body.slice(0, 240) : null,
-      error: r.error ?? null,
-    });
-    if (r.ok && handles.length > 0) break; // stop at first productive index
-  }
-  return { skipped: false, attempts };
-}
-
-
+// ─── Shopify-native probes (cross-check only) ─────────────────────────
 function handlesFromHtml(html) {
   const out = new Set();
   const re = /\/products\/([a-z0-9][a-z0-9-]{2,120})/gi;
@@ -156,70 +132,42 @@ function handlesFromHtml(html) {
   while ((m = re.exec(html))) out.add(m[1].toLowerCase());
   return [...out];
 }
-
 function handlesFromSuggest(json) {
   const products = json?.resources?.results?.products ?? [];
-  return products
-    .map((p) => (p?.handle ? String(p.handle).toLowerCase() : null))
-    .filter(Boolean);
+  return products.map((p) => (p?.handle ? String(p.handle).toLowerCase() : null)).filter(Boolean);
 }
 
-// Build the probe endpoints for one SKU.
-function endpointsFor(sku) {
+function shopifyEndpointsFor(sku) {
   const q = encodeURIComponent(sku);
   return [
-    {
-      key: "suggest.product",
-      url: `${HOST}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last`,
-      kind: "json",
-      extract: (r) => handlesFromSuggest(r.json),
-    },
-    {
-      key: "suggest.broad",
-      url: `${HOST}/search/suggest.json?q=${q}&resources[type]=product,collection,page,article&resources[limit]=10&resources[options][unavailable_products]=last`,
-      kind: "json",
-      extract: (r) => handlesFromSuggest(r.json),
-    },
-    {
-      key: "search.view=json",
-      url: `${HOST}/search?q=${q}&type=product&view=json`,
-      kind: "text",
-      extract: (r) => handlesFromHtml(r.body),
-    },
-    {
-      key: "search.section",
-      url: `${HOST}/search?q=${q}&type=product&section_id=predictive-search`,
-      kind: "text",
-      extract: (r) => handlesFromHtml(r.body),
-    },
-    {
-      key: "search.html",
-      url: `${HOST}/search?q=${q}&type=product`,
-      kind: "text",
-      extract: (r) => handlesFromHtml(r.body),
-    },
-    {
-      key: "handle.json",
-      url: `${HOST}/products/${encodeURIComponent(sku.toLowerCase())}.json`,
-      kind: "json",
-      extract: (r) => (r.json?.product?.handle ? [String(r.json.product.handle).toLowerCase()] : []),
-    },
-    {
-      key: "handle.js",
-      url: `${HOST}/products/${encodeURIComponent(sku.toLowerCase())}.js`,
-      kind: "json",
-      extract: (r) => (r.json?.handle ? [String(r.json.handle).toLowerCase()] : []),
-    },
-    {
-      key: "handle.oembed",
-      url: `${HOST}/products/${encodeURIComponent(sku.toLowerCase())}.oembed`,
-      kind: "json",
-      extract: (r) => {
-        const u = r.json?.provider_url || r.json?.author_url || "";
-        return handlesFromHtml(String(u));
-      },
-    },
+    { key: "suggest.product", url: `${HOST}/search/suggest.json?q=${q}&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last`, kind: "json", extract: (r) => handlesFromSuggest(r.json) },
+    { key: "search.view=json", url: `${HOST}/search?q=${q}&type=product&view=json`, kind: "text", extract: (r) => handlesFromHtml(r.body) },
+    { key: "handle.json", url: `${HOST}/products/${encodeURIComponent(sku.toLowerCase())}.json`, kind: "json", extract: (r) => (r.json?.product?.handle ? [String(r.json.product.handle).toLowerCase()] : []) },
   ];
+}
+
+// Extract a compact summary of an Algolia hit (JB Hi-Fi schema).
+function summarizeHit(h) {
+  if (!h) return null;
+  return {
+    objectID: h.objectID ?? null,
+    sku: h.sku ?? null,
+    variantId: h.variant_id ?? null,
+    productId: h.product_id ?? null,
+    title: h.title ?? h.primary_title ?? null,
+    handle: h.handle ?? null,
+    vendor: h.vendor ?? null,
+    productType: h.product_type ?? null,
+    price: h.price ?? h.pricing?.displayPriceInc ?? null,
+    published: h.product_published ?? null,
+    button: h.button ?? null,                 // "DoNotDisplay" == HIDDEN
+    tags: typeof h.tags === "string" ? h.tags.split(",").map((s) => s.trim()) : (h.tags ?? null),
+    releaseDate: h.release_date ? new Date(h.release_date * 1000).toISOString() : null,
+    image: h.product_image ?? null,
+    inventoryManagement: h.inventory_management ?? null,
+    availabilityRank: h.availabilityRank ?? null,
+    isHidden: h.button === "DoNotDisplay" || h.button === "SoldOut" || h.button === "ComingSoon",
+  };
 }
 
 async function hydrateHandle(handle, ctx) {
@@ -231,30 +179,25 @@ async function hydrateHandle(handle, ctx) {
     available: v.available ?? null, inventoryQty: v.inventory_quantity ?? null,
   }));
   return {
-    handle,
-    hydrated: true,
-    id: p.id ?? null,
-    title: p.title,
-    vendor: p.vendor ?? null,
-    productType: p.product_type ?? null,
+    handle, hydrated: true, id: p.id ?? null, title: p.title,
+    vendor: p.vendor ?? null, productType: p.product_type ?? null,
     tags: Array.isArray(p.tags) ? p.tags : typeof p.tags === "string" ? p.tags.split(",").map((s) => s.trim()) : [],
-    publishedAt: p.published_at ?? null,
-    updatedAt: p.updated_at ?? null,
-    createdAt: p.created_at ?? null,
+    publishedAt: p.published_at ?? null, updatedAt: p.updated_at ?? null, createdAt: p.created_at ?? null,
     image: p.image?.src ?? p.images?.[0]?.src ?? null,
     variantCount: variants.length,
     inventoryTotal: variants.reduce((s, v) => s + (Number(v.inventoryQty) || 0), 0),
-    variants,
-    url: `${HOST}/products/${handle}`,
+    variants, url: `${HOST}/products/${handle}`,
   };
 }
 
+// ─── Main entry ───────────────────────────────────────────────────────
 export async function runJbhifiProbe(opts = {}) {
-  const { skus = [], proxy = null, concurrency = 6 } = opts;
+  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false } = opts;
   const t0 = Date.now();
   const jar = createJar();
   const dispatcher = makeDispatcher(proxy);
   const ctx = { dispatcher, jar };
+  const deadline = t0 + TIME_BUDGET_MS;
 
   const list = (Array.isArray(skus) ? skus : [])
     .map((s) => String(s).trim())
@@ -262,86 +205,106 @@ export async function runJbhifiProbe(opts = {}) {
     .slice(0, 50);
 
   try {
-    // Discover Algolia credentials ONCE per run (shared across all SKUs).
-    const algolia = await discoverAlgolia(ctx);
+    // 1. Resolve Algolia creds. Hard-coded first; only scrape on demand.
+    let algolia = { ...ALGOLIA_FALLBACK, source: "hardcoded", sourceUrls: [] };
+    if (refreshKeys) {
+      const disc = await discoverAlgoliaFromBundles(ctx, 15_000);
+      if (disc.discovered) {
+        algolia = { appId: disc.appId, apiKey: disc.apiKey, indexName: disc.indexName ?? ALGOLIA_FALLBACK.indexName, source: "discovered", sourceUrls: disc.sourceUrls };
+      } else {
+        algolia.sourceUrls = disc.sourceUrls;
+        algolia.discoveryError = disc.reason ?? "no config regex match";
+      }
+    }
 
+    // 2. Per-SKU Algolia queries + optional Shopify probes.
     const bySku = [];
     const allHandles = new Set();
 
     for (const sku of list) {
-      const eps = endpointsFor(sku);
-      const [shopifyResults, algoliaResult] = await Promise.all([
-        Promise.all(
+      if (Date.now() > deadline) {
+        bySku.push({ sku, endpoints: [{ key: "budget", url: "-", status: 0, ok: false, elapsedMs: 0, bytes: 0, handles: [], snippet: "time budget exceeded", error: null }], handlesFound: [], algoliaSummary: null });
+        continue;
+      }
+
+      // Three Algolia strategies in parallel.
+      const [byQuery, bySkuFacet, byVariant] = await Promise.all([
+        algoliaQuery(algolia, `query=${encodeURIComponent(sku)}&hitsPerPage=5`, ctx),
+        algoliaQuery(algolia, `query=&filters=sku:"${sku}"&hitsPerPage=5`, ctx),
+        /^\d{8,20}$/.test(sku)
+          ? algoliaQuery(algolia, `query=&filters=variant_id=${sku}&hitsPerPage=5`, ctx)
+          : Promise.resolve({ status: 0, ok: false, elapsedMs: 0, bytes: 0, body: "", json: null, skipped: true }),
+      ]);
+
+      const rows = [];
+      const pushAlgolia = (label, r) => {
+        if (r.skipped) return;
+        const hits = r.json?.hits ?? [];
+        const handles = hits.map((h) => h.handle).filter(Boolean).map((h) => String(h).toLowerCase());
+        for (const h of handles) allHandles.add(h);
+        rows.push({
+          key: `algolia:${label}`,
+          url: `algolia.net/1/indexes/${algolia.indexName}/query`,
+          status: r.status, ok: r.ok, elapsedMs: r.elapsedMs, bytes: r.bytes,
+          handles: [...new Set(handles)],
+          snippet: r.json ? `nbHits=${r.json.nbHits ?? "?"} ${hits[0] ? "first=" + JSON.stringify(summarizeHit(hits[0])) : ""}`.slice(0, 400) : (r.body || "").slice(0, 240),
+          error: r.error ?? null,
+        });
+      };
+      pushAlgolia("query", byQuery);
+      pushAlgolia("sku-filter", bySkuFacet);
+      pushAlgolia("variant-filter", byVariant);
+
+      // Rich per-SKU Algolia summary (first exact match by sku, then any hit).
+      const allHits = [
+        ...(bySkuFacet.json?.hits ?? []),
+        ...(byQuery.json?.hits ?? []),
+        ...(byVariant.json?.hits ?? []),
+      ];
+      const exact = allHits.find((h) => String(h?.sku ?? "").toLowerCase() === sku.toLowerCase());
+      const algoliaSummary = summarizeHit(exact ?? allHits[0] ?? null);
+
+      // 3. Optional Shopify cross-checks.
+      if (!skipShopify && Date.now() < deadline) {
+        const eps = shopifyEndpointsFor(sku);
+        const shopifyResults = await Promise.all(
           eps.map(async (ep) => {
             const r = ep.kind === "json" ? await fetchJson(ep.url, ctx) : await fetchText(ep.url, ctx);
             let handles = [];
             try { handles = ep.extract(r) ?? []; } catch { /* ignore */ }
             for (const h of handles) allHandles.add(h);
             return {
-              key: ep.key,
-              url: ep.url.replace(HOST, ""),
-              status: r.status,
-              ok: r.ok,
-              elapsedMs: r.elapsedMs,
-              bytes: r.bytes,
-              handles,
-              snippet: r.body ? String(r.body).slice(0, 240) : null,
-              error: r.error ?? null,
+              key: ep.key, url: ep.url.replace(HOST, ""),
+              status: r.status, ok: r.ok, elapsedMs: r.elapsedMs, bytes: r.bytes,
+              handles, snippet: r.body ? String(r.body).slice(0, 240) : null, error: r.error ?? null,
             };
           }),
-        ),
-        queryAlgolia(algolia, sku, ctx),
-      ]);
-
-      // Fold Algolia attempts into the same endpoint matrix so the UI shows them.
-      const algoliaRows = (algoliaResult.attempts ?? []).map((a) => {
-        for (const h of a.handles) allHandles.add(h);
-        return {
-          key: `algolia:${a.indexName}`,
-          url: `algolia.net/1/indexes/${a.indexName}/query`,
-          status: a.status,
-          ok: a.ok,
-          elapsedMs: a.elapsedMs,
-          bytes: (a.snippet ?? "").length,
-          handles: a.handles,
-          snippet: a.firstHit ? `nbHits=${a.nbHits} first=${JSON.stringify(a.firstHit)}` : a.snippet,
-          error: a.error ?? null,
-        };
-      });
-      if (algoliaResult.skipped) {
-        algoliaRows.push({
-          key: "algolia:skipped",
-          url: "-",
-          status: 0,
-          ok: false,
-          elapsedMs: 0,
-          bytes: 0,
-          handles: [],
-          snippet: algoliaResult.reason,
-          error: null,
-        });
+        );
+        rows.push(...shopifyResults);
       }
 
-      const results = [...shopifyResults, ...algoliaRows];
-      bySku.push({ sku, endpoints: results, handlesFound: [...new Set(results.flatMap((r) => r.handles))] });
+      bySku.push({ sku, endpoints: rows, handlesFound: [...new Set(rows.flatMap((r) => r.handles))], algoliaSummary });
     }
 
-    // Hydrate every unique handle in parallel (bounded).
+    // 4. Hydrate every unique handle in parallel (bounded), respecting deadline.
     const uniqueHandles = [...allHandles];
     const hydrated = new Map();
-    let i = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, uniqueHandles.length) }, async () => {
-        while (i < uniqueHandles.length) {
-          const idx = i++;
-          const h = uniqueHandles[idx];
-          const norm = await hydrateHandle(h, ctx);
-          hydrated.set(h, norm);
-        }
-      }),
-    );
+    if (Date.now() < deadline) {
+      let i = 0;
+      const remaining = () => deadline - Date.now();
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, uniqueHandles.length) }, async () => {
+          while (i < uniqueHandles.length && remaining() > 500) {
+            const idx = i++;
+            const h = uniqueHandles[idx];
+            const norm = await hydrateHandle(h, ctx);
+            hydrated.set(h, norm);
+          }
+        }),
+      );
+    }
 
-    // Match each SKU back to its confirmed product (SKU appears in a variant).
+    // Match each SKU to its confirmed hydrated product.
     const matches = [];
     for (const row of bySku) {
       const confirmed = [];
@@ -351,27 +314,31 @@ export async function runJbhifiProbe(opts = {}) {
         const hit = (p.variants ?? []).find((v) => v.sku && String(v.sku).toLowerCase() === row.sku.toLowerCase());
         if (hit) confirmed.push({ ...p, matchedVariant: hit });
       }
-      matches.push({ sku: row.sku, product: confirmed[0] ?? null, alternates: confirmed.slice(1) });
+      matches.push({ sku: row.sku, algolia: row.algoliaSummary, product: confirmed[0] ?? null, alternates: confirmed.slice(1) });
     }
 
     return {
       ok: true,
       elapsedMs: Date.now() - t0,
+      budgetExceeded: Date.now() > deadline,
       stats: {
         skus: list.length,
-        endpointsPerSku: (list[0] ? endpointsFor(list[0]).length : 0),
         uniqueHandlesFound: uniqueHandles.length,
         confirmed: matches.filter((m) => m.product).length,
+        algoliaHits: matches.filter((m) => m.algolia).length,
+        hiddenFound: matches.filter((m) => m.algolia?.isHidden).length,
       },
       algolia: {
         appId: algolia.appId,
         apiKey: algolia.apiKey ? `${algolia.apiKey.slice(0, 6)}…${algolia.apiKey.slice(-4)}` : null,
         indexName: algolia.indexName,
-        discovered: !!(algolia.appId && algolia.apiKey),
+        source: algolia.source,
+        discovered: !!algolia.appId,
         sources: algolia.sourceUrls,
+        discoveryError: algolia.discoveryError ?? null,
       },
       matches,
-      bySku, // full endpoint matrix — the actual recon output
+      bySku,
       hydrated: [...hydrated.values()],
     };
   } finally {

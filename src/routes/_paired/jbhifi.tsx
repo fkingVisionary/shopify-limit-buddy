@@ -92,24 +92,48 @@ type ProbeMatch = {
   alternates: Product[];
 };
 
+type AlgoliaSummary = {
+  objectID: string | null;
+  sku: string | null;
+  variantId: number | null;
+  productId: number | null;
+  title: string | null;
+  handle: string | null;
+  vendor: string | null;
+  productType: string | null;
+  price: number | string | null;
+  published: boolean | null;
+  button: string | null;
+  tags: string[] | string | null;
+  releaseDate: string | null;
+  image: string | null;
+  inventoryManagement: string | null;
+  availabilityRank: number | null;
+  isHidden: boolean;
+} | null;
+
 type ProbeResult = {
   ok: boolean;
   elapsedMs: number;
+  budgetExceeded?: boolean;
   stats: {
     skus: number;
-    endpointsPerSku: number;
     uniqueHandlesFound: number;
     confirmed: number;
+    algoliaHits: number;
+    hiddenFound: number;
   };
   algolia?: {
     appId: string | null;
     apiKey: string | null;
     indexName: string | null;
+    source: string;
     discovered: boolean;
     sources: { url: string; status: number; bytes: number }[];
+    discoveryError?: string | null;
   };
-  matches: ProbeMatch[];
-  bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[] }[];
+  matches: (ProbeMatch & { algolia: AlgoliaSummary })[];
+  bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[]; algoliaSummary: AlgoliaSummary }[];
 };
 
 function JbhifiReconPage() {
@@ -159,7 +183,7 @@ function JbhifiReconPage() {
     }
   }
 
-  async function runProbe() {
+  async function runProbe(opts: { refreshKeys?: boolean; skipShopify?: boolean } = {}) {
     const skus = skusText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
     if (!skus.length) {
       setError("Paste at least one SKU to probe endpoints.");
@@ -170,7 +194,7 @@ function JbhifiReconPage() {
     setResult(null);
     try {
       const res = await probeFn({
-        data: { skus, proxy: proxy.trim() || null, concurrency: 6 },
+        data: { skus, proxy: proxy.trim() || null, concurrency: 6, refreshKeys: !!opts.refreshKeys, skipShopify: !!opts.skipShopify },
       });
       if (!res.ok) {
         setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
@@ -272,15 +296,31 @@ function JbhifiReconPage() {
               </Button>
             </div>
           </div>
-          <div className="mt-3 flex justify-end">
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button
               variant="secondary"
               onClick={() => void runProbe()}
               disabled={loading}
-              title="Fan out across ~8 public Shopify endpoints per SKU and report which leaked data"
+              title="Algolia direct query + Shopify cross-checks"
             >
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Probe endpoints ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs)
+              Probe ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs)
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void runProbe({ skipShopify: true })}
+              disabled={loading}
+              title="Algolia only — fastest"
+            >
+              Algolia only
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => void runProbe({ refreshKeys: true })}
+              disabled={loading}
+              title="Re-scrape theme bundles for fresh Algolia keys"
+            >
+              <RefreshCw className="mr-2 h-3 w-3" /> Refresh keys
             </Button>
           </div>
         </Card>
@@ -297,24 +337,26 @@ function JbhifiReconPage() {
             <div className="mb-3 flex flex-wrap items-center gap-3 text-xs">
               <span className="font-medium">Endpoint probe</span>
               <Badge variant="outline">{probe.stats.skus} SKUs</Badge>
-              <Badge variant="outline">{probe.stats.endpointsPerSku} endpoints/SKU</Badge>
-              <Badge variant="outline">{probe.stats.uniqueHandlesFound} handles found</Badge>
+              <Badge variant="outline">{probe.stats.algoliaHits} algolia hits</Badge>
+              <Badge variant={probe.stats.hiddenFound > 0 ? "destructive" : "outline"}>
+                {probe.stats.hiddenFound} hidden
+              </Badge>
+              <Badge variant="outline">{probe.stats.uniqueHandlesFound} handles</Badge>
               <Badge variant={probe.stats.confirmed > 0 ? "default" : "secondary"}>
                 {probe.stats.confirmed} confirmed
               </Badge>
               <span className="text-muted-foreground">· {probe.elapsedMs}ms</span>
+              {probe.budgetExceeded && <Badge variant="destructive">budget exceeded</Badge>}
             </div>
             {probe.algolia && (
               <div className={`mb-3 rounded-md border p-2 text-[11px] font-mono ${probe.algolia.discovered ? "border-green-500/40 bg-green-500/5" : "border-destructive/40 bg-destructive/5"}`}>
                 <div className="mb-1 font-sans font-medium">
-                  Algolia {probe.algolia.discovered ? "✓ discovered" : "✗ not found"}
+                  Algolia {probe.algolia.discovered ? "✓" : "✗"} ({probe.algolia.source})
                 </div>
                 <div>appId: {probe.algolia.appId ?? "—"}</div>
                 <div>apiKey: {probe.algolia.apiKey ?? "—"}</div>
-                <div>indexName: {probe.algolia.indexName ?? "— (fallback list tried)"}</div>
-                <div className="mt-1 text-muted-foreground">
-                  scanned {probe.algolia.sources.length} source{probe.algolia.sources.length === 1 ? "" : "s"}
-                </div>
+                <div>indexName: {probe.algolia.indexName ?? "—"}</div>
+                {probe.algolia.discoveryError && <div className="text-destructive">err: {probe.algolia.discoveryError}</div>}
               </div>
             )}
             <div className="space-y-3">
@@ -322,9 +364,21 @@ function JbhifiReconPage() {
                 <details key={row.sku} className="rounded-md border" open>
                   <summary className="cursor-pointer px-3 py-2 text-xs font-mono">
                     <span className="font-semibold">{row.sku}</span>
+                    {row.algoliaSummary && (
+                      <>
+                        <span className="ml-2 text-foreground">{row.algoliaSummary.title}</span>
+                        {row.algoliaSummary.price != null && <span className="ml-2 text-muted-foreground">${row.algoliaSummary.price}</span>}
+                        {row.algoliaSummary.button && (
+                          <Badge variant={row.algoliaSummary.isHidden ? "destructive" : "secondary"} className="ml-2 text-[10px]">
+                            {row.algoliaSummary.button}
+                          </Badge>
+                        )}
+                        {row.algoliaSummary.published === false && <Badge variant="destructive" className="ml-1 text-[10px]">unpublished</Badge>}
+                        {row.algoliaSummary.releaseDate && <span className="ml-2 text-muted-foreground">rel {row.algoliaSummary.releaseDate.slice(0, 10)}</span>}
+                      </>
+                    )}
                     <span className="ml-2 text-muted-foreground">
-                      {row.handlesFound.length} handle{row.handlesFound.length === 1 ? "" : "s"}:
-                      {" "}{row.handlesFound.slice(0, 3).join(", ") || "—"}
+                      · {row.handlesFound.length} handle{row.handlesFound.length === 1 ? "" : "s"}
                     </span>
                   </summary>
                   <div className="border-t overflow-x-auto">
