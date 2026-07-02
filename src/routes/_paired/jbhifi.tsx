@@ -76,6 +76,7 @@ function fmtPrice(min: number | null, max: number | null) {
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
   const [query, setQuery] = useState("");
+  const [proxy, setProxy] = useState("");
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -86,14 +87,16 @@ function JbhifiReconPage() {
     setLoading(true);
     setError(null);
     try {
+      const trimmedProxy = proxy.trim();
       const res = await runFn({
         data: {
           query: query.trim() || null,
           hiddenOnly,
           refresh: !!opts.refresh,
           limit: 300,
-          hydrateAll: hiddenOnly, // hidden needs hydration to match
+          hydrateAll: hiddenOnly,
           useProxy: false,
+          proxy: trimmedProxy || null,
         },
       });
       if (!res.ok) {
@@ -108,11 +111,6 @@ function JbhifiReconPage() {
     }
   }
 
-  // Initial sweep on mount.
-  useEffect(() => {
-    void run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const stats = result?.stats;
   const products = result?.products ?? [];
