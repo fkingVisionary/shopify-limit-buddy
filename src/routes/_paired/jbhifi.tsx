@@ -329,7 +329,7 @@ function JbhifiReconPage() {
               title="Algolia direct query + Shopify cross-checks"
             >
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Probe ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs)
+              Probe ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs · {keywordsText.split(/\r?\n/).filter((s) => s.trim()).length} keywords)
             </Button>
             <Button
               variant="outline"
