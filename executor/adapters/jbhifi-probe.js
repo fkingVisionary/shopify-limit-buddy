@@ -37,7 +37,7 @@ const ALGOLIA_FALLBACK = {
   productFamiliesKey: "1d989f0839a992bbece9099e1b091f07",
 };
 
-const TIME_BUDGET_MS = 40_000;
+const TIME_BUDGET_MS = 22_000;
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────
 async function fetchJson(url, ctx, extraHeaders = {}) {
