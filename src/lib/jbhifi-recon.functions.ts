@@ -12,6 +12,7 @@ const InputSchema = z.object({
   refresh: z.boolean().default(false),
   hydrateAll: z.boolean().default(false),
   useProxy: z.boolean().default(false),
+  proxy: z.string().min(7).max(300).nullable().optional(),
 });
 
 export const runJbhifiRecon = createServerFn({ method: "POST" })
