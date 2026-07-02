@@ -6,12 +6,15 @@ import { z } from "zod";
 // See executor/adapters/jbhifi-probe.js.
 
 const InputSchema = z.object({
-  skus: z.array(z.string().min(1).max(64)).min(1).max(50),
+  skus: z.array(z.string().min(1).max(64)).max(50).default([]),
+  queries: z.array(z.string().min(1).max(200)).max(20).default([]),
   proxy: z.string().min(7).max(300).nullable().optional(),
   concurrency: z.number().int().min(1).max(16).default(6),
   refreshKeys: z.boolean().optional(),
   skipShopify: z.boolean().optional(),
-});
+  hitsPerQuery: z.number().int().min(1).max(50).optional(),
+}).refine((v) => v.skus.length > 0 || v.queries.length > 0, { message: "provide skus or queries" });
+
 
 export const runJbhifiProbe = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
