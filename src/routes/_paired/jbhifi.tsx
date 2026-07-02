@@ -375,6 +375,17 @@ function JbhifiReconPage() {
                         )}
                         {row.algoliaSummary.published === false && <Badge variant="destructive" className="ml-1 text-[10px]">unpublished</Badge>}
                         {row.algoliaSummary.releaseDate && <span className="ml-2 text-muted-foreground">rel {row.algoliaSummary.releaseDate.slice(0, 10)}</span>}
+                        {row.algoliaSummary.handle && (
+                          <a
+                            href={`https://www.jbhifi.com.au/products/${row.algoliaSummary.handle}`}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            onClick={(e) => e.stopPropagation()}
+                            className="ml-2 text-primary underline"
+                          >
+                            open ↗
+                          </a>
+                        )}
                       </>
                     )}
                     <span className="ml-2 text-muted-foreground">
