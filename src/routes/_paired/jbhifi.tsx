@@ -109,6 +109,8 @@ type AlgoliaSummary = {
   image: string | null;
   inventoryManagement: string | null;
   availabilityRank: number | null;
+  limitPerOrder: number | null;
+  availability: string | null;
   isHidden: boolean;
 } | null;
 
@@ -118,10 +120,13 @@ type ProbeResult = {
   budgetExceeded?: boolean;
   stats: {
     skus: number;
+    queries?: number;
     uniqueHandlesFound: number;
     confirmed: number;
     algoliaHits: number;
     hiddenFound: number;
+    queryHits?: number;
+    queryHiddenHits?: number;
   };
   algolia?: {
     appId: string | null;
@@ -134,14 +139,18 @@ type ProbeResult = {
   };
   matches: (ProbeMatch & { algolia: AlgoliaSummary })[];
   bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[]; algoliaSummary: AlgoliaSummary }[];
+  byQuery?: { query: string; nbHits: number; elapsedMs: number; status: number; ok: boolean; error: string | null; hits: NonNullable<AlgoliaSummary>[] }[];
 };
+
 
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
   const probeFn = useServerFn(runJbhifiProbe);
   const [query, setQuery] = useState("");
   const [skusText, setSkusText] = useState("");
+  const [keywordsText, setKeywordsText] = useState("");
   const [proxy, setProxy] = useState("");
+
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -185,8 +194,9 @@ function JbhifiReconPage() {
 
   async function runProbe(opts: { refreshKeys?: boolean; skipShopify?: boolean } = {}) {
     const skus = skusText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-    if (!skus.length) {
-      setError("Paste at least one SKU to probe endpoints.");
+    const queries = keywordsText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    if (!skus.length && !queries.length) {
+      setError("Paste at least one SKU or keyword to probe.");
       return;
     }
     setLoading(true);
@@ -194,7 +204,7 @@ function JbhifiReconPage() {
     setResult(null);
     try {
       const res = await probeFn({
-        data: { skus, proxy: proxy.trim() || null, concurrency: 6, refreshKeys: !!opts.refreshKeys, skipShopify: !!opts.skipShopify },
+        data: { skus, queries, proxy: proxy.trim() || null, concurrency: 6, refreshKeys: !!opts.refreshKeys, skipShopify: !!opts.skipShopify },
       });
       if (!res.ok) {
         setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
@@ -207,6 +217,7 @@ function JbhifiReconPage() {
       setLoading(false);
     }
   }
+
 
 
   const stats = result?.stats;
@@ -264,6 +275,20 @@ function JbhifiReconPage() {
               Paste comma/space separated SKUs. Uses Shopify predictive search + per-handle hydration — fast and safe from 502s.
             </p>
           </div>
+          <div className="mb-3">
+            <Label className="text-xs">Keywords (one per line — Algolia direct)</Label>
+            <textarea
+              value={keywordsText}
+              onChange={(e) => setKeywordsText(e.target.value)}
+              placeholder={"pokemon 30th celebration elite trainer\nswitch 2\nps5 pro"}
+              rows={3}
+              className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Each line is one Algolia keyword search. Returns hidden/embargoed hits (button=DoNotDisplay) too — the fastest way to reverse-engineer discovery.
+            </p>
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
             <div>
               <Label className="text-xs">Search</Label>
@@ -304,7 +329,7 @@ function JbhifiReconPage() {
               title="Algolia direct query + Shopify cross-checks"
             >
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Probe ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs)
+              Probe ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs · {keywordsText.split(/\r?\n/).filter((s) => s.trim()).length} keywords)
             </Button>
             <Button
               variant="outline"
@@ -373,8 +398,14 @@ function JbhifiReconPage() {
                             {row.algoliaSummary.button}
                           </Badge>
                         )}
+                        {row.algoliaSummary.limitPerOrder != null && (
+                          <Badge variant="outline" className="ml-1 text-[10px]" title="Per-order quantity cap">
+                            limit {row.algoliaSummary.limitPerOrder}/order
+                          </Badge>
+                        )}
                         {row.algoliaSummary.published === false && <Badge variant="destructive" className="ml-1 text-[10px]">unpublished</Badge>}
                         {row.algoliaSummary.releaseDate && <span className="ml-2 text-muted-foreground">rel {row.algoliaSummary.releaseDate.slice(0, 10)}</span>}
+
                         {row.algoliaSummary.handle && (
                           <a
                             href={`https://www.jbhifi.com.au/products/${row.algoliaSummary.handle}`}
@@ -425,8 +456,73 @@ function JbhifiReconPage() {
                 </details>
               ))}
             </div>
+            {probe.byQuery && probe.byQuery.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <div className="text-xs font-medium">Keyword discovery</div>
+                {probe.byQuery.map((q) => (
+                  <details key={q.query} className="rounded-md border" open>
+                    <summary className="cursor-pointer px-3 py-2 text-xs">
+                      <span className="font-mono font-semibold">{q.query}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        · {q.nbHits} nbHits · {q.hits.length} shown · {q.elapsedMs}ms
+                      </span>
+                      {!q.ok && <Badge variant="destructive" className="ml-2 text-[10px]">HTTP {q.status}</Badge>}
+                    </summary>
+                    <div className="border-t">
+                      <table className="w-full text-[11px]">
+                        <thead className="bg-muted/50 text-left">
+                          <tr>
+                            <th className="px-2 py-1">sku</th>
+                            <th className="px-2 py-1">title</th>
+                            <th className="px-2 py-1 text-right">$</th>
+                            <th className="px-2 py-1">status</th>
+                            <th className="px-2 py-1 text-right">limit</th>
+                            <th className="px-2 py-1">release</th>
+                            <th className="px-2 py-1">link</th>
+                          </tr>
+                        </thead>
+                        <tbody className="font-mono">
+                          {q.hits.map((h, i) => (
+                            <tr key={`${h.sku}-${i}`} className={`border-t ${h.isHidden ? "bg-destructive/5" : ""}`}>
+                              <td className="px-2 py-1 font-semibold">{h.sku ?? "—"}</td>
+                              <td className="px-2 py-1 font-sans">{h.title ?? "—"}</td>
+                              <td className="px-2 py-1 text-right">{h.price != null ? `$${h.price}` : "—"}</td>
+                              <td className="px-2 py-1">
+                                {h.button && (
+                                  <Badge variant={h.isHidden ? "destructive" : "secondary"} className="text-[10px]">
+                                    {h.button}
+                                  </Badge>
+                                )}
+                              </td>
+                              <td className="px-2 py-1 text-right tabular-nums">{h.limitPerOrder ?? "—"}</td>
+                              <td className="px-2 py-1">{h.releaseDate ? h.releaseDate.slice(0, 10) : "—"}</td>
+                              <td className="px-2 py-1">
+                                {h.handle && (
+                                  <a
+                                    href={`https://www.jbhifi.com.au/products/${h.handle}`}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className="text-primary underline"
+                                  >
+                                    open ↗
+                                  </a>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                          {q.hits.length === 0 && (
+                            <tr><td colSpan={7} className="px-2 py-2 text-muted-foreground">no hits</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
           </Card>
         )}
+
 
 
 

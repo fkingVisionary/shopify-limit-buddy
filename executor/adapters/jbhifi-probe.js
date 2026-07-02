@@ -166,9 +166,12 @@ function summarizeHit(h) {
     image: h.product_image ?? null,
     inventoryManagement: h.inventory_management ?? null,
     availabilityRank: h.availabilityRank ?? null,
+    limitPerOrder: h.product?.limitPerOrder ?? null,
+    availability: h.availability?.overallStatus ?? null,
     isHidden: h.button === "DoNotDisplay" || h.button === "SoldOut" || h.button === "ComingSoon",
   };
 }
+
 
 async function hydrateHandle(handle, ctx) {
   const r = await fetchJson(`${HOST}/products/${handle}.json`, ctx);
@@ -192,7 +195,7 @@ async function hydrateHandle(handle, ctx) {
 
 // ─── Main entry ───────────────────────────────────────────────────────
 export async function runJbhifiProbe(opts = {}) {
-  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt } = opts;
+  const { skus = [], queries = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt, hitsPerQuery = 20 } = opts;
   // Algolia-only mode: skip the slow jbhifi.com.au hydrate step unless explicitly opted in.
   const skipHydrate = skipHydrateOpt ?? skipShopify;
   const t0 = Date.now();
@@ -205,6 +208,11 @@ export async function runJbhifiProbe(opts = {}) {
     .map((s) => String(s).trim())
     .filter(Boolean)
     .slice(0, 50);
+  const queryList = (Array.isArray(queries) ? queries : [])
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
 
   try {
     // 1. Resolve Algolia creds. Hard-coded first; only scrape on demand.
@@ -288,6 +296,28 @@ export async function runJbhifiProbe(opts = {}) {
       bySku.push({ sku, endpoints: rows, handlesFound: [...new Set(rows.flatMap((r) => r.handles))], algoliaSummary });
     }
 
+    // 2b. Keyword queries — free-text Algolia searches for discovery.
+    const byQuery = [];
+    for (const q of queryList) {
+      if (Date.now() > deadline) {
+        byQuery.push({ query: q, nbHits: 0, elapsedMs: 0, status: 0, ok: false, hits: [], error: "time budget exceeded" });
+        continue;
+      }
+      const r = await algoliaQuery(algolia, `query=${encodeURIComponent(q)}&hitsPerPage=${hitsPerQuery}`, ctx);
+      const rawHits = r.json?.hits ?? [];
+      const hits = rawHits.map(summarizeHit).filter(Boolean);
+      byQuery.push({
+        query: q,
+        nbHits: r.json?.nbHits ?? hits.length,
+        elapsedMs: r.elapsedMs,
+        status: r.status,
+        ok: r.ok,
+        error: r.error ?? null,
+        hits,
+      });
+    }
+
+
     // 4. Hydrate every unique handle in parallel (bounded), respecting deadline.
     const uniqueHandles = [...allHandles];
     const hydrated = new Map();
@@ -325,10 +355,13 @@ export async function runJbhifiProbe(opts = {}) {
       budgetExceeded: Date.now() > deadline,
       stats: {
         skus: list.length,
+        queries: queryList.length,
         uniqueHandlesFound: uniqueHandles.length,
         confirmed: matches.filter((m) => m.product).length,
         algoliaHits: matches.filter((m) => m.algolia).length,
         hiddenFound: matches.filter((m) => m.algolia?.isHidden).length,
+        queryHits: byQuery.reduce((s, q) => s + q.hits.length, 0),
+        queryHiddenHits: byQuery.reduce((s, q) => s + q.hits.filter((h) => h?.isHidden).length, 0),
       },
       algolia: {
         appId: algolia.appId,
@@ -341,8 +374,10 @@ export async function runJbhifiProbe(opts = {}) {
       },
       matches,
       bySku,
+      byQuery,
       hydrated: [...hydrated.values()],
     };
+
   } finally {
     try { await dispatcher?.close?.(); } catch { /* ignore */ }
   }
