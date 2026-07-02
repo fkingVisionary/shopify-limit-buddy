@@ -142,6 +142,19 @@ function JbhifiReconPage() {
         </div>
 
         <Card className="mb-4 p-4">
+          <div className="mb-3">
+            <Label className="text-xs">Proxy (optional)</Label>
+            <Input
+              value={proxy}
+              onChange={(e) => setProxy(e.target.value)}
+              placeholder="user:pass@host:port  or  http://user:pass@host:port"
+              className="font-mono text-xs"
+              autoFocus
+            />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Leave blank to use the executor&apos;s default egress. Paste one proxy to test without touching your groups.
+            </p>
+          </div>
           <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
             <div>
               <Label className="text-xs">Search</Label>
@@ -175,6 +188,7 @@ function JbhifiReconPage() {
             </div>
           </div>
         </Card>
+
 
         {error && (
           <Card className="mb-4 border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
