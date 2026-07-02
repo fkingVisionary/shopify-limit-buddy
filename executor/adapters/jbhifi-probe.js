@@ -291,7 +291,7 @@ export async function runJbhifiProbe(opts = {}) {
     // 4. Hydrate every unique handle in parallel (bounded), respecting deadline.
     const uniqueHandles = [...allHandles];
     const hydrated = new Map();
-    if (Date.now() < deadline) {
+    if (!skipHydrate && Date.now() < deadline) {
       let i = 0;
       const remaining = () => deadline - Date.now();
       await Promise.all(
