@@ -109,6 +109,8 @@ type AlgoliaSummary = {
   image: string | null;
   inventoryManagement: string | null;
   availabilityRank: number | null;
+  limitPerOrder: number | null;
+  availability: string | null;
   isHidden: boolean;
 } | null;
 
@@ -118,10 +120,13 @@ type ProbeResult = {
   budgetExceeded?: boolean;
   stats: {
     skus: number;
+    queries?: number;
     uniqueHandlesFound: number;
     confirmed: number;
     algoliaHits: number;
     hiddenFound: number;
+    queryHits?: number;
+    queryHiddenHits?: number;
   };
   algolia?: {
     appId: string | null;
@@ -134,7 +139,9 @@ type ProbeResult = {
   };
   matches: (ProbeMatch & { algolia: AlgoliaSummary })[];
   bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[]; algoliaSummary: AlgoliaSummary }[];
+  byQuery?: { query: string; nbHits: number; elapsedMs: number; status: number; ok: boolean; error: string | null; hits: NonNullable<AlgoliaSummary>[] }[];
 };
+
 
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
