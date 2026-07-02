@@ -175,6 +175,8 @@ app.post("/jbhifi/probe", async (req, reply) => {
     const result = await runJbhifiProbe({
       skus: Array.isArray(body.skus) ? body.skus : [],
       concurrency: Number(body.concurrency ?? 6),
+      refreshKeys: !!body.refreshKeys,
+      skipShopify: !!body.skipShopify,
       proxy,
     });
     return result;
