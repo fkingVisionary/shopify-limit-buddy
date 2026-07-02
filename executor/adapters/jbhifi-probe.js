@@ -195,7 +195,7 @@ async function hydrateHandle(handle, ctx) {
 
 // ─── Main entry ───────────────────────────────────────────────────────
 export async function runJbhifiProbe(opts = {}) {
-  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt } = opts;
+  const { skus = [], queries = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt, hitsPerQuery = 20 } = opts;
   // Algolia-only mode: skip the slow jbhifi.com.au hydrate step unless explicitly opted in.
   const skipHydrate = skipHydrateOpt ?? skipShopify;
   const t0 = Date.now();
@@ -208,6 +208,11 @@ export async function runJbhifiProbe(opts = {}) {
     .map((s) => String(s).trim())
     .filter(Boolean)
     .slice(0, 50);
+  const queryList = (Array.isArray(queries) ? queries : [])
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+    .slice(0, 20);
+
 
   try {
     // 1. Resolve Algolia creds. Hard-coded first; only scrape on demand.
