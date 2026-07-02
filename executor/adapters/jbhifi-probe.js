@@ -166,9 +166,12 @@ function summarizeHit(h) {
     image: h.product_image ?? null,
     inventoryManagement: h.inventory_management ?? null,
     availabilityRank: h.availabilityRank ?? null,
+    limitPerOrder: h.product?.limitPerOrder ?? null,
+    availability: h.availability?.overallStatus ?? null,
     isHidden: h.button === "DoNotDisplay" || h.button === "SoldOut" || h.button === "ComingSoon",
   };
 }
+
 
 async function hydrateHandle(handle, ctx) {
   const r = await fetchJson(`${HOST}/products/${handle}.json`, ctx);
