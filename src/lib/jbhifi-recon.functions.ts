@@ -25,7 +25,13 @@ export const runJbhifiRecon = createServerFn({ method: "POST" })
     }
     const t0 = Date.now();
     try {
-      const res = await fetch(`${url.replace(/\/$/, "")}/jbhifi/recon`, {
+      let origin = url.trim();
+      try {
+        origin = new URL(origin).origin;
+      } catch {
+        origin = origin.replace(/\/+$/, "");
+      }
+      const res = await fetch(`${origin}/jbhifi/recon`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
@@ -40,6 +46,7 @@ export const runJbhifiRecon = createServerFn({ method: "POST" })
         status: res.status,
         elapsedMs: Date.now() - t0,
         result: body,
+        error: res.ok ? undefined : body?.error ?? body?.message ?? `Executor HTTP ${res.status}`,
       };
     } catch (e) {
       return {
