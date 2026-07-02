@@ -37,7 +37,7 @@ const ALGOLIA_FALLBACK = {
   productFamiliesKey: "1d989f0839a992bbece9099e1b091f07",
 };
 
-const TIME_BUDGET_MS = 40_000;
+const TIME_BUDGET_MS = 22_000;
 
 // ─── HTTP helpers ─────────────────────────────────────────────────────
 async function fetchJson(url, ctx, extraHeaders = {}) {
@@ -192,7 +192,9 @@ async function hydrateHandle(handle, ctx) {
 
 // ─── Main entry ───────────────────────────────────────────────────────
 export async function runJbhifiProbe(opts = {}) {
-  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false } = opts;
+  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt } = opts;
+  // Algolia-only mode: skip the slow jbhifi.com.au hydrate step unless explicitly opted in.
+  const skipHydrate = skipHydrateOpt ?? skipShopify;
   const t0 = Date.now();
   const jar = createJar();
   const dispatcher = makeDispatcher(proxy);
@@ -289,7 +291,7 @@ export async function runJbhifiProbe(opts = {}) {
     // 4. Hydrate every unique handle in parallel (bounded), respecting deadline.
     const uniqueHandles = [...allHandles];
     const hydrated = new Map();
-    if (Date.now() < deadline) {
+    if (!skipHydrate && Date.now() < deadline) {
       let i = 0;
       const remaining = () => deadline - Date.now();
       await Promise.all(
