@@ -101,6 +101,13 @@ type ProbeResult = {
     uniqueHandlesFound: number;
     confirmed: number;
   };
+  algolia?: {
+    appId: string | null;
+    apiKey: string | null;
+    indexName: string | null;
+    discovered: boolean;
+    sources: { url: string; status: number; bytes: number }[];
+  };
   matches: ProbeMatch[];
   bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[] }[];
 };
@@ -297,6 +304,19 @@ function JbhifiReconPage() {
               </Badge>
               <span className="text-muted-foreground">· {probe.elapsedMs}ms</span>
             </div>
+            {probe.algolia && (
+              <div className={`mb-3 rounded-md border p-2 text-[11px] font-mono ${probe.algolia.discovered ? "border-green-500/40 bg-green-500/5" : "border-destructive/40 bg-destructive/5"}`}>
+                <div className="mb-1 font-sans font-medium">
+                  Algolia {probe.algolia.discovered ? "✓ discovered" : "✗ not found"}
+                </div>
+                <div>appId: {probe.algolia.appId ?? "—"}</div>
+                <div>apiKey: {probe.algolia.apiKey ?? "—"}</div>
+                <div>indexName: {probe.algolia.indexName ?? "— (fallback list tried)"}</div>
+                <div className="mt-1 text-muted-foreground">
+                  scanned {probe.algolia.sources.length} source{probe.algolia.sources.length === 1 ? "" : "s"}
+                </div>
+              </div>
+            )}
             <div className="space-y-3">
               {probe.bySku.map((row) => (
                 <details key={row.sku} className="rounded-md border" open>
