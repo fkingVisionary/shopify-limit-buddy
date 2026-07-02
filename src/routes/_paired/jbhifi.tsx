@@ -456,8 +456,73 @@ function JbhifiReconPage() {
                 </details>
               ))}
             </div>
+            {probe.byQuery && probe.byQuery.length > 0 && (
+              <div className="mt-4 space-y-3">
+                <div className="text-xs font-medium">Keyword discovery</div>
+                {probe.byQuery.map((q) => (
+                  <details key={q.query} className="rounded-md border" open>
+                    <summary className="cursor-pointer px-3 py-2 text-xs">
+                      <span className="font-mono font-semibold">{q.query}</span>
+                      <span className="ml-2 text-muted-foreground">
+                        · {q.nbHits} nbHits · {q.hits.length} shown · {q.elapsedMs}ms
+                      </span>
+                      {!q.ok && <Badge variant="destructive" className="ml-2 text-[10px]">HTTP {q.status}</Badge>}
+                    </summary>
+                    <div className="border-t">
+                      <table className="w-full text-[11px]">
+                        <thead className="bg-muted/50 text-left">
+                          <tr>
+                            <th className="px-2 py-1">sku</th>
+                            <th className="px-2 py-1">title</th>
+                            <th className="px-2 py-1 text-right">$</th>
+                            <th className="px-2 py-1">status</th>
+                            <th className="px-2 py-1 text-right">limit</th>
+                            <th className="px-2 py-1">release</th>
+                            <th className="px-2 py-1">link</th>
+                          </tr>
+                        </thead>
+                        <tbody className="font-mono">
+                          {q.hits.map((h, i) => (
+                            <tr key={`${h.sku}-${i}`} className={`border-t ${h.isHidden ? "bg-destructive/5" : ""}`}>
+                              <td className="px-2 py-1 font-semibold">{h.sku ?? "—"}</td>
+                              <td className="px-2 py-1 font-sans">{h.title ?? "—"}</td>
+                              <td className="px-2 py-1 text-right">{h.price != null ? `$${h.price}` : "—"}</td>
+                              <td className="px-2 py-1">
+                                {h.button && (
+                                  <Badge variant={h.isHidden ? "destructive" : "secondary"} className="text-[10px]">
+                                    {h.button}
+                                  </Badge>
+                                )}
+                              </td>
+                              <td className="px-2 py-1 text-right tabular-nums">{h.limitPerOrder ?? "—"}</td>
+                              <td className="px-2 py-1">{h.releaseDate ? h.releaseDate.slice(0, 10) : "—"}</td>
+                              <td className="px-2 py-1">
+                                {h.handle && (
+                                  <a
+                                    href={`https://www.jbhifi.com.au/products/${h.handle}`}
+                                    target="_blank"
+                                    rel="noreferrer noopener"
+                                    className="text-primary underline"
+                                  >
+                                    open ↗
+                                  </a>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                          {q.hits.length === 0 && (
+                            <tr><td colSpan={7} className="px-2 py-2 text-muted-foreground">no hits</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                ))}
+              </div>
+            )}
           </Card>
         )}
+
 
 
 
