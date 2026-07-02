@@ -148,29 +148,6 @@ async function queryAlgolia(algolia, sku, ctx) {
   return { skipped: false, attempts };
 }
 
-async function fetchJsonOld(url, ctx) {
-  const t0 = Date.now();
-  try {
-    const res = await request(url, { method: "GET", headers: { referer: HOST + "/", accept: "application/json,*/*" } }, ctx);
-    const body = await res.text();
-    let json = null;
-    try { json = JSON.parse(body); } catch { /* not json */ }
-    return { url, status: res.status, ok: res.ok, elapsedMs: Date.now() - t0, bytes: body.length, body, json };
-  } catch (e) {
-    return { url, status: 0, ok: false, elapsedMs: Date.now() - t0, bytes: 0, body: "", json: null, error: e?.message ?? String(e) };
-  }
-}
-
-async function fetchText(url, ctx) {
-  const t0 = Date.now();
-  try {
-    const res = await request(url, { method: "GET", headers: { referer: HOST + "/", accept: "text/html,*/*" } }, ctx);
-    const body = await res.text();
-    return { url, status: res.status, ok: res.ok, elapsedMs: Date.now() - t0, bytes: body.length, body };
-  } catch (e) {
-    return { url, status: 0, ok: false, elapsedMs: Date.now() - t0, bytes: 0, body: "", error: e?.message ?? String(e) };
-  }
-}
 
 function handlesFromHtml(html) {
   const out = new Set();
