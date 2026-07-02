@@ -32,7 +32,8 @@ export const runJbhifiRecon = createServerFn({ method: "POST" })
         },
         body: JSON.stringify(data),
       });
-      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const body = (await res.json().catch(() => ({}))) as any;
       return {
         ok: res.ok,
         status: res.status,
