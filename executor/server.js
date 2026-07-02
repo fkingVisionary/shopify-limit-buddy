@@ -174,11 +174,14 @@ app.post("/jbhifi/probe", async (req, reply) => {
   try {
     const result = await runJbhifiProbe({
       skus: Array.isArray(body.skus) ? body.skus : [],
+      queries: Array.isArray(body.queries) ? body.queries : [],
       concurrency: Number(body.concurrency ?? 6),
       refreshKeys: !!body.refreshKeys,
       skipShopify: !!body.skipShopify,
+      hitsPerQuery: body.hitsPerQuery ? Number(body.hitsPerQuery) : undefined,
       proxy,
     });
+
     return result;
   } catch (e) {
     reply.code(500);
