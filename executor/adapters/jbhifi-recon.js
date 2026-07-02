@@ -179,9 +179,24 @@ function matchesQuery(p, q) {
   return hay.includes(needle);
 }
 
+// Resolve a SKU (or free-text) to candidate product handles via the public
+// Shopify predictive search endpoint. Works for unlisted/hidden products
+// that don't appear in /products.json as long as the item is published to
+// the Online Store sales channel.
+async function searchSuggest(term, ctx) {
+  const url = `${HOST}/search/suggest.json?q=${encodeURIComponent(term)}&resources[type]=product&resources[limit]=10&resources[options][unavailable_products]=last&resources[options][fields]=title,product_type,variants.sku,vendor,tag`;
+  const r = await getJson(url, ctx);
+  log(`search/suggest?q=${term}`, r.ok, `status=${r.status}`);
+  const products = r.json?.resources?.results?.products ?? [];
+  return products
+    .map((p) => (p?.handle ? String(p.handle).toLowerCase() : null))
+    .filter(Boolean);
+}
+
 export async function runJbhifiRecon(opts = {}) {
   const {
     query = null,
+    skus = null,
     limit = 200,
     hiddenOnly = false,
     refresh = false,
@@ -193,19 +208,69 @@ export async function runJbhifiRecon(opts = {}) {
   const jar = createJar();
   const dispatcher = makeDispatcher(proxy);
   const ctx = { dispatcher, jar };
+  const TIME_BUDGET_MS = 45_000;
+  const outOfBudget = () => Date.now() - t0 > TIME_BUDGET_MS;
 
   try {
+    // ---- SKU-targeted fast path: skip full sweep. ------------------------
+    if (Array.isArray(skus) && skus.length > 0) {
+      cache.endpointHits = {};
+      const results = [];
+      const seenHandles = new Set();
+      for (const raw of skus) {
+        const sku = String(raw).trim();
+        if (!sku) continue;
+        const handles = await searchSuggest(sku, ctx);
+        // Also try direct /products/{sku}.json in case handle == sku.
+        const guess = sku.toLowerCase();
+        if (!handles.includes(guess)) handles.push(guess);
+        for (const h of handles) {
+          if (seenHandles.has(h)) continue;
+          seenHandles.add(h);
+          const norm = await hydrate(h, ctx);
+          if (!norm?.hydrated) continue;
+          const hit = (norm.variants ?? []).some(
+            (v) => v.sku && String(v.sku).toLowerCase() === sku.toLowerCase(),
+          );
+          if (hit) {
+            norm.matchedSku = sku;
+            results.push(norm);
+            break; // one handle per SKU
+          }
+        }
+        if (outOfBudget()) break;
+      }
+      return {
+        ok: true,
+        elapsedMs: Date.now() - t0,
+        cached: false,
+        mode: "sku",
+        stats: {
+          sitemapCount: 0,
+          productsJsonCount: 0,
+          hiddenCount: results.length,
+          candidatesConsidered: skus.length,
+          hydratedThisCall: seenHandles.size,
+          returned: results.length,
+          endpointHits: cache.endpointHits,
+          sweptAt: Date.now(),
+        },
+        products: results,
+      };
+    }
+
+    // ---- Standard sweep path --------------------------------------------
     const fresh = refresh || Date.now() - cache.sweptAt > CACHE_TTL_MS;
     if (fresh) {
       cache.endpointHits = {};
       cache.hydrated.clear();
+      // Cap products.json sweep at 60 pages (~15k products) to stay in budget.
       const [sitemap, pj] = await Promise.all([
         sweepSitemap(ctx),
-        sweepProductsJson(ctx),
+        sweepProductsJson(ctx, 60),
       ]);
       cache.sitemapHandles = sitemap;
       cache.productsJsonHandles = pj.handles;
-      // Seed hydrated map from /products.json entries so we don't re-fetch them.
       for (const p of pj.products) {
         const h = String(p.handle).toLowerCase();
         cache.hydrated.set(h, { ...normaliseProduct(p, h, "products.json"), hydrated: true });
@@ -216,10 +281,8 @@ export async function runJbhifiRecon(opts = {}) {
     const allHandles = new Set([...cache.sitemapHandles, ...cache.productsJsonHandles]);
     const hiddenHandles = new Set([...cache.sitemapHandles].filter((h) => !cache.productsJsonHandles.has(h)));
 
-    // Candidate set:
     let candidates = [...(hiddenOnly ? hiddenHandles : allHandles)];
 
-    // Fast path: filter by query against already-known products.json entries first.
     const preFiltered = [];
     const needsHydration = [];
     for (const h of candidates) {
@@ -231,16 +294,12 @@ export async function runJbhifiRecon(opts = {}) {
       }
     }
 
-    // Decide how much to hydrate. If a query is set, hydrate all hidden
-    // candidates (we can't match without titles). Otherwise cap at `limit`.
     let toHydrate;
-    if (hydrateAll || (query && hiddenOnly)) {
-      toHydrate = needsHydration;
-    } else if (query) {
-      toHydrate = needsHydration; // need titles to match
-    } else {
-      toHydrate = needsHydration.slice(0, Math.max(0, limit - preFiltered.length));
-    }
+    if (hydrateAll || (query && hiddenOnly)) toHydrate = needsHydration;
+    else if (query) toHydrate = needsHydration;
+    else toHydrate = needsHydration.slice(0, Math.max(0, limit - preFiltered.length));
+    // Hard cap so we never blow the request budget.
+    toHydrate = toHydrate.slice(0, 400);
 
     const hydratedResults = await withLimit(toHydrate, 8, (h) => hydrate(h, ctx));
     const hydratedMatches = hydratedResults
@@ -248,9 +307,7 @@ export async function runJbhifiRecon(opts = {}) {
       .filter((p) => matchesQuery(p, query));
 
     let products = [...preFiltered, ...hydratedMatches];
-    // Mark hidden badge.
     for (const p of products) p.hidden = hiddenHandles.has(String(p.handle).toLowerCase());
-    // Sort: hidden first, then newest publishedAt.
     products.sort((a, b) => {
       if (a.hidden !== b.hidden) return a.hidden ? -1 : 1;
       const ta = a.publishedAt ? Date.parse(a.publishedAt) : 0;
@@ -263,6 +320,7 @@ export async function runJbhifiRecon(opts = {}) {
       ok: true,
       elapsedMs: Date.now() - t0,
       cached: !fresh,
+      mode: "sweep",
       stats: {
         sitemapCount: cache.sitemapHandles.size,
         productsJsonCount: cache.productsJsonHandles.size,
