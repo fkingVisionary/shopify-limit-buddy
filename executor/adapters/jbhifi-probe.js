@@ -192,7 +192,9 @@ async function hydrateHandle(handle, ctx) {
 
 // ─── Main entry ───────────────────────────────────────────────────────
 export async function runJbhifiProbe(opts = {}) {
-  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false } = opts;
+  const { skus = [], proxy = null, concurrency = 6, refreshKeys = false, skipShopify = false, skipHydrate: skipHydrateOpt } = opts;
+  // Algolia-only mode: skip the slow jbhifi.com.au hydrate step unless explicitly opted in.
+  const skipHydrate = skipHydrateOpt ?? skipShopify;
   const t0 = Date.now();
   const jar = createJar();
   const dispatcher = makeDispatcher(proxy);
