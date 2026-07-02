@@ -265,6 +265,17 @@ function JbhifiReconPage() {
               </Button>
             </div>
           </div>
+          <div className="mt-3 flex justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => void runProbe()}
+              disabled={loading}
+              title="Fan out across ~8 public Shopify endpoints per SKU and report which leaked data"
+            >
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Probe endpoints ({skusText.split(/[\s,]+/).filter(Boolean).length} SKUs)
+            </Button>
+          </div>
         </Card>
 
 
