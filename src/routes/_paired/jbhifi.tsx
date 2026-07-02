@@ -148,7 +148,9 @@ function JbhifiReconPage() {
   const probeFn = useServerFn(runJbhifiProbe);
   const [query, setQuery] = useState("");
   const [skusText, setSkusText] = useState("");
+  const [keywordsText, setKeywordsText] = useState("");
   const [proxy, setProxy] = useState("");
+
   const [hiddenOnly, setHiddenOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
