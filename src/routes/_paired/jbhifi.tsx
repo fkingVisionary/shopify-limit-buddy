@@ -92,24 +92,48 @@ type ProbeMatch = {
   alternates: Product[];
 };
 
+type AlgoliaSummary = {
+  objectID: string | null;
+  sku: string | null;
+  variantId: number | null;
+  productId: number | null;
+  title: string | null;
+  handle: string | null;
+  vendor: string | null;
+  productType: string | null;
+  price: number | string | null;
+  published: boolean | null;
+  button: string | null;
+  tags: string[] | string | null;
+  releaseDate: string | null;
+  image: string | null;
+  inventoryManagement: string | null;
+  availabilityRank: number | null;
+  isHidden: boolean;
+} | null;
+
 type ProbeResult = {
   ok: boolean;
   elapsedMs: number;
+  budgetExceeded?: boolean;
   stats: {
     skus: number;
-    endpointsPerSku: number;
     uniqueHandlesFound: number;
     confirmed: number;
+    algoliaHits: number;
+    hiddenFound: number;
   };
   algolia?: {
     appId: string | null;
     apiKey: string | null;
     indexName: string | null;
+    source: string;
     discovered: boolean;
     sources: { url: string; status: number; bytes: number }[];
+    discoveryError?: string | null;
   };
-  matches: ProbeMatch[];
-  bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[] }[];
+  matches: (ProbeMatch & { algolia: AlgoliaSummary })[];
+  bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[]; algoliaSummary: AlgoliaSummary }[];
 };
 
 function JbhifiReconPage() {
