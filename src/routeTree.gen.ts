@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as PairedRouteImport } from './routes/_paired'
 import { Route as PairedIndexRouteImport } from './routes/_paired/index'
+import { Route as PairedJbhifiRouteImport } from './routes/_paired/jbhifi'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
 import { Route as ApiPublicExecTestRouteImport } from './routes/api/public/exec-test'
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
@@ -30,6 +31,11 @@ const PairedRoute = PairedRouteImport.update({
 const PairedIndexRoute = PairedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => PairedRoute,
+} as any)
+const PairedJbhifiRoute = PairedJbhifiRouteImport.update({
+  id: '/jbhifi',
+  path: '/jbhifi',
   getParentRoute: () => PairedRoute,
 } as any)
 const ApiPublicShopifyRoute = ApiPublicShopifyRouteImport.update({
@@ -61,6 +67,7 @@ const ApiPublicRunnerPairRoute = ApiPublicRunnerPairRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof PairedIndexRoute
   '/pair': typeof PairRoute
+  '/jbhifi': typeof PairedJbhifiRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -69,6 +76,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/pair': typeof PairRoute
+  '/jbhifi': typeof PairedJbhifiRoute
   '/': typeof PairedIndexRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
@@ -80,6 +88,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_paired': typeof PairedRouteWithChildren
   '/pair': typeof PairRoute
+  '/_paired/jbhifi': typeof PairedJbhifiRoute
   '/_paired/': typeof PairedIndexRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
@@ -92,6 +101,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/pair'
+    | '/jbhifi'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -100,6 +110,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/pair'
+    | '/jbhifi'
     | '/'
     | '/api/public/exec-test'
     | '/api/public/shopify'
@@ -110,6 +121,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_paired'
     | '/pair'
+    | '/_paired/jbhifi'
     | '/_paired/'
     | '/api/public/exec-test'
     | '/api/public/shopify'
@@ -151,6 +163,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PairedIndexRouteImport
       parentRoute: typeof PairedRoute
     }
+    '/_paired/jbhifi': {
+      id: '/_paired/jbhifi'
+      path: '/jbhifi'
+      fullPath: '/jbhifi'
+      preLoaderRoute: typeof PairedJbhifiRouteImport
+      parentRoute: typeof PairedRoute
+    }
     '/api/public/shopify': {
       id: '/api/public/shopify'
       path: '/api/public/shopify'
@@ -190,10 +209,12 @@ declare module '@tanstack/react-router' {
 }
 
 interface PairedRouteChildren {
+  PairedJbhifiRoute: typeof PairedJbhifiRoute
   PairedIndexRoute: typeof PairedIndexRoute
 }
 
 const PairedRouteChildren: PairedRouteChildren = {
+  PairedJbhifiRoute: PairedJbhifiRoute,
   PairedIndexRoute: PairedIndexRoute,
 }
 
@@ -212,13 +233,3 @@ const rootRouteChildren: RootRouteChildren = {
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}

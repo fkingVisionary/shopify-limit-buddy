@@ -6,6 +6,7 @@
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
 import { makeDispatcher, createJar, request, UA } from "./http.js";
+import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.EXECUTOR_TOKEN;
@@ -136,6 +137,32 @@ app.post("/recon", async (req, reply) => {
     try { await dispatcher?.close?.(); } catch { /* ignore */ }
   }
 });
+
+// ─── JB Hi-Fi Shopify recon ─────────────────────────────────────────
+// Discovers products (including hidden-but-published ones) from JB Hi-Fi's
+// public Shopify surfaces. Body: { query?, limit?, hiddenOnly?, refresh?,
+// hydrateAll?, useProxy? }.
+app.post("/jbhifi/recon", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  try {
+    const result = await runJbhifiRecon({
+      query: body.query ?? null,
+      limit: Number(body.limit ?? 200),
+      hiddenOnly: !!body.hiddenOnly,
+      refresh: !!body.refresh,
+      hydrateAll: !!body.hydrateAll,
+      proxy,
+    });
+    return result;
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+});
+
+
 
 app
   .listen({ host: "0.0.0.0", port: PORT })
