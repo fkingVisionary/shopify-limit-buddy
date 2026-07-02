@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Loader2, Search, RefreshCw, ExternalLink, ArrowLeft, Copy } from "lucide-react";
 import { runJbhifiRecon } from "@/lib/jbhifi-recon.functions";
+import { runJbhifiProbe } from "@/lib/jbhifi-probe.functions";
 
 export const Route = createFileRoute("/_paired/jbhifi")({
   head: () => ({
@@ -73,8 +74,40 @@ function fmtPrice(min: number | null, max: number | null) {
   return `$${min.toFixed(2)}–$${max.toFixed(2)}`;
 }
 
+type ProbeEndpoint = {
+  key: string;
+  url: string;
+  status: number;
+  ok: boolean;
+  elapsedMs: number;
+  bytes: number;
+  handles: string[];
+  snippet: string | null;
+  error: string | null;
+};
+
+type ProbeMatch = {
+  sku: string;
+  product: (Product & { matchedVariant?: Variant }) | null;
+  alternates: Product[];
+};
+
+type ProbeResult = {
+  ok: boolean;
+  elapsedMs: number;
+  stats: {
+    skus: number;
+    endpointsPerSku: number;
+    uniqueHandlesFound: number;
+    confirmed: number;
+  };
+  matches: ProbeMatch[];
+  bySku: { sku: string; endpoints: ProbeEndpoint[]; handlesFound: string[] }[];
+};
+
 function JbhifiReconPage() {
   const runFn = useServerFn(runJbhifiRecon);
+  const probeFn = useServerFn(runJbhifiProbe);
   const [query, setQuery] = useState("");
   const [skusText, setSkusText] = useState("");
   const [proxy, setProxy] = useState("");
@@ -82,11 +115,13 @@ function JbhifiReconPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ReconResult | null>(null);
+  const [probe, setProbe] = useState<ProbeResult | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   async function run(opts: { refresh?: boolean } = {}) {
     setLoading(true);
     setError(null);
+    setProbe(null);
     try {
       const trimmedProxy = proxy.trim();
       const skus = skusText
@@ -109,6 +144,31 @@ function JbhifiReconPage() {
         setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
       } else {
         setResult(res.result as ReconResult);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runProbe() {
+    const skus = skusText.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    if (!skus.length) {
+      setError("Paste at least one SKU to probe endpoints.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const res = await probeFn({
+        data: { skus, proxy: proxy.trim() || null, concurrency: 6 },
+      });
+      if (!res.ok) {
+        setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
+      } else {
+        setProbe(res.result as ProbeResult);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
