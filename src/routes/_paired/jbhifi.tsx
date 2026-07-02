@@ -1,0 +1,272 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
+import { useEffect, useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { Loader2, Search, RefreshCw, ExternalLink, ArrowLeft, Copy } from "lucide-react";
+import { runJbhifiRecon } from "@/lib/jbhifi-recon.functions";
+
+export const Route = createFileRoute("/_paired/jbhifi")({
+  head: () => ({
+    meta: [
+      { title: "JB Hi-Fi Recon — J1m's Bot" },
+      { name: "description", content: "Discover hidden JB Hi-Fi Shopify products before they hit the storefront." },
+      { name: "robots", content: "noindex" },
+    ],
+  }),
+  component: JbhifiReconPage,
+});
+
+type Variant = {
+  id: number;
+  sku: string | null;
+  title: string;
+  price: string | null;
+  available: boolean | null;
+  inventoryQty: number | null;
+};
+
+type Product = {
+  id: number | null;
+  handle: string;
+  title: string;
+  vendor: string | null;
+  productType: string | null;
+  tags: string[];
+  publishedAt: string | null;
+  updatedAt: string | null;
+  image: string | null;
+  priceMin: number | null;
+  priceMax: number | null;
+  variantCount: number;
+  inventoryTotal: number;
+  variants: Variant[];
+  url: string;
+  hidden?: boolean;
+  source?: string;
+};
+
+type ReconResult = {
+  ok: boolean;
+  elapsedMs: number;
+  cached: boolean;
+  stats: {
+    sitemapCount: number;
+    productsJsonCount: number;
+    hiddenCount: number;
+    candidatesConsidered: number;
+    hydratedThisCall: number;
+    returned: number;
+    sweptAt: number;
+    endpointHits: Record<string, { ok: boolean; note: string; at: number }>;
+  };
+  products: Product[];
+};
+
+function fmtPrice(min: number | null, max: number | null) {
+  if (min == null) return "—";
+  if (max == null || max === min) return `$${min.toFixed(2)}`;
+  return `$${min.toFixed(2)}–$${max.toFixed(2)}`;
+}
+
+function JbhifiReconPage() {
+  const runFn = useServerFn(runJbhifiRecon);
+  const [query, setQuery] = useState("");
+  const [hiddenOnly, setHiddenOnly] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ReconResult | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  async function run(opts: { refresh?: boolean } = {}) {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await runFn({
+        data: {
+          query: query.trim() || null,
+          hiddenOnly,
+          refresh: !!opts.refresh,
+          limit: 300,
+          hydrateAll: hiddenOnly, // hidden needs hydration to match
+          useProxy: false,
+        },
+      });
+      if (!res.ok) {
+        setError((res as { error?: string }).error ?? `HTTP ${(res as { status?: number }).status ?? "error"}`);
+      } else {
+        setResult(res.result as ReconResult);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Initial sweep on mount.
+  useEffect(() => {
+    void run();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const stats = result?.stats;
+  const products = result?.products ?? [];
+
+  const endpointRows = useMemo(
+    () => (stats ? Object.entries(stats.endpointHits) : []),
+    [stats],
+  );
+
+  function copyRow(p: Product) {
+    void navigator.clipboard.writeText(JSON.stringify(p, null, 2));
+    setCopied(p.handle);
+    setTimeout(() => setCopied(null), 1200);
+  }
+
+  return (
+    <div className="min-h-screen bg-background text-foreground">
+      <div className="mx-auto max-w-6xl px-4 py-6">
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <Link to="/" className="mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+              <ArrowLeft className="h-3 w-3" /> Back
+            </Link>
+            <h1 className="text-2xl font-semibold tracking-tight">JB Hi-Fi Shopify recon</h1>
+            <p className="text-sm text-muted-foreground">
+              Discovers products via sitemap + <code>/products.json</code>. &quot;Hidden&quot; = in sitemap but not in the public feed.
+            </p>
+          </div>
+        </div>
+
+        <Card className="mb-4 p-4">
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto]">
+            <div>
+              <Label className="text-xs">Search</Label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") void run(); }}
+                  placeholder="pokemon, celebrations, switch 2, ps5…"
+                  className="pl-8"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col justify-end">
+              <div className="flex items-center gap-2 rounded-md border px-3 py-2">
+                <Switch id="hidden" checked={hiddenOnly} onCheckedChange={setHiddenOnly} />
+                <Label htmlFor="hidden" className="cursor-pointer text-xs">Hidden only</Label>
+              </div>
+            </div>
+            <div className="flex flex-col justify-end">
+              <Button onClick={() => void run()} disabled={loading}>
+                {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Search className="mr-2 h-4 w-4" />}
+                Search
+              </Button>
+            </div>
+            <div className="flex flex-col justify-end">
+              <Button variant="outline" onClick={() => void run({ refresh: true })} disabled={loading} title="Force re-sweep sitemap + products.json">
+                <RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+        {error && (
+          <Card className="mb-4 border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+            {error}
+          </Card>
+        )}
+
+        {stats && (
+          <Card className="mb-4 p-4">
+            <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-6">
+              <Stat label="Sitemap" value={stats.sitemapCount} />
+              <Stat label="products.json" value={stats.productsJsonCount} />
+              <Stat label="Hidden" value={stats.hiddenCount} highlight={stats.hiddenCount > 0} />
+              <Stat label="Considered" value={stats.candidatesConsidered} />
+              <Stat label="Hydrated" value={stats.hydratedThisCall} />
+              <Stat label="Returned" value={stats.returned} />
+            </div>
+            <details className="mt-3 text-xs text-muted-foreground">
+              <summary className="cursor-pointer">Endpoint diagnostics ({endpointRows.length})</summary>
+              <div className="mt-2 space-y-1">
+                {endpointRows.map(([k, v]) => (
+                  <div key={k} className="flex gap-2 font-mono">
+                    <span className={v.ok ? "text-green-600" : "text-destructive"}>{v.ok ? "✓" : "✗"}</span>
+                    <span className="min-w-0 flex-1 truncate">{k}</span>
+                    <span className="text-muted-foreground">{v.note}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </Card>
+        )}
+
+        <div className="space-y-2">
+          {products.map((p) => (
+            <Card key={p.handle} className="p-3">
+              <div className="flex gap-3">
+                {p.image ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={p.image} alt="" className="h-16 w-16 shrink-0 rounded object-cover" />
+                ) : (
+                  <div className="h-16 w-16 shrink-0 rounded bg-muted" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {p.hidden && <Badge variant="destructive" className="uppercase">Hidden</Badge>}
+                    <a href={p.url} target="_blank" rel="noreferrer" className="truncate font-medium hover:underline">
+                      {p.title}
+                    </a>
+                    <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span>{fmtPrice(p.priceMin, p.priceMax)}</span>
+                    {p.vendor && <span>· {p.vendor}</span>}
+                    {p.productType && <span>· {p.productType}</span>}
+                    <span>· {p.variantCount} variant{p.variantCount === 1 ? "" : "s"}</span>
+                    {p.inventoryTotal > 0 && <span>· inv {p.inventoryTotal}</span>}
+                    {p.publishedAt && <span>· pub {new Date(p.publishedAt).toLocaleString()}</span>}
+                  </div>
+                  {p.variants.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {p.variants.slice(0, 8).map((v) => (
+                        <Badge key={v.id} variant="outline" className="font-mono text-[10px]">
+                          {v.sku ?? v.id}
+                          {v.available === false ? " · OOS" : ""}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => copyRow(p)} title="Copy JSON">
+                  <Copy className="h-3 w-3" />
+                  {copied === p.handle ? " Copied" : ""}
+                </Button>
+              </div>
+            </Card>
+          ))}
+          {!loading && products.length === 0 && result && (
+            <Card className="p-8 text-center text-sm text-muted-foreground">No products match.</Card>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
+  return (
+    <div className={`rounded-md border p-2 ${highlight ? "border-primary/50 bg-primary/5" : ""}`}>
+      <div className="text-[10px] uppercase text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold tabular-nums">{value.toLocaleString()}</div>
+    </div>
+  );
+}
