@@ -139,9 +139,22 @@ function KmartPage() {
     writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder });
   }, [url, qty, proxy, placeOrder]);
 
+  // Normalize: if the field contains an accidental duplication (e.g. user
+  // pasted while the field was non-empty and the two got concatenated),
+  // keep only the LAST valid https://…kmart.com.au/… occurrence.
+  const normalizeKmartUrl = (raw: string): string => {
+    const trimmed = raw.trim();
+    const matches = trimmed.match(/https?:\/\/[^\s]+/gi);
+    if (!matches || matches.length === 0) return trimmed;
+    const kmart = matches.filter((u) => /kmart\.com\.au/i.test(u));
+    return (kmart[kmart.length - 1] ?? matches[matches.length - 1]).replace(/[)\].,;]+$/, "");
+  };
+  const cleanUrl = useMemo(() => normalizeKmartUrl(url), [url]);
+  const urlWasCleaned = cleanUrl !== url.trim() && url.trim().length > 0;
+
   const canRun = useMemo(() => {
-    return /^https:\/\/(www\.)?kmart\.com\.au\//i.test(url.trim()) && qty > 0 && !running;
-  }, [url, qty, running]);
+    return /^https:\/\/(www\.)?kmart\.com\.au\//i.test(cleanUrl) && qty > 0 && !running;
+  }, [cleanUrl, qty, running]);
 
   const handleRun = async () => {
     setRunning(true);
