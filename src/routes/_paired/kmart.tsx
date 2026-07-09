@@ -400,10 +400,13 @@ function KmartPage() {
           <Card className="mb-4 p-4">
             <div className="mb-2 flex items-center justify-between">
               <div className="text-sm font-medium">Result</div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Badge variant={result.result?.ok ? "default" : "destructive"} className="text-[10px]">
                   {result.result?.ok ? "ok" : "failed"} · {result.result?.dryRun ? "dry-run" : "real"}
                 </Badge>
+                {result.status != null && (
+                  <Badge variant="outline" className="text-[10px]">HTTP {result.status}</Badge>
+                )}
                 {result.elapsedMs != null && (
                   <Badge variant="outline" className="text-[10px]">{result.elapsedMs}ms</Badge>
                 )}
@@ -416,9 +419,19 @@ function KmartPage() {
             )}
             {result.result?.error && (
               <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                Failed at <code>{result.result.failedStep}</code>: {result.result.error}
+                Failed at <code>{result.result.failedStep ?? "—"}</code>: {result.result.error}
               </div>
             )}
+            {/* Raw body dump when no steps came back (helps debug executor issues) */}
+            {(!steps || steps.length === 0) && result.result && (
+              <details className="mb-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
+                <summary className="cursor-pointer text-muted-foreground">Raw response body</summary>
+                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">
+                  {JSON.stringify(result.result, null, 2)}
+                </pre>
+              </details>
+            )}
+
             {result.result?.orderNumber && (
               <div className="mb-2 rounded border border-green-500/40 bg-green-500/5 p-2 text-xs">
                 <b>Order:</b> <code>{result.result.orderNumber}</code>
