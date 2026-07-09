@@ -34,6 +34,13 @@ with `undici` unblocks the proxy.
   `Authorization` header. Generate with `openssl rand -hex 32`.
 - `PORT` — default `8080`.
 
+## Important deploy note
+
+The Docker image prewarms `node-tls-client` during build so the native TLS
+library is already present when `/run` receives traffic. If the live service
+returns an instant empty `502` while `/health` is fine, rebuild and redeploy the
+executor image so that Dockerfile step runs.
+
 ## Local run
 
 ```bash
