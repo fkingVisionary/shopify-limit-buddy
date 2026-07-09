@@ -164,7 +164,7 @@ function KmartPage() {
       const res = (await runFn({
         data: {
           taskId,
-          storeUrl: url.trim(),
+          storeUrl: cleanUrl,
           // Kmart adapter reads SKU from PDP; variantId is only shape-required.
           variantId: 1,
           qty,
