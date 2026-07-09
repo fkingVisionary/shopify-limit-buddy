@@ -8,6 +8,12 @@ RUN apt-get update \
 COPY package.json ./
 RUN npm install --omit=dev
 COPY . .
+# node-tls-client downloads its native Go shared library on first init into
+# os.tmpdir(). If that first download happens on the live VM and fails, the
+# package calls process.exit(1), so Fly returns an empty 502 for /run. Prewarm
+# the library into the image at build time so checkout requests never trigger
+# that crash path.
+RUN node -e "import('node-tls-client').then(async ({ initTLS, destroyTLS }) => { await initTLS(); await destroyTLS?.(); })"
 ENV PORT=8080
 EXPOSE 8080
 CMD ["node", "server.js"]

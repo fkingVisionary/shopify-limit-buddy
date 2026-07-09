@@ -80,8 +80,25 @@ export const runOnExecutor = createServerFn({ method: "POST" })
         },
         body: JSON.stringify(payload),
       });
-      const body = await res.json().catch(() => ({}));
-      return { ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: body };
+      const rawBody = await res.text().catch(() => "");
+      let body: any = {};
+      if (rawBody) {
+        try {
+          body = JSON.parse(rawBody);
+        } catch {
+          body = { rawBody: rawBody.slice(0, 2_000) };
+        }
+      }
+      const fallbackError = !res.ok && !body?.error
+        ? `Executor returned HTTP ${res.status}${rawBody ? "" : " with an empty body"}`
+        : undefined;
+      return {
+        ok: res.ok,
+        status: res.status,
+        elapsedMs: Date.now() - t0,
+        result: body,
+        ...(fallbackError ? { error: fallbackError } : {}),
+      };
     } catch (e) {
       return {
         ok: false as const,
