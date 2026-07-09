@@ -139,9 +139,22 @@ function KmartPage() {
     writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder });
   }, [url, qty, proxy, placeOrder]);
 
+  // Normalize: if the field contains an accidental duplication (e.g. user
+  // pasted while the field was non-empty and the two got concatenated),
+  // keep only the LAST valid https://…kmart.com.au/… occurrence.
+  const normalizeKmartUrl = (raw: string): string => {
+    const trimmed = raw.trim();
+    const matches = trimmed.match(/https?:\/\/[^\s]+/gi);
+    if (!matches || matches.length === 0) return trimmed;
+    const kmart = matches.filter((u) => /kmart\.com\.au/i.test(u));
+    return (kmart[kmart.length - 1] ?? matches[matches.length - 1]).replace(/[)\].,;]+$/, "");
+  };
+  const cleanUrl = useMemo(() => normalizeKmartUrl(url), [url]);
+  const urlWasCleaned = cleanUrl !== url.trim() && url.trim().length > 0;
+
   const canRun = useMemo(() => {
-    return /^https:\/\/(www\.)?kmart\.com\.au\//i.test(url.trim()) && qty > 0 && !running;
-  }, [url, qty, running]);
+    return /^https:\/\/(www\.)?kmart\.com\.au\//i.test(cleanUrl) && qty > 0 && !running;
+  }, [cleanUrl, qty, running]);
 
   const handleRun = async () => {
     setRunning(true);
@@ -151,7 +164,7 @@ function KmartPage() {
       const res = (await runFn({
         data: {
           taskId,
-          storeUrl: url.trim(),
+          storeUrl: cleanUrl,
           // Kmart adapter reads SKU from PDP; variantId is only shape-required.
           variantId: 1,
           qty,
@@ -179,7 +192,7 @@ function KmartPage() {
       const entry: HistoryEntry = {
         taskId,
         at: Date.now(),
-        url: url.trim(),
+        url: cleanUrl,
         ok: Boolean(res?.result?.ok),
         dryRun: Boolean(res?.result?.dryRun),
         orderNumber: res?.result?.orderNumber ?? null,
@@ -254,6 +267,20 @@ function KmartPage() {
                 placeholder="https://www.kmart.com.au/product/…"
                 className="font-mono text-xs"
               />
+              {urlWasCleaned && (
+                <div className="mt-1 flex items-center justify-between gap-2 rounded border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400">
+                  <span className="truncate">
+                    URL looks doubled — will submit as <code className="break-all">{cleanUrl}</code>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setUrl(cleanUrl)}
+                    className="shrink-0 rounded border border-amber-500/40 px-2 py-0.5 hover:bg-amber-500/10"
+                  >
+                    Fix
+                  </button>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
