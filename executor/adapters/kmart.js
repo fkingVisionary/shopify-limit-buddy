@@ -1077,6 +1077,10 @@ fragment LineItemFields on LineItem {
 
         // 8f. create3DSToken — hands the Paydock UUID to Kmart's payment
         //     orchestrator. Returns a payment token or a 3DS challenge URL.
+        let paymentToken = null;
+        let threeDSStatus = null;
+        let acsUrl = null;
+        let sessionData = null;
         if (oneTimeToken) {
           await tStep("create_3ds_token", async () => {
             const res = await gqlPost({
@@ -1091,10 +1095,20 @@ fragment LineItemFields on LineItem {
                 "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String!, $saveCardOption: Boolean!, $useSavedCard: Boolean!) { create3DSToken(oneTimeToken: $oneTimeToken, gatewayType: $gatewayType, saveCardOption: $saveCardOption, useSavedCard: $useSavedCard) { token acsUrl sessionData status __typename } }",
             });
             const txt = await res.text();
+            try {
+              const j = JSON.parse(txt);
+              const c = j?.data?.create3DSToken;
+              if (c) {
+                paymentToken = c.token ?? null;
+                threeDSStatus = c.status ?? null;
+                acsUrl = c.acsUrl ?? null;
+                sessionData = c.sessionData ?? null;
+              }
+            } catch {}
             return {
               status: res.status,
-              ok: res.status < 400,
-              note: `${txt.slice(0, 500)}`,
+              ok: res.status < 400 && Boolean(paymentToken || acsUrl),
+              note: `status=${threeDSStatus} token=${paymentToken ? paymentToken.slice(0, 10) + "…" : "null"} acs=${acsUrl ? "yes" : "no"} : ${txt.slice(0, 300)}`,
             };
           });
         } else {
@@ -1105,14 +1119,134 @@ fragment LineItemFields on LineItem {
           });
         }
 
-        // 8g. placeOrder — gated behind task.placeOrder AND requires the
-        //     final mutation op name (not yet captured). Logs a recon stub.
-        if (task.placeOrder === true) {
-          steps.push({
-            step: "place_order",
-            ok: false,
-            note: "NOT IMPLEMENTED: capture final placeOrder/submitOrder mutation from DevTools first",
+        // 8f.2. handle_3ds — branch on the 3DS status.
+        //   • not_required / authenticated / succeeded → frictionless, proceed.
+        //   • challenge / pending / requires_challenge → issuer step-up
+        //     (form POST to acsUrl with PaReq + browser redirect back). Not
+        //     achievable in a pure HTTP chain; log + stop so the timeline
+        //     surfaces the exact case.
+        if (paymentToken || threeDSStatus) {
+          const frictionless =
+            !threeDSStatus ||
+            /not[_-]?required|authenticated|succeeded|completed|frictionless/i.test(String(threeDSStatus));
+          if (frictionless && paymentToken) {
+            steps.push({ step: "handle_3ds", ok: true, note: `frictionless status=${threeDSStatus ?? "(none)"}` });
+          } else {
+            steps.push({
+              step: "handle_3ds",
+              ok: false,
+              note: `challenge required status=${threeDSStatus} acs=${acsUrl ?? "(none)"} sessionData=${sessionData ? "yes" : "no"} — issuer step-up not supported in HTTP chain`,
+            });
+          }
+        }
+
+        // 8g. bundle_recon — scan checkout bundle JS for order-mutation op
+        //     names so we can wire the real placeOrder without a HAR. Runs
+        //     only when the caller opts into a real submit and no explicit
+        //     mutation was supplied.
+        if (task.placeOrder === true && !task.placeOrderMutation) {
+          await tStep("bundle_recon", async () => {
+            const hits = new Set();
+            const scanText = (txt) => {
+              let m;
+              const reMut = /mutation\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+              while ((m = reMut.exec(txt)) !== null) {
+                if (/order|submit|place|checkout/i.test(m[1])) hits.add(m[1]);
+              }
+              const reOp = /operationName["']?\s*[:=]\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g;
+              while ((m = reOp.exec(txt)) !== null) {
+                if (/order|submit|place|checkout/i.test(m[1])) hits.add(m[1]);
+              }
+            };
+            scanText(checkoutHtml);
+            const scriptSrcs = Array.from(
+              checkoutHtml.matchAll(/<script[^>]+src=["']([^"']+)["']/gi),
+              (mm) => mm[1],
+            )
+              .filter((s) => /_next|main|checkout|payment|bundle/i.test(s))
+              .slice(0, 3);
+            for (const src of scriptSrcs) {
+              try {
+                const abs = src.startsWith("http") ? src : origin + (src.startsWith("/") ? src : `/${src}`);
+                const r = await request(
+                  abs,
+                  { method: "GET", headers: { referer: origin + "/checkout/payment", "user-agent": UA } },
+                  ctx,
+                );
+                const t = await r.text();
+                scanText(t);
+              } catch {}
+            }
+            return {
+              ok: hits.size > 0,
+              note: hits.size > 0 ? `candidates: ${Array.from(hits).slice(0, 20).join(", ")}` : "no order-mutation op names found",
+            };
           });
+        }
+
+        // 8h. placeOrder — real submit. Requires:
+        //   - task.placeOrder === true
+        //   - task.placeOrderMutation = { operationName, query, extraVars? }
+        //   - paymentToken from create3DSToken (frictionless 3DS)
+        // The mutation signature varies per commercetools tenant; we send
+        // { paymentToken, cartId, cartVersion, gatewayType, ...extraVars }
+        // and let the caller supply the exact query captured from live
+        // traffic (via bundle_recon output or a real HAR).
+        let orderNumber = null;
+        let orderId = null;
+        let paymentStatus = null;
+        if (task.placeOrder === true) {
+          const mut = task.placeOrderMutation;
+          if (!mut?.operationName || !mut?.query) {
+            steps.push({
+              step: "place_order",
+              ok: false,
+              note: "skipped: task.placeOrderMutation { operationName, query } not supplied — check bundle_recon candidates",
+            });
+          } else if (!paymentToken) {
+            steps.push({
+              step: "place_order",
+              ok: false,
+              note: "skipped: no paymentToken from create3DSToken",
+            });
+          } else {
+            await tStep("place_order", async () => {
+              const res = await gqlPost({
+                operationName: mut.operationName,
+                variables: {
+                  paymentToken,
+                  cartId,
+                  cartVersion,
+                  gatewayType,
+                  ...(mut.extraVars ?? {}),
+                },
+                query: mut.query,
+              });
+              const txt = await res.text();
+              try {
+                const j = JSON.parse(txt);
+                const walk = (o) => {
+                  if (!o || typeof o !== "object") return;
+                  for (const [k, v] of Object.entries(o)) {
+                    if (typeof v === "string") {
+                      if (/^orderNumber$/i.test(k) && !orderNumber) orderNumber = v;
+                      if (/paymentStatus|orderState/i.test(k) && !paymentStatus) paymentStatus = v;
+                    } else if (v && typeof v === "object") {
+                      if (typeof v.orderNumber === "string" && !orderNumber) orderNumber = v.orderNumber;
+                      if (typeof v.id === "string" && !orderId && /order/i.test(k)) orderId = v.id;
+                      walk(v);
+                    }
+                  }
+                };
+                walk(j?.data ?? {});
+              } catch {}
+              return {
+                status: res.status,
+                ok: res.status < 400 && Boolean(orderNumber || orderId),
+                note: `order=${orderNumber ?? orderId ?? "null"} paymentStatus=${paymentStatus ?? "null"} : ${txt.slice(0, 400)}`,
+              };
+            });
+          }
         } else {
           steps.push({
             step: "place_order",
@@ -1120,15 +1254,21 @@ fragment LineItemFields on LineItem {
             note: "skipped: task.placeOrder !== true (dry-run stop)",
           });
         }
+
+        ctx.__kmart_order = { orderNumber, orderId, paymentStatus };
       }
     }
 
+    const orderInfo = ctx.__kmart_order ?? {};
     return {
       ok: pdpStatus > 0 && pdpStatus < 400,
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
       dryRun: task.placeOrder !== true,
+      orderNumber: orderInfo.orderNumber ?? null,
+      orderId: orderInfo.orderId ?? null,
+      paymentStatus: orderInfo.paymentStatus ?? null,
     };
   },
 };
