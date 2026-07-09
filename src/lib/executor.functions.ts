@@ -72,7 +72,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     };
     const t0 = Date.now();
     try {
-      const res = await fetch(`${url.replace(/\/$/, "")}/run`, {
+      const res = await fetch(`${url}/run`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
