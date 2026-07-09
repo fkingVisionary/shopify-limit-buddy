@@ -189,6 +189,86 @@ export const kmartAdapter = {
     }
     const scriptUrl = origin + scriptPath;
 
+    // 2b. PROACTIVE SBSD SOLVE. Kmart runs passive SBSD on the whole site.
+    //     Real Chrome fetches + solves the SBSD script on the homepage
+    //     before any protected nav (category/PDP). Without it, `_abck`
+    //     alone is not enough and category/PDP hard-403 with no in-body
+    //     challenge (see `sbsd_missing` note on prior runs). Docs §3.5.
+    const runSbsd = async (sourceHtml, pageUrl, label) => {
+      const parsed = parseSbsd(sourceHtml);
+      if (!parsed) {
+        steps.push({ step: `${label}:none`, ok: true, note: "no SBSD script tag in HTML" });
+        return false;
+      }
+      const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
+      const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
+      const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
+      let sbsdBody = "";
+      await tStep(`${label}:script_fetch`, async () => {
+        const r = await request(
+          sbsdScriptUrl,
+          {
+            method: "GET",
+            headers: {
+              "user-agent": UA,
+              referer: pageUrl,
+              "accept-language": ACCEPT_LANG,
+              accept: "*/*",
+              "sec-fetch-dest": "script",
+              "sec-fetch-mode": "no-cors",
+              "sec-fetch-site": "same-origin",
+            },
+          },
+          ctx,
+        );
+        sbsdBody = await r.text();
+        return { status: r.status, note: `uuid=${parsed.uuid.slice(0, 8)} ${sbsdBody.length}b t=${parsed.t || "-"}` };
+      });
+      const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
+      for (let i = 0; i < rounds; i++) {
+        await tStep(`${label}:round#${i}`, async () => {
+          const payload = await solveAkamaiSbsd({
+            jar: ctx.jar,
+            pageUrl,
+            scriptBody: sbsdBody,
+            uuid: parsed.uuid,
+            oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+            index: i,
+            userAgent: UA,
+            ip: egressIp,
+            acceptLanguage: ACCEPT_LANG,
+          });
+          const res = await request(
+            sbsdPostUrl,
+            {
+              method: "POST",
+              headers: {
+                "user-agent": UA,
+                "content-type": "application/json",
+                accept: "*/*",
+                "accept-language": ACCEPT_LANG,
+                origin,
+                referer: pageUrl,
+                "sec-fetch-dest": "empty",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-site": "same-origin",
+              },
+              body: JSON.stringify({ body: payload }),
+            },
+            ctx,
+          );
+          const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+          return { status: res.status, ok: res.status < 400, note: `jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")}` };
+        }).catch(() => {});
+      }
+      return true;
+    };
+    try {
+      await runSbsd(html, origin + "/", "sbsd_home");
+    } catch (e) {
+      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
+    }
+
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
 
