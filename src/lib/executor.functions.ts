@@ -17,6 +17,12 @@ const CardSchema = z.object({
   holder: z.string().min(1).max(100),
 });
 
+const PlaceOrderMutationSchema = z.object({
+  operationName: z.string().min(1).max(100),
+  query: z.string().min(10).max(20_000),
+  extraVars: z.record(z.string(), z.unknown()).optional(),
+});
+
 const InputSchema = z.object({
   taskId: z.string().min(1).max(100),
   storeUrl: z.string().url().max(500),
@@ -27,6 +33,11 @@ const InputSchema = z.object({
   // Optional caller-supplied card. When omitted, falls back to env-injected
   // card on the server. Future: comes from the calling user's profile row.
   card: CardSchema.optional().nullable(),
+  // Real submit gates: both must be truthy to place a real order.
+  //   placeOrder=true tells the adapter to attempt the final GraphQL call.
+  //   placeOrderMutation supplies the op captured via bundle_recon / HAR.
+  placeOrder: z.boolean().default(false),
+  placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
 });
 
 // Read card fields from Lovable Cloud secrets server-side. Returns null when

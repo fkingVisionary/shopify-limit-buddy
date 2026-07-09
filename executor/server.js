@@ -11,6 +11,12 @@ import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.EXECUTOR_TOKEN;
+// Concurrency cap — protects the Fly VM from OOM under drop-time bursts.
+// Each in-flight checkout holds a cookie jar, undici dispatcher, and a few
+// KB of HTML in memory (~2-5 MB per task). Set generously; tune down if
+// memory pressure shows in Fly metrics.
+const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT ?? 120);
+let inflight = 0;
 
 if (!TOKEN) {
   console.error("FATAL: EXECUTOR_TOKEN env var is required");
@@ -19,7 +25,7 @@ if (!TOKEN) {
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
-app.get("/health", async () => ({ ok: true, ts: Date.now() }));
+app.get("/health", async () => ({ ok: true, ts: Date.now(), inflight, cap: MAX_CONCURRENT }));
 
 function checkAuth(req, reply) {
   const auth = req.headers.authorization ?? "";
@@ -36,6 +42,10 @@ app.post("/run", async (req, reply) => {
   if (!task?.taskId || !task?.storeUrl || !task?.variantId) {
     reply.code(400);
     return { ok: false, error: "missing required fields: taskId, storeUrl, variantId" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
   }
   // Normalise + validate optional card. Never log full PAN or CVV.
   let card = null;
@@ -56,17 +66,36 @@ app.post("/run", async (req, reply) => {
       req.log.warn("card field present but invalid shape — ignoring");
     }
   }
-  const result = await runCheckout({
-    taskId: String(task.taskId),
-    storeUrl: String(task.storeUrl),
-    variantId: Number(task.variantId),
-    qty: Number(task.qty ?? 1),
-    profile: task.profile ?? null,
-    card,
-    proxy: task.proxy ?? null,
-    dryRun: task.dryRun !== false,
-  });
-  return result;
+  // Validate optional placeOrderMutation shape.
+  let placeOrderMutation = null;
+  if (task.placeOrderMutation && typeof task.placeOrderMutation === "object") {
+    const m = task.placeOrderMutation;
+    if (typeof m.operationName === "string" && typeof m.query === "string") {
+      placeOrderMutation = {
+        operationName: m.operationName.slice(0, 100),
+        query: m.query.slice(0, 20_000),
+        extraVars: m.extraVars && typeof m.extraVars === "object" ? m.extraVars : {},
+      };
+    }
+  }
+  inflight++;
+  try {
+    const result = await runCheckout({
+      taskId: String(task.taskId),
+      storeUrl: String(task.storeUrl),
+      variantId: Number(task.variantId),
+      qty: Number(task.qty ?? 1),
+      profile: task.profile ?? null,
+      card,
+      proxy: task.proxy ?? null,
+      dryRun: task.dryRun !== false,
+      placeOrder: task.placeOrder === true,
+      placeOrderMutation,
+    });
+    return result;
+  } finally {
+    inflight--;
+  }
 });
 
 // ─── Recon endpoint ──────────────────────────────────────────────────
