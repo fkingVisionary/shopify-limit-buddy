@@ -55,11 +55,14 @@ function cardFromEnv() {
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }) => {
-    const url = process.env.EXECUTOR_URL;
+    const rawUrl = process.env.EXECUTOR_URL;
     const token = process.env.EXECUTOR_TOKEN;
-    if (!url || !token) {
+    if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
+    // Defensive: strip trailing slash and any accidental /health, /run, /recon suffix
+    const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
+
     // Fall back to PROXY_URL_RESI env if no proxy supplied per-task.
     // Prefer caller-supplied card (future: profile-sourced); else inject from env.
     const payload = {
