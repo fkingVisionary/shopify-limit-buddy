@@ -55,11 +55,14 @@ function cardFromEnv() {
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }) => {
-    const url = process.env.EXECUTOR_URL;
+    const rawUrl = process.env.EXECUTOR_URL;
     const token = process.env.EXECUTOR_TOKEN;
-    if (!url || !token) {
+    if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
+    // Defensive: strip trailing slash and any accidental /health, /run, /recon suffix
+    const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
+
     // Fall back to PROXY_URL_RESI env if no proxy supplied per-task.
     // Prefer caller-supplied card (future: profile-sourced); else inject from env.
     const payload = {
@@ -69,7 +72,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     };
     const t0 = Date.now();
     try {
-      const res = await fetch(`${url.replace(/\/$/, "")}/run`, {
+      const res = await fetch(`${url}/run`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
@@ -89,10 +92,11 @@ export const runOnExecutor = createServerFn({ method: "POST" })
   });
 
 export const pingExecutor = createServerFn({ method: "GET" }).handler(async () => {
-  const url = process.env.EXECUTOR_URL;
-  if (!url) return { ok: false as const, error: "EXECUTOR_URL not set" };
+  const rawUrl = process.env.EXECUTOR_URL;
+  if (!rawUrl) return { ok: false as const, error: "EXECUTOR_URL not set" };
+  const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
   try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/health`);
+    const res = await fetch(`${url}/health`);
     return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
