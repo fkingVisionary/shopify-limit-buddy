@@ -81,10 +81,10 @@ export const runOnExecutor = createServerFn({ method: "POST" })
         body: JSON.stringify(payload),
       });
       const rawBody = await res.text().catch(() => "");
-      let body: Record<string, unknown> = {};
+      let body: any = {};
       if (rawBody) {
         try {
-          body = JSON.parse(rawBody) as Record<string, unknown>;
+          body = JSON.parse(rawBody);
         } catch {
           body = { rawBody: rawBody.slice(0, 2_000) };
         }
