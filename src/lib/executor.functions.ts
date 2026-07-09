@@ -92,10 +92,11 @@ export const runOnExecutor = createServerFn({ method: "POST" })
   });
 
 export const pingExecutor = createServerFn({ method: "GET" }).handler(async () => {
-  const url = process.env.EXECUTOR_URL;
-  if (!url) return { ok: false as const, error: "EXECUTOR_URL not set" };
+  const rawUrl = process.env.EXECUTOR_URL;
+  if (!rawUrl) return { ok: false as const, error: "EXECUTOR_URL not set" };
+  const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
   try {
-    const res = await fetch(`${url.replace(/\/$/, "")}/health`);
+    const res = await fetch(`${url}/health`);
     return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
   } catch (e) {
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
