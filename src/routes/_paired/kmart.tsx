@@ -267,6 +267,20 @@ function KmartPage() {
                 placeholder="https://www.kmart.com.au/product/…"
                 className="font-mono text-xs"
               />
+              {urlWasCleaned && (
+                <div className="mt-1 flex items-center justify-between gap-2 rounded border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-400">
+                  <span className="truncate">
+                    URL looks doubled — will submit as <code className="break-all">{cleanUrl}</code>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setUrl(cleanUrl)}
+                    className="shrink-0 rounded border border-amber-500/40 px-2 py-0.5 hover:bg-amber-500/10"
+                  >
+                    Fix
+                  </button>
+                </div>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
