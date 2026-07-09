@@ -192,7 +192,7 @@ function KmartPage() {
       const entry: HistoryEntry = {
         taskId,
         at: Date.now(),
-        url: url.trim(),
+        url: cleanUrl,
         ok: Boolean(res?.result?.ok),
         dryRun: Boolean(res?.result?.dryRun),
         orderNumber: res?.result?.orderNumber ?? null,
