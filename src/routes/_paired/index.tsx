@@ -1607,6 +1607,10 @@ function Index() {
             <div>
               <div className="text-[10px] uppercase tracking-wider text-primary">J1m's Bot</div>
               <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
+              <div className="mt-0.5 flex gap-1">
+                <Link to="/jbhifi" className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] hover:bg-muted">JB Hi-Fi</Link>
+                <Link to="/kmart" className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] hover:bg-muted">Kmart</Link>
+              </div>
             </div>
           </div>
           {tab === "tasks" && (
