@@ -339,7 +339,8 @@ export async function request(url, opts, ctx) {
       headers["x-oxylabs-session-time"] = ctx.oxylabsSessionTime ?? "10";
     }
   }
-  }
+
+
 
   if (TRANSPORT !== "tls") {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
