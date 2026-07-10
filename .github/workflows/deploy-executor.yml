@@ -18,7 +18,7 @@ on:
       region:
         description: "Fly region"
         type: string
-        default: "syd"
+        default: "lax"
 
 concurrency:
   group: deploy-executor
@@ -99,6 +99,7 @@ jobs:
         run: |
           flyctl deploy \
             --remote-only \
+            --ha=false \
             --app "$APP" \
             --config fly.toml \
             --dockerfile Dockerfile \
