@@ -54,7 +54,7 @@ GitHub mobile app → your repo → **Actions** tab → **Deploy executor** → 
 
 **First time only:** toggle `create_app` ON. Subsequent deploys: leave it off.
 
-Leave `region` as `lax`. Sydney often has no spare Fly capacity; the executor now deploys as a single machine (`--ha=false`) so it avoids the two-machine replacement loop shown by `machine is replacing` / `no capacity available in syd`.
+Leave `region` as `syd` (Sydney — closest to Kmart AU, fastest checkouts) and `fallback_region` as `lax`. If Sydney has no spare Fly capacity, the workflow automatically retries the deploy in the fallback region so you're never stuck. The executor deploys as a single machine (`--ha=false`) to avoid two-machine replacement loops.
 
 Tap **Run workflow**. ~2 minutes later the job finishes and the logs print:
 
