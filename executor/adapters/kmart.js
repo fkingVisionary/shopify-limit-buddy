@@ -310,6 +310,21 @@ export const kmartAdapter = {
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need `~0~` in
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
+    //
+    // Seed a sentinel `_abck` if the jar is missing one. Hyper's /v2/sensor
+    // endpoint rejects empty abck with `{"error":"missing abck"}` — this
+    // happens when Oxylabs Web Unblocker (with a sticky session-id) captures
+    // the initial Akamai Set-Cookie into its own session store instead of
+    // forwarding it. The sentinel is Akamai's own "unsolved" placeholder;
+    // the sensor POST response Set-Cookies the real `_abck` back.
+    if (!ctx.jar.has("_abck")) {
+      ctx.jar.ingest({ "set-cookie": ["_abck=-1~-1~-1~-1~-1~-1~-1; Path=/"] });
+      steps.push({
+        step: "akamai_abck_seed",
+        ok: true,
+        note: "jar had no _abck after warm_home; seeded sentinel for first sensor",
+      });
+    }
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
