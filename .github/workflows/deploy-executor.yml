@@ -60,6 +60,9 @@ jobs:
           EXECUTOR_TOKEN: ${{ secrets.EXECUTOR_TOKEN }}
           HYPER_API_KEY: ${{ secrets.HYPER_API_KEY }}
           PROXY_URL_RESI: ${{ secrets.PROXY_URL_RESI }}
+          EXECUTOR_HTTP_TRANSPORT: ${{ secrets.EXECUTOR_HTTP_TRANSPORT }}
+          OXYLABS_UNBLOCKER_USER: ${{ secrets.OXYLABS_UNBLOCKER_USER }}
+          OXYLABS_UNBLOCKER_PASS: ${{ secrets.OXYLABS_UNBLOCKER_PASS }}
         run: |
           missing=0
           for var in EXECUTOR_TOKEN HYPER_API_KEY PROXY_URL_RESI; do
@@ -70,11 +73,26 @@ jobs:
           done
           if [ "$missing" = "1" ]; then exit 1; fi
 
+          # Optional Oxylabs Web Unblocker secrets — staged only when all three are present.
+          oxy_args=()
+          if [ -n "$EXECUTOR_HTTP_TRANSPORT" ] && [ -n "$OXYLABS_UNBLOCKER_USER" ] && [ -n "$OXYLABS_UNBLOCKER_PASS" ]; then
+            echo "Oxylabs Web Unblocker: enabled (transport=$EXECUTOR_HTTP_TRANSPORT)"
+            oxy_args=(
+              "EXECUTOR_HTTP_TRANSPORT=$EXECUTOR_HTTP_TRANSPORT"
+              "OXYLABS_UNBLOCKER_USER=$OXYLABS_UNBLOCKER_USER"
+              "OXYLABS_UNBLOCKER_PASS=$OXYLABS_UNBLOCKER_PASS"
+            )
+          else
+            echo "Oxylabs Web Unblocker: disabled (set EXECUTOR_HTTP_TRANSPORT / OXYLABS_UNBLOCKER_USER / OXYLABS_UNBLOCKER_PASS repo secrets to enable)"
+          fi
+
           flyctl secrets set \
             EXECUTOR_TOKEN="$EXECUTOR_TOKEN" \
             HYPER_API_KEY="$HYPER_API_KEY" \
             PROXY_URL_RESI="$PROXY_URL_RESI" \
+            "${oxy_args[@]}" \
             --app "$APP" --stage
+
 
       - name: Deploy executor
         working-directory: executor
@@ -93,4 +111,11 @@ jobs:
           echo ""
           echo "Health check:"
           HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
-          curl -sSf "https://$HOST/health" || echo "(health check failed - check flyctl logs --app $APP)"
+          HEALTH=$(curl -sSf "https://$HOST/health" || echo "")
+          echo "$HEALTH"
+          if echo "$HEALTH" | grep -q '"transport":"oxylabs"'; then
+            echo "Oxylabs Web Unblocker: ACTIVE"
+          else
+            echo "Oxylabs Web Unblocker: not active (transport is not oxylabs)"
+          fi
+

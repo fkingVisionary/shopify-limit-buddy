@@ -1,52 +1,31 @@
-# Switch Kmart to Oxylabs Web Unblocker
+Totally fair — you shouldn't need `flyctl` on your phone. The repo already deploys via GitHub Actions, so we'll add Oxylabs the same way: **paste 3 secrets into GitHub, tap Run workflow, done.**
 
-## Why
+## What you do (5 minutes, phone only)
 
-We've confirmed the block isn't sensor validity — it's Akamai fingerprinting the connection (TLS/JA3, HTTP2, header order, IP class). Chasing that ourselves is a losing arms race. Oxylabs Web Unblocker does the whole stack (real Chrome TLS handshake, sensor generation, residential IP rotation, retries) and returns the final response. We stay HTTP, stay fast, and stop maintaining Akamai bypass logic.
+1. GitHub mobile site → your repo → **Settings → Secrets and variables → Actions → New repository secret**. Add three:
+   - `EXECUTOR_HTTP_TRANSPORT` = `oxylabs`
+   - `OXYLABS_UNBLOCKER_USER` = (from dashboard.oxylabs.io → Web Unblocker → sub-user)
+   - `OXYLABS_UNBLOCKER_PASS` = (same place)
+2. GitHub app → **Actions → Deploy executor → Run workflow** (leave `create_app` OFF).
+3. When it finishes, open `https://j1ms-bot-executor.fly.dev/health` in your browser. It should say `"transport":"oxylabs"`.
 
-## What the user provides
+## What I change in the repo
 
-1. Create an Oxylabs Web Unblocker sub-user at dashboard.oxylabs.io → Web Unblocker.
-2. When prompted, paste the username + password into the secure secret form (`OXYLABS_UNBLOCKER_USER`, `OXYLABS_UNBLOCKER_PASS`).
+**`.github/workflows/deploy-executor.yml`** — extend the `fly secrets set` step so it also stages the three new secrets on every deploy, alongside the existing `EXECUTOR_TOKEN` / `HYPER_API_KEY` / `PROXY_URL_RESI`. That's the only code change; the executor already knows how to use them.
 
-## Changes
+**`SETUP.md`** — add a short "Enable Oxylabs" section pointing at the same three GitHub secrets, so future-you doesn't have to remember.
 
-### 1. `executor/http.js` — add an Oxylabs transport
+## What I do NOT change
 
-- New transport mode `oxylabs` selected when `EXECUTOR_HTTP_TRANSPORT=oxylabs` **or** when `ctx.useUnblocker === true`.
-- Routes requests through `http://customer-USER:PASS@unblock.oxylabs.io:60000` using undici's `ProxyAgent` with `requestTls: { rejectUnauthorized: false }` (their MITM cert).
-- Adds `x-oxylabs-geo-location: United States` and `x-oxylabs-render: html` headers only on the first hit of a flow (category / PDP HTML); JSON add-to-cart calls skip render.
-- Preserves cookie jar ingestion on the response we actually use.
-- Falls back to the existing undici transport for non-Kmart adapters.
-
-### 2. `executor/adapters/kmart.js` — opt into unblocker
-
-- Set `ctx.useUnblocker = true` at the top of the Kmart flow.
-- Delete the SBSD solve chain, the Akamai sensor warm loop, the fingerprint header pinning, and the retry-on-403 branches — Oxylabs handles all of it. Keep the request sequence (home → category → PDP → add-to-cart → checkout) since we still need the resulting cookies/HTML for parsing.
-- Keep the cookie jar; Oxylabs returns Set-Cookie headers we still ingest for the checkout POST.
-
-### 3. `executor/server.js` — surface unblocker status in `/health` and job logs
-
-- Log `transport=oxylabs` on each step so we can see it in Fly logs.
-
-### 4. `executor/README.md`
-
-- Document the two new env vars and how to toggle per-adapter.
-
-### 5. Secret setup
-
-- Use `add_secret` for `OXYLABS_UNBLOCKER_USER` and `OXYLABS_UNBLOCKER_PASS` (user pastes values into the secure form).
-- These are runtime secrets injected into the Fly executor via existing deploy pipeline — no build-time changes.
-
-## Out of scope
-
-- No changes to the TanStack frontend, checkout job queue, or `src/lib/executor.functions.ts` request shape.
-- Other adapters (non-Kmart) keep the current undici transport.
-- No retry/backoff tuning yet — Oxylabs retries internally; we'll observe one clean run before adding our own.
+- No `flyctl` needed, ever.
+- No frontend / TanStack / checkout job changes.
+- Kmart adapter and `executor/http.js` already handle Oxylabs — they just need the env vars, which the workflow will now inject.
 
 ## Validation
 
-1. Deploy executor with the two secrets set.
-2. Run one Kmart checkout job end-to-end.
-3. Confirm 200s on category + PDP + add-to-cart in the job log, and a completed order.
-4. If it works, delete the dead SBSD/sensor code paths in a follow-up cleanup pass.
+After the workflow finishes:
+1. `/health` reports `"transport":"oxylabs"`.
+2. Run one Kmart job. Timeline should start with `unblocker` and have no `akamai_*` steps.
+3. If `/health` still says `undici`, the workflow step name tells us which secret is missing — no guessing.
+
+If you want, once you confirm the plan I'll also add an "Oxylabs status" line to the workflow's final log so you can see at a glance whether it picked up the secrets.

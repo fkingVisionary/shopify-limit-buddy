@@ -90,11 +90,32 @@ Success looks like a step chain ending with `akamai_solved` and a `pdp_get` retu
 
 ---
 
+## Enable Oxylabs Web Unblocker (recommended for Kmart)
+
+Oxylabs handles Akamai TLS/JA3, sensor generation, and residential IP rotation on their side, so we don't have to chase Akamai updates ourselves.
+
+1. Create a Web Unblocker sub-user at <https://dashboard.oxylabs.io> → **Web Unblocker**. Copy the username and password.
+2. On the github.com mobile site, add three more repo secrets in **Settings → Secrets and variables → Actions**:
+
+   | Name | Value |
+   |---|---|
+   | `EXECUTOR_HTTP_TRANSPORT` | `oxylabs` |
+   | `OXYLABS_UNBLOCKER_USER` | Oxylabs sub-user username |
+   | `OXYLABS_UNBLOCKER_PASS` | Oxylabs sub-user password |
+
+3. GitHub app → **Actions → Deploy executor → Run workflow** (leave `create_app` OFF).
+4. When the job finishes, the last log line says `Oxylabs Web Unblocker: ACTIVE`. You can also visit `https://<your-app>.fly.dev/health` — it should return `"transport":"oxylabs"`.
+
+To disable Oxylabs, delete any one of those three repo secrets and re-run the workflow. The executor falls back to the default undici transport.
+
+---
+
 ## Updating later
 
 - **Executor code changes** (anything under `executor/`): re-run the **Deploy executor** workflow from the GitHub app. `create_app` stays OFF.
 - **Rotate a secret** (e.g. new Hyper key): update the GitHub repo secret, then re-run the workflow — the workflow restages secrets on Fly every deploy.
 - **Check executor logs**: Fly dashboard → your app → Live logs (works in mobile browser).
+
 
 ---
 
