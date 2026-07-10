@@ -1,58 +1,52 @@
-# Fix Kmart PDP 403 — SBSD + journey chain
+# Switch Kmart to Oxylabs Web Unblocker
 
-## What's actually broken
+## Why
 
-TLS is fine — `node-tls-client` is already impersonating Chrome 133 and the homepage returns 200. The block is Akamai's **SBSD** (Server-side Bot Detection) layer:
+We've confirmed the block isn't sensor validity — it's Akamai fingerprinting the connection (TLS/JA3, HTTP2, header order, IP class). Chasing that ourselves is a losing arms race. Oxylabs Web Unblocker does the whole stack (real Chrome TLS handshake, sensor generation, residential IP rotation, retries) and returns the final response. We stay HTTP, stay fast, and stop maintaining Akamai bypass logic.
 
-- `_abck` sensor: solved (rounds=3, 201s) — this lets us hit the homepage
-- `bm_sz`: minted on warm_home
-- Category / PDP: still 403 because Kmart requires an **SBSD score** on top of `_abck` for product routes
-- Our current step `sbsd_missing` proves it — we look for an inline SBSD script in the 403 body and there isn't one, so the flow gives up
+## What the user provides
 
-Kmart serves the SBSD script proactively from a separate endpoint before the browser ever hits a protected route. Real Chrome fetches it during the homepage journey; our chain skips it.
+1. Create an Oxylabs Web Unblocker sub-user at dashboard.oxylabs.io → Web Unblocker.
+2. When prompted, paste the username + password into the secure secret form (`OXYLABS_UNBLOCKER_USER`, `OXYLABS_UNBLOCKER_PASS`).
 
-## Fix
+## Changes
 
-Two changes to `executor/adapters/kmart.js`, both before `pdp_get`:
+### 1. `executor/http.js` — add an Oxylabs transport
 
-**1. Fetch the SBSD script and solve it via Hyper**
+- New transport mode `oxylabs` selected when `EXECUTOR_HTTP_TRANSPORT=oxylabs` **or** when `ctx.useUnblocker === true`.
+- Routes requests through `http://customer-USER:PASS@unblock.oxylabs.io:60000` using undici's `ProxyAgent` with `requestTls: { rejectUnauthorized: false }` (their MITM cert).
+- Adds `x-oxylabs-geo-location: United States` and `x-oxylabs-render: html` headers only on the first hit of a flow (category / PDP HTML); JSON add-to-cart calls skip render.
+- Preserves cookie jar ingestion on the response we actually use.
+- Falls back to the existing undici transport for non-Kmart adapters.
 
-- After `akamai_solved` succeeds on the homepage, scrape the SBSD script URL from the homepage HTML (Kmart embeds it as a `<script src="/.well-known/sbsd/...">` tag, or serves it inline in the warm_home body).
-- GET that script through the same TLS session (adds a `sbsd_script_fetch` step).
-- Feed the script + current cookies into `solveAkamaiSbsd` (already imported from `../antibot.js`).
-- POST the resulting sensor payload to the SBSD endpoint (usually `/.well-known/sbsd`), ingest response cookies (`bm_sv`, sometimes a refreshed `_abck`).
-- New steps: `sbsd_script_fetch`, `sbsd_solve`, `sbsd_post`.
+### 2. `executor/adapters/kmart.js` — opt into unblocker
 
-**2. Add a proper referrer/journey chain**
+- Set `ctx.useUnblocker = true` at the top of the Kmart flow.
+- Delete the SBSD solve chain, the Akamai sensor warm loop, the fingerprint header pinning, and the retry-on-403 branches — Oxylabs handles all of it. Keep the request sequence (home → category → PDP → add-to-cart → checkout) since we still need the resulting cookies/HTML for parsing.
+- Keep the cookie jar; Oxylabs returns Set-Cookie headers we still ingest for the checkout POST.
 
-Real Chrome browses home → category → PDP with matching `referer` and `sec-fetch-site` headers. We currently jump home → category → PDP with wrong referrers, which Akamai flags.
+### 3. `executor/server.js` — surface unblocker status in `/health` and job logs
 
-- `category_browse` sends `referer: https://www.kmart.com.au/` and `sec-fetch-site: same-origin`.
-- `pdp_get` sends `referer: <category URL>` (or homepage if we skip category) and `sec-fetch-site: same-origin`.
-- Add a small human-like delay (200-600ms jitter) between hops so timing signals look plausible.
+- Log `transport=oxylabs` on each step so we can see it in Fly logs.
 
-**3. If SBSD post still returns without minting `bm_sv`, retry once**
+### 4. `executor/README.md`
 
-Akamai occasionally rejects the first SBSD submission and expects a re-solve with the refreshed cookie context. Loop up to 2 attempts, then fail with a clear `sbsd_unsolved` step.
+- Document the two new env vars and how to toggle per-adapter.
 
-## Files touched
+### 5. Secret setup
 
-- `executor/adapters/kmart.js` — new SBSD block between `akamai_solved` and `category_browse`; referrer/sec-fetch cleanup on category + PDP requests; retry loop.
-- Nothing on the Lovable/UI side. Existing timeline in `src/routes/_paired/kmart.tsx` already renders new steps automatically.
+- Use `add_secret` for `OXYLABS_UNBLOCKER_USER` and `OXYLABS_UNBLOCKER_PASS` (user pastes values into the secure form).
+- These are runtime secrets injected into the Fly executor via existing deploy pipeline — no build-time changes.
 
-## Verification plan
+## Out of scope
 
-1. Run once dry-run with your working proxy against the salamander PDP.
-2. Expected new timeline: `warm_home ✓ → akamai_sensor ✓ → akamai_solved ✓ → sbsd_script_fetch ✓ → sbsd_solve ✓ → sbsd_post ✓ → category_browse ✓(200) → pdp_get ✓(200) → sku_extract ✓`.
-3. If `sbsd_post` succeeds but `pdp_get` still 403s, the diagnostic step notes will tell us whether it's a missing cookie vs a fresh challenge — I'll iterate from there.
-4. Only once dry-run reaches `sku_extract` cleanly do we try `placeOrder: true`.
+- No changes to the TanStack frontend, checkout job queue, or `src/lib/executor.functions.ts` request shape.
+- Other adapters (non-Kmart) keep the current undici transport.
+- No retry/backoff tuning yet — Oxylabs retries internally; we'll observe one clean run before adding our own.
 
-## Out of scope for this plan
+## Validation
 
-- Swapping to a headless-browser fallback (Playwright/patchright). Keeping HTTP-only for the 101-concurrent target.
-- Any change to jbhifi flow.
-- TLS/fingerprint changes — already correct.
-
-## Technical detail
-
-`hyper-sdk-js` exposes `solveAkamaiSbsd({ script, userAgent, cookie })` returning `{ payload }` which we POST as `{ sensor_data: payload }` — same shape as the existing sensor solve. The `solveAkamaiSbsd` import is already in `executor/adapters/kmart.js` line 14, it's just never called. Reference: `executor/docs/hyper-solutions-brief.md` covers the endpoint shape.
+1. Deploy executor with the two secrets set.
+2. Run one Kmart checkout job end-to-end.
+3. Confirm 200s on category + PDP + add-to-cart in the job log, and a completed order.
+4. If it works, delete the dead SBSD/sensor code paths in a follow-up cleanup pass.
