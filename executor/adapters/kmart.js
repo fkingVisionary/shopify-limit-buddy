@@ -279,7 +279,6 @@ export const kmartAdapter = {
       }
       return true;
     };
-    if (!OXYLABS_ENABLED) {
     try {
       await runSbsd(html, origin + "/", "sbsd_home");
     } catch (e) {
