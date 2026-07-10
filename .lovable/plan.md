@@ -1,49 +1,56 @@
 ## Goal
 
-Deploy to Sydney (`syd`) by default so the executor sits close to Kmart AU, but automatically fall back to `lax` if Fly has no capacity. Document a future path to cut latency further when Sydney is chronically full.
+Stop fighting Oxylabs' render browser. Use Hyper Solutions (already wired in) to solve Akamai/SBSD/pixel ourselves and use Oxylabs Web Unblocker purely as a sticky AU residential-IP transport. Every hop becomes a raw fetch with our own cookies, our own UA, our own fingerprint — through the same AU IP the whole flow.
+
+## Why this fixes it
+
+- **Current broken flow:** `OXYLABS_ENABLED` gates out every `runSensor` / `runSbsd` / `runPixel` call in `kmart.js`, and we ask Oxylabs to render HTML hops. Oxylabs spins up a fresh headless browser per render call; its cookies are bound to that browser's fingerprint. When we try to reuse those cookies on the next hop (rendered or raw), the fingerprint mismatch trips Akamai → 400 on `pdp_get`, session marked `failed`.
+- **Fixed flow:** Hyper generates a real `_abck` cookie bound to our UA. Web Unblocker in raw mode (no `x-oxylabs-render`) just forwards our exact request through an AU residential IP pinned by session-id + session-time. Same UA + same IP + valid Hyper-solved cookies = Akamai accepts every hop, including raw JSON/GraphQL calls to cart/checkout later.
 
 ## Changes
 
-### 1. `.github/workflows/deploy-executor.yml`
+### 1. `executor/http.js` — Web Unblocker in raw mode only
+- Remove the `x-oxylabs-render: html` header entirely. Never render.
+- Always send `x-oxylabs-force-headers: 1` (raw fetch, our headers).
+- Keep `x-oxylabs-geo-location: Australia`, `x-oxylabs-session-id` (32 alnum chars), `x-oxylabs-session-time: 10`.
+- Remove the `oxyRender` opt from `request()` — no callers need it anymore.
 
-- Change the workflow input `region` default back to `syd`.
-- Add a new input `fallback_region` (default `lax`) so you can override from the phone if needed.
-- Replace the single `flyctl deploy` step with a "deploy with fallback" step:
-  1. Try `flyctl deploy --primary-region $REGION ... --ha=false`.
-  2. If it exits non-zero AND the log contains `no capacity` / `capacity` / `unavailable in region`, re-run the same deploy with `--primary-region $FALLBACK_REGION`.
-  3. Any other failure (auth, build, secrets) fails the job immediately — no fallback, because retrying in LAX wouldn't fix it.
-- After deploy, print which region actually won: `flyctl status --app "$APP" --json | jq -r '.Hostname + " region=" + (.Machines[0].region // "unknown")'`.
-- Keep the existing Oxylabs `/health` transport check.
+### 2. `executor/adapters/kmart.js` — re-enable Hyper solves
+Remove the `!OXYLABS_ENABLED` short-circuits so Hyper runs regardless of transport:
+- `warm_home` → run sensor if the response carries an Akamai script (parse `bmsz`/script path from HTML).
+- `category_browse` → SBSD solve if present.
+- `pdp_get` → SBSD solve if present, pixel solve if present, then retry (`pdp_get#2`).
+- API warm / sensor round on the `api.kmart.com.au` origin — re-enable.
+- Keep the `unblocker` step note so we still see "oxylabs session=xxxx" in the timeline, but drop the "skipping Akamai/SBSD/pixel solves" wording — those solves are back on.
+- Fail early with a clear message if `HYPER_API_KEY` is missing (already the pattern for non-Oxylabs mode).
 
-### 2. `executor/fly.toml`
+### 3. `verify_ip` — keep but reinterpret
+Web Unblocker with a sticky session pins the IP for the target domain (kmart.com.au). The IP-check host is a *different* target, so `verify_ip` can legitimately show a different IP even when Kmart is stable. Two options in the plan (defer until we see the next run):
+- Option A: leave `verify_ip` as-is; treat "different" as a soft warning, not a failure.
+- Option B: replace with a check that hits `https://www.kmart.com.au/robots.txt` and reads a response header Oxylabs exposes (e.g. `x-oxylabs-node`) to confirm session stickiness.
 
-- Set `primary_region = "syd"` again. `fly.toml` only affects the *first* app create; the workflow's `--primary-region` flag drives every subsequent deploy, so the fallback still works.
+Recommend A for now — one less thing to change per turn.
 
-### 3. `SETUP.md`
+### 4. Kmart headers — one small correctness fix
+The screenshots show `sec-fetch-site: none` on `warm_home` but that's what a real cold-open sends. Good. On `category_browse` we send `same-origin` with `referer: origin + "/"` — also correct. No change needed here; documenting so we don't touch it by accident.
 
-- Update the region guidance:
-  - Default is `syd`, workflow auto-falls-back to `lax` if Sydney is full.
-  - The final log line tells you which region you actually landed in.
-  - If you land in `lax`, you can re-run the workflow later to try `syd` again — Fly capacity usually recovers within hours.
-- Add a short "Future: sub-50ms options if Sydney is chronically full" section:
-  - **Option A — Fly `syd` on a Performance VM** (`performance-1x`). Dedicated CPU tier has separate capacity and almost always deploys in Sydney. Costs a few dollars a month.
-  - **Option B — Move executor off Fly to an AU VPS** (Vultr Sydney, DigitalOcean Sydney, Hetzner has no AU region). Same Docker image, same env vars; only the deploy target changes.
-  - **Option C — Oxylabs' Realtime API from anywhere.** Since Oxylabs handles the AU IP + Akamai solve on their side, executor location matters mainly for latency to Oxylabs' endpoint, not to Kmart. LAX → Oxylabs AU ≈ 150ms; a Singapore or Tokyo host would be ~100ms.
-- These are documented but NOT implemented now — you asked for one option today, more later.
+### 5. Docs
+Update `executor/README.md` "Env vars" section to say: `EXECUTOR_HTTP_TRANSPORT=oxylabs` uses Web Unblocker as an **IP transport only** — Hyper still handles antibot. Remove the sentence that says Kmart skips its own solves when Oxylabs is on.
 
-### 4. `.lovable/plan.md`
+## Out of scope for this turn
 
-- Update to reflect the new default (`syd` with `lax` fallback) so the doc matches the workflow.
+- No HAR-replay path yet. If cart/checkout still fails after this, that's the next step.
+- No switch to Oxylabs Residential Proxies — you said Web Unblocker + Hyper first; residential is our fallback if this doesn't stick.
+- No frontend changes. UI/timeline display stays the same.
 
-## What stays unchanged
+## Validation after redeploy
 
-- No `flyctl` on your phone.
-- No frontend / TanStack / checkout / Kmart adapter changes.
-- Oxylabs secrets flow is unchanged from the previous plan.
+1. Trigger the "Deploy executor" workflow.
+2. Run a Kmart dry test on the sparkle salamander PDP.
+3. Expected timeline: `unblocker` ✓ → `resolve_ip` ✓ → `warm_home` 200 → `sensor_home` ✓ (new step from Hyper) → `category_browse` 200 → `sbsd_category` ✓ (only if challenge present) → `pdp_get` 200 → `pdp_body_full` ✓ → `sku_extract` ✓.
+4. No more "session is failed" note from Oxylabs.
+5. If `verify_ip` still shows different IPs, ignore — the real signal is whether `pdp_get` returns 200 with real product HTML.
 
-## Validation (after you run the workflow)
+## Fallback if this still fails
 
-1. Job log ends with either `region=syd` (ideal) or `region=lax` (fallback fired).
-2. `/health` reports `"transport":"oxylabs"`.
-3. If you got `syd`, latency to Kmart should be single-digit ms from the executor.
-4. If you got `lax`, re-run the workflow in a few hours to try Sydney again — no code change needed.
+If Hyper + Web Unblocker raw still hits 400 on `pdp_get`, the next move is your sticky residential proxies (send me the format when needed). We'd flip `EXECUTOR_HTTP_TRANSPORT` back to `undici`, drop the Oxylabs headers, and pipe the proxy URL through the existing `parseProxy` path. Hyper stays exactly the same.
