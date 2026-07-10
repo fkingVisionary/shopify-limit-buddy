@@ -90,6 +90,25 @@ function navHeaders({ referer, site }) {
   };
 }
 
+function akamaiSensorHeaders({ requestOrigin, referer }) {
+  return {
+    "user-agent": UA,
+    "content-type": "application/x-www-form-urlencoded",
+    accept: "*/*",
+    "accept-language": ACCEPT_LANG,
+    origin: requestOrigin,
+    referer,
+    ...CHROME_CH,
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-dest": "empty",
+  };
+}
+
+function akamaiSensorBody(payload) {
+  return `sensor_data=${encodeURIComponent(payload)}`;
+}
+
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
@@ -349,15 +368,8 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: {
-              "user-agent": UA,
-              "content-type": "text/plain;charset=UTF-8",
-              accept: "*/*",
-              "accept-language": ACCEPT_LANG,
-              origin,
-              referer: origin + "/",
-            },
-            body: JSON.stringify({ sensor_data: r.payload }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+            body: akamaiSensorBody(r.payload),
           },
           ctx,
         );
@@ -715,15 +727,8 @@ export const kmartAdapter = {
               r.postUrl,
               {
                 method: "POST",
-                headers: {
-                  "user-agent": UA,
-                  "content-type": "text/plain;charset=UTF-8",
-                  accept: "*/*",
-                  "accept-language": ACCEPT_LANG,
-                  origin: apiOrigin,
-                  referer: apiOrigin + "/",
-                },
-                body: JSON.stringify({ sensor_data: r.payload }),
+                headers: akamaiSensorHeaders({ requestOrigin: apiOrigin, referer: apiOrigin + "/" }),
+                body: akamaiSensorBody(r.payload),
               },
               ctx,
             );
