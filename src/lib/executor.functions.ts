@@ -63,11 +63,12 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     // Defensive: strip trailing slash and any accidental /health, /run, /recon suffix
     const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
 
-    // Fall back to PROXY_URL_RESI env if no proxy supplied per-task.
+    // Keep an empty proxy truly direct. Falling back to a server-side proxy made
+    // "without proxies" runs still use the same failing network path.
     // Prefer caller-supplied card (future: profile-sourced); else inject from env.
     const payload = {
       ...data,
-      proxy: data.proxy ?? process.env.PROXY_URL_RESI ?? null,
+      proxy: data.proxy?.trim() || null,
       card: data.card ?? cardFromEnv(),
     };
     const t0 = Date.now();
