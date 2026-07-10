@@ -160,5 +160,5 @@ jobs:
           else
             echo "Region: $ACTUAL_REGION — Sydney was unavailable; re-run the workflow later to try syd again"
           fi
-          fi
+
 
