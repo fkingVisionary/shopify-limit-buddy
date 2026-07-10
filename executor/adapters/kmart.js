@@ -51,18 +51,18 @@ const CATEGORY_PATHS = [
 // Chrome 124 / macOS navigation header shape. Akamai scores requests on the
 // presence + ordering of these client hints; a Chrome UA without matching
 // sec-ch-ua + sec-fetch-* is an instant bot tag.
-// Chrome 133 macOS client hints — basic (low entropy) + high entropy.
+// Chrome 131 macOS client hints — basic (low entropy) + high entropy.
 // Real Chrome sends the high-entropy hints (arch/bitness/full-version-list/
 // model/platform-version) on navigation requests whenever the origin has
 // previously responded with Accept-CH (Kmart does). Sending only the low-
 // entropy trio is a classic headless-Chrome tell.
 const CHROME_CH = {
-  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
   "sec-ch-ua-arch": '"arm"',
   "sec-ch-ua-bitness": '"64"',
-  "sec-ch-ua-full-version": '"133.0.6943.99"',
+  "sec-ch-ua-full-version": '"131.0.6778.265"',
   "sec-ch-ua-full-version-list":
-    '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="133.0.6943.99", "Chromium";v="133.0.6943.99"',
+    '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="131.0.6778.265", "Chromium";v="131.0.6778.265"',
   "sec-ch-ua-mobile": "?0",
   "sec-ch-ua-model": '""',
   "sec-ch-ua-platform": '"macOS"',

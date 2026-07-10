@@ -16,7 +16,7 @@
 import { Session, ClientIdentifier, initTLS } from "node-tls-client";
 
 const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 // Lazy global TLS init. node-tls-client spawns a piscina worker pool that
 // hosts the Go shared library; initTLS must be awaited once before the first
@@ -94,7 +94,10 @@ class Dispatcher {
     if (this._session) return this._session;
     await ensureTls();
     this._session = new Session({
-      clientIdentifier: ClientIdentifier.chrome_133,
+      // node-tls-client@2.1.0 only ships Chrome profiles up to 131. Passing an
+      // unsupported identifier silently falls back while our headers still say
+      // 133, creating a TLS/UA mismatch that Akamai scores hard.
+      clientIdentifier: ClientIdentifier.chrome_131,
       timeout: 30_000,
       headerOrder: CHROME_HEADER_ORDER,
       ...(this.proxy ? { proxy: this.proxy } : {}),
