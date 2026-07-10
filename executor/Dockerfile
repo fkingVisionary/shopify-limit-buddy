@@ -2,14 +2,14 @@
 # refuse to load it, so we must use a glibc base image.
 FROM node:20-bookworm-slim
 WORKDIR /app
-ENV TMPDIR=/app/.tmp
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
+  && rm -rf /var/lib/apt/lists/* \
+  && mkdir -p /app/.tmp && chmod 1777 /app/.tmp
+ENV TMPDIR=/app/.tmp
 COPY package.json ./
 RUN npm install --omit=dev
 COPY . .
-RUN mkdir -p /app/.tmp && chmod 1777 /app/.tmp
 # node-tls-client downloads its native Go shared library on first init into
 # os.tmpdir(). Fly can present a fresh runtime /tmp, so keep TMPDIR inside the
 # image and prewarm there; otherwise first live checkout can download/fail and
