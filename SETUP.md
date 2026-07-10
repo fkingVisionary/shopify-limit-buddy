@@ -142,3 +142,15 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 - **Kmart AU only** for now — that's the only domain whitelisted on the current Hyper key.
 - **Browserless** stays in the codebase but is recon-only; it is NOT in the checkout path.
 - **JB Hi-Fi / Shopify** flows are paused until Hyper whitelists those Akamai/Shopify profiles.
+
+---
+
+## Future: lower-latency options if Sydney is chronically full
+
+The workflow's `syd → lax` fallback keeps you running, but LAX adds ~150ms per request round-trip vs Sydney. If Sydney capacity stays bad for days at a time, these are the escape hatches (documented now, not implemented until you ask):
+
+- **Option A — Fly Sydney on a Performance VM.** In `executor/fly.toml` change `[[vm]] size` from `shared-cpu-2x` to `performance-1x`. Dedicated-CPU tier has separate capacity and almost always deploys in `syd`. Adds a few dollars a month. One-line change, still phone-deployable via the same workflow.
+- **Option B — Move the executor off Fly to an AU VPS.** Vultr Sydney or DigitalOcean Sydney both take the same Docker image + env vars. Only the deploy target changes; the executor code stays identical. Slightly more setup (one-time), but you own the region.
+- **Option C — Reduce dependency on executor location.** Oxylabs handles the AU IP + Akamai solve on their side, so what actually matters is latency between the executor and Oxylabs' endpoint, not between the executor and Kmart. A Singapore or Tokyo Fly region (`sin` / `nrt`) is ~100ms to Oxylabs AU vs ~150ms from LAX — better than LAX and usually has capacity when `syd` doesn't. To try it: re-run the workflow with `region=sin` and `fallback_region=lax`.
+
+None of these require code changes to the checkout logic — they're deploy-target choices.
