@@ -32,6 +32,20 @@ async function ensureTls() {
 
 const TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 
+// Oxylabs Web Unblocker — https://developers.oxylabs.io/scraper-apis/web-unblocker
+// Proxy-style endpoint. Handles TLS/JA3, Akamai sensor generation, and
+// residential IP rotation for us. When enabled, all outbound requests go
+// through it and the adapter can skip its own antibot solves.
+const OXY_HOST = process.env.OXYLABS_UNBLOCKER_HOST ?? "unblock.oxylabs.io";
+const OXY_PORT = process.env.OXYLABS_UNBLOCKER_PORT ?? "60000";
+const OXY_USER = process.env.OXYLABS_UNBLOCKER_USER ?? "";
+const OXY_PASS = process.env.OXYLABS_UNBLOCKER_PASS ?? "";
+const OXY_GEO = process.env.OXYLABS_UNBLOCKER_GEO ?? "Australia";
+export const OXYLABS_ENABLED = TRANSPORT === "oxylabs" && OXY_USER && OXY_PASS;
+function oxyProxyUrl() {
+  return `http://${encodeURIComponent(OXY_USER)}:${encodeURIComponent(OXY_PASS)}@${OXY_HOST}:${OXY_PORT}`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
