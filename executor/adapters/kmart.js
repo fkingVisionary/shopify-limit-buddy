@@ -516,7 +516,7 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    if (!OXYLABS_ENABLED && parseSbsd(pdpHtml)) {
+    if (parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
@@ -533,14 +533,14 @@ export const kmartAdapter = {
         };
         return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
       });
-    } else if (!OXYLABS_ENABLED && pdpStatus >= 400) {
+    } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
 
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
-    if (!OXYLABS_ENABLED) try {
+    try {
       const pixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: pdpUrl,
