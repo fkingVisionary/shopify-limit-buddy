@@ -7,11 +7,14 @@ Totally fair — you shouldn't need `flyctl` on your phone. The repo already dep
    - `OXYLABS_UNBLOCKER_USER` = (from dashboard.oxylabs.io → Web Unblocker → sub-user)
    - `OXYLABS_UNBLOCKER_PASS` = (same place)
 2. GitHub app → **Actions → Deploy executor → Run workflow** (leave `create_app` OFF).
-3. When it finishes, open `https://j1ms-bot-executor.fly.dev/health` in your browser. It should say `"transport":"oxylabs"`.
+3. Leave `region` as `lax`; Sydney capacity is currently causing the deploy loop.
+4. When it finishes, open `https://j1ms-bot-executor.fly.dev/health` in your browser. It should say `"transport":"oxylabs"`.
 
 ## What I change in the repo
 
 **`.github/workflows/deploy-executor.yml`** — extend the `fly secrets set` step so it also stages the three new secrets on every deploy, alongside the existing `EXECUTOR_TOKEN` / `HYPER_API_KEY` / `PROXY_URL_RESI`. That's the only code change; the executor already knows how to use them.
+
+Also deploy with `--ha=false` and default `region=lax` so Fly doesn't try to replace two machines in Sydney while that region has no capacity.
 
 **`SETUP.md`** — add a short "Enable Oxylabs" section pointing at the same three GitHub secrets, so future-you doesn't have to remember.
 

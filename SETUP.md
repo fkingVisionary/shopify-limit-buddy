@@ -3,7 +3,7 @@
 You can deploy the Kmart/Hyper executor to Fly.io entirely from your phone — no laptop, no PowerShell, no `flyctl` install. A GitHub Actions workflow does the build and deploy; you just tap "Run workflow" in the GitHub mobile app.
 
 Final state:
-- Fly.io app `j1ms-bot-executor` in Sydney running `executor/`
+- Fly.io app `j1ms-bot-executor` running `executor/`
 - 3 secrets on Fly: `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `PROXY_URL_RESI`
 - 2 secrets in Lovable: `EXECUTOR_URL`, `EXECUTOR_TOKEN`
 
@@ -53,6 +53,8 @@ Add all four:
 GitHub mobile app → your repo → **Actions** tab → **Deploy executor** → **Run workflow**.
 
 **First time only:** toggle `create_app` ON. Subsequent deploys: leave it off.
+
+Leave `region` as `lax`. Sydney often has no spare Fly capacity; the executor now deploys as a single machine (`--ha=false`) so it avoids the two-machine replacement loop shown by `machine is replacing` / `no capacity available in syd`.
 
 Tap **Run workflow**. ~2 minutes later the job finishes and the logs print:
 
@@ -125,6 +127,7 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 |---|---|
 | Workflow fails on "Verify FLY_API_TOKEN" | Secret not set or misnamed — check repo Settings |
 | Workflow fails on "Create Fly app" | App name taken globally — pick a unique name and pass it as the `app_name` workflow input |
+| Workflow fails with `machine is replacing` or `no capacity available in syd` | Re-run the workflow with `create_app` OFF and leave `region` as `lax` |
 | `pdp_get` returns 403 | Proxy isn't residential AU — swap proxy provider |
 | `antibot_misconfigured` in chain output | `HYPER_API_KEY` missing or rejected on Fly — re-check the GitHub secret and re-run workflow |
 | Want to scale down / stop spending | Fly dashboard → app → Scale → set min machines to 0 (already the default) |
