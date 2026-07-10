@@ -32,6 +32,22 @@ async function ensureTls() {
 
 const TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableNetworkError(error) {
+  const msg = String(error?.message ?? error).toLowerCase();
+  const code = error?.code ?? error?.cause?.code;
+  return (
+    code === "ECONNRESET" ||
+    code === "UND_ERR_SOCKET" ||
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    msg.includes("client network socket disconnected") ||
+    msg.includes("fetch failed")
+  );
+}
+
 // Chrome 124 request header order. The exact ordering matters — Akamai
 // inspects it as part of the bot score. This matches a real Chrome 124
 // navigation/CORS request (cookie always last).
@@ -133,6 +149,16 @@ class Dispatcher {
       }
       this._proxyAgent = null;
     }
+  }
+
+  async resetUndici() {
+    if (!this._proxyAgent) return;
+    try {
+      await this._proxyAgent.close();
+    } catch {
+      /* ignore */
+    }
+    this._proxyAgent = null;
   }
 }
 
@@ -265,15 +291,27 @@ export async function request(url, opts, ctx) {
   };
 
   if (TRANSPORT !== "tls") {
-    const res = await undiciFetch(url, {
-      method,
-      headers,
-      redirect: "manual",
-      dispatcher: dispatcher.undiciDispatcher(),
-      ...(opts?.body !== undefined ? { body: opts.body } : {}),
-    });
-    jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
-    return wrapFetchResponse(res, url);
+    const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
+    let lastError;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const res = await undiciFetch(url, {
+          method,
+          headers,
+          redirect: "manual",
+          dispatcher: dispatcher.undiciDispatcher(),
+          ...(opts?.body !== undefined ? { body: opts.body } : {}),
+        });
+        jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
+        return wrapFetchResponse(res, url);
+      } catch (e) {
+        lastError = e;
+        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
+        try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
+        await sleep(250 + attempt * 500);
+      }
+    }
+    throw lastError;
   }
 
   // Native TLS experiment path. Kept opt-in because a native library failure
