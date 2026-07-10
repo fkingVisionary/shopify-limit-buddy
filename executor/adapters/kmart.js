@@ -500,72 +500,23 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    const sbsd = parseSbsd(pdpHtml);
-    if (sbsd) {
-      {
-        const sbsdScriptUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + `?v=${sbsd.uuid}${sbsd.t ? `&t=${sbsd.t}` : ""}`;
-
-        const sbsdPostUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + (sbsd.t ? `?t=${sbsd.t}` : "");
-        let sbsdScriptBody = "";
-        await tStep("sbsd_script_fetch", async () => {
-          const r = await request(sbsdScriptUrl, { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } }, ctx);
-          sbsdScriptBody = await r.text();
-          return { status: r.status, note: `uuid=${sbsd.uuid.slice(0, 8)} ${sbsdScriptBody.length}b t=${sbsd.t || "-"}` };
-        });
-        const rounds = sbsd.t ? 1 : 2; // hard challenge = 1 round, passive = 2
-        for (let i = 0; i < rounds; i++) {
-          await tStep(`sbsd_round#${i}`, async () => {
-            const payload = await solveAkamaiSbsd({
-              jar: ctx.jar,
-              pageUrl: pdpUrl,
-              scriptBody: sbsdScriptBody,
-              uuid: sbsd.uuid,
-              oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
-              index: i,
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-            });
-            const res = await request(
-              sbsdPostUrl,
-              {
-                method: "POST",
-                headers: {
-                  "user-agent": UA,
-                  "content-type": "application/json",
-                  accept: "*/*",
-                  "accept-language": ACCEPT_LANG,
-                  origin,
-                  referer: pdpUrl,
-                },
-                body: JSON.stringify({ body: payload }),
-              },
-              ctx,
-            );
-            const bodyTxt = (await res.text()).slice(0, 200).replace(/\s+/g, " ");
-            const setCk = res.headers.get("set-cookie") ?? "";
-            const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
-            return { status: res.status, note: `body="${bodyTxt}" setCk=${setCk.slice(0, 120)} jarSbsd=${sbsdKeys}` };
-          });
-        }
-
-        {
-          const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
-          dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
-          await tStep("pdp_get#2", async () => {
-            const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-            pdpStatus = res.status;
-            pdpHtml = await res.text();
-            const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
-            const respHeaders = {
-              server: res.headers.get("server"),
-              "akamai-grn": res.headers.get("akamai-grn"),
-              "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
-            };
-            return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
-          });
-        }
-      }
+    if (parseSbsd(pdpHtml)) {
+      await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
+      await sleep(450, 950);
+      const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
+      dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+      await tStep("pdp_get#2", async () => {
+        const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
+        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
+        const respHeaders = {
+          server: res.headers.get("server"),
+          "akamai-grn": res.headers.get("akamai-grn"),
+          "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+        };
+        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+      });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
