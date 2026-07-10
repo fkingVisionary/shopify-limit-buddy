@@ -16,7 +16,11 @@ on:
         type: string
         default: "j1ms-bot-executor"
       region:
-        description: "Fly region"
+        description: "Preferred Fly region (default: syd for AU latency)"
+        type: string
+        default: "syd"
+      fallback_region:
+        description: "Fallback region if the preferred region has no capacity"
         type: string
         default: "lax"
 
