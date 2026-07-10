@@ -195,6 +195,19 @@ export const kmartAdapter = {
       );
       html = await res.text();
       scriptPath = findAkamaiScriptPath(html);
+      // Diagnostic: expose which cookies Kmart (via Oxylabs) actually set —
+      // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
+      // "missing abck" and none of the downstream steps can succeed.
+      const setCookies =
+        typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+      const setCookieNames = setCookies
+        .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+        .filter(Boolean);
+      steps.push({
+        step: "warm_home:cookies",
+        ok: setCookieNames.includes("_abck"),
+        note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}]`,
+      });
       return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
     });
 
