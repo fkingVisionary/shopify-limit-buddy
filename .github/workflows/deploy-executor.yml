@@ -36,6 +36,7 @@ jobs:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       APP: ${{ inputs.app_name }}
       REGION: ${{ inputs.region }}
+      FALLBACK_REGION: ${{ inputs.fallback_region }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
