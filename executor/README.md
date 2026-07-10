@@ -33,13 +33,17 @@ with `undici` unblocks the proxy.
 - `EXECUTOR_TOKEN` — shared secret. The Lovable app sends this in the
   `Authorization` header. Generate with `openssl rand -hex 32`.
 - `PORT` — default `8080`.
+- `EXECUTOR_HTTP_TRANSPORT` — default `undici`. Set to `tls` only for controlled
+  `node-tls-client` experiments; the native TLS path can crash the process and
+  show up as an empty `502` from `/run`.
 
 ## Important deploy note
 
-The Docker image prewarms `node-tls-client` during build so the native TLS
-library is already present when `/run` receives traffic. If the live service
-returns an instant empty `502` while `/health` is fine, rebuild and redeploy the
-executor image so that Dockerfile step runs.
+The default executor path is now `undici`, not native TLS, so `/run` should
+return a JSON step timeline even when Kmart blocks a request. If you explicitly
+set `EXECUTOR_HTTP_TRANSPORT=tls`, the Docker image prewarms `node-tls-client`
+during build, but an instant empty `502` still means the native TLS process path
+crashed before Fastify could serialize an error.
 
 ## Local run
 

@@ -1,19 +1,17 @@
-// Proxy-aware HTTP client built on bogdanfinn/tls-client (via node-tls-client).
+// Proxy-aware HTTP client. Default transport is undici because it is stable and
+// returns adapter timelines instead of crashing the executor. The native
+// node-tls-client path is still available behind EXECUTOR_HTTP_TRANSPORT=tls for
+// controlled TLS experiments, but it is not the default after repeated empty
+// 502s from native crashes.
 //
-// Why not undici/node-fetch: Hyper Solutions' docs explicitly call out that
-// Akamai flags non-browser JA3/JA4 fingerprints at the edge BEFORE any sensor
-// evaluation. Native Node TLS (undici, node-fetch, axios) all share the same
-// non-Chrome handshake and get 403'd by AkamaiGHost on sight. node-tls-client
-// is a Node binding around bogdanfinn's Go tls-client, which impersonates real
-// Chrome handshakes + HTTP/2 settings + header order.
-//
-// Module surface is unchanged from the previous undici version:
+// Module surface:
 //   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
 //   createJar()              → name-keyed cookie jar (same shape as before)
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
-//   UA                       → Chrome 124 / macOS user-agent string
+//   UA                       → Chrome / macOS user-agent string
 
 import { Session, ClientIdentifier, initTLS } from "node-tls-client";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -26,6 +24,8 @@ function ensureTls() {
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
 }
+
+const TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 
 // Chrome 124 request header order. The exact ordering matters — Akamai
 // inspects it as part of the bot score. This matches a real Chrome 124
@@ -88,12 +88,18 @@ function parseProxy(raw) {
 class Dispatcher {
   constructor(proxyUrl) {
     this.proxy = proxyUrl;
-    this._session = null;
+    this._tlsSession = null;
+    this._proxyAgent = null;
   }
-  async session() {
-    if (this._session) return this._session;
+  undiciDispatcher() {
+    if (!this.proxy) return undefined;
+    if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
+    return this._proxyAgent;
+  }
+  async tlsSession() {
+    if (this._tlsSession) return this._tlsSession;
     await ensureTls();
-    this._session = new Session({
+    this._tlsSession = new Session({
       // node-tls-client@2.1.0 only ships Chrome profiles up to 131. Passing an
       // unsupported identifier silently falls back while our headers still say
       // 133, creating a TLS/UA mismatch that Akamai scores hard.
@@ -102,16 +108,24 @@ class Dispatcher {
       headerOrder: CHROME_HEADER_ORDER,
       ...(this.proxy ? { proxy: this.proxy } : {}),
     });
-    return this._session;
+    return this._tlsSession;
   }
   async close() {
-    if (this._session) {
+    if (this._tlsSession) {
       try {
-        await this._session.close();
+        await this._tlsSession.close();
       } catch {
         /* ignore */
       }
-      this._session = null;
+      this._tlsSession = null;
+    }
+    if (this._proxyAgent) {
+      try {
+        await this._proxyAgent.close();
+      } catch {
+        /* ignore */
+      }
+      this._proxyAgent = null;
     }
   }
 }
@@ -203,6 +217,31 @@ function wrapResponse(res, requestedUrl) {
   };
 }
 
+function wrapFetchResponse(res, requestedUrl) {
+  return {
+    status: res.status,
+    ok: res.ok,
+    url: res.url || requestedUrl,
+    headers: {
+      get(name) {
+        return res.headers.get(name);
+      },
+      getSetCookie() {
+        if (typeof res.headers.getSetCookie === "function") return res.headers.getSetCookie();
+        const v = res.headers.get("set-cookie");
+        return v ? [v] : [];
+      },
+      raw: res.headers,
+    },
+    text() {
+      return res.text();
+    },
+    json() {
+      return res.json();
+    },
+  };
+}
+
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
@@ -219,11 +258,21 @@ export async function request(url, opts, ctx) {
     ...(opts?.headers ?? {}),
   };
 
-  // node-tls-client doesn't accept a `dispatcher`-style object; the proxy is
-  // already on the Session. It also doesn't follow redirects by default when
-  // we pass followRedirects:false, which matches our previous manual-redirect
-  // behaviour exactly.
-  const session = await dispatcher.session();
+  if (TRANSPORT !== "tls") {
+    const res = await undiciFetch(url, {
+      method,
+      headers,
+      redirect: "manual",
+      dispatcher: dispatcher.undiciDispatcher(),
+      ...(opts?.body !== undefined ? { body: opts.body } : {}),
+    });
+    jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
+    return wrapFetchResponse(res, url);
+  }
+
+  // Native TLS experiment path. Kept opt-in because a native library failure
+  // can terminate the process before Fastify can return JSON.
+  const session = await dispatcher.tlsSession();
   const reqOpts = {
     headers,
     followRedirects: false,
