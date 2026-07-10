@@ -54,17 +54,20 @@ GitHub mobile app → your repo → **Actions** tab → **Deploy executor** → 
 
 **First time only:** toggle `create_app` ON. Subsequent deploys: leave it off.
 
-Leave `region` as `lax`. Sydney often has no spare Fly capacity; the executor now deploys as a single machine (`--ha=false`) so it avoids the two-machine replacement loop shown by `machine is replacing` / `no capacity available in syd`.
+Leave `region` as `syd` (Sydney — closest to Kmart AU, fastest checkouts) and `fallback_region` as `lax`. If Sydney has no spare Fly capacity, the workflow automatically retries the deploy in the fallback region so you're never stuck. The executor deploys as a single machine (`--ha=false`) to avoid two-machine replacement loops.
 
 Tap **Run workflow**. ~2 minutes later the job finishes and the logs print:
 
 ```
-Executor hostname:
-j1ms-bot-executor.fly.dev
+j1ms-bot-executor.fly.dev  region=syd  (requested=syd, fallback=lax)
 
 Health check:
-{"ok":true}
+{"ok":true,"transport":"oxylabs"}
+Oxylabs Web Unblocker: ACTIVE
+Region: Sydney (ideal for Kmart AU latency)
 ```
+
+The `region=` line tells you where you actually landed. If it says `region=lax` the fallback fired (Sydney was out of capacity) — the executor still works via Oxylabs' AU IPs, just with ~150ms extra latency. Re-run the workflow later to try Sydney again; capacity usually recovers within hours.
 
 If the health check fails, open the job log and look for the failing step.
 
@@ -127,7 +130,7 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 |---|---|
 | Workflow fails on "Verify FLY_API_TOKEN" | Secret not set or misnamed — check repo Settings |
 | Workflow fails on "Create Fly app" | App name taken globally — pick a unique name and pass it as the `app_name` workflow input |
-| Workflow fails with `machine is replacing` or `no capacity available in syd` | Re-run the workflow with `create_app` OFF and leave `region` as `lax` |
+| Workflow fails with `machine is replacing` or `no capacity available in syd` | Nothing to do — the workflow auto-falls-back to `lax`. Re-run later to try Sydney again. |
 | `pdp_get` returns 403 | Proxy isn't residential AU — swap proxy provider |
 | `antibot_misconfigured` in chain output | `HYPER_API_KEY` missing or rejected on Fly — re-check the GitHub secret and re-run workflow |
 | Want to scale down / stop spending | Fly dashboard → app → Scale → set min machines to 0 (already the default) |
@@ -139,3 +142,15 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 - **Kmart AU only** for now — that's the only domain whitelisted on the current Hyper key.
 - **Browserless** stays in the codebase but is recon-only; it is NOT in the checkout path.
 - **JB Hi-Fi / Shopify** flows are paused until Hyper whitelists those Akamai/Shopify profiles.
+
+---
+
+## Future: lower-latency options if Sydney is chronically full
+
+The workflow's `syd → lax` fallback keeps you running, but LAX adds ~150ms per request round-trip vs Sydney. If Sydney capacity stays bad for days at a time, these are the escape hatches (documented now, not implemented until you ask):
+
+- **Option A — Fly Sydney on a Performance VM.** In `executor/fly.toml` change `[[vm]] size` from `shared-cpu-2x` to `performance-1x`. Dedicated-CPU tier has separate capacity and almost always deploys in `syd`. Adds a few dollars a month. One-line change, still phone-deployable via the same workflow.
+- **Option B — Move the executor off Fly to an AU VPS.** Vultr Sydney or DigitalOcean Sydney both take the same Docker image + env vars. Only the deploy target changes; the executor code stays identical. Slightly more setup (one-time), but you own the region.
+- **Option C — Reduce dependency on executor location.** Oxylabs handles the AU IP + Akamai solve on their side, so what actually matters is latency between the executor and Oxylabs' endpoint, not between the executor and Kmart. A Singapore or Tokyo Fly region (`sin` / `nrt`) is ~100ms to Oxylabs AU vs ~150ms from LAX — better than LAX and usually has capacity when `syd` doesn't. To try it: re-run the workflow with `region=sin` and `fallback_region=lax`.
+
+None of these require code changes to the checkout logic — they're deploy-target choices.

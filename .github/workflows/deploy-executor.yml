@@ -16,7 +16,11 @@ on:
         type: string
         default: "j1ms-bot-executor"
       region:
-        description: "Fly region"
+        description: "Preferred Fly region (default: syd for AU latency)"
+        type: string
+        default: "syd"
+      fallback_region:
+        description: "Fallback region if the preferred region has no capacity"
         type: string
         default: "lax"
 
@@ -32,6 +36,7 @@ jobs:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       APP: ${{ inputs.app_name }}
       REGION: ${{ inputs.region }}
+      FALLBACK_REGION: ${{ inputs.fallback_region }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -94,24 +99,55 @@ jobs:
             --app "$APP" --stage
 
 
-      - name: Deploy executor
+      - name: Deploy executor (with region fallback)
         working-directory: executor
         run: |
-          flyctl deploy \
-            --remote-only \
-            --ha=false \
-            --app "$APP" \
-            --config fly.toml \
-            --dockerfile Dockerfile \
-            --primary-region "$REGION"
+          set +e
+          deploy_region() {
+            local region="$1"
+            echo "::group::flyctl deploy --primary-region $region"
+            flyctl deploy \
+              --remote-only \
+              --ha=false \
+              --app "$APP" \
+              --config fly.toml \
+              --dockerfile Dockerfile \
+              --primary-region "$region" \
+              2>&1 | tee /tmp/deploy.log
+            local rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            return $rc
+          }
+
+          deploy_region "$REGION"
+          rc=$?
+
+          if [ $rc -ne 0 ]; then
+            if grep -qiE 'no capacity|capacity|unavailable in region|no active leases' /tmp/deploy.log; then
+              echo "::warning::Region $REGION out of capacity — retrying in $FALLBACK_REGION"
+              deploy_region "$FALLBACK_REGION"
+              rc=$?
+              if [ $rc -ne 0 ]; then
+                echo "::error::Fallback deploy in $FALLBACK_REGION also failed"
+                exit $rc
+              fi
+              echo "DEPLOYED_REGION=$FALLBACK_REGION" >> "$GITHUB_ENV"
+            else
+              echo "::error::Deploy failed for a non-capacity reason — see log above"
+              exit $rc
+            fi
+          else
+            echo "DEPLOYED_REGION=$REGION" >> "$GITHUB_ENV"
+          fi
 
       - name: Print app hostname
         run: |
           echo "Executor hostname:"
-          flyctl status --app "$APP" --json | jq -r '.Hostname'
+          HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
+          ACTUAL_REGION=$(flyctl status --app "$APP" --json | jq -r '.Machines[0].region // "unknown"')
+          echo "$HOST  region=$ACTUAL_REGION  (requested=$REGION, fallback=$FALLBACK_REGION)"
           echo ""
           echo "Health check:"
-          HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
           HEALTH=$(curl -sSf "https://$HOST/health" || echo "")
           echo "$HEALTH"
           if echo "$HEALTH" | grep -q '"transport":"oxylabs"'; then
@@ -119,4 +155,10 @@ jobs:
           else
             echo "Oxylabs Web Unblocker: not active (transport is not oxylabs)"
           fi
+          if [ "$ACTUAL_REGION" = "syd" ]; then
+            echo "Region: Sydney (ideal for Kmart AU latency)"
+          else
+            echo "Region: $ACTUAL_REGION — Sydney was unavailable; re-run the workflow later to try syd again"
+          fi
+
 
