@@ -198,7 +198,7 @@ export const kmartAdapter = {
       return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
     });
 
-    if (!scriptPath && !OXYLABS_ENABLED) {
+    if (!scriptPath) {
       // Without the script path we can't generate a sensor. Fail fast.
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
