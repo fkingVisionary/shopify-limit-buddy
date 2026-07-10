@@ -34,10 +34,11 @@ with `undici` unblocks the proxy.
   `Authorization` header. Generate with `openssl rand -hex 32`.
 - `PORT` — default `8080`.
 - `EXECUTOR_HTTP_TRANSPORT` — `undici` (default), `tls`, or `oxylabs`.
-  Set to `oxylabs` to route all requests through Oxylabs Web Unblocker,
-  which handles Akamai TLS/JA3 + sensor generation + residential IP
-  rotation on their side. When enabled the Kmart adapter skips its own
-  Akamai / SBSD / pixel solves.
+  Set to `oxylabs` to route all requests through Oxylabs Web Unblocker as
+  a **raw AU residential-IP transport only** — Hyper still solves
+  Akamai/SBSD/pixel challenges. We do not use Oxylabs' render mode
+  because rendered requests use a fresh browser per call and can't reuse
+  the cookies we've been building up.
 - `OXYLABS_UNBLOCKER_USER` / `OXYLABS_UNBLOCKER_PASS` — required when
   `EXECUTOR_HTTP_TRANSPORT=oxylabs`. Sub-user credentials from
   dashboard.oxylabs.io → Web Unblocker.
