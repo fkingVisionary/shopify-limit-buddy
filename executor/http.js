@@ -319,39 +319,28 @@ export async function request(url, opts, ctx) {
 
   // Oxylabs Web Unblocker headers. These are stripped by Oxylabs before the
   // request leaves their edge — they never reach the target.
-  //   x-oxylabs-geo-location: pin egress geo so Kmart AU sees an AU IP.
-  //   x-oxylabs-render: html   → run the full browser + Akamai solve pipeline.
-  //   x-oxylabs-session-id     → stick to one residential IP for the flow.
-  //   x-oxylabs-force-headers  → send exactly the headers we specified.
+  //
+  // We use Web Unblocker as a RAW residential-IP transport only:
+  //   x-oxylabs-geo-location  → pin egress geo (AU) so Kmart sees an AU IP.
+  //   x-oxylabs-session-id    → stick to one residential IP for the flow.
+  //   x-oxylabs-session-time  → hold that IP for up to 10 minutes.
+  //   x-oxylabs-force-headers → send OUR exact headers/cookies (no browser).
+  //
+  // We deliberately do NOT set x-oxylabs-render. Rendering spins up a fresh
+  // headless browser per request with its own fingerprint, which can't reuse
+  // cookies we captured on previous hops. Instead, Hyper solves Akamai/SBSD/
+  // pixel challenges into cookies bound to OUR UA + IP, and we forward
+  // everything raw — same fingerprint on every hop.
   if (OXYLABS_ENABLED) {
     headers["x-oxylabs-geo-location"] = OXY_GEO;
+    headers["x-oxylabs-force-headers"] = "1";
     if (ctx.oxylabsSessionId) {
       headers["x-oxylabs-session-id"] = ctx.oxylabsSessionId;
-      // session-time (minutes, max 10) pins the residential IP for the whole
-      // flow. Without it, Oxylabs releases the IP after the first request and
-      // subsequent hops land on a different exit.
       headers["x-oxylabs-session-time"] = ctx.oxylabsSessionTime ?? "10";
     }
-    // Only ask Oxylabs to render (spin up a headless browser + solve Akamai)
-    // for HTML navigation requests; JSON/GraphQL POSTs use raw fetch through
-    // the same residential IP session, which is faster and cheaper.
-    const isNav =
-      method === "GET" &&
-      String(headers.accept ?? "").includes("text/html");
-    const doRender = isNav && opts?.oxyRender !== false;
-    if (doRender) {
-      headers["x-oxylabs-render"] = "html";
-      // IMPORTANT: do NOT force-headers on rendered requests. Oxylabs spins up
-      // a fresh browser per render call; forcing OUR cookies + headers into
-      // that browser makes Akamai reject the fingerprint mismatch (session
-      // "failed", pdp_get 400). Let the browser send its own natural values.
-    } else {
-      // Raw fetch — force our exact headers so Kmart sees the same UA/cookies
-      // we've been building up.
-      headers["x-oxylabs-force-headers"] = "1";
-    }
   }
-  }
+
+
 
   if (TRANSPORT !== "tls") {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
