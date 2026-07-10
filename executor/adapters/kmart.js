@@ -93,7 +93,7 @@ function navHeaders({ referer, site }) {
 function akamaiSensorHeaders({ requestOrigin, referer }) {
   return {
     "user-agent": UA,
-    "content-type": "application/x-www-form-urlencoded",
+    "content-type": "application/json",
     accept: "*/*",
     "accept-language": ACCEPT_LANG,
     origin: requestOrigin,
@@ -106,7 +106,7 @@ function akamaiSensorHeaders({ requestOrigin, referer }) {
 }
 
 function akamaiSensorBody(payload) {
-  return `sensor_data=${encodeURIComponent(payload)}`;
+  return JSON.stringify({ sensor_data: payload });
 }
 
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and

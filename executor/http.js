@@ -121,9 +121,10 @@ function parseProxy(raw) {
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
 class Dispatcher {
-  constructor(proxyUrl, useOxylabs) {
+  constructor(proxyUrl, useOxylabs, useTls) {
     this.proxy = proxyUrl;
     this.useOxylabs = useOxylabs;
+    this.useTls = useTls;
     this._tlsSession = null;
     this._proxyAgent = null;
   }
@@ -193,9 +194,13 @@ export function makeDispatcher(rawProxy) {
   // If the task supplies a residential proxy, use it. Otherwise, when enabled,
   // Oxylabs is the default transport.
   const useOxylabs = OXYLABS_ENABLED && !url;
+  // When Oxylabs is the default but a task explicitly supplies a proxy, use the
+  // Chrome TLS client with that proxy so Akamai sees a browser-like TLS/HTTP
+  // fingerprint instead of undici's default stack.
+  const useTls = TRANSPORT === "tls" || (OXYLABS_ENABLED && Boolean(url));
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
-  return new Dispatcher(url, useOxylabs);
+  return new Dispatcher(url, useOxylabs, useTls);
 }
 
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
@@ -344,7 +349,7 @@ export async function request(url, opts, ctx) {
 
 
 
-  if (TRANSPORT !== "tls") {
+  if (!dispatcher.useTls) {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
