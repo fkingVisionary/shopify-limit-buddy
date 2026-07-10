@@ -757,6 +757,9 @@ export const kmartAdapter = {
           }
         }
       }
+      } // end !OXYLABS_ENABLED api warm/sensor block
+
+
 
 
       // 7b. getActiveBag — me.activeCart may be null on first run.
