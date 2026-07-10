@@ -111,4 +111,11 @@ jobs:
           echo ""
           echo "Health check:"
           HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
-          curl -sSf "https://$HOST/health" || echo "(health check failed - check flyctl logs --app $APP)"
+          HEALTH=$(curl -sSf "https://$HOST/health" || echo "")
+          echo "$HEALTH"
+          if echo "$HEALTH" | grep -q '"transport":"oxylabs"'; then
+            echo "Oxylabs Web Unblocker: ACTIVE"
+          else
+            echo "Oxylabs Web Unblocker: not active (transport is not oxylabs)"
+          fi
+
