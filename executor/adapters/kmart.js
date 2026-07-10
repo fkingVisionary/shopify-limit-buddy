@@ -377,7 +377,7 @@ export const kmartAdapter = {
     //     posts arrive as a `bm_so` cookie that Akamai's risk engine reads on
     //     the next request. Non-fatal: most warm_home responses don't carry
     //     a pixel, in which case this is a no-op.
-    try {
+    if (!OXYLABS_ENABLED) try {
       const warmPixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: origin + "/",
