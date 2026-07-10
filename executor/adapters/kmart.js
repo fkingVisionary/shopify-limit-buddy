@@ -615,7 +615,7 @@ export const kmartAdapter = {
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
-      if (!OXYLABS_ENABLED) {
+      {
       // 7a. Solve Akamai for api.kmart.com.au — separate _abck scope.
       //     Cookie jar is name-keyed (not domain-keyed), so the api-host
       //     sensor responses will overwrite the www host's _abck. That's
