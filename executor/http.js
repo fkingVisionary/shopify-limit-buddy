@@ -262,7 +262,7 @@ function wrapResponse(res, requestedUrl) {
       return Array.isArray(v) ? v.join(", ") : String(v);
     },
     getSetCookie() {
-      const v = rawHeaders["set-cookie"];
+      const v = rawHeaders["set-cookie"] ?? rawHeaders["Set-Cookie"];
       if (!v) return [];
       return Array.isArray(v) ? v : [String(v)];
     },
