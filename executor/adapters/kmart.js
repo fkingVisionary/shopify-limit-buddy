@@ -58,7 +58,7 @@ const CATEGORY_PATHS = [
 // entropy trio is a classic headless-Chrome tell.
 const CHROME_CH = {
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
-  "sec-ch-ua-arch": '"arm"',
+  "sec-ch-ua-arch": '"x86"',
   "sec-ch-ua-bitness": '"64"',
   "sec-ch-ua-full-version": '"131.0.6778.265"',
   "sec-ch-ua-full-version-list":
