@@ -58,7 +58,7 @@ const CATEGORY_PATHS = [
 // entropy trio is a classic headless-Chrome tell.
 const CHROME_CH = {
   "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
-  "sec-ch-ua-arch": '"arm"',
+  "sec-ch-ua-arch": '"x86"',
   "sec-ch-ua-bitness": '"64"',
   "sec-ch-ua-full-version": '"131.0.6778.265"',
   "sec-ch-ua-full-version-list":
@@ -232,7 +232,7 @@ export const kmartAdapter = {
             pageUrl,
             scriptBody: sbsdBody,
             uuid: parsed.uuid,
-            oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
             index: i,
             userAgent: UA,
             ip: egressIp,
@@ -407,6 +407,9 @@ export const kmartAdapter = {
     //     chain (none → home → category → pdp) and an extra 200 to learn from.
     const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
     const catUrl = origin + catPath;
+    let categoryStatus = 0;
+    let categoryHtml = "";
+    let categoryOk = false;
     await sleep(700, 1400); // brief glance at homepage before the click
     await tStep("category_browse", async () => {
       const res = await request(
@@ -414,9 +417,39 @@ export const kmartAdapter = {
         { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
         ctx,
       );
-      const body = await res.text();
-      return { status: res.status, ok: res.status < 400, note: `${catPath} ${body.length}b` };
-    }).catch(() => {});
+      categoryStatus = res.status;
+      categoryHtml = await res.text();
+      categoryOk = res.status < 400;
+      const hasSbsd = Boolean(parseSbsd(categoryHtml));
+      return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
+    });
+
+    // If the category hop is the first route to expose the SBSD block, solve it
+    // there and retry the category before moving on. A real browser cannot click
+    // from a 403 category page into the PDP, so keeping that failed hop in the
+    // journey makes the next request look impossible.
+    if (!categoryOk && categoryHtml) {
+      try {
+        const solvedCategorySbsd = await runSbsd(categoryHtml, catUrl, "sbsd_category");
+        if (solvedCategorySbsd) {
+          await sleep(350, 850);
+          await tStep("category_browse#2", async () => {
+            const res = await request(
+              catUrl,
+              { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
+              ctx,
+            );
+            categoryStatus = res.status;
+            categoryHtml = await res.text();
+            categoryOk = res.status < 400;
+            const snippet = categoryHtml.replace(/\s+/g, " ").trim().slice(0, 180);
+            return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b | ${snippet}` };
+          });
+        }
+      } catch (e) {
+        steps.push({ step: "sbsd_category:error", ok: false, note: e?.message ?? String(e) });
+      }
+    }
     // Human dwell on the category page before clicking through to the PDP.
     // 1.5–3s is the critical gap — Akamai's risk model is sensitive to the
     // home→PDP interval being unrealistically short.
@@ -426,7 +459,8 @@ export const kmartAdapter = {
     let pdpStatus = 0;
     let pdpHtml = "";
     {
-      const pdpHeaders = navHeaders({ referer: catUrl, site: "same-origin" });
+      const pdpReferer = categoryOk ? catUrl : origin + "/";
+      const pdpHeaders = navHeaders({ referer: pdpReferer, site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
       steps.push({
         step: "pdp_get:hdrs",
@@ -466,72 +500,23 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    const sbsd = parseSbsd(pdpHtml);
-    if (sbsd) {
-      {
-        const sbsdScriptUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + `?v=${sbsd.uuid}${sbsd.t ? `&t=${sbsd.t}` : ""}`;
-
-        const sbsdPostUrl = origin + (sbsd.path.startsWith("/") ? sbsd.path : "/" + sbsd.path) + (sbsd.t ? `?t=${sbsd.t}` : "");
-        let sbsdScriptBody = "";
-        await tStep("sbsd_script_fetch", async () => {
-          const r = await request(sbsdScriptUrl, { method: "GET", headers: { "user-agent": UA, referer: pdpUrl, "accept-language": ACCEPT_LANG } }, ctx);
-          sbsdScriptBody = await r.text();
-          return { status: r.status, note: `uuid=${sbsd.uuid.slice(0, 8)} ${sbsdScriptBody.length}b t=${sbsd.t || "-"}` };
-        });
-        const rounds = sbsd.t ? 1 : 2; // hard challenge = 1 round, passive = 2
-        for (let i = 0; i < rounds; i++) {
-          await tStep(`sbsd_round#${i}`, async () => {
-            const payload = await solveAkamaiSbsd({
-              jar: ctx.jar,
-              pageUrl: pdpUrl,
-              scriptBody: sbsdScriptBody,
-              uuid: sbsd.uuid,
-              oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
-              index: i,
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-            });
-            const res = await request(
-              sbsdPostUrl,
-              {
-                method: "POST",
-                headers: {
-                  "user-agent": UA,
-                  "content-type": "application/json",
-                  accept: "*/*",
-                  "accept-language": ACCEPT_LANG,
-                  origin,
-                  referer: pdpUrl,
-                },
-                body: JSON.stringify({ body: payload }),
-              },
-              ctx,
-            );
-            const bodyTxt = (await res.text()).slice(0, 200).replace(/\s+/g, " ");
-            const setCk = res.headers.get("set-cookie") ?? "";
-            const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
-            return { status: res.status, note: `body="${bodyTxt}" setCk=${setCk.slice(0, 120)} jarSbsd=${sbsdKeys}` };
-          });
-        }
-
-        {
-          const pdp2Headers = navHeaders({ referer: origin + "/", site: "same-origin" });
-          dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
-          await tStep("pdp_get#2", async () => {
-            const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-            pdpStatus = res.status;
-            pdpHtml = await res.text();
-            const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
-            const respHeaders = {
-              server: res.headers.get("server"),
-              "akamai-grn": res.headers.get("akamai-grn"),
-              "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
-            };
-            return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
-          });
-        }
-      }
+    if (parseSbsd(pdpHtml)) {
+      await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
+      await sleep(450, 950);
+      const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
+      dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+      await tStep("pdp_get#2", async () => {
+        const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
+        const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
+        const respHeaders = {
+          server: res.headers.get("server"),
+          "akamai-grn": res.headers.get("akamai-grn"),
+          "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
+        };
+        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+      });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
@@ -731,7 +716,7 @@ export const kmartAdapter = {
                 pageUrl: apiOrigin + "/",
                 scriptBody: apiSbsdBody,
                 uuid: apiSbsd.uuid,
-                oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+                oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
                 index: i,
                 userAgent: UA,
                 ip: egressIp,
