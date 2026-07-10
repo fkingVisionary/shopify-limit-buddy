@@ -38,7 +38,8 @@ with `undici` unblocks the proxy.
   a **raw AU residential-IP transport only** — Hyper still solves
   Akamai/SBSD/pixel challenges. We do not use Oxylabs' render mode
   because rendered requests use a fresh browser per call and can't reuse
-  the cookies we've been building up.
+  the cookies we've been building up. If a task supplies an explicit proxy,
+  that proxy overrides Oxylabs for the run and uses the Chrome TLS client.
 - `OXYLABS_UNBLOCKER_USER` / `OXYLABS_UNBLOCKER_PASS` — required when
   `EXECUTOR_HTTP_TRANSPORT=oxylabs`. Sub-user credentials from
   dashboard.oxylabs.io → Web Unblocker.

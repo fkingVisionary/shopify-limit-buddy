@@ -33,9 +33,9 @@ async function ensureTls() {
 const TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 
 // Oxylabs Web Unblocker — https://developers.oxylabs.io/scraper-apis/web-unblocker
-// Proxy-style endpoint. Handles TLS/JA3, Akamai sensor generation, and
-// residential IP rotation for us. When enabled, all outbound requests go
-// through it and the adapter can skip its own antibot solves.
+// Proxy-style endpoint used as the default transport when configured. An
+// explicit task proxy still wins so residential proxy tests actually exercise
+// the caller-provided IP instead of silently falling back to Oxylabs.
 const OXY_HOST = process.env.OXYLABS_UNBLOCKER_HOST ?? "unblock.oxylabs.io";
 const OXY_PORT = process.env.OXYLABS_UNBLOCKER_PORT ?? "60000";
 const OXY_USER = process.env.OXYLABS_UNBLOCKER_USER ?? "";
@@ -121,13 +121,15 @@ function parseProxy(raw) {
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
 class Dispatcher {
-  constructor(proxyUrl) {
+  constructor(proxyUrl, useOxylabs, useTls) {
     this.proxy = proxyUrl;
+    this.useOxylabs = useOxylabs;
+    this.useTls = useTls;
     this._tlsSession = null;
     this._proxyAgent = null;
   }
   undiciDispatcher() {
-    if (OXYLABS_ENABLED) {
+    if (this.useOxylabs) {
       if (!this._proxyAgent) {
         this._proxyAgent = new ProxyAgent({
           uri: oxyProxyUrl(),
@@ -188,12 +190,17 @@ class Dispatcher {
 }
 
 export function makeDispatcher(rawProxy) {
-  // When Oxylabs is enabled we ignore whatever proxy the caller passed —
-  // Oxylabs IS the proxy and it handles IP rotation for us.
-  const url = OXYLABS_ENABLED ? null : parseProxy(rawProxy);
+  const url = parseProxy(rawProxy);
+  // If the task supplies a residential proxy, use it. Otherwise, when enabled,
+  // Oxylabs is the default transport.
+  const useOxylabs = OXYLABS_ENABLED && !url;
+  // When Oxylabs is the default but a task explicitly supplies a proxy, use the
+  // Chrome TLS client with that proxy so Akamai sees a browser-like TLS/HTTP
+  // fingerprint instead of undici's default stack.
+  const useTls = TRANSPORT === "tls" || (OXYLABS_ENABLED && Boolean(url));
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
-  return new Dispatcher(url);
+  return new Dispatcher(url, useOxylabs, useTls);
 }
 
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
@@ -255,7 +262,7 @@ function wrapResponse(res, requestedUrl) {
       return Array.isArray(v) ? v.join(", ") : String(v);
     },
     getSetCookie() {
-      const v = rawHeaders["set-cookie"];
+      const v = rawHeaders["set-cookie"] ?? rawHeaders["Set-Cookie"];
       if (!v) return [];
       return Array.isArray(v) ? v : [String(v)];
     },
@@ -331,7 +338,7 @@ export async function request(url, opts, ctx) {
   // cookies we captured on previous hops. Instead, Hyper solves Akamai/SBSD/
   // pixel challenges into cookies bound to OUR UA + IP, and we forward
   // everything raw — same fingerprint on every hop.
-  if (OXYLABS_ENABLED) {
+  if (dispatcher.useOxylabs) {
     headers["x-oxylabs-geo-location"] = OXY_GEO;
     headers["x-oxylabs-force-headers"] = "1";
     if (ctx.oxylabsSessionId) {
@@ -342,7 +349,7 @@ export async function request(url, opts, ctx) {
 
 
 
-  if (TRANSPORT !== "tls") {
+  if (!dispatcher.useTls) {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {

@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, OXYLABS_ENABLED } from "../http.js";
+import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { randomUUID } from "node:crypto";
@@ -93,7 +93,7 @@ function navHeaders({ referer, site }) {
 function akamaiSensorHeaders({ requestOrigin, referer }) {
   return {
     "user-agent": UA,
-    "content-type": "application/x-www-form-urlencoded",
+    "content-type": "application/json",
     accept: "*/*",
     "accept-language": ACCEPT_LANG,
     origin: requestOrigin,
@@ -106,7 +106,7 @@ function akamaiSensorHeaders({ requestOrigin, referer }) {
 }
 
 function akamaiSensorBody(payload) {
-  return `sensor_data=${encodeURIComponent(payload)}`;
+  return JSON.stringify({ sensor_data: payload });
 }
 
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
@@ -163,9 +163,10 @@ export const kmartAdapter = {
       }
     };
 
-    // Oxylabs Web Unblocker handles Akamai for us — mark the session so http.js
-    // pins the same residential IP across the flow, and skip our own solves.
-    if (OXYLABS_ENABLED) {
+    // Oxylabs Web Unblocker is the default transport when no explicit proxy was
+    // supplied. If the task supplies a proxy, http.js uses that proxy instead so
+    // "with proxy" tests are not accidentally routed through Oxylabs.
+    if (ctx.dispatcher?.useOxylabs) {
       // Oxylabs Web Unblocker session_id: alphanumeric only, ≤32 chars.
       // Pin the same AU residential IP for the whole flow (max 10 min).
       // Web Unblocker is used as a raw transport only — Hyper still solves
@@ -373,7 +374,16 @@ export const kmartAdapter = {
           },
           ctx,
         );
-        return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…`, _ctx: r.context };
+        const body = await res.text().catch(() => "");
+        const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+        const setCookieNames = setCookies
+          .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+          .filter(Boolean);
+        return {
+          status: res.status,
+          note: `success=${/"success"\s*:\s*true/i.test(body)} setCookies=[${setCookieNames.join(",") || "none"}] abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}… ctx=${r.context?.length ?? 0}`,
+          _ctx: r.context,
+        };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
       prevContext = context;
       if (abckSolved(ctx.jar, i + 1)) {
