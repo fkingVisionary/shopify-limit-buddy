@@ -536,7 +536,7 @@ export const kmartAdapter = {
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
-    try {
+    if (!OXYLABS_ENABLED) try {
       const pixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: pdpUrl,
