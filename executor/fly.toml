@@ -1,5 +1,5 @@
 app = "j1ms-bot-executor"
-primary_region = "lax"
+primary_region = "syd"
 
 [build]
   dockerfile = "Dockerfile"
