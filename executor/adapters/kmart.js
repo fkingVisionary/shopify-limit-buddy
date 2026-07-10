@@ -147,11 +147,16 @@ export const kmartAdapter = {
     // Oxylabs Web Unblocker handles Akamai for us — mark the session so http.js
     // pins the same residential IP across the flow, and skip our own solves.
     if (OXYLABS_ENABLED) {
-      ctx.oxylabsSessionId = randomUUID();
+      // Oxylabs Web Unblocker session_id: alphanumeric only, ≤32 chars.
+      // A UUID with dashes is silently rejected, which is why the IP rotated
+      // mid-run and pdp_get 400'd on us. Strip dashes → 32 alnum chars.
+      ctx.oxylabsSessionId = randomUUID().replace(/-/g, "");
+      // Hold the same residential IP for the full flow (max 10 minutes).
+      ctx.oxylabsSessionTime = "10";
       steps.push({
         step: "unblocker",
         ok: true,
-        note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} (skipping Akamai/SBSD/pixel solves)`,
+        note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} ttl=10m (skipping Akamai/SBSD/pixel solves)`,
       });
     } else if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
