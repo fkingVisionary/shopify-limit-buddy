@@ -345,7 +345,6 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-    } // end !OXYLABS_ENABLED
 
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
