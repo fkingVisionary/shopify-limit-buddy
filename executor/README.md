@@ -33,17 +33,35 @@ with `undici` unblocks the proxy.
 - `EXECUTOR_TOKEN` — shared secret. The Lovable app sends this in the
   `Authorization` header. Generate with `openssl rand -hex 32`.
 - `PORT` — default `8080`.
-- `EXECUTOR_HTTP_TRANSPORT` — default `undici`. Set to `tls` only for controlled
-  `node-tls-client` experiments; the native TLS path can crash the process and
-  show up as an empty `502` from `/run`.
+- `EXECUTOR_HTTP_TRANSPORT` — `undici` (default), `tls`, or `oxylabs`.
+  Set to `oxylabs` to route all requests through Oxylabs Web Unblocker,
+  which handles Akamai TLS/JA3 + sensor generation + residential IP
+  rotation on their side. When enabled the Kmart adapter skips its own
+  Akamai / SBSD / pixel solves.
+- `OXYLABS_UNBLOCKER_USER` / `OXYLABS_UNBLOCKER_PASS` — required when
+  `EXECUTOR_HTTP_TRANSPORT=oxylabs`. Sub-user credentials from
+  dashboard.oxylabs.io → Web Unblocker.
+- `OXYLABS_UNBLOCKER_HOST` (default `unblock.oxylabs.io`),
+  `OXYLABS_UNBLOCKER_PORT` (default `60000`),
+  `OXYLABS_UNBLOCKER_GEO` (default `Australia`) — override only if
+  Oxylabs assigns you a different endpoint or you need another geo.
 
-## Important deploy note
+## Deploy note
 
-The default executor path is now `undici`, not native TLS, so `/run` should
-return a JSON step timeline even when Kmart blocks a request. If you explicitly
-set `EXECUTOR_HTTP_TRANSPORT=tls`, the Docker image prewarms `node-tls-client`
-during build, but an instant empty `502` still means the native TLS process path
-crashed before Fastify could serialize an error.
+To enable Oxylabs on Fly, set the three secrets and redeploy:
+
+```bash
+fly secrets set \
+  EXECUTOR_HTTP_TRANSPORT=oxylabs \
+  OXYLABS_UNBLOCKER_USER=... \
+  OXYLABS_UNBLOCKER_PASS=... \
+  -a <your-executor-app>
+```
+
+If you explicitly set `EXECUTOR_HTTP_TRANSPORT=tls`, the Docker image
+prewarms `node-tls-client` during build, but an instant empty `502` still
+means the native TLS process path crashed before Fastify could serialize
+an error.
 
 ## Local run
 

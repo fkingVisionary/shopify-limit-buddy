@@ -5,7 +5,7 @@
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
-import { makeDispatcher, createJar, request, UA } from "./http.js";
+import { makeDispatcher, createJar, request, UA, OXYLABS_ENABLED } from "./http.js";
 import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
 import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
 
@@ -25,7 +25,13 @@ if (!TOKEN) {
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
-app.get("/health", async () => ({ ok: true, ts: Date.now(), inflight, cap: MAX_CONCURRENT }));
+app.get("/health", async () => ({
+  ok: true,
+  ts: Date.now(),
+  inflight,
+  cap: MAX_CONCURRENT,
+  transport: OXYLABS_ENABLED ? "oxylabs" : (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici"),
+}));
 
 function checkAuth(req, reply) {
   const auth = req.headers.authorization ?? "";

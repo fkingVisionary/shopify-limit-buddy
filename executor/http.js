@@ -32,6 +32,20 @@ async function ensureTls() {
 
 const TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 
+// Oxylabs Web Unblocker — https://developers.oxylabs.io/scraper-apis/web-unblocker
+// Proxy-style endpoint. Handles TLS/JA3, Akamai sensor generation, and
+// residential IP rotation for us. When enabled, all outbound requests go
+// through it and the adapter can skip its own antibot solves.
+const OXY_HOST = process.env.OXYLABS_UNBLOCKER_HOST ?? "unblock.oxylabs.io";
+const OXY_PORT = process.env.OXYLABS_UNBLOCKER_PORT ?? "60000";
+const OXY_USER = process.env.OXYLABS_UNBLOCKER_USER ?? "";
+const OXY_PASS = process.env.OXYLABS_UNBLOCKER_PASS ?? "";
+const OXY_GEO = process.env.OXYLABS_UNBLOCKER_GEO ?? "Australia";
+export const OXYLABS_ENABLED = TRANSPORT === "oxylabs" && OXY_USER && OXY_PASS;
+function oxyProxyUrl() {
+  return `http://${encodeURIComponent(OXY_USER)}:${encodeURIComponent(OXY_PASS)}@${OXY_HOST}:${OXY_PORT}`;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -113,6 +127,17 @@ class Dispatcher {
     this._proxyAgent = null;
   }
   undiciDispatcher() {
+    if (OXYLABS_ENABLED) {
+      if (!this._proxyAgent) {
+        this._proxyAgent = new ProxyAgent({
+          uri: oxyProxyUrl(),
+          // Oxylabs terminates TLS on their side and re-signs upstream certs;
+          // undici must accept the intercepted chain.
+          requestTls: { rejectUnauthorized: false },
+        });
+      }
+      return this._proxyAgent;
+    }
     if (!this.proxy) return undefined;
     if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
     return this._proxyAgent;
@@ -163,7 +188,9 @@ class Dispatcher {
 }
 
 export function makeDispatcher(rawProxy) {
-  const url = parseProxy(rawProxy);
+  // When Oxylabs is enabled we ignore whatever proxy the caller passed —
+  // Oxylabs IS the proxy and it handles IP rotation for us.
+  const url = OXYLABS_ENABLED ? null : parseProxy(rawProxy);
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
   return new Dispatcher(url);
@@ -289,6 +316,25 @@ export async function request(url, opts, ctx) {
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
+
+  // Oxylabs Web Unblocker headers. These are stripped by Oxylabs before the
+  // request leaves their edge — they never reach the target.
+  //   x-oxylabs-geo-location: pin egress geo so Kmart AU sees an AU IP.
+  //   x-oxylabs-render: html   → run the full browser + Akamai solve pipeline.
+  //   x-oxylabs-session-id     → stick to one residential IP for the flow.
+  //   x-oxylabs-force-headers  → send exactly the headers we specified.
+  if (OXYLABS_ENABLED) {
+    headers["x-oxylabs-geo-location"] = OXY_GEO;
+    headers["x-oxylabs-force-headers"] = "1";
+    if (ctx.oxylabsSessionId) headers["x-oxylabs-session-id"] = ctx.oxylabsSessionId;
+    // Only ask Oxylabs to render (spin up a headless browser + solve Akamai)
+    // for HTML navigation requests; JSON/GraphQL POSTs use raw fetch through
+    // the same residential IP session, which is faster and cheaper.
+    const isNav =
+      method === "GET" &&
+      String(headers.accept ?? "").includes("text/html");
+    if (isNav && opts?.oxyRender !== false) headers["x-oxylabs-render"] = "html";
+  }
 
   if (TRANSPORT !== "tls") {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;

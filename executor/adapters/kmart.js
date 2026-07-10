@@ -9,9 +9,10 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA } from "../http.js";
+import { request, UA, OXYLABS_ENABLED } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+import { randomUUID } from "node:crypto";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -143,7 +144,16 @@ export const kmartAdapter = {
       }
     };
 
-    if (!hyperConfigured()) {
+    // Oxylabs Web Unblocker handles Akamai for us — mark the session so http.js
+    // pins the same residential IP across the flow, and skip our own solves.
+    if (OXYLABS_ENABLED) {
+      ctx.oxylabsSessionId = randomUUID();
+      steps.push({
+        step: "unblocker",
+        ok: true,
+        note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} (skipping Akamai/SBSD/pixel solves)`,
+      });
+    } else if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
       return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
     }
@@ -182,12 +192,12 @@ export const kmartAdapter = {
       return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
     });
 
-    if (!scriptPath) {
+    if (!scriptPath && !OXYLABS_ENABLED) {
       // Without the script path we can't generate a sensor. Fail fast.
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-    const scriptUrl = origin + scriptPath;
+    const scriptUrl = scriptPath ? origin + scriptPath : null;
 
     // 2b. PROACTIVE SBSD SOLVE. Kmart runs passive SBSD on the whole site.
     //     Real Chrome fetches + solves the SBSD script on the homepage
@@ -263,6 +273,7 @@ export const kmartAdapter = {
       }
       return true;
     };
+    if (!OXYLABS_ENABLED) {
     try {
       await runSbsd(html, origin + "/", "sbsd_home");
     } catch (e) {
@@ -329,6 +340,7 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
+    } // end !OXYLABS_ENABLED
 
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
@@ -365,7 +377,7 @@ export const kmartAdapter = {
     //     posts arrive as a `bm_so` cookie that Akamai's risk engine reads on
     //     the next request. Non-fatal: most warm_home responses don't carry
     //     a pixel, in which case this is a no-op.
-    try {
+    if (!OXYLABS_ENABLED) try {
       const warmPixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: origin + "/",
@@ -500,7 +512,7 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    if (parseSbsd(pdpHtml)) {
+    if (!OXYLABS_ENABLED && parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
@@ -517,14 +529,14 @@ export const kmartAdapter = {
         };
         return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
       });
-    } else if (pdpStatus >= 400) {
+    } else if (!OXYLABS_ENABLED && pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
 
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
-    try {
+    if (!OXYLABS_ENABLED) try {
       const pixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: pdpUrl,
@@ -599,6 +611,7 @@ export const kmartAdapter = {
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
+      if (!OXYLABS_ENABLED) {
       // 7a. Solve Akamai for api.kmart.com.au — separate _abck scope.
       //     Cookie jar is name-keyed (not domain-keyed), so the api-host
       //     sensor responses will overwrite the www host's _abck. That's
@@ -744,6 +757,9 @@ export const kmartAdapter = {
           }
         }
       }
+      } // end !OXYLABS_ENABLED api warm/sensor block
+
+
 
 
       // 7b. getActiveBag — me.activeCart may be null on first run.
