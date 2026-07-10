@@ -195,6 +195,19 @@ export const kmartAdapter = {
       );
       html = await res.text();
       scriptPath = findAkamaiScriptPath(html);
+      // Diagnostic: expose which cookies Kmart (via Oxylabs) actually set —
+      // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
+      // "missing abck" and none of the downstream steps can succeed.
+      const setCookies =
+        typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+      const setCookieNames = setCookies
+        .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+        .filter(Boolean);
+      steps.push({
+        step: "warm_home:cookies",
+        ok: setCookieNames.includes("_abck"),
+        note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}]`,
+      });
       return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
     });
 
@@ -297,6 +310,11 @@ export const kmartAdapter = {
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need `~0~` in
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
+    steps.push({
+      step: "akamai_sensor:pre",
+      ok: ctx.jar.has("_abck"),
+      note: `abck=${(ctx.jar.get("_abck") ?? "(empty)").slice(0, 60)} bmsz=${(ctx.jar.get("bm_sz") ?? "(empty)").slice(0, 30)} scriptBytes=${scriptBody?.length ?? 0}`,
+    });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
         const r = await solveAkamaiSensor({
