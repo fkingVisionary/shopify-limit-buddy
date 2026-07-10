@@ -144,6 +144,15 @@ export const kmartAdapter = {
       }
     };
 
+    // Oxylabs Web Unblocker path. Skips the Akamai/SBSD/pixel solves entirely
+    // — Oxylabs handles all of that behind their proxy. We only need to fetch
+    // the PDP (for SKU extraction) and drive the commercetools cart mutations.
+    if (OXYLABS_ENABLED) {
+      ctx.oxylabsSessionId = randomUUID();
+      steps.push({ step: "unblocker", ok: true, note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)}` });
+      return await runViaUnblocker(task, ctx, steps, tStep);
+    }
+
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
       return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
