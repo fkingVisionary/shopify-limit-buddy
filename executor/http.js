@@ -127,6 +127,17 @@ class Dispatcher {
     this._proxyAgent = null;
   }
   undiciDispatcher() {
+    if (OXYLABS_ENABLED) {
+      if (!this._proxyAgent) {
+        this._proxyAgent = new ProxyAgent({
+          uri: oxyProxyUrl(),
+          // Oxylabs terminates TLS on their side and re-signs upstream certs;
+          // undici must accept the intercepted chain.
+          requestTls: { rejectUnauthorized: false },
+        });
+      }
+      return this._proxyAgent;
+    }
     if (!this.proxy) return undefined;
     if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
     return this._proxyAgent;
@@ -177,7 +188,9 @@ class Dispatcher {
 }
 
 export function makeDispatcher(rawProxy) {
-  const url = parseProxy(rawProxy);
+  // When Oxylabs is enabled we ignore whatever proxy the caller passed —
+  // Oxylabs IS the proxy and it handles IP rotation for us.
+  const url = OXYLABS_ENABLED ? null : parseProxy(rawProxy);
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
   return new Dispatcher(url);
