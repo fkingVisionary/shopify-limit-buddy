@@ -326,7 +326,14 @@ export async function request(url, opts, ctx) {
   if (OXYLABS_ENABLED) {
     headers["x-oxylabs-geo-location"] = OXY_GEO;
     headers["x-oxylabs-force-headers"] = "1";
-    if (ctx.oxylabsSessionId) headers["x-oxylabs-session-id"] = ctx.oxylabsSessionId;
+    if (ctx.oxylabsSessionId) {
+      headers["x-oxylabs-session-id"] = ctx.oxylabsSessionId;
+      // session-time (minutes, max 10) pins the residential IP for the whole
+      // flow. Without it, Oxylabs releases the IP after the first request and
+      // subsequent hops land on a different exit — Akamai/Kmart then invalidate
+      // the cookies from the first IP and return 400/550.
+      headers["x-oxylabs-session-time"] = ctx.oxylabsSessionTime ?? "10";
+    }
     // Only ask Oxylabs to render (spin up a headless browser + solve Akamai)
     // for HTML navigation requests; JSON/GraphQL POSTs use raw fetch through
     // the same residential IP session, which is faster and cheaper.
