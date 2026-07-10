@@ -192,12 +192,12 @@ export const kmartAdapter = {
       return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
     });
 
-    if (!scriptPath) {
+    if (!scriptPath && !OXYLABS_ENABLED) {
       // Without the script path we can't generate a sensor. Fail fast.
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-    const scriptUrl = origin + scriptPath;
+    const scriptUrl = scriptPath ? origin + scriptPath : null;
 
     // 2b. PROACTIVE SBSD SOLVE. Kmart runs passive SBSD on the whole site.
     //     Real Chrome fetches + solves the SBSD script on the homepage
