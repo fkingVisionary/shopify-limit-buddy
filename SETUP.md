@@ -59,12 +59,15 @@ Leave `region` as `syd` (Sydney — closest to Kmart AU, fastest checkouts) and 
 Tap **Run workflow**. ~2 minutes later the job finishes and the logs print:
 
 ```
-Executor hostname:
-j1ms-bot-executor.fly.dev
+j1ms-bot-executor.fly.dev  region=syd  (requested=syd, fallback=lax)
 
 Health check:
-{"ok":true}
+{"ok":true,"transport":"oxylabs"}
+Oxylabs Web Unblocker: ACTIVE
+Region: Sydney (ideal for Kmart AU latency)
 ```
+
+The `region=` line tells you where you actually landed. If it says `region=lax` the fallback fired (Sydney was out of capacity) — the executor still works via Oxylabs' AU IPs, just with ~150ms extra latency. Re-run the workflow later to try Sydney again; capacity usually recovers within hours.
 
 If the health check fails, open the job log and look for the failing step.
 
