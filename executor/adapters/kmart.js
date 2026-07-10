@@ -310,6 +310,11 @@ export const kmartAdapter = {
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need `~0~` in
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
+    steps.push({
+      step: "akamai_sensor:pre",
+      ok: ctx.jar.has("_abck"),
+      note: `abck=${(ctx.jar.get("_abck") ?? "(empty)").slice(0, 60)} bmsz=${(ctx.jar.get("bm_sz") ?? "(empty)").slice(0, 30)} scriptBytes=${scriptBody?.length ?? 0}`,
+    });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
         const r = await solveAkamaiSensor({
