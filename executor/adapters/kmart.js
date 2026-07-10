@@ -232,7 +232,7 @@ export const kmartAdapter = {
             pageUrl,
             scriptBody: sbsdBody,
             uuid: parsed.uuid,
-            oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
             index: i,
             userAgent: UA,
             ip: egressIp,
@@ -407,6 +407,9 @@ export const kmartAdapter = {
     //     chain (none → home → category → pdp) and an extra 200 to learn from.
     const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
     const catUrl = origin + catPath;
+    let categoryStatus = 0;
+    let categoryHtml = "";
+    let categoryOk = false;
     await sleep(700, 1400); // brief glance at homepage before the click
     await tStep("category_browse", async () => {
       const res = await request(
@@ -414,9 +417,39 @@ export const kmartAdapter = {
         { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
         ctx,
       );
-      const body = await res.text();
-      return { status: res.status, ok: res.status < 400, note: `${catPath} ${body.length}b` };
-    }).catch(() => {});
+      categoryStatus = res.status;
+      categoryHtml = await res.text();
+      categoryOk = res.status < 400;
+      const hasSbsd = Boolean(parseSbsd(categoryHtml));
+      return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
+    });
+
+    // If the category hop is the first route to expose the SBSD block, solve it
+    // there and retry the category before moving on. A real browser cannot click
+    // from a 403 category page into the PDP, so keeping that failed hop in the
+    // journey makes the next request look impossible.
+    if (!categoryOk && categoryHtml) {
+      try {
+        const solvedCategorySbsd = await runSbsd(categoryHtml, catUrl, "sbsd_category");
+        if (solvedCategorySbsd) {
+          await sleep(350, 850);
+          await tStep("category_browse#2", async () => {
+            const res = await request(
+              catUrl,
+              { method: "GET", headers: navHeaders({ referer: origin + "/", site: "same-origin" }) },
+              ctx,
+            );
+            categoryStatus = res.status;
+            categoryHtml = await res.text();
+            categoryOk = res.status < 400;
+            const snippet = categoryHtml.replace(/\s+/g, " ").trim().slice(0, 180);
+            return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b | ${snippet}` };
+          });
+        }
+      } catch (e) {
+        steps.push({ step: "sbsd_category:error", ok: false, note: e?.message ?? String(e) });
+      }
+    }
     // Human dwell on the category page before clicking through to the PDP.
     // 1.5–3s is the critical gap — Akamai's risk model is sensitive to the
     // home→PDP interval being unrealistically short.
@@ -426,7 +459,8 @@ export const kmartAdapter = {
     let pdpStatus = 0;
     let pdpHtml = "";
     {
-      const pdpHeaders = navHeaders({ referer: catUrl, site: "same-origin" });
+      const pdpReferer = categoryOk ? catUrl : origin + "/";
+      const pdpHeaders = navHeaders({ referer: pdpReferer, site: "same-origin" });
       dumpRequestState("pdp_get:recon", pdpUrl, pdpHeaders);
       steps.push({
         step: "pdp_get:hdrs",
@@ -486,7 +520,7 @@ export const kmartAdapter = {
               pageUrl: pdpUrl,
               scriptBody: sbsdScriptBody,
               uuid: sbsd.uuid,
-              oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+              oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
               index: i,
               userAgent: UA,
               ip: egressIp,
@@ -516,7 +550,7 @@ export const kmartAdapter = {
         }
 
         {
-          const pdp2Headers = navHeaders({ referer: origin + "/", site: "same-origin" });
+          const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
           dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
           await tStep("pdp_get#2", async () => {
             const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
@@ -731,7 +765,7 @@ export const kmartAdapter = {
                 pageUrl: apiOrigin + "/",
                 scriptBody: apiSbsdBody,
                 uuid: apiSbsd.uuid,
-                oCookie: ctx.jar.get("sbsd_o") ?? ctx.jar.get("bm_so") ?? "",
+                oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
                 index: i,
                 userAgent: UA,
                 ip: egressIp,
