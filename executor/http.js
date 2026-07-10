@@ -317,6 +317,25 @@ export async function request(url, opts, ctx) {
     ...(opts?.headers ?? {}),
   };
 
+  // Oxylabs Web Unblocker headers. These are stripped by Oxylabs before the
+  // request leaves their edge — they never reach the target.
+  //   x-oxylabs-geo-location: pin egress geo so Kmart AU sees an AU IP.
+  //   x-oxylabs-render: html   → run the full browser + Akamai solve pipeline.
+  //   x-oxylabs-session-id     → stick to one residential IP for the flow.
+  //   x-oxylabs-force-headers  → send exactly the headers we specified.
+  if (OXYLABS_ENABLED) {
+    headers["x-oxylabs-geo-location"] = OXY_GEO;
+    headers["x-oxylabs-force-headers"] = "1";
+    if (ctx.oxylabsSessionId) headers["x-oxylabs-session-id"] = ctx.oxylabsSessionId;
+    // Only ask Oxylabs to render (spin up a headless browser + solve Akamai)
+    // for HTML navigation requests; JSON/GraphQL POSTs use raw fetch through
+    // the same residential IP session, which is faster and cheaper.
+    const isNav =
+      method === "GET" &&
+      String(headers.accept ?? "").includes("text/html");
+    if (isNav && opts?.oxyRender !== false) headers["x-oxylabs-render"] = "html";
+  }
+
   if (TRANSPORT !== "tls") {
     const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
     let lastError;
