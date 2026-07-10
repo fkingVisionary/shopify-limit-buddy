@@ -10,7 +10,6 @@
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
 //   UA                       → Chrome / macOS user-agent string
 
-import { Session, ClientIdentifier, initTLS } from "node-tls-client";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
 const UA =
@@ -20,7 +19,13 @@ const UA =
 // hosts the Go shared library; initTLS must be awaited once before the first
 // Session is constructed. Cache the promise so concurrent callers share it.
 let tlsInitPromise = null;
-function ensureTls() {
+let tlsClientModulePromise = null;
+async function loadTlsClient() {
+  if (!tlsClientModulePromise) tlsClientModulePromise = import("node-tls-client");
+  return tlsClientModulePromise;
+}
+async function ensureTls() {
+  const { initTLS } = await loadTlsClient();
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
 }
@@ -99,6 +104,7 @@ class Dispatcher {
   async tlsSession() {
     if (this._tlsSession) return this._tlsSession;
     await ensureTls();
+    const { Session, ClientIdentifier } = await loadTlsClient();
     this._tlsSession = new Session({
       // node-tls-client@2.1.0 only ships Chrome profiles up to 131. Passing an
       // unsupported identifier silently falls back while our headers still say
