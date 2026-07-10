@@ -163,9 +163,10 @@ export const kmartAdapter = {
       }
     };
 
-    // Oxylabs Web Unblocker handles Akamai for us — mark the session so http.js
-    // pins the same residential IP across the flow, and skip our own solves.
-    if (OXYLABS_ENABLED) {
+    // Oxylabs Web Unblocker is the default transport when no explicit proxy was
+    // supplied. If the task supplies a proxy, http.js uses that proxy instead so
+    // "with proxy" tests are not accidentally routed through Oxylabs.
+    if (ctx.dispatcher?.useOxylabs) {
       // Oxylabs Web Unblocker session_id: alphanumeric only, ≤32 chars.
       // Pin the same AU residential IP for the whole flow (max 10 min).
       // Web Unblocker is used as a raw transport only — Hyper still solves
