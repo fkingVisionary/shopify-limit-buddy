@@ -130,7 +130,7 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 |---|---|
 | Workflow fails on "Verify FLY_API_TOKEN" | Secret not set or misnamed — check repo Settings |
 | Workflow fails on "Create Fly app" | App name taken globally — pick a unique name and pass it as the `app_name` workflow input |
-| Workflow fails with `machine is replacing` or `no capacity available in syd` | Re-run the workflow with `create_app` OFF and leave `region` as `lax` |
+| Workflow fails with `machine is replacing` or `no capacity available in syd` | Nothing to do — the workflow auto-falls-back to `lax`. Re-run later to try Sydney again. |
 | `pdp_get` returns 403 | Proxy isn't residential AU — swap proxy provider |
 | `antibot_misconfigured` in chain output | `HYPER_API_KEY` missing or rejected on Fly — re-check the GitHub secret and re-run workflow |
 | Want to scale down / stop spending | Fly dashboard → app → Scale → set min machines to 0 (already the default) |
