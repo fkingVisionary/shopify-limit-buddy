@@ -374,7 +374,16 @@ export const kmartAdapter = {
           },
           ctx,
         );
-        return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…`, _ctx: r.context };
+        const body = await res.text().catch(() => "");
+        const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+        const setCookieNames = setCookies
+          .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+          .filter(Boolean);
+        return {
+          status: res.status,
+          note: `success=${/"success"\s*:\s*true/i.test(body)} setCookies=[${setCookieNames.join(",") || "none"}] abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}… ctx=${r.context?.length ?? 0}`,
+          _ctx: r.context,
+        };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
       prevContext = context;
       if (abckSolved(ctx.jar, i + 1)) {
