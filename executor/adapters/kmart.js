@@ -1019,11 +1019,11 @@ export const kmartAdapter = {
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
-          operationName: "getActiveBag",
+          operationName: "getMyActiveCart",
           variables: {},
           query:
-            "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
-        });
+            "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+        }, "cart_get_initial");
         const txt = await res.text();
         try {
           const j = JSON.parse(txt);
@@ -1071,7 +1071,7 @@ export const kmartAdapter = {
 
             query:
               "mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }",
-          });
+          }, "cart_create");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -1124,7 +1124,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
-          });
+          }, "cart_probe_active");
           const txt = await res.text();
           return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
         });
@@ -1134,7 +1134,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
-          });
+          }, "cart_probe_full");
           const txt = await res.text();
           return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
         });
@@ -1154,7 +1154,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateQuery,
-          });
+          }, "cart_atc");
 
           const txt = await res.text();
           let lineCount = 0;
@@ -1202,7 +1202,7 @@ fragment LineItemFields on LineItem {
             operationName: "getMyActiveCart",
             variables: {},
             query: verifyQuery,
-          });
+          }, "cart_verify");
           const txt = await res.text();
           let hasSku = false;
           let lineCount = 0;
@@ -1371,7 +1371,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateNoStockQuery,
-          });
+          }, "addr_shipping");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -1398,7 +1398,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateNoStockQuery,
-          });
+          }, "addr_billing");
           const txt = await res.text();
           let hasBilling = false;
           let hasStreet = false;
@@ -1423,7 +1423,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getMyActiveBag { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity variant { sku __typename } __typename } billingAddress { email __typename } shippingAddress { email __typename } __typename } __typename } }",
-          });
+          }, "checkout_refresh");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -1553,7 +1553,7 @@ fragment LineItemFields on LineItem {
               },
               query:
                 "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String, $useSavedCard: Boolean, $saveCardOption: Boolean) {\n  create3DSToken(\n    oneTimeToken: $oneTimeToken\n    gatewayType: $gatewayType\n    useSavedCard: $useSavedCard\n    saveCardOption: $saveCardOption\n  )\n}\n",
-            });
+            }, "create_3ds");
             const txt = await res.text();
             try {
               const j = JSON.parse(txt);
@@ -1784,7 +1784,7 @@ fragment LineItemFields on LineItem {
                 },
                 query:
                   "mutation chargePayDockWithToken($type: TokenType!, $token: String!, $gatewayType: String!, $saveCard: Boolean, $isCreateAccount: Boolean) {\n  chargePayDockWithToken(\n    type: $type\n    token: $token\n    gatewayType: $gatewayType\n    saveCard: $saveCard\n    isCreateAccount: $isCreateAccount\n  ) {\n    paydockChargeId\n    paymentId\n    orderNumber\n    accountCreationStatus\n    __typename\n  }\n}\n",
-              });
+              }, "place_order");
               const txt = await res.text();
               try {
                 const j = JSON.parse(txt);
