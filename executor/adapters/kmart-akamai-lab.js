@@ -342,11 +342,19 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       if (solved) break;
     }
 
-    const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds: sensorRounds });
-    addStep({ step: solved ? "akamai_lab_pass" : "akamai_lab_fail", ok: solved, note: verdict });
+    const finalAbckMarker = marker(jar.get("_abck"));
+    const classification = classifyEdge({
+      status: initialRes.status,
+      hasAbck: jar.has("_abck"),
+      abckMarker: finalAbckMarker,
+      solved,
+    });
+    const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds: sensorRounds, classification });
+    addStep({ step: solved ? "akamai_lab_pass" : "akamai_lab_fail", ok: solved, note: `classification=${classification} ${verdict}` });
 
     return {
       ok: solved,
+      classification,
       verdict,
       targetUrl,
       transport: dispatcher.transport,
@@ -356,6 +364,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       initialIp,
       finalIp: currentIp,
       ipStable: !initialIp || !currentIp || initialIp === currentIp,
+      initialStatus: initialRes.status,
       scriptUrl,
       scriptBytes: scriptBody.length,
       hyper: hyperSensorInputShape(),
