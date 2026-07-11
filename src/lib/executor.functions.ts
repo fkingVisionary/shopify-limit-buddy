@@ -44,6 +44,7 @@ const AkamaiLabInputSchema = z.object({
   url: z.string().url().max(500),
   proxy: z.string().min(7).max(500).optional().nullable(),
   rounds: z.number().int().min(1).max(6).default(3),
+  baselineTrace: z.unknown().optional().nullable(),
 });
 
 export const runOnExecutor = createServerFn({ method: "POST" })
@@ -145,6 +146,7 @@ export const runAkamaiLab = createServerFn({ method: "POST" })
           url: data.url,
           proxy: data.proxy?.trim() || null,
           rounds: data.rounds,
+          baselineTrace: data.baselineTrace ?? null,
         }),
       });
       const rawBody = await res.text().catch(() => "");
