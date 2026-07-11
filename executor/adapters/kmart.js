@@ -946,8 +946,12 @@ export const kmartAdapter = {
                 country: "AU",
                 shippingAddress: { country: "AU" },
                 postcodeSelector: postcodeSelectorJson,
+                // HAR entry #343 always sends selectedCncStoreId on cart
+                // creation. Include verbatim; harmless for home delivery.
+                selectedCncStoreId: "1241",
               },
             },
+
             query:
               "mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }",
           });
