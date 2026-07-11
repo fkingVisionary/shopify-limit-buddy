@@ -1,101 +1,212 @@
 #!/usr/bin/env node
 // HAR diff machine.
 //
-// Compares a real browser HAR (Kmart AU end-to-end checkout) against our
-// executor's request timeline. Extracts the "golden" sequence from the HAR
-// and prints per-step deltas (missing calls, header drift, variable drift).
-//
-// Usage:
-//   node executor/scripts/har-diff.mjs <har-path> [--json executor-run.json]
-//
-// If no executor run json is supplied, it prints the golden checklist only
-// (useful for scoping which requests we still need to implement).
-//
-// The golden checklist collapses noisy UI/analytics traffic and highlights
-// only the calls that materially move the checkout forward:
-//   1. api.kmart.com.au/shopping-agent/v1/get-token   (bot-manager seed)
-//   2. GraphQL: getMyActiveCart / createMyBag / updateMyBag(addLineItem)
-//   3. GraphQL: SetCustomPostcode + setShippingAddress + setBillingAddress
-//   4. api.paydock.com/v1/payment_sources/tokens      (card → oneTimeToken)
-//   5. GraphQL: create3DSToken                        (JWT session data)
-//   6. api.paydock.com/v1/charges/standalone-3ds/handle    (→ charge_3ds_id)
-//   7. api.paydock.com/v1/charges/standalone-3ds/process   (frictionless)
-//   8. GraphQL: chargePayDockWithToken                (→ orderNumber)
+// Compares a successful Kmart browser HAR against an executor debug trace.
+// It is intentionally conservative: values that naturally vary (ids, tokens,
+// exact cookies) are redacted or shape-compared, while headers and operation
+// ordering that influence Akamai/commercetools are reported precisely.
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const HAR_HOSTS = new Set([
-  "www.kmart.com.au",
-  "api.kmart.com.au",
-  "auth.kmart.com.au",
-  "api.paydock.com",
-  "widget.paydock.com",
-  "paydock.as1.gpayments.net",
-]);
-
-// Canonical order-critical operation names + their expected variable shape.
-// The diff engine keys off (host + path + operationName).
 const CRITICAL = [
-  { key: "seed", host: "api.kmart.com.au", path: "/shopping-agent/v1/get-token", method: "POST", note: "Bot-manager seed. Body: {sessionId:<uuid>}. Sets ak_bmsc + bm_sv for api host." },
-  { key: "cart_get", host: "api.kmart.com.au", op: "getMyActiveCart", note: "Guest cart probe. May return activeCart:null on first call." },
-  { key: "cart_create", host: "api.kmart.com.au", op: "createMyBag", note: "Creates cart with postcodeSelector JSON + optional selectedCncStoreId." },
-  { key: "cart_atc", host: "api.kmart.com.au", op: "updateMyBag", note: "addLineItem {sku,quantity,addToCartSource:'PDP'}." },
-  { key: "cart_verify", host: "api.kmart.com.au", op: "getMyActiveCart", note: "Verify cart after ATC." },
-  { key: "postcode", host: "api.kmart.com.au", op: "SetCustomPostcode", optional: true, note: "Optional — only if switching postcode." },
-  { key: "addr_shipping", host: "api.kmart.com.au", op: "updateMyBagWithoutBagStockAvailability", note: "setShippingAddress with FULL address (streetName as '<number> <street>' string, company:'', deliveryInstructions:'', isAuthorisedToLeave:true, additionalAddressInfo:'{\"dpid\":null}', region:null)." },
-  { key: "addr_billing", host: "api.kmart.com.au", op: "updateMyBagWithoutBagStockAvailability", note: "Same call with setShippingAddress + setBillingAddress. 3DS validator needs streetName/state/postalCode on billing." },
-  { key: "paydock_tokenize", host: "api.paydock.com", path: "/v1/payment_sources/tokens", method: "POST", note: "PAN → UUID oneTimeToken. Uses x-user-public-key header." },
-  { key: "create_3ds", host: "api.kmart.com.au", op: "create3DSToken", note: "Returns base64(JSON{content:<JWT>,format:'standalone_3ds'}). Variables: {oneTimeToken, gatewayType:'MasterCard', useSavedCard:false, saveCardOption:false}." },
-  { key: "paydock_handle", host: "api.paydock.com", path: "/v1/charges/standalone-3ds/handle", method: "POST", note: "Query: ?x-access-token=<JWT extracted from create3DSToken>. Body: requestorTransId=<uuid>&event=InitAuthTimedOut&param=<base64 browser env>. Returns 302 with Location containing charge_3ds_id." },
-  { key: "paydock_process", host: "api.paydock.com", path: "/v1/charges/standalone-3ds/process", method: "POST", note: "Header x-access-token=<second JWT from /handle response cookie or reused>. Body: {charge_3ds_id}. Returns {resource.data.result.frictionless:true} on success." },
-  { key: "place_order", host: "api.kmart.com.au", op: "chargePayDockWithToken", note: "Variables: {type:'TOKEN_3DS', token:<charge_3ds_id>, gatewayType:'MasterCard', saveCard:false, isCreateAccount:false}. Returns orderNumber." },
+  {
+    key: "seed",
+    host: "api.kmart.com.au",
+    path: "/shopping-agent/v1/get-token",
+    method: "POST",
+    requiredHeaders: ["accept", "content-type", "origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "priority", "x-visitor-id", "newrelic", "traceparent", "tracestate"],
+  },
+  {
+    key: "cart_get_initial",
+    host: "api.kmart.com.au",
+    op: "getMyActiveCart",
+    ordinal: 1,
+    requiredHeaders: ["cache-control", "pragma", "origin", "referer", "priority", "newrelic", "traceparent", "tracestate"],
+  },
+  {
+    key: "cart_create",
+    host: "api.kmart.com.au",
+    op: "createMyBag",
+    requiredHeaders: ["cache-control", "pragma", "origin", "referer", "priority", "newrelic", "traceparent", "tracestate"],
+  },
+  { key: "cart_probe_active", host: "api.kmart.com.au", op: "getActiveBag", ordinal: 1 },
+  { key: "cart_probe_full", host: "api.kmart.com.au", op: "getMyActiveCart", ordinal: 3 },
+  {
+    key: "cart_atc",
+    host: "api.kmart.com.au",
+    op: "updateMyBag",
+    requiredVariables: ["id", "version", "actions"],
+    requiredHeaders: ["cache-control", "pragma", "origin", "referer", "priority", "newrelic", "traceparent", "tracestate"],
+  },
+  { key: "cart_verify", host: "api.kmart.com.au", op: "getMyActiveCart", ordinal: 4 },
+  {
+    key: "addr_shipping",
+    host: "api.kmart.com.au",
+    op: "updateMyBagWithoutBagStockAvailability",
+    ordinal: 1,
+    requiredVariables: ["id", "version", "actions"],
+  },
+  {
+    key: "addr_billing",
+    host: "api.kmart.com.au",
+    op: "updateMyBagWithoutBagStockAvailability",
+    ordinal: 2,
+    requiredVariables: ["id", "version", "actions"],
+  },
+  {
+    key: "paydock_tokenize",
+    host: "api.paydock.com",
+    path: "/v1/payment_sources/tokens",
+    method: "POST",
+    requiredHeaders: ["origin", "referer", "content-type", "x-user-public-key"],
+  },
+  {
+    key: "create_3ds",
+    host: "api.kmart.com.au",
+    op: "create3DSToken",
+    requiredVariables: ["oneTimeToken", "gatewayType", "useSavedCard", "saveCardOption"],
+  },
+  {
+    key: "paydock_handle",
+    host: "api.paydock.com",
+    path: "/v1/charges/standalone-3ds/handle",
+    method: "POST",
+    requiredHeaders: ["origin", "referer", "content-type"],
+  },
+  {
+    key: "paydock_process",
+    host: "api.paydock.com",
+    path: "/v1/charges/standalone-3ds/process",
+    method: "POST",
+    requiredHeaders: ["origin", "referer", "content-type", "x-access-token"],
+  },
+  { key: "soh_event", host: "api.kmart.com.au", op: "updateMyBagWithoutBagStockAvailability", ordinal: 3, optional: true },
+  { key: "place_order", host: "api.kmart.com.au", op: "chargePayDockWithToken", optional: true },
 ];
 
+const STEP_TO_KEY = {
+  api_seed: "seed",
+  api_get_token: "seed",
+  cart_get: "cart_get_initial",
+  cart_create: "cart_create",
+  cart_probe1: "cart_probe_active",
+  cart_probe2: "cart_probe_full",
+  cart_atc: "cart_atc",
+  cart_verify: "cart_verify",
+  checkout_set_address: "addr_shipping",
+  checkout_set_billing: "addr_billing",
+  paydock_tokenize: "paydock_tokenize",
+  create_3ds_token: "create_3ds",
+  paydock_3ds_handle: "paydock_handle",
+  paydock_3ds_process: "paydock_process",
+  checkout_soh_event: "soh_event",
+  place_order: "place_order",
+  charge_paydock: "place_order",
+};
+
 function parseHost(url) {
-  const m = /^https?:\/\/([^/]+)/.exec(url);
-  return m ? m[1] : "";
+  try { return new URL(url).host; } catch { return ""; }
 }
 
-function loadHar(harPath) {
-  const raw = fs.readFileSync(harPath, "utf8");
-  const har = JSON.parse(raw);
-  return har.log.entries;
+function normalizeHeaders(headers) {
+  if (Array.isArray(headers)) return Object.fromEntries(headers.map((h) => [String(h.name).toLowerCase(), String(h.value ?? "")]));
+  return Object.fromEntries(Object.entries(headers ?? {}).map(([k, v]) => [String(k).toLowerCase(), String(v ?? "")]));
 }
 
-function extractOp(entry) {
-  const pd = entry.request.postData?.text;
-  if (!pd) return { op: null, variables: null };
-  try {
-    const j = JSON.parse(pd);
-    return { op: j.operationName ?? null, variables: j.variables ?? null, query: j.query ?? null };
-  } catch { return { op: null, variables: null }; }
+function parseBody(text) {
+  if (!text) return { raw: null };
+  try { return JSON.parse(text); } catch {}
+  if (String(text).includes("=")) return Object.fromEntries(new URLSearchParams(text));
+  return { raw: String(text).slice(0, 500) };
+}
+
+function queryHash(query) {
+  if (!query) return null;
+  return crypto.createHash("sha256").update(String(query).replace(/\s+/g, " ").trim()).digest("hex").slice(0, 12);
+}
+
+function shape(value) {
+  if (Array.isArray(value)) return value.map((v) => shape(v));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shape(v)]));
+  return typeof value;
+}
+
+function redact(value, key = "") {
+  const k = String(key).toLowerCase();
+  if (k.includes("card") || k.includes("ccv") || k.includes("cvv")) return "[redacted]";
+  if (k.includes("token") || k.includes("jwt") || k.includes("access")) return "[redacted]";
+  if (k === "email" || k === "phone") return "[redacted]";
+  if (Array.isArray(value)) return value.map((v) => redact(v));
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redact(childValue, childKey)]));
+  if (typeof value === "string" && /^\d{12,19}$/.test(value)) return "[redacted]";
+  return value;
+}
+
+function cookieNamesFromHeader(header) {
+  return String(header ?? "").split(";").map((part) => part.trim().split("=")[0]).filter(Boolean);
+}
+
+function setCookieNamesFromHar(entry) {
+  return (entry.response.headers ?? [])
+    .filter((h) => String(h.name).toLowerCase() === "set-cookie")
+    .map((h) => String(h.value).split(";")[0].split("=")[0])
+    .filter(Boolean);
+}
+
+function normalizeHarEntry(entry, entryIndex, key) {
+  const req = entry.request;
+  const headers = normalizeHeaders(req.headers);
+  const body = parseBody(req.postData?.text ?? "");
+  const op = body.operationName ?? null;
+  const variables = body.variables ?? null;
+  const query = body.query ?? null;
+  const url = new URL(req.url);
+  return {
+    key,
+    entryIndex,
+    host: url.host,
+    path: url.pathname,
+    method: req.method,
+    status: entry.response.status,
+    operationName: op,
+    variables: redact(variables),
+    variableShape: shape(variables),
+    queryHash: queryHash(query),
+    requestBody: redact(body),
+    requestHeaders: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, name === "cookie" ? cookieNamesFromHeader(value).join("; ") : value])),
+    cookieNames: cookieNamesFromHeader(headers.cookie),
+    setCookieNames: setCookieNamesFromHar(entry),
+  };
+}
+
+function matchesSpec(candidate, spec, ordinalCounts) {
+  if (spec.host && candidate.host !== spec.host) return false;
+  if (spec.path && candidate.path !== spec.path) return false;
+  if (spec.method && candidate.method !== spec.method) return false;
+  if (spec.op && candidate.operationName !== spec.op) return false;
+  const countKey = `${spec.host}:${spec.path ?? ""}:${spec.op ?? ""}`;
+  ordinalCounts[countKey] = (ordinalCounts[countKey] ?? 0) + 1;
+  if (spec.ordinal && ordinalCounts[countKey] !== spec.ordinal) return false;
+  return true;
 }
 
 function buildGolden(entries) {
   const hits = [];
-  for (const [i, e] of entries.entries()) {
-    if (e.request.method === "OPTIONS") continue;
-    const host = parseHost(e.request.url);
-    if (!HAR_HOSTS.has(host)) continue;
-    const pathname = new URL(e.request.url).pathname;
-    const pd = e.request.postData?.text ?? null;
-    const { op, variables, query } = extractOp(e);
-    for (const c of CRITICAL) {
-      const hostOk = c.host === host;
-      const pathOk = c.path ? c.path === pathname : true;
-      const methodOk = c.method ? c.method === e.request.method : true;
-      const opOk = c.op ? c.op === op : true;
-      if (hostOk && pathOk && methodOk && opOk) {
-        if (!hits.find((h) => h.key === c.key)) {
-          hits.push({
-            key: c.key, entryIndex: i, host, method: e.request.method,
-            url: e.request.url, path: pathname, status: e.response.status,
-            op, variables, query,
-            responseBody: (e.response.content?.text ?? "").slice(0, 2000),
-            requestBody: pd ? pd.slice(0, 2000) : null,
-          });
-        }
+  const used = new Set();
+  let cursor = 0;
+  for (const spec of CRITICAL) {
+    for (let i = cursor; i < entries.length; i++) {
+      const entry = entries[i];
+      if (used.has(i) || entry.request.method === "OPTIONS") continue;
+      const body = parseBody(entry.request.postData?.text ?? "");
+      const url = new URL(entry.request.url);
+      const candidate = { host: url.host, path: url.pathname, method: entry.request.method, operationName: body.operationName ?? null };
+      if (matchesSpec(candidate, { ...spec, ordinal: undefined }, {})) {
+        hits.push(normalizeHarEntry(entry, i, spec.key));
+        used.add(i);
+        cursor = i + 1;
         break;
       }
     }
@@ -103,73 +214,114 @@ function buildGolden(entries) {
   return hits;
 }
 
+function normalizeTraceEntry(entry) {
+  const body = typeof entry.requestBody === "string" ? parseBody(entry.requestBody) : (entry.requestBody ?? {});
+  return {
+    key: entry.key,
+    entryIndex: "trace",
+    host: entry.host,
+    path: entry.path,
+    method: entry.method,
+    status: entry.status,
+    operationName: entry.operationName ?? body.operationName ?? null,
+    variables: redact(entry.variables ?? body.variables ?? null),
+    variableShape: shape(entry.variables ?? body.variables ?? null),
+    queryHash: queryHash(entry.query ?? body.query ?? null),
+    requestBody: redact(body),
+    requestHeaders: normalizeHeaders(entry.requestHeaders),
+    cookieNames: entry.cookieNames ?? [],
+    setCookieNames: entry.setCookieNames ?? [],
+  };
+}
+
+function loadRun(runPath) {
+  const raw = JSON.parse(fs.readFileSync(runPath, "utf8"));
+  const trace = raw.trace ?? raw.result?.trace ?? raw.result?.result?.trace ?? [];
+  const steps = raw.steps ?? raw.result?.steps ?? raw.result?.result?.steps ?? [];
+  return { trace: trace.map(normalizeTraceEntry), steps };
+}
 
 function printChecklist(hits) {
-  console.log("\n=== KMART CHECKOUT — GOLDEN CHECKLIST (from HAR) ===\n");
-  for (const c of CRITICAL) {
-    const hit = hits.find((h) => h.key === c.key);
-    const badge = hit ? `[✓ har entry #${hit.entryIndex} → ${hit.status}]` : (c.optional ? "[·] optional" : "[MISSING FROM HAR]");
-    console.log(`${badge}  ${c.key}`);
-    console.log(`   ${c.note}`);
-    if (hit?.op) console.log(`   op=${hit.op}`);
-    if (hit?.variables) console.log(`   vars=${JSON.stringify(hit.variables).slice(0, 260)}`);
+  console.log("\n=== KMART CHECKOUT — GOLDEN CHECKLIST ===\n");
+  for (const spec of CRITICAL) {
+    const hit = hits.find((h) => h.key === spec.key);
+    const badge = hit ? `[✓ har #${hit.entryIndex} → ${hit.status}]` : (spec.optional ? "[· optional]" : "[MISSING]");
+    console.log(`${badge} ${spec.key}`);
+    if (hit) {
+      console.log(`   ${hit.method} ${hit.host}${hit.path} op=${hit.operationName ?? "-"} q=${hit.queryHash ?? "-"}`);
+      console.log(`   vars=${JSON.stringify(hit.variables).slice(0, 300)}`);
+      console.log(`   requiredHeaders=${(spec.requiredHeaders ?? []).join(",") || "-"}`);
+    }
     console.log();
   }
 }
 
-function loadRun(runPath) {
-  const raw = fs.readFileSync(runPath, "utf8");
-  return JSON.parse(raw);
+function missingHeaders(actual, required) {
+  return (required ?? []).filter((h) => !actual.requestHeaders?.[h]);
 }
 
-// Map executor step names → checklist keys so we can spot missing steps.
-const STEP_TO_KEY = {
-  "api_seed": "seed",
-  "api_get_token": "seed",
-  "cart_get": "cart_get",
-  "cart_create": "cart_create",
-  "cart_atc": "cart_atc",
-  "cart_verify": "cart_verify",
-  "checkout_set_address": "addr_shipping",
-  "checkout_set_billing": "addr_billing",
-  "paydock_tokenize": "paydock_tokenize",
-  "create_3ds_token": "create_3ds",
-  "paydock_3ds_handle": "paydock_handle",
-  "paydock_3ds_process": "paydock_process",
-  "place_order": "place_order",
-  "charge_paydock": "place_order",
-};
+function missingVars(actual, required) {
+  return (required ?? []).filter((v) => !(actual.variables && Object.prototype.hasOwnProperty.call(actual.variables, v)));
+}
 
-function diffAgainstRun(hits, runResult) {
-  const steps = runResult?.result?.steps ?? runResult?.steps ?? [];
-  const runKeys = new Set(steps.map((s) => STEP_TO_KEY[s.step]).filter(Boolean));
-  console.log("\n=== DIFF: executor run vs golden ===\n");
-  for (const c of CRITICAL) {
-    const inHar = Boolean(hits.find((h) => h.key === c.key));
-    const inRun = runKeys.has(c.key);
-    const step = steps.find((s) => STEP_TO_KEY[s.step] === c.key);
-    const state = step ? (step.ok ? "PASS" : `FAIL (${step.note?.slice(0, 100) ?? ""})`) : (inRun ? "?" : "NOT ATTEMPTED");
-    const flag = inHar && !inRun ? "  ← IMPLEMENT" : (inHar && step && !step.ok ? "  ← BROKEN" : "");
-    console.log(`  ${c.key.padEnd(22)}  har=${inHar ? "y" : "-"}  run=${state}${flag}`);
+function compareHit(golden, actual, spec) {
+  const deltas = [];
+  if (!actual) return ["missing from executor trace"];
+  if (golden.method !== actual.method) deltas.push(`method ${actual.method} != ${golden.method}`);
+  if (golden.host !== actual.host) deltas.push(`host ${actual.host} != ${golden.host}`);
+  if (golden.path !== actual.path) deltas.push(`path ${actual.path} != ${golden.path}`);
+  const mh = missingHeaders(actual, spec.requiredHeaders);
+  if (mh.length) deltas.push(`missing headers: ${mh.join(",")}`);
+  const mv = missingVars(actual, spec.requiredVariables);
+  if (mv.length) deltas.push(`missing vars: ${mv.join(",")}`);
+  if (golden.queryHash && actual.queryHash && golden.queryHash !== actual.queryHash) deltas.push(`query hash ${actual.queryHash} != ${golden.queryHash}`);
+  if (golden.key === "seed" && !actual.requestHeaders["x-visitor-id"]) deltas.push("seed missing x-visitor-id");
+  return deltas;
+}
+
+function diffAgainstRun(goldenHits, run) {
+  console.log("\n=== DIFF: executor trace vs HAR ===\n");
+  for (const spec of CRITICAL) {
+    const golden = goldenHits.find((h) => h.key === spec.key);
+    const actual = run.trace.find((h) => h.key === spec.key) || run.trace.find((h) => {
+      if (spec.host && h.host !== spec.host) return false;
+      if (spec.path && h.path !== spec.path) return false;
+      if (spec.op && h.operationName !== spec.op) return false;
+      return true;
+    });
+    const step = run.steps.find((s) => STEP_TO_KEY[s.step] === spec.key);
+    if (!golden && spec.optional) {
+      console.log(`${spec.key.padEnd(20)} optional in HAR`);
+      continue;
+    }
+    if (!golden) {
+      console.log(`${spec.key.padEnd(20)} HAR missing`);
+      continue;
+    }
+    const deltas = compareHit(golden, actual, spec);
+    const state = deltas.length ? "DELTA" : "MATCH";
+    const status = actual ? `status=${actual.status}` : (step ? `step=${step.ok ? "pass" : "fail"}` : "not-run");
+    console.log(`${spec.key.padEnd(20)} ${state} ${status}`);
+    for (const d of deltas) console.log(`   - ${d}`);
+    if (step && !step.ok) console.log(`   - step failed: ${String(step.note ?? "").slice(0, 180)}`);
   }
   console.log();
 }
 
-// ── CLI ──────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
 if (argv.length === 0 || argv[0] === "--help") {
-  console.log("Usage: node har-diff.mjs <har-path> [--json executor-run.json]");
+  console.log("Usage: node executor/scripts/har-diff.mjs <har-path> [--json executor-run.json]");
+  console.log("Executor run JSON should include result.trace; pass debugTrace:true to /run.");
   process.exit(argv[0] === "--help" ? 0 : 1);
 }
+
 const harPath = path.resolve(argv[0]);
 const jsonIdx = argv.indexOf("--json");
 const runPath = jsonIdx >= 0 ? path.resolve(argv[jsonIdx + 1]) : null;
 
-const entries = loadHar(harPath);
+const har = JSON.parse(fs.readFileSync(harPath, "utf8"));
+const entries = har.log.entries;
+const golden = buildGolden(entries);
 console.log(`Loaded HAR: ${entries.length} entries from ${harPath}`);
-const hits = buildGolden(entries);
-printChecklist(hits);
-if (runPath) {
-  const run = loadRun(runPath);
-  diffAgainstRun(hits, run);
-}
+printChecklist(golden);
+if (runPath) diffAgainstRun(golden, loadRun(runPath));

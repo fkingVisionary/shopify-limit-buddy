@@ -135,6 +135,79 @@ function sensorBodySuccess(body) {
   return "unknown";
 }
 
+function randomDecimalString(digits) {
+  let out = "";
+  while (out.length < digits) out += Math.floor(Math.random() * 10);
+  return out.slice(0, digits).replace(/^0/, "1");
+}
+
+function visitorIdFromGa(value) {
+  const match = String(value ?? "").match(/^GA\d+\.\d+\.(\d+\.\d+)$/);
+  return match?.[1] ?? null;
+}
+
+function ensureKmartVisitorIdentity(jar) {
+  const existing = visitorIdFromGa(jar.get("_ga"));
+  if (existing) return existing;
+
+  // Kmart's shopping-agent seed requires x-visitor-id. In the HAR it is the
+  // GA client id without the GA prefix: _ga=GA1.1.<visitor> → x-visitor-id.
+  // If analytics cookies are absent in our fresh jar, create a coherent
+  // browser identity set before touching api.kmart.com.au.
+  const visitorId = `${randomDecimalString(10)}.${Math.floor(Date.now() / 1000) - Math.floor(Math.random() * 86_400)}`;
+  jar.ingest({
+    "set-cookie": [
+      `_ga=GA1.1.${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `server_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `client_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `server_visitor_id_test=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `client_visitor_id_test=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `tealium_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+    ],
+  });
+  return visitorId;
+}
+
+function redactHeaderValue(name, value) {
+  const key = String(name).toLowerCase();
+  const raw = String(value ?? "");
+  if (key === "cookie") {
+    return raw
+      .split(";")
+      .map((part) => part.trim().split("=")[0])
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (key === "authorization" || key === "x-access-token") return raw ? "[redacted]" : "";
+  if (key === "newrelic" || key === "traceparent" || key === "tracestate") return raw.slice(0, 64) + (raw.length > 64 ? "…" : "");
+  return raw;
+}
+
+function redactTraceBody(body) {
+  if (body == null) return null;
+  const redact = (value, key = "") => {
+    const k = String(key).toLowerCase();
+    if (k.includes("card_number")) return "[card-number-redacted]";
+    if (k.includes("card_ccv") || k === "cvv") return "[cvv-redacted]";
+    if (k.includes("token") || k.includes("jwt") || k.includes("x-access-token")) return "[token-redacted]";
+    if (k === "email") return "[email-redacted]";
+    if (k === "phone") return "[phone-redacted]";
+    if (Array.isArray(value)) return value.map((v) => redact(v));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redact(childValue, childKey)]));
+    }
+    if (typeof value === "string" && /^\d{12,19}$/.test(value)) return "[number-redacted]";
+    return value;
+  };
+  if (typeof body !== "string") return redact(body);
+  try {
+    return redact(JSON.parse(body));
+  } catch {
+    if (body.includes("card_number") || body.includes("x-access-token")) return "[redacted-form-body]";
+    return body.slice(0, 1200);
+  }
+}
+
 async function postAkamaiSensorRounds({
   label,
   steps,
@@ -244,6 +317,35 @@ export const kmartAdapter = {
         });
         throw e;
       }
+    };
+
+    const traceEnabled = task.debugTrace === true || process.env.KMART_TRACE === "1";
+    const requestTrace = ctx.requestTrace ?? (ctx.requestTrace = []);
+    const recordTrace = (key, url, opts, res, extra = {}) => {
+      if (!traceEnabled) return;
+      let parsedUrl;
+      try { parsedUrl = new URL(url); } catch { parsedUrl = null; }
+      const headers = opts?.headers ?? {};
+      const cookieHeader = ctx.jar.header();
+      requestTrace.push({
+        key,
+        method: (opts?.method ?? "GET").toUpperCase(),
+        host: parsedUrl?.host ?? null,
+        path: parsedUrl?.pathname ?? null,
+        status: res?.status ?? null,
+        operationName: extra.operationName ?? null,
+        variables: redactTraceBody(extra.variables ?? null),
+        query: typeof extra.query === "string" ? extra.query.replace(/\s+/g, " ").trim() : null,
+        requestBody: redactTraceBody(opts?.body ?? null),
+        requestHeaders: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
+        cookieNames: cookieHeader.split(";").map((part) => part.trim().split("=")[0]).filter(Boolean),
+        setCookieNames: res ? cookieNamesFromResponse(res) : [],
+      });
+    };
+    const tracedRequest = async (key, url, opts, extra = {}) => {
+      const res = await request(url, opts, ctx);
+      recordTrace(key, url, opts, res, extra);
+      return res;
     };
 
     steps.push({
@@ -776,6 +878,9 @@ export const kmartAdapter = {
     }
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
+    ctx.__kmart_cart = { cartAtcOk: false, cartVerifyHasSku: false };
+
+    const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
     const gqlHeaders = {
       "user-agent": UA,
@@ -808,29 +913,30 @@ export const kmartAdapter = {
       globalThis.crypto.getRandomValues(bytes);
       return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
     };
-    const nrHeaders = () => {
+    const nrHeaders = (ap = NR_AP) => {
       const tr = randHex(32);
       const id = randHex(16);
       const ti = Date.now();
       const nrPayload = {
         v: [0, 1],
-        d: { ty: "Browser", ac: NR_AC, ap: NR_AP, id, tr, ti, tk: NR_TK },
+        d: { ty: "Browser", ac: NR_AC, ap, id, tr, ti, tk: NR_TK },
       };
       return {
         newrelic: Buffer.from(JSON.stringify(nrPayload)).toString("base64"),
         traceparent: `00-${tr}-${id}-01`,
-        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${NR_AP}-${id}----${ti}`,
+        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${ap}-${id}----${ti}`,
       };
     };
-    const gqlPost = async (body) =>
-      request(
+    const gqlPost = async (body, traceKey = body?.operationName ?? "graphql") =>
+      tracedRequest(
+        traceKey,
         gqlUrl,
         {
           method: "POST",
           headers: { ...gqlHeaders, ...nrHeaders() },
           body: JSON.stringify(body),
         },
-        ctx,
+        { operationName: body?.operationName ?? null, variables: body?.variables ?? null, query: body?.query ?? null },
       );
 
 
@@ -857,35 +963,46 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      let apiSeedOk = false;
       await tStep("api_get_token", async () => {
-        const res = await request(
+        const getTokenHeaders = {
+          "user-agent": UA,
+          accept: "*/*",
+          "accept-language": ACCEPT_LANG,
+          "content-type": "application/json",
+          origin,
+          referer: origin + "/",
+          ...CHROME_CH,
+          "sec-fetch-site": "same-site",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+          priority: "u=1, i",
+          "x-visitor-id": apiVisitorId,
+          ...nrHeaders("1834777981"),
+        };
+        const res = await tracedRequest(
+          "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
           {
             method: "POST",
-            headers: {
-              "user-agent": UA,
-              accept: "*/*",
-              "accept-language": ACCEPT_LANG,
-              "content-type": "application/json",
-              origin,
-              referer: origin + "/",
-              ...CHROME_CH,
-              "sec-fetch-site": "same-site",
-              "sec-fetch-mode": "cors",
-              "sec-fetch-dest": "empty",
-            },
+            headers: getTokenHeaders,
             body: JSON.stringify({ sessionId }),
           },
-          ctx,
+          { requestBody: { sessionId } },
         );
         const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
+        apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
-          ok: res.status < 400,
-          note: `sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          ok: apiSeedOk,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
+      if (!apiSeedOk) {
+        steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
+        return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
+      }
       }
 
 
@@ -902,11 +1019,11 @@ export const kmartAdapter = {
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
-          operationName: "getActiveBag",
+          operationName: "getMyActiveCart",
           variables: {},
           query:
-            "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
-        });
+            "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+        }, "cart_get_initial");
         const txt = await res.text();
         try {
           const j = JSON.parse(txt);
@@ -954,7 +1071,7 @@ export const kmartAdapter = {
 
             query:
               "mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }",
-          });
+          }, "cart_create");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -971,6 +1088,8 @@ export const kmartAdapter = {
 
 
       // 7d. updateMyBag — addLineItem(sku) + setCustomField(selectedCncStoreId).
+      let cartAtcOk = false;
+      let cartVerifyHasSku = false;
       if (cartId && sku) {
         const updateQuery = `mutation updateMyBag($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
@@ -1005,7 +1124,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
-          });
+          }, "cart_probe_active");
           const txt = await res.text();
           return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
         });
@@ -1015,7 +1134,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
-          });
+          }, "cart_probe_full");
           const txt = await res.text();
           return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
         });
@@ -1035,7 +1154,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateQuery,
-          });
+          }, "cart_atc");
 
           const txt = await res.text();
           let lineCount = 0;
@@ -1051,9 +1170,11 @@ fragment LineItemFields on LineItem {
               hasSku = (c.lineItems ?? []).some((li) => li.variant?.sku === sku);
             }
           } catch {}
+          cartAtcOk = res.status < 400 && hasSku;
+          ctx.__kmart_cart.cartAtcOk = cartAtcOk;
           return {
             status: res.status,
-            ok: res.status < 400 && hasSku,
+            ok: cartAtcOk,
             note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
           };
         });
@@ -1081,7 +1202,7 @@ fragment LineItemFields on LineItem {
             operationName: "getMyActiveCart",
             variables: {},
             query: verifyQuery,
-          });
+          }, "cart_verify");
           const txt = await res.text();
           let hasSku = false;
           let lineCount = 0;
@@ -1090,6 +1211,8 @@ fragment LineItemFields on LineItem {
             const lis = j?.data?.me?.activeCart?.lineItems ?? [];
             lineCount = lis.length;
             hasSku = lis.some((li) => li.variant?.sku === sku);
+            cartVerifyHasSku = hasSku;
+            ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
           } catch {}
           return {
             status: res.status,
@@ -1111,7 +1234,14 @@ fragment LineItemFields on LineItem {
       //    Stops short of placeOrder until task.placeOrder === true AND we
       //    have the final mutation captured.
       // ===================================================================
-      const wantCheckout = task.checkout !== false && cartId && sku;
+      const wantCheckout = task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
+      if (task.checkout !== false && cartId && sku && (!cartAtcOk || !cartVerifyHasSku)) {
+        steps.push({
+          step: "checkout_gate",
+          ok: false,
+          note: `stopped before address/payment because cart not verified: cartAtcOk=${cartAtcOk} cartVerifyHasSku=${cartVerifyHasSku}`,
+        });
+      }
       if (wantCheckout) {
         // 8a. Warm the checkout pages — establishes the referer chain that
         //     later GraphQL calls expect (some ops are referer-gated).
@@ -1241,7 +1371,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateNoStockQuery,
-          });
+          }, "addr_shipping");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -1268,7 +1398,7 @@ fragment LineItemFields on LineItem {
               ],
             },
             query: updateNoStockQuery,
-          });
+          }, "addr_billing");
           const txt = await res.text();
           let hasBilling = false;
           let hasStreet = false;
@@ -1293,7 +1423,7 @@ fragment LineItemFields on LineItem {
             variables: {},
             query:
               "query getMyActiveBag { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity variant { sku __typename } __typename } billingAddress { email __typename } shippingAddress { email __typename } __typename } __typename } }",
-          });
+          }, "checkout_refresh");
           const txt = await res.text();
           try {
             const j = JSON.parse(txt);
@@ -1362,7 +1492,8 @@ fragment LineItemFields on LineItem {
             };
             if (paydockPublicKey) headers["x-user-public-key"] = paydockPublicKey;
 
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_tokenize",
               "https://api.paydock.com/v1/payment_sources/tokens",
               {
                 method: "POST",
@@ -1379,7 +1510,6 @@ fragment LineItemFields on LineItem {
                   meta: {},
                 }),
               },
-              ctx,
             );
             const txt = await res.text();
             try {
@@ -1423,7 +1553,7 @@ fragment LineItemFields on LineItem {
               },
               query:
                 "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String, $useSavedCard: Boolean, $saveCardOption: Boolean) {\n  create3DSToken(\n    oneTimeToken: $oneTimeToken\n    gatewayType: $gatewayType\n    useSavedCard: $useSavedCard\n    saveCardOption: $saveCardOption\n  )\n}\n",
-            });
+            }, "create_3ds");
             const txt = await res.text();
             try {
               const j = JSON.parse(txt);
@@ -1500,7 +1630,8 @@ fragment LineItemFields on LineItem {
               param,
             }).toString();
             const url = `https://api.paydock.com/v1/charges/standalone-3ds/handle?x-access-token=${encodeURIComponent(paydockJwt)}`;
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_handle",
               url,
               {
                 method: "POST",
@@ -1517,7 +1648,6 @@ fragment LineItemFields on LineItem {
                 },
                 body,
               },
-              ctx,
             );
             const loc = res.headers.get("location") ?? "";
             const idMatch = loc.match(/charge_3ds_id=([a-f0-9-]{20,})/i);
@@ -1548,7 +1678,8 @@ fragment LineItemFields on LineItem {
         let processStatus = null;
         if (paydockJwt && charge3dsId) {
           await tStep("paydock_3ds_process", async () => {
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_process",
               "https://api.paydock.com/v1/charges/standalone-3ds/process",
               {
                 method: "POST",
@@ -1566,7 +1697,6 @@ fragment LineItemFields on LineItem {
                 },
                 body: JSON.stringify({ charge_3ds_id: charge3dsId }),
               },
-              ctx,
             );
             const txt = await res.text();
             try {
@@ -1585,7 +1715,47 @@ fragment LineItemFields on LineItem {
           steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
         }
 
-        // 8i. chargePayDockWithToken — THE REAL PLACE-ORDER MUTATION.
+        // 8i. Final stock-event custom field. The HAR sets `sohEvent` after
+        // Paydock 3DS processing and immediately before the real order mutation.
+        // Keep this in dry-run too because it is a cart-state prerequisite, not
+        // the order submission itself.
+        if (processFrictionless && sku) {
+          await tStep("checkout_soh_event", async () => {
+            const res = await gqlPost({
+              operationName: "updateMyBagWithoutBagStockAvailability",
+              variables: {
+                id: cartId,
+                version: cartVersion,
+                actions: [
+                  {
+                    setCustomField: {
+                      name: "sohEvent",
+                      value: JSON.stringify({
+                        poolConfig: [{ keyCode: sku, poolName: "OMFP-CONFIGURED-POOL" }],
+                      }),
+                    },
+                  },
+                ],
+              },
+              query: updateNoStockQuery,
+            }, "soh_event");
+            const txt = await res.text();
+            try {
+              const j = JSON.parse(txt);
+              const c = j?.data?.updateMyCart;
+              if (c?.version) cartVersion = c.version;
+            } catch {}
+            return {
+              status: res.status,
+              ok: res.status < 400,
+              note: `v=${cartVersion} sku=${sku} : ${txt.slice(0, 260)}`,
+            };
+          });
+        } else {
+          steps.push({ step: "checkout_soh_event", ok: false, note: `skipped: processFrictionless=${processFrictionless} sku=${sku ?? "null"}` });
+        }
+
+        // 8j. chargePayDockWithToken — THE REAL PLACE-ORDER MUTATION.
         //     Real HAR entry #807 returns { orderNumber, paydockChargeId,
         //     paymentId, accountCreationStatus }. Guarded by
         //     task.placeOrder === true so the default dry-run stops here.
@@ -1614,7 +1784,7 @@ fragment LineItemFields on LineItem {
                 },
                 query:
                   "mutation chargePayDockWithToken($type: TokenType!, $token: String!, $gatewayType: String!, $saveCard: Boolean, $isCreateAccount: Boolean) {\n  chargePayDockWithToken(\n    type: $type\n    token: $token\n    gatewayType: $gatewayType\n    saveCard: $saveCard\n    isCreateAccount: $isCreateAccount\n  ) {\n    paydockChargeId\n    paymentId\n    orderNumber\n    accountCreationStatus\n    __typename\n  }\n}\n",
-              });
+              }, "place_order");
               const txt = await res.text();
               try {
                 const j = JSON.parse(txt);
@@ -1646,11 +1816,13 @@ fragment LineItemFields on LineItem {
 
 
     const orderInfo = ctx.__kmart_order ?? {};
+    const cartInfo = ctx.__kmart_cart ?? {};
     return {
-      ok: pdpStatus > 0 && pdpStatus < 400,
+      ok: pdpStatus > 0 && pdpStatus < 400 && cartInfo.cartAtcOk === true && cartInfo.cartVerifyHasSku === true,
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
+      trace: traceEnabled ? requestTrace : undefined,
       dryRun: task.placeOrder !== true,
       orderNumber: orderInfo.orderNumber ?? null,
       orderId: orderInfo.orderId ?? null,
