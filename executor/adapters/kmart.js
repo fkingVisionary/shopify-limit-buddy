@@ -1359,24 +1359,28 @@ fragment LineItemFields on LineItem {
                 useSavedCard: false,
               },
               query:
-                "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String!, $saveCardOption: Boolean!, $useSavedCard: Boolean!) { create3DSToken(oneTimeToken: $oneTimeToken, gatewayType: $gatewayType, saveCardOption: $saveCardOption, useSavedCard: $useSavedCard) { token acsUrl sessionData status __typename } }",
+                "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String!, $saveCardOption: Boolean!, $useSavedCard: Boolean!) { create3DSToken(oneTimeToken: $oneTimeToken, gatewayType: $gatewayType, saveCardOption: $saveCardOption, useSavedCard: $useSavedCard) }",
             });
             const txt = await res.text();
             try {
               const j = JSON.parse(txt);
+              // Schema note: create3DSToken returns `String!` (a scalar), not an
+              // object — asking for a selection set errors with
+              // "must not have a selection since type String! has no subfields".
+              // The returned string IS the payment token for the frictionless
+              // path. Kmart's real 3DS challenge flow uses a different mutation.
               const c = j?.data?.create3DSToken;
-              if (c) {
-                paymentToken = c.token ?? null;
-                threeDSStatus = c.status ?? null;
-                acsUrl = c.acsUrl ?? null;
-                sessionData = c.sessionData ?? null;
+              if (typeof c === "string" && c) {
+                paymentToken = c;
+                threeDSStatus = "frictionless";
               }
             } catch {}
             return {
               status: res.status,
-              ok: res.status < 400 && Boolean(paymentToken || acsUrl),
-              note: `status=${threeDSStatus} token=${paymentToken ? paymentToken.slice(0, 10) + "…" : "null"} acs=${acsUrl ? "yes" : "no"} : ${txt.slice(0, 300)}`,
+              ok: res.status < 400 && Boolean(paymentToken),
+              note: `status=${threeDSStatus} token=${paymentToken ? paymentToken.slice(0, 10) + "…" : "null"} : ${txt.slice(0, 300)}`,
             };
+
           });
         } else {
           steps.push({
