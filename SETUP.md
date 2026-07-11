@@ -91,7 +91,7 @@ In Lovable chat:
 
 > "Dry-run a Kmart product URL through the executor"
 
-Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. A 403 means the proxy isn't residential AU — swap providers.
+Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. The timeline must show `transport mode=tls` for sticky residential proxy runs; a residential IP alone is not enough if the HTTP client fingerprint is non-browser.
 
 ---
 

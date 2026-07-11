@@ -109,6 +109,26 @@ function akamaiSensorBody(payload) {
   return JSON.stringify({ sensor_data: payload });
 }
 
+function marker(value) {
+  const v = String(value ?? "");
+  if (!v) return "(none)";
+  const m = v.match(/~(-?\d+)~/);
+  return `${v.length}b ind=${m?.[1] ?? "?"}`;
+}
+
+function cookieNamesFromResponse(res) {
+  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  return setCookies
+    .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+    .filter(Boolean);
+}
+
+function sensorBodySuccess(body) {
+  if (/"success"\s*:\s*true/i.test(body)) return "true";
+  if (/"success"\s*:\s*false/i.test(body)) return "false";
+  return "unknown";
+}
+
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
@@ -179,6 +199,11 @@ export const kmartAdapter = {
         note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} ttl=10m (raw transport; Hyper solves antibot)`,
       });
     }
+    steps.push({
+      step: "transport",
+      ok: true,
+      note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)} oxylabs=${Boolean(ctx.dispatcher?.useOxylabs)}`,
+    });
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
       return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
@@ -348,10 +373,12 @@ export const kmartAdapter = {
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
-      note: `abck=${(ctx.jar.get("_abck") ?? "(empty)").slice(0, 60)} bmsz=${(ctx.jar.get("bm_sz") ?? "(empty)").slice(0, 30)} scriptBytes=${scriptBody?.length ?? 0}`,
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0}`,
     });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
+        const beforeAbck = marker(ctx.jar.get("_abck"));
+        const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: origin + "/",
@@ -375,13 +402,11 @@ export const kmartAdapter = {
           ctx,
         );
         const body = await res.text().catch(() => "");
-        const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-        const setCookieNames = setCookies
-          .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
-          .filter(Boolean);
+        const setCookieNames = cookieNamesFromResponse(res);
         return {
           status: res.status,
-          note: `success=${/"success"\s*:\s*true/i.test(body)} setCookies=[${setCookieNames.join(",") || "none"}] abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}… ctx=${r.context?.length ?? 0}`,
+          ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
           _ctx: r.context,
         };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
@@ -412,11 +437,6 @@ export const kmartAdapter = {
       // post-pdp steps cut off by upstream truncation. Trim aggressively.
       const abck = String(jarDump._abck ?? "");
       const bmsz = String(jarDump.bm_sz ?? "");
-      const marker = (v) => {
-        if (!v) return "(none)";
-        const m = v.match(/~(-?\d+)~/);
-        return `${v.length}b ind=${m?.[1] ?? "?"}`;
-      };
       steps.push({
         step: label,
         ok: true,
@@ -722,6 +742,8 @@ export const kmartAdapter = {
         let apiSolved = false;
         for (let i = 0; i < 3; i++) {
           await tStep(`api_sensor#${i + 1}`, async () => {
+            const beforeAbck = marker(ctx.jar.get("_abck"));
+            const beforeBmsz = marker(ctx.jar.get("bm_sz"));
             const r = await solveAkamaiSensor({
               jar: ctx.jar,
               pageUrl: apiOrigin + "/",
@@ -742,7 +764,13 @@ export const kmartAdapter = {
               },
               ctx,
             );
-            return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
+            const body = await res.text().catch(() => "");
+            const setCookieNames = cookieNamesFromResponse(res);
+            return {
+              status: res.status,
+              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+              note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${apiPrev?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+            };
           });
           if (abckSolved(ctx.jar, i + 1)) {
             apiSolved = true;
