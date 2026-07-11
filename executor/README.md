@@ -33,35 +33,12 @@ with `undici` unblocks the proxy.
 - `EXECUTOR_TOKEN` — shared secret. The Lovable app sends this in the
   `Authorization` header. Generate with `openssl rand -hex 32`.
 - `PORT` — default `8080`.
-- `EXECUTOR_HTTP_TRANSPORT` — `undici` (default), `tls`, or `oxylabs`.
-  Set to `oxylabs` to route all requests through Oxylabs Web Unblocker as
-  a **raw AU residential-IP transport only** — Hyper still solves
-  Akamai/SBSD/pixel challenges. We do not use Oxylabs' render mode
-  because rendered requests use a fresh browser per call and can't reuse
-  the cookies we've been building up. If a task supplies an explicit proxy,
-  that proxy always overrides Oxylabs for the run and uses the Chrome TLS
-  client. Sticky residential IPs are necessary but not sufficient for Kmart:
-  Akamai also requires the browser-like TLS/HTTP fingerprint and matching
-  Hyper inputs.
-- `OXYLABS_UNBLOCKER_USER` / `OXYLABS_UNBLOCKER_PASS` — required when
-  `EXECUTOR_HTTP_TRANSPORT=oxylabs`. Sub-user credentials from
-  dashboard.oxylabs.io → Web Unblocker.
-- `OXYLABS_UNBLOCKER_HOST` (default `unblock.oxylabs.io`),
-  `OXYLABS_UNBLOCKER_PORT` (default `60000`),
-  `OXYLABS_UNBLOCKER_GEO` (default `Australia`) — override only if
-  Oxylabs assigns you a different endpoint or you need another geo.
+- `EXECUTOR_HTTP_TRANSPORT` — `undici` (default) or `tls`.
+  Any explicit proxy uses the Chrome TLS client. Sticky residential IPs are
+  necessary but not sufficient for Kmart: Akamai also requires the browser-like
+  TLS/HTTP fingerprint and matching Hyper inputs.
 
 ## Deploy note
-
-To enable Oxylabs on Fly, set the three secrets and redeploy:
-
-```bash
-fly secrets set \
-  EXECUTOR_HTTP_TRANSPORT=oxylabs \
-  OXYLABS_UNBLOCKER_USER=... \
-  OXYLABS_UNBLOCKER_PASS=... \
-  -a <your-executor-app>
-```
 
 If you explicitly set `EXECUTOR_HTTP_TRANSPORT=tls`, the Docker image
 prewarms `node-tls-client` during build, but an instant empty `502` still

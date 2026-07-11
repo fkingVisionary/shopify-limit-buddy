@@ -12,7 +12,6 @@
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
-import { randomUUID } from "node:crypto";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -240,26 +239,10 @@ export const kmartAdapter = {
       }
     };
 
-    // Oxylabs Web Unblocker is the default transport when no explicit proxy was
-    // supplied. If the task supplies a proxy, http.js uses that proxy instead so
-    // "with proxy" tests are not accidentally routed through Oxylabs.
-    if (ctx.dispatcher?.useOxylabs) {
-      // Oxylabs Web Unblocker session_id: alphanumeric only, ≤32 chars.
-      // Pin the same AU residential IP for the whole flow (max 10 min).
-      // Web Unblocker is used as a raw transport only — Hyper still solves
-      // Akamai/SBSD/pixel below.
-      ctx.oxylabsSessionId = randomUUID().replace(/-/g, "");
-      ctx.oxylabsSessionTime = "10";
-      steps.push({
-        step: "unblocker",
-        ok: true,
-        note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} ttl=10m (raw transport; Hyper solves antibot)`,
-      });
-    }
     steps.push({
       step: "transport",
       ok: true,
-      note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)} oxylabs=${Boolean(ctx.dispatcher?.useOxylabs)}`,
+      note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)}`,
     });
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
@@ -298,7 +281,7 @@ export const kmartAdapter = {
       );
       html = await res.text();
       scriptPath = findAkamaiScriptPath(html);
-      // Diagnostic: expose which cookies Kmart (via Oxylabs) actually set —
+      // Diagnostic: expose which cookies Kmart actually set —
       // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
       // "missing abck" and none of the downstream steps can succeed.
       const setCookies =
@@ -428,11 +411,9 @@ export const kmartAdapter = {
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
     //
     // Seed a sentinel `_abck` if the jar is missing one. Hyper's /v2/sensor
-    // endpoint rejects empty abck with `{"error":"missing abck"}` — this
-    // happens when Oxylabs Web Unblocker (with a sticky session-id) captures
-    // the initial Akamai Set-Cookie into its own session store instead of
-    // forwarding it. The sentinel is Akamai's own "unsolved" placeholder;
-    // the sensor POST response Set-Cookies the real `_abck` back.
+    // endpoint rejects empty abck with `{"error":"missing abck"}`. The
+    // sentinel is Akamai's own "unsolved" placeholder; the sensor POST
+    // response Set-Cookies the real `_abck` back.
     if (!ctx.jar.has("_abck")) {
       ctx.jar.ingest({ "set-cookie": ["_abck=-1~-1~-1~-1~-1~-1~-1; Path=/"] });
       steps.push({
