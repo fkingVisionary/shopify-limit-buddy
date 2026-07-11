@@ -777,7 +777,12 @@ export const kmartAdapter = {
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
 
-    const gqlHeaders = {
+    // Kmart's storefront is an Apollo client. Their WAF discriminates
+    // "queries that look like Apollo" from "raw fetch()"; the discriminator
+    // shows up as ATC (mutation) 403s while getActiveBag/getMyActiveCart
+    // (queries) sail through with the same session. Send the Apollo client
+    // hint headers on every GraphQL POST.
+    const gqlBaseHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
       accept: "*/*",
@@ -788,9 +793,29 @@ export const kmartAdapter = {
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
+      "apollographql-client-name": "kmart-web",
+      "apollographql-client-version": "1.0.0",
     };
-    const gqlPost = async (body) =>
-      request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
+    // Collapse GraphQL query whitespace to a single-line form. Apollo's default
+    // print output has newlines but persisted clients / production builds send
+    // compact strings; some WAF rules trigger on the multi-line shape.
+    const compactGql = (s) => String(s).replace(/\s+/g, " ").trim();
+    const gqlPost = async (body) => {
+      const op = body?.operationName ?? "query";
+      const compactBody = { ...body, ...(body?.query ? { query: compactGql(body.query) } : {}) };
+      return request(
+        // Echo operationName in the query string — matches Apollo's default
+        // ?op= hint used for logging/telemetry, and gives the WAF the same
+        // URL shape it sees from the real storefront.
+        `${gqlUrl}?op=${encodeURIComponent(op)}`,
+        {
+          method: "POST",
+          headers: { ...gqlBaseHeaders, "x-apollo-operation-name": op },
+          body: JSON.stringify(compactBody),
+        },
+        ctx,
+      );
+    };
 
     if (pdpStatus > 0 && pdpStatus < 400) {
       {
