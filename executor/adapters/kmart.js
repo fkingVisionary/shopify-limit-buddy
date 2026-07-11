@@ -878,6 +878,7 @@ export const kmartAdapter = {
     }
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
+    ctx.__kmart_cart = { cartAtcOk: false, cartVerifyHasSku: false };
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
@@ -1170,6 +1171,7 @@ fragment LineItemFields on LineItem {
             }
           } catch {}
           cartAtcOk = res.status < 400 && hasSku;
+          ctx.__kmart_cart.cartAtcOk = cartAtcOk;
           return {
             status: res.status,
             ok: cartAtcOk,
@@ -1210,6 +1212,7 @@ fragment LineItemFields on LineItem {
             lineCount = lis.length;
             hasSku = lis.some((li) => li.variant?.sku === sku);
             cartVerifyHasSku = hasSku;
+            ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
           } catch {}
           return {
             status: res.status,
@@ -1813,8 +1816,9 @@ fragment LineItemFields on LineItem {
 
 
     const orderInfo = ctx.__kmart_order ?? {};
+    const cartInfo = ctx.__kmart_cart ?? {};
     return {
-      ok: pdpStatus > 0 && pdpStatus < 400,
+      ok: pdpStatus > 0 && pdpStatus < 400 && cartInfo.cartAtcOk === true && cartInfo.cartVerifyHasSku === true,
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
