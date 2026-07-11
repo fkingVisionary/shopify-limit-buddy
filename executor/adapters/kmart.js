@@ -18,14 +18,21 @@ import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd }
 //   <script src="/path?v=<token>[&t=<token>]">
 // `v` is an opaque token (NOT necessarily UUID-shaped), and the presence
 // of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
-// passive SBSD (2 submissions). The previous UUID-strict matcher missed
-// all real Kmart challenges because their `v` value is not UUID-formatted.
-const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
+// passive SBSD (2 submissions).
+//
+// IMPORTANT: the path must NOT end in `.js` — that's the Akamai bot-manager
+// sensor script, not an SBSD challenge. The previous permissive pattern
+// matched the sensor script URL and caused proactive `runSbsd` on the
+// homepage to POST an SBSD payload to the sensor endpoint, poisoning the
+// session and hard-403'ing category / cart on the next request.
+const SBSD_RE = /src=["']((?:\/[a-z\d\-_.]+)+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
+  if (/\.js$/i.test(m[1])) return null; // sensor script, not SBSD
   return { path: m[1], uuid: m[2], t: m[3] ?? "" };
 }
+
 
 
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
@@ -391,21 +398,44 @@ export const kmartAdapter = {
       }
       return true;
     };
-    try {
-      await runSbsd(html, origin + "/", "sbsd_home");
-    } catch (e) {
-      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
-    }
+    // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
+    // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
+    // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
+    // was firing on Akamai's own bot-manager script tag (SBSD_RE matches
+    // any `?v=` script) and POSTing bogus SBSD payloads to the sensor
+    // endpoint, poisoning the session. Reactive SBSD on pdp_get remains.
 
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
 
-    // 3. Fetch the Akamai sensor script (first sensor needs the script body).
+    // 3. Fetch the Akamai sensor script. Headers must match a real Chrome
+    //    script-tag load — the lab uses these exact headers and consistently
+    //    reaches SOLVED. Missing CH / sec-fetch-dest / accept-encoding is a
+    //    fingerprintable divergence and is enough on its own to have the
+    //    following sensor POST scored as bot.
     await tStep("akamai_script_fetch", async () => {
-      const res = await request(scriptUrl, { method: "GET", headers: { "user-agent": UA, referer: origin + "/", "accept-language": ACCEPT_LANG } }, ctx);
+      const res = await request(
+        scriptUrl,
+        {
+          method: "GET",
+          headers: {
+            "user-agent": UA,
+            accept: "*/*",
+            "accept-language": ACCEPT_LANG,
+            "accept-encoding": "gzip, deflate, br, zstd",
+            referer: origin + "/",
+            ...CHROME_CH,
+            "sec-fetch-dest": "script",
+            "sec-fetch-mode": "no-cors",
+            "sec-fetch-site": "same-origin",
+          },
+        },
+        ctx,
+      );
       scriptBody = await res.text();
       return { status: res.status, note: `${scriptBody.length}b` };
     });
+
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need `~0~` in
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
@@ -433,7 +463,8 @@ export const kmartAdapter = {
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
-          pageUrl: origin + "/",
+          pageUrl: pdpUrl,
+
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
@@ -448,7 +479,7 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
             body: akamaiSensorBody(r.payload),
           },
           ctx,
@@ -503,46 +534,12 @@ export const kmartAdapter = {
     };
 
 
-    // 4b. Pre-PDP pixel solve. If warm_home embedded a pixel challenge, solve
-    //     it now to upgrade the bot score BEFORE the gated navigation. Pixel
-    //     posts arrive as a `bm_so` cookie that Akamai's risk engine reads on
-    //     the next request. Non-fatal: most warm_home responses don't carry
-    //     a pixel, in which case this is a no-op.
-    try {
-      const warmPixel = await solveAkamaiPixel({
-        jar: ctx.jar,
-        pageUrl: origin + "/",
-        html,
-        userAgent: UA,
-        ip: egressIp,
-        acceptLanguage: ACCEPT_LANG,
-        ctx,
-      });
-      if (warmPixel) {
-        await tStep("akamai_pixel_prepdp", async () => {
-          const res = await request(
-            warmPixel.postUrl,
-            {
-              method: "POST",
-              headers: {
-                "user-agent": UA,
-                "content-type": "application/x-www-form-urlencoded",
-                origin,
-                referer: origin + "/",
-                "accept-language": ACCEPT_LANG,
-              },
-              body: warmPixel.payload,
-            },
-            ctx,
-          );
-          return { status: res.status, note: `pixel posted, bm_so=${ctx.jar.has("bm_so")}` };
-        });
-      } else {
-        steps.push({ step: "akamai_pixel_prepdp", ok: true, note: "no pixel on warm_home" });
-      }
-    } catch (e) {
-      steps.push({ step: "akamai_pixel_prepdp", ok: false, note: e?.message ?? String(e) });
-    }
+    // Pre-PDP pixel solve REMOVED. The lab reaches SOLVED without any pixel
+    // POST and the previous implementation was firing on an empty pixel spec
+    // (warm_home rarely embeds one), sometimes POSTing a stale/blank body
+    // that Akamai scored against the session. Reactive pixel on pdp_get
+    // (step 6 below) still runs when the PDP actually embeds a pixel.
+
 
     // 4c. Intermediate category browse. Real users don't teleport from the
     //     homepage to a deep PDP — they click into a category first. Hitting
