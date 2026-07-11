@@ -319,6 +319,35 @@ export const kmartAdapter = {
       }
     };
 
+    const traceEnabled = task.debugTrace === true || process.env.KMART_TRACE === "1";
+    const requestTrace = ctx.requestTrace ?? (ctx.requestTrace = []);
+    const recordTrace = (key, url, opts, res, extra = {}) => {
+      if (!traceEnabled) return;
+      let parsedUrl;
+      try { parsedUrl = new URL(url); } catch { parsedUrl = null; }
+      const headers = opts?.headers ?? {};
+      const cookieHeader = ctx.jar.header();
+      requestTrace.push({
+        key,
+        method: (opts?.method ?? "GET").toUpperCase(),
+        host: parsedUrl?.host ?? null,
+        path: parsedUrl?.pathname ?? null,
+        status: res?.status ?? null,
+        operationName: extra.operationName ?? null,
+        variables: redactTraceBody(extra.variables ?? null),
+        query: typeof extra.query === "string" ? extra.query.replace(/\s+/g, " ").trim() : null,
+        requestBody: redactTraceBody(opts?.body ?? null),
+        requestHeaders: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
+        cookieNames: cookieHeader.split(";").map((part) => part.trim().split("=")[0]).filter(Boolean),
+        setCookieNames: res ? cookieNamesFromResponse(res) : [],
+      });
+    };
+    const tracedRequest = async (key, url, opts, extra = {}) => {
+      const res = await request(url, opts, ctx);
+      recordTrace(key, url, opts, res, extra);
+      return res;
+    };
+
     steps.push({
       step: "transport",
       ok: true,
