@@ -91,13 +91,13 @@ In Lovable chat:
 
 > "Dry-run a Kmart product URL through the executor"
 
-Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. A 403 means the proxy isn't residential AU — swap providers.
+Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. The timeline must show `transport mode=tls` for sticky residential proxy runs; a residential IP alone is not enough if the HTTP client fingerprint is non-browser.
 
 ---
 
-## Enable Oxylabs Web Unblocker (recommended for Kmart)
+## Optional: Enable Oxylabs Web Unblocker
 
-Oxylabs handles Akamai TLS/JA3, sensor generation, and residential IP rotation on their side, so we don't have to chase Akamai updates ourselves.
+The current Kmart route is sticky residential proxy + Chrome TLS transport + Hyper. Oxylabs Web Unblocker is optional and should not be mixed into normal Hyper debugging unless you are deliberately testing that transport.
 
 1. Create a Web Unblocker sub-user at <https://dashboard.oxylabs.io> → **Web Unblocker**. Copy the username and password.
 2. On the github.com mobile site, add three more repo secrets in **Settings → Secrets and variables → Actions**:

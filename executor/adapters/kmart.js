@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 // of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
 // passive SBSD (2 submissions). The previous UUID-strict matcher missed
 // all real Kmart challenges because their `v` value is not UUID-formatted.
-const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
+const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
@@ -109,6 +109,83 @@ function akamaiSensorBody(payload) {
   return JSON.stringify({ sensor_data: payload });
 }
 
+function marker(value) {
+  const v = String(value ?? "");
+  if (!v) return "(none)";
+  const m = v.match(/~(-?\d+)~/);
+  return `${v.length}b ind=${m?.[1] ?? "?"}`;
+}
+
+function cookieNamesFromResponse(res) {
+  const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+  return setCookies
+    .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+    .filter(Boolean);
+}
+
+function sensorBodySuccess(body) {
+  if (/"success"\s*:\s*true/i.test(body)) return "true";
+  if (/"success"\s*:\s*false/i.test(body)) return "false";
+  return "unknown";
+}
+
+async function postAkamaiSensorRounds({
+  label,
+  steps,
+  tStep,
+  ctx,
+  jar,
+  pageUrl,
+  scriptUrl,
+  scriptBody,
+  requestOrigin,
+  referer,
+  egressIp,
+}) {
+  let localContext = null;
+  for (let i = 0; i < 3; i++) {
+    await tStep(`${label}#${i + 1}`, async () => {
+      const beforeAbck = marker(jar.get("_abck"));
+      const beforeBmsz = marker(jar.get("bm_sz"));
+      const r = await solveAkamaiSensor({
+        jar,
+        pageUrl,
+        userAgent: UA,
+        ip: egressIp,
+        acceptLanguage: ACCEPT_LANG,
+        scriptUrl,
+        scriptBody,
+        prevContext: localContext,
+        version: "3",
+      });
+      localContext = r.context;
+      const res = await request(
+        r.postUrl,
+        {
+          method: "POST",
+          headers: akamaiSensorHeaders({ requestOrigin, referer }),
+          body: akamaiSensorBody(r.payload),
+        },
+        ctx,
+      );
+      const body = await res.text().catch(() => "");
+      const setCookieNames = cookieNamesFromResponse(res);
+      return {
+        status: res.status,
+        ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+        note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(jar.get("bm_sz"))} ctxIn=${i === 0 ? 0 : localContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+      };
+    });
+    if (abckSolved(jar, i + 1)) {
+      steps.push({ step: `${label}:solved`, ok: true, note: `rounds=${i + 1}` });
+      return true;
+    }
+    await sleep(200, 400);
+  }
+  steps.push({ step: `${label}:unsolved`, ok: false, note: "_abck not valid after 3 challenge rounds" });
+  return false;
+}
+
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
@@ -179,6 +256,11 @@ export const kmartAdapter = {
         note: `oxylabs session=${ctx.oxylabsSessionId.slice(0, 8)} ttl=10m (raw transport; Hyper solves antibot)`,
       });
     }
+    steps.push({
+      step: "transport",
+      ok: true,
+      note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)} oxylabs=${Boolean(ctx.dispatcher?.useOxylabs)}`,
+    });
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
       return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
@@ -190,6 +272,7 @@ export const kmartAdapter = {
     let scriptBody = null;
     let html = "";
     let prevContext = null;
+    let lastSbsdUuid = "";
 
     // 1. Resolve egress IP for fingerprint consistency.
     const ip = await tStep("resolve_ip", async () => {
@@ -228,7 +311,12 @@ export const kmartAdapter = {
         ok: setCookieNames.includes("_abck"),
         note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}]`,
       });
-      return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
+      const snippet = html.replace(/\s+/g, " ").trim().slice(0, 240);
+      return {
+        status: res.status,
+        ok: res.status >= 200 && res.status < 400 && Boolean(scriptPath),
+        note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"} srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} body=${snippet}`,
+      };
     });
 
     if (!scriptPath) {
@@ -247,6 +335,12 @@ export const kmartAdapter = {
       const parsed = parseSbsd(sourceHtml);
       if (!parsed) {
         steps.push({ step: `${label}:none`, ok: true, note: "no SBSD script tag in HTML" });
+        return false;
+      }
+      if (parsed.uuid) lastSbsdUuid = parsed.uuid;
+      const sbsdUuid = parsed.uuid || lastSbsdUuid;
+      if (!sbsdUuid) {
+        steps.push({ step: `${label}:missing_uuid`, ok: false, note: "SBSD script had empty v= and no cached uuid from an earlier page" });
         return false;
       }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
@@ -271,7 +365,7 @@ export const kmartAdapter = {
           ctx,
         );
         sbsdBody = await r.text();
-        return { status: r.status, note: `uuid=${parsed.uuid.slice(0, 8)} ${sbsdBody.length}b t=${parsed.t || "-"}` };
+        return { status: r.status, note: `uuid=${sbsdUuid.slice(0, 8)}${parsed.uuid ? "" : "(cached)"} ${sbsdBody.length}b t=${parsed.t || "-"}` };
       });
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
@@ -280,7 +374,7 @@ export const kmartAdapter = {
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
-            uuid: parsed.uuid,
+            uuid: sbsdUuid,
             oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
             index: i,
             userAgent: UA,
@@ -306,8 +400,10 @@ export const kmartAdapter = {
             },
             ctx,
           );
+          const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
+          const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
-          return { status: res.status, ok: res.status < 400, note: `jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")}` };
+          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
         }).catch(() => {});
       }
       return true;
@@ -348,10 +444,12 @@ export const kmartAdapter = {
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
-      note: `abck=${(ctx.jar.get("_abck") ?? "(empty)").slice(0, 60)} bmsz=${(ctx.jar.get("bm_sz") ?? "(empty)").slice(0, 30)} scriptBytes=${scriptBody?.length ?? 0}`,
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0}`,
     });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
+        const beforeAbck = marker(ctx.jar.get("_abck"));
+        const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: origin + "/",
@@ -375,13 +473,11 @@ export const kmartAdapter = {
           ctx,
         );
         const body = await res.text().catch(() => "");
-        const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-        const setCookieNames = setCookies
-          .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
-          .filter(Boolean);
+        const setCookieNames = cookieNamesFromResponse(res);
         return {
           status: res.status,
-          note: `success=${/"success"\s*:\s*true/i.test(body)} setCookies=[${setCookieNames.join(",") || "none"}] abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}… ctx=${r.context?.length ?? 0}`,
+          ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
           _ctx: r.context,
         };
       }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
@@ -412,11 +508,6 @@ export const kmartAdapter = {
       // post-pdp steps cut off by upstream truncation. Trim aggressively.
       const abck = String(jarDump._abck ?? "");
       const bmsz = String(jarDump.bm_sz ?? "");
-      const marker = (v) => {
-        if (!v) return "(none)";
-        const m = v.match(/~(-?\d+)~/);
-        return `${v.length}b ind=${m?.[1] ?? "?"}`;
-      };
       steps.push({
         step: label,
         ok: true,
@@ -553,6 +644,60 @@ export const kmartAdapter = {
       });
       if (pdpHtml && pdpHtml.length < 10000) {
         steps.push({ step: "pdp_body_full", ok: true, note: pdpHtml });
+      }
+    }
+
+    // Some Kmart 403 pages return a fresh Akamai sensor script rather than an
+    // SBSD payload. Treat that as a new script body/context, post sensors for
+    // the PDP page URL, then retry the PDP before moving on.
+    if (pdpStatus >= 400) {
+      const pdpChallengePath = findAkamaiScriptPath(pdpHtml);
+      if (pdpChallengePath) {
+        const pdpChallengeUrl = origin + pdpChallengePath;
+        let pdpChallengeBody = "";
+        await tStep("pdp_akamai_script_fetch", async () => {
+          const res = await request(
+            pdpChallengeUrl,
+            {
+              method: "GET",
+              headers: {
+                "user-agent": UA,
+                referer: pdpUrl,
+                "accept-language": ACCEPT_LANG,
+                accept: "*/*",
+                "sec-fetch-dest": "script",
+                "sec-fetch-mode": "no-cors",
+                "sec-fetch-site": "same-origin",
+              },
+            },
+            ctx,
+          );
+          pdpChallengeBody = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${pdpChallengeBody.length}b path=${pdpChallengePath}` };
+        });
+        await postAkamaiSensorRounds({
+          label: "pdp_akamai_sensor",
+          steps,
+          tStep,
+          ctx,
+          jar: ctx.jar,
+          pageUrl: pdpUrl,
+          scriptUrl: pdpChallengeUrl,
+          scriptBody: pdpChallengeBody,
+          requestOrigin: origin,
+          referer: pdpUrl,
+          egressIp,
+        });
+        await sleep(450, 950);
+        const pdpRetryHeaders = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
+        dumpRequestState("pdp_get#akamai_retry:recon", pdpUrl, pdpRetryHeaders);
+        await tStep("pdp_get#akamai_retry", async () => {
+          const res = await request(pdpUrl, { method: "GET", headers: pdpRetryHeaders }, ctx);
+          pdpStatus = res.status;
+          pdpHtml = await res.text();
+          const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
+          return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b | ${snippet}` };
+        });
       }
     }
 
@@ -722,6 +867,8 @@ export const kmartAdapter = {
         let apiSolved = false;
         for (let i = 0; i < 3; i++) {
           await tStep(`api_sensor#${i + 1}`, async () => {
+            const beforeAbck = marker(ctx.jar.get("_abck"));
+            const beforeBmsz = marker(ctx.jar.get("bm_sz"));
             const r = await solveAkamaiSensor({
               jar: ctx.jar,
               pageUrl: apiOrigin + "/",
@@ -742,7 +889,13 @@ export const kmartAdapter = {
               },
               ctx,
             );
-            return { status: res.status, note: `abck=${(ctx.jar.get("_abck") ?? "").slice(0, 40)}…` };
+            const body = await res.text().catch(() => "");
+            const setCookieNames = cookieNamesFromResponse(res);
+            return {
+              status: res.status,
+              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+              note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${apiPrev?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+            };
           });
           if (abckSolved(ctx.jar, i + 1)) {
             apiSolved = true;

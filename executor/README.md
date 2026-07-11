@@ -39,7 +39,10 @@ with `undici` unblocks the proxy.
   Akamai/SBSD/pixel challenges. We do not use Oxylabs' render mode
   because rendered requests use a fresh browser per call and can't reuse
   the cookies we've been building up. If a task supplies an explicit proxy,
-  that proxy overrides Oxylabs for the run and uses the Chrome TLS client.
+  that proxy always overrides Oxylabs for the run and uses the Chrome TLS
+  client. Sticky residential IPs are necessary but not sufficient for Kmart:
+  Akamai also requires the browser-like TLS/HTTP fingerprint and matching
+  Hyper inputs.
 - `OXYLABS_UNBLOCKER_USER` / `OXYLABS_UNBLOCKER_PASS` — required when
   `EXECUTOR_HTTP_TRANSPORT=oxylabs`. Sub-user credentials from
   dashboard.oxylabs.io → Web Unblocker.

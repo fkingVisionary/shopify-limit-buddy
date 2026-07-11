@@ -31,6 +31,7 @@ app.get("/health", async () => ({
   inflight,
   cap: MAX_CONCURRENT,
   transport: OXYLABS_ENABLED ? "oxylabs" : (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici"),
+  explicitProxyTransport: "tls",
 }));
 
 function checkAuth(req, reply) {
