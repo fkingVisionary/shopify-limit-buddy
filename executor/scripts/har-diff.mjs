@@ -79,6 +79,7 @@ function buildGolden(entries) {
     const host = parseHost(e.request.url);
     if (!HAR_HOSTS.has(host)) continue;
     const pathname = new URL(e.request.url).pathname;
+    const pd = e.request.postData?.text ?? null;
     const { op, variables, query } = extractOp(e);
     for (const c of CRITICAL) {
       const hostOk = c.host === host;
@@ -86,8 +87,6 @@ function buildGolden(entries) {
       const methodOk = c.method ? c.method === e.request.method : true;
       const opOk = c.op ? c.op === op : true;
       if (hostOk && pathOk && methodOk && opOk) {
-        // For repeated ops (e.g. two updateMyBagWithoutBagStockAvailability),
-        // keep the first hit per key unless key has a "*" suffix.
         if (!hits.find((h) => h.key === c.key)) {
           hits.push({
             key: c.key, entryIndex: i, host, method: e.request.method,
@@ -103,6 +102,7 @@ function buildGolden(entries) {
   }
   return hits;
 }
+
 
 function printChecklist(hits) {
   console.log("\n=== KMART CHECKOUT — GOLDEN CHECKLIST (from HAR) ===\n");
