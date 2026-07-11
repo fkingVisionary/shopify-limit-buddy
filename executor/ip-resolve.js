@@ -14,9 +14,7 @@ export async function resolveEgressIp(ctx, { force = false } = {}) {
   // Key by the actual proxy URL so each proxy session gets its own cached IP.
   // Previously every proxied task shared one "proxied" bucket, which mixed
   // IPs across sessions and made drift detection useless.
-  const key = ctx?.dispatcher?.useOxylabs
-    ? `oxylabs:${ctx?.oxylabsSessionId ?? "default"}`
-    : (ctx?.dispatcher?.proxy ?? "");
+  const key = ctx?.dispatcher?.proxy ?? "";
   if (!force) {
     const hit = cache.get(key);
     if (hit && Date.now() - hit.ts < TTL_MS) return hit.ip;

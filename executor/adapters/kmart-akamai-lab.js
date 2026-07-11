@@ -281,17 +281,14 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const requestedProxy = Boolean(String(resolvedProxy ?? "").trim());
   const jar = createJar();
-  // Oxylabs has been removed from the lab decision path. The lab is Chrome-131
-  // TLS only — either direct, or over the caller-supplied residential proxy.
-  // `transport` is accepted for API compatibility but coerced to "tls" so the
-  // executor's global TRANSPORT env cannot silently route the lab through
-  // Oxylabs Web Unblocker.
+  // The lab is Chrome-131 TLS only — either direct, or over the caller-supplied
+  // residential proxy. `transport` is accepted for API compatibility but
+  // coerced to "tls" so stale env/config cannot change the lab transport.
   const requestedTransport = String(transport ?? "tls");
   const transportMode = "tls";
   const dispatcher = makeDispatcher(resolvedProxy, {
     forceTls: true,
     forceUndici: false,
-    forceOxylabs: false,
   });
   const ctx = { dispatcher, jar };
   const startedAt = Date.now();
@@ -349,8 +346,8 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   try {
     addStep({
       step: "transport",
-      ok: dispatcher.transport === "tls" && !dispatcher.useOxylabs,
-      note: `lab=tls-only (oxylabs removed) requestedTransport=${requestedTransport} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
+      ok: dispatcher.transport === "tls",
+      note: `lab=tls-only requestedTransport=${requestedTransport} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)}`,
     });
 
     addStep({ step: "hyper_sdk_shape", ok: true, note: JSON.stringify(hyperSensorInputShape()) });
