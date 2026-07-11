@@ -123,6 +123,7 @@ app.post("/akamai/lab", async (req, reply) => {
       proxy: body.proxy ?? null,
       rounds: Number(body.rounds ?? 3),
       useProxy: Boolean(body.useProxy),
+      transport: body.transport ?? "tls",
     });
   } catch (e) {
     reply.code(500);

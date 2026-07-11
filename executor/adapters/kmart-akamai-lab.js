@@ -113,12 +113,17 @@ function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved,
   return "FAIL: _abck rotated but never reached a valid marker";
 }
 
-export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false }) {
+export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false, transport = "tls" }) {
   const targetUrl = String(url || DEFAULT_URL).trim();
   const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const requestedProxy = Boolean(String(resolvedProxy ?? "").trim());
   const jar = createJar();
-  const dispatcher = makeDispatcher(resolvedProxy);
+  const transportMode = ["auto", "tls", "undici", "oxylabs"].includes(String(transport)) ? String(transport) : "tls";
+  const dispatcher = makeDispatcher(resolvedProxy, {
+    forceTls: transportMode === "tls",
+    forceUndici: transportMode === "undici",
+    forceOxylabs: transportMode === "oxylabs",
+  });
   const ctx = { dispatcher, jar };
   const startedAt = Date.now();
   const steps = [];
@@ -137,7 +142,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     addStep({
       step: "transport",
       ok: requestedProxy ? dispatcher.transport === "tls" : true,
-      note: `requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
+      note: `requestedMode=${transportMode} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
     });
 
     addStep({ step: "hyper_sdk_shape", ok: true, note: JSON.stringify(hyperSensorInputShape()) });
@@ -168,6 +173,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         verdict: "FAIL: script URL/body mismatch — no Akamai script path found on initial PDP response",
         targetUrl,
         transport: dispatcher.transport,
+        requestedMode: transportMode,
         requestedProxy,
         initialIp,
         steps,
@@ -233,6 +239,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         ok: sensorRes.status < 400 && bodySuccess(rawBody) !== false && solved,
         status: sensorRes.status,
         transport: dispatcher.transport,
+        requestedMode: transportMode,
         requestedProxy,
         egressIp: roundIp,
         ipChanged: Boolean(initialIp && roundIp && initialIp !== roundIp),
@@ -267,6 +274,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       verdict,
       targetUrl,
       transport: dispatcher.transport,
+      requestedMode: transportMode,
       requestedProxy,
       parsedProxy: Boolean(dispatcher.proxy),
       initialIp,
@@ -287,6 +295,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       verdict: `FAIL: lab error — ${e?.message ?? String(e)}`,
       targetUrl,
       transport: dispatcher.transport,
+      requestedMode: transportMode,
       requestedProxy,
       steps,
       rounds: sensorRounds,

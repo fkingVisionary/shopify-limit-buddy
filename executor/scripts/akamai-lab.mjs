@@ -14,7 +14,7 @@ const res = await fetch(`${baseUrl.replace(/\/$/, "")}/akamai/lab`, {
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
   },
-  body: JSON.stringify({ url, proxy, rounds: 3 }),
+  body: JSON.stringify({ url, proxy, rounds: 3, transport: process.env.AKAMAI_LAB_TRANSPORT ?? "tls" }),
 });
 
 const text = await res.text();
