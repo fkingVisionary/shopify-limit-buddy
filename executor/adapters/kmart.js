@@ -18,14 +18,21 @@ import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd }
 //   <script src="/path?v=<token>[&t=<token>]">
 // `v` is an opaque token (NOT necessarily UUID-shaped), and the presence
 // of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
-// passive SBSD (2 submissions). The previous UUID-strict matcher missed
-// all real Kmart challenges because their `v` value is not UUID-formatted.
-const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
+// passive SBSD (2 submissions).
+//
+// IMPORTANT: the path must NOT end in `.js` — that's the Akamai bot-manager
+// sensor script, not an SBSD challenge. The previous permissive pattern
+// matched the sensor script URL and caused proactive `runSbsd` on the
+// homepage to POST an SBSD payload to the sensor endpoint, poisoning the
+// session and hard-403'ing category / cart on the next request.
+const SBSD_RE = /src=["']((?:\/[a-z\d\-_.]+)+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
+  if (/\.js$/i.test(m[1])) return null; // sensor script, not SBSD
   return { path: m[1], uuid: m[2], t: m[3] ?? "" };
 }
+
 
 
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
