@@ -990,18 +990,44 @@ fragment LineItemFields on LineItem {
   custom { fields { offerId __typename } __typename }
   __typename
 }`;
+        // Real HAR (entries #357, #366) fires two probe reads between
+        // cart_create and cart_atc — getActiveBag then getMyActiveCart —
+        // before the addLineItem mutation. Skipping them changed our
+        // request-cadence fingerprint enough for Akamai to score the ATC
+        // as bot traffic (→ 403). Replay both.
+        await tStep("cart_probe1", async () => {
+          const res = await gqlPost({
+            operationName: "getActiveBag",
+            variables: {},
+            query:
+              "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
+        });
+        await tStep("cart_probe2", async () => {
+          const res = await gqlPost({
+            operationName: "getMyActiveCart",
+            variables: {},
+            query:
+              "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
+        });
+
         await tStep("cart_atc", async () => {
           const res = await gqlPost({
             operationName: "updateMyBag",
             variables: {
               id: cartId,
               version: cartVersion,
-              // HAR entry #368: single addLineItem action for home delivery.
-              // The setCustomField selectedCncStoreId in the real HAR was
-              // only present because that session started as C&C; we do
-              // home delivery so we skip it.
+              // HAR entry #368: addLineItem + setCustomField selectedCncStoreId.
+              // We include the custom field verbatim — real browsers always
+              // send it and the extra action is harmless for home delivery.
               actions: [
                 { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
               ],
             },
             query: updateQuery,
@@ -1027,6 +1053,7 @@ fragment LineItemFields on LineItem {
             note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
           };
         });
+
 
         // 7e. Verify with the rich getMyActiveCart query.
         await tStep("cart_verify", async () => {
