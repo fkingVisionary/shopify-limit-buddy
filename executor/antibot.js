@@ -48,6 +48,37 @@ export function hyperConfigured() {
   return Boolean(API_KEY);
 }
 
+export function hyperSensorInputShape() {
+  const sample = new SensorInput(
+    "abck",
+    "bmsz",
+    "3",
+    "https://example.com/page",
+    "ua",
+    "127.0.0.1",
+    "en-AU,en;q=0.9",
+    "ctx",
+    "script",
+    "https://example.com/akamai.js",
+  );
+  return {
+    sdk: "hyper-sdk-js",
+    constructorOrder: ["abck", "bmsz", "version", "pageUrl", "userAgent", "ip", "acceptLanguage", "context", "script", "scriptUrl"],
+    observedFields: {
+      abck: sample.abck,
+      bmsz: sample.bmsz,
+      version: sample.version,
+      pageUrl: sample.pageUrl,
+      userAgent: sample.userAgent,
+      ip: sample.ip,
+      acceptLanguage: sample.acceptLanguage,
+      context: sample.context,
+      script: sample.script,
+      scriptUrl: sample.scriptUrl,
+    },
+  };
+}
+
 // ─── Akamai sensor ───────────────────────────────────────────────────
 // abck/bmsz cookies come from the jar; if they're absent (first sensor),
 // pass empty strings — Hyper handles the seeding.
