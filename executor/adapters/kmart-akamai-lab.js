@@ -7,7 +7,7 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 import { createJar, makeDispatcher, request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, hyperSensorInputShape, solveAkamaiSensor } from "../antibot.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 const ORIGIN = "https://www.kmart.com.au";
 const ACCEPT_LANG = "en-AU,en;q=0.9";
