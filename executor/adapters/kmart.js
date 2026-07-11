@@ -1150,55 +1150,87 @@ fragment LineItemFields on LineItem {
         // Identity + address. Prefer task.profile when supplied; otherwise fall
         // back to the same Brisbane 4001 QLD values used in the postcodeSelector
         // so pickup postcode and billing address stay consistent.
+        //
+        // Address shape mirrors the real HAR (Chrome DevTools capture of a
+        // successful C&C checkout on 2026-07-11):
+        //   setShippingAddress.address = {
+        //     firstName, lastName, email, phone,
+        //     streetName: "133 Allenby Rd",   ← full "<number> <street>" combined
+        //     city, state, country: "AU", postalCode,
+        //     company: "", deliveryInstructions: "", isAuthorisedToLeave: true,
+        //     additionalAddressInfo: "{\"dpid\":null}", region: null
+        //   }
+        //   setBillingAddress.address = same minus deliveryInstructions/isAuthorisedToLeave
+        //   addItemShippingAddress.address = {
+        //     key: "storeAddress",   ← literal string, NOT the store id
+        //     streetName: "C&C – No Address Specified",
+        //     city, state, postalCode, country: "AU"
+        //   }
+        // Kmart's 3DS validator specifically requires non-empty
+        // streetName/state/postalCode on both shipping and billing.
         const p = task.profile ?? {};
         const identity = {
-          firstName: p.first_name ?? task.firstName ?? "morgan",
-          lastName: p.last_name ?? task.lastName ?? "edwards",
+          firstName: p.first_name ?? task.firstName ?? "Morgan",
+          lastName: p.last_name ?? task.lastName ?? "Edwards",
           email: p.email ?? task.email ?? "flowgdesigns@gmail.com",
-          phone: p.phone ?? task.phone ?? "0429444444",
+          phone: p.phone ?? task.phone ?? "0429386919",
         };
-        // Split "12 Main St" → streetNumber "12", streetName "Main St".
-        // commercetools accepts either combined or split; Kmart's 3DS
-        // validator requires streetName specifically to be non-empty.
-        const rawStreet = (p.address1 ?? "1 Queen Street").trim();
-        const streetMatch = rawStreet.match(/^(\d+[a-z]?)\s+(.+)$/i);
-        const streetNumber = streetMatch?.[1] ?? "1";
-        const streetName = streetMatch?.[2] ?? rawStreet;
-        const address = {
-          streetNumber,
-          streetName,
-          city: p.city ?? "Brisbane",
-          state: p.province ?? "QLD",
-          postalCode: p.zip ?? "4001",
-          country: "AU",
-        };
+        const streetLine = ((p.address1 ?? "133 Allenby Rd").toString()).trim();
+        const cncCity = p.city ?? "WELLINGTON POINT";
+        const cncState = p.province ?? "QLD";
+        const cncPostcode = p.zip ?? "4160";
         const cncStoreId = "1124";
 
-        // 8b. setShippingAddress (contact) + addItemShippingAddress (C&C store).
         const updateNoStockQuery = `mutation updateMyBagWithoutBagStockAvailability($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
     id version
     totalPrice { centAmount __typename }
-    shippingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
-    billingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
-    itemShippingAddresses { key country __typename }
+    shippingAddress { firstName lastName email phone streetName city state postalCode country company additionalAddressInfo region deliveryInstructions isAuthorisedToLeave __typename }
+    billingAddress { firstName lastName email phone streetName city state postalCode country company additionalAddressInfo region __typename }
+    itemShippingAddresses { key streetName city state postalCode country __typename }
     __typename
   }
 }`;
 
-        const contactAddress = {
+        const shippingAddressPayload = {
           firstName: identity.firstName,
           lastName: identity.lastName,
           email: identity.email,
           phone: identity.phone,
-          ...address,
+          streetName: streetLine,
+          city: cncCity,
+          state: cncState,
+          country: "AU",
+          postalCode: cncPostcode,
+          company: "",
+          deliveryInstructions: "",
+          isAuthorisedToLeave: true,
+          additionalAddressInfo: "{\"dpid\":null}",
+          region: null,
         };
-        // C&C store address — uses key=storeId so commercetools can tie line
-        // items to a pickup destination via shippingDetails.
+        const billingAddressPayload = {
+          firstName: identity.firstName,
+          lastName: identity.lastName,
+          email: identity.email,
+          phone: identity.phone,
+          streetName: streetLine,
+          city: cncCity,
+          state: cncState,
+          country: "AU",
+          postalCode: cncPostcode,
+          company: "",
+          additionalAddressInfo: "{\"dpid\":null}",
+          region: null,
+        };
+        // C&C pickup address. Real HAR uses the literal key "storeAddress"
+        // and a synthetic street "C&C – No Address Specified"; the store id
+        // is carried separately via the selectedCncStoreId custom field.
         const storeAddress = {
-          key: cncStoreId,
-          firstName: "Kmart",
-          lastName: cncStoreId,
+          key: "storeAddress",
+          streetName: "C&C – No Address Specified",
+          city: cncCity,
+          state: cncState,
+          postalCode: cncPostcode,
           country: "AU",
         };
 
@@ -1209,7 +1241,7 @@ fragment LineItemFields on LineItem {
               id: cartId,
               version: cartVersion,
               actions: [
-                { setShippingAddress: { address: contactAddress } },
+                { setShippingAddress: { address: shippingAddressPayload } },
                 { addItemShippingAddress: { address: storeAddress } },
               ],
             },
@@ -1224,7 +1256,7 @@ fragment LineItemFields on LineItem {
           return {
             status: res.status,
             ok: res.status < 400,
-            note: `v=${cartVersion} : ${txt.slice(0, 350)}`,
+            note: `v=${cartVersion} store=${cncStoreId} : ${txt.slice(0, 350)}`,
           };
         });
 
@@ -1236,24 +1268,26 @@ fragment LineItemFields on LineItem {
               id: cartId,
               version: cartVersion,
               actions: [
-                { setShippingAddress: { address: contactAddress } },
-                { setBillingAddress: { address: contactAddress } },
+                { setShippingAddress: { address: shippingAddressPayload } },
+                { setBillingAddress: { address: billingAddressPayload } },
               ],
             },
             query: updateNoStockQuery,
           });
           const txt = await res.text();
           let hasBilling = false;
+          let hasStreet = false;
           try {
             const j = JSON.parse(txt);
             const c = j?.data?.updateMyCart;
             if (c?.version) cartVersion = c.version;
             hasBilling = Boolean(c?.billingAddress?.email);
+            hasStreet = Boolean(c?.billingAddress?.streetName && c?.billingAddress?.state && c?.billingAddress?.postalCode);
           } catch {}
           return {
             status: res.status,
-            ok: res.status < 400 && hasBilling,
-            note: `v=${cartVersion} hasBilling=${hasBilling} : ${txt.slice(0, 350)}`,
+            ok: res.status < 400 && hasBilling && hasStreet,
+            note: `v=${cartVersion} hasBilling=${hasBilling} hasStreet=${hasStreet} : ${txt.slice(0, 350)}`,
           };
         });
 
