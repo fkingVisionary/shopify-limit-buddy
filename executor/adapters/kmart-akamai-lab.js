@@ -156,6 +156,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
 
     let html = "";
     let scriptPath = null;
+    let scriptSourceUrl = targetUrl;
     const initialRes = await request(targetUrl, { method: "GET", headers: navHeaders({ site: "none" }) }, ctx);
     html = await initialRes.text();
     scriptPath = parseAkamaiPath(html);
@@ -166,6 +167,23 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       status: initialRes.status,
       note: `html=${html.length}b setCookies=[${initialSetCookies.join(",") || "none"}] jar=[${Object.keys(jar.dump()).join(",") || "none"}] script=${scriptPath ?? "(none)"} abck=${marker(jar.get("_abck")).text} bmsz=${marker(jar.get("bm_sz")).text}`,
     });
+
+    if (!scriptPath) {
+      const homeRes = await request(ORIGIN + "/", { method: "GET", headers: navHeaders({ referer: targetUrl, site: "same-origin" }) }, ctx);
+      const homeHtml = await homeRes.text();
+      const homeScriptPath = parseAkamaiPath(homeHtml);
+      const homeSetCookies = cookieNamesFromResponse(homeRes);
+      addStep({
+        step: "script_discovery_home",
+        ok: Boolean(homeScriptPath),
+        status: homeRes.status,
+        note: `initial PDP had no script; home html=${homeHtml.length}b setCookies=[${homeSetCookies.join(",") || "none"}] script=${homeScriptPath ?? "(none)"} abck=${marker(jar.get("_abck")).text} bmsz=${marker(jar.get("bm_sz")).text}`,
+      });
+      if (homeScriptPath) {
+        scriptPath = homeScriptPath;
+        scriptSourceUrl = ORIGIN + "/";
+      }
+    }
 
     if (!scriptPath) {
       return {
@@ -182,13 +200,13 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     }
 
     const scriptUrl = new URL(scriptPath, ORIGIN).toString();
-    const scriptRes = await request(scriptUrl, { method: "GET", headers: scriptHeaders(targetUrl) }, ctx);
+    const scriptRes = await request(scriptUrl, { method: "GET", headers: scriptHeaders(scriptSourceUrl) }, ctx);
     const scriptBody = await scriptRes.text();
     addStep({
       step: "akamai_script_fetch",
       ok: scriptRes.status < 400 && scriptBody.length > 0,
       status: scriptRes.status,
-      note: `scriptUrl=${scriptUrl} bytes=${scriptBody.length} setCookies=[${cookieNamesFromResponse(scriptRes).join(",") || "none"}]`,
+      note: `source=${scriptSourceUrl} scriptUrl=${scriptUrl} bytes=${scriptBody.length} setCookies=[${cookieNamesFromResponse(scriptRes).join(",") || "none"}]`,
     });
 
     if (!jar.has("_abck")) {
