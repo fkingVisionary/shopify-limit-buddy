@@ -788,14 +788,51 @@ export const kmartAdapter = {
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
+      "cache-control": "no-cache",
+      pragma: "no-cache",
+      priority: "u=1, i",
       // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
-      // Setting it globally is harmless for cart calls and matches every
-      // authenticated shape the browser sends. Missing on cart_atc et al.
-      // would leave us fingerprintable against real Chrome traffic.
       "x-country-code": "AU",
     };
+
+    // New Relic RUM headers — real Kmart pages carry these on every api.*
+    // GraphQL call. Akamai's Bot Manager reportedly scores requests that
+    // are missing them lower on the "real browser" heuristic. Constants
+    // (ac / ap / tk) come from HAR entry #368; per-request ids are freshly
+    // random per call (traceparent / newrelic.id / newrelic.tr).
+    const NR_AC = "1065151";
+    const NR_AP = "1564950200";
+    const NR_TK = "1647451";
+    const randHex = (n) => {
+      const bytes = new Uint8Array(n / 2);
+      globalThis.crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    };
+    const nrHeaders = () => {
+      const tr = randHex(32);
+      const id = randHex(16);
+      const ti = Date.now();
+      const nrPayload = {
+        v: [0, 1],
+        d: { ty: "Browser", ac: NR_AC, ap: NR_AP, id, tr, ti, tk: NR_TK },
+      };
+      return {
+        newrelic: Buffer.from(JSON.stringify(nrPayload)).toString("base64"),
+        traceparent: `00-${tr}-${id}-01`,
+        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${NR_AP}-${id}----${ti}`,
+      };
+    };
     const gqlPost = async (body) =>
-      request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
+      request(
+        gqlUrl,
+        {
+          method: "POST",
+          headers: { ...gqlHeaders, ...nrHeaders() },
+          body: JSON.stringify(body),
+        },
+        ctx,
+      );
+
 
     if (pdpStatus > 0 && pdpStatus < 400) {
       {
