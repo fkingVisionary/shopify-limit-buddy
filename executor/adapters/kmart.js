@@ -527,46 +527,12 @@ export const kmartAdapter = {
     };
 
 
-    // 4b. Pre-PDP pixel solve. If warm_home embedded a pixel challenge, solve
-    //     it now to upgrade the bot score BEFORE the gated navigation. Pixel
-    //     posts arrive as a `bm_so` cookie that Akamai's risk engine reads on
-    //     the next request. Non-fatal: most warm_home responses don't carry
-    //     a pixel, in which case this is a no-op.
-    try {
-      const warmPixel = await solveAkamaiPixel({
-        jar: ctx.jar,
-        pageUrl: origin + "/",
-        html,
-        userAgent: UA,
-        ip: egressIp,
-        acceptLanguage: ACCEPT_LANG,
-        ctx,
-      });
-      if (warmPixel) {
-        await tStep("akamai_pixel_prepdp", async () => {
-          const res = await request(
-            warmPixel.postUrl,
-            {
-              method: "POST",
-              headers: {
-                "user-agent": UA,
-                "content-type": "application/x-www-form-urlencoded",
-                origin,
-                referer: origin + "/",
-                "accept-language": ACCEPT_LANG,
-              },
-              body: warmPixel.payload,
-            },
-            ctx,
-          );
-          return { status: res.status, note: `pixel posted, bm_so=${ctx.jar.has("bm_so")}` };
-        });
-      } else {
-        steps.push({ step: "akamai_pixel_prepdp", ok: true, note: "no pixel on warm_home" });
-      }
-    } catch (e) {
-      steps.push({ step: "akamai_pixel_prepdp", ok: false, note: e?.message ?? String(e) });
-    }
+    // Pre-PDP pixel solve REMOVED. The lab reaches SOLVED without any pixel
+    // POST and the previous implementation was firing on an empty pixel spec
+    // (warm_home rarely embeds one), sometimes POSTing a stale/blank body
+    // that Akamai scored against the session. Reactive pixel on pdp_get
+    // (step 6 below) still runs when the PDP actually embeds a pixel.
+
 
     // 4c. Intermediate category browse. Real users don't teleport from the
     //     homepage to a deep PDP — they click into a category first. Hitting
