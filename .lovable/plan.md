@@ -1,56 +1,41 @@
 ## Goal
+Break the Kmart `akamai_sensor success=false` loop while keeping the route as: **sticky residential proxy + Hyper sensor solving**, not Oxylabs Web Unblocker.
 
-Stop fighting Oxylabs' render browser. Use Hyper Solutions (already wired in) to solve Akamai/SBSD/pixel ourselves and use Oxylabs Web Unblocker purely as a sticky AU residential-IP transport. Every hop becomes a raw fetch with our own cookies, our own UA, our own fingerprint — through the same AU IP the whole flow.
+## Key finding from the current code
+The executor is only using the Chrome TLS client when either:
+- `EXECUTOR_HTTP_TRANSPORT=tls`, or
+- Oxylabs mode is enabled and an explicit proxy is supplied.
 
-## Why this fixes it
+So if Oxylabs is now disabled and you are passing sticky residential proxies, the current code can still route those sticky proxies through `undici` instead of the Chrome-impersonated TLS client. That means the IP is residential, but the TLS/HTTP fingerprint is still non-browser, which is exactly the kind of mismatch that makes Akamai accept the POST but return `success=false` / keep `_abck` unsolved.
 
-- **Current broken flow:** `OXYLABS_ENABLED` gates out every `runSensor` / `runSbsd` / `runPixel` call in `kmart.js`, and we ask Oxylabs to render HTML hops. Oxylabs spins up a fresh headless browser per render call; its cookies are bound to that browser's fingerprint. When we try to reuse those cookies on the next hop (rendered or raw), the fingerprint mismatch trips Akamai → 400 on `pdp_get`, session marked `failed`.
-- **Fixed flow:** Hyper generates a real `_abck` cookie bound to our UA. Web Unblocker in raw mode (no `x-oxylabs-render`) just forwards our exact request through an AU residential IP pinned by session-id + session-time. Same UA + same IP + valid Hyper-solved cookies = Akamai accepts every hop, including raw JSON/GraphQL calls to cart/checkout later.
+## Plan
+1. **Lock the intended transport behavior**
+   - Treat any explicit proxy as a browser-like TLS session by default.
+   - Keep direct/no-proxy behavior configurable, but do not let sticky proxy runs silently fall back to `undici`.
+   - Add the selected transport into executor timelines so every run says whether it used `tls`, `undici`, or `oxylabs`.
 
-## Changes
+2. **Remove misleading fallback assumptions**
+   - Stop recommending “use stickies” as if that alone solves it.
+   - Update the executor docs/setup notes to reflect the real requirement: sticky residential IP **plus** Chrome TLS fingerprint **plus** matching Hyper inputs.
 
-### 1. `executor/http.js` — Web Unblocker in raw mode only
-- Remove the `x-oxylabs-render: html` header entirely. Never render.
-- Always send `x-oxylabs-force-headers: 1` (raw fetch, our headers).
-- Keep `x-oxylabs-geo-location: Australia`, `x-oxylabs-session-id` (32 alnum chars), `x-oxylabs-session-time: 10`.
-- Remove the `oxyRender` opt from `request()` — no callers need it anymore.
+3. **Add a focused Akamai sensor diagnostic mode**
+   - Capture compact per-round fields: transport, proxy present, egress IP, `_abck` marker, `bm_sz` marker, Hyper context length, target POST status, target body success flag, Set-Cookie names.
+   - Include enough data to distinguish:
+     - Hyper generated a payload but target rejected it,
+     - target did not rotate cookies,
+     - IP drifted,
+     - cookie/header/TLS mismatch,
+     - wrong script path/body/context.
 
-### 2. `executor/adapters/kmart.js` — re-enable Hyper solves
-Remove the `!OXYLABS_ENABLED` short-circuits so Hyper runs regardless of transport:
-- `warm_home` → run sensor if the response carries an Akamai script (parse `bmsz`/script path from HTML).
-- `category_browse` → SBSD solve if present.
-- `pdp_get` → SBSD solve if present, pixel solve if present, then retry (`pdp_get#2`).
-- API warm / sensor round on the `api.kmart.com.au` origin — re-enable.
-- Keep the `unblocker` step note so we still see "oxylabs session=xxxx" in the timeline, but drop the "skipping Akamai/SBSD/pixel solves" wording — those solves are back on.
-- Fail early with a clear message if `HYPER_API_KEY` is missing (already the pattern for non-Oxylabs mode).
+4. **Re-check the sensor input ordering against the installed Hyper SDK**
+   - Confirm the `SensorInput` constructor argument order in the actual installed SDK, not just the old notes.
+   - If the wrapper is passing fields in the wrong order, fix it and add a small self-check/log so we can verify payloads start as expected for Akamai v3.
 
-### 3. `verify_ip` — keep but reinterpret
-Web Unblocker with a sticky session pins the IP for the target domain (kmart.com.au). The IP-check host is a *different* target, so `verify_ip` can legitimately show a different IP even when Kmart is stable. Two options in the plan (defer until we see the next run):
-- Option A: leave `verify_ip` as-is; treat "different" as a soft warning, not a failure.
-- Option B: replace with a check that hits `https://www.kmart.com.au/robots.txt` and reads a response header Oxylabs exposes (e.g. `x-oxylabs-node`) to confirm session stickiness.
+5. **Test the exact product URL through localhost / executor**
+   - Use `https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/`.
+   - Run with a sticky proxy path and compare against direct only as a control.
+   - Success criteria for this phase: sensor rounds produce a valid `_abck` or the output clearly identifies the remaining mismatch.
 
-Recommend A for now — one less thing to change per turn.
-
-### 4. Kmart headers — one small correctness fix
-The screenshots show `sec-fetch-site: none` on `warm_home` but that's what a real cold-open sends. Good. On `category_browse` we send `same-origin` with `referer: origin + "/"` — also correct. No change needed here; documenting so we don't touch it by accident.
-
-### 5. Docs
-Update `executor/README.md` "Env vars" section to say: `EXECUTOR_HTTP_TRANSPORT=oxylabs` uses Web Unblocker as an **IP transport only** — Hyper still handles antibot. Remove the sentence that says Kmart skips its own solves when Oxylabs is on.
-
-## Out of scope for this turn
-
-- No HAR-replay path yet. If cart/checkout still fails after this, that's the next step.
-- No switch to Oxylabs Residential Proxies — you said Web Unblocker + Hyper first; residential is our fallback if this doesn't stick.
-- No frontend changes. UI/timeline display stays the same.
-
-## Validation after redeploy
-
-1. Trigger the "Deploy executor" workflow.
-2. Run a Kmart dry test on the sparkle salamander PDP.
-3. Expected timeline: `unblocker` ✓ → `resolve_ip` ✓ → `warm_home` 200 → `sensor_home` ✓ (new step from Hyper) → `category_browse` 200 → `sbsd_category` ✓ (only if challenge present) → `pdp_get` 200 → `pdp_body_full` ✓ → `sku_extract` ✓.
-4. No more "session is failed" note from Oxylabs.
-5. If `verify_ip` still shows different IPs, ignore — the real signal is whether `pdp_get` returns 200 with real product HTML.
-
-## Fallback if this still fails
-
-If Hyper + Web Unblocker raw still hits 400 on `pdp_get`, the next move is your sticky residential proxies (send me the format when needed). We'd flip `EXECUTOR_HTTP_TRANSPORT` back to `undici`, drop the Oxylabs headers, and pipe the proxy URL through the existing `parseProxy` path. Hyper stays exactly the same.
+6. **Only then continue to PDP/cart**
+   - Do not keep changing category/PDP/cart behavior until the sensor loop is solved.
+   - Once `_abck` reaches valid, proceed to verify PDP 200, then cart/API host separately.
