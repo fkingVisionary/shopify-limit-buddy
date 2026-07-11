@@ -253,7 +253,12 @@ export const kmartAdapter = {
         ok: setCookieNames.includes("_abck"),
         note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}]`,
       });
-      return { status: res.status, note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"}` };
+      const snippet = html.replace(/\s+/g, " ").trim().slice(0, 240);
+      return {
+        status: res.status,
+        ok: res.status >= 200 && res.status < 400 && Boolean(scriptPath),
+        note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"} srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} body=${snippet}`,
+      };
     });
 
     if (!scriptPath) {

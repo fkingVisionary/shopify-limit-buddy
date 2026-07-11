@@ -106,11 +106,18 @@ function parseProxy(raw) {
   const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : "http";
   let rest = schemeMatch ? s.slice(schemeMatch[0].length) : s;
 
+  const safeDecode = (value) => {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  };
   const build = (host, port, user, pass) => {
     if (!host || !/^\d{1,5}$/.test(String(port ?? ""))) return null;
     const n = Number(port);
     if (n <= 0 || n > 65535) return null;
-    const auth = user != null ? `${encodeURIComponent(user)}:${encodeURIComponent(pass ?? "")}@` : "";
+    const auth = user != null ? `${encodeURIComponent(safeDecode(user))}:${encodeURIComponent(safeDecode(pass ?? ""))}@` : "";
     return `${scheme}://${auth}${host}:${port}`;
   };
 
