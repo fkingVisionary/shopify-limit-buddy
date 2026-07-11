@@ -101,16 +101,32 @@ function compactCookies(jar) {
   };
 }
 
-function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds }) {
+// Classify the state Akamai edge is putting us in. Three distinct outcomes
+// that used to all collapse to "fail":
+//   EDGE_DENY        — edge refused before bot-manager ran; no _abck at all.
+//                      IP reputation problem, not a sensor problem.
+//   SENSOR_CHALLENGE — _abck present but sentinel (~-1~); Hyper must solve.
+//   SOLVED           — _abck valid (~0~ marker); sensor round succeeded.
+//   UNKNOWN          — anything else (partial, unexpected shape).
+function classifyEdge({ status, hasAbck, abckMarker, solved }) {
+  if (solved) return "SOLVED";
+  if (!hasAbck && status >= 400) return "EDGE_DENY";
+  if (hasAbck && abckMarker?.index === "-1") return "SENSOR_CHALLENGE";
+  if (hasAbck) return "SENSOR_CHALLENGE";
+  return "UNKNOWN";
+}
+
+function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds, classification }) {
   if (requestedProxy && !dispatcher.proxy) return "FAIL: sticky proxy was supplied but was not parsed";
   if (requestedProxy && dispatcher.transport !== "tls") return `FAIL: explicit proxy transport was ${dispatcher.transport}, expected tls`;
+  if (classification === "EDGE_DENY") return "EDGE_DENY: Akamai edge refused this IP before bot-manager ran — try a different proxy (this is NOT a Hyper failure)";
   if (initialIp && currentIp && initialIp !== currentIp) return `FAIL: IP changed between sensor rounds (${initialIp} → ${currentIp})`;
   if (solved) return "PASS: transport stable + Hyper sensor POST reached valid _abck";
   const rejected = rounds.find((r) => r.bodySuccess === false);
-  if (rejected) return "FAIL: Hyper generated payload but Kmart returned success=false";
+  if (rejected) return "SENSOR_REJECTED: Hyper generated payload but Kmart returned success=false — sensor shape/context mismatch";
   const noCookies = rounds.every((r) => r.setCookies.length === 0);
-  if (noCookies) return "FAIL: sensor POST did not rotate cookies";
-  return "FAIL: _abck rotated but never reached a valid marker";
+  if (noCookies) return "SENSOR_NO_ROTATE: sensor POST did not rotate cookies — request shape or headers wrong";
+  return "SENSOR_STALE: _abck rotated but never reached a valid marker after all rounds";
 }
 
 export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false, transport = "tls" }) {
