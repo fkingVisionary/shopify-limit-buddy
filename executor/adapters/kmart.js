@@ -820,6 +820,15 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      // x-visitor-id is REQUIRED by the /shopping-agent/v1/get-token
+      // endpoint — without it we get HTTP 400 "Missing required header:
+      // x-visitor-id" and no ak_bmsc/bm_sv cookies are minted, which then
+      // cascades into every api.kmart.com.au call being 403'd by Akamai
+      // Bot Manager (see the cart_atc Access Denied).
+      //
+      // Format (from HAR): "<randInt10>.<unixSec10>" — same value the
+      // browser reads from the GA client-id cookie (_ga=GA1.1.<v-id>).
+      const visitorId = `${Math.floor(1_000_000_000 + Math.random() * 9_000_000_000)}.${Math.floor(Date.now() / 1000)}`;
       await tStep("api_get_token", async () => {
         const res = await request(
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -836,11 +845,13 @@ export const kmartAdapter = {
               "sec-fetch-site": "same-site",
               "sec-fetch-mode": "cors",
               "sec-fetch-dest": "empty",
+              "x-visitor-id": visitorId,
             },
             body: JSON.stringify({ sessionId }),
           },
           ctx,
         );
+
         const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
         return {
