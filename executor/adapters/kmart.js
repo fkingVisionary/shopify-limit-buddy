@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 // of `t=` distinguishes a HARD challenge (1 sensor submission, §3.3) from
 // passive SBSD (2 submissions). The previous UUID-strict matcher missed
 // all real Kmart challenges because their `v` value is not UUID-formatted.
-const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]+)(?:&[^"']*?t=([^"'&]+))?["']/i;
+const SBSD_RE = /src=["']([a-z\d\/\-_.]+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i;
 function parseSbsd(html) {
   const m = SBSD_RE.exec(html);
   if (!m) return null;
@@ -189,15 +189,7 @@ async function postAkamaiSensorRounds({
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
-  const sdkPath = parseAkamaiPath(html);
-  if (sdkPath) return sdkPath;
-  // Kmart's 403 Access Denied pages can serve the Akamai script as
-  // `<script src="/<rotating-path>?v=" defer>` with an empty v token. The SDK
-  // parser handles normal page HTML, but this challenge form needs a fallback.
-  const m = /<script[^>]+src=["']([^"']+\?v=)[^"']*["']/i.exec(html);
-  if (!m) return null;
-  const raw = m[1].replace(/\?v=$/, "");
-  return raw.startsWith("http") ? new URL(raw).pathname : raw;
+  return parseAkamaiPath(html);
 }
 
 // Solved when _abck contains the `~0~` indicator AND survives the SDK's
@@ -280,6 +272,7 @@ export const kmartAdapter = {
     let scriptBody = null;
     let html = "";
     let prevContext = null;
+    let lastSbsdUuid = "";
 
     // 1. Resolve egress IP for fingerprint consistency.
     const ip = await tStep("resolve_ip", async () => {
@@ -344,6 +337,12 @@ export const kmartAdapter = {
         steps.push({ step: `${label}:none`, ok: true, note: "no SBSD script tag in HTML" });
         return false;
       }
+      if (parsed.uuid) lastSbsdUuid = parsed.uuid;
+      const sbsdUuid = parsed.uuid || lastSbsdUuid;
+      if (!sbsdUuid) {
+        steps.push({ step: `${label}:missing_uuid`, ok: false, note: "SBSD script had empty v= and no cached uuid from an earlier page" });
+        return false;
+      }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
       const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
@@ -366,7 +365,7 @@ export const kmartAdapter = {
           ctx,
         );
         sbsdBody = await r.text();
-        return { status: r.status, note: `uuid=${parsed.uuid.slice(0, 8)} ${sbsdBody.length}b t=${parsed.t || "-"}` };
+        return { status: r.status, note: `uuid=${sbsdUuid.slice(0, 8)}${parsed.uuid ? "" : "(cached)"} ${sbsdBody.length}b t=${parsed.t || "-"}` };
       });
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
@@ -375,7 +374,7 @@ export const kmartAdapter = {
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
-            uuid: parsed.uuid,
+            uuid: sbsdUuid,
             oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
             index: i,
             userAgent: UA,
