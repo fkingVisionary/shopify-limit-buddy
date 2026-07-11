@@ -328,13 +328,11 @@ export const kmartAdapter = {
         return false;
       }
       if (parsed.uuid) lastSbsdUuid = parsed.uuid;
-      // Fallback: SBSD challenges sometimes serve `?v=` empty, expecting the
-      // client to have generated its own session uuid (persisted for the tab).
-      // Generate one lazily and cache it so all subsequent SBSD hops reuse it.
-      if (!lastSbsdUuid) lastSbsdUuid = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const sbsdUuid = parsed.uuid || lastSbsdUuid;
-      const uuidSource = parsed.uuid ? "script" : "generated";
-      steps.push({ step: `${label}:uuid`, ok: true, note: `uuid=${sbsdUuid.slice(0, 8)} source=${uuidSource}` });
+      if (!sbsdUuid) {
+        steps.push({ step: `${label}:missing_uuid`, ok: false, note: "SBSD script had empty v= and no cached uuid from an earlier page" });
+        return false;
+      }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
       const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
@@ -822,15 +820,6 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // x-visitor-id is REQUIRED by the /shopping-agent/v1/get-token
-      // endpoint — without it we get HTTP 400 "Missing required header:
-      // x-visitor-id" and no ak_bmsc/bm_sv cookies are minted, which then
-      // cascades into every api.kmart.com.au call being 403'd by Akamai
-      // Bot Manager (see the cart_atc Access Denied).
-      //
-      // Format (from HAR): "<randInt10>.<unixSec10>" — same value the
-      // browser reads from the GA client-id cookie (_ga=GA1.1.<v-id>).
-      const visitorId = `${Math.floor(1_000_000_000 + Math.random() * 9_000_000_000)}.${Math.floor(Date.now() / 1000)}`;
       await tStep("api_get_token", async () => {
         const res = await request(
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -847,13 +836,11 @@ export const kmartAdapter = {
               "sec-fetch-site": "same-site",
               "sec-fetch-mode": "cors",
               "sec-fetch-dest": "empty",
-              "x-visitor-id": visitorId,
             },
             body: JSON.stringify({ sessionId }),
           },
           ctx,
         );
-
         const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
         return {
