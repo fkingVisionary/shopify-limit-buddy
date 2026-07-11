@@ -201,15 +201,57 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       }
     }
 
+    // Classify the edge state from the initial PDP fetch. If the edge outright
+    // denied us (403 with no _abck), Hyper cannot help — bot-manager never ran.
+    const initialAbckMarker = marker(jar.get("_abck"));
+    const initialHasAbck = jar.has("_abck");
+    const initialClassification = classifyEdge({
+      status: initialRes.status,
+      hasAbck: initialHasAbck,
+      abckMarker: initialAbckMarker,
+      solved: false,
+    });
+    addStep({
+      step: "classify_edge",
+      ok: initialClassification !== "EDGE_DENY",
+      note: `classification=${initialClassification} status=${initialRes.status} hasAbck=${initialHasAbck} abck=${initialAbckMarker.text}`,
+    });
+
+    if (initialClassification === "EDGE_DENY") {
+      const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp: initialIp, solved: false, rounds: [], classification: "EDGE_DENY" });
+      addStep({ step: "akamai_lab_skip", ok: false, note: verdict });
+      return {
+        ok: false,
+        classification: "EDGE_DENY",
+        verdict,
+        targetUrl,
+        transport: dispatcher.transport,
+        requestedMode: transportMode,
+        requestedProxy,
+        parsedProxy: Boolean(dispatcher.proxy),
+        initialIp,
+        finalIp: initialIp,
+        ipStable: true,
+        initialStatus: initialRes.status,
+        hyper: hyperSensorInputShape(),
+        rounds: [],
+        steps,
+        cookies: compactCookies(jar),
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+
     if (!scriptPath) {
       return {
         ok: false,
-        verdict: "FAIL: script URL/body mismatch — no Akamai script path found on initial PDP response",
+        classification: "UNKNOWN",
+        verdict: "FAIL: no Akamai script path found on initial PDP or home (edge served content without bot-manager script — unexpected shape)",
         targetUrl,
         transport: dispatcher.transport,
         requestedMode: transportMode,
         requestedProxy,
         initialIp,
+        initialStatus: initialRes.status,
         steps,
         cookies: compactCookies(jar),
       };
