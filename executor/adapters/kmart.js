@@ -885,6 +885,20 @@ export const kmartAdapter = {
       });
 
       // 7c. createMyBag — only if no active cart.
+      //     postcodeSelector is a JSON string per real HAR (entry #343);
+      //     backend parses it server-side to seed shippingInfo. Use the
+      //     profile's real postcode so downstream setShippingAddress
+      //     doesn't fight the cart's stored postcode.
+      const profileForCart = task.profile ?? {};
+      const cartPostcode = profileForCart.zip ?? "4160";
+      const cartCity = (profileForCart.city ?? "WELLINGTON POINT").toUpperCase();
+      const cartState = profileForCart.province ?? "QLD";
+      const postcodeSelectorJson = JSON.stringify({
+        city: cartCity,
+        postalCode: cartPostcode,
+        state: cartState,
+        country: "AU",
+      });
       if (!cartId) {
         await tStep("cart_create", async () => {
           const res = await gqlPost({
@@ -894,9 +908,7 @@ export const kmartAdapter = {
                 currency: "AUD",
                 country: "AU",
                 shippingAddress: { country: "AU" },
-                postcodeSelector:
-                  '{"city":"BRISBANE","postalCode":"4001","state":"QLD","country":"AU"}',
-                selectedCncStoreId: "1124",
+                postcodeSelector: postcodeSelectorJson,
               },
             },
             query:
@@ -911,10 +923,11 @@ export const kmartAdapter = {
           return {
             status: res.status,
             ok: res.status < 400 && Boolean(cartId),
-            note: `id=${cartId ?? "null"} v=${cartVersion ?? "?"} : ${txt.slice(0, 400)}`,
+            note: `id=${cartId ?? "null"} v=${cartVersion ?? "?"} postcode=${cartPostcode} : ${txt.slice(0, 400)}`,
           };
         });
       }
+
 
       // 7d. updateMyBag — addLineItem(sku) + setCustomField(selectedCncStoreId).
       if (cartId && sku) {
