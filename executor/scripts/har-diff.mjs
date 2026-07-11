@@ -194,16 +194,18 @@ function matchesSpec(candidate, spec, ordinalCounts) {
 function buildGolden(entries) {
   const hits = [];
   const used = new Set();
-  const ordinalCounts = {};
+  let cursor = 0;
   for (const spec of CRITICAL) {
-    for (const [i, entry] of entries.entries()) {
+    for (let i = cursor; i < entries.length; i++) {
+      const entry = entries[i];
       if (used.has(i) || entry.request.method === "OPTIONS") continue;
       const body = parseBody(entry.request.postData?.text ?? "");
       const url = new URL(entry.request.url);
       const candidate = { host: url.host, path: url.pathname, method: entry.request.method, operationName: body.operationName ?? null };
-      if (matchesSpec(candidate, spec, ordinalCounts)) {
+      if (matchesSpec(candidate, { ...spec, ordinal: undefined }, {})) {
         hits.push(normalizeHarEntry(entry, i, spec.key));
         used.add(i);
+        cursor = i + 1;
         break;
       }
     }
