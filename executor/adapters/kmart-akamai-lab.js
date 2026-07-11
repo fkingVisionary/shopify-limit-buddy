@@ -141,9 +141,14 @@ function eventMap(trace) {
   const map = new Map();
   for (const event of trace?.events ?? []) {
     if (!event?.label) continue;
-    map.set(event.label, event);
+    const key = `${event.label}:${event.type ?? "event"}`;
+    map.set(key, event);
   }
   return map;
+}
+
+function parseUrl(value) {
+  return new URL(value, ORIGIN);
 }
 
 function valueAt(obj, path) {
@@ -315,8 +320,8 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       label,
       type: "request",
       method,
-      urlPath: new URL(urlForRequest).pathname,
-      urlHost: new URL(urlForRequest).host,
+      urlPath: parseUrl(urlForRequest).pathname,
+      urlHost: parseUrl(urlForRequest).host,
       headers: summarizeHeaders(opts?.headers, jar),
       jar: compactCookies(jar),
       body: opts?.body ? { bytes: String(opts.body).length, sha256: sha256(opts.body).slice(0, 16) } : undefined,
@@ -327,7 +332,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       label,
       type: "response",
       status: res.status,
-      urlPath: new URL(res.url ?? urlForRequest).pathname,
+      urlPath: parseUrl(res.url ?? urlForRequest).pathname,
       response: responseHeaderSummary(res),
       jar: compactCookies(jar),
     });
@@ -450,8 +455,8 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       label: "akamai_script_body",
       type: "script",
       script: { bytes: scriptBody.length, sha256: sha256(scriptBody) },
-      sourceUrlPath: new URL(scriptSourceUrl).pathname,
-      scriptUrlPath: new URL(scriptUrl).pathname,
+      sourceUrlPath: parseUrl(scriptSourceUrl).pathname,
+      scriptUrlPath: parseUrl(scriptUrl).pathname,
     });
     addStep({
       step: "akamai_script_fetch",
@@ -493,15 +498,15 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         label: `akamai_sensor#${i + 1}`,
         type: "sensor_generated",
         sensor: {
-          postPath: new URL(generated.postUrl).pathname,
+          postPath: parseUrl(generated.postUrl).pathname,
           payloadPrefix: String(generated.payload ?? "").slice(0, 3),
           payloadBytes: String(generated.payload ?? "").length,
           ctxIn,
           ctxOut: context.length,
         },
         hyperInput: {
-          pagePath: new URL(targetUrl).pathname,
-          scriptPath: new URL(scriptUrl).pathname,
+          pagePath: parseUrl(targetUrl).pathname,
+          scriptPath: parseUrl(scriptUrl).pathname,
           userAgent: UA,
           acceptLanguage: ACCEPT_LANG,
           ipPresent: Boolean(roundIp ?? initialIp),
