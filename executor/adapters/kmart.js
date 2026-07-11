@@ -777,12 +777,7 @@ export const kmartAdapter = {
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
 
-    // Kmart's storefront is an Apollo client. Their WAF discriminates
-    // "queries that look like Apollo" from "raw fetch()"; the discriminator
-    // shows up as ATC (mutation) 403s while getActiveBag/getMyActiveCart
-    // (queries) sail through with the same session. Send the Apollo client
-    // hint headers on every GraphQL POST.
-    const gqlBaseHeaders = {
+    const gqlHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
       accept: "*/*",
@@ -793,29 +788,9 @@ export const kmartAdapter = {
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
-      "apollographql-client-name": "kmart-web",
-      "apollographql-client-version": "1.0.0",
     };
-    // Collapse GraphQL query whitespace to a single-line form. Apollo's default
-    // print output has newlines but persisted clients / production builds send
-    // compact strings; some WAF rules trigger on the multi-line shape.
-    const compactGql = (s) => String(s).replace(/\s+/g, " ").trim();
-    const gqlPost = async (body) => {
-      const op = body?.operationName ?? "query";
-      const compactBody = { ...body, ...(body?.query ? { query: compactGql(body.query) } : {}) };
-      return request(
-        // Echo operationName in the query string — matches Apollo's default
-        // ?op= hint used for logging/telemetry, and gives the WAF the same
-        // URL shape it sees from the real storefront.
-        `${gqlUrl}?op=${encodeURIComponent(op)}`,
-        {
-          method: "POST",
-          headers: { ...gqlBaseHeaders, "x-apollo-operation-name": op },
-          body: JSON.stringify(compactBody),
-        },
-        ctx,
-      );
-    };
+    const gqlPost = async (body) =>
+      request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
       {
@@ -976,7 +951,7 @@ export const kmartAdapter = {
       steps.push({
         step: "cart_get:hdrs",
         ok: true,
-        note: JSON.stringify({ url: gqlUrl, headers: gqlBaseHeaders, cookieHeader: ctx.jar.header() }),
+        note: JSON.stringify({ url: gqlUrl, headers: gqlHeaders, cookieHeader: ctx.jar.header() }),
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
@@ -1200,15 +1175,12 @@ fragment LineItemFields on LineItem {
         const cncStoreId = "1124";
 
         // 8b. setShippingAddress (contact) + addItemShippingAddress (C&C store).
-        // Return-selection uses only fields that exist on the Address type
-        // in Kmart's schema — streetNumber is accepted as an INPUT on address
-        // draft but is NOT a queryable field on the Address return type.
         const updateNoStockQuery = `mutation updateMyBagWithoutBagStockAvailability($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
     id version
     totalPrice { centAmount __typename }
-    shippingAddress { firstName lastName email phone streetName city state postalCode country __typename }
-    billingAddress { firstName lastName email phone streetName city state postalCode country __typename }
+    shippingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
+    billingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
     itemShippingAddresses { key country __typename }
     __typename
   }
