@@ -1712,7 +1712,47 @@ fragment LineItemFields on LineItem {
           steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
         }
 
-        // 8i. chargePayDockWithToken — THE REAL PLACE-ORDER MUTATION.
+        // 8i. Final stock-event custom field. The HAR sets `sohEvent` after
+        // Paydock 3DS processing and immediately before the real order mutation.
+        // Keep this in dry-run too because it is a cart-state prerequisite, not
+        // the order submission itself.
+        if (processFrictionless && sku) {
+          await tStep("checkout_soh_event", async () => {
+            const res = await gqlPost({
+              operationName: "updateMyBagWithoutBagStockAvailability",
+              variables: {
+                id: cartId,
+                version: cartVersion,
+                actions: [
+                  {
+                    setCustomField: {
+                      name: "sohEvent",
+                      value: JSON.stringify({
+                        poolConfig: [{ keyCode: sku, poolName: "OMFP-CONFIGURED-POOL" }],
+                      }),
+                    },
+                  },
+                ],
+              },
+              query: updateNoStockQuery,
+            }, "soh_event");
+            const txt = await res.text();
+            try {
+              const j = JSON.parse(txt);
+              const c = j?.data?.updateMyCart;
+              if (c?.version) cartVersion = c.version;
+            } catch {}
+            return {
+              status: res.status,
+              ok: res.status < 400,
+              note: `v=${cartVersion} sku=${sku} : ${txt.slice(0, 260)}`,
+            };
+          });
+        } else {
+          steps.push({ step: "checkout_soh_event", ok: false, note: `skipped: processFrictionless=${processFrictionless} sku=${sku ?? "null"}` });
+        }
+
+        // 8j. chargePayDockWithToken — THE REAL PLACE-ORDER MUTATION.
         //     Real HAR entry #807 returns { orderNumber, paydockChargeId,
         //     paymentId, accountCreationStatus }. Guarded by
         //     task.placeOrder === true so the default dry-run stops here.
