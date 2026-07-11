@@ -1147,12 +1147,30 @@ fragment LineItemFields on LineItem {
           };
         });
 
-        // Identity (hardcoded for now — wire to task.identity in a later batch).
+        // Identity + address. Prefer task.profile when supplied; otherwise fall
+        // back to the same Brisbane 4001 QLD values used in the postcodeSelector
+        // so pickup postcode and billing address stay consistent.
+        const p = task.profile ?? {};
         const identity = {
-          firstName: task.firstName ?? "morgan",
-          lastName: task.lastName ?? "edwards",
-          email: task.email ?? "flowgdesigns@gmail.com",
-          phone: task.phone ?? "0429444444",
+          firstName: p.first_name ?? task.firstName ?? "morgan",
+          lastName: p.last_name ?? task.lastName ?? "edwards",
+          email: p.email ?? task.email ?? "flowgdesigns@gmail.com",
+          phone: p.phone ?? task.phone ?? "0429444444",
+        };
+        // Split "12 Main St" → streetNumber "12", streetName "Main St".
+        // commercetools accepts either combined or split; Kmart's 3DS
+        // validator requires streetName specifically to be non-empty.
+        const rawStreet = (p.address1 ?? "1 Queen Street").trim();
+        const streetMatch = rawStreet.match(/^(\d+[a-z]?)\s+(.+)$/i);
+        const streetNumber = streetMatch?.[1] ?? "1";
+        const streetName = streetMatch?.[2] ?? rawStreet;
+        const address = {
+          streetNumber,
+          streetName,
+          city: p.city ?? "Brisbane",
+          state: p.province ?? "QLD",
+          postalCode: p.zip ?? "4001",
+          country: "AU",
         };
         const cncStoreId = "1124";
 
@@ -1161,8 +1179,8 @@ fragment LineItemFields on LineItem {
   updateMyCart(id: $id, version: $version, actions: $actions) {
     id version
     totalPrice { centAmount __typename }
-    shippingAddress { firstName lastName email phone country __typename }
-    billingAddress { firstName lastName email phone country __typename }
+    shippingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
+    billingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
     itemShippingAddresses { key country __typename }
     __typename
   }
@@ -1173,7 +1191,7 @@ fragment LineItemFields on LineItem {
           lastName: identity.lastName,
           email: identity.email,
           phone: identity.phone,
-          country: "AU",
+          ...address,
         };
         // C&C store address — uses key=storeId so commercetools can tie line
         // items to a pickup destination via shippingDetails.
