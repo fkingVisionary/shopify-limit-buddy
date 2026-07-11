@@ -101,6 +101,7 @@ const STEP_TO_KEY = {
   create_3ds_token: "create_3ds",
   paydock_3ds_handle: "paydock_handle",
   paydock_3ds_process: "paydock_process",
+  checkout_soh_event: "soh_event",
   place_order: "place_order",
   charge_paydock: "place_order",
 };
