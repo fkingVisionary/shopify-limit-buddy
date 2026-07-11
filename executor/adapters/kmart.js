@@ -1087,6 +1087,8 @@ export const kmartAdapter = {
 
 
       // 7d. updateMyBag — addLineItem(sku) + setCustomField(selectedCncStoreId).
+      let cartAtcOk = false;
+      let cartVerifyHasSku = false;
       if (cartId && sku) {
         const updateQuery = `mutation updateMyBag($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
@@ -1167,9 +1169,10 @@ fragment LineItemFields on LineItem {
               hasSku = (c.lineItems ?? []).some((li) => li.variant?.sku === sku);
             }
           } catch {}
+          cartAtcOk = res.status < 400 && hasSku;
           return {
             status: res.status,
-            ok: res.status < 400 && hasSku,
+            ok: cartAtcOk,
             note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
           };
         });
@@ -1206,6 +1209,7 @@ fragment LineItemFields on LineItem {
             const lis = j?.data?.me?.activeCart?.lineItems ?? [];
             lineCount = lis.length;
             hasSku = lis.some((li) => li.variant?.sku === sku);
+            cartVerifyHasSku = hasSku;
           } catch {}
           return {
             status: res.status,
@@ -1227,7 +1231,14 @@ fragment LineItemFields on LineItem {
       //    Stops short of placeOrder until task.placeOrder === true AND we
       //    have the final mutation captured.
       // ===================================================================
-      const wantCheckout = task.checkout !== false && cartId && sku;
+      const wantCheckout = task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
+      if (task.checkout !== false && cartId && sku && (!cartAtcOk || !cartVerifyHasSku)) {
+        steps.push({
+          step: "checkout_gate",
+          ok: false,
+          note: `stopped before address/payment because cart not verified: cartAtcOk=${cartAtcOk} cartVerifyHasSku=${cartVerifyHasSku}`,
+        });
+      }
       if (wantCheckout) {
         // 8a. Warm the checkout pages — establishes the referer chain that
         //     later GraphQL calls expect (some ops are referer-gated).
@@ -1478,7 +1489,8 @@ fragment LineItemFields on LineItem {
             };
             if (paydockPublicKey) headers["x-user-public-key"] = paydockPublicKey;
 
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_tokenize",
               "https://api.paydock.com/v1/payment_sources/tokens",
               {
                 method: "POST",
@@ -1495,7 +1507,6 @@ fragment LineItemFields on LineItem {
                   meta: {},
                 }),
               },
-              ctx,
             );
             const txt = await res.text();
             try {
@@ -1616,7 +1627,8 @@ fragment LineItemFields on LineItem {
               param,
             }).toString();
             const url = `https://api.paydock.com/v1/charges/standalone-3ds/handle?x-access-token=${encodeURIComponent(paydockJwt)}`;
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_handle",
               url,
               {
                 method: "POST",
@@ -1633,7 +1645,6 @@ fragment LineItemFields on LineItem {
                 },
                 body,
               },
-              ctx,
             );
             const loc = res.headers.get("location") ?? "";
             const idMatch = loc.match(/charge_3ds_id=([a-f0-9-]{20,})/i);
@@ -1664,7 +1675,8 @@ fragment LineItemFields on LineItem {
         let processStatus = null;
         if (paydockJwt && charge3dsId) {
           await tStep("paydock_3ds_process", async () => {
-            const res = await request(
+            const res = await tracedRequest(
+              "paydock_process",
               "https://api.paydock.com/v1/charges/standalone-3ds/process",
               {
                 method: "POST",
@@ -1682,7 +1694,6 @@ fragment LineItemFields on LineItem {
                 },
                 body: JSON.stringify({ charge_3ds_id: charge3dsId }),
               },
-              ctx,
             );
             const txt = await res.text();
             try {
@@ -1767,6 +1778,7 @@ fragment LineItemFields on LineItem {
       steps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
+      trace: traceEnabled ? requestTrace : undefined,
       dryRun: task.placeOrder !== true,
       orderNumber: orderInfo.orderNumber ?? null,
       orderId: orderInfo.orderId ?? null,
