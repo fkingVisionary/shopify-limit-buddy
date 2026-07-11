@@ -101,16 +101,32 @@ function compactCookies(jar) {
   };
 }
 
-function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds }) {
+// Classify the state Akamai edge is putting us in. Three distinct outcomes
+// that used to all collapse to "fail":
+//   EDGE_DENY        — edge refused before bot-manager ran; no _abck at all.
+//                      IP reputation problem, not a sensor problem.
+//   SENSOR_CHALLENGE — _abck present but sentinel (~-1~); Hyper must solve.
+//   SOLVED           — _abck valid (~0~ marker); sensor round succeeded.
+//   UNKNOWN          — anything else (partial, unexpected shape).
+function classifyEdge({ status, hasAbck, abckMarker, solved }) {
+  if (solved) return "SOLVED";
+  if (!hasAbck && status >= 400) return "EDGE_DENY";
+  if (hasAbck && abckMarker?.index === "-1") return "SENSOR_CHALLENGE";
+  if (hasAbck) return "SENSOR_CHALLENGE";
+  return "UNKNOWN";
+}
+
+function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds, classification }) {
   if (requestedProxy && !dispatcher.proxy) return "FAIL: sticky proxy was supplied but was not parsed";
   if (requestedProxy && dispatcher.transport !== "tls") return `FAIL: explicit proxy transport was ${dispatcher.transport}, expected tls`;
+  if (classification === "EDGE_DENY") return "EDGE_DENY: Akamai edge refused this IP before bot-manager ran — try a different proxy (this is NOT a Hyper failure)";
   if (initialIp && currentIp && initialIp !== currentIp) return `FAIL: IP changed between sensor rounds (${initialIp} → ${currentIp})`;
   if (solved) return "PASS: transport stable + Hyper sensor POST reached valid _abck";
   const rejected = rounds.find((r) => r.bodySuccess === false);
-  if (rejected) return "FAIL: Hyper generated payload but Kmart returned success=false";
+  if (rejected) return "SENSOR_REJECTED: Hyper generated payload but Kmart returned success=false — sensor shape/context mismatch";
   const noCookies = rounds.every((r) => r.setCookies.length === 0);
-  if (noCookies) return "FAIL: sensor POST did not rotate cookies";
-  return "FAIL: _abck rotated but never reached a valid marker";
+  if (noCookies) return "SENSOR_NO_ROTATE: sensor POST did not rotate cookies — request shape or headers wrong";
+  return "SENSOR_STALE: _abck rotated but never reached a valid marker after all rounds";
 }
 
 export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false, transport = "tls" }) {
@@ -185,15 +201,57 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       }
     }
 
+    // Classify the edge state from the initial PDP fetch. If the edge outright
+    // denied us (403 with no _abck), Hyper cannot help — bot-manager never ran.
+    const initialAbckMarker = marker(jar.get("_abck"));
+    const initialHasAbck = jar.has("_abck");
+    const initialClassification = classifyEdge({
+      status: initialRes.status,
+      hasAbck: initialHasAbck,
+      abckMarker: initialAbckMarker,
+      solved: false,
+    });
+    addStep({
+      step: "classify_edge",
+      ok: initialClassification !== "EDGE_DENY",
+      note: `classification=${initialClassification} status=${initialRes.status} hasAbck=${initialHasAbck} abck=${initialAbckMarker.text}`,
+    });
+
+    if (initialClassification === "EDGE_DENY") {
+      const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp: initialIp, solved: false, rounds: [], classification: "EDGE_DENY" });
+      addStep({ step: "akamai_lab_skip", ok: false, note: verdict });
+      return {
+        ok: false,
+        classification: "EDGE_DENY",
+        verdict,
+        targetUrl,
+        transport: dispatcher.transport,
+        requestedMode: transportMode,
+        requestedProxy,
+        parsedProxy: Boolean(dispatcher.proxy),
+        initialIp,
+        finalIp: initialIp,
+        ipStable: true,
+        initialStatus: initialRes.status,
+        hyper: hyperSensorInputShape(),
+        rounds: [],
+        steps,
+        cookies: compactCookies(jar),
+        elapsedMs: Date.now() - startedAt,
+      };
+    }
+
     if (!scriptPath) {
       return {
         ok: false,
-        verdict: "FAIL: script URL/body mismatch — no Akamai script path found on initial PDP response",
+        classification: "UNKNOWN",
+        verdict: "FAIL: no Akamai script path found on initial PDP or home (edge served content without bot-manager script — unexpected shape)",
         targetUrl,
         transport: dispatcher.transport,
         requestedMode: transportMode,
         requestedProxy,
         initialIp,
+        initialStatus: initialRes.status,
         steps,
         cookies: compactCookies(jar),
       };
@@ -284,11 +342,19 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       if (solved) break;
     }
 
-    const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds: sensorRounds });
-    addStep({ step: solved ? "akamai_lab_pass" : "akamai_lab_fail", ok: solved, note: verdict });
+    const finalAbckMarker = marker(jar.get("_abck"));
+    const classification = classifyEdge({
+      status: initialRes.status,
+      hasAbck: jar.has("_abck"),
+      abckMarker: finalAbckMarker,
+      solved,
+    });
+    const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds: sensorRounds, classification });
+    addStep({ step: solved ? "akamai_lab_pass" : "akamai_lab_fail", ok: solved, note: `classification=${classification} ${verdict}` });
 
     return {
       ok: solved,
+      classification,
       verdict,
       targetUrl,
       transport: dispatcher.transport,
@@ -298,6 +364,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       initialIp,
       finalIp: currentIp,
       ipStable: !initialIp || !currentIp || initialIp === currentIp,
+      initialStatus: initialRes.status,
       scriptUrl,
       scriptBytes: scriptBody.length,
       hyper: hyperSensorInputShape(),
@@ -310,6 +377,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     addStep({ step: "akamai_lab_error", ok: false, note: e?.message ?? String(e) });
     return {
       ok: false,
+      classification: "UNKNOWN",
       verdict: `FAIL: lab error — ${e?.message ?? String(e)}`,
       targetUrl,
       transport: dispatcher.transport,
