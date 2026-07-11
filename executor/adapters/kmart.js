@@ -328,11 +328,13 @@ export const kmartAdapter = {
         return false;
       }
       if (parsed.uuid) lastSbsdUuid = parsed.uuid;
+      // Fallback: SBSD challenges sometimes serve `?v=` empty, expecting the
+      // client to have generated its own session uuid (persisted for the tab).
+      // Generate one lazily and cache it so all subsequent SBSD hops reuse it.
+      if (!lastSbsdUuid) lastSbsdUuid = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const sbsdUuid = parsed.uuid || lastSbsdUuid;
-      if (!sbsdUuid) {
-        steps.push({ step: `${label}:missing_uuid`, ok: false, note: "SBSD script had empty v= and no cached uuid from an earlier page" });
-        return false;
-      }
+      const uuidSource = parsed.uuid ? "script" : "generated";
+      steps.push({ step: `${label}:uuid`, ok: true, note: `uuid=${sbsdUuid.slice(0, 8)} source=${uuidSource}` });
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
       const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
