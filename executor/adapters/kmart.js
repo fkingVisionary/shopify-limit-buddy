@@ -189,7 +189,15 @@ async function postAkamaiSensorRounds({
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
-  return parseAkamaiPath(html);
+  const sdkPath = parseAkamaiPath(html);
+  if (sdkPath) return sdkPath;
+  // Kmart's 403 Access Denied pages can serve the Akamai script as
+  // `<script src="/<rotating-path>?v=" defer>` with an empty v token. The SDK
+  // parser handles normal page HTML, but this challenge form needs a fallback.
+  const m = /<script[^>]+src=["']([^"']+\?v=)[^"']*["']/i.exec(html);
+  if (!m) return null;
+  const raw = m[1].replace(/\?v=$/, "");
+  return raw.startsWith("http") ? new URL(raw).pathname : raw;
 }
 
 // Solved when _abck contains the `~0~` indicator AND survives the SDK's
