@@ -1200,12 +1200,15 @@ fragment LineItemFields on LineItem {
         const cncStoreId = "1124";
 
         // 8b. setShippingAddress (contact) + addItemShippingAddress (C&C store).
+        // Return-selection uses only fields that exist on the Address type
+        // in Kmart's schema — streetNumber is accepted as an INPUT on address
+        // draft but is NOT a queryable field on the Address return type.
         const updateNoStockQuery = `mutation updateMyBagWithoutBagStockAvailability($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
     id version
     totalPrice { centAmount __typename }
-    shippingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
-    billingAddress { firstName lastName email phone streetName streetNumber city state postalCode country __typename }
+    shippingAddress { firstName lastName email phone streetName city state postalCode country __typename }
+    billingAddress { firstName lastName email phone streetName city state postalCode country __typename }
     itemShippingAddresses { key country __typename }
     __typename
   }
