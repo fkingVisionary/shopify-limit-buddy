@@ -38,6 +38,7 @@ export async function runCheckout(task) {
         adapter: adapter.id,
         elapsedMs: now() - t0,
         steps: out.steps ?? ctx.steps,
+        trace: out.trace,
         finalUrl: out.finalUrl,
         cookies: out.cookies,
         dryRun: Boolean(out.dryRun ?? task.dryRun),
@@ -51,6 +52,7 @@ export async function runCheckout(task) {
         failedStep: e?.code ?? "adapter_error",
         elapsedMs: now() - t0,
         steps: ctx.steps,
+        trace: ctx.requestTrace,
         cookies: ctx.jar?.dump?.() ?? {},
       };
     } finally {
