@@ -38,6 +38,7 @@ const InputSchema = z.object({
   //   placeOrderMutation supplies the op captured via bundle_recon / HAR.
   placeOrder: z.boolean().default(false),
   placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
+  debugTrace: z.boolean().default(false),
 });
 
 const AkamaiLabInputSchema = z.object({
