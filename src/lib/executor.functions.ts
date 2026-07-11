@@ -46,18 +46,6 @@ const AkamaiLabInputSchema = z.object({
   rounds: z.number().int().min(1).max(6).default(3),
 });
 
-// Read card fields from Lovable Cloud secrets server-side. Returns null when
-// any required field is missing (lets dry-runs work without card configured).
-function cardFromEnv() {
-  const number = process.env.KMART_CARD_NUMBER;
-  const cvv = process.env.KMART_CARD_CVV;
-  const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
-  const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
-  const holder = process.env.KMART_CARD_HOLDER;
-  if (!number || !cvv || !expMonth || !expYear || !holder) return null;
-  return { number, cvv, expMonth, expYear, holder };
-}
-
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }) => {
@@ -69,13 +57,22 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     // Defensive: strip trailing slash and any accidental /health, /run, /recon suffix
     const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
 
+    const number = process.env.KMART_CARD_NUMBER;
+    const cvv = process.env.KMART_CARD_CVV;
+    const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
+    const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
+    const holder = process.env.KMART_CARD_HOLDER;
+    const envCard = number && cvv && expMonth && expYear && holder
+      ? { number, cvv, expMonth, expYear, holder }
+      : null;
+
     // Keep an empty proxy truly direct. Falling back to a server-side proxy made
     // "without proxies" runs still use the same failing network path.
     // Prefer caller-supplied card (future: profile-sourced); else inject from env.
     const payload = {
       ...data,
       proxy: data.proxy?.trim() || null,
-      card: data.card ?? cardFromEnv(),
+      card: data.card ?? envCard,
     };
     const t0 = Date.now();
     try {
