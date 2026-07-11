@@ -783,164 +783,74 @@ export const kmartAdapter = {
       accept: "*/*",
       "accept-language": ACCEPT_LANG,
       origin,
-      referer: pdpUrl,
+      referer: origin + "/",
       ...CHROME_CH,
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
+      // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
+      // Setting it globally is harmless for cart calls and matches every
+      // authenticated shape the browser sends. Missing on cart_atc et al.
+      // would leave us fingerprintable against real Chrome traffic.
+      "x-country-code": "AU",
     };
     const gqlPost = async (body) =>
       request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
 
     if (pdpStatus > 0 && pdpStatus < 400) {
       {
-      // 7a. Solve Akamai for api.kmart.com.au — separate _abck scope.
-      //     Cookie jar is name-keyed (not domain-keyed), so the api-host
-      //     sensor responses will overwrite the www host's _abck. That's
-      //     fine: we're done with www after pdp_get#2.
-      let apiSeedHtml = "";
-      let apiScriptPath = null;
-      await tStep("api_warm", async () => {
+      // 7a. API-host bot-manager seed. Kmart's api.kmart.com.au does NOT
+      //     run the full Akamai JS sensor; instead the browser hits
+      //     POST /shopping-agent/v1/get-token which seeds `ak_bmsc` +
+      //     `bm_sv` (Akamai Bot Manager static challenge cookies) for the
+      //     api host. Parent-domain `.kmart.com.au` cookies like `_abck`
+      //     and `bm_sz` — already solved on WWW — are automatically sent
+      //     to api.* by the cookie jar. The previous api-host sensor
+      //     solve was over-solving and overwriting the parent-domain
+      //     `_abck` with an api-scoped variant that Akamai then scored
+      //     against subsequent GraphQL calls (→ Access Denied on ATC).
+      //
+      //     Source: HAR entry #25 (real browser first request to api.*
+      //     is get-token, not a sensor script).
+      const sessionId = (() => {
+        // Real HAR sessionId: "4tQL5VsAygaQefVIGXblCa83Avzi6XzLQs4G7-JApNU"
+        // (43-char base64url of 32 random bytes). Regenerate per task so
+        // sessions don't collide.
+        const bytes = new Uint8Array(32);
+        globalThis.crypto.getRandomValues(bytes);
+        return Buffer.from(bytes).toString("base64url");
+      })();
+      await tStep("api_get_token", async () => {
         const res = await request(
-          apiOrigin + "/",
+          apiOrigin + "/shopping-agent/v1/get-token",
           {
-            method: "GET",
+            method: "POST",
             headers: {
               "user-agent": UA,
-              accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+              accept: "*/*",
               "accept-language": ACCEPT_LANG,
-              referer: pdpUrl,
+              "content-type": "application/json",
+              origin,
+              referer: origin + "/",
               ...CHROME_CH,
               "sec-fetch-site": "same-site",
               "sec-fetch-mode": "cors",
               "sec-fetch-dest": "empty",
             },
+            body: JSON.stringify({ sessionId }),
           },
           ctx,
         );
-        apiSeedHtml = await res.text();
-        apiScriptPath = findAkamaiScriptPath(apiSeedHtml);
+        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
+        const setCookieNames = cookieNamesFromResponse(res);
         return {
           status: res.status,
-          ok: Boolean(apiScriptPath),
-          note: `${apiSeedHtml.length}b script=${apiScriptPath ?? "(none)"}`,
+          ok: res.status < 400,
+          note: `sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
-      steps.push({ step: "api_warm_body_full", ok: true, note: apiSeedHtml.slice(0, 5000) });
-
-      if (apiScriptPath) {
-        const apiScriptUrl = apiOrigin + apiScriptPath;
-        let apiScriptBody = "";
-        await tStep("api_script_fetch", async () => {
-          const r = await request(
-            apiScriptUrl,
-            { method: "GET", headers: { "user-agent": UA, referer: apiOrigin + "/", "accept-language": ACCEPT_LANG } },
-            ctx,
-          );
-          apiScriptBody = await r.text();
-          return { status: r.status, note: `${apiScriptBody.length}b` };
-        });
-
-        let apiPrev = null;
-        let apiSolved = false;
-        for (let i = 0; i < 3; i++) {
-          await tStep(`api_sensor#${i + 1}`, async () => {
-            const beforeAbck = marker(ctx.jar.get("_abck"));
-            const beforeBmsz = marker(ctx.jar.get("bm_sz"));
-            const r = await solveAkamaiSensor({
-              jar: ctx.jar,
-              pageUrl: apiOrigin + "/",
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-              scriptUrl: apiScriptUrl,
-              scriptBody: apiScriptBody,
-              prevContext: apiPrev,
-            });
-            apiPrev = r.context;
-            const res = await request(
-              r.postUrl,
-              {
-                method: "POST",
-                headers: akamaiSensorHeaders({ requestOrigin: apiOrigin, referer: apiOrigin + "/" }),
-                body: akamaiSensorBody(r.payload),
-              },
-              ctx,
-            );
-            const body = await res.text().catch(() => "");
-            const setCookieNames = cookieNamesFromResponse(res);
-            return {
-              status: res.status,
-              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-              note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${apiPrev?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
-            };
-          });
-          if (abckSolved(ctx.jar, i + 1)) {
-            apiSolved = true;
-            steps.push({ step: "api_akamai_solved", ok: true, note: `rounds=${i + 1}` });
-            break;
-          }
-        }
-        if (!apiSolved) {
-          steps.push({ step: "api_akamai_unsolved", ok: false, note: "_abck not ~0~ after 3 rounds on api host" });
-        }
-
-        // SBSD on the api host, if present.
-        const apiSbsd = parseSbsd(apiSeedHtml);
-        if (apiSbsd) {
-          const sbsdScriptUrl =
-            apiOrigin + (apiSbsd.path.startsWith("/") ? apiSbsd.path : "/" + apiSbsd.path) +
-            `?v=${apiSbsd.uuid}${apiSbsd.t ? `&t=${apiSbsd.t}` : ""}`;
-          const sbsdPostUrl =
-            apiOrigin + (apiSbsd.path.startsWith("/") ? apiSbsd.path : "/" + apiSbsd.path) +
-            (apiSbsd.t ? `?t=${apiSbsd.t}` : "");
-          let apiSbsdBody = "";
-          await tStep("api_sbsd_script_fetch", async () => {
-            const r = await request(
-              sbsdScriptUrl,
-              { method: "GET", headers: { "user-agent": UA, referer: apiOrigin + "/", "accept-language": ACCEPT_LANG } },
-              ctx,
-            );
-            apiSbsdBody = await r.text();
-            return { status: r.status, note: `uuid=${apiSbsd.uuid.slice(0, 8)} ${apiSbsdBody.length}b t=${apiSbsd.t || "-"}` };
-          });
-          const apiRounds = apiSbsd.t ? 1 : 2;
-          for (let i = 0; i < apiRounds; i++) {
-            await tStep(`api_sbsd_round#${i}`, async () => {
-              const payload = await solveAkamaiSbsd({
-                jar: ctx.jar,
-                pageUrl: apiOrigin + "/",
-                scriptBody: apiSbsdBody,
-                uuid: apiSbsd.uuid,
-                oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
-                index: i,
-                userAgent: UA,
-                ip: egressIp,
-                acceptLanguage: ACCEPT_LANG,
-              });
-              const res = await request(
-                sbsdPostUrl,
-                {
-                  method: "POST",
-                  headers: {
-                    "user-agent": UA,
-                    "content-type": "application/json",
-                    accept: "*/*",
-                    "accept-language": ACCEPT_LANG,
-                    origin: apiOrigin,
-                    referer: apiOrigin + "/",
-                  },
-                  body: JSON.stringify({ body: payload }),
-                },
-                ctx,
-              );
-              const bodyTxt = (await res.text()).slice(0, 160).replace(/\s+/g, " ");
-              return { status: res.status, note: `body="${bodyTxt}"` };
-            });
-          }
-        }
       }
-      } // end api warm/sensor block
+
 
 
 
