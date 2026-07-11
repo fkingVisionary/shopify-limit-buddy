@@ -349,8 +349,8 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   try {
     addStep({
       step: "transport",
-      ok: requestedProxy ? dispatcher.transport === "tls" : true,
-      note: `requestedMode=${transportMode} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
+      ok: dispatcher.transport === "tls" && !dispatcher.useOxylabs,
+      note: `lab=tls-only (oxylabs removed) requestedTransport=${requestedTransport} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
     });
 
     addStep({ step: "hyper_sdk_shape", ok: true, note: JSON.stringify(hyperSensorInputShape()) });
