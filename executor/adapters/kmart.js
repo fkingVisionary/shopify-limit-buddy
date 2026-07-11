@@ -1257,12 +1257,14 @@ fragment LineItemFields on LineItem {
           checkoutHtml.match(/public[-_]?key["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{20,})/)?.[1] ||
           "";
 
-        // Derive Paydock gateway type from card BIN.
-        const firstDigit = cardNumber.charAt(0);
-        const first2 = cardNumber.slice(0, 2);
-        let gatewayType = "Visa";
-        if (firstDigit === "5" || (first2 >= "22" && first2 <= "27")) gatewayType = "MasterCard";
-        else if (first2 === "34" || first2 === "37") gatewayType = "Amex";
+        // Kmart's Paydock account is configured with a single gateway named
+        // "MasterCard" that processes all card brands — real HAR entry #766
+        // uses gatewayType="MasterCard" even for a Visa PAN (4216 04…).
+        // Deriving from BIN would send the wrong gatewayType and either 400
+        // on create3DSToken or route through a gateway Kmart doesn't have
+        // configured. Hardcode per HAR.
+        const gatewayType = "MasterCard";
+
 
         let oneTimeToken = null;
         if (!cardNumber || !cardCcv) {
