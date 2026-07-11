@@ -976,7 +976,7 @@ export const kmartAdapter = {
       steps.push({
         step: "cart_get:hdrs",
         ok: true,
-        note: JSON.stringify({ url: gqlUrl, headers: gqlHeaders, cookieHeader: ctx.jar.header() }),
+        note: JSON.stringify({ url: gqlUrl, headers: gqlBaseHeaders, cookieHeader: ctx.jar.header() }),
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
