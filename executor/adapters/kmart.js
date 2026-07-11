@@ -391,21 +391,44 @@ export const kmartAdapter = {
       }
       return true;
     };
-    try {
-      await runSbsd(html, origin + "/", "sbsd_home");
-    } catch (e) {
-      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
-    }
+    // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
+    // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
+    // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
+    // was firing on Akamai's own bot-manager script tag (SBSD_RE matches
+    // any `?v=` script) and POSTing bogus SBSD payloads to the sensor
+    // endpoint, poisoning the session. Reactive SBSD on pdp_get remains.
 
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
 
-    // 3. Fetch the Akamai sensor script (first sensor needs the script body).
+    // 3. Fetch the Akamai sensor script. Headers must match a real Chrome
+    //    script-tag load — the lab uses these exact headers and consistently
+    //    reaches SOLVED. Missing CH / sec-fetch-dest / accept-encoding is a
+    //    fingerprintable divergence and is enough on its own to have the
+    //    following sensor POST scored as bot.
     await tStep("akamai_script_fetch", async () => {
-      const res = await request(scriptUrl, { method: "GET", headers: { "user-agent": UA, referer: origin + "/", "accept-language": ACCEPT_LANG } }, ctx);
+      const res = await request(
+        scriptUrl,
+        {
+          method: "GET",
+          headers: {
+            "user-agent": UA,
+            accept: "*/*",
+            "accept-language": ACCEPT_LANG,
+            "accept-encoding": "gzip, deflate, br, zstd",
+            referer: origin + "/",
+            ...CHROME_CH,
+            "sec-fetch-dest": "script",
+            "sec-fetch-mode": "no-cors",
+            "sec-fetch-site": "same-origin",
+          },
+        },
+        ctx,
+      );
       scriptBody = await res.text();
       return { status: res.status, note: `${scriptBody.length}b` };
     });
+
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need `~0~` in
     //    the cookie before we're allowed past the bot wall. Cap at 3 rounds.
