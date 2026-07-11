@@ -959,13 +959,17 @@ fragment LineItemFields on LineItem {
             variables: {
               id: cartId,
               version: cartVersion,
+              // HAR entry #368: single addLineItem action for home delivery.
+              // The setCustomField selectedCncStoreId in the real HAR was
+              // only present because that session started as C&C; we do
+              // home delivery so we skip it.
               actions: [
                 { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
-                { setCustomField: { name: "selectedCncStoreId", value: "1124" } },
               ],
             },
             query: updateQuery,
           });
+
           const txt = await res.text();
           let lineCount = 0;
           let total = null;
