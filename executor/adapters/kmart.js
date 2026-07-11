@@ -456,7 +456,8 @@ export const kmartAdapter = {
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
-          pageUrl: origin + "/",
+          pageUrl: pdpUrl,
+
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
