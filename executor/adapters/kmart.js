@@ -1326,12 +1326,23 @@ fragment LineItemFields on LineItem {
           });
         }
 
-        // 8f. create3DSToken — hands the Paydock UUID to Kmart's payment
-        //     orchestrator. Returns a payment token or a 3DS challenge URL.
-        let paymentToken = null;
-        let threeDSStatus = null;
-        let acsUrl = null;
-        let sessionData = null;
+        // 8f. create3DSToken — Kmart's payment orchestrator hands us a
+        //     base64-wrapped GPayments session bundle. Query shape matches
+        //     real HAR entry #766 exactly (nullable String/Boolean, not
+        //     required — the required version worked but caused schema
+        //     drift warnings when new optional fields were introduced).
+        //
+        // Response: data.create3DSToken = base64(JSON{
+        //   content: "<JWT>",           ← acts as x-access-token for /process
+        //   format: "standalone_3ds"
+        // })
+        //
+        // JWT payload contains meta (base64) with everything we need:
+        //   charge_3ds_id, service_type, initialization_url,
+        //   authorization_url, secondary_url
+        let paydockJwt = null;           // x-access-token for /process
+        let charge3dsId = null;          // used by chargePayDockWithToken
+        let create3dsRaw = null;
         if (oneTimeToken) {
           await tStep("create_3ds_token", async () => {
             const res = await gqlPost({
@@ -1339,32 +1350,37 @@ fragment LineItemFields on LineItem {
               variables: {
                 oneTimeToken,
                 gatewayType,
-                saveCardOption: false,
                 useSavedCard: false,
+                saveCardOption: false,
               },
               query:
-                "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String!, $saveCardOption: Boolean!, $useSavedCard: Boolean!) { create3DSToken(oneTimeToken: $oneTimeToken, gatewayType: $gatewayType, saveCardOption: $saveCardOption, useSavedCard: $useSavedCard) }",
+                "mutation create3DSToken($oneTimeToken: String!, $gatewayType: String, $useSavedCard: Boolean, $saveCardOption: Boolean) {\n  create3DSToken(\n    oneTimeToken: $oneTimeToken\n    gatewayType: $gatewayType\n    useSavedCard: $useSavedCard\n    saveCardOption: $saveCardOption\n  )\n}\n",
             });
             const txt = await res.text();
             try {
               const j = JSON.parse(txt);
-              // Schema note: create3DSToken returns `String!` (a scalar), not an
-              // object — asking for a selection set errors with
-              // "must not have a selection since type String! has no subfields".
-              // The returned string IS the payment token for the frictionless
-              // path. Kmart's real 3DS challenge flow uses a different mutation.
-              const c = j?.data?.create3DSToken;
-              if (typeof c === "string" && c) {
-                paymentToken = c;
-                threeDSStatus = "frictionless";
+              const outerB64 = j?.data?.create3DSToken;
+              if (typeof outerB64 === "string" && outerB64) {
+                create3dsRaw = outerB64;
+                const outer = JSON.parse(Buffer.from(outerB64, "base64").toString("utf8"));
+                paydockJwt = outer?.content ?? null;
+                if (paydockJwt) {
+                  const parts = paydockJwt.split(".");
+                  const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+                  const meta = payload?.meta
+                    ? JSON.parse(Buffer.from(payload.meta, "base64").toString("utf8"))
+                    : {};
+                  charge3dsId = meta.charge_3ds_id ?? null;
+                }
               }
-            } catch {}
+            } catch (e) {
+              steps.push({ step: "create_3ds_token:decode", ok: false, note: e?.message ?? String(e) });
+            }
             return {
               status: res.status,
-              ok: res.status < 400 && Boolean(paymentToken),
-              note: `status=${threeDSStatus} token=${paymentToken ? paymentToken.slice(0, 10) + "…" : "null"} : ${txt.slice(0, 300)}`,
+              ok: res.status < 400 && Boolean(charge3dsId),
+              note: `charge_3ds_id=${charge3dsId ?? "null"} jwtLen=${paydockJwt?.length ?? 0} : ${txt.slice(0, 300)}`,
             };
-
           });
         } else {
           steps.push({
@@ -1374,131 +1390,177 @@ fragment LineItemFields on LineItem {
           });
         }
 
-        // 8f.2. handle_3ds — branch on the 3DS status.
-        //   • not_required / authenticated / succeeded → frictionless, proceed.
-        //   • challenge / pending / requires_challenge → issuer step-up
-        //     (form POST to acsUrl with PaReq + browser redirect back). Not
-        //     achievable in a pure HTTP chain; log + stop so the timeline
-        //     surfaces the exact case.
-        if (paymentToken || threeDSStatus) {
-          const frictionless =
-            !threeDSStatus ||
-            /not[_-]?required|authenticated|succeeded|completed|frictionless/i.test(String(threeDSStatus));
-          if (frictionless && paymentToken) {
-            steps.push({ step: "handle_3ds", ok: true, note: `frictionless status=${threeDSStatus ?? "(none)"}` });
-          } else {
-            steps.push({
-              step: "handle_3ds",
-              ok: false,
-              note: `challenge required status=${threeDSStatus} acs=${acsUrl ?? "(none)"} sessionData=${sessionData ? "yes" : "no"} — issuer step-up not supported in HTTP chain`,
-            });
-          }
-        }
-
-        // 8g. bundle_recon — scan checkout bundle JS for order-mutation op
-        //     names so we can wire the real placeOrder without a HAR. Runs
-        //     only when the caller opts into a real submit and no explicit
-        //     mutation was supplied.
-        if (task.placeOrder === true && !task.placeOrderMutation) {
-          await tStep("bundle_recon", async () => {
-            const hits = new Set();
-            const scanText = (txt) => {
-              let m;
-              const reMut = /mutation\s+([A-Za-z_][A-Za-z0-9_]*)/g;
-              while ((m = reMut.exec(txt)) !== null) {
-                if (/order|submit|place|checkout/i.test(m[1])) hits.add(m[1]);
-              }
-              const reOp = /operationName["']?\s*[:=]\s*["']([A-Za-z_][A-Za-z0-9_]*)["']/g;
-              while ((m = reOp.exec(txt)) !== null) {
-                if (/order|submit|place|checkout/i.test(m[1])) hits.add(m[1]);
-              }
+        // 8g. Paydock standalone-3ds handle — signals the 3DS orchestrator
+        //     that the browser's 3DS-method probe didn't complete
+        //     (InitAuthTimedOut). Real browsers hit this path whenever the
+        //     issuer's ACS doesn't respond within the SDK timeout; the
+        //     issuer then falls back to frictionless authentication or a
+        //     challenge. From a headless HTTP client we can never run the
+        //     3dsMethod iframe, so InitAuthTimedOut is legitimate here.
+        //
+        // Real HAR entry #788:
+        //   POST /v1/charges/standalone-3ds/handle?x-access-token=<JWT>
+        //   Content-Type: application/x-www-form-urlencoded
+        //   Body: requestorTransId=<uuid>&event=InitAuthTimedOut
+        //         &param=<base64(browser info JSON)>
+        //   → 302 Location: widget.paydock.com/3ds/standalone-3ds?...
+        //     &charge_3ds_id=<id>&info=InitAuthTimedOut
+        let handleOk = false;
+        if (paydockJwt && charge3dsId) {
+          await tStep("paydock_3ds_handle", async () => {
+            const requestorTransId = crypto.randomUUID();
+            // Browser env blob that matches HAR entry #788's decoded param.
+            // Values match a real Chrome 150 / Windows viewer; only browserIP
+            // is dynamic — we synthesize from the egress IP resolver.
+            const browserInfo = {
+              browserAcceptHeader:
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+              browserIP: egressIp || "0.0.0.0",
+              browserJavaEnabled: false,
+              browserLanguage: "en-GB",
+              browserJavascriptEnabled: true,
+              browserColorDepth: "24",
+              browserScreenHeight: "864",
+              browserScreenWidth: "1536",
+              browserTZ: "-600",
+              browserUserAgent: UA,
             };
-            scanText(checkoutHtml);
-            const scriptSrcs = Array.from(
-              checkoutHtml.matchAll(/<script[^>]+src=["']([^"']+)["']/gi),
-              (mm) => mm[1],
-            )
-              .filter((s) => /_next|main|checkout|payment|bundle/i.test(s))
-              .slice(0, 3);
-            for (const src of scriptSrcs) {
-              try {
-                const abs = src.startsWith("http") ? src : origin + (src.startsWith("/") ? src : `/${src}`);
-                const r = await request(
-                  abs,
-                  { method: "GET", headers: { referer: origin + "/checkout/payment", "user-agent": UA } },
-                  ctx,
-                );
-                const t = await r.text();
-                scanText(t);
-              } catch {}
-            }
+            const param = Buffer.from(JSON.stringify(browserInfo), "utf8").toString("base64");
+            const body = new URLSearchParams({
+              requestorTransId,
+              event: "InitAuthTimedOut",
+              param,
+            }).toString();
+            const url = `https://api.paydock.com/v1/charges/standalone-3ds/handle?x-access-token=${encodeURIComponent(paydockJwt)}`;
+            const res = await request(
+              url,
+              {
+                method: "POST",
+                headers: {
+                  "user-agent": UA,
+                  accept: "*/*",
+                  "content-type": "application/x-www-form-urlencoded",
+                  origin: "https://paydock.as1.gpayments.net",
+                  referer: "https://paydock.as1.gpayments.net/",
+                  ...CHROME_CH,
+                  "sec-fetch-site": "cross-site",
+                  "sec-fetch-mode": "cors",
+                  "sec-fetch-dest": "empty",
+                },
+                body,
+              },
+              ctx,
+            );
+            const loc = res.headers.get("location") ?? "";
+            const idMatch = loc.match(/charge_3ds_id=([a-f0-9-]{20,})/i);
+            const returnedId = idMatch?.[1] ?? null;
+            handleOk = res.status >= 300 && res.status < 400 && Boolean(returnedId);
+            // Trust the location's id if it disagrees with the JWT-decoded one.
+            if (returnedId) charge3dsId = returnedId;
             return {
-              ok: hits.size > 0,
-              note: hits.size > 0 ? `candidates: ${Array.from(hits).slice(0, 20).join(", ")}` : "no order-mutation op names found",
+              status: res.status,
+              ok: handleOk,
+              note: `transId=${requestorTransId.slice(0, 8)} status=${res.status} loc=${loc.slice(0, 200)}`,
             };
-          });
+          }).catch((e) => steps.push({ step: "paydock_3ds_handle:error", ok: false, note: e?.message ?? String(e) }));
+        } else {
+          steps.push({ step: "paydock_3ds_handle", ok: false, note: "skipped: no paydockJwt/charge3dsId from create3DSToken" });
         }
 
-        // 8h. placeOrder — real submit. Requires:
-        //   - task.placeOrder === true
-        //   - task.placeOrderMutation = { operationName, query, extraVars? }
-        //   - paymentToken from create3DSToken (frictionless 3DS)
-        // The mutation signature varies per commercetools tenant; we send
-        // { paymentToken, cartId, cartVersion, gatewayType, ...extraVars }
-        // and let the caller supply the exact query captured from live
-        // traffic (via bundle_recon output or a real HAR).
+        // 8h. Paydock standalone-3ds process — completes the 3DS flow on
+        //     Paydock's side. Without this, chargePayDockWithToken will
+        //     reject the charge_3ds_id as "not yet processed".
+        //
+        // Real HAR entry #802:
+        //   POST /v1/charges/standalone-3ds/process
+        //   x-access-token: <JWT from create3DSToken>
+        //   Body: {"charge_3ds_id": "<id>"}
+        //   → 200 { resource.data.result.frictionless: true }
+        let processFrictionless = false;
+        let processStatus = null;
+        if (paydockJwt && charge3dsId) {
+          await tStep("paydock_3ds_process", async () => {
+            const res = await request(
+              "https://api.paydock.com/v1/charges/standalone-3ds/process",
+              {
+                method: "POST",
+                headers: {
+                  "user-agent": UA,
+                  accept: "application/json, text/plain, */*",
+                  "content-type": "application/json; charset=UTF-8",
+                  "x-access-token": paydockJwt,
+                  origin,
+                  referer: origin + "/",
+                  ...CHROME_CH,
+                  "sec-fetch-site": "cross-site",
+                  "sec-fetch-mode": "cors",
+                  "sec-fetch-dest": "empty",
+                },
+                body: JSON.stringify({ charge_3ds_id: charge3dsId }),
+              },
+              ctx,
+            );
+            const txt = await res.text();
+            try {
+              const j = JSON.parse(txt);
+              const result = j?.resource?.data?.result;
+              processFrictionless = Boolean(result?.frictionless);
+              processStatus = result?.status ?? null;
+            } catch {}
+            return {
+              status: res.status,
+              ok: res.status < 400 && processFrictionless,
+              note: `frictionless=${processFrictionless} status=${processStatus} : ${txt.slice(0, 300)}`,
+            };
+          }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
+        } else {
+          steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
+        }
+
+        // 8i. chargePayDockWithToken — THE REAL PLACE-ORDER MUTATION.
+        //     Real HAR entry #807 returns { orderNumber, paydockChargeId,
+        //     paymentId, accountCreationStatus }. Guarded by
+        //     task.placeOrder === true so the default dry-run stops here.
         let orderNumber = null;
         let orderId = null;
         let paymentStatus = null;
         if (task.placeOrder === true) {
-          const mut = task.placeOrderMutation;
-          if (!mut?.operationName || !mut?.query) {
+          if (!charge3dsId) {
+            steps.push({ step: "place_order", ok: false, note: "skipped: no charge_3ds_id" });
+          } else if (!processFrictionless) {
             steps.push({
               step: "place_order",
               ok: false,
-              note: "skipped: task.placeOrderMutation { operationName, query } not supplied — check bundle_recon candidates",
-            });
-          } else if (!paymentToken) {
-            steps.push({
-              step: "place_order",
-              ok: false,
-              note: "skipped: no paymentToken from create3DSToken",
+              note: `skipped: 3DS not frictionless (status=${processStatus}). Issuer step-up would require a real browser to complete the ACS challenge.`,
             });
           } else {
             await tStep("place_order", async () => {
               const res = await gqlPost({
-                operationName: mut.operationName,
+                operationName: "chargePayDockWithToken",
                 variables: {
-                  paymentToken,
-                  cartId,
-                  cartVersion,
+                  type: "TOKEN_3DS",
+                  token: charge3dsId,
                   gatewayType,
-                  ...(mut.extraVars ?? {}),
+                  saveCard: false,
+                  isCreateAccount: false,
                 },
-                query: mut.query,
+                query:
+                  "mutation chargePayDockWithToken($type: TokenType!, $token: String!, $gatewayType: String!, $saveCard: Boolean, $isCreateAccount: Boolean) {\n  chargePayDockWithToken(\n    type: $type\n    token: $token\n    gatewayType: $gatewayType\n    saveCard: $saveCard\n    isCreateAccount: $isCreateAccount\n  ) {\n    paydockChargeId\n    paymentId\n    orderNumber\n    accountCreationStatus\n    __typename\n  }\n}\n",
               });
               const txt = await res.text();
               try {
                 const j = JSON.parse(txt);
-                const walk = (o) => {
-                  if (!o || typeof o !== "object") return;
-                  for (const [k, v] of Object.entries(o)) {
-                    if (typeof v === "string") {
-                      if (/^orderNumber$/i.test(k) && !orderNumber) orderNumber = v;
-                      if (/paymentStatus|orderState/i.test(k) && !paymentStatus) paymentStatus = v;
-                    } else if (v && typeof v === "object") {
-                      if (typeof v.orderNumber === "string" && !orderNumber) orderNumber = v.orderNumber;
-                      if (typeof v.id === "string" && !orderId && /order/i.test(k)) orderId = v.id;
-                      walk(v);
-                    }
-                  }
-                };
-                walk(j?.data ?? {});
+                const r = j?.data?.chargePayDockWithToken;
+                if (r) {
+                  orderNumber = r.orderNumber ?? null;
+                  orderId = r.paymentId ?? r.paydockChargeId ?? null;
+                  paymentStatus = orderNumber ? "captured" : (r ? "no_order" : null);
+                }
               } catch {}
               return {
                 status: res.status,
-                ok: res.status < 400 && Boolean(orderNumber || orderId),
-                note: `order=${orderNumber ?? orderId ?? "null"} paymentStatus=${paymentStatus ?? "null"} : ${txt.slice(0, 400)}`,
+                ok: res.status < 400 && Boolean(orderNumber),
+                note: `order=${orderNumber ?? "null"} paydockCharge=${orderId ?? "null"} : ${txt.slice(0, 400)}`,
               };
             });
           }
@@ -1513,6 +1575,7 @@ fragment LineItemFields on LineItem {
         ctx.__kmart_order = { orderNumber, orderId, paymentStatus };
       }
     }
+
 
     const orderInfo = ctx.__kmart_order ?? {};
     return {
