@@ -400,8 +400,10 @@ export const kmartAdapter = {
             },
             ctx,
           );
+          const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
+          const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
-          return { status: res.status, ok: res.status < 400, note: `jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")}` };
+          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
         }).catch(() => {});
       }
       return true;
