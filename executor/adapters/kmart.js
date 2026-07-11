@@ -472,7 +472,7 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
             body: akamaiSensorBody(r.payload),
           },
           ctx,
