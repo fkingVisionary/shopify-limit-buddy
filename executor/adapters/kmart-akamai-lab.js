@@ -7,7 +7,7 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 import { createJar, makeDispatcher, request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, hyperSensorInputShape, solveAkamaiSensor } from "../antibot.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 
 const ORIGIN = "https://www.kmart.com.au";
 const ACCEPT_LANG = "en-AU,en;q=0.9";
@@ -281,11 +281,17 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const requestedProxy = Boolean(String(resolvedProxy ?? "").trim());
   const jar = createJar();
-  const transportMode = ["auto", "tls", "undici", "oxylabs"].includes(String(transport)) ? String(transport) : "tls";
+  // Oxylabs has been removed from the lab decision path. The lab is Chrome-131
+  // TLS only — either direct, or over the caller-supplied residential proxy.
+  // `transport` is accepted for API compatibility but coerced to "tls" so the
+  // executor's global TRANSPORT env cannot silently route the lab through
+  // Oxylabs Web Unblocker.
+  const requestedTransport = String(transport ?? "tls");
+  const transportMode = "tls";
   const dispatcher = makeDispatcher(resolvedProxy, {
-    forceTls: transportMode === "tls",
-    forceUndici: transportMode === "undici",
-    forceOxylabs: transportMode === "oxylabs",
+    forceTls: true,
+    forceUndici: false,
+    forceOxylabs: false,
   });
   const ctx = { dispatcher, jar };
   const startedAt = Date.now();
@@ -299,10 +305,6 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     events: [],
   };
 
-  if (dispatcher.useOxylabs) {
-    ctx.oxylabsSessionId = randomUUID().replace(/-/g, "");
-    ctx.oxylabsSessionTime = "10";
-  }
 
   const addStep = (step) => {
     steps.push({ msFromStart: Date.now() - startedAt, ...step });
@@ -347,8 +349,8 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   try {
     addStep({
       step: "transport",
-      ok: requestedProxy ? dispatcher.transport === "tls" : true,
-      note: `requestedMode=${transportMode} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
+      ok: dispatcher.transport === "tls" && !dispatcher.useOxylabs,
+      note: `lab=tls-only (oxylabs removed) requestedTransport=${requestedTransport} requestedProxy=${requestedProxy} parsedProxy=${Boolean(dispatcher.proxy)} transport=${dispatcher.transport} tls=${Boolean(dispatcher.useTls)} oxylabs=${Boolean(dispatcher.useOxylabs)}`,
     });
 
     addStep({ step: "hyper_sdk_shape", ok: true, note: JSON.stringify(hyperSensorInputShape()) });
