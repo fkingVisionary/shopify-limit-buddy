@@ -135,6 +135,79 @@ function sensorBodySuccess(body) {
   return "unknown";
 }
 
+function randomDecimalString(digits) {
+  let out = "";
+  while (out.length < digits) out += Math.floor(Math.random() * 10);
+  return out.slice(0, digits).replace(/^0/, "1");
+}
+
+function visitorIdFromGa(value) {
+  const match = String(value ?? "").match(/^GA\d+\.\d+\.(\d+\.\d+)$/);
+  return match?.[1] ?? null;
+}
+
+function ensureKmartVisitorIdentity(jar) {
+  const existing = visitorIdFromGa(jar.get("_ga"));
+  if (existing) return existing;
+
+  // Kmart's shopping-agent seed requires x-visitor-id. In the HAR it is the
+  // GA client id without the GA prefix: _ga=GA1.1.<visitor> → x-visitor-id.
+  // If analytics cookies are absent in our fresh jar, create a coherent
+  // browser identity set before touching api.kmart.com.au.
+  const visitorId = `${randomDecimalString(10)}.${Math.floor(Date.now() / 1000) - Math.floor(Math.random() * 86_400)}`;
+  jar.ingest({
+    "set-cookie": [
+      `_ga=GA1.1.${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `server_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `client_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `server_visitor_id_test=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `client_visitor_id_test=${visitorId}; Path=/; Domain=.kmart.com.au`,
+      `tealium_visitor_id=${visitorId}; Path=/; Domain=.kmart.com.au`,
+    ],
+  });
+  return visitorId;
+}
+
+function redactHeaderValue(name, value) {
+  const key = String(name).toLowerCase();
+  const raw = String(value ?? "");
+  if (key === "cookie") {
+    return raw
+      .split(";")
+      .map((part) => part.trim().split("=")[0])
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (key === "authorization" || key === "x-access-token") return raw ? "[redacted]" : "";
+  if (key === "newrelic" || key === "traceparent" || key === "tracestate") return raw.slice(0, 64) + (raw.length > 64 ? "…" : "");
+  return raw;
+}
+
+function redactTraceBody(body) {
+  if (body == null) return null;
+  const redact = (value, key = "") => {
+    const k = String(key).toLowerCase();
+    if (k.includes("card_number")) return "[card-number-redacted]";
+    if (k.includes("card_ccv") || k === "cvv") return "[cvv-redacted]";
+    if (k.includes("token") || k.includes("jwt") || k.includes("x-access-token")) return "[token-redacted]";
+    if (k === "email") return "[email-redacted]";
+    if (k === "phone") return "[phone-redacted]";
+    if (Array.isArray(value)) return value.map((v) => redact(v));
+    if (value && typeof value === "object") {
+      return Object.fromEntries(Object.entries(value).map(([childKey, childValue]) => [childKey, redact(childValue, childKey)]));
+    }
+    if (typeof value === "string" && /^\d{12,19}$/.test(value)) return "[number-redacted]";
+    return value;
+  };
+  if (typeof body !== "string") return redact(body);
+  try {
+    return redact(JSON.parse(body));
+  } catch {
+    if (body.includes("card_number") || body.includes("x-access-token")) return "[redacted-form-body]";
+    return body.slice(0, 1200);
+  }
+}
+
 async function postAkamaiSensorRounds({
   label,
   steps,
