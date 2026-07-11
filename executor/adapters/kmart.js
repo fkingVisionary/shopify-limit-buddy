@@ -1275,19 +1275,25 @@ fragment LineItemFields on LineItem {
           });
         } else {
           await tStep("paydock_tokenize", async () => {
+            // Real HAR entry #764: origin/referer are widget.paydock.com,
+            // NOT www.kmart.com.au. Sending the storefront origin makes
+            // Paydock's CORS check reject the token as coming from an
+            // unregistered caller. The widget origin is what the SDK uses
+            // when it iframes into the checkout page.
             const headers = {
               "user-agent": UA,
               "content-type": "application/json",
               accept: "application/json",
               "accept-language": ACCEPT_LANG,
-              origin,
-              referer: origin + "/checkout/payment",
+              origin: "https://widget.paydock.com",
+              referer: "https://widget.paydock.com/",
               ...CHROME_CH,
               "sec-fetch-site": "cross-site",
               "sec-fetch-mode": "cors",
               "sec-fetch-dest": "empty",
             };
             if (paydockPublicKey) headers["x-user-public-key"] = paydockPublicKey;
+
             const res = await request(
               "https://api.paydock.com/v1/payment_sources/tokens",
               {
