@@ -167,6 +167,7 @@ function KmartPage() {
   const [result, setResult] = useState<RunResult | null>(null);
   const [labResult, setLabResult] = useState<LabResult | null>(null);
   const [akamaiBaseline, setAkamaiBaseline] = useState<AkamaiTrace | null>(null);
+  const [akamaiBaselineText, setAkamaiBaselineText] = useState("");
 
   const [candidates, setCandidates] = useState<string[]>([]);
   const [mutation, setMutation] = useState<StoredMutation | null>(null);
@@ -186,7 +187,9 @@ function KmartPage() {
       setMutExtraVars(m.extraVars ? JSON.stringify(m.extraVars, null, 2) : "");
     }
     setHistory(readJSON<HistoryEntry[]>(HISTORY_KEY, []));
-    setAkamaiBaseline(readJSON<AkamaiTrace | null>(AKAMAI_BASELINE_KEY, null));
+    const savedBaseline = readJSON<AkamaiTrace | null>(AKAMAI_BASELINE_KEY, null);
+    setAkamaiBaseline(savedBaseline);
+    if (savedBaseline) setAkamaiBaselineText(JSON.stringify(savedBaseline, null, 2));
     const last = readJSON<{ url: string; qty: number; proxy: string; placeOrder: boolean } | null>(LAST_INPUT_KEY, null);
     if (last) {
       setUrl(last.url ?? "");
@@ -330,10 +333,23 @@ function KmartPage() {
   const saveAkamaiBaseline = () => {
     if (!labTrace) return;
     setAkamaiBaseline(labTrace);
+    setAkamaiBaselineText(JSON.stringify(labTrace, null, 2));
     writeJSON(AKAMAI_BASELINE_KEY, labTrace);
+  };
+  const importAkamaiBaseline = () => {
+    try {
+      const parsed = JSON.parse(akamaiBaselineText);
+      const trace = Array.isArray(parsed?.events) ? parsed : parsed?.trace;
+      if (!trace || !Array.isArray(trace.events)) throw new Error("Trace JSON must include an events array");
+      setAkamaiBaseline(trace);
+      writeJSON(AKAMAI_BASELINE_KEY, trace);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Invalid baseline trace JSON");
+    }
   };
   const clearAkamaiBaseline = () => {
     setAkamaiBaseline(null);
+    setAkamaiBaselineText("");
     try { localStorage.removeItem(AKAMAI_BASELINE_KEY); } catch {}
   };
 
@@ -488,6 +504,20 @@ function KmartPage() {
                 </Button>
               )}
             </div>
+            <details className="mb-3 rounded border border-border/60 bg-muted/20 p-2 text-xs">
+              <summary className="cursor-pointer text-muted-foreground">Paste/import baseline trace JSON</summary>
+              <Textarea
+                value={akamaiBaselineText}
+                onChange={(e) => setAkamaiBaselineText(e.target.value)}
+                placeholder='{"id":"browser-baseline","events":[...]}'
+                className="mt-2 min-h-[120px] font-mono text-[11px]"
+              />
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="outline" onClick={importAkamaiBaseline} disabled={!akamaiBaselineText.trim()}>
+                  <GitCompareArrows className="mr-2 h-3 w-3" /> Use as baseline
+                </Button>
+              </div>
+            </details>
             {labDiff && (
               <div className="mb-3 rounded border border-border/60 bg-muted/20 p-2 text-xs">
                 <div className="mb-2 flex items-center justify-between gap-2">
