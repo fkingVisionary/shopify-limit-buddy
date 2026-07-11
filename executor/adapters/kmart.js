@@ -879,6 +879,8 @@ export const kmartAdapter = {
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
 
+    const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
+
     const gqlHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
@@ -910,29 +912,30 @@ export const kmartAdapter = {
       globalThis.crypto.getRandomValues(bytes);
       return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
     };
-    const nrHeaders = () => {
+    const nrHeaders = (ap = NR_AP) => {
       const tr = randHex(32);
       const id = randHex(16);
       const ti = Date.now();
       const nrPayload = {
         v: [0, 1],
-        d: { ty: "Browser", ac: NR_AC, ap: NR_AP, id, tr, ti, tk: NR_TK },
+        d: { ty: "Browser", ac: NR_AC, ap, id, tr, ti, tk: NR_TK },
       };
       return {
         newrelic: Buffer.from(JSON.stringify(nrPayload)).toString("base64"),
         traceparent: `00-${tr}-${id}-01`,
-        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${NR_AP}-${id}----${ti}`,
+        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${ap}-${id}----${ti}`,
       };
     };
-    const gqlPost = async (body) =>
-      request(
+    const gqlPost = async (body, traceKey = body?.operationName ?? "graphql") =>
+      tracedRequest(
+        traceKey,
         gqlUrl,
         {
           method: "POST",
           headers: { ...gqlHeaders, ...nrHeaders() },
           body: JSON.stringify(body),
         },
-        ctx,
+        { operationName: body?.operationName ?? null, variables: body?.variables ?? null, query: body?.query ?? null },
       );
 
 
@@ -959,35 +962,46 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      let apiSeedOk = false;
       await tStep("api_get_token", async () => {
-        const res = await request(
+        const getTokenHeaders = {
+          "user-agent": UA,
+          accept: "*/*",
+          "accept-language": ACCEPT_LANG,
+          "content-type": "application/json",
+          origin,
+          referer: origin + "/",
+          ...CHROME_CH,
+          "sec-fetch-site": "same-site",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+          priority: "u=1, i",
+          "x-visitor-id": apiVisitorId,
+          ...nrHeaders("1834777981"),
+        };
+        const res = await tracedRequest(
+          "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
           {
             method: "POST",
-            headers: {
-              "user-agent": UA,
-              accept: "*/*",
-              "accept-language": ACCEPT_LANG,
-              "content-type": "application/json",
-              origin,
-              referer: origin + "/",
-              ...CHROME_CH,
-              "sec-fetch-site": "same-site",
-              "sec-fetch-mode": "cors",
-              "sec-fetch-dest": "empty",
-            },
+            headers: getTokenHeaders,
             body: JSON.stringify({ sessionId }),
           },
-          ctx,
+          { requestBody: { sessionId } },
         );
         const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
+        apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
-          ok: res.status < 400,
-          note: `sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          ok: apiSeedOk,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
+      if (!apiSeedOk) {
+        steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
+        return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
+      }
       }
 
 
