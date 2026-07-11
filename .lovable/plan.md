@@ -1,78 +1,39 @@
-## Direction
+## Root cause
+`create3DSToken` fails because the cart's stored billing address is incomplete. In `executor/adapters/kmart.js` line 1171, `contactAddress` is:
 
-We stop treating this as a proxy problem. The current evidence says at least one residential path reaches Kmart’s Akamai bot-manager layer and receives the required cookies, but Hyper-generated sensor posts are being rejected with `success:false` and `_abck` staying `~-1~`.
+```
+{ firstName, lastName, email, phone, country: "AU" }
+```
 
-So the next milestone is not “find more proxies” or “try Oxylabs”; it is:
+commercetools accepts this at `setBillingAddress` time (the fields are optional at the schema level), but Kmart's `create3DSToken` resolver validates that a payment-ready billing address includes `streetName`, `state`, and `postalCode`. Missing those → the exact error we see.
 
-> Get one clean Kmart browser/session trace, then diff its Akamai sensor request context against our executor/Hyper request context until the rejection reason is isolated.
+Cart_atc / cart_verify 403 issue is a separate track and stays deferred pending the HAR you're capturing.
 
-## What we will do next
+## Fix
 
-1. **Freeze the known-good test lane**
-   - Pick the proxy/session that reached `warm_home 200` and returned `_abck`, `bm_sz`, `ak_bmsc`, `bm_sc`, `bm_so`.
-   - Use it only as the controlled lab lane.
-   - Do not switch providers unless this lane returns `EDGE_DENY`.
+1. **Extend `contactAddress` in `executor/adapters/kmart.js` (~line 1171)** to include the address fields commercetools needs:
+   - `streetName`
+   - `streetNumber` (may also be required, include to be safe)
+   - `postalCode`
+   - `city`
+   - `state`
+   - `country: "AU"`
 
-2. **Remove Oxylabs from the decision path**
-   - Oxylabs transport can remain available as a transport option, but it should not be the main strategy.
-   - The default investigation path should be the direct Chrome-131 TLS executor path plus the provided sticky residential proxy.
+2. **Source those from `task.profile` when present, with a safe AU fallback**
+   - Prefer `task.profile.address.{streetName, streetNumber, postalCode, city, state}` (or the closest existing field names on the profile — I'll check `src/lib/checkout.functions.ts` / task shape and match).
+   - Fallback (only used when the caller sent no address): use the same Brisbane 4001 QLD values already hardcoded in the `postcodeSelector` on line 988 so the pickup postcode and billing address stay consistent.
 
-3. **Capture a real Kmart Akamai baseline**
-   - Run a real browser session through the same proxy where possible.
-   - Capture HAR and cookies for:
-     - initial home/PDP document
-     - Akamai script fetch
-     - the real `sensor_data` POST
-     - response body and Set-Cookie rotation
-   - If Playwright/browser gets edge-denied while executor TLS does not, we treat the browser HAR as unavailable and instead capture the executor’s full HTTP trace.
+3. **Apply the same address to both `setShippingAddress` and `setBillingAddress`** in `checkout_set_address` (line 1187) and `checkout_set_billing` (line 1213). Real checkouts store the same full address on both by default.
 
-4. **Build the diff machine around Akamai sensor context**
-   Compare real/expected versus executor/Hyper on:
-   - document request headers
-   - script request headers
-   - sensor POST headers
-   - referer/origin/path
-   - cookie header order and values
-   - `bm_sz` / `_abck` state before each sensor round
-   - Akamai script URL and script body hash
-   - Hyper input shape: page URL, script URL, script body, UA, language, IP, previous context
-   - Hyper output shape: payload prefix/length/context length
-   - response status/body/Set-Cookie names
+4. **Do not change the `create3DSToken` mutation itself.** Its signature (4 scalars) is already correct per the schema; the resolver reads the cart's stored addresses server-side.
 
-5. **Change the lab output from screenshots into evidence**
-   - Add a downloadable JSON/trace output for each lab run.
-   - Add compact diff sections instead of huge wrapped table text on mobile.
-   - Make `SENSOR_REJECTED` show exactly what differed from the baseline.
+## Validation
+- Re-run the same dry-run.
+- Success criteria:
+  - `checkout_set_billing` note shows `hasBilling=true` (already the case).
+  - `create_3ds_token` returns `status=200` with a non-null `token` and `status="frictionless"` — no `INTERNAL_SERVER_ERROR` about street/state/postcode.
+  - `place_order` continues to be gated by `task.placeOrder`, so nothing goes live.
 
-6. **Only then fix the executor**
-   Based on the diff, adjust only the mismatching layer:
-   - wrong URL/referer/script source
-   - wrong cookie carry-forward/order
-   - wrong sensor POST body shape
-   - wrong Hyper previous context handling
-   - wrong TLS/header profile
-   - wrong warm-up sequence
-
-## Success criteria
-
-We know this is moving forward when the lab can answer one of these precisely:
-
-- `EDGE_DENY`: this proxy/IP never reached Akamai sensor; change IP.
-- `SENSOR_REJECTED`: edge accepted the session but rejected Hyper payload; diff shows the mismatched request/context.
-- `SENSOR_STALE`: cookies rotated but `_abck` never became valid; compare cookie/context progression.
-- `SOLVED`: `_abck` reaches `~0~`; continue into cart/checkout flow.
-
-## Immediate implementation plan
-
-1. Add an executor trace mode for the Kmart Akamai lab that records normalized request/response evidence without leaking proxy credentials or card data.
-2. Add a baseline/diff utility that compares a saved HAR-like trace to the current lab run.
-3. Update the Kmart lab UI to show the classification, rejection reason, and a downloadable trace/diff instead of unreadable wrapped logs.
-4. Run the lab through the known-good sticky proxy lane and use the diff to make the next targeted fix.
-
-## What we are explicitly not doing
-
-- Not chasing random new proxies.
-- Not treating Oxylabs as the fix.
-- Not attempting checkout again until `_abck` is solved.
-- Not blaming Hyper for `EDGE_DENY`.
-- Not changing multiple layers at once.
+## Not in scope
+- The `cart_atc` 403 on `api.kmart.com.au` — waiting on your HAR.
+- Any change to the `create3DSToken` GraphQL query shape.
