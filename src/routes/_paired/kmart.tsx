@@ -54,12 +54,14 @@ type LabResult = {
   elapsedMs?: number;
   result?: {
     ok?: boolean;
+    classification?: "SOLVED" | "SENSOR_CHALLENGE" | "EDGE_DENY" | "UNKNOWN";
     verdict?: string;
     transport?: string;
     requestedProxy?: boolean;
     initialIp?: string | null;
     finalIp?: string | null;
     ipStable?: boolean;
+    initialStatus?: number;
     scriptBytes?: number;
     steps?: Step[];
     rounds?: unknown[];
