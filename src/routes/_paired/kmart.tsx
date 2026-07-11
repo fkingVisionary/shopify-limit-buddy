@@ -8,8 +8,8 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowLeft, Loader2, Play, Save, Trash2, Copy } from "lucide-react";
-import { runOnExecutor } from "@/lib/executor.functions";
+import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical } from "lucide-react";
+import { runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
 
 export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
@@ -44,6 +44,27 @@ type RunResult = {
     error?: string;
     failedStep?: string;
     adapter?: string;
+  };
+  error?: string;
+};
+
+type LabResult = {
+  ok: boolean;
+  status?: number;
+  elapsedMs?: number;
+  result?: {
+    ok?: boolean;
+    verdict?: string;
+    transport?: string;
+    requestedProxy?: boolean;
+    initialIp?: string | null;
+    finalIp?: string | null;
+    ipStable?: boolean;
+    scriptBytes?: number;
+    steps?: Step[];
+    rounds?: unknown[];
+    cookies?: unknown;
+    error?: string;
   };
   error?: string;
 };
@@ -99,13 +120,16 @@ function extractCandidatesFromSteps(steps: Step[]): string[] {
 
 function KmartPage() {
   const runFn = useServerFn(runOnExecutor);
+  const labFn = useServerFn(runAkamaiLab);
 
   const [url, setUrl] = useState("");
   const [qty, setQty] = useState(1);
   const [proxy, setProxy] = useState("");
   const [placeOrder, setPlaceOrder] = useState(false);
   const [running, setRunning] = useState(false);
+  const [labRunning, setLabRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [labResult, setLabResult] = useState<LabResult | null>(null);
 
   const [candidates, setCandidates] = useState<string[]>([]);
   const [mutation, setMutation] = useState<StoredMutation | null>(null);
@@ -206,6 +230,25 @@ function KmartPage() {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleAkamaiLab = async () => {
+    setLabRunning(true);
+    setLabResult(null);
+    try {
+      const res = (await labFn({
+        data: {
+          url: cleanUrl,
+          proxy: proxy.trim() || null,
+          rounds: 3,
+        },
+      })) as LabResult;
+      setLabResult(res);
+    } catch (e) {
+      setLabResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setLabRunning(false);
     }
   };
 
@@ -313,6 +356,10 @@ function KmartPage() {
               <Switch checked={placeOrder} onCheckedChange={setPlaceOrder} />
             </div>
             <div className="flex items-center gap-2">
+              <Button onClick={handleAkamaiLab} disabled={!canRun || labRunning} variant="outline">
+                {labRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-2 h-4 w-4" />}
+                {labRunning ? "Testing Akamai…" : "Akamai lab"}
+              </Button>
               <Button onClick={handleRun} disabled={!canRun}>
                 {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
                 {running ? "Running…" : placeOrder ? "Run — real submit" : "Run — dry run"}
@@ -330,6 +377,77 @@ function KmartPage() {
             </div>
           </div>
         </Card>
+
+        {/* Akamai-only lab result */}
+        {labResult && (
+          <Card className="mb-4 p-4">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Akamai lab</div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={labResult.result?.ok ? "default" : "destructive"} className="text-[10px]">
+                  {labResult.result?.ok ? "pass" : "fail"}
+                </Badge>
+                {labResult.result?.transport && <Badge variant="outline" className="text-[10px]">{labResult.result.transport}</Badge>}
+                {labResult.result?.ipStable != null && <Badge variant="outline" className="text-[10px]">IP {labResult.result.ipStable ? "stable" : "changed"}</Badge>}
+              </div>
+            </div>
+            {labResult.error && (
+              <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                Lab error: {labResult.error}
+              </div>
+            )}
+            {labResult.result?.verdict && (
+              <div className="mb-2 rounded border border-border/60 bg-muted/30 p-2 font-mono text-xs break-all">
+                {labResult.result.verdict}
+              </div>
+            )}
+            <div className="mb-2 grid gap-2 text-xs md:grid-cols-3">
+              <div><span className="text-muted-foreground">Initial IP:</span> <code>{labResult.result?.initialIp ?? "—"}</code></div>
+              <div><span className="text-muted-foreground">Final IP:</span> <code>{labResult.result?.finalIp ?? "—"}</code></div>
+              <div><span className="text-muted-foreground">Script bytes:</span> <code>{labResult.result?.scriptBytes ?? "—"}</code></div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-border/50 text-left text-muted-foreground">
+                    <th className="py-1 pr-2">Step</th>
+                    <th className="py-1 pr-2 w-14">Status</th>
+                    <th className="py-1">Note</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(labResult.result?.steps ?? []).map((s, i) => (
+                    <tr key={i} className="border-b border-border/20 align-top">
+                      <td className="py-1 pr-2 font-mono">
+                        <span className={s.ok ? "text-green-600" : "text-destructive"}>{s.ok ? "✓" : "✗"}</span> {s.step}
+                      </td>
+                      <td className="py-1 pr-2 font-mono">{s.status ?? "—"}</td>
+                      <td className="py-1 font-mono text-[11px] break-all">
+                        {s.note ?? ""}
+                        {s.note && (
+                          <button
+                            type="button"
+                            onClick={() => navigator.clipboard?.writeText(s.note ?? "")}
+                            className="ml-1 inline-flex align-middle text-muted-foreground hover:text-foreground"
+                            title="Copy"
+                          >
+                            <Copy className="inline h-3 w-3" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <details className="mt-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
+              <summary className="cursor-pointer text-muted-foreground">Raw lab JSON</summary>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">
+                {JSON.stringify(labResult.result, null, 2)}
+              </pre>
+            </details>
+          </Card>
+        )}
 
         {/* Saved mutation editor */}
         <Card className="mb-4 p-4">

@@ -221,15 +221,17 @@ class Dispatcher {
   }
 }
 
-export function makeDispatcher(rawProxy) {
+export function makeDispatcher(rawProxy, opts = {}) {
   const url = parseProxy(rawProxy);
   // If the task supplies a residential proxy, use it. Otherwise, when enabled,
   // Oxylabs is the default transport.
-  const useOxylabs = OXYLABS_ENABLED && !url;
+  const useOxylabs = opts.forceOxylabs
+    ? Boolean(OXYLABS_ENABLED && !url)
+    : OXYLABS_ENABLED && !url && !opts.forceTls && !opts.forceUndici;
   // Any explicit residential proxy must use the Chrome TLS client. A sticky
   // residential IP with undici's non-browser TLS fingerprint still fails Akamai
   // sensors with success=false, so never silently downgrade proxied runs.
-  const useTls = TRANSPORT === "tls" || Boolean(url);
+  const useTls = !opts.forceUndici && !useOxylabs && (opts.forceTls || TRANSPORT === "tls" || Boolean(url));
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
   return new Dispatcher(url, useOxylabs, useTls);

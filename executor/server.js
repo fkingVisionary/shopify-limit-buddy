@@ -6,6 +6,7 @@
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
 import { makeDispatcher, createJar, request, UA, OXYLABS_ENABLED } from "./http.js";
+import { runKmartAkamaiLab } from "./adapters/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
 import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
 
@@ -102,6 +103,31 @@ app.post("/run", async (req, reply) => {
     return result;
   } finally {
     inflight--;
+  }
+});
+
+// ─── Kmart Akamai lab ────────────────────────────────────────────────
+// Isolated diagnostic endpoint. It stops after sensor rounds and never
+// proceeds to PDP retry/cart/checkout, so Akamai regressions are visible.
+app.post("/akamai/lab", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  const url = body.url ?? body.storeUrl ?? "https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/";
+  if (!/^https:\/\/(www\.)?kmart\.com\.au\//i.test(String(url))) {
+    reply.code(400);
+    return { ok: false, error: "url must be a kmart.com.au https URL" };
+  }
+  try {
+    return await runKmartAkamaiLab({
+      url: String(url),
+      proxy: body.proxy ?? null,
+      rounds: Number(body.rounds ?? 3),
+      useProxy: Boolean(body.useProxy),
+      transport: body.transport ?? "tls",
+    });
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message ?? String(e) };
   }
 });
 

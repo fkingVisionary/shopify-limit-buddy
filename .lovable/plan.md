@@ -1,41 +1,83 @@
-## Goal
-Break the Kmart `akamai_sensor success=false` loop while keeping the route as: **sticky residential proxy + Hyper sensor solving**, not Oxylabs Web Unblocker.
+## New plan: stop the regressions, isolate Akamai, then move forward
 
-## Key finding from the current code
-The executor is only using the Chrome TLS client when either:
-- `EXECUTOR_HTTP_TRANSPORT=tls`, or
-- Oxylabs mode is enabled and an explicit proxy is supplied.
+### Goal
+Get Kmart out of the `_abck` / `akamai_sensor success=false` loop reliably using the intended route: sticky residential proxy + Chrome-like TLS + Hyper Solutions. No more PDP/cart/checkout changes until the sensor layer is proven stable.
 
-So if Oxylabs is now disabled and you are passing sticky residential proxies, the current code can still route those sticky proxies through `undici` instead of the Chrome-impersonated TLS client. That means the IP is residential, but the TLS/HTTP fingerprint is still non-browser, which is exactly the kind of mismatch that makes Akamai accept the POST but return `success=false` / keep `_abck` unsolved.
+### What changes now
+1. **Freeze the checkout surface**
+   - Stop changing PDP, cart, GraphQL, and checkout behavior.
+   - Treat every current failure as an Akamai preflight failure until `_abck` reaches a valid state consistently.
 
-## Plan
-1. **Lock the intended transport behavior**
-   - Treat any explicit proxy as a browser-like TLS session by default.
-   - Keep direct/no-proxy behavior configurable, but do not let sticky proxy runs silently fall back to `undici`.
-   - Add the selected transport into executor timelines so every run says whether it used `tls`, `undici`, or `oxylabs`.
+2. **Add a dedicated Akamai lab endpoint**
+   - Add an executor endpoint that only does:
+     - open the exact Kmart PDP URL,
+     - collect initial cookies,
+     - fetch the Akamai script,
+     - call Hyper,
+     - POST sensor data,
+     - repeat a fixed number of rounds,
+     - return a compact diagnostic report.
+   - It will not continue to PDP/cart logic, so results are not polluted by later code paths.
 
-2. **Remove misleading fallback assumptions**
-   - Stop recommending “use stickies” as if that alone solves it.
-   - Update the executor docs/setup notes to reflect the real requirement: sticky residential IP **plus** Chrome TLS fingerprint **plus** matching Hyper inputs.
+3. **Make transport impossible to misread**
+   - Every diagnostic round will report:
+     - requested proxy present: yes/no,
+     - actual transport: `tls`, `undici`, or `oxylabs`,
+     - egress IP,
+     - whether IP changed between rounds,
+     - user agent and accept-language family.
+   - If the UI says `transport=oxylabs` while you expected sticky proxy, that becomes a hard fail in the diagnostic, not something hidden in logs.
 
-3. **Add a focused Akamai sensor diagnostic mode**
-   - Capture compact per-round fields: transport, proxy present, egress IP, `_abck` marker, `bm_sz` marker, Hyper context length, target POST status, target body success flag, Set-Cookie names.
-   - Include enough data to distinguish:
-     - Hyper generated a payload but target rejected it,
-     - target did not rotate cookies,
-     - IP drifted,
-     - cookie/header/TLS mismatch,
-     - wrong script path/body/context.
+4. **Verify Hyper input shape against the installed SDK**
+   - Inspect the installed `hyper-sdk-js` package directly.
+   - Confirm `SensorInput` argument order from the actual package code/types.
+   - Add a startup/self-check diagnostic that reports the input order assumptions without exposing secrets.
 
-4. **Re-check the sensor input ordering against the installed Hyper SDK**
-   - Confirm the `SensorInput` constructor argument order in the actual installed SDK, not just the old notes.
-   - If the wrapper is passing fields in the wrong order, fix it and add a small self-check/log so we can verify payloads start as expected for Akamai v3.
+5. **Compare three controlled variants only**
+   - Direct TLS control.
+   - Sticky residential proxy through Chrome TLS.
+   - Existing Oxylabs path only as a negative/legacy control, not the main route.
 
-5. **Test the exact product URL through localhost / executor**
-   - Use `https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/`.
-   - Run with a sticky proxy path and compare against direct only as a control.
-   - Success criteria for this phase: sensor rounds produce a valid `_abck` or the output clearly identifies the remaining mismatch.
+6. **Record round-by-round Akamai facts**
+   Each sensor round should show:
+   - HTTP status,
+   - body success flag,
+   - Set-Cookie names,
+   - `_abck` marker before/after,
+   - `bm_sz` marker before/after,
+   - Hyper payload length,
+   - Hyper context length in/out,
+   - script URL/path used,
+   - whether `_abck` reached `~0~`.
 
-6. **Only then continue to PDP/cart**
-   - Do not keep changing category/PDP/cart behavior until the sensor loop is solved.
-   - Once `_abck` reaches valid, proceed to verify PDP 200, then cart/API host separately.
+7. **Add a regression guard**
+   - Add a small local executor test/script for the lab endpoint so we can rerun the exact same Kmart URL after each change.
+   - This prevents “one step forward, one step back” because the Akamai layer becomes the acceptance gate.
+
+### Acceptance gate before touching PDP/cart again
+We only resume product/cart/checkout work after the Akamai lab returns one of these:
+
+```text
+PASS: sticky proxy + tls transport + stable IP + Hyper sensor POST success=true + _abck contains ~0~
+```
+
+or a precise remaining blocker, for example:
+
+```text
+FAIL: sticky proxy was not actually used
+FAIL: transport was oxylabs/undici instead of tls
+FAIL: IP changed between sensor rounds
+FAIL: Hyper context generated but Kmart rejected sensor body
+FAIL: script URL/body mismatch
+FAIL: _abck rotates but never reaches valid marker
+```
+
+### First implementation pass
+- Add the dedicated `/akamai/lab` executor endpoint.
+- Wire a Lovable server function/button or reuse the existing diagnostic UI to call it.
+- Do not modify checkout flow behavior in this pass.
+- Run it against:
+  `https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/`
+
+### Why this should stop the back-and-forth
+Right now the same run mixes Akamai solving, PDP retry, SBSD detection, cart logic, proxy routing, and UI display. That makes each fix able to regress another layer. This plan splits Akamai into its own repeatable test so we can prove the exact layer that is failing before touching anything else.
