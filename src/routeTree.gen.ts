@@ -16,6 +16,7 @@ import { Route as PairedKmartRouteImport } from './routes/_paired/kmart'
 import { Route as PairedJbhifiRouteImport } from './routes/_paired/jbhifi'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
 import { Route as ApiPublicExecTestRouteImport } from './routes/api/public/exec-test'
+import { Route as ApiPublicExecHealthRouteImport } from './routes/api/public/exec-health'
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
 import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
 import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/runner.pair'
@@ -54,6 +55,11 @@ const ApiPublicExecTestRoute = ApiPublicExecTestRouteImport.update({
   path: '/api/public/exec-test',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicExecHealthRoute = ApiPublicExecHealthRouteImport.update({
+  id: '/api/public/exec-health',
+  path: '/api/public/exec-health',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicRunnerReportRoute = ApiPublicRunnerReportRouteImport.update({
   id: '/api/public/runner/report',
   path: '/api/public/runner/report',
@@ -75,6 +81,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
+  '/api/public/exec-health': typeof ApiPublicExecHealthRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -86,6 +93,7 @@ export interface FileRoutesByTo {
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
   '/': typeof PairedIndexRoute
+  '/api/public/exec-health': typeof ApiPublicExecHealthRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -99,6 +107,7 @@ export interface FileRoutesById {
   '/_paired/jbhifi': typeof PairedJbhifiRoute
   '/_paired/kmart': typeof PairedKmartRoute
   '/_paired/': typeof PairedIndexRoute
+  '/api/public/exec-health': typeof ApiPublicExecHealthRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -112,6 +121,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/jbhifi'
     | '/kmart'
+    | '/api/public/exec-health'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -123,6 +133,7 @@ export interface FileRouteTypes {
     | '/jbhifi'
     | '/kmart'
     | '/'
+    | '/api/public/exec-health'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -135,6 +146,7 @@ export interface FileRouteTypes {
     | '/_paired/jbhifi'
     | '/_paired/kmart'
     | '/_paired/'
+    | '/api/public/exec-health'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -145,6 +157,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   PairedRoute: typeof PairedRouteWithChildren
   PairRoute: typeof PairRoute
+  ApiPublicExecHealthRoute: typeof ApiPublicExecHealthRoute
   ApiPublicExecTestRoute: typeof ApiPublicExecTestRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
   ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
@@ -203,6 +216,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicExecTestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/exec-health': {
+      id: '/api/public/exec-health'
+      path: '/api/public/exec-health'
+      fullPath: '/api/public/exec-health'
+      preLoaderRoute: typeof ApiPublicExecHealthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/runner/report': {
       id: '/api/public/runner/report'
       path: '/api/public/runner/report'
@@ -245,6 +265,7 @@ const PairedRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   PairedRoute: PairedRouteWithChildren,
   PairRoute: PairRoute,
+  ApiPublicExecHealthRoute: ApiPublicExecHealthRoute,
   ApiPublicExecTestRoute: ApiPublicExecTestRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
   ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
