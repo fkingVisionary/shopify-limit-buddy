@@ -788,14 +788,51 @@ export const kmartAdapter = {
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
+      "cache-control": "no-cache",
+      pragma: "no-cache",
+      priority: "u=1, i",
       // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
-      // Setting it globally is harmless for cart calls and matches every
-      // authenticated shape the browser sends. Missing on cart_atc et al.
-      // would leave us fingerprintable against real Chrome traffic.
       "x-country-code": "AU",
     };
+
+    // New Relic RUM headers — real Kmart pages carry these on every api.*
+    // GraphQL call. Akamai's Bot Manager reportedly scores requests that
+    // are missing them lower on the "real browser" heuristic. Constants
+    // (ac / ap / tk) come from HAR entry #368; per-request ids are freshly
+    // random per call (traceparent / newrelic.id / newrelic.tr).
+    const NR_AC = "1065151";
+    const NR_AP = "1564950200";
+    const NR_TK = "1647451";
+    const randHex = (n) => {
+      const bytes = new Uint8Array(n / 2);
+      globalThis.crypto.getRandomValues(bytes);
+      return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    };
+    const nrHeaders = () => {
+      const tr = randHex(32);
+      const id = randHex(16);
+      const ti = Date.now();
+      const nrPayload = {
+        v: [0, 1],
+        d: { ty: "Browser", ac: NR_AC, ap: NR_AP, id, tr, ti, tk: NR_TK },
+      };
+      return {
+        newrelic: Buffer.from(JSON.stringify(nrPayload)).toString("base64"),
+        traceparent: `00-${tr}-${id}-01`,
+        tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${NR_AP}-${id}----${ti}`,
+      };
+    };
     const gqlPost = async (body) =>
-      request(gqlUrl, { method: "POST", headers: gqlHeaders, body: JSON.stringify(body) }, ctx);
+      request(
+        gqlUrl,
+        {
+          method: "POST",
+          headers: { ...gqlHeaders, ...nrHeaders() },
+          body: JSON.stringify(body),
+        },
+        ctx,
+      );
+
 
     if (pdpStatus > 0 && pdpStatus < 400) {
       {
@@ -909,8 +946,12 @@ export const kmartAdapter = {
                 country: "AU",
                 shippingAddress: { country: "AU" },
                 postcodeSelector: postcodeSelectorJson,
+                // HAR entry #343 always sends selectedCncStoreId on cart
+                // creation. Include verbatim; harmless for home delivery.
+                selectedCncStoreId: "1241",
               },
             },
+
             query:
               "mutation createMyBag($draft: MyCartDraft!) { createMyCart(draft: $draft) { id version postcodeSelector { postalCode __typename } __typename } }",
           });
@@ -953,18 +994,44 @@ fragment LineItemFields on LineItem {
   custom { fields { offerId __typename } __typename }
   __typename
 }`;
+        // Real HAR (entries #357, #366) fires two probe reads between
+        // cart_create and cart_atc — getActiveBag then getMyActiveCart —
+        // before the addLineItem mutation. Skipping them changed our
+        // request-cadence fingerprint enough for Akamai to score the ATC
+        // as bot traffic (→ 403). Replay both.
+        await tStep("cart_probe1", async () => {
+          const res = await gqlPost({
+            operationName: "getActiveBag",
+            variables: {},
+            query:
+              "query getActiveBag { me { activeCart { id version lineItems { quantity __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
+        });
+        await tStep("cart_probe2", async () => {
+          const res = await gqlPost({
+            operationName: "getMyActiveCart",
+            variables: {},
+            query:
+              "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+          });
+          const txt = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
+        });
+
         await tStep("cart_atc", async () => {
           const res = await gqlPost({
             operationName: "updateMyBag",
             variables: {
               id: cartId,
               version: cartVersion,
-              // HAR entry #368: single addLineItem action for home delivery.
-              // The setCustomField selectedCncStoreId in the real HAR was
-              // only present because that session started as C&C; we do
-              // home delivery so we skip it.
+              // HAR entry #368: addLineItem + setCustomField selectedCncStoreId.
+              // We include the custom field verbatim — real browsers always
+              // send it and the extra action is harmless for home delivery.
               actions: [
                 { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
               ],
             },
             query: updateQuery,
@@ -990,6 +1057,7 @@ fragment LineItemFields on LineItem {
             note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
           };
         });
+
 
         // 7e. Verify with the rich getMyActiveCart query.
         await tStep("cart_verify", async () => {
