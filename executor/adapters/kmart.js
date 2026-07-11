@@ -129,6 +129,63 @@ function sensorBodySuccess(body) {
   return "unknown";
 }
 
+async function postAkamaiSensorRounds({
+  label,
+  steps,
+  tStep,
+  ctx,
+  jar,
+  pageUrl,
+  scriptUrl,
+  scriptBody,
+  requestOrigin,
+  referer,
+  egressIp,
+}) {
+  let localContext = null;
+  for (let i = 0; i < 3; i++) {
+    await tStep(`${label}#${i + 1}`, async () => {
+      const beforeAbck = marker(jar.get("_abck"));
+      const beforeBmsz = marker(jar.get("bm_sz"));
+      const r = await solveAkamaiSensor({
+        jar,
+        pageUrl,
+        userAgent: UA,
+        ip: egressIp,
+        acceptLanguage: ACCEPT_LANG,
+        scriptUrl,
+        scriptBody,
+        prevContext: localContext,
+        version: "3",
+      });
+      localContext = r.context;
+      const res = await request(
+        r.postUrl,
+        {
+          method: "POST",
+          headers: akamaiSensorHeaders({ requestOrigin, referer }),
+          body: akamaiSensorBody(r.payload),
+        },
+        ctx,
+      );
+      const body = await res.text().catch(() => "");
+      const setCookieNames = cookieNamesFromResponse(res);
+      return {
+        status: res.status,
+        ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+        note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(jar.get("bm_sz"))} ctxIn=${i === 0 ? 0 : localContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+      };
+    });
+    if (abckSolved(jar, i + 1)) {
+      steps.push({ step: `${label}:solved`, ok: true, note: `rounds=${i + 1}` });
+      return true;
+    }
+    await sleep(200, 400);
+  }
+  steps.push({ step: `${label}:unsolved`, ok: false, note: "_abck not valid after 3 challenge rounds" });
+  return false;
+}
+
 // Use the SDK's parseAkamaiPath — Kmart's path doesn't contain "/akam/" and
 // rotates per page load, so our old `/akam/` regex always missed.
 function findAkamaiScriptPath(html) {
@@ -578,6 +635,60 @@ export const kmartAdapter = {
       });
       if (pdpHtml && pdpHtml.length < 10000) {
         steps.push({ step: "pdp_body_full", ok: true, note: pdpHtml });
+      }
+    }
+
+    // Some Kmart 403 pages return a fresh Akamai sensor script rather than an
+    // SBSD payload. Treat that as a new script body/context, post sensors for
+    // the PDP page URL, then retry the PDP before moving on.
+    if (pdpStatus >= 400) {
+      const pdpChallengePath = findAkamaiScriptPath(pdpHtml);
+      if (pdpChallengePath) {
+        const pdpChallengeUrl = origin + pdpChallengePath;
+        let pdpChallengeBody = "";
+        await tStep("pdp_akamai_script_fetch", async () => {
+          const res = await request(
+            pdpChallengeUrl,
+            {
+              method: "GET",
+              headers: {
+                "user-agent": UA,
+                referer: pdpUrl,
+                "accept-language": ACCEPT_LANG,
+                accept: "*/*",
+                "sec-fetch-dest": "script",
+                "sec-fetch-mode": "no-cors",
+                "sec-fetch-site": "same-origin",
+              },
+            },
+            ctx,
+          );
+          pdpChallengeBody = await res.text();
+          return { status: res.status, ok: res.status < 400, note: `${pdpChallengeBody.length}b path=${pdpChallengePath}` };
+        });
+        await postAkamaiSensorRounds({
+          label: "pdp_akamai_sensor",
+          steps,
+          tStep,
+          ctx,
+          jar: ctx.jar,
+          pageUrl: pdpUrl,
+          scriptUrl: pdpChallengeUrl,
+          scriptBody: pdpChallengeBody,
+          requestOrigin: origin,
+          referer: pdpUrl,
+          egressIp,
+        });
+        await sleep(450, 950);
+        const pdpRetryHeaders = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
+        dumpRequestState("pdp_get#akamai_retry:recon", pdpUrl, pdpRetryHeaders);
+        await tStep("pdp_get#akamai_retry", async () => {
+          const res = await request(pdpUrl, { method: "GET", headers: pdpRetryHeaders }, ctx);
+          pdpStatus = res.status;
+          pdpHtml = await res.text();
+          const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
+          return { status: res.status, ok: res.status < 400, note: `${pdpHtml.length}b | ${snippet}` };
+        });
       }
     }
 
