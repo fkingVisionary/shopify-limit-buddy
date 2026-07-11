@@ -99,6 +99,7 @@ app.post("/run", async (req, reply) => {
       dryRun: task.dryRun !== false,
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
+        debugTrace: task.debugTrace === true,
     });
     return result;
   } finally {
