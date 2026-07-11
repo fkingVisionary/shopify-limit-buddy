@@ -386,13 +386,28 @@ function KmartPage() {
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="text-sm font-medium">Akamai lab</div>
               <div className="flex flex-wrap gap-2">
-                <Badge variant={labResult.result?.ok ? "default" : "destructive"} className="text-[10px]">
-                  {labResult.result?.ok ? "pass" : "fail"}
+                <Badge
+                  variant={
+                    labResult.result?.classification === "SOLVED"
+                      ? "default"
+                      : labResult.result?.classification === "EDGE_DENY"
+                        ? "secondary"
+                        : "destructive"
+                  }
+                  className="text-[10px]"
+                >
+                  {labResult.result?.classification ?? (labResult.result?.ok ? "pass" : "fail")}
                 </Badge>
                 {labResult.result?.transport && <Badge variant="outline" className="text-[10px]">{labResult.result.transport}</Badge>}
+                {labResult.result?.initialStatus != null && <Badge variant="outline" className="text-[10px]">edge {labResult.result.initialStatus}</Badge>}
                 {labResult.result?.ipStable != null && <Badge variant="outline" className="text-[10px]">IP {labResult.result.ipStable ? "stable" : "changed"}</Badge>}
               </div>
             </div>
+            {labResult.result?.classification === "EDGE_DENY" && (
+              <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
+                <strong>Edge deny (not a Hyper failure).</strong> Akamai refused this IP before bot-manager loaded — no <code>_abck</code> sentinel was set. Try a different proxy/pool. This IP's reputation is the problem, not the sensor code.
+              </div>
+            )}
             {labResult.error && (
               <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
                 Lab error: {labResult.error}
