@@ -124,6 +124,7 @@ app.post("/akamai/lab", async (req, reply) => {
       rounds: Number(body.rounds ?? 3),
       useProxy: Boolean(body.useProxy),
       transport: body.transport ?? "tls",
+      baselineTrace: body.baselineTrace ?? null,
     });
   } catch (e) {
     reply.code(500);

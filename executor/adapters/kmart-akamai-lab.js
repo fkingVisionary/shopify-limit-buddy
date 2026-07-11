@@ -7,7 +7,7 @@ import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
 import { createJar, makeDispatcher, request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, hyperSensorInputShape, solveAkamaiSensor } from "../antibot.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 const ORIGIN = "https://www.kmart.com.au";
 const ACCEPT_LANG = "en-AU,en;q=0.9";
@@ -72,6 +72,153 @@ function sensorHeaders(referer) {
   };
 }
 
+function sha256(value) {
+  return createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function cookieSummaryFromHeader(cookieHeader) {
+  const pairs = String(cookieHeader ?? "")
+    .split(";")
+    .map((p) => p.trim())
+    .filter(Boolean)
+    .map((p) => {
+      const eq = p.indexOf("=");
+      return eq > 0 ? { name: p.slice(0, eq), value: p.slice(eq + 1) } : { name: p, value: "" };
+    });
+  return {
+    names: pairs.map((p) => p.name),
+    count: pairs.length,
+    bytes: String(cookieHeader ?? "").length,
+    abck: marker(pairs.find((p) => p.name === "_abck")?.value),
+    bmsz: marker(pairs.find((p) => p.name === "bm_sz")?.value),
+  };
+}
+
+function summarizeHeaders(headers, jar) {
+  const merged = {
+    "user-agent": UA,
+    accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": ACCEPT_LANG,
+    ...(jar?.header?.() ? { cookie: jar.header() } : {}),
+    ...(headers ?? {}),
+  };
+  const out = {};
+  for (const [key, value] of Object.entries(merged)) {
+    const lower = key.toLowerCase();
+    if (lower === "cookie") {
+      out.cookie = cookieSummaryFromHeader(value);
+    } else if (lower === "authorization" || lower.includes("proxy")) {
+      out[lower] = "[redacted]";
+    } else {
+      out[lower] = String(value);
+    }
+  }
+  return out;
+}
+
+function responseHeaderSummary(res) {
+  return {
+    server: res.headers.get("server"),
+    contentType: res.headers.get("content-type"),
+    setCookieNames: cookieNamesFromResponse(res),
+  };
+}
+
+function compactTraceEvent(event) {
+  return Object.fromEntries(Object.entries(event).filter(([, value]) => value !== undefined));
+}
+
+function normalizeBaselineTrace(input) {
+  if (!input || typeof input !== "object") return null;
+  if (Array.isArray(input)) return { events: input };
+  if (Array.isArray(input.events)) return input;
+  if (input.trace && typeof input.trace === "object" && Array.isArray(input.trace.events)) return input.trace;
+  return null;
+}
+
+function eventMap(trace) {
+  const map = new Map();
+  for (const event of trace?.events ?? []) {
+    if (!event?.label) continue;
+    const key = `${event.label}:${event.type ?? "event"}`;
+    map.set(key, event);
+  }
+  return map;
+}
+
+function parseUrl(value) {
+  return new URL(value, ORIGIN);
+}
+
+function valueAt(obj, path) {
+  return path.split(".").reduce((acc, key) => (acc && typeof acc === "object" ? acc[key] : undefined), obj);
+}
+
+function diffTrace(currentTrace, baselineInput) {
+  const baseline = normalizeBaselineTrace(baselineInput);
+  if (!baseline) return null;
+  const current = eventMap(currentTrace);
+  const expected = eventMap(baseline);
+  const fields = [
+    "type",
+    "method",
+    "urlPath",
+    "status",
+    "headers.user-agent",
+    "headers.accept",
+    "headers.accept-language",
+    "headers.origin",
+    "headers.referer",
+    "headers.sec-fetch-site",
+    "headers.sec-fetch-mode",
+    "headers.sec-fetch-dest",
+    "headers.cookie.names",
+    "response.setCookieNames",
+    "jar.names",
+    "jar.abck.index",
+    "jar.bmsz.index",
+    "script.bytes",
+    "script.sha256",
+    "sensor.payloadPrefix",
+    "sensor.payloadBytes",
+    "sensor.ctxIn",
+    "sensor.ctxOut",
+    "sensor.bodySuccess",
+  ];
+  const mismatches = [];
+  const missingCurrent = [];
+  const missingBaseline = [];
+
+  for (const label of expected.keys()) {
+    if (!current.has(label)) missingCurrent.push(label);
+  }
+  for (const label of current.keys()) {
+    if (!expected.has(label)) missingBaseline.push(label);
+  }
+  for (const [label, baseEvent] of expected.entries()) {
+    const curEvent = current.get(label);
+    if (!curEvent) continue;
+    for (const field of fields) {
+      const expectedValue = valueAt(baseEvent, field);
+      const actualValue = valueAt(curEvent, field);
+      if (expectedValue === undefined && actualValue === undefined) continue;
+      if (JSON.stringify(expectedValue) !== JSON.stringify(actualValue)) {
+        mismatches.push({ label, field, expected: expectedValue ?? null, actual: actualValue ?? null });
+      }
+    }
+  }
+
+  return {
+    baselineId: baseline.id ?? null,
+    comparedAt: new Date().toISOString(),
+    eventCounts: { baseline: expected.size, current: current.size },
+    missingCurrent,
+    missingBaseline,
+    mismatches: mismatches.slice(0, 80),
+    mismatchCount: mismatches.length,
+  };
+}
+
 function marker(value) {
   const v = String(value ?? "");
   if (!v) return { present: false, bytes: 0, index: null, text: "(none)" };
@@ -129,7 +276,7 @@ function verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved,
   return "SENSOR_STALE: _abck rotated but never reached a valid marker after all rounds";
 }
 
-export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false, transport = "tls" }) {
+export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, rounds = 3, useProxy = false, transport = "tls", baselineTrace = null }) {
   const targetUrl = String(url || DEFAULT_URL).trim();
   const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const requestedProxy = Boolean(String(resolvedProxy ?? "").trim());
@@ -144,6 +291,13 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   const startedAt = Date.now();
   const steps = [];
   const sensorRounds = [];
+  const trace = {
+    id: `akamai-${Date.now().toString(36)}`,
+    createdAt: new Date().toISOString(),
+    targetUrl,
+    sanitized: true,
+    events: [],
+  };
 
   if (dispatcher.useOxylabs) {
     ctx.oxylabsSessionId = randomUUID().replace(/-/g, "");
@@ -153,6 +307,42 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
   const addStep = (step) => {
     steps.push({ msFromStart: Date.now() - startedAt, ...step });
   };
+
+  const addTrace = (event) => {
+    trace.events.push(compactTraceEvent({ atMs: Date.now() - startedAt, ...event }));
+  };
+
+  const tracedRequest = async (label, urlForRequest, opts) => {
+    const method = (opts?.method ?? "GET").toUpperCase();
+    const beforeCookieHeader = jar.header();
+    addTrace({
+      label,
+      type: "request",
+      method,
+      urlPath: parseUrl(urlForRequest).pathname,
+      urlHost: parseUrl(urlForRequest).host,
+      headers: summarizeHeaders(opts?.headers, jar),
+      jar: compactCookies(jar),
+      body: opts?.body ? { bytes: String(opts.body).length, sha256: sha256(opts.body).slice(0, 16) } : undefined,
+      cookieHeaderBefore: cookieSummaryFromHeader(beforeCookieHeader),
+    });
+    const res = await request(urlForRequest, opts, ctx);
+    addTrace({
+      label,
+      type: "response",
+      status: res.status,
+      urlPath: parseUrl(res.url ?? urlForRequest).pathname,
+      response: responseHeaderSummary(res),
+      jar: compactCookies(jar),
+    });
+    return res;
+  };
+
+  const withDiff = (result) => ({
+    ...result,
+    trace,
+    diff: diffTrace(trace, baselineTrace),
+  });
 
   try {
     addStep({
@@ -164,7 +354,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     addStep({ step: "hyper_sdk_shape", ok: true, note: JSON.stringify(hyperSensorInputShape()) });
     if (!hyperConfigured()) {
       addStep({ step: "hyper_config", ok: false, note: "HYPER_API_KEY missing on executor" });
-      return { ok: false, verdict: "FAIL: HYPER_API_KEY missing on executor", targetUrl, steps, cookies: compactCookies(jar) };
+      return withDiff({ ok: false, verdict: "FAIL: HYPER_API_KEY missing on executor", targetUrl, steps, cookies: compactCookies(jar) });
     }
 
     const initialIp = await resolveEgressIp(ctx, { force: true });
@@ -173,7 +363,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     let html = "";
     let scriptPath = null;
     let scriptSourceUrl = targetUrl;
-    const initialRes = await request(targetUrl, { method: "GET", headers: navHeaders({ site: "none" }) }, ctx);
+    const initialRes = await tracedRequest("initial_pdp_get", targetUrl, { method: "GET", headers: navHeaders({ site: "none" }) });
     html = await initialRes.text();
     scriptPath = parseAkamaiPath(html);
     const initialSetCookies = cookieNamesFromResponse(initialRes);
@@ -185,7 +375,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     });
 
     if (!scriptPath) {
-      const homeRes = await request(ORIGIN + "/", { method: "GET", headers: navHeaders({ referer: targetUrl, site: "same-origin" }) }, ctx);
+      const homeRes = await tracedRequest("script_discovery_home", ORIGIN + "/", { method: "GET", headers: navHeaders({ referer: targetUrl, site: "same-origin" }) });
       const homeHtml = await homeRes.text();
       const homeScriptPath = parseAkamaiPath(homeHtml);
       const homeSetCookies = cookieNamesFromResponse(homeRes);
@@ -220,7 +410,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     if (initialClassification === "EDGE_DENY") {
       const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp: initialIp, solved: false, rounds: [], classification: "EDGE_DENY" });
       addStep({ step: "akamai_lab_skip", ok: false, note: verdict });
-      return {
+      return withDiff({
         ok: false,
         classification: "EDGE_DENY",
         verdict,
@@ -238,11 +428,11 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         steps,
         cookies: compactCookies(jar),
         elapsedMs: Date.now() - startedAt,
-      };
+      });
     }
 
     if (!scriptPath) {
-      return {
+      return withDiff({
         ok: false,
         classification: "UNKNOWN",
         verdict: "FAIL: no Akamai script path found on initial PDP or home (edge served content without bot-manager script — unexpected shape)",
@@ -254,12 +444,19 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         initialStatus: initialRes.status,
         steps,
         cookies: compactCookies(jar),
-      };
+      });
     }
 
     const scriptUrl = new URL(scriptPath, ORIGIN).toString();
-    const scriptRes = await request(scriptUrl, { method: "GET", headers: scriptHeaders(scriptSourceUrl) }, ctx);
+    const scriptRes = await tracedRequest("akamai_script_fetch", scriptUrl, { method: "GET", headers: scriptHeaders(scriptSourceUrl) });
     const scriptBody = await scriptRes.text();
+    addTrace({
+      label: "akamai_script_body",
+      type: "script",
+      script: { bytes: scriptBody.length, sha256: sha256(scriptBody) },
+      sourceUrlPath: parseUrl(scriptSourceUrl).pathname,
+      scriptUrlPath: parseUrl(scriptUrl).pathname,
+    });
     addStep({
       step: "akamai_script_fetch",
       ok: scriptRes.status < 400 && scriptBody.length > 0,
@@ -296,14 +493,35 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       });
       context = generated.context ?? "";
 
-      const sensorRes = await request(
+      addTrace({
+        label: `akamai_sensor#${i + 1}`,
+        type: "sensor_generated",
+        sensor: {
+          postPath: parseUrl(generated.postUrl).pathname,
+          payloadPrefix: String(generated.payload ?? "").slice(0, 3),
+          payloadBytes: String(generated.payload ?? "").length,
+          ctxIn,
+          ctxOut: context.length,
+        },
+        hyperInput: {
+          pagePath: parseUrl(targetUrl).pathname,
+          scriptPath: parseUrl(scriptUrl).pathname,
+          userAgent: UA,
+          acceptLanguage: ACCEPT_LANG,
+          ipPresent: Boolean(roundIp ?? initialIp),
+          prevContextBytes: ctxIn,
+        },
+        jar: compactCookies(jar),
+      });
+
+      const sensorRes = await tracedRequest(
+        `akamai_sensor#${i + 1}`,
         generated.postUrl,
         {
           method: "POST",
           headers: sensorHeaders(targetUrl),
           body: JSON.stringify({ sensor_data: generated.payload }),
         },
-        ctx,
       );
       const rawBody = await sensorRes.text().catch(() => "");
       const setCookies = cookieNamesFromResponse(sensorRes);
@@ -332,6 +550,22 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
         solved,
         body: rawBody.replace(/\s+/g, " ").slice(0, 220),
       };
+      addTrace({
+        label: `akamai_sensor#${i + 1}`,
+        type: "sensor_result",
+        status: sensorRes.status,
+        sensor: {
+          bodySuccess: bodySuccess(rawBody),
+          setCookies,
+          beforeAbck,
+          afterAbck,
+          beforeBmsz,
+          afterBmsz,
+          solved,
+          responseBody: rawBody.replace(/\s+/g, " ").slice(0, 220),
+        },
+        jar: compactCookies(jar),
+      });
       sensorRounds.push(round);
       addStep({
         step: `akamai_sensor#${i + 1}`,
@@ -352,7 +586,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     const verdict = verdictFrom({ dispatcher, requestedProxy, initialIp, currentIp, solved, rounds: sensorRounds, classification });
     addStep({ step: solved ? "akamai_lab_pass" : "akamai_lab_fail", ok: solved, note: `classification=${classification} ${verdict}` });
 
-    return {
+    return withDiff({
       ok: solved,
       classification,
       verdict,
@@ -372,10 +606,10 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       steps,
       cookies: compactCookies(jar),
       elapsedMs: Date.now() - startedAt,
-    };
+    });
   } catch (e) {
     addStep({ step: "akamai_lab_error", ok: false, note: e?.message ?? String(e) });
-    return {
+    return withDiff({
       ok: false,
       classification: "UNKNOWN",
       verdict: `FAIL: lab error — ${e?.message ?? String(e)}`,
@@ -387,7 +621,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
       rounds: sensorRounds,
       cookies: compactCookies(jar),
       elapsedMs: Date.now() - startedAt,
-    };
+    });
   } finally {
     try { await dispatcher.close?.(); } catch { /* ignore */ }
   }

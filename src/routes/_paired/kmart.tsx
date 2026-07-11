@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical } from "lucide-react";
+import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows } from "lucide-react";
 import { runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
 
 export const Route = createFileRoute("/_paired/kmart")({
@@ -27,6 +27,7 @@ const RECON_CANDIDATES_KEY = "aio:kmart-recon-candidates";
 const MUTATION_KEY = "aio:kmart-place-order-mutation";
 const HISTORY_KEY = "aio:kmart-run-history";
 const LAST_INPUT_KEY = "aio:kmart-last-input";
+const AKAMAI_BASELINE_KEY = "aio:kmart-akamai-baseline-trace";
 
 type Step = { step: string; ok: boolean; status: number | null; ms?: number; note?: string };
 type RunResult = {
@@ -66,9 +67,29 @@ type LabResult = {
     steps?: Step[];
     rounds?: unknown[];
     cookies?: unknown;
+    trace?: AkamaiTrace;
+    diff?: TraceDiff | null;
     error?: string;
   };
   error?: string;
+};
+
+type AkamaiTrace = {
+  id?: string;
+  createdAt?: string;
+  targetUrl?: string;
+  sanitized?: boolean;
+  events?: Array<Record<string, unknown> & { label?: string; type?: string }>;
+};
+
+type TraceDiff = {
+  baselineId?: string | null;
+  comparedAt?: string;
+  eventCounts?: { baseline?: number; current?: number };
+  missingCurrent?: string[];
+  missingBaseline?: string[];
+  mismatches?: Array<{ label: string; field: string; expected: unknown; actual: unknown }>;
+  mismatchCount?: number;
 };
 
 type StoredMutation = {
@@ -104,6 +125,19 @@ function writeJSON<T>(key: string, value: T) {
   } catch {}
 }
 
+function downloadJSON(filename: string, value: unknown) {
+  if (typeof window === "undefined") return;
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json" });
+  const href = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(href);
+}
+
 // Pull op-name candidates out of a `bundle_recon` step note.
 // Format we emit from the adapter: `candidates: name1, name2, name3`
 function extractCandidatesFromSteps(steps: Step[]): string[] {
@@ -132,6 +166,8 @@ function KmartPage() {
   const [labRunning, setLabRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
   const [labResult, setLabResult] = useState<LabResult | null>(null);
+  const [akamaiBaseline, setAkamaiBaseline] = useState<AkamaiTrace | null>(null);
+  const [akamaiBaselineText, setAkamaiBaselineText] = useState("");
 
   const [candidates, setCandidates] = useState<string[]>([]);
   const [mutation, setMutation] = useState<StoredMutation | null>(null);
@@ -151,6 +187,9 @@ function KmartPage() {
       setMutExtraVars(m.extraVars ? JSON.stringify(m.extraVars, null, 2) : "");
     }
     setHistory(readJSON<HistoryEntry[]>(HISTORY_KEY, []));
+    const savedBaseline = readJSON<AkamaiTrace | null>(AKAMAI_BASELINE_KEY, null);
+    setAkamaiBaseline(savedBaseline);
+    if (savedBaseline) setAkamaiBaselineText(JSON.stringify(savedBaseline, null, 2));
     const last = readJSON<{ url: string; qty: number; proxy: string; placeOrder: boolean } | null>(LAST_INPUT_KEY, null);
     if (last) {
       setUrl(last.url ?? "");
@@ -244,6 +283,7 @@ function KmartPage() {
           url: cleanUrl,
           proxy: proxy.trim() || null,
           rounds: 3,
+          baselineTrace: akamaiBaseline,
         },
       })) as LabResult;
       setLabResult(res);
@@ -288,6 +328,30 @@ function KmartPage() {
   };
 
   const steps = result?.result?.steps ?? [];
+  const labTrace = labResult?.result?.trace;
+  const labDiff = labResult?.result?.diff;
+  const saveAkamaiBaseline = () => {
+    if (!labTrace) return;
+    setAkamaiBaseline(labTrace);
+    setAkamaiBaselineText(JSON.stringify(labTrace, null, 2));
+    writeJSON(AKAMAI_BASELINE_KEY, labTrace);
+  };
+  const importAkamaiBaseline = () => {
+    try {
+      const parsed = JSON.parse(akamaiBaselineText);
+      const trace = Array.isArray(parsed?.events) ? parsed : parsed?.trace;
+      if (!trace || !Array.isArray(trace.events)) throw new Error("Trace JSON must include an events array");
+      setAkamaiBaseline(trace);
+      writeJSON(AKAMAI_BASELINE_KEY, trace);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Invalid baseline trace JSON");
+    }
+  };
+  const clearAkamaiBaseline = () => {
+    setAkamaiBaseline(null);
+    setAkamaiBaselineText("");
+    try { localStorage.removeItem(AKAMAI_BASELINE_KEY); } catch {}
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -418,24 +482,96 @@ function KmartPage() {
                 {labResult.result.verdict}
               </div>
             )}
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded border border-border/60 bg-muted/20 p-2 text-xs">
+              <div className="mr-auto min-w-0">
+                <div className="font-medium">Trace evidence</div>
+                <div className="truncate text-muted-foreground">
+                  {akamaiBaseline ? `Baseline ${akamaiBaseline.id ?? "saved"} · ${akamaiBaseline.events?.length ?? 0} events` : "No baseline saved yet"}
+                </div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => labTrace && downloadJSON(`kmart-akamai-trace-${labTrace.id ?? Date.now()}.json`, labTrace)} disabled={!labTrace}>
+                <Download className="mr-2 h-3 w-3" /> Trace
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => labResult?.result && downloadJSON(`kmart-akamai-result-${Date.now()}.json`, labResult.result)} disabled={!labResult?.result}>
+                <Download className="mr-2 h-3 w-3" /> Result
+              </Button>
+              <Button size="sm" variant="outline" onClick={saveAkamaiBaseline} disabled={!labTrace}>
+                <Save className="mr-2 h-3 w-3" /> Save baseline
+              </Button>
+              {akamaiBaseline && (
+                <Button size="sm" variant="ghost" onClick={clearAkamaiBaseline}>
+                  <Trash2 className="mr-2 h-3 w-3" /> Clear baseline
+                </Button>
+              )}
+            </div>
+            <details className="mb-3 rounded border border-border/60 bg-muted/20 p-2 text-xs">
+              <summary className="cursor-pointer text-muted-foreground">Paste/import baseline trace JSON</summary>
+              <Textarea
+                value={akamaiBaselineText}
+                onChange={(e) => setAkamaiBaselineText(e.target.value)}
+                placeholder='{"id":"browser-baseline","events":[...]}'
+                className="mt-2 min-h-[120px] font-mono text-[11px]"
+              />
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="outline" onClick={importAkamaiBaseline} disabled={!akamaiBaselineText.trim()}>
+                  <GitCompareArrows className="mr-2 h-3 w-3" /> Use as baseline
+                </Button>
+              </div>
+            </details>
+            {labDiff && (
+              <div className="mb-3 rounded border border-border/60 bg-muted/20 p-2 text-xs">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-medium">
+                    <GitCompareArrows className="h-3 w-3" /> Baseline diff
+                  </div>
+                  <Badge variant={labDiff.mismatchCount ? "destructive" : "default"} className="text-[10px]">
+                    {labDiff.mismatchCount ?? 0} mismatches
+                  </Badge>
+                </div>
+                <div className="mb-2 grid gap-1 text-muted-foreground md:grid-cols-3">
+                  <div>baseline events <code>{labDiff.eventCounts?.baseline ?? "—"}</code></div>
+                  <div>current events <code>{labDiff.eventCounts?.current ?? "—"}</code></div>
+                  <div>missing current <code>{labDiff.missingCurrent?.length ?? 0}</code></div>
+                </div>
+                {(labDiff.missingCurrent?.length ?? 0) > 0 && (
+                  <div className="mb-2 font-mono text-[11px] text-destructive">
+                    Missing current: {labDiff.missingCurrent?.join(", ")}
+                  </div>
+                )}
+                {(labDiff.mismatches?.length ?? 0) > 0 && (
+                  <div className="space-y-1">
+                    {labDiff.mismatches?.slice(0, 10).map((m, i) => (
+                      <div key={`${m.label}-${m.field}-${i}`} className="rounded border border-border/40 bg-background/60 p-2 font-mono text-[11px]">
+                        <div className="font-medium">{m.label} · {m.field}</div>
+                        <div className="break-all text-muted-foreground">expected: {JSON.stringify(m.expected)}</div>
+                        <div className="break-all">actual: {JSON.stringify(m.actual)}</div>
+                      </div>
+                    ))}
+                    {(labDiff.mismatchCount ?? 0) > 10 && (
+                      <div className="text-muted-foreground">Showing first 10 mismatches. Download result JSON for all diff entries.</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="mb-2 grid gap-2 text-xs md:grid-cols-3">
               <div><span className="text-muted-foreground">Initial IP:</span> <code>{labResult.result?.initialIp ?? "—"}</code></div>
               <div><span className="text-muted-foreground">Final IP:</span> <code>{labResult.result?.finalIp ?? "—"}</code></div>
               <div><span className="text-muted-foreground">Script bytes:</span> <code>{labResult.result?.scriptBytes ?? "—"}</code></div>
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
+            <div className="hidden overflow-x-auto md:block">
+              <table className="w-full text-xs table-fixed">
                 <thead>
                   <tr className="border-b border-border/50 text-left text-muted-foreground">
-                    <th className="py-1 pr-2">Step</th>
-                    <th className="py-1 pr-2 w-14">Status</th>
+                    <th className="w-44 py-1 pr-2">Step</th>
+                    <th className="w-14 py-1 pr-2">Status</th>
                     <th className="py-1">Note</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(labResult.result?.steps ?? []).map((s, i) => (
                     <tr key={i} className="border-b border-border/20 align-top">
-                      <td className="py-1 pr-2 font-mono">
+                      <td className="py-1 pr-2 font-mono break-all">
                         <span className={s.ok ? "text-green-600" : "text-destructive"}>{s.ok ? "✓" : "✗"}</span> {s.step}
                       </td>
                       <td className="py-1 pr-2 font-mono">{s.status ?? "—"}</td>
@@ -456,6 +592,17 @@ function KmartPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+            <div className="space-y-2 md:hidden">
+              {(labResult.result?.steps ?? []).map((s, i) => (
+                <div key={i} className="rounded border border-border/40 bg-muted/20 p-2 text-xs">
+                  <div className="mb-1 flex items-center justify-between gap-2 font-mono">
+                    <span className="break-all"><span className={s.ok ? "text-green-600" : "text-destructive"}>{s.ok ? "✓" : "✗"}</span> {s.step}</span>
+                    <code>{s.status ?? "—"}</code>
+                  </div>
+                  <div className="max-h-28 overflow-auto break-all font-mono text-[11px] text-muted-foreground">{s.note ?? ""}</div>
+                </div>
+              ))}
             </div>
             <details className="mt-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
               <summary className="cursor-pointer text-muted-foreground">Raw lab JSON</summary>
