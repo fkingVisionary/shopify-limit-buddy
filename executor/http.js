@@ -93,28 +93,52 @@ const CHROME_HEADER_ORDER = [
   "cookie",
 ];
 
-// Accept "user:pass@host:port" or "host:port" or full "http://user:pass@host:port".
+// Accept "user:pass@host:port", "host:port:user:pass", "user:pass:host:port",
+// "host:port", or full "http://user:pass@host:port". Proxy providers often
+// include raw special characters in usernames/passwords, so do not rely on the
+// URL constructor until after credentials are split and encoded.
 function parseProxy(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
+  if (!s) return null;
 
-  // Common proxy-list format: host:port:user:pass. Convert it before URL
-  // parsing; otherwise URL treats the third segment as part of an invalid port
-  // and the request silently falls back to direct egress.
-  if (!/^https?:\/\//i.test(s) && !/^socks5?:\/\//i.test(s) && !s.includes("@")) {
-    const parts = s.split(":");
-    if (parts.length >= 4 && /^\d{1,5}$/.test(parts[1])) {
-      const [host, port, user, ...passParts] = parts;
-      const pass = passParts.join(":");
-      s = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
-    }
+  const schemeMatch = s.match(/^(https?|socks5?):\/\//i);
+  const scheme = schemeMatch ? schemeMatch[1].toLowerCase() : "http";
+  let rest = schemeMatch ? s.slice(schemeMatch[0].length) : s;
+
+  const build = (host, port, user, pass) => {
+    if (!host || !/^\d{1,5}$/.test(String(port ?? ""))) return null;
+    const n = Number(port);
+    if (n <= 0 || n > 65535) return null;
+    const auth = user != null ? `${encodeURIComponent(user)}:${encodeURIComponent(pass ?? "")}@` : "";
+    return `${scheme}://${auth}${host}:${port}`;
+  };
+
+  if (rest.includes("@")) {
+    const at = rest.lastIndexOf("@");
+    const auth = rest.slice(0, at);
+    const hostPort = rest.slice(at + 1);
+    const colon = hostPort.lastIndexOf(":");
+    if (colon <= 0) return null;
+    const userColon = auth.indexOf(":");
+    if (userColon <= 0) return null;
+    return build(hostPort.slice(0, colon), hostPort.slice(colon + 1), auth.slice(0, userColon), auth.slice(userColon + 1));
   }
-  if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
-  try {
-    return new URL(s).toString();
-  } catch {
-    return null;
+
+  const parts = rest.split(":");
+  if (parts.length === 2) return build(parts[0], parts[1]);
+  if (parts.length >= 4 && /^\d{1,5}$/.test(parts[1])) {
+    const [host, port, user, ...passParts] = parts;
+    return build(host, port, user, passParts.join(":"));
   }
+  if (parts.length >= 4 && /^\d{1,5}$/.test(parts[parts.length - 1])) {
+    const port = parts[parts.length - 1];
+    const host = parts[parts.length - 2];
+    const user = parts[0];
+    const pass = parts.slice(1, -2).join(":");
+    return build(host, port, user, pass);
+  }
+  return null;
 }
 
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
