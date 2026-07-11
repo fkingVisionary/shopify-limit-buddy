@@ -377,6 +377,7 @@ export async function runKmartAkamaiLab({ url = DEFAULT_URL, proxy = null, round
     addStep({ step: "akamai_lab_error", ok: false, note: e?.message ?? String(e) });
     return {
       ok: false,
+      classification: "UNKNOWN",
       verdict: `FAIL: lab error — ${e?.message ?? String(e)}`,
       targetUrl,
       transport: dispatcher.transport,
