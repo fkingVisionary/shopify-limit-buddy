@@ -1408,7 +1408,7 @@ fragment LineItemFields on LineItem {
         let handleOk = false;
         if (paydockJwt && charge3dsId) {
           await tStep("paydock_3ds_handle", async () => {
-            const requestorTransId = crypto.randomUUID();
+            const requestorTransId = globalThis.crypto.randomUUID();
             // Browser env blob that matches HAR entry #788's decoded param.
             // Values match a real Chrome 150 / Windows viewer; only browserIP
             // is dynamic — we synthesize from the egress IP resolver.
