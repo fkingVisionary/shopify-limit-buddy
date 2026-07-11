@@ -256,31 +256,93 @@ function printChecklist(hits) {
   }
 }
 
-function missingHeaders(actual, required) {
-  return (required ?? []).filter((h) => !actual.requestHeaders?.[h]);
+// ── Byte-level diff helpers ─────────────────────────────────────────────
+
+// Structural JSON diff → array of "path: goldenType/value → actualType/value"
+// notes. Values are only shown when small; large blobs are shape-summarised.
+function jsonDiff(a, b, pathPrefix = "$", out = []) {
+  const ta = a === null ? "null" : Array.isArray(a) ? "array" : typeof a;
+  const tb = b === null ? "null" : Array.isArray(b) ? "array" : typeof b;
+  if (ta !== tb) { out.push(`${pathPrefix}: type ${tb} != ${ta}`); return out; }
+  if (ta === "object") {
+    const ak = Object.keys(a ?? {}); const bk = Object.keys(b ?? {});
+    for (const k of ak) if (!bk.includes(k)) out.push(`${pathPrefix}.${k}: MISSING (HAR has ${JSON.stringify(a[k]).slice(0, 60)})`);
+    for (const k of bk) if (!ak.includes(k)) out.push(`${pathPrefix}.${k}: EXTRA (executor sent ${JSON.stringify(b[k]).slice(0, 60)})`);
+    const common = ak.filter((k) => bk.includes(k));
+    const goldenOrder = common.join(",");
+    const actualOrder = bk.filter((k) => ak.includes(k)).join(",");
+    if (goldenOrder !== actualOrder) out.push(`${pathPrefix}: key order [${actualOrder}] != [${goldenOrder}]`);
+    for (const k of common) jsonDiff(a[k], b[k], `${pathPrefix}.${k}`, out);
+    return out;
+  }
+  if (ta === "array") {
+    if (a.length !== b.length) out.push(`${pathPrefix}: length ${b.length} != ${a.length}`);
+    const n = Math.min(a.length, b.length);
+    for (let i = 0; i < n; i++) jsonDiff(a[i], b[i], `${pathPrefix}[${i}]`, out);
+    return out;
+  }
+  if (a !== b) {
+    const sa = JSON.stringify(a); const sb = JSON.stringify(b);
+    if (sa !== sb) out.push(`${pathPrefix}: ${String(sb).slice(0, 60)} != ${String(sa).slice(0, 60)}`);
+  }
+  return out;
 }
 
-function missingVars(actual, required) {
-  return (required ?? []).filter((v) => !(actual.variables && Object.prototype.hasOwnProperty.call(actual.variables, v)));
+const HEADER_IGNORE = new Set([
+  "content-length", "cookie", "host", ":authority", ":method", ":path", ":scheme",
+  "if-none-match", "if-modified-since", "accept-encoding",
+]);
+const HEADER_VOLATILE = new Set(["newrelic", "traceparent", "tracestate", "x-visitor-id"]);
+function headerDiff(golden, actual) {
+  const out = [];
+  const g = golden.requestHeaders ?? {}; const a = actual.requestHeaders ?? {};
+  const gk = Object.keys(g).filter((k) => !HEADER_IGNORE.has(k) && !k.startsWith(":"));
+  const ak = Object.keys(a).filter((k) => !HEADER_IGNORE.has(k) && !k.startsWith(":"));
+  for (const k of gk) {
+    if (!(k in a)) { out.push(`hdr ${k}: MISSING (HAR: ${String(g[k]).slice(0, 80)})`); continue; }
+    if (HEADER_VOLATILE.has(k)) {
+      const gl = String(g[k]).length, al = String(a[k]).length;
+      if (Math.abs(gl - al) / Math.max(gl, 1) > 0.2) out.push(`hdr ${k}: length ${al} != ${gl} (shape mismatch)`);
+      continue;
+    }
+    if (String(g[k]) !== String(a[k])) out.push(`hdr ${k}: "${String(a[k]).slice(0, 60)}" != "${String(g[k]).slice(0, 60)}"`);
+  }
+  for (const k of ak) if (!(k in g)) out.push(`hdr ${k}: EXTRA (executor sent "${String(a[k]).slice(0, 60)}")`);
+  return out;
 }
 
-function compareHit(golden, actual, spec) {
+function cookieDiff(golden, actual) {
+  const g = new Set(golden.cookieNames ?? []); const a = new Set(actual.cookieNames ?? []);
+  const missing = [...g].filter((n) => !a.has(n));
+  const extra = [...a].filter((n) => !g.has(n));
+  const out = [];
+  if (missing.length) out.push(`cookies MISSING: ${missing.join(", ")}`);
+  if (extra.length) out.push(`cookies EXTRA: ${extra.join(", ")}`);
+  return out;
+}
+
+function compareHitBytelevel(golden, actual, spec) {
   const deltas = [];
-  if (!actual) return ["missing from executor trace"];
+  if (!actual) return ["MISSING from executor trace"];
   if (golden.method !== actual.method) deltas.push(`method ${actual.method} != ${golden.method}`);
   if (golden.host !== actual.host) deltas.push(`host ${actual.host} != ${golden.host}`);
   if (golden.path !== actual.path) deltas.push(`path ${actual.path} != ${golden.path}`);
-  const mh = missingHeaders(actual, spec.requiredHeaders);
-  if (mh.length) deltas.push(`missing headers: ${mh.join(",")}`);
-  const mv = missingVars(actual, spec.requiredVariables);
-  if (mv.length) deltas.push(`missing vars: ${mv.join(",")}`);
-  if (golden.queryHash && actual.queryHash && golden.queryHash !== actual.queryHash) deltas.push(`query hash ${actual.queryHash} != ${golden.queryHash}`);
-  if (golden.key === "seed" && !actual.requestHeaders["x-visitor-id"]) deltas.push("seed missing x-visitor-id");
+  if (golden.queryHash && actual.queryHash && golden.queryHash !== actual.queryHash) {
+    deltas.push(`GraphQL query hash ${actual.queryHash} != ${golden.queryHash} (wording drift)`);
+  }
+  deltas.push(...headerDiff(golden, actual));
+  deltas.push(...cookieDiff(golden, actual));
+  deltas.push(...jsonDiff(golden.requestBody ?? {}, actual.requestBody ?? {}, "body"));
+  for (const h of spec.requiredHeaders ?? []) if (!actual.requestHeaders?.[h]) deltas.push(`REQUIRED hdr ${h} missing`);
+  for (const v of spec.requiredVariables ?? []) {
+    if (!(actual.variables && Object.prototype.hasOwnProperty.call(actual.variables, v))) deltas.push(`REQUIRED var ${v} missing`);
+  }
   return deltas;
 }
 
 function diffAgainstRun(goldenHits, run) {
-  console.log("\n=== DIFF: executor trace vs HAR ===\n");
+  console.log("\n=== BYTE-LEVEL DIFF: executor trace vs HAR ===\n");
+  let redCount = 0;
   for (const spec of CRITICAL) {
     const golden = goldenHits.find((h) => h.key === spec.key);
     const actual = run.trace.find((h) => h.key === spec.key) || run.trace.find((h) => {
@@ -290,22 +352,16 @@ function diffAgainstRun(goldenHits, run) {
       return true;
     });
     const step = run.steps.find((s) => STEP_TO_KEY[s.step] === spec.key);
-    if (!golden && spec.optional) {
-      console.log(`${spec.key.padEnd(20)} optional in HAR`);
-      continue;
-    }
-    if (!golden) {
-      console.log(`${spec.key.padEnd(20)} HAR missing`);
-      continue;
-    }
-    const deltas = compareHit(golden, actual, spec);
-    const state = deltas.length ? "DELTA" : "MATCH";
+    if (!golden) { console.log(`${spec.key.padEnd(22)} ${spec.optional ? "· optional (HAR skipped)" : "! HAR entry not found"}\n`); continue; }
+    const deltas = actual ? compareHitBytelevel(golden, actual, spec) : ["MISSING from executor trace"];
+    const state = deltas.length === 0 ? "✓ GREEN" : `✗ ${deltas.length} delta${deltas.length === 1 ? "" : "s"}`;
     const status = actual ? `status=${actual.status}` : (step ? `step=${step.ok ? "pass" : "fail"}` : "not-run");
-    console.log(`${spec.key.padEnd(20)} ${state} ${status}`);
-    for (const d of deltas) console.log(`   - ${d}`);
-    if (step && !step.ok) console.log(`   - step failed: ${String(step.note ?? "").slice(0, 180)}`);
+    console.log(`── ${spec.key.padEnd(22)} ${state}   ${status}   (har #${golden.entryIndex})`);
+    if (deltas.length) { redCount++; for (const d of deltas) console.log(`     · ${d}`); }
+    if (step && !step.ok) console.log(`     · executor step note: ${String(step.note ?? "").slice(0, 200)}`);
+    console.log();
   }
-  console.log();
+  console.log(`Summary: ${CRITICAL.length - redCount}/${CRITICAL.length} steps green.\n`);
 }
 
 const argv = process.argv.slice(2);
