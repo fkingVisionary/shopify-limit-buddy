@@ -1098,6 +1098,20 @@ export const kmartAdapter = {
           const ac = j?.data?.me?.activeCart;
           if (ac) { cartId = ac.id; cartVersion = ac.version; }
         } catch {}
+        const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+        const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id","www-authenticate"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
+        steps.push({
+          step: "dbg:cart_get:res",
+          ok: true,
+          note: JSON.stringify({
+            status: res.status,
+            respHeaders: respHdrDump,
+            setCookieNames: cookieNamesFromResponse(res),
+            setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
+            body: txt.slice(0, 600),
+            cookieHeaderAtSend: ctx.jar.header(),
+          }).slice(0, 3500),
+        });
         steps.push({ step: "cart_get_body_full", ok: true, note: `srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} | ${txt.slice(0, 4500)}` });
         return {
           status: res.status,
