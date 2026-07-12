@@ -6,7 +6,7 @@ import { createFileRoute } from "@tanstack/react-router";
 export const Route = createFileRoute("/api/public/exec-test")({
   server: {
     handlers: {
-      POST: async ({ request }) => {
+      POST: async ({ request, context: routeCtx }: any) => {
         const url = process.env.EXECUTOR_URL;
         const token = process.env.EXECUTOR_TOKEN;
         if (!url || !token) {
@@ -26,6 +26,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxyGroupId?: string;
           proxyGroupName?: string;
           dryRun?: boolean;
+          async?: boolean;
+          debugTrace?: boolean;
         };
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
@@ -113,32 +115,54 @@ export const Route = createFileRoute("/api/public/exec-test")({
             dryRun: body.dryRun ?? true,
             proxy,
             card,
-            debugTrace: (body as any).debugTrace === true,
+            debugTrace: body.debugTrace === true,
           };
-          const res = await fetch(`${origin}/run`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          const rawText = await res.text();
-          // Persist full raw body to Supabase so the sandbox can retrieve it
-          // without hitting tool-output truncation.
-          try {
-            const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
-            await supabaseAdmin.from("exec_run_dumps").insert({
-              task_id: payload.taskId,
-              status: res.status,
-              body: rawText,
-            });
-          } catch (e) {
-            console.error("exec_run_dumps insert failed", e);
+
+          const runAndDump = async () => {
+            try {
+              const res = await fetch(`${origin}/run`, {
+                method: "POST",
+                headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+              const rawText = await res.text();
+              try {
+                const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+                await supabaseAdmin.from("exec_run_dumps").insert({
+                  task_id: payload.taskId,
+                  status: res.status,
+                  body: rawText,
+                });
+              } catch (e) {
+                console.error("exec_run_dumps insert failed", e);
+              }
+              return { rawText, status: res.status, ok: res.ok };
+            } catch (e) {
+              try {
+                const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+                await supabaseAdmin.from("exec_run_dumps").insert({
+                  task_id: payload.taskId,
+                  status: 0,
+                  body: JSON.stringify({ error: e instanceof Error ? e.message : String(e) }),
+                });
+              } catch {}
+              return { rawText: "", status: 0, ok: false };
+            }
+          };
+
+          if (body.async) {
+            const p = runAndDump();
+            const waitUntil = routeCtx?.cloudflare?.executionCtx?.waitUntil ?? routeCtx?.executionCtx?.waitUntil;
+            if (typeof waitUntil === "function") waitUntil.call(routeCtx?.cloudflare?.executionCtx ?? routeCtx?.executionCtx, p);
+            return Response.json({ ok: true, queued: true, taskId: payload.taskId, proxyUsed });
           }
+
+          const { rawText, status, ok } = await runAndDump();
           const data = (JSON.parse(rawText || "{}")) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean; trace?: unknown };
-          // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
           const compactSteps = Array.isArray(data?.steps)
             ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 5000 ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})` : s.note) : undefined }))
             : [];
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed, taskId: payload.taskId });
+          return Response.json({ ok, status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed, taskId: payload.taskId });
 
         } catch (e) {
           return Response.json(
