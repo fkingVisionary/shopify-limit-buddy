@@ -456,6 +456,81 @@ function diffAgainstRun(goldenHits, run) {
   console.log();
 }
 
+function printTrustChecklist(trustHar) {
+  const scripts = trustHar.filter((e) => e.type === "script_fetch_with_v");
+  const sbsd = trustHar.filter((e) => e.type === "sbsd_round");
+  const sensors = trustHar.filter((e) => e.type === "akamai_sensor");
+  console.log("\n=== AKAMAI / SBSD TRUST CHECKLIST ===\n");
+  console.log(`script_fetch_with_v  ${scripts.length}`);
+  for (const e of scripts.slice(0, 12)) {
+    console.log(`   har #${e.entryIndex} ${e.method} ${e.host}${e.path}${e.search ? "?…" : ""} status=${e.status} set=[${e.setCookieNames.join(",") || "none"}]`);
+  }
+  console.log(`akamai_sensor       ${sensors.length}`);
+  for (const e of sensors.slice(0, 12)) {
+    console.log(`   har #${e.entryIndex} ${e.method} ${e.host}${e.path} status=${e.status} payload=${e.payloadBytes ?? "?"} set=[${e.setCookieNames.join(",") || "none"}]`);
+  }
+  console.log(`sbsd_round          ${sbsd.length}`);
+  for (const e of sbsd.slice(0, 12)) {
+    console.log(`   har #${e.entryIndex} ${e.method} ${e.host}${e.path} status=${e.status} payload=${e.payloadBytes ?? "?"} set=[${e.setCookieNames.join(",") || "none"}]`);
+  }
+  console.log();
+}
+
+function summarizeTrustSequence(seq) {
+  const counts = seq.reduce((acc, e) => {
+    acc[e.type] = (acc[e.type] ?? 0) + 1;
+    return acc;
+  }, {});
+  return counts;
+}
+
+function compareTrust(trustHar, run) {
+  const runTrust = buildTrustRun(run);
+  console.log("\n=== TRUST DIFF: executor trace vs HAR ===\n");
+  console.log(`HAR counts: ${JSON.stringify(summarizeTrustSequence(trustHar))}`);
+  console.log(`RUN counts: ${JSON.stringify(summarizeTrustSequence(runTrust))}`);
+  const harSbsd = trustHar.filter((e) => e.type === "sbsd_round");
+  const runSbsd = runTrust.filter((e) => e.type === "sbsd_round");
+  const harSensors = trustHar.filter((e) => e.type === "akamai_sensor");
+  const runSensors = runTrust.filter((e) => e.type === "akamai_sensor_round");
+  const harScripts = trustHar.filter((e) => e.type === "script_fetch_with_v");
+  const runScripts = runTrust.filter((e) => e.type === "sbsd_script_fetch");
+
+  const compareList = (label, harList, runList, fields) => {
+    const max = Math.max(harList.length, runList.length);
+    console.log(`\n${label}`);
+    for (let i = 0; i < Math.min(max, 16); i++) {
+      const h = harList[i];
+      const r = runList[i];
+      if (!h) {
+        console.log(`   #${i} extra run ${r?.method ?? "?"} ${r?.host ?? "?"}${r?.path ?? ""} status=${r?.status ?? "?"}`);
+        continue;
+      }
+      if (!r) {
+        console.log(`   #${i} missing run for har #${h.entryIndex} ${h.method} ${h.host}${h.path} status=${h.status}`);
+        continue;
+      }
+      const deltas = [];
+      for (const field of fields) {
+        if (JSON.stringify(h[field] ?? null) !== JSON.stringify(r[field] ?? null)) deltas.push(`${field}: run=${JSON.stringify(r[field] ?? null)} har=${JSON.stringify(h[field] ?? null)}`);
+      }
+      console.log(`   #${i} ${deltas.length ? "DELTA" : "MATCH"} har #${h.entryIndex} run=${r.key ?? r.label ?? "event"}`);
+      for (const d of deltas.slice(0, 6)) console.log(`      - ${d}`);
+    }
+  };
+
+  compareList("script fetches with ?v", harScripts, runScripts, ["method", "host", "path", "status"]);
+  compareList("Akamai sensor posts", harSensors, runSensors, ["method", "host", "path", "status"]);
+  compareList("SBSD body posts", harSbsd, runSbsd, ["method", "host", "path", "status"]);
+  if (runSbsd.length) {
+    console.log("\nSBSD executor input summary");
+    for (const e of runSbsd.slice(0, 8)) {
+      console.log(`   ${e.key} round=${e.round} o=${e.oCookieSource ?? "?"} payload=${e.payloadBytes ?? "?"} set=[${(e.setCookieNames ?? []).join(",") || "none"}]`);
+    }
+  }
+  console.log();
+}
+
 const argv = process.argv.slice(2);
 if (argv.length === 0 || argv[0] === "--help") {
   console.log("Usage: node executor/scripts/har-diff.mjs <har-path> [--json executor-run.json]");
@@ -470,6 +545,12 @@ const runPath = jsonIdx >= 0 ? path.resolve(argv[jsonIdx + 1]) : null;
 const har = JSON.parse(fs.readFileSync(harPath, "utf8"));
 const entries = har.log.entries;
 const golden = buildGolden(entries);
+const trustHar = buildTrustHar(entries);
 console.log(`Loaded HAR: ${entries.length} entries from ${harPath}`);
 printChecklist(golden);
-if (runPath) diffAgainstRun(golden, loadRun(runPath));
+printTrustChecklist(trustHar);
+if (runPath) {
+  const run = loadRun(runPath);
+  diffAgainstRun(golden, run);
+  compareTrust(trustHar, run);
+}
