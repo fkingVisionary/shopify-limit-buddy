@@ -366,6 +366,15 @@ export const kmartAdapter = {
     let prevContext = null;
     let lastSbsdUuid = "";
 
+    // Executor recovery bisect switch. `cart-baseline` skips the proactive
+    // homepage SBSD solve + the opportunistic pixel POST — the two steps
+    // most likely to be mutating jar cookies that api.kmart.com.au then
+    // rejects. Reactive SBSD on the PDP itself is preserved because PDP
+    // won't 200 without it. Also short-circuits before checkout so we
+    // only exercise the cart chain.
+    const kmartMode = task.kmartMode === "cart-baseline" ? "cart-baseline" : "current";
+    steps.push({ step: "kmart_mode", ok: true, note: `mode=${kmartMode}` });
+
     // 1. Resolve egress IP for fingerprint consistency.
     const ip = await tStep("resolve_ip", async () => {
       const v = await resolveEgressIp(ctx);
