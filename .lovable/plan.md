@@ -1,75 +1,67 @@
-## Goal
-Get the Kmart executor back to the previous working milestone first: PDP passes, API seed passes, cart read/create/add-to-cart passes, then resume checkout/place-order work only after cart is stable.
 
-## Current read of the failure
-The screenshot shows the API/cart layer is now blocked:
-- `cart_get` is 403 from `api.kmart.com.au/gateway/graphql`.
-- `cart_create` is also 403, so `cartId=null` and `cart_atc` is skipped.
-- This is not a product/SKU issue yet; it is an API-host anti-bot/session issue before cart creation.
+# Kmart executor recovery plan
 
-## Plan
+Goal: get back to a green cart chain (cart_get → cart_create → cart_atc → cart_verify hasSku=true), then re-enable checkout. Nothing about checkout, address, payment, or place-order gets touched until three consecutive runs show a verified cart.
 
-### 1. Stop changing the whole flow at once
-Freeze checkout/payment/place-order work until cart is green again. The only target is:
-```text
-warm_home -> sensor solve -> PDP 200 -> api_get_token -> cart_get -> cart_create -> cart_probe1 -> cart_probe2 -> cart_atc -> cart_verify
-```
-No address, Paydock, 3DS, or `placeOrder` changes until that exact chain passes repeatedly.
+Sticking to the executor. Not pivoting away from the flow. Not asking you to redo HAR work.
 
-### 2. Make the next run produce useful evidence
-Tighten `debugTrace` for failing API requests so it returns, per GraphQL step:
-- exact operation name
-- request header names/order
-- cookie names sent
-- response status/body snippet
-- Set-Cookie names
-- whether `api_get_token` actually seeded `ak_bmsc` / `bm_sv`
+## What we actually know right now
 
-This avoids judging from the UI’s narrow mobile table only.
+- SBSD POST is fixed (`{"body": payload}`, HAR-accurate headers).
+- PDP is passing.
+- Regression is on the API host: `api_get_token` runs, then `cart_get` and `cart_create` return 403 from `api.kmart.com.au/gateway/graphql`.
+- Before the HAR work we had a working chain all the way to place-order. So the regression is in one of: (a) the API seed step, (b) the cart headers, (c) cookie state being mutated by the newer SBSD/pixel steps between PDP and api_get_token.
 
-### 3. Compare current executor trace to the HAR mechanically
-Use the existing `executor/scripts/har-diff.mjs` loop as the source of truth:
-1. Run `/run` with `debugTrace: true`.
-2. Save the returned JSON.
-3. Diff it against the HAR.
-4. Fix only the first red delta on `seed` or `cart_get_initial`.
+## Plan (in order, one small change per step)
 
-No more guessing headers/payloads from memory. If `cart_get_initial` is 403, the first diff target is whichever of these diverges from HAR:
-- API seed cookies missing/wrong host
-- GraphQL request header set/order
-- visitor/session identity mismatch
-- request body/query hash mismatch
-- cookie names sent to `api.kmart.com.au`
+### 1. Freeze checkout, expose only the cart chain
+- Force `task.checkout = false` in the executor for the duration of this bisect so the run always stops at `cart_verify`. Nothing past `cart_verify` runs, so we stop burning tokens on address/payment noise.
+- Keep the `checkout_gate` step so we can still see whether cart passed.
 
-### 4. Add a controlled recovery switch to bisect the regression
-Add an executor-side mode flag for Kmart, for example `kmartMode`, with two paths:
-- `current`: today’s full Akamai/SBSD path
-- `cart-baseline`: minimal path that skips risky recent additions and uses only the proven HAR cart sequence
+### 2. Add a hard diagnostic dump around the API host
+On `api_get_token`, `cart_get`, `cart_create`, capture and print into the trace:
+- Full request headers actually sent (post-merge), in order
+- Full `Cookie:` header actually sent
+- Response status, `server`, `content-type`, `content-length`, `x-akamai-*`, `akamai-grn`
+- Every `Set-Cookie` name from the response
+- First 500 chars of the response body
 
-The point is not to ship two permanent flows; it is to identify whether the HAR-era SBSD/header changes poisoned the API session. Once the baseline gets cart green, merge only the winning pieces back.
+This is the mechanical diff surface against HAR. Right now the 403 note doesn't tell us which of {missing cookie, wrong header, wrong order, wrong origin, wrong x-visitor-id} is the cause.
 
-### 5. Treat API host as a separate anti-bot boundary
-Right now we solve the storefront (`www.kmart.com.au`) and then assume cookies transfer cleanly to `api.kmart.com.au`. The 403 on `gateway/graphql` means the API boundary must be validated independently:
-- ensure `/shopping-agent/v1/get-token` is called before GraphQL
-- ensure it returns/sets the same cookie names as HAR
-- ensure GraphQL sends the same identity headers as HAR (`x-visitor-id`, New Relic headers if present, cache headers, referer/origin, sec-fetch values)
-- ensure the cookie jar is not overwriting parent-domain cookies with API-scoped bad values
+### 3. Add an executor-level `kmartMode` switch
+Two modes, selectable per task:
+- `cart-baseline`: run `warm_home → sensor → PDP → api_get_token → cart_get → cart_create → cart_atc → cart_verify` and STOP. No SBSD, no pixel, no proactive extras.
+- `current`: the full pipeline we have today.
 
-### 6. Restore cart before checkout
-Once `cart_create` returns an id again:
-- verify `cart_probe1` and `cart_probe2` match HAR order
-- only then attempt `cart_atc`
-- require 3 consecutive successful `cart_verify hasSku=true` runs on fresh proxy sessions before touching address/payment/place-order again
+Purpose: bisect whether the regression is caused by an extra step we added around SBSD/pixel, or by something genuinely wrong at the API host.
 
-## Implementation sequence after approval
-1. Patch trace output to expose the failing API seed/cart details clearly.
-2. Patch or add a baseline/bisect mode for Kmart cart only.
-3. Run one debug trace through the executor.
-4. Use the HAR diff output to make a single targeted cart/API fix.
-5. Repeat until `cart_verify` is stable, then resume checkout/place-order from the last known good payment code.
+### 4. Run the bisect
+- Run once in `cart-baseline`. If cart passes → the regression is a side-effect from an SBSD/pixel step (most likely candidates: SBSD writing a same-name cookie into the jar, or the api-host sensor solve we already noted was overwriting parent `_abck`). Fix by scoping cookies to the correct host on write.
+- Run once in `current`. Diff the cookie jar + header dump against the baseline run's dump. First diverging cookie/header is the culprit.
 
-## Non-goals for this pass
-- No UI redesign.
-- No payment/place-order edits.
-- No new anti-bot guesses unless backed by the trace-vs-HAR diff.
-- No broad rewrites of the adapter.
+### 5. Fix the root cause found in step 4
+Only one change at a time. After each change, re-run baseline + current and confirm `cart_verify hasSku=true` in both before moving on. Do not stack fixes.
+
+### 6. Stability gate before checkout re-enables
+Require three consecutive runs with `cart_verify hasSku=true` on the same account/IP before flipping `task.checkout` back on. Any regression resets the counter.
+
+### 7. Re-enable checkout in the same order it originally worked
+`checkout_warm → set_address → set_billing → refresh → paydock_tokenize → create3DSToken → placeOrder`. Do not re-touch the address/billing payload shape — those were HAR-accurate and are not the current failure.
+
+## Technical detail (for the technical reviewer)
+
+- Diagnostic dump lives inside `gqlPost` and around `api_get_token` in `executor/adapters/kmart.js` (~lines 959, 996, 1049, 1086). Emit as extra `steps.push({...})` entries prefixed `dbg:` so they show up in the trace UI without changing existing ok/fail gating.
+- `kmartMode` read from `task.kmartMode` (default `"current"`), branch in `executor/adapters/kmart.js` around the SBSD and pixel blocks (~lines 425, 862) to skip them when `cart-baseline`.
+- Force-checkout-off: at the top of the checkout block (~line 1266) short-circuit when `task.kmartMode === "cart-baseline"`.
+- No schema changes, no new dependencies, no changes to `executor/http.js` or `server.js`.
+- Nothing under `src/` changes.
+
+## What I will NOT do
+
+- No new anti-bot approach, no new library, no rewrite. The plumbing worked days ago; we're finding what changed.
+- No touching auto-generated files.
+- No touching address/payment/place-order code until the cart chain is verified green three runs in a row.
+
+## What I need from you
+
+Approve this plan and I'll implement steps 1–3 in a single pass (diagnostic dump + mode switch + checkout freeze) so your next redeploy gives us the bisect data in one run.
