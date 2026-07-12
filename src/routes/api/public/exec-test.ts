@@ -118,6 +118,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
             proxy,
             card,
             debugTrace: body.debugTrace === true,
+            kmartMode: body.kmartMode === "cart-baseline" ? "cart-baseline" : "current",
+            checkout: body.checkout !== false,
           };
 
           const runAndDump = async () => {
