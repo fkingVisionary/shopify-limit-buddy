@@ -13,6 +13,20 @@ For an executor run JSON, call `/run` with `debugTrace:true`. The trace is
 redacted before it leaves the executor: card data, JWTs/tokens, email/phone and
 cookie values are replaced with safe placeholders or cookie names only.
 
+The diff now has two sections:
+
+- **Checkout/API sequence** — GraphQL, `get-token`, Paydock, and order-step
+  method/path/header/query/variable deltas.
+- **Akamai/SBSD trust** — Kmart same-origin script fetches, Akamai
+  `sensor_data` POSTs, and SBSD JSON `body` POSTs. Executor traces include
+  only safe hashes/lengths for SBSD inputs and payloads, plus cookie markers and
+  set-cookie names.
+
+Use `kmartMode:"cart-baseline" | "current" | "diagnostic"` on `/run` to make
+the requested/normalized mode visible in trace output. The current checkpoint
+still routes through the same adapter branch; this field is for reliable
+comparison logging before behavior is split again.
+
 Golden checklist (from `www.kmart.com.au.har_1.json`, 971 entries):
 
 | step                  | HAR entry | note                                                   |
