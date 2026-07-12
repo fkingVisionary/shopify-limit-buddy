@@ -359,27 +359,45 @@ export const kmartAdapter = {
       let parsedUrl;
       try { parsedUrl = new URL(url); } catch { parsedUrl = null; }
       const headers = opts?.headers ?? {};
-      const cookieHeader = ctx.jar.header();
+      const cookieHeader = extra.requestCookieHeader ?? ctx.jar.header();
+      const tracedHeaders = { ...headers, ...(cookieHeader ? { cookie: cookieHeader } : {}) };
       requestTrace.push({
+        kind: "request",
         key,
         method: (opts?.method ?? "GET").toUpperCase(),
         host: parsedUrl?.host ?? null,
         path: parsedUrl?.pathname ?? null,
+        search: parsedUrl?.search ?? "",
         status: res?.status ?? null,
         operationName: extra.operationName ?? null,
         variables: redactTraceBody(extra.variables ?? null),
         query: typeof extra.query === "string" ? extra.query.replace(/\s+/g, " ").trim() : null,
         requestBody: redactTraceBody(opts?.body ?? null),
-        requestHeaders: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
+        requestHeaders: Object.fromEntries(Object.entries(tracedHeaders).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
         cookieNames: cookieHeader.split(";").map((part) => part.trim().split("=")[0]).filter(Boolean),
         setCookieNames: res ? cookieNamesFromResponse(res) : [],
       });
     };
+    const recordTraceEvent = (key, event = {}) => {
+      if (!traceEnabled) return;
+      requestTrace.push({ kind: "event", key, ...event });
+    };
     const tracedRequest = async (key, url, opts, extra = {}) => {
+      const requestCookieHeader = ctx.jar.header();
       const res = await request(url, opts, ctx);
-      recordTrace(key, url, opts, res, extra);
+      recordTrace(key, url, opts, res, { ...extra, requestCookieHeader });
       return res;
     };
+
+    const allowedKmartModes = new Set(["current", "cart-baseline", "diagnostic"]);
+    const requestedKmartMode = typeof task.kmartMode === "string" ? task.kmartMode : "current";
+    const kmartMode = allowedKmartModes.has(requestedKmartMode) ? requestedKmartMode : "current";
+    steps.push({
+      step: "kmart_mode",
+      ok: true,
+      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" }),
+    });
+    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" } });
 
     steps.push({
       step: "transport",
