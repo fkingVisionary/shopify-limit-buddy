@@ -1024,6 +1024,17 @@ export const kmartAdapter = {
           "x-visitor-id": apiVisitorId,
           ...nrHeaders("1834777981"),
         };
+        steps.push({
+          step: "dbg:api_get_token:req",
+          ok: true,
+          note: JSON.stringify({
+            url: apiOrigin + "/shopping-agent/v1/get-token",
+            headerOrder: Object.keys(getTokenHeaders),
+            headers: getTokenHeaders,
+            cookieHeader: ctx.jar.header(),
+            cookieNames: Object.keys(ctx.jar.dump()),
+          }).slice(0, 2000),
+        });
         const res = await tracedRequest(
           "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -1034,13 +1045,26 @@ export const kmartAdapter = {
           },
           { requestBody: { sessionId } },
         );
-        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
+        const bodyTxt = (await res.text().catch(() => "")).slice(0, 500);
         const setCookieNames = cookieNamesFromResponse(res);
+        const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+        const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
+        steps.push({
+          step: "dbg:api_get_token:res",
+          ok: true,
+          note: JSON.stringify({
+            status: res.status,
+            respHeaders: respHdrDump,
+            setCookieNames,
+            setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
+            body: bodyTxt,
+          }).slice(0, 3500),
+        });
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt.slice(0, 200)}`,
         };
       });
       if (!apiSeedOk) {
