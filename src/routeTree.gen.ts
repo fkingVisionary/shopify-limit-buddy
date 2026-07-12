@@ -16,6 +16,7 @@ import { Route as PairedKmartRouteImport } from './routes/_paired/kmart'
 import { Route as PairedJbhifiRouteImport } from './routes/_paired/jbhifi'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
 import { Route as ApiPublicExecTestRouteImport } from './routes/api/public/exec-test'
+import { Route as ApiPublicExecRunRawRouteImport } from './routes/api/public/exec-run-raw'
 import { Route as ApiPublicExecHealthRouteImport } from './routes/api/public/exec-health'
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
 import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
@@ -55,6 +56,11 @@ const ApiPublicExecTestRoute = ApiPublicExecTestRouteImport.update({
   path: '/api/public/exec-test',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicExecRunRawRoute = ApiPublicExecRunRawRouteImport.update({
+  id: '/api/public/exec-run-raw',
+  path: '/api/public/exec-run-raw',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiPublicExecHealthRoute = ApiPublicExecHealthRouteImport.update({
   id: '/api/public/exec-health',
   path: '/api/public/exec-health',
@@ -82,6 +88,7 @@ export interface FileRoutesByFullPath {
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
   '/api/public/exec-health': typeof ApiPublicExecHealthRoute
+  '/api/public/exec-run-raw': typeof ApiPublicExecRunRawRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/kmart': typeof PairedKmartRoute
   '/': typeof PairedIndexRoute
   '/api/public/exec-health': typeof ApiPublicExecHealthRoute
+  '/api/public/exec-run-raw': typeof ApiPublicExecRunRawRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/_paired/kmart': typeof PairedKmartRoute
   '/_paired/': typeof PairedIndexRoute
   '/api/public/exec-health': typeof ApiPublicExecHealthRoute
+  '/api/public/exec-run-raw': typeof ApiPublicExecRunRawRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
     | '/jbhifi'
     | '/kmart'
     | '/api/public/exec-health'
+    | '/api/public/exec-run-raw'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -134,6 +144,7 @@ export interface FileRouteTypes {
     | '/kmart'
     | '/'
     | '/api/public/exec-health'
+    | '/api/public/exec-run-raw'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -147,6 +158,7 @@ export interface FileRouteTypes {
     | '/_paired/kmart'
     | '/_paired/'
     | '/api/public/exec-health'
+    | '/api/public/exec-run-raw'
     | '/api/public/exec-test'
     | '/api/public/shopify'
     | '/api/public/runner/pair'
@@ -158,6 +170,7 @@ export interface RootRouteChildren {
   PairedRoute: typeof PairedRouteWithChildren
   PairRoute: typeof PairRoute
   ApiPublicExecHealthRoute: typeof ApiPublicExecHealthRoute
+  ApiPublicExecRunRawRoute: typeof ApiPublicExecRunRawRoute
   ApiPublicExecTestRoute: typeof ApiPublicExecTestRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
   ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
@@ -216,6 +229,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicExecTestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/exec-run-raw': {
+      id: '/api/public/exec-run-raw'
+      path: '/api/public/exec-run-raw'
+      fullPath: '/api/public/exec-run-raw'
+      preLoaderRoute: typeof ApiPublicExecRunRawRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/exec-health': {
       id: '/api/public/exec-health'
       path: '/api/public/exec-health'
@@ -266,6 +286,7 @@ const rootRouteChildren: RootRouteChildren = {
   PairedRoute: PairedRouteWithChildren,
   PairRoute: PairRoute,
   ApiPublicExecHealthRoute: ApiPublicExecHealthRoute,
+  ApiPublicExecRunRawRoute: ApiPublicExecRunRawRoute,
   ApiPublicExecTestRoute: ApiPublicExecTestRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
   ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
