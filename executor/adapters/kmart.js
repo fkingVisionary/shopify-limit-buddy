@@ -478,17 +478,23 @@ export const kmartAdapter = {
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
         await tStep(`${label}:round#${i}`, async () => {
+          const oCookiePre = ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "";
+          const bmSoPre = ctx.jar.get("bm_so") ?? "";
+          const bmSPre = ctx.jar.get("bm_s") ?? "";
           const payload = await solveAkamaiSbsd({
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
             uuid: sbsdUuid,
-            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
+            oCookie: oCookiePre,
             index: i,
             userAgent: UA,
             ip: egressIp,
             acceptLanguage: ACCEPT_LANG,
           });
+          const bodyJson = JSON.stringify({ body: payload });
+          const payloadBytes = Buffer.byteLength(payload, "utf8");
+          const bodyBytes = Buffer.byteLength(bodyJson, "utf8");
           const res = await request(
             sbsdPostUrl,
             {
@@ -507,23 +513,26 @@ export const kmartAdapter = {
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
               },
-              // Browser HAR body is JSON: {"body":"<sbsd-payload>"}.
-              // Sending the raw payload while declaring application/json gets
-              // Akamai's blank 202/no-Set-Cookie rejection.
-              body: JSON.stringify({ body: payload }),
+              body: bodyJson,
             },
             ctx,
           );
           const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
-          const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
           const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+          const bmSInResp = setCookieNames.includes("bm_s");
+          const bmSoInResp = setCookieNames.includes("bm_so");
+          const bmSPost = ctx.jar.get("bm_s") ?? "";
+          const bmSoPost = ctx.jar.get("bm_so") ?? "";
           const hdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn"].map(h=>`${h}=${res.headers.get?.(h) ?? ""}`).join(" ");
-          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] rawSC=${rawSetCookies.length} jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} hdrs={${hdrDump}} bodyLen=${bodyTxt.length} body=${bodyTxt} rawSCFirst=${(rawSetCookies[0]||"").slice(0,180)}` };
+          // HAR baseline reference: payload~398 (i=0) / ~4587 (i=1); response Set-Cookie contains bm_s.
+          const note = `oCookieLen=${oCookiePre.length} bm_soPre=${bmSoPre.length}b bm_sPre=${bmSPre.length}b payloadBytes=${payloadBytes} bodyBytes=${bodyBytes} setCookies=[${setCookieNames.join(",") || "none"}] bm_sInResp=${bmSInResp} bm_soInResp=${bmSoInResp} bm_sChanged=${bmSPre !== bmSPost} bm_soChanged=${bmSoPre !== bmSoPost} rawSC=${rawSetCookies.length} hdrs={${hdrDump}} bodyLen=${bodyTxt.length} body=${bodyTxt} rawSCFirst=${(rawSetCookies[0]||"").slice(0,180)}`;
+          return { status: res.status, ok: res.status < 400 && (bmSInResp || rawSetCookies.length > 0), note };
         }).catch(() => {});
       }
       return true;
     };
+
     // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
     // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
     // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
