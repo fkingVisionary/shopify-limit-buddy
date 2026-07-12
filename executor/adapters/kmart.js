@@ -1206,7 +1206,7 @@ export const kmartAdapter = {
           "accept-language": ACCEPT_LANG,
           "content-type": "application/json",
           origin,
-          referer: origin + "/",
+          referer: apiReferer,
           ...CHROME_CH,
           "sec-fetch-site": "same-site",
           "sec-fetch-mode": "cors",
