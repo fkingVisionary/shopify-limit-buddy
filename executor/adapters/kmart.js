@@ -660,18 +660,12 @@ export const kmartAdapter = {
       }
       return true;
     };
-    // Proactive SBSD on the homepage. Diagnostic `home_scripts_dump` proved
-    // Kmart's `/` serves exactly ONE SBSD candidate (non-`.js`, has `v=`)
-    // and ZERO sensor-like tags, so SBSD_RE cannot mis-match the sensor
-    // here — the earlier poisoning risk applied to other pages, not `/`.
-    // HAR shows `bm_sv` is minted by TWO passive rounds on the homepage
-    // (no `t` param → 2 rounds via runSbsd's own gating) BEFORE any
-    // category/PDP/API call. Without it, cart_atc hard-403s.
-    try {
-      await runSbsd(html, origin + "/", "sbsd_home");
-    } catch (e) {
-      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
-    }
+    // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
+    // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
+    // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
+    // was firing on Akamai's own bot-manager script tag (SBSD_RE matches
+    // any `?v=` script) and POSTing bogus SBSD payloads to the sensor
+    // endpoint, poisoning the session. Reactive SBSD on pdp_get remains.
 
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
