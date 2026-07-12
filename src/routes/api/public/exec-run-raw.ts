@@ -55,6 +55,18 @@ export const Route = createFileRoute("/api/public/exec-run-raw")({
           body: JSON.stringify(payload),
         });
         const text = await res.text();
+        // Persist the full raw response to a Supabase table so the sandbox can
+        // read it (avoids tool-output truncation and preview auth walls).
+        try {
+          const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+          await supabaseAdmin.from("exec_run_dumps").insert({
+            task_id: payload.taskId,
+            status: res.status,
+            body: text,
+          });
+        } catch (e) {
+          console.error("exec_run_dumps insert failed", e);
+        }
         return new Response(text, {
           status: res.status,
           headers: { "content-type": "application/json", "cache-control": "no-store" },
