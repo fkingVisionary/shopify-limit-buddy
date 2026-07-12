@@ -794,6 +794,16 @@ export const kmartAdapter = {
       categoryHtml = await res.text();
       categoryOk = res.status < 400;
       const hasSbsd = Boolean(parseSbsd(categoryHtml));
+      recordTraceEvent("nav_category", {
+        type: "document_get",
+        url: catUrl,
+        referer: origin + "/",
+        status: res.status,
+        htmlBytes: categoryHtml.length,
+        hasSbsd,
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
     });
 
@@ -816,6 +826,16 @@ export const kmartAdapter = {
             categoryHtml = await res.text();
             categoryOk = res.status < 400;
             const snippet = categoryHtml.replace(/\s+/g, " ").trim().slice(0, 180);
+            recordTraceEvent("nav_category_retry", {
+              type: "document_get",
+              url: catUrl,
+              referer: origin + "/",
+              status: res.status,
+              htmlBytes: categoryHtml.length,
+              hasSbsd: Boolean(parseSbsd(categoryHtml)),
+              setCookieNames: cookieNamesFromResponse(res),
+              jar: cookieTrustSnapshot(ctx.jar),
+            });
             return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b | ${snippet}` };
           });
         }
@@ -847,6 +867,18 @@ export const kmartAdapter = {
         const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
         const hasRefScript = /<script[^>]+src=["'][^"']*\?v=/i.test(pdpHtml);
         const hasRefMarker = /Reference\s*#|Access\s+Denied/i.test(pdpHtml);
+        recordTraceEvent("nav_pdp", {
+          type: "document_get",
+          url: pdpUrl,
+          referer: pdpReferer,
+          status: res.status,
+          htmlBytes: pdpHtml.length,
+          hasSbsd: Boolean(parseSbsd(pdpHtml)),
+          hasReferenceMarker: hasRefMarker,
+          hasScriptWithV: hasRefScript,
+          setCookieNames: cookieNamesFromResponse(res),
+          jar: cookieTrustSnapshot(ctx.jar),
+        });
         return {
           status: res.status,
           ok: res.status < 400,
