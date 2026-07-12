@@ -862,7 +862,9 @@ export const kmartAdapter = {
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
-    try {
+    if (kmartMode === "cart-baseline") {
+      steps.push({ step: "akamai_pixel:skipped", ok: true, note: "cart-baseline mode: skipping pixel" });
+    } else try {
       const pixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: pdpUrl,
