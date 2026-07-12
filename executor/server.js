@@ -101,6 +101,8 @@ app.post("/run", async (req, reply) => {
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
         debugTrace: task.debugTrace === true,
+        kmartMode: task.kmartMode === "cart-baseline" ? "cart-baseline" : "current",
+        checkout: task.checkout !== false,
     });
     return result;
   } finally {
