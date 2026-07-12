@@ -12,6 +12,7 @@
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+import { createHash } from "node:crypto";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -139,6 +140,38 @@ function randomDecimalString(digits) {
   let out = "";
   while (out.length < digits) out += Math.floor(Math.random() * 10);
   return out.slice(0, digits).replace(/^0/, "1");
+}
+
+function hashShort(value, bytes = 12) {
+  const raw = value == null ? "" : String(value);
+  if (!raw) return null;
+  return createHash("sha256").update(raw).digest("hex").slice(0, bytes);
+}
+
+function bodyPreview(value, max = 180) {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function cookieTrustSnapshot(jar) {
+  return {
+    abck: marker(jar.get("_abck")),
+    bmsz: marker(jar.get("bm_sz")),
+    akBmsc: jar.has("ak_bmsc"),
+    bmS: marker(jar.get("bm_s")),
+    bmSo: marker(jar.get("bm_so")),
+    bmSv: marker(jar.get("bm_sv")),
+    sbsdO: marker(jar.get("sbsd_o")),
+  };
+}
+
+function sbsdOCookieInput(jar) {
+  const bmSo = jar.get("bm_so");
+  const sbsdO = jar.get("sbsd_o");
+  // Preserve current behavior in this diagnostic batch; trace the source so
+  // the HAR diff can prove whether this needs to become sbsd_o-first later.
+  const source = bmSo ? "bm_so" : (sbsdO ? "sbsd_o" : "none");
+  const value = bmSo ?? sbsdO ?? "";
+  return { source, value, bytes: String(value).length, hash: hashShort(value) };
 }
 
 function visitorIdFromGa(value) {
