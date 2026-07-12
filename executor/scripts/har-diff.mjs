@@ -127,6 +127,11 @@ function queryHash(query) {
   return crypto.createHash("sha256").update(String(query).replace(/\s+/g, " ").trim()).digest("hex").slice(0, 12);
 }
 
+function valueHash(value) {
+  if (value == null || value === "") return null;
+  return crypto.createHash("sha256").update(String(value)).digest("hex").slice(0, 12);
+}
+
 function shape(value) {
   if (Array.isArray(value)) return value.map((v) => shape(v));
   if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, shape(v)]));
@@ -217,6 +222,7 @@ function buildGolden(entries) {
 function normalizeTraceEntry(entry) {
   const body = typeof entry.requestBody === "string" ? parseBody(entry.requestBody) : (entry.requestBody ?? {});
   return {
+    kind: entry.kind ?? "request",
     key: entry.key,
     entryIndex: "trace",
     host: entry.host,
@@ -231,6 +237,7 @@ function normalizeTraceEntry(entry) {
     requestHeaders: normalizeHeaders(entry.requestHeaders),
     cookieNames: entry.cookieNames ?? [],
     setCookieNames: entry.setCookieNames ?? [],
+    raw: entry,
   };
 }
 
@@ -239,6 +246,147 @@ function loadRun(runPath) {
   const trace = raw.trace ?? raw.result?.trace ?? raw.result?.result?.trace ?? [];
   const steps = raw.steps ?? raw.result?.steps ?? raw.result?.result?.steps ?? [];
   return { trace: trace.map(normalizeTraceEntry), steps };
+}
+
+function requestBodyKind(body) {
+  if (body && typeof body === "object" && Object.prototype.hasOwnProperty.call(body, "sensor_data")) return "akamai_sensor";
+  if (body && typeof body === "object" && Object.prototype.hasOwnProperty.call(body, "body")) return "sbsd_round";
+  return "other";
+}
+
+function sameOriginKmartPath(path) {
+  if (!path || path.startsWith("/assets/") || path.includes("/_next/")) return false;
+  return path.split("/").filter(Boolean).length >= 4;
+}
+
+function normalizeHarTrustEntry(entry, entryIndex) {
+  const req = entry.request;
+  const url = new URL(req.url);
+  const headers = normalizeHeaders(req.headers);
+  const body = parseBody(req.postData?.text ?? "");
+  const kind = requestBodyKind(body);
+  const rawPayload = kind === "akamai_sensor" ? body.sensor_data : (kind === "sbsd_round" ? body.body : null);
+  return {
+    entryIndex,
+    type: kind,
+    method: req.method,
+    host: url.host,
+    path: url.pathname,
+    search: url.search,
+    status: entry.response.status,
+    referer: headers.referer ?? null,
+    origin: headers.origin ?? null,
+    contentType: headers["content-type"] ?? null,
+    secFetchSite: headers["sec-fetch-site"] ?? null,
+    payloadBytes: rawPayload == null ? null : String(rawPayload).length,
+    payloadHash: valueHash(rawPayload),
+    cookieNames: cookieNamesFromHeader(headers.cookie),
+    setCookieNames: setCookieNamesFromHar(entry),
+  };
+}
+
+function buildTrustHar(entries) {
+  const trust = [];
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const req = entry.request;
+    if (req.method === "OPTIONS") continue;
+    let url;
+    try { url = new URL(req.url); } catch { continue; }
+    if (!url.host.endsWith("kmart.com.au")) continue;
+    const body = parseBody(req.postData?.text ?? "");
+    const kind = requestBodyKind(body);
+    if (kind === "akamai_sensor") {
+      trust.push(normalizeHarTrustEntry(entry, i));
+      continue;
+    }
+    if (kind === "sbsd_round") {
+      trust.push(normalizeHarTrustEntry(entry, i));
+      continue;
+    }
+    if (req.method === "GET" && url.searchParams.has("v") && sameOriginKmartPath(url.pathname)) {
+      trust.push({
+        entryIndex: i,
+        type: "script_fetch_with_v",
+        method: req.method,
+        host: url.host,
+        path: url.pathname,
+        search: url.search,
+        status: entry.response.status,
+        cookieNames: cookieNamesFromHeader(normalizeHeaders(req.headers).cookie),
+        setCookieNames: setCookieNamesFromHar(entry),
+      });
+    }
+  }
+  return trust;
+}
+
+function eventType(entry) {
+  return entry.raw?.type ?? entry.raw?.raw?.type ?? null;
+}
+
+function buildTrustRun(run) {
+  const out = [];
+  for (const normalized of run.trace) {
+    const raw = normalized.raw ?? {};
+    const type = raw.type ?? normalized.type;
+    if (type === "sbsd_script_fetch") {
+      let url = null;
+      try { url = new URL(raw.scriptUrl); } catch {}
+      out.push({
+        type,
+        key: raw.key,
+        label: raw.label,
+        method: "GET",
+        host: url?.host ?? null,
+        path: url?.pathname ?? null,
+        search: url?.search ?? "",
+        status: raw.status,
+        scriptBytes: raw.scriptBytes,
+        scriptHash: raw.scriptHash,
+        setCookieNames: raw.setCookieNames ?? [],
+        hasToken: raw.hasToken,
+      });
+    } else if (type === "sbsd_round") {
+      let url = null;
+      try { url = new URL(raw.postUrl); } catch {}
+      out.push({
+        type,
+        key: raw.key,
+        label: raw.label,
+        round: raw.round,
+        method: "POST",
+        host: url?.host ?? null,
+        path: url?.pathname ?? null,
+        search: url?.search ?? "",
+        status: raw.response?.status ?? raw.status,
+        payloadBytes: raw.payload?.bytes ?? null,
+        payloadHash: raw.payload?.hash ?? null,
+        setCookieNames: raw.response?.setCookieNames ?? [],
+        oCookieSource: raw.input?.oCookieSource ?? null,
+        beforeCookies: raw.beforeCookies ?? null,
+        afterCookies: raw.afterCookies ?? null,
+      });
+    } else if (type === "akamai_sensor_round") {
+      let url = null;
+      try { url = new URL(raw.scriptUrl); } catch {}
+      out.push({
+        type,
+        key: raw.key,
+        round: raw.round,
+        method: "POST",
+        host: url?.host ?? null,
+        path: url?.pathname ?? null,
+        search: url?.search ?? "",
+        status: raw.response?.status ?? raw.status,
+        payloadBytes: raw.payload?.bytes ?? null,
+        payloadHash: raw.payload?.hash ?? null,
+        setCookieNames: raw.response?.setCookieNames ?? [],
+        bodySuccess: raw.response?.bodySuccess ?? null,
+      });
+    }
+  }
+  return out;
 }
 
 function printChecklist(hits) {
