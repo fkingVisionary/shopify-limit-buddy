@@ -9,14 +9,10 @@ RUN apt-get update \
 ENV TMPDIR=/app/.tmp
 COPY package.json ./
 RUN npm install --omit=dev
-# Pre-provision the native tls-client shared library during image build.
-# node-tls-client otherwise downloads this file on the first proxied request;
-# if GitHub/rate-limit/CDN access fails, the package calls process.exit(1),
-# which looks like an empty Fly 502. Failing the deploy is better than killing
-# a live checkout run, and this keeps /run deterministic.
-COPY scripts/prewarm-tls.mjs ./scripts/prewarm-tls.mjs
-RUN node ./scripts/prewarm-tls.mjs
 COPY . .
+# Do not prewarm node-tls-client during image builds. Its native asset endpoint
+# can return 403 and fail the whole deploy; the default runtime transport is
+# undici, and TLS is opt-in via EXECUTOR_HTTP_TRANSPORT=tls.
 ENV PORT=8080
 EXPOSE 8080
 CMD ["node", "server.js"]

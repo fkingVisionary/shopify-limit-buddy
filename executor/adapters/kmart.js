@@ -366,15 +366,6 @@ export const kmartAdapter = {
     let prevContext = null;
     let lastSbsdUuid = "";
 
-    // Executor recovery bisect switch. `cart-baseline` skips the proactive
-    // homepage SBSD solve + the opportunistic pixel POST — the two steps
-    // most likely to be mutating jar cookies that api.kmart.com.au then
-    // rejects. Reactive SBSD on the PDP itself is preserved because PDP
-    // won't 200 without it. Also short-circuits before checkout so we
-    // only exercise the cart chain.
-    const kmartMode = task.kmartMode === "cart-baseline" ? "cart-baseline" : "current";
-    steps.push({ step: "kmart_mode", ok: true, note: `mode=${kmartMode}` });
-
     // 1. Resolve egress IP for fingerprint consistency.
     const ip = await tStep("resolve_ip", async () => {
       const v = await resolveEgressIp(ctx);
@@ -446,12 +437,7 @@ export const kmartAdapter = {
       }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
-      // POST URL: passive is the bare path (`/<path>`). The HAR confirms the
-      // browser loads `/<path>?v=<uuid>` but POSTs to `/<path>` with no query.
-      // Hard challenge (§3.4) keeps only `?t=<t>` on the POST.
-      const sbsdPostUrl = parsed.t
-        ? `${origin}${sbsdPath}?t=${parsed.t}`
-        : `${origin}${sbsdPath}`;
+      const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
       let sbsdBody = "";
       await tStep(`${label}:script_fetch`, async () => {
         const r = await request(
@@ -460,10 +446,8 @@ export const kmartAdapter = {
             method: "GET",
             headers: {
               "user-agent": UA,
-                ...CHROME_CH,
               referer: pageUrl,
               "accept-language": ACCEPT_LANG,
-                "accept-encoding": "gzip, deflate, br, zstd",
               accept: "*/*",
               "sec-fetch-dest": "script",
               "sec-fetch-mode": "no-cors",
@@ -478,61 +462,44 @@ export const kmartAdapter = {
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
         await tStep(`${label}:round#${i}`, async () => {
-          const oCookiePre = ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "";
-          const bmSoPre = ctx.jar.get("bm_so") ?? "";
-          const bmSPre = ctx.jar.get("bm_s") ?? "";
           const payload = await solveAkamaiSbsd({
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
             uuid: sbsdUuid,
-            oCookie: oCookiePre,
+            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
             index: i,
             userAgent: UA,
             ip: egressIp,
             acceptLanguage: ACCEPT_LANG,
           });
-          const bodyJson = JSON.stringify({ body: payload });
-          const payloadBytes = Buffer.byteLength(payload, "utf8");
-          const bodyBytes = Buffer.byteLength(bodyJson, "utf8");
           const res = await request(
             sbsdPostUrl,
             {
               method: "POST",
               headers: {
                 "user-agent": UA,
-                ...CHROME_CH,
                 "content-type": "application/json",
                 accept: "*/*",
                 "accept-language": ACCEPT_LANG,
-                "accept-encoding": "gzip, deflate, br, zstd",
                 origin,
                 referer: pageUrl,
-                priority: "u=1, i",
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
               },
-              body: bodyJson,
+              body: JSON.stringify({ body: payload }),
             },
             ctx,
           );
           const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
-          const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-          const bmSInResp = setCookieNames.includes("bm_s");
-          const bmSoInResp = setCookieNames.includes("bm_so");
-          const bmSPost = ctx.jar.get("bm_s") ?? "";
-          const bmSoPost = ctx.jar.get("bm_so") ?? "";
-          const hdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn"].map(h=>`${h}=${res.headers.get?.(h) ?? ""}`).join(" ");
-          // HAR baseline reference: payload~398 (i=0) / ~4587 (i=1); response Set-Cookie contains bm_s.
-          const note = `oCookieLen=${oCookiePre.length} bm_soPre=${bmSoPre.length}b bm_sPre=${bmSPre.length}b payloadBytes=${payloadBytes} bodyBytes=${bodyBytes} setCookies=[${setCookieNames.join(",") || "none"}] bm_sInResp=${bmSInResp} bm_soInResp=${bmSoInResp} bm_sChanged=${bmSPre !== bmSPost} bm_soChanged=${bmSoPre !== bmSoPost} rawSC=${rawSetCookies.length} hdrs={${hdrDump}} bodyLen=${bodyTxt.length} body=${bodyTxt} rawSCFirst=${(rawSetCookies[0]||"").slice(0,180)}`;
-          return { status: res.status, ok: res.status < 400 && (bmSInResp || rawSetCookies.length > 0), note };
+          const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
         }).catch(() => {});
       }
       return true;
     };
-
     // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
     // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
     // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
@@ -642,24 +609,6 @@ export const kmartAdapter = {
     if (!abckSolved(ctx.jar, 3)) {
       steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
-    }
-
-    // Proactive SBSD on the homepage. Kmart embeds the real SBSD script tag
-    // (path + `?v=<uuid>`) in the homepage response. If we skip solving here,
-    // downstream category/PDP requests 403 with a mini block page whose SBSD
-    // script has an empty `v=` — Akamai's way of telling us we should have
-    // cached the UUID from a prior page. Solving here seeds `bm_so`/`bm_sv`
-    // before the first protected nav. The earlier "removed" note applied to
-    // a stricter regex era; SBSD_RE now correctly rejects `.js` sensor
-    // scripts and only matches paths carrying `?v=`.
-    try {
-      if (kmartMode === "cart-baseline") {
-        steps.push({ step: "sbsd_home:skipped", ok: true, note: "cart-baseline mode: skipping proactive homepage SBSD" });
-      } else {
-        await runSbsd(html, origin + "/", "sbsd_home");
-      }
-    } catch (e) {
-      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
     }
 
 
@@ -871,9 +820,7 @@ export const kmartAdapter = {
 
 
     // 6. Opportunistic pixel solve if the PDP carries one. Non-fatal.
-    if (kmartMode === "cart-baseline") {
-      steps.push({ step: "akamai_pixel:skipped", ok: true, note: "cart-baseline mode: skipping pixel" });
-    } else try {
+    try {
       const pixel = await solveAkamaiPixel({
         jar: ctx.jar,
         pageUrl: pdpUrl,
@@ -1033,17 +980,6 @@ export const kmartAdapter = {
           "x-visitor-id": apiVisitorId,
           ...nrHeaders("1834777981"),
         };
-        steps.push({
-          step: "dbg:api_get_token:req",
-          ok: true,
-          note: JSON.stringify({
-            url: apiOrigin + "/shopping-agent/v1/get-token",
-            headerOrder: Object.keys(getTokenHeaders),
-            headers: getTokenHeaders,
-            cookieHeader: ctx.jar.header(),
-            cookieNames: Object.keys(ctx.jar.dump()),
-          }).slice(0, 2000),
-        });
         const res = await tracedRequest(
           "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -1054,26 +990,13 @@ export const kmartAdapter = {
           },
           { requestBody: { sessionId } },
         );
-        const bodyTxt = (await res.text().catch(() => "")).slice(0, 500);
+        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
-        const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-        const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
-        steps.push({
-          step: "dbg:api_get_token:res",
-          ok: true,
-          note: JSON.stringify({
-            status: res.status,
-            respHeaders: respHdrDump,
-            setCookieNames,
-            setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
-            body: bodyTxt,
-          }).slice(0, 3500),
-        });
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt.slice(0, 200)}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
       if (!apiSeedOk) {
@@ -1107,20 +1030,6 @@ export const kmartAdapter = {
           const ac = j?.data?.me?.activeCart;
           if (ac) { cartId = ac.id; cartVersion = ac.version; }
         } catch {}
-        const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-        const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id","www-authenticate"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
-        steps.push({
-          step: "dbg:cart_get:res",
-          ok: true,
-          note: JSON.stringify({
-            status: res.status,
-            respHeaders: respHdrDump,
-            setCookieNames: cookieNamesFromResponse(res),
-            setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
-            body: txt.slice(0, 600),
-            cookieHeaderAtSend: ctx.jar.header(),
-          }).slice(0, 3500),
-        });
         steps.push({ step: "cart_get_body_full", ok: true, note: `srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} | ${txt.slice(0, 4500)}` });
         return {
           status: res.status,
@@ -1169,20 +1078,6 @@ export const kmartAdapter = {
             const c = j?.data?.createMyCart;
             if (c) { cartId = c.id; cartVersion = c.version; }
           } catch {}
-          const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
-          const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id","www-authenticate"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
-          steps.push({
-            step: "dbg:cart_create:res",
-            ok: true,
-            note: JSON.stringify({
-              status: res.status,
-              respHeaders: respHdrDump,
-              setCookieNames: cookieNamesFromResponse(res),
-              setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
-              body: txt.slice(0, 600),
-              cookieHeaderAtSend: ctx.jar.header(),
-            }).slice(0, 3500),
-          });
           return {
             status: res.status,
             ok: res.status < 400 && Boolean(cartId),
@@ -1339,10 +1234,7 @@ fragment LineItemFields on LineItem {
       //    Stops short of placeOrder until task.placeOrder === true AND we
       //    have the final mutation captured.
       // ===================================================================
-      const wantCheckout = kmartMode !== "cart-baseline" && task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
-      if (kmartMode === "cart-baseline") {
-        steps.push({ step: "checkout_frozen", ok: true, note: `cart-baseline mode: skipping checkout. cartAtcOk=${cartAtcOk} cartVerifyHasSku=${cartVerifyHasSku} cartId=${cartId ? cartId.slice(0,8) : "null"}` });
-      }
+      const wantCheckout = task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
       if (task.checkout !== false && cartId && sku && (!cartAtcOk || !cartVerifyHasSku)) {
         steps.push({
           step: "checkout_gate",

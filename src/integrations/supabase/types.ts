@@ -132,30 +132,6 @@ export type Database = {
           },
         ]
       }
-      exec_run_dumps: {
-        Row: {
-          body: string
-          created_at: string
-          id: string
-          status: number | null
-          task_id: string
-        }
-        Insert: {
-          body: string
-          created_at?: string
-          id?: string
-          status?: number | null
-          task_id: string
-        }
-        Update: {
-          body?: string
-          created_at?: string
-          id?: string
-          status?: number | null
-          task_id?: string
-        }
-        Relationships: []
-      }
       proxy_groups: {
         Row: {
           created_at: string

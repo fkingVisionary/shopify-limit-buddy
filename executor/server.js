@@ -5,7 +5,7 @@
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
-import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT, tlsNativeStatus } from "./http.js";
+import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT } from "./http.js";
 import { runKmartAkamaiLab } from "./adapters/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
 import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
@@ -33,7 +33,6 @@ app.get("/health", async () => ({
   cap: MAX_CONCURRENT,
   transport: HTTP_TRANSPORT,
   explicitProxyTransport: "tls",
-  tlsNative: tlsNativeStatus(),
 }));
 
 function checkAuth(req, reply) {
@@ -101,8 +100,6 @@ app.post("/run", async (req, reply) => {
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
         debugTrace: task.debugTrace === true,
-        kmartMode: task.kmartMode === "cart-baseline" ? "cart-baseline" : "current",
-        checkout: task.checkout !== false,
     });
     return result;
   } finally {

@@ -1,79 +1,76 @@
-## Goal
-Create solid direction before more implementation: preserve what we learned, roll back to the last better-working state, then rebuild the Kmart flow with controlled comparisons instead of blind patches.
+## Plan: HAR-first repair pass
 
-## Recommended next move
+### Goal
+Make the executor follow the successful Kmart HAR as the source of truth, instead of guessing individual fixes. The first target is to unblock `api_get_token` and `cart_atc`; 3DS should only be evaluated after the cart actually contains the SKU.
 
-1. **Write a checkpoint report first**
-   - Document every major attempt so far: what changed, what improved, what regressed, and what evidence we have.
-   - Include the latest trace findings:
-     - Akamai sensor can solve and `_abck` reaches a validated state.
-     - `sbsd_category:round#0` and `sbsd_pdp:round#0` can mint `bm_s`.
-     - `sbsd_home:round#0` and all `round#1` payloads are being rejected.
-     - PDP/cart still 403 even after some SBSD success, meaning the session is still not fully trusted.
-     - `kmartMode` passthrough appears suspicious and needs to be verified from a cleaner state.
-   - Save this as a project report so we do not lose the hard-won diagnostics when rolling back.
+### What the latest evidence shows
+- `api_get_token` is returning `400` with `Missing required header: x-visitor-id`.
+- The successful HAR sends `x-visitor-id`, `newrelic`, `traceparent`, `tracestate`, `priority`, and browser identity cookies on `POST /shopping-agent/v1/get-token`.
+- Our current `get-token` code does not send `x-visitor-id` or New Relic headers.
+- `cart_atc` still returns Akamai Access Denied, likely because the API BotManager seed is incomplete or invalid.
+- `create_3ds_token` is currently noise while `cart_atc` fails: the flow should not continue to payment when `cart_verify` says the SKU is absent.
 
-2. **Rollback using Lovable history, not manual code edits**
-   - Use History to restore the version where the flow looked most promising.
-   - Based on the screenshot, likely candidates are the successful `@place_order` dry runs or the successful `@cart_atc` real run.
-   - After rollback, do not immediately change logic. First run a baseline trace and save it.
+### Implementation steps after approval
 
-   <presentation-actions>
-     <presentation-open-history>View History</presentation-open-history>
-   </presentation-actions>
+1. **Build a proper HAR diff machine**
+   - Extend `executor/scripts/har-diff.mjs` from a checklist into a strict comparator.
+   - Extract the golden sequence from the uploaded HAR:
+     - `get-token`
+     - early `getMyActiveCart` reads
+     - `createMyBag`
+     - `getActiveBag`
+     - pre-ATC `getMyActiveCart`
+     - `updateMyBag` ATC
+     - post-ATC verify
+     - address/billing mutations
+     - Paydock tokenize
+     - `create3DSToken`
+     - Paydock handle/process
+     - final pre-order custom-field step
+   - Compare method, URL path, operationName, variables shape, normalized query hash, required headers, referer/origin, cookie names present, response status, and set-cookie names.
+   - Redact card numbers, JWTs, tokens, email/phone, and full cookie values.
 
-3. **Re-establish a clean baseline**
-   - Run Kmart dry mode once from the rolled-back state.
-   - Save the trace as `rollback-baseline.json`.
-   - Summarize only stable facts: final failure step, HTTP statuses, key cookies, SBSD outcomes, and whether PDP/cart is accessible.
+2. **Add executor trace output for diffing**
+   - Add a debug trace mode that records each critical request in the same shape as the HAR diff expects.
+   - Keep normal user output concise, but return a machine-readable trace when debugging is enabled.
+   - This gives us an actual “HAR vs current executor” report instead of relying on screenshots.
 
-4. **Fix instrumentation before changing the checkout strategy**
-   - Ensure `kmartMode` actually reaches the executor task.
-   - Add trace labels for:
-     - mode
-     - page URL
-     - Hyper payload index
-     - script hash/body length
-     - `o` cookie length/hash
-     - `bm_so`, `bm_s`, `_abck`, `bm_sv` before/after each key request
-   - Keep this diagnostic-only. No behavior changes yet.
+3. **Fix API BotManager seed exactly from HAR**
+   - Derive `x-visitor-id` from the `_ga` cookie in the HAR-compatible format, e.g. `_ga=GA1.1.1948965462.1758342961` → `1948965462.1758342961`.
+   - If `_ga` is absent, create a coherent browser identity set before `get-token` rather than sending no visitor ID.
+   - Send New Relic headers on `get-token` using the HAR’s `ap=1834777981` for that endpoint.
+   - Align `get-token` headers with HAR: `priority`, `origin`, `referer`, `sec-fetch-*`, language, and browser client hints.
+   - Treat `get-token` as a hard gate: if it does not return `200` and valid API BotManager cookies, stop before cart mutation.
 
-5. **Compare two flows from the same code state**
-   - Run `cart-baseline` and `current` automatically against the same product/variant/proxy settings.
-   - Save both traces side by side.
-   - Diff the first point where they diverge.
+4. **Repair `cart_atc` only from measured HAR deltas**
+   - Run the new diff against the current flow trace.
+   - Patch only the mismatches that appear before `cart_atc`.
+   - Preserve the HAR action shape for ATC:
+     - `addLineItem { sku, quantity, addToCartSource: "PDP" }`
+     - `setCustomField { name: "selectedCncStoreId", value: "1241" }`
+   - Confirm `cart_atc` returns `200` and `cart_verify` has `hasSku=true` before touching payment again.
 
-6. **Focus on the likely wall: SBSD round#1**
-   - Compare our generated round#1 payload against the HAR round#1 payload.
-   - Specifically inspect whether Hyper inputs differ:
-     - payload index
-     - UUID/session identifiers
-     - `o` cookie
-     - sensor/script version
-     - target URL/referrer
-     - cookie jar state
-   - Do not chase cart GraphQL or payment until SBSD trust is understood.
+5. **Stop payment when cart failed**
+   - Change checkout gating so address/payment/3DS runs only if `cart_atc` succeeded and `cart_verify` confirms the SKU is in the cart.
+   - This prevents misleading 3DS errors caused by an empty cart.
 
-7. **Only then make one controlled fix at a time**
-   - One hypothesis per change.
-   - One run after each change.
-   - Save trace names with the hypothesis, e.g. `round1-o-cookie-fix.json`, `round1-url-fix.json`.
-   - If a change regresses, revert that single change immediately.
+6. **Then fix address and 3DS against HAR**
+   - Compare address mutation variables against HAR entries `#599` and `#690`.
+   - Preserve full street/city/state/postcode on billing before `create3DSToken`.
+   - Compare `create3DSToken` query/variables and Paydock handle/process headers/body against HAR entries `#766`, `#788`, and `#802`.
+   - Add the HAR’s final `sohEvent` custom-field mutation before real order submission if the diff shows it is required.
 
-## What I would not do next
-- I would not keep editing the current broken state without a report and rollback.
-- I would not pivot to a totally different executor/browser approach yet.
-- I would not work on payment/place-order while PDP/cart trust is still failing.
-- I would not rely on the UI recent-runs list alone; we need saved trace artifacts for comparison.
+7. **Validation criteria**
+   - `api_get_token`: `200`, no “missing x-visitor-id”, expected BotManager cookie names present.
+   - `cart_atc`: `200`, no Access Denied HTML.
+   - `cart_verify`: `lines > 0`, `hasSku=true`.
+   - `checkout_set_billing`: billing has `streetName`, `state`, and `postalCode`.
+   - `create_3ds_token`: non-null JWT / charge ID.
+   - `paydock_3ds_process`: frictionless success or a clearly classified challenge state.
+   - `place_order` remains dry-run gated unless explicitly enabled.
 
-## Success criteria
-We should proceed only when we can answer these clearly:
-
-- Which historical version was the best baseline?
-- What exact step regressed after that version?
-- Does `kmartMode` actually change executor behavior?
-- Why is SBSD round#1 rejected compared with the HAR?
-- What is the smallest code change that moves the flow forward?
-
-## User action needed before implementation
-Approve this plan, then use the History button to choose the last known better-working version. After that, I’ll create the checkpoint report and run the clean baseline workflow from that restored state.
+### First concrete code changes I expect
+- Add `x-visitor-id` generation/derivation.
+- Reuse New Relic header generation for `get-token`, with endpoint-specific app ID from the HAR.
+- Gate cart/payment progression on successful upstream steps.
+- Upgrade `har-diff.mjs` and executor tracing so future fixes come from exact deltas, not guesswork.
