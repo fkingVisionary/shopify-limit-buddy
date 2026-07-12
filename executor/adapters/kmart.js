@@ -437,10 +437,9 @@ export const kmartAdapter = {
       }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
-      // POST URL: hard challenge (§3.4) is `/<path>?t=<t>`; passive is bare
-      // `/<path>` with no query string. Prior attempts with `?v=<uuid>` on
-      // passive yielded 200 OK but no `bm_sv` — Akamai treats an unexpected
-      // query on the passive POST as an invalid challenge submission.
+      // POST URL: passive is the bare path (`/<path>`). The HAR confirms the
+      // browser loads `/<path>?v=<uuid>` but POSTs to `/<path>` with no query.
+      // Hard challenge (§3.4) keeps only `?t=<t>` on the POST.
       const sbsdPostUrl = parsed.t
         ? `${origin}${sbsdPath}?t=${parsed.t}`
         : `${origin}${sbsdPath}`;
@@ -452,8 +451,10 @@ export const kmartAdapter = {
             method: "GET",
             headers: {
               "user-agent": UA,
+                ...CHROME_CH,
               referer: pageUrl,
               "accept-language": ACCEPT_LANG,
+                "accept-encoding": "gzip, deflate, br, zstd",
               accept: "*/*",
               "sec-fetch-dest": "script",
               "sec-fetch-mode": "no-cors",
@@ -485,16 +486,22 @@ export const kmartAdapter = {
               method: "POST",
               headers: {
                 "user-agent": UA,
+                ...CHROME_CH,
                 "content-type": "application/json",
                 accept: "*/*",
                 "accept-language": ACCEPT_LANG,
+                "accept-encoding": "gzip, deflate, br, zstd",
                 origin,
                 referer: pageUrl,
+                priority: "u=1, i",
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
               },
-              body: payload,
+              // Browser HAR body is JSON: {"body":"<sbsd-payload>"}.
+              // Sending the raw payload while declaring application/json gets
+              // Akamai's blank 202/no-Set-Cookie rejection.
+              body: JSON.stringify({ body: payload }),
             },
             ctx,
           );
