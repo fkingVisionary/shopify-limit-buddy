@@ -236,6 +236,8 @@ function KmartPage() {
           proxy: proxy.trim() || null,
           dryRun: !placeOrder,
           placeOrder,
+          debugTrace: true,
+          kmartMode: "diagnostic",
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
