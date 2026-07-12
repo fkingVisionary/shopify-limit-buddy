@@ -1,0 +1,1 @@
+GRANT ALL ON public.exec_run_dumps TO service_role;
