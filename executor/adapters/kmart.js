@@ -1330,7 +1330,10 @@ fragment LineItemFields on LineItem {
       //    Stops short of placeOrder until task.placeOrder === true AND we
       //    have the final mutation captured.
       // ===================================================================
-      const wantCheckout = task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
+      const wantCheckout = kmartMode !== "cart-baseline" && task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
+      if (kmartMode === "cart-baseline") {
+        steps.push({ step: "checkout_frozen", ok: true, note: `cart-baseline mode: skipping checkout. cartAtcOk=${cartAtcOk} cartVerifyHasSku=${cartVerifyHasSku} cartId=${cartId ? cartId.slice(0,8) : "null"}` });
+      }
       if (task.checkout !== false && cartId && sku && (!cartAtcOk || !cartVerifyHasSku)) {
         steps.push({
           step: "checkout_gate",
