@@ -1160,6 +1160,20 @@ export const kmartAdapter = {
             const c = j?.data?.createMyCart;
             if (c) { cartId = c.id; cartVersion = c.version; }
           } catch {}
+          const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+          const respHdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn","x-akamai-request-id","www-authenticate"].reduce((o,h)=>{o[h]=res.headers.get?.(h) ?? null;return o;},{});
+          steps.push({
+            step: "dbg:cart_create:res",
+            ok: true,
+            note: JSON.stringify({
+              status: res.status,
+              respHeaders: respHdrDump,
+              setCookieNames: cookieNamesFromResponse(res),
+              setCookiesRaw: rawSetCookies.map((sc) => String(sc).slice(0, 200)),
+              body: txt.slice(0, 600),
+              cookieHeaderAtSend: ctx.jar.header(),
+            }).slice(0, 3500),
+          });
           return {
             status: res.status,
             ok: res.status < 400 && Boolean(cartId),
