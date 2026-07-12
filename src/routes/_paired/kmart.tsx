@@ -721,8 +721,26 @@ function KmartPage() {
                 {result.elapsedMs != null && (
                   <Badge variant="outline" className="text-[10px]">{result.elapsedMs}ms</Badge>
                 )}
+                <button
+                  type="button"
+                  onClick={() => navigator.clipboard?.writeText(JSON.stringify(result.result ?? result, null, 2))}
+                  className="rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] hover:bg-muted"
+                  title="Copy full result JSON"
+                >
+                  Copy JSON
+                </button>
               </div>
             </div>
+            {Array.isArray((result.result as any)?.trace) && (result.result as any).trace.length > 0 && (
+              <details className="mb-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
+                <summary className="cursor-pointer text-muted-foreground">
+                  Trace events ({(result.result as any).trace.length})
+                </summary>
+                <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all font-mono">
+                  {JSON.stringify((result.result as any).trace, null, 2)}
+                </pre>
+              </details>
+            )}
             {result.error && (
               <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
                 Transport error: {result.error}
