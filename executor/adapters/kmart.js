@@ -611,6 +611,20 @@ export const kmartAdapter = {
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
 
+    // Proactive SBSD on the homepage. Kmart embeds the real SBSD script tag
+    // (path + `?v=<uuid>`) in the homepage response. If we skip solving here,
+    // downstream category/PDP requests 403 with a mini block page whose SBSD
+    // script has an empty `v=` — Akamai's way of telling us we should have
+    // cached the UUID from a prior page. Solving here seeds `bm_so`/`bm_sv`
+    // before the first protected nav. The earlier "removed" note applied to
+    // a stricter regex era; SBSD_RE now correctly rejects `.js` sensor
+    // scripts and only matches paths carrying `?v=`.
+    try {
+      await runSbsd(html, origin + "/", "sbsd_home");
+    } catch (e) {
+      steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
+    }
+
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
