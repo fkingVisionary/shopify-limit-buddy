@@ -644,7 +644,11 @@ export const kmartAdapter = {
     // a stricter regex era; SBSD_RE now correctly rejects `.js` sensor
     // scripts and only matches paths carrying `?v=`.
     try {
-      await runSbsd(html, origin + "/", "sbsd_home");
+      if (kmartMode === "cart-baseline") {
+        steps.push({ step: "sbsd_home:skipped", ok: true, note: "cart-baseline mode: skipping proactive homepage SBSD" });
+      } else {
+        await runSbsd(html, origin + "/", "sbsd_home");
+      }
     } catch (e) {
       steps.push({ step: "sbsd_home:error", ok: false, note: e?.message ?? String(e) });
     }
