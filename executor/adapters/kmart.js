@@ -437,7 +437,10 @@ export const kmartAdapter = {
       }
       const sbsdPath = parsed.path.startsWith("/") ? parsed.path : "/" + parsed.path;
       const sbsdScriptUrl = origin + sbsdPath + `?v=${parsed.uuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
-      const sbsdPostUrl = origin + sbsdPath + (parsed.t ? `?t=${parsed.t}` : "");
+      // POST URL mirrors the script URL's query string. HAR shows Kmart's
+      // real browser POSTs to `/<path>?v=<uuid>[&t=<t>]` — dropping `v=` yields
+      // 200 OK but Akamai withholds `bm_sv`, so downstream nav 403s.
+      const sbsdPostUrl = origin + sbsdPath + `?v=${sbsdUuid}${parsed.t ? `&t=${parsed.t}` : ""}`;
       let sbsdBody = "";
       await tStep(`${label}:script_fetch`, async () => {
         const r = await request(
