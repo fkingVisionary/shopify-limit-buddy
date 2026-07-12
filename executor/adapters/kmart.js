@@ -441,6 +441,15 @@ export const kmartAdapter = {
       );
       html = await res.text();
       scriptPath = findAkamaiScriptPath(html);
+      recordTraceEvent("nav_warm_home", {
+        type: "document_get",
+        url: origin + "/",
+        status: res.status,
+        htmlBytes: html.length,
+        scriptPath,
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       // Diagnostic: expose which cookies Kmart actually set —
       // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
       // "missing abck" and none of the downstream steps can succeed.
