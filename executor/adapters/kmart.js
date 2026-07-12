@@ -517,17 +517,35 @@ export const kmartAdapter = {
           ctx,
         );
         sbsdBody = await r.text();
+        recordTraceEvent(`${label}:script_fetch`, {
+          type: "sbsd_script_fetch",
+          label,
+          pageUrl,
+          scriptUrl: sbsdScriptUrl,
+          postUrl: sbsdPostUrl,
+          path: sbsdPath,
+          uuidHash: hashShort(sbsdUuid),
+          hasToken: Boolean(parsed.t),
+          tokenHash: hashShort(parsed.t),
+          status: r.status,
+          scriptBytes: sbsdBody.length,
+          scriptHash: hashShort(sbsdBody),
+          setCookieNames: cookieNamesFromResponse(r),
+          jar: cookieTrustSnapshot(ctx.jar),
+        });
         return { status: r.status, note: `uuid=${sbsdUuid.slice(0, 8)}${parsed.uuid ? "" : "(cached)"} ${sbsdBody.length}b t=${parsed.t || "-"}` };
       });
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
         await tStep(`${label}:round#${i}`, async () => {
+          const oInput = sbsdOCookieInput(ctx.jar);
+          const beforeCookies = cookieTrustSnapshot(ctx.jar);
           const payload = await solveAkamaiSbsd({
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
             uuid: sbsdUuid,
-            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
+            oCookie: oInput.value,
             index: i,
             userAgent: UA,
             ip: egressIp,
@@ -555,6 +573,31 @@ export const kmartAdapter = {
           const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+          recordTraceEvent(`${label}:round#${i}`, {
+            type: "sbsd_round",
+            label,
+            round: i,
+            pageUrl,
+            referer: pageUrl,
+            scriptUrl: sbsdScriptUrl,
+            postUrl: sbsdPostUrl,
+            path: sbsdPath,
+            uuidHash: hashShort(sbsdUuid),
+            hasToken: Boolean(parsed.t),
+            tokenHash: hashShort(parsed.t),
+            input: {
+              oCookieSource: oInput.source,
+              oCookieBytes: oInput.bytes,
+              oCookieHash: oInput.hash,
+              scriptBytes: sbsdBody.length,
+              scriptHash: hashShort(sbsdBody),
+              egressIpKnown: Boolean(egressIp),
+            },
+            payload: { bytes: String(payload ?? "").length, hash: hashShort(payload) },
+            beforeCookies,
+            response: { status: res.status, setCookieNames, bodyBytes: bodyTxt.length, bodyPreview: bodyTxt },
+            afterCookies: cookieTrustSnapshot(ctx.jar),
+          });
           return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
         }).catch(() => {});
       }
