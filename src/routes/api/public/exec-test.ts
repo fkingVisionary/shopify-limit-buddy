@@ -26,6 +26,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxyGroupId?: string;
           proxyGroupName?: string;
           dryRun?: boolean;
+          async?: boolean;
+          debugTrace?: boolean;
         };
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
