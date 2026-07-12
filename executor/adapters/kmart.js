@@ -1111,13 +1111,19 @@ export const kmartAdapter = {
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
+    // Referer MUST be the PDP URL, not the homepage. Real Chrome fires
+    // GraphQL/get-token XHRs from the product page, and Akamai Bot Manager
+    // scores same-site XHRs where referer path is `/` (homepage) far lower
+    // than XHRs whose referer matches the PDP the shopper is on. This was
+    // the last remaining www→api asymmetry vs the HAR.
+    const apiReferer = pdpUrl || (origin + "/");
     const gqlHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
       accept: "*/*",
       "accept-language": ACCEPT_LANG,
       origin,
-      referer: origin + "/",
+      referer: apiReferer,
       ...CHROME_CH,
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
