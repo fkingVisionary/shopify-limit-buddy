@@ -1,61 +1,75 @@
+## Goal
+Get the Kmart executor back to the previous working milestone first: PDP passes, API seed passes, cart read/create/add-to-cart passes, then resume checkout/place-order work only after cart is stable.
 
-## Where we actually are
+## Current read of the failure
+The screenshot shows the API/cart layer is now blocked:
+- `cart_get` is 403 from `api.kmart.com.au/gateway/graphql`.
+- `cart_create` is also 403, so `cartId=null` and `cart_atc` is skipped.
+- This is not a product/SKU issue yet; it is an API-host anti-bot/session issue before cart creation.
 
-You are right — the HAR has everything. The failure is not "we don't know what to send." From your screenshot:
+## Plan
 
-- `api_get_token` ✅  → BM seed works
-- `cart_get` / `cart_create` / `cart_probe1` / `cart_probe2` all **200** → `_abck` is validated, GraphQL host accepts our jar
-- `cart_atc` (the `updateMyBag` mutation with `addLineItem`) **403 Access Denied — Reference 18.24f10f17…** → Akamai
-- `cart_verify` returns cart with `lineItems: []` → confirms ATC never mutated
-- `checkout_gate` correctly stops before address/payment
+### 1. Stop changing the whole flow at once
+Freeze checkout/payment/place-order work until cart is green again. The only target is:
+```text
+warm_home -> sensor solve -> PDP 200 -> api_get_token -> cart_get -> cart_create -> cart_probe1 -> cart_probe2 -> cart_atc -> cart_verify
+```
+No address, Paydock, 3DS, or `placeOrder` changes until that exact chain passes repeatedly.
 
-So four consecutive `POST /gateway/graphql` succeed and the fifth — the mutation carrying `addLineItem` — is scored as a bot. This is a **mutation-scoped scoring problem**, not "we forgot a header". The last two turns have been guessing at headers; we need to stop guessing and measure.
+### 2. Make the next run produce useful evidence
+Tighten `debugTrace` for failing API requests so it returns, per GraphQL step:
+- exact operation name
+- request header names/order
+- cookie names sent
+- response status/body snippet
+- Set-Cookie names
+- whether `api_get_token` actually seeded `ak_bmsc` / `bm_sv`
 
-## The plan: instrument, diff, eliminate — in that order
+This avoids judging from the UI’s narrow mobile table only.
 
-### 1. Turn `har-diff.mjs` into a byte-level diff (not a checklist)
+### 3. Compare current executor trace to the HAR mechanically
+Use the existing `executor/scripts/har-diff.mjs` loop as the source of truth:
+1. Run `/run` with `debugTrace: true`.
+2. Save the returned JSON.
+3. Diff it against the HAR.
+4. Fix only the first red delta on `seed` or `cart_get_initial`.
 
-Today the diff prints "MATCH / DELTA" per golden step. Extend it so for every one of the 12 golden requests it prints:
+No more guessing headers/payloads from memory. If `cart_get_initial` is 403, the first diff target is whichever of these diverges from HAR:
+- API seed cookies missing/wrong host
+- GraphQL request header set/order
+- visitor/session identity mismatch
+- request body/query hash mismatch
+- cookie names sent to `api.kmart.com.au`
 
-- header set delta (present/absent AND value shape — e.g. `traceparent` present but wrong length)
-- cookie name delta on the request (which names were sent, which HAR sent that we didn't, and vice-versa)
-- request body delta as a structured JSON patch (missing keys, extra keys, type changes) — not string compare
-- normalized GraphQL `query` hash (whitespace-collapsed) so wording drift shows up
-- response status + set-cookie name delta
+### 4. Add a controlled recovery switch to bisect the regression
+Add an executor-side mode flag for Kmart, for example `kmartMode`, with two paths:
+- `current`: today’s full Akamai/SBSD path
+- `cart-baseline`: minimal path that skips risky recent additions and uses only the proven HAR cart sequence
 
-Output one screen per step, red/green only on real differences. This is the source of truth for the next four sub-tasks; no code change to `kmart.js` happens without a diff line pointing at it.
+The point is not to ship two permanent flows; it is to identify whether the HAR-era SBSD/header changes poisoned the API session. Once the baseline gets cart green, merge only the winning pieces back.
 
-### 2. One clean measured run
+### 5. Treat API host as a separate anti-bot boundary
+Right now we solve the storefront (`www.kmart.com.au`) and then assume cookies transfer cleanly to `api.kmart.com.au`. The 403 on `gateway/graphql` means the API boundary must be validated independently:
+- ensure `/shopping-agent/v1/get-token` is called before GraphQL
+- ensure it returns/sets the same cookie names as HAR
+- ensure GraphQL sends the same identity headers as HAR (`x-visitor-id`, New Relic headers if present, cache headers, referer/origin, sec-fetch values)
+- ensure the cookie jar is not overwriting parent-domain cookies with API-scoped bad values
 
-Do a single `/run` with `debugTrace:true` against SKU `43664474` (the capybara URL you sent), then run `har-diff.mjs www.kmart.com.au.har_1.json --json run.json`. Save the report. Everything below refers to that report.
+### 6. Restore cart before checkout
+Once `cart_create` returns an id again:
+- verify `cart_probe1` and `cart_probe2` match HAR order
+- only then attempt `cart_atc`
+- require 3 consecutive successful `cart_verify hasSku=true` runs on fresh proxy sessions before touching address/payment/place-order again
 
-### 3. Eliminate the cart_atc 403 — one variable per attempt
+## Implementation sequence after approval
+1. Patch trace output to expose the failing API seed/cart details clearly.
+2. Patch or add a baseline/bisect mode for Kmart cart only.
+3. Run one debug trace through the executor.
+4. Use the HAR diff output to make a single targeted cart/API fix.
+5. Repeat until `cart_verify` is stable, then resume checkout/place-order from the last known good payment code.
 
-Ordered by cheapness × likelihood. After each change we re-run and re-diff; we do NOT stack two changes in one attempt.
-
-1. **Body byte-identity.** Rebuild the `updateMyBag` body so `JSON.stringify` produces the exact key order and whitespace as HAR entry #368 (browser emits `{"operationName":…,"variables":…,"query":…}` with no spaces and a trailing `\n` inside the query string). Diff will show whether content-length now matches 1315.
-2. **Request cadence.** Real HAR has ≥30 s of PDP/analytics activity between `createMyBag` (#343) and `updateMyBag` (#368). We fire the whole 4-call GraphQL burst in <1 s. Insert a jittered 800–1500 ms sleep between `cart_probe2` and `cart_atc`, and a smaller one after `cart_create`. If the 403 disappears, cadence was the vector; we then tune, not remove.
-3. **OPTIONS preflight parity.** Browser sends `OPTIONS /gateway/graphql` before every POST (HAR #344, #358, #367). Undici skips them. Add an explicit preflight OPTIONS with the same `access-control-request-headers` list Chrome sends. Cheap; either matters or doesn't.
-4. **PDP warm before ATC.** Between `cart_probe2` and `cart_atc`, fetch the PDP HTML once (`/product/squish-capybara-toy-assorted-43664474/`) so `bm_sz` rotates on `www.` and `_abck` picks up a fresh score, mirroring HAR #153 rotating `bm_sz` just before ATC.
-5. **Fresh sensor round before the mutation.** If steps 1–4 don't move it, run one extra Akamai sensor POST on `www.kmart.com.au` right before ATC to bump `_abck` from `~0~` into the "recently-scored" window. Hyper is already wired; this is one extra `solveAkamaiSensor` call, not a new integration.
-6. **Only if all of the above fail.** Suspect TLS/HTTP-2 fingerprint (undici vs Chrome). That is a real, known Akamai lever but expensive to change (would mean routing the mutation via curl-impersonate or a headed browser). We do not touch it until 1–5 are proven not to fix it, because it changes everything else.
-
-### 4. Only after `cart_atc` returns 200 with `hasSku=true`
-
-Then and only then diff the address (#599/#690), Paydock tokenize (#764), `create3DSToken` (#766), Paydock `/handle` (#788) and `/process` (#802), `sohEvent` (#805), `chargePayDockWithToken` (#807). The gating you already have will keep them off until the cart is real, so there is nothing to fix there yet.
-
-### 5. Definition of done
-
-- `har-diff` report shows 0 red rows for every golden step through `cart_atc` and `cart_verify`
-- `cart_atc` returns 200 with `hasSku=true` on three consecutive runs against fresh proxy IPs
-- No new headers, cookies, or payload fields added that don't appear in HAR (no cargo-culting)
-
-## What files change
-
-- `executor/scripts/har-diff.mjs` — upgrade to byte-level diff (§1)
-- `executor/adapters/kmart.js` — at most one change per attempt in §3, each tied to a diff line
-- `executor/scripts/README.md` — document the one-variable-at-a-time loop so we don't slide back into stacking fixes
-
-## What I need from you to start
-
-Just "go". First action will be §1 + §2 (diff upgrade, single measured run, publish the report) before touching `kmart.js` again. No more speculative header additions.
+## Non-goals for this pass
+- No UI redesign.
+- No payment/place-order edits.
+- No new anti-bot guesses unless backed by the trace-vs-HAR diff.
+- No broad rewrites of the adapter.
