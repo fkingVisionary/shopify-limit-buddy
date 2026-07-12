@@ -1010,6 +1010,15 @@ export const kmartAdapter = {
             },
             ctx,
           );
+          recordTraceEvent("akamai_pixel", {
+            type: "akamai_pixel_post",
+            postUrl: pixel.postUrl,
+            status: res.status,
+            payloadBytes: String(pixel.payload ?? "").length,
+            payloadHash: hashShort(pixel.payload),
+            setCookieNames: cookieNamesFromResponse(res),
+            jar: cookieTrustSnapshot(ctx.jar),
+          });
           return { status: res.status, note: "pixel posted" };
         });
       } else {
