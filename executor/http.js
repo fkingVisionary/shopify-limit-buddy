@@ -11,6 +11,9 @@
 //   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { existsSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -20,11 +23,42 @@ const UA =
 // Session is constructed. Cache the promise so concurrent callers share it.
 let tlsInitPromise = null;
 let tlsClientModulePromise = null;
+function tlsNativeFileInfo() {
+  const platform = process.platform;
+  const arch = process.arch;
+  const map = {
+    darwin: {
+      arm64: "tls-client-arm64.dylib",
+      x64: "tls-client-x86.dylib",
+    },
+    win32: {
+      x64: "tls-client-64.dll",
+      ia32: "tls-client-32.dll",
+    },
+    linux: {
+      arm64: "tls-client-arm64.so",
+      x64: "tls-client-x64.so",
+      default: "tls-client-amd64.so",
+    },
+  };
+  const name = map[platform]?.[arch] ?? map[platform]?.default ?? map.linux.default;
+  const expectedPath = path.join(os.tmpdir(), name);
+  return { platform, arch, name, expectedPath, present: existsSync(expectedPath) };
+}
+
+export function tlsNativeStatus() {
+  return tlsNativeFileInfo();
+}
+
 async function loadTlsClient() {
   if (!tlsClientModulePromise) tlsClientModulePromise = import("node-tls-client");
   return tlsClientModulePromise;
 }
 async function ensureTls() {
+  const native = tlsNativeFileInfo();
+  if (!native.present) {
+    throw new Error(`TLS native asset missing (${native.name}); redeploy executor so the Docker image prewarms it at ${native.expectedPath}`);
+  }
   const { initTLS } = await loadTlsClient();
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
