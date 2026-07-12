@@ -471,6 +471,63 @@ export const kmartAdapter = {
       };
     });
 
+    // 2a-DIAG. Homepage script-tag dump. Diagnostic-only: enumerates every
+    // <script src="…"> found in the homepage HTML with its path, whether
+    // the path ends in `.js`, and which query params it carries. We hash
+    // the token values so nothing sensitive leaks. Use this to identify
+    // the real SBSD script tag Kmart serves so we can tighten SBSD_RE
+    // without re-poisoning the session by matching the sensor script.
+    try {
+      const tagRe = /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
+      const seen = [];
+      let mm;
+      while ((mm = tagRe.exec(html)) && seen.length < 60) {
+        const raw = mm[1];
+        // Only report internal/relative script srcs — third-party CDNs are noise here.
+        if (!/^\//.test(raw) && !/kmart\.com\.au/i.test(raw)) continue;
+        let path = raw;
+        let query = "";
+        const qi = raw.indexOf("?");
+        if (qi >= 0) { path = raw.slice(0, qi); query = raw.slice(qi + 1); }
+        const qparams = query
+          ? Object.fromEntries(
+              query.split("&").filter(Boolean).map((p) => {
+                const [k, v = ""] = p.split("=");
+                return [k, v ? `${v.length}b:${hashShort(v)}` : "(empty)"];
+              }),
+            )
+          : {};
+        const endsJs = /\.js(?:$|\?)/i.test(raw);
+        const sbsdReMatch = SBSD_RE.test(`src="${raw}"`);
+        const sbsdParsed = parseSbsd(`<script src="${raw}">`);
+        seen.push({
+          path,
+          endsJs,
+          hasV: "v" in qparams,
+          hasT: "t" in qparams,
+          qparams,
+          matchesSbsdRe: sbsdReMatch,
+          parsedAsSbsd: Boolean(sbsdParsed),
+        });
+      }
+      const sbsdCandidates = seen.filter((s) => s.hasV && !s.endsJs);
+      const sensorLike = seen.filter((s) => s.endsJs && s.hasV);
+      recordTraceEvent("home_scripts_dump", {
+        type: "diag_home_scripts",
+        totalTags: seen.length,
+        sbsdCandidates,
+        sensorLike,
+        allTags: seen,
+      });
+      steps.push({
+        step: "home_scripts_dump",
+        ok: true,
+        note: `scriptTags=${seen.length} sbsdCandidates=${sbsdCandidates.length} sensorLike=${sensorLike.length}`,
+      });
+    } catch (e) {
+      steps.push({ step: "home_scripts_dump", ok: false, note: `err=${e?.message ?? e}` });
+    }
+
     if (!scriptPath) {
       // Without the script path we can't generate a sensor. Fail fast.
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
