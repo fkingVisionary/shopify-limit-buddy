@@ -120,12 +120,25 @@ export const Route = createFileRoute("/api/public/exec-test")({
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean; trace?: unknown };
+          const rawText = await res.text();
+          // Persist full raw body to Supabase so the sandbox can retrieve it
+          // without hitting tool-output truncation.
+          try {
+            const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+            await supabaseAdmin.from("exec_run_dumps").insert({
+              task_id: payload.taskId,
+              status: res.status,
+              body: rawText,
+            });
+          } catch (e) {
+            console.error("exec_run_dumps insert failed", e);
+          }
+          const data = (JSON.parse(rawText || "{}")) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean; trace?: unknown };
           // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
           const compactSteps = Array.isArray(data?.steps)
             ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 5000 ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})` : s.note) : undefined }))
             : [];
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps, trace: (data as any).trace }, cardSent: Boolean(card), proxyUsed });
+          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed, taskId: payload.taskId });
 
         } catch (e) {
           return Response.json(
