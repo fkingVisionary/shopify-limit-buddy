@@ -494,7 +494,7 @@ export const kmartAdapter = {
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
               },
-              body: JSON.stringify({ body: payload }),
+              body: payload,
             },
             ctx,
           );
