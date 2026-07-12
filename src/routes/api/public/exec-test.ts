@@ -28,6 +28,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
           dryRun?: boolean;
           async?: boolean;
           debugTrace?: boolean;
+          kmartMode?: "cart-baseline" | "current";
+          checkout?: boolean;
         };
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
