@@ -6,7 +6,7 @@ import { createFileRoute } from "@tanstack/react-router";
 export const Route = createFileRoute("/api/public/exec-test")({
   server: {
     handlers: {
-      POST: async ({ request }) => {
+      POST: async ({ request, context: routeCtx }: any) => {
         const url = process.env.EXECUTOR_URL;
         const token = process.env.EXECUTOR_TOKEN;
         if (!url || !token) {
