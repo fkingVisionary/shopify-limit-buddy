@@ -638,6 +638,16 @@ export const kmartAdapter = {
         ctx,
       );
       scriptBody = await res.text();
+      recordTraceEvent("akamai_script_fetch", {
+        type: "akamai_script_fetch",
+        scriptUrl,
+        referer: origin + "/",
+        status: res.status,
+        scriptBytes: scriptBody.length,
+        scriptHash: hashShort(scriptBody),
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       return { status: res.status, note: `${scriptBody.length}b` };
     });
 
@@ -666,6 +676,7 @@ export const kmartAdapter = {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
         const beforeAbck = marker(ctx.jar.get("_abck"));
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
+        const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: pdpUrl,
@@ -691,6 +702,23 @@ export const kmartAdapter = {
         );
         const body = await res.text().catch(() => "");
         const setCookieNames = cookieNamesFromResponse(res);
+        recordTraceEvent(`akamai_sensor#${i + 1}`, {
+          type: "akamai_sensor_round",
+          round: i + 1,
+          pageUrl: pdpUrl,
+          scriptUrl,
+          input: {
+            scriptBytes: prevContext ? 0 : scriptBody?.length ?? 0,
+            scriptHash: prevContext ? null : hashShort(scriptBody),
+            contextInBytes: prevContext?.length ?? 0,
+            egressIpKnown: Boolean(egressIp),
+          },
+          payload: { bytes: String(r.payload ?? "").length, hash: hashShort(r.payload), prefix: String(r.payload ?? "").slice(0, 2) },
+          beforeCookies,
+          response: { status: res.status, setCookieNames, bodySuccess: sensorBodySuccess(body), bodyPreview: bodyPreview(body) },
+          afterCookies: cookieTrustSnapshot(ctx.jar),
+          contextOutBytes: r.context?.length ?? 0,
+        });
         return {
           status: res.status,
           ok: res.status < 400 && sensorBodySuccess(body) !== "false",
