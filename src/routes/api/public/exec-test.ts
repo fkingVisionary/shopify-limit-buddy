@@ -28,6 +28,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
           dryRun?: boolean;
           async?: boolean;
           debugTrace?: boolean;
+          kmartMode?: "cart-baseline" | "current";
+          checkout?: boolean;
         };
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
@@ -116,6 +118,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
             proxy,
             card,
             debugTrace: body.debugTrace === true,
+            kmartMode: body.kmartMode === "cart-baseline" ? "cart-baseline" : "current",
+            checkout: body.checkout !== false,
           };
 
           const runAndDump = async () => {
