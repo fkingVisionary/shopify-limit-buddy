@@ -1,76 +1,173 @@
-## Plan: HAR-first repair pass
+## Goal
 
-### Goal
-Make the executor follow the successful Kmart HAR as the source of truth, instead of guessing individual fixes. The first target is to unblock `api_get_token` and `cart_atc`; 3DS should only be evaluated after the cart actually contains the SKU.
+Restart from this best-working checkpoint and make progress without random patching. The HAR is the source of truth for the browser flow, and Hyper Solutions remains the solver layer for Akamai sensor/SBSD/pixel payloads.
 
-### What the latest evidence shows
-- `api_get_token` is returning `400` with `Missing required header: x-visitor-id`.
-- The successful HAR sends `x-visitor-id`, `newrelic`, `traceparent`, `tracestate`, `priority`, and browser identity cookies on `POST /shopping-agent/v1/get-token`.
-- Our current `get-token` code does not send `x-visitor-id` or New Relic headers.
-- `cart_atc` still returns Akamai Access Denied, likely because the API BotManager seed is incomplete or invalid.
-- `create_3ds_token` is currently noise while `cart_atc` fails: the flow should not continue to payment when `cart_verify` says the SKU is absent.
+## Ground rules
 
-### Implementation steps after approval
+- Do not label this a proxy issue unless a measured trace proves IP/session drift.
+- Do not pivot away from the external Node executor or Hyper path.
+- Do not chase payment/place-order while cart/SBSD trust is failing.
+- Make one hypothesis-driven change at a time, with a before/after trace.
+- Keep real order submission gated behind the existing explicit `placeOrder === true` switch.
 
-1. **Build a proper HAR diff machine**
-   - Extend `executor/scripts/har-diff.mjs` from a checklist into a strict comparator.
-   - Extract the golden sequence from the uploaded HAR:
-     - `get-token`
-     - early `getMyActiveCart` reads
-     - `createMyBag`
-     - `getActiveBag`
-     - pre-ATC `getMyActiveCart`
-     - `updateMyBag` ATC
-     - post-ATC verify
-     - address/billing mutations
-     - Paydock tokenize
-     - `create3DSToken`
-     - Paydock handle/process
-     - final pre-order custom-field step
-   - Compare method, URL path, operationName, variables shape, normalized query hash, required headers, referer/origin, cookie names present, response status, and set-cookie names.
-   - Redact card numbers, JWTs, tokens, email/phone, and full cookie values.
+## What I found at this checkpoint
 
-2. **Add executor trace output for diffing**
-   - Add a debug trace mode that records each critical request in the same shape as the HAR diff expects.
-   - Keep normal user output concise, but return a machine-readable trace when debugging is enabled.
-   - This gives us an actual “HAR vs current executor” report instead of relying on screenshots.
+- The executor architecture is still the correct base: Node executor, TLS-client transport, per-task cookie jar, Hyper-backed Akamai solving.
+- The uploaded report identifies the current highest-signal wall as SBSD/session trust, especially generated SBSD round #1 vs the real browser/HAR behavior.
+- The current code already has some HAR-alignment work: `x-visitor-id`, New Relic headers, GraphQL trace output, cart verification gating, and Paydock/3DS steps.
+- The weak point is that the trace is not yet rich enough to compare the real browser HAR and the executor at the exact SBSD/API trust boundary.
+- The current cookie jar is name-keyed, not domain/path-keyed. That was intentional for simple handoff, but it may hide same-name cookie scope/order issues that matter for Akamai/SBSD.
 
-3. **Fix API BotManager seed exactly from HAR**
-   - Derive `x-visitor-id` from the `_ga` cookie in the HAR-compatible format, e.g. `_ga=GA1.1.1948965462.1758342961` → `1948965462.1758342961`.
-   - If `_ga` is absent, create a coherent browser identity set before `get-token` rather than sending no visitor ID.
-   - Send New Relic headers on `get-token` using the HAR’s `ap=1834777981` for that endpoint.
-   - Align `get-token` headers with HAR: `priority`, `origin`, `referer`, `sec-fetch-*`, language, and browser client hints.
-   - Treat `get-token` as a hard gate: if it does not return `200` and valid API BotManager cookies, stop before cart mutation.
+## Plan
 
-4. **Repair `cart_atc` only from measured HAR deltas**
-   - Run the new diff against the current flow trace.
-   - Patch only the mismatches that appear before `cart_atc`.
-   - Preserve the HAR action shape for ATC:
-     - `addLineItem { sku, quantity, addToCartSource: "PDP" }`
-     - `setCustomField { name: "selectedCncStoreId", value: "1241" }`
-   - Confirm `cart_atc` returns `200` and `cart_verify` has `hasSku=true` before touching payment again.
+### 1. Freeze this checkpoint with a clean baseline trace
 
-5. **Stop payment when cart failed**
-   - Change checkout gating so address/payment/3DS runs only if `cart_atc` succeeded and `cart_verify` confirms the SKU is in the cart.
-   - This prevents misleading 3DS errors caused by an empty cart.
+Run one dry Kmart checkout from the checkpoint with `debugTrace: true` and save it as the new baseline.
 
-6. **Then fix address and 3DS against HAR**
-   - Compare address mutation variables against HAR entries `#599` and `#690`.
-   - Preserve full street/city/state/postcode on billing before `create3DSToken`.
-   - Compare `create3DSToken` query/variables and Paydock handle/process headers/body against HAR entries `#766`, `#788`, and `#802`.
-   - Add the HAR’s final `sohEvent` custom-field mutation before real order submission if the diff shows it is required.
+The baseline must record:
 
-7. **Validation criteria**
-   - `api_get_token`: `200`, no “missing x-visitor-id”, expected BotManager cookie names present.
-   - `cart_atc`: `200`, no Access Denied HTML.
-   - `cart_verify`: `lines > 0`, `hasSku=true`.
-   - `checkout_set_billing`: billing has `streetName`, `state`, and `postalCode`.
-   - `create_3ds_token`: non-null JWT / charge ID.
-   - `paydock_3ds_process`: frictionless success or a clearly classified challenge state.
-   - `place_order` remains dry-run gated unless explicitly enabled.
+- final successful/failing step
+- transport mode and explicit proxy flag
+- starting and ending egress IP, only as equality/drift metadata
+- `_abck`, `bm_sz`, `ak_bmsc`, `bm_s`, `bm_so`, `bm_sv` presence and safe markers
+- PDP/category status
+- SBSD script fetches and POST outcomes
+- API `get-token` status and set-cookie names
+- cart create/ATC/verify status
 
-### First concrete code changes I expect
-- Add `x-visitor-id` generation/derivation.
-- Reuse New Relic header generation for `get-token`, with endpoint-specific app ID from the HAR.
-- Gate cart/payment progression on successful upstream steps.
-- Upgrade `har-diff.mjs` and executor tracing so future fixes come from exact deltas, not guesswork.
+This becomes the reference for all later changes.
+
+### 2. Upgrade instrumentation before changing behavior
+
+Add richer trace events for every trust-building request, not only GraphQL/payment calls:
+
+- home/category/PDP navigations
+- Akamai script fetches
+- Akamai sensor POSTs
+- pixel POSTs when present
+- SBSD script fetches
+- SBSD round #0 and round #1 POSTs
+- API `get-token`
+- GraphQL cart/checkout calls
+
+For SBSD, trace safe values only:
+
+- page URL and referer
+- SBSD path, `v` presence/hash, `t` presence/hash
+- round index
+- Hyper input summary: page URL, script byte length/hash, `o` cookie source, `o` length/hash, egress IP equality marker
+- payload byte length/hash, not raw payload
+- pre/post cookie markers for `bm_s`, `bm_so`, `bm_sv`
+- response status, set-cookie names, body length/short non-sensitive preview
+
+No checkout behavior changes in this phase.
+
+### 3. Build a stricter HAR/SBSD diff machine
+
+Extend the HAR diff tool so it can compare two layers:
+
+#### Checkout/API sequence diff
+
+Compare the browser HAR against executor trace for:
+
+- request order
+- method, host, path
+- operationName
+- query hash
+- variables shape
+- required headers
+- origin/referer
+- cookie names present
+- response status
+- set-cookie names
+
+#### SBSD/Akamai trust diff
+
+Extract from the HAR and compare:
+
+- which page exposed SBSD
+- script URL/path/query shape
+- POST URL/path/query shape
+- number of rounds
+- round index sequence
+- cookie names sent and received
+- whether `bm_s`/`bm_so`/`bm_sv` changed after each round
+- timing/cadence buckets where visible from HAR timestamps
+
+This gives us a concrete “HAR vs executor” report instead of guessing.
+
+### 4. Fix `kmartMode` / branch trace reliability
+
+The report says previous comparisons were unreliable because both intended modes showed `mode=current`.
+
+Fix the control-plane/executor handoff so every run records:
+
+- requested `kmartMode`
+- normalized `kmartMode`
+- actual adapter branch taken
+- whether the run is baseline/current/diagnostic
+
+Then run `cart-baseline` and `current` from the same code state and compare the first real divergence.
+
+### 5. Repair SBSD using Hyper + HAR together
+
+Only after the trace/diff exposes the first mismatch, patch SBSD handling one hypothesis at a time.
+
+Likely controlled fixes to test:
+
+- correct SBSD page URL input: category vs PDP vs challenge URL
+- correct referer on SBSD script fetch and POST
+- correct `o` cookie source: `sbsd_o` vs `bm_so`, with domain/path-aware selection if needed
+- correct round index handling: passive must be `0` then `1`; hard challenge with `t` must be `0` only
+- correct script body continuity: hash script body and reset Hyper context if script changes
+- correct cookie scoping/order: stop flattening same-name cookies if HAR shows host/path distinction matters
+- correct SBSD detection: never confuse Akamai sensor script URLs with SBSD challenge URLs
+
+Success criteria for this phase:
+
+- SBSD round #0 and #1 responses match HAR-level set-cookie behavior
+- `bm_s`/`bm_so`/`bm_sv` markers move in the same pattern as the HAR
+- PDP/category/cart no longer hit Akamai Access Denied after trust-building
+
+### 6. Re-align API/cart only after SBSD is stable
+
+Once SBSD/session trust matches the HAR better, re-check the API/cart path:
+
+- `POST /shopping-agent/v1/get-token` must return 200
+- `x-visitor-id` must derive from `_ga` when present
+- New Relic headers must be present with the endpoint-specific app id seen in HAR
+- API seed must mint/refresh expected BotManager cookies
+- `createMyBag`, `getActiveBag`, `getMyActiveCart`, `updateMyBag`, and verify calls must follow HAR order
+- `cart_verify` must confirm `hasSku=true` before address/payment steps run
+
+### 7. Only then revisit address, 3DS, and payment
+
+After cart is reliable:
+
+- compare address/billing mutation variables against the successful HAR
+- preserve full street/state/postcode for billing before `create3DSToken`
+- compare Paydock tokenization headers/origin/referer against HAR
+- compare `create3DSToken`, `handle`, and `process` bodies/headers against HAR
+- keep `place_order` dry-run gated unless explicitly enabled
+
+## Validation checklist
+
+A change is accepted only if the new trace improves one of these without regressing earlier steps:
+
+- `akamai_sensor`: `_abck` reaches valid state
+- `sbsd_round_0`: status and set-cookie behavior match HAR pattern
+- `sbsd_round_1`: status and set-cookie behavior match HAR pattern
+- `api_get_token`: 200, no missing-header error, expected BotManager cookies present
+- `cart_atc`: 200, no Access Denied HTML
+- `cart_verify`: `lines > 0`, `hasSku=true`
+- `checkout_set_billing`: street/state/postcode present
+- `create_3ds_token`: non-null JWT / charge id
+- `paydock_3ds_process`: frictionless success or clearly classified challenge state
+
+## First implementation batch after approval
+
+1. Add diagnostic-only SBSD/Akamai trace events.
+2. Fix `kmartMode` passthrough and branch reporting.
+3. Extend the HAR diff tool to compare SBSD/script/sensor events.
+4. Run the baseline trace and produce the first exact HAR-vs-executor delta.
+5. Make the first single SBSD fix only if the delta identifies it clearly.

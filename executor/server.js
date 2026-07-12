@@ -99,7 +99,8 @@ app.post("/run", async (req, reply) => {
       dryRun: task.dryRun !== false,
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
-        debugTrace: task.debugTrace === true,
+      debugTrace: task.debugTrace === true,
+      kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
     });
     return result;
   } finally {

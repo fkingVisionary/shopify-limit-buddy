@@ -12,6 +12,7 @@
 import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+import { createHash } from "node:crypto";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -139,6 +140,38 @@ function randomDecimalString(digits) {
   let out = "";
   while (out.length < digits) out += Math.floor(Math.random() * 10);
   return out.slice(0, digits).replace(/^0/, "1");
+}
+
+function hashShort(value, bytes = 12) {
+  const raw = value == null ? "" : String(value);
+  if (!raw) return null;
+  return createHash("sha256").update(raw).digest("hex").slice(0, bytes);
+}
+
+function bodyPreview(value, max = 180) {
+  return String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function cookieTrustSnapshot(jar) {
+  return {
+    abck: marker(jar.get("_abck")),
+    bmsz: marker(jar.get("bm_sz")),
+    akBmsc: jar.has("ak_bmsc"),
+    bmS: marker(jar.get("bm_s")),
+    bmSo: marker(jar.get("bm_so")),
+    bmSv: marker(jar.get("bm_sv")),
+    sbsdO: marker(jar.get("sbsd_o")),
+  };
+}
+
+function sbsdOCookieInput(jar) {
+  const bmSo = jar.get("bm_so");
+  const sbsdO = jar.get("sbsd_o");
+  // Preserve current behavior in this diagnostic batch; trace the source so
+  // the HAR diff can prove whether this needs to become sbsd_o-first later.
+  const source = bmSo ? "bm_so" : (sbsdO ? "sbsd_o" : "none");
+  const value = bmSo ?? sbsdO ?? "";
+  return { source, value, bytes: String(value).length, hash: hashShort(value) };
 }
 
 function visitorIdFromGa(value) {
@@ -326,27 +359,45 @@ export const kmartAdapter = {
       let parsedUrl;
       try { parsedUrl = new URL(url); } catch { parsedUrl = null; }
       const headers = opts?.headers ?? {};
-      const cookieHeader = ctx.jar.header();
+      const cookieHeader = extra.requestCookieHeader ?? ctx.jar.header();
+      const tracedHeaders = { ...headers, ...(cookieHeader ? { cookie: cookieHeader } : {}) };
       requestTrace.push({
+        kind: "request",
         key,
         method: (opts?.method ?? "GET").toUpperCase(),
         host: parsedUrl?.host ?? null,
         path: parsedUrl?.pathname ?? null,
+        search: parsedUrl?.search ?? "",
         status: res?.status ?? null,
         operationName: extra.operationName ?? null,
         variables: redactTraceBody(extra.variables ?? null),
         query: typeof extra.query === "string" ? extra.query.replace(/\s+/g, " ").trim() : null,
         requestBody: redactTraceBody(opts?.body ?? null),
-        requestHeaders: Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
+        requestHeaders: Object.fromEntries(Object.entries(tracedHeaders).map(([name, value]) => [name.toLowerCase(), redactHeaderValue(name, value)])),
         cookieNames: cookieHeader.split(";").map((part) => part.trim().split("=")[0]).filter(Boolean),
         setCookieNames: res ? cookieNamesFromResponse(res) : [],
       });
     };
+    const recordTraceEvent = (key, event = {}) => {
+      if (!traceEnabled) return;
+      requestTrace.push({ kind: "event", key, ...event });
+    };
     const tracedRequest = async (key, url, opts, extra = {}) => {
+      const requestCookieHeader = ctx.jar.header();
       const res = await request(url, opts, ctx);
-      recordTrace(key, url, opts, res, extra);
+      recordTrace(key, url, opts, res, { ...extra, requestCookieHeader });
       return res;
     };
+
+    const allowedKmartModes = new Set(["current", "cart-baseline", "diagnostic"]);
+    const requestedKmartMode = typeof task.kmartMode === "string" ? task.kmartMode : "current";
+    const kmartMode = allowedKmartModes.has(requestedKmartMode) ? requestedKmartMode : "current";
+    steps.push({
+      step: "kmart_mode",
+      ok: true,
+      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" }),
+    });
+    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" } });
 
     steps.push({
       step: "transport",
@@ -390,6 +441,15 @@ export const kmartAdapter = {
       );
       html = await res.text();
       scriptPath = findAkamaiScriptPath(html);
+      recordTraceEvent("nav_warm_home", {
+        type: "document_get",
+        url: origin + "/",
+        status: res.status,
+        htmlBytes: html.length,
+        scriptPath,
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       // Diagnostic: expose which cookies Kmart actually set —
       // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
       // "missing abck" and none of the downstream steps can succeed.
@@ -457,17 +517,35 @@ export const kmartAdapter = {
           ctx,
         );
         sbsdBody = await r.text();
+        recordTraceEvent(`${label}:script_fetch`, {
+          type: "sbsd_script_fetch",
+          label,
+          pageUrl,
+          scriptUrl: sbsdScriptUrl,
+          postUrl: sbsdPostUrl,
+          path: sbsdPath,
+          uuidHash: hashShort(sbsdUuid),
+          hasToken: Boolean(parsed.t),
+          tokenHash: hashShort(parsed.t),
+          status: r.status,
+          scriptBytes: sbsdBody.length,
+          scriptHash: hashShort(sbsdBody),
+          setCookieNames: cookieNamesFromResponse(r),
+          jar: cookieTrustSnapshot(ctx.jar),
+        });
         return { status: r.status, note: `uuid=${sbsdUuid.slice(0, 8)}${parsed.uuid ? "" : "(cached)"} ${sbsdBody.length}b t=${parsed.t || "-"}` };
       });
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
       for (let i = 0; i < rounds; i++) {
         await tStep(`${label}:round#${i}`, async () => {
+          const oInput = sbsdOCookieInput(ctx.jar);
+          const beforeCookies = cookieTrustSnapshot(ctx.jar);
           const payload = await solveAkamaiSbsd({
             jar: ctx.jar,
             pageUrl,
             scriptBody: sbsdBody,
             uuid: sbsdUuid,
-            oCookie: ctx.jar.get("bm_so") ?? ctx.jar.get("sbsd_o") ?? "",
+            oCookie: oInput.value,
             index: i,
             userAgent: UA,
             ip: egressIp,
@@ -495,6 +573,31 @@ export const kmartAdapter = {
           const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+          recordTraceEvent(`${label}:round#${i}`, {
+            type: "sbsd_round",
+            label,
+            round: i,
+            pageUrl,
+            referer: pageUrl,
+            scriptUrl: sbsdScriptUrl,
+            postUrl: sbsdPostUrl,
+            path: sbsdPath,
+            uuidHash: hashShort(sbsdUuid),
+            hasToken: Boolean(parsed.t),
+            tokenHash: hashShort(parsed.t),
+            input: {
+              oCookieSource: oInput.source,
+              oCookieBytes: oInput.bytes,
+              oCookieHash: oInput.hash,
+              scriptBytes: sbsdBody.length,
+              scriptHash: hashShort(sbsdBody),
+              egressIpKnown: Boolean(egressIp),
+            },
+            payload: { bytes: String(payload ?? "").length, hash: hashShort(payload) },
+            beforeCookies,
+            response: { status: res.status, setCookieNames, bodyBytes: bodyTxt.length, bodyPreview: bodyTxt },
+            afterCookies: cookieTrustSnapshot(ctx.jar),
+          });
           return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
         }).catch(() => {});
       }
@@ -535,6 +638,16 @@ export const kmartAdapter = {
         ctx,
       );
       scriptBody = await res.text();
+      recordTraceEvent("akamai_script_fetch", {
+        type: "akamai_script_fetch",
+        scriptUrl,
+        referer: origin + "/",
+        status: res.status,
+        scriptBytes: scriptBody.length,
+        scriptHash: hashShort(scriptBody),
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       return { status: res.status, note: `${scriptBody.length}b` };
     });
 
@@ -563,6 +676,7 @@ export const kmartAdapter = {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
         const beforeAbck = marker(ctx.jar.get("_abck"));
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
+        const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: pdpUrl,
@@ -588,6 +702,23 @@ export const kmartAdapter = {
         );
         const body = await res.text().catch(() => "");
         const setCookieNames = cookieNamesFromResponse(res);
+        recordTraceEvent(`akamai_sensor#${i + 1}`, {
+          type: "akamai_sensor_round",
+          round: i + 1,
+          pageUrl: pdpUrl,
+          scriptUrl,
+          input: {
+            scriptBytes: prevContext ? 0 : scriptBody?.length ?? 0,
+            scriptHash: prevContext ? null : hashShort(scriptBody),
+            contextInBytes: prevContext?.length ?? 0,
+            egressIpKnown: Boolean(egressIp),
+          },
+          payload: { bytes: String(r.payload ?? "").length, hash: hashShort(r.payload), prefix: String(r.payload ?? "").slice(0, 2) },
+          beforeCookies,
+          response: { status: res.status, setCookieNames, bodySuccess: sensorBodySuccess(body), bodyPreview: bodyPreview(body) },
+          afterCookies: cookieTrustSnapshot(ctx.jar),
+          contextOutBytes: r.context?.length ?? 0,
+        });
         return {
           status: res.status,
           ok: res.status < 400 && sensorBodySuccess(body) !== "false",
@@ -663,6 +794,16 @@ export const kmartAdapter = {
       categoryHtml = await res.text();
       categoryOk = res.status < 400;
       const hasSbsd = Boolean(parseSbsd(categoryHtml));
+      recordTraceEvent("nav_category", {
+        type: "document_get",
+        url: catUrl,
+        referer: origin + "/",
+        status: res.status,
+        htmlBytes: categoryHtml.length,
+        hasSbsd,
+        setCookieNames: cookieNamesFromResponse(res),
+        jar: cookieTrustSnapshot(ctx.jar),
+      });
       return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
     });
 
@@ -685,6 +826,16 @@ export const kmartAdapter = {
             categoryHtml = await res.text();
             categoryOk = res.status < 400;
             const snippet = categoryHtml.replace(/\s+/g, " ").trim().slice(0, 180);
+            recordTraceEvent("nav_category_retry", {
+              type: "document_get",
+              url: catUrl,
+              referer: origin + "/",
+              status: res.status,
+              htmlBytes: categoryHtml.length,
+              hasSbsd: Boolean(parseSbsd(categoryHtml)),
+              setCookieNames: cookieNamesFromResponse(res),
+              jar: cookieTrustSnapshot(ctx.jar),
+            });
             return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b | ${snippet}` };
           });
         }
@@ -716,6 +867,18 @@ export const kmartAdapter = {
         const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
         const hasRefScript = /<script[^>]+src=["'][^"']*\?v=/i.test(pdpHtml);
         const hasRefMarker = /Reference\s*#|Access\s+Denied/i.test(pdpHtml);
+        recordTraceEvent("nav_pdp", {
+          type: "document_get",
+          url: pdpUrl,
+          referer: pdpReferer,
+          status: res.status,
+          htmlBytes: pdpHtml.length,
+          hasSbsd: Boolean(parseSbsd(pdpHtml)),
+          hasReferenceMarker: hasRefMarker,
+          hasScriptWithV: hasRefScript,
+          setCookieNames: cookieNamesFromResponse(res),
+          jar: cookieTrustSnapshot(ctx.jar),
+        });
         return {
           status: res.status,
           ok: res.status < 400,
@@ -847,6 +1010,15 @@ export const kmartAdapter = {
             },
             ctx,
           );
+          recordTraceEvent("akamai_pixel", {
+            type: "akamai_pixel_post",
+            postUrl: pixel.postUrl,
+            status: res.status,
+            payloadBytes: String(pixel.payload ?? "").length,
+            payloadHash: hashShort(pixel.payload),
+            setCookieNames: cookieNamesFromResponse(res),
+            jar: cookieTrustSnapshot(ctx.jar),
+          });
           return { status: res.status, note: "pixel posted" };
         });
       } else {
