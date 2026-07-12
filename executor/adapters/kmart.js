@@ -501,7 +501,9 @@ export const kmartAdapter = {
           const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
-          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
+          const rawSetCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+          const hdrDump = ["server","content-type","content-length","x-akamai-transformed","akamai-grn"].map(h=>`${h}=${res.headers.get?.(h) ?? ""}`).join(" ");
+          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] rawSC=${rawSetCookies.length} jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} hdrs={${hdrDump}} bodyLen=${bodyTxt.length} body=${bodyTxt} rawSCFirst=${(rawSetCookies[0]||"").slice(0,180)}` };
         }).catch(() => {});
       }
       return true;
