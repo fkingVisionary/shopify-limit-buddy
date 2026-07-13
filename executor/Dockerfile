@@ -6,6 +6,18 @@ FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 WORKDIR /app
 RUN mkdir -p /app/.tmp && chmod 1777 /app/.tmp
 ENV TMPDIR=/app/.tmp
+# Hyper's Playwright lane prefers channel:"chrome" (real Google Chrome). The
+# base image only ships bundled Chromium — without this, kmart-playwright falls
+# back and Akamai often edge-denies before Bot Manager loads (kmart-mriyj1y1).
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends wget gnupg ca-certificates \
+  && wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+    | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+  && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends google-chrome-stable \
+  && rm -rf /var/lib/apt/lists/*
 COPY package.json ./
 # Playwright browsers are already installed in the base image; skip re-download.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
