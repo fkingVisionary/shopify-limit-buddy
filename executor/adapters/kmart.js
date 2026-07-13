@@ -1310,6 +1310,76 @@ export const kmartAdapter = {
       }
       }
 
+      // 7a.1. API-host Akamai sensor solve.
+      // Kmart's api.kmart.com.au sits behind its own Akamai edge. The parent
+      // `.kmart.com.au` `_abck` set on WWW is sent to api.* by the jar, but
+      // Akamai scores that _abck against the origin that produced its
+      // validated sensor payload — WWW — and treats the first api.* graphql
+      // POST as unvalidated (→ 403 Access Denied). We fix that by posting a
+      // Hyper-solved sensor payload to the same Akamai script path served
+      // under api.kmart.com.au, so the response Set-Cookies an api-origin
+      // validated _abck alongside the WWW one.
+      //
+      // Prior regression note (kept for future readers): an api-host sensor
+      // was tried before get-token was in place and appeared to *overwrite*
+      // the WWW _abck, worsening ATC. Ordering is now: WWW sensor rounds →
+      // PDP → get-token → api sensor rounds → graphql. If the regression
+      // pattern re-appears (WWW _abck marker changes across api_sensor),
+      // disable this block by sending task.apiSensor=false from the caller.
+      const apiSensorEnabled = task.apiSensor !== false && Boolean(scriptPath);
+      if (apiSensorEnabled) {
+        const apiScriptUrl = apiOrigin + scriptPath;
+        let apiCtxToken = null;
+        let apiSensorSolved = false;
+        for (let i = 0; i < 3; i++) {
+          const beforeWwwAbck = marker(ctx.jar.get("_abck"));
+          await tStep(`api_sensor#${i + 1}`, async () => {
+            const r = await solveAkamaiSensor({
+              jar: ctx.jar,
+              pageUrl: apiReferer,
+              userAgent: UA,
+              ip: egressIp,
+              acceptLanguage: ACCEPT_LANG,
+              scriptUrl: apiScriptUrl,
+              scriptBody,
+              prevContext: apiCtxToken,
+              version: "3",
+            });
+            apiCtxToken = r.context;
+            const res = await request(
+              apiScriptUrl,
+              {
+                method: "POST",
+                headers: akamaiSensorHeaders({ requestOrigin: apiOrigin, referer: apiReferer }),
+                body: akamaiSensorBody(r.payload),
+              },
+              ctx,
+            );
+            const body = await res.text().catch(() => "");
+            const setCookieNames = cookieNamesFromResponse(res);
+            const afterWwwAbck = marker(ctx.jar.get("_abck"));
+            return {
+              status: res.status,
+              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+              note: `apiHostSensor payload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] wwwAbckBefore=${beforeWwwAbck} wwwAbckAfter=${afterWwwAbck} abck=${marker(ctx.jar.get("_abck"))} body=${body.replace(/\s+/g, " ").slice(0, 160)}`,
+            };
+          });
+          if (abckSolved(ctx.jar, i + 1)) {
+            apiSensorSolved = true;
+            steps.push({ step: "api_sensor:solved", ok: true, note: `rounds=${i + 1}` });
+            break;
+          }
+          await sleep(200, 400);
+        }
+        if (!apiSensorSolved) {
+          steps.push({ step: "api_sensor:unsolved", ok: false, note: "api-host _abck not valid after 3 rounds (continuing to cart_get anyway)" });
+        }
+      } else {
+        steps.push({ step: "api_sensor:skipped", ok: true, note: `scriptPath=${scriptPath ?? "none"} apiSensorFlag=${task.apiSensor}` });
+      }
+
+
+
 
 
 
