@@ -14,7 +14,7 @@ const CardSchema = z.object({
   cvv: z.string().min(3).max(4),
   expMonth: z.string().min(1).max(2),
   expYear: z.string().min(2).max(4),
-  holder: z.string().min(1).max(100),
+  holder: z.string().max(100).optional().default(""),
 });
 
 const PlaceOrderMutationSchema = z.object({
