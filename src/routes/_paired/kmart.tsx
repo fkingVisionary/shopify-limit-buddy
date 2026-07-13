@@ -690,7 +690,8 @@ function KmartPage() {
               <div>
                 <div className="text-sm font-medium">Attempt real place order</div>
                 <div className="text-xs text-muted-foreground">
-                  Off = dry-run (stops after 3DS). On = runs built-in <code>chargePayDockWithToken</code> after frictionless 3DS.
+                  Off = dry-run (stops after 3DS). On = runs built-in <code>chargePayDockWithToken</code> after 3DS auth.
+                  Revolut/disposable cards are almost always 3DS — if the bank step-ups, watch your phone and approve the push while <code>paydock_3ds_acs</code> is open (~2 min).
                   {usePlaywright ? " Playwright seeds Akamai cookies, then HTTP GraphQL completes checkout." : ""}
                 </div>
               </div>
@@ -1167,6 +1168,8 @@ function KmartPage() {
                     "paydock_3ds_init",
                     "paydock_3ds_handle",
                     "paydock_3ds_process",
+                    "paydock_3ds_acs",
+                    "paydock_3ds_process#2",
                     "place_order",
                     "payment_summary",
                   ].map((name) => {

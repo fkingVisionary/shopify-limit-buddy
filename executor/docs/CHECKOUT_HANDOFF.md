@@ -71,8 +71,9 @@ Golden sequence (from captured HAR `www.kmart.com.au.har_1.json`, see `executor/
 | `getMyActiveCart` / `createMyCart` / `updateMyCart` ATC | Done | + probe reads between create and ATC |
 | Address + billing + C&C storeAddress | Done | Profile-driven; defaults to QLD C&C fixture |
 | Paydock tokenize | Done | `origin=widget.paydock.com` (HAR-critical) |
-| `create3DSToken` → init iframes → handle → process | Done | Hits GPayments init/secondary URLs before InitAuthTimedOut; frictionless path only for placeOrder |
-| `chargePayDockWithToken` | Done | Gated: `placeOrder === true` **and** frictionless 3DS (built-in mutation — no UI-saved query required) |
+| `create3DSToken` → init iframes → handle → process | Done | Hits GPayments init/secondary URLs before InitAuthTimedOut |
+| ACS step-up (Revolut / bank app) | Done | Playwright opens `authorization_url`, waits ~2 min for app approve, re-processes |
+| `chargePayDockWithToken` | Done | Gated: `placeOrder === true` **and** authenticated 3DS (frictionless OR ACS-complete) |
 | `resumeFrom: "api"` + `seedCookies` | Done (this turn) | Skip WWW warm; continue GraphQL |
 | `skipAtc` | Done (this turn) | Used after Playwright already ATC’d |
 
@@ -125,7 +126,9 @@ If ATC “succeeds” but verify misses SKU, you get `checkout_gate` and stop. I
 
 ### 4.4 3DS step-up (non-frictionless)
 
-`place_order` is skipped unless Paydock process returns frictionless. Issuer step-up needs a real browser ACS challenge (not implemented). For test cards, use a frictionless MID/card or complete ACS inside Playwright before handoff (open work).
+Revolut disposable cards are still 3DS-enrolled. “No confirm prompt” in a browser is usually **frictionless fingerprinting**, not “no 3DS”. When the issuer step-ups, the adapter opens ACS via Playwright (`paydock_3ds_acs`) and waits for app/OTP completion, then re-calls `/process`.
+
+Opt out with `acsChallenge:false`. Timeout via `acsTimeoutMs` (30–180s, default 120s).
 
 ### 4.5 TLS fingerprint drift
 
