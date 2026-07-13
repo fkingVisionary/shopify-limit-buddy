@@ -1207,17 +1207,19 @@ export const kmartAdapter = {
         tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${ap}-${id}----${ti}`,
       };
     };
-    const gqlPost = async (body, traceKey = body?.operationName ?? "graphql") =>
-      tracedRequest(
+    const gqlPost = async (body, traceKey = body?.operationName ?? "graphql") => {
+      const authHeaders = ctx.__kmart_bearer ? { authorization: `Bearer ${ctx.__kmart_bearer}` } : {};
+      return tracedRequest(
         traceKey,
         gqlUrl,
         {
           method: "POST",
-          headers: { ...gqlHeaders, ...nrHeaders() },
+          headers: { ...gqlHeaders, ...authHeaders, ...nrHeaders() },
           body: JSON.stringify(body),
         },
         { operationName: body?.operationName ?? null, variables: body?.variables ?? null, query: body?.query ?? null },
       );
+    };
 
 
     if (pdpStatus > 0 && pdpStatus < 400) {
