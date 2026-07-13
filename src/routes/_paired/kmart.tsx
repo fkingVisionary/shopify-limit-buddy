@@ -27,7 +27,30 @@ const RECON_CANDIDATES_KEY = "aio:kmart-recon-candidates";
 const MUTATION_KEY = "aio:kmart-place-order-mutation";
 const HISTORY_KEY = "aio:kmart-run-history";
 const LAST_INPUT_KEY = "aio:kmart-last-input";
+const PROFILE_KEY = "aio:kmart-checkout-profile";
 const AKAMAI_BASELINE_KEY = "aio:kmart-akamai-baseline-trace";
+
+type CheckoutProfile = {
+  email: string;
+  first_name: string;
+  last_name: string;
+  address1: string;
+  city: string;
+  province: string;
+  zip: string;
+  phone: string;
+};
+
+const EMPTY_PROFILE: CheckoutProfile = {
+  email: "",
+  first_name: "",
+  last_name: "",
+  address1: "",
+  city: "",
+  province: "",
+  zip: "",
+  phone: "",
+};
 
 type Step = { step: string; ok: boolean; status: number | null; ms?: number; note?: string };
 type RunResult = {
@@ -202,6 +225,7 @@ function KmartPage() {
   const [mutQuery, setMutQuery] = useState("");
   const [mutExtraVars, setMutExtraVars] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [profile, setProfile] = useState<CheckoutProfile>(EMPTY_PROFILE);
 
   // Hydrate from localStorage after mount (SSR safety).
   useEffect(() => {
@@ -214,6 +238,7 @@ function KmartPage() {
       setMutExtraVars(m.extraVars ? JSON.stringify(m.extraVars, null, 2) : "");
     }
     setHistory(readJSON<HistoryEntry[]>(HISTORY_KEY, []));
+    setProfile({ ...EMPTY_PROFILE, ...readJSON<Partial<CheckoutProfile>>(PROFILE_KEY, {}) });
     const savedBaseline = readJSON<AkamaiTrace | null>(AKAMAI_BASELINE_KEY, null);
     setAkamaiBaseline(savedBaseline);
     if (savedBaseline) setAkamaiBaselineText(JSON.stringify(savedBaseline, null, 2));
@@ -231,6 +256,9 @@ function KmartPage() {
   useEffect(() => {
     writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder, usePlaywright });
   }, [url, qty, proxy, placeOrder, usePlaywright]);
+  useEffect(() => {
+    writeJSON(PROFILE_KEY, profile);
+  }, [profile]);
 
   // Normalize: if the field contains an accidental duplication (e.g. user
   // pasted while the field was non-empty and the two got concatenated),
@@ -266,6 +294,16 @@ function KmartPage() {
           placeOrder,
           debugTrace: true,
           kmartMode: usePlaywright ? "playwright" : "current",
+          profile: {
+            email: profile.email || null,
+            first_name: profile.first_name || null,
+            last_name: profile.last_name || null,
+            address1: profile.address1 || null,
+            city: profile.city || null,
+            province: profile.province || null,
+            zip: profile.zip || null,
+            phone: profile.phone || null,
+          },
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
@@ -467,6 +505,35 @@ function KmartPage() {
                 />
               </div>
             </div>
+            <details className="rounded-md border border-border/50 p-3">
+              <summary className="cursor-pointer text-sm font-medium">Checkout profile (shipping / billing)</summary>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {(
+                  [
+                    ["email", "Email"],
+                    ["phone", "Phone"],
+                    ["first_name", "First name"],
+                    ["last_name", "Last name"],
+                    ["address1", "Street (number + name)"],
+                    ["city", "City"],
+                    ["province", "State (e.g. QLD)"],
+                    ["zip", "Postcode"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <div key={key}>
+                    <Label className="text-xs">{label}</Label>
+                    <Input
+                      value={profile[key]}
+                      onChange={(e) => setProfile((p) => ({ ...p, [key]: e.target.value }))}
+                      className="text-xs"
+                    />
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                Empty fields fall back to adapter fixtures. Card still comes from executor env <code>KMART_CARD_*</code> unless supplied by the server.
+              </p>
+            </details>
             <div className="flex items-center justify-between rounded-md border border-border/50 p-3">
               <div>
                 <div className="text-sm font-medium">Attempt real place order</div>

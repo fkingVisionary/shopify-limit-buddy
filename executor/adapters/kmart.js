@@ -1626,6 +1626,47 @@ fragment LineItemFields on LineItem {
             note: `lines=${lineCount} hasSku=${hasSku} : ${txt.slice(0, 400)}`,
           };
         });
+
+        // If verify missed the SKU (common after Playwright cookie handoff when
+        // the browser cart isn't visible to api.*), force a GraphQL ATC once.
+        if (!cartVerifyHasSku && cartId && sku) {
+          steps.push({
+            step: "cart_verify_miss",
+            ok: false,
+            note: "activeCart missing SKU after verify — forcing GraphQL ATC recovery",
+          });
+          await tStep("cart_atc_recover", async () => {
+            const res = await gqlPost({
+              operationName: "updateMyCart",
+              variables: {
+                id: cartId,
+                version: cartVersion,
+                actions: [
+                  { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                  { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
+                ],
+              },
+              query: updateQuery,
+            }, "cart_atc_recover");
+            const txt = await res.text();
+            let hasSku = false;
+            try {
+              const j = JSON.parse(txt);
+              const c = j?.data?.updateMyCart;
+              if (c?.version) cartVersion = c.version;
+              hasSku = (c?.lineItems ?? []).some((li) => li.variant?.sku === sku);
+            } catch {}
+            cartAtcOk = res.status < 400 && hasSku;
+            cartVerifyHasSku = hasSku;
+            ctx.__kmart_cart.cartAtcOk = cartAtcOk;
+            ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
+            return {
+              status: res.status,
+              ok: cartAtcOk,
+              note: `recover hasSku=${hasSku} : ${txt.slice(0, 400)}`,
+            };
+          });
+        }
       } else {
         steps.push({
           step: "cart_atc",

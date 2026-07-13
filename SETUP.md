@@ -90,8 +90,18 @@ If you prefer Railway over Fly for the Node executor:
    | `PROXY_URL_RESI` | `http://user:pass@host:port` (optional default proxy) |
    | `PORT` | Railway sets this; leave alone |
 
-5. After deploy, open `https://<your-service>.up.railway.app/health`.
+5. After deploy, open `https://<your-service>.up.railway.app/health` (JSON).  
+   Visiting `/` alone used to look blank — it now returns a small JSON index.  
+   In Networking, do **not** force a custom target port unless it matches `PORT` (Railway injects this). Prefer the default public domain routing.
 6. In Lovable secrets set `EXECUTOR_URL` to that origin (no trailing path) and the same `EXECUTOR_TOKEN`.
+
+Quick checks after connect:
+```bash
+curl -sS https://<your-service>.up.railway.app/health
+curl -sS -X POST https://<your-service>.up.railway.app/health/diagnose \
+  -H "authorization: Bearer $EXECUTOR_TOKEN" -H "content-type: application/json" \
+  -d '{"proxy":null}'
+```
 
 The Playwright base image is large (~2GB+). Railway hobby plans can deploy it, but first builds are slow. If the build OOMs, bump the service memory or stick with Fly (`SETUP.md` steps 1–4).
 

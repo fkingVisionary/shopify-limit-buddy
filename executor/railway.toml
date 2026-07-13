@@ -18,6 +18,6 @@ healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
-
-[service]
-# Railway injects PORT; executor already reads process.env.PORT.
+# Railway injects PORT — do not hardcode a public target port in Networking
+# unless it matches process.env.PORT. Prefer leaving target port blank /
+# default so the edge proxies to whatever PORT the container binds.
