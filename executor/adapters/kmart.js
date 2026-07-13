@@ -416,11 +416,21 @@ export const kmartAdapter = {
     // extract fails, and worse, that fake URL becomes the referer on every
     // api.kmart.com.au GraphQL call → 403 Access Denied at the api edge.
     // Strip any trailing non-standard segment after the -<keycode>/ chunk.
-    const pdpUrl = (() => {
+    let pdpUrl = (() => {
       const raw = String(task.storeUrl || "");
       const m = raw.match(/^(https?:\/\/[^/]+\/product\/[^/?#]*-\d{6,9})(?:\/[^?#]*)?(\?[^#]*)?/i);
       return m ? `${m[1]}/${m[2] ?? ""}` : raw;
     })();
+    const resolveKmartRedirect = (location, baseUrl) => {
+      if (!location) return null;
+      try {
+        const next = new URL(location, baseUrl);
+        if (next.hostname !== "www.kmart.com.au" && next.hostname !== "kmart.com.au") return null;
+        return next.href;
+      } catch {
+        return null;
+      }
+    };
     steps.push({ step: "pdp_url_sanitize", ok: true, note: `raw=${task.storeUrl} → clean=${pdpUrl}` });
 
     let scriptPath = null;
@@ -956,7 +966,22 @@ export const kmartAdapter = {
         note: JSON.stringify({ url: pdpUrl, headers: pdpHeaders, cookieHeader: ctx.jar.header() }),
       });
       await tStep("pdp_get", async () => {
-        const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
+        let res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
+        if (res.status >= 300 && res.status < 400) {
+          const redirectFrom = pdpUrl;
+          const redirectTo = resolveKmartRedirect(res.headers.get("location"), redirectFrom);
+          steps.push({
+            step: "pdp_redirect",
+            ok: Boolean(redirectTo),
+            status: res.status,
+            ms: 0,
+            note: redirectTo ? `${redirectFrom} → ${redirectTo}` : `unfollowable location=${res.headers.get("location") ?? "(none)"}`,
+          });
+          if (redirectTo) {
+            pdpUrl = redirectTo;
+            res = await request(pdpUrl, { method: "GET", headers: navHeaders({ referer: pdpReferer, site: "same-origin" }) }, ctx);
+          }
+        }
         pdpStatus = res.status;
         pdpHtml = await res.text();
         const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
