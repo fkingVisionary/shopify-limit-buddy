@@ -162,6 +162,7 @@ function KmartPage() {
   const [qty, setQty] = useState(1);
   const [proxy, setProxy] = useState("");
   const [placeOrder, setPlaceOrder] = useState(false);
+  const [usePlaywright, setUsePlaywright] = useState(false);
   const [running, setRunning] = useState(false);
   const [labRunning, setLabRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
