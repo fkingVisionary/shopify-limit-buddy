@@ -1,0 +1,18 @@
+# Railway — dashboard (control plane) service
+#
+# Settings:
+#   Root Directory = /   (repo root — NOT executor/)
+#   Builder        = Dockerfile
+#
+# The checkout executor stays on Fly.io. Do not reuse the executor Railway
+# service for this UI, and do not set Root Directory to executor/.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
