@@ -1,0 +1,20 @@
+{
+  "context": "Executor run against https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/ variant SKU 43552146. Transport: node-tls-client (Chrome fingerprint). Residential proxy AU. Hyper SDK solves www _abck successfully. First failure is api-host sensor.",
+  "steps_summary": [
+    { "step": "warm_home",        "ok": true,  "status": 200, "note": "www.kmart.com.au/, sets bm_sz + _abck (ind=0)" },
+    { "step": "akamai_script",    "ok": true,  "status": 200, "note": "fetched Akamai sensor JS from www" },
+    { "step": "akamai_sensor#1",  "ok": true,  "status": 201, "note": "Hyper sensor accepted on www, _abck ind changes" },
+    { "step": "akamai_sensor:solved", "ok": true, "note": "www abck validated (ind=~7)" },
+    { "step": "api_sensor#1",     "ok": false, "status": 503, "note": "POST to api.kmart.com.au sensor endpoint. apiHostSensor payload=3; bodySuccess=unknown; setCookies=[bm_sv]; wwwAbckBefore=838b ind=0; wwwAbckAfter=838b ind=0; body=<html><title>503 Service Temporarily Unavailable</title>..." },
+    { "step": "api_sensor:solved", "ok": true, "note": "loop reports solved rounds=1 despite 503 (false positive in adapter)" },
+    { "step": "cart_get",         "ok": false, "status": 403, "note": "GET https://api.kmart.com.au/gateway/graphql (activeCart query). 393b Access Denied HTML from errors.edgesuite.net" },
+    { "step": "cart_create",      "ok": false, "status": 403, "note": "id=null v=? postcode=4160. Same edgesuite Access Denied HTML" },
+    { "step": "cart_atc",         "ok": false, "note": "skipped: cartId=null sku=43552146" }
+  ],
+  "key_observations": [
+    "api-host _abck is never seeded — only www _abck exists in jar.",
+    "The api_sensor POST returns 503 (not 201). Adapter incorrectly flags it 'solved'.",
+    "cart_get / cart_create receive edgesuite 'Access Denied' — Akamai edge, not origin — meaning no valid abck cookie is being sent to api.kmart.com.au.",
+    "Question for Harvey: does a real browser hit a distinct sensor endpoint on api.kmart.com.au, or does it reuse the www abck cross-domain? What path/headers does it use?"
+  ]
+}
