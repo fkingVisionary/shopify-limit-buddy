@@ -108,7 +108,7 @@ Ordered by how often they kill a run:
 
 - WWW `_abck` solved but `api.kmart.com.au/gateway/graphql` still 403.  
 - Code already: get-token seed + optional api-host sensor.  
-- API-host sensor is **off by default** (HAR + 503s). Only set `apiSensor: true` for controlled experiments.  
+- GraphQL cart ops (incl. ATC) use **homepage referer** per slim HAR; on ATC Access Denied we refresh WWW sensor and retry once.  
 - Playwright hybrid exists specifically because pure HTTP often cannot reproduce api-host trust.
 
 ### 4.3 Cart gate
