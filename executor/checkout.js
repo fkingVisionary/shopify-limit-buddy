@@ -7,6 +7,7 @@
 
 import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
+import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 
 const now = () => Date.now();
 
@@ -30,7 +31,12 @@ export async function runCheckout(task) {
     try { await dispatcher?.close?.(); } catch { /* ignore */ }
   };
 
-  const adapter = pickAdapter(store);
+  // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
+  // Overrides hostname-based adapter picking. Runs real Chromium + Hyper's
+  // Playwright handlers instead of the raw-HTTP kmart adapter.
+  const wantPlaywright =
+    task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(new URL(store).hostname.toLowerCase());
+  const adapter = wantPlaywright ? kmartPlaywrightAdapter : pickAdapter(store);
   if (adapter) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.

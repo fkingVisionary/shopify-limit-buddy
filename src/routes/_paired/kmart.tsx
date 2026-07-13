@@ -162,6 +162,7 @@ function KmartPage() {
   const [qty, setQty] = useState(1);
   const [proxy, setProxy] = useState("");
   const [placeOrder, setPlaceOrder] = useState(false);
+  const [usePlaywright, setUsePlaywright] = useState(false);
   const [running, setRunning] = useState(false);
   const [labRunning, setLabRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
@@ -237,7 +238,7 @@ function KmartPage() {
           dryRun: !placeOrder,
           placeOrder,
           debugTrace: true,
-          kmartMode: "diagnostic",
+          kmartMode: usePlaywright ? "playwright" : "diagnostic",
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
@@ -422,6 +423,15 @@ function KmartPage() {
                 </div>
               </div>
               <Switch checked={placeOrder} onCheckedChange={setPlaceOrder} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-border/50 p-3">
+              <div>
+                <div className="text-sm font-medium">Use Playwright fallback lane</div>
+                <div className="text-xs text-muted-foreground">
+                  Absolute backup: real Chromium + Hyper's Playwright handlers. Slower + heavier, but reproduces api-host <code>_abck</code> seeding that raw HTTP can't. Dry-run only for now (home → PDP → cart click → checkout page).
+                </div>
+              </div>
+              <Switch checked={usePlaywright} onCheckedChange={setUsePlaywright} />
             </div>
             <div className="flex items-center gap-2">
               <Button onClick={handleAkamaiLab} disabled={!canRun || labRunning} variant="outline">
