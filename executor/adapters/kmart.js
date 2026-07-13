@@ -395,9 +395,9 @@ export const kmartAdapter = {
     steps.push({
       step: "kmart_mode",
       ok: true,
-      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" }),
+      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "cart-baseline-mriwd1up" }),
     });
-    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" } });
+    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "cart-baseline-mriwd1up" } });
 
     steps.push({
       step: "transport",
@@ -1237,11 +1237,9 @@ export const kmartAdapter = {
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
-    // Empirically (kmart-mriwd1up): PDP referer + x-visitor-id + apollo-client
-    // headers cleared getMyActiveCart / createMyCart. Stripping them to match
-    // slim-HAR homepage referer (PR #10) immediately 403'd cart_get
-    // (kmart-mriwrjcy). Prefer the working browser-client stamp; ATC still
-    // has its own sensor-retry path on Access Denied.
+    // Working baseline (kmart-mriwd1up): PDP referer + x-visitor-id +
+    // apollo-client headers → cart_get / cart_create 200. Do not strip these
+    // for slim-HAR homepage referer experiments — that 403'd cart_get.
     const apiReferer = pdpUrl || (origin + "/");
     const gqlHeaders = {
       "user-agent": UA,
@@ -1605,123 +1603,48 @@ fragment LineItemFields on LineItem {
           });
           cartAtcOk = true;
           ctx.__kmart_cart.cartAtcOk = true;
-        } else {
-          const atcActions = [
-            { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
-            { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
-          ];
-          // Minimal mutation (no fragments) — recover after Akamai 403 previously
-          // returned GraphQL "Unknown operation named updateMyCart" when the
-          // large fragment document may have been stripped/mangled at the edge.
-          const atcQueryMinimal =
-            "mutation updateMyCart($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) { updateMyCart(id: $id, version: $version, actions: $actions) { id version totalPrice { centAmount __typename } lineItems { id quantity variant { sku __typename } __typename } __typename } }";
+        } else await tStep("cart_atc", async () => {
+          const res = await gqlPost({
+            operationName: "updateMyCart",
+            variables: {
+              id: cartId,
+              version: cartVersion,
+              // HAR entry #368: addLineItem + setCustomField selectedCncStoreId.
+              actions: [
+                { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
+              ],
+            },
+            query: updateQuery,
+          }, "cart_atc");
 
-          const parseAtcResponse = (res, txt) => {
-            let lineCount = 0;
-            let total = null;
-            let hasSku = false;
-            try {
-              const j = JSON.parse(txt);
-              const c = j?.data?.updateMyCart;
-              if (c) {
-                cartVersion = c.version ?? cartVersion;
-                lineCount = c.lineItems?.length ?? 0;
-                total = c.totalPrice?.centAmount ?? null;
-                hasSku = (c.lineItems ?? []).some((li) => li.variant?.sku === sku);
-              }
-            } catch { /* Access Denied HTML */ }
-            const denied = res.status === 403 || /Access\s+Denied/i.test(txt);
-            return { lineCount, total, hasSku, denied };
-          };
-
-          const postAtc = async (stepName, queryDoc) => {
-            const res = await gqlPost({
-              operationName: "updateMyCart",
-              variables: { id: cartId, version: cartVersion, actions: atcActions },
-              query: queryDoc,
-            }, stepName === "cart_atc" ? "cart_atc" : stepName);
-            const txt = await res.text();
-            const parsed = parseAtcResponse(res, txt);
-            cartAtcOk = res.status < 400 && parsed.hasSku;
-            ctx.__kmart_cart.cartAtcOk = cartAtcOk;
-            return {
-              status: res.status,
-              ok: cartAtcOk,
-              note: `sku=${sku} lines=${parsed.lineCount} total=${parsed.total} hasSku=${parsed.hasSku} denied=${parsed.denied} : ${txt.slice(0, 500)}`,
-              _denied: parsed.denied,
-              _txt: txt,
-            };
-          };
-
-          // Human gap: HAR leaves ~hundreds of ms–seconds between probe reads
-          // and addLineItem. Back-to-back ATC (30ms deny on kmart-mriwd1up) is
-          // a strong bot tell.
-          await sleep(900, 2200);
-
-          let atcDenied = false;
-          await tStep("cart_atc", async () => {
-            const out = await postAtc("cart_atc", updateQuery);
-            atcDenied = Boolean(out._denied);
-            return out;
-          });
-
-          // On Akamai Access Denied for ATC only (create/get still worked):
-          // refresh WWW _abck with 1–2 sensor posts, then retry once with the
-          // minimal mutation document + homepage referer (already set).
-          if (!cartAtcOk && atcDenied && scriptPath && scriptBody) {
-            steps.push({
-              step: "cart_atc:denied",
-              ok: false,
-              note: "updateMyCart Access Denied — refreshing WWW sensor then retrying ATC once",
-            });
-            const wwwScriptUrl = origin + scriptPath;
-            let sensorCtx = prevContext;
-            for (let i = 0; i < 2; i++) {
-              try {
-                await tStep(`cart_atc:sensor#${i + 1}`, async () => {
-                  const r = await solveAkamaiSensor({
-                    jar: ctx.jar,
-                    pageUrl: origin + "/",
-                    userAgent: UA,
-                    ip: egressIp,
-                    acceptLanguage: ACCEPT_LANG,
-                    scriptUrl: wwwScriptUrl,
-                    scriptBody: i === 0 ? scriptBody : "",
-                    prevContext: sensorCtx,
-                    version: "3",
-                  });
-                  sensorCtx = r.context;
-                  prevContext = r.context;
-                  const res = await request(
-                    wwwScriptUrl,
-                    {
-                      method: "POST",
-                      headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
-                      body: akamaiSensorBody(r.payload),
-                    },
-                    ctx,
-                  );
-                  const body = await res.text().catch(() => "");
-                  return {
-                    status: res.status,
-                    ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-                    note: `abck=${marker(ctx.jar.get("_abck"))} setCookies=[${cookieNamesFromResponse(res).join(",") || "none"}] bodySuccess=${sensorBodySuccess(body)}`,
-                  };
-                });
-                if (abckSolved(ctx.jar, i + 1)) break;
-                await sleep(200, 400);
-              } catch (e) {
-                steps.push({ step: `cart_atc:sensor#${i + 1}:error`, ok: false, note: e?.message ?? String(e) });
-                break;
-              }
+          const txt = await res.text();
+          let lineCount = 0;
+          let total = null;
+          let hasSku = false;
+          try {
+            const j = JSON.parse(txt);
+            const c = j?.data?.updateMyCart;
+            if (c) {
+              cartVersion = c.version ?? cartVersion;
+              lineCount = c.lineItems?.length ?? 0;
+              total = c.totalPrice?.centAmount ?? null;
+              hasSku = (c.lineItems ?? []).some((li) => li.variant?.sku === sku);
             }
-            await sleep(700, 1600);
-            await tStep("cart_atc#2", async () => postAtc("cart_atc#2", atcQueryMinimal));
-          }
+          } catch {}
+          cartAtcOk = res.status < 400 && hasSku;
+          ctx.__kmart_cart.cartAtcOk = cartAtcOk;
+          return {
+            status: res.status,
+            ok: cartAtcOk,
+            note: `sku=${sku} lines=${lineCount} total=${total} hasSku=${hasSku} : ${txt.slice(0, 500)}`,
+          };
+        });
 
-          // 7e. Verify with the rich getMyActiveCart query.
-          await tStep("cart_verify", async () => {
-            const verifyQuery = `query getMyActiveCart {
+
+        // 7e. Verify with the rich getMyActiveCart query.
+        await tStep("cart_verify", async () => {
+          const verifyQuery = `query getMyActiveCart {
   me {
     activeCart {
       id version
@@ -1737,51 +1660,68 @@ fragment LineItemFields on LineItem {
     __typename
   }
 }`;
+          const res = await gqlPost({
+            operationName: "getMyActiveCart",
+            variables: {},
+            query: verifyQuery,
+          }, "cart_verify");
+          const txt = await res.text();
+          let hasSku = false;
+          let lineCount = 0;
+          try {
+            const j = JSON.parse(txt);
+            const lis = j?.data?.me?.activeCart?.lineItems ?? [];
+            lineCount = lis.length;
+            hasSku = lis.some((li) => li.variant?.sku === sku);
+            cartVerifyHasSku = hasSku;
+            ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && hasSku,
+            note: `lines=${lineCount} hasSku=${hasSku} : ${txt.slice(0, 400)}`,
+          };
+        });
+
+        // If verify missed the SKU, force a GraphQL ATC once (same query as baseline).
+        if (!cartVerifyHasSku && cartId && sku) {
+          steps.push({
+            step: "cart_verify_miss",
+            ok: false,
+            note: "activeCart missing SKU after verify — forcing GraphQL ATC recovery",
+          });
+          await tStep("cart_atc_recover", async () => {
             const res = await gqlPost({
-              operationName: "getMyActiveCart",
-              variables: {},
-              query: verifyQuery,
-            }, "cart_verify");
+              operationName: "updateMyCart",
+              variables: {
+                id: cartId,
+                version: cartVersion,
+                actions: [
+                  { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
+                  { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
+                ],
+              },
+              query: updateQuery,
+            }, "cart_atc_recover");
             const txt = await res.text();
             let hasSku = false;
-            let lineCount = 0;
             try {
               const j = JSON.parse(txt);
-              const lis = j?.data?.me?.activeCart?.lineItems ?? [];
-              lineCount = lis.length;
-              hasSku = lis.some((li) => li.variant?.sku === sku);
-              cartVerifyHasSku = hasSku;
-              ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
+              const c = j?.data?.updateMyCart;
+              if (c?.version) cartVersion = c.version;
+              hasSku = (c?.lineItems ?? []).some((li) => li.variant?.sku === sku);
             } catch {}
+            cartAtcOk = res.status < 400 && hasSku;
+            cartVerifyHasSku = hasSku;
+            ctx.__kmart_cart.cartAtcOk = cartAtcOk;
+            ctx.__kmart_cart.cartVerifyHasSku = cartVerifyHasSku;
             return {
               status: res.status,
-              ok: res.status < 400 && hasSku,
-              note: `lines=${lineCount} hasSku=${hasSku} : ${txt.slice(0, 400)}`,
+              ok: cartAtcOk,
+              note: `recover hasSku=${hasSku} : ${txt.slice(0, 400)}`,
             };
           });
-
-          // Soft recover only when ATC was not Akamai-denied (e.g. version skew
-          // / empty cart after a 200). After Access Denied we already retried.
-          if (!cartVerifyHasSku && cartId && sku && !atcDenied) {
-            steps.push({
-              step: "cart_verify_miss",
-              ok: false,
-              note: "activeCart missing SKU after verify — forcing GraphQL ATC recovery (minimal query)",
-            });
-            await tStep("cart_atc_recover", async () => postAtc("cart_atc_recover", atcQueryMinimal));
-            if (cartAtcOk) {
-              cartVerifyHasSku = true;
-              ctx.__kmart_cart.cartVerifyHasSku = true;
-            }
-          } else if (!cartVerifyHasSku && atcDenied) {
-            steps.push({
-              step: "cart_verify_miss",
-              ok: false,
-              note: "skipped recover after Akamai ATC deny (already retried as cart_atc#2)",
-            });
-          }
         }
-
       } else {
         steps.push({
           step: "cart_atc",

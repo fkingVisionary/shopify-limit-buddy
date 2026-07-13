@@ -108,8 +108,9 @@ Ordered by how often they kill a run:
 
 - WWW `_abck` solved but `api.kmart.com.au/gateway/graphql` still 403.  
 - Code already: get-token seed + optional api-host sensor.  
-- GraphQL cart uses PDP referer + x-visitor/apollo stamps (restored after
-  homepage-only headers 403'd cart_get). ATC still retries after Access Denied.  
+- GraphQL cart uses the **mriwd1up baseline**: PDP referer + x-visitor/apollo
+  stamps (cart_get / cart_create 200). Experimental homepage-referer / ATC
+  sensor-retry paths were reverted — finalize checkout from this checkpoint.  
 - Playwright hybrid exists specifically because pure HTTP often cannot reproduce api-host trust.
 
 ### 4.3 Cart gate
