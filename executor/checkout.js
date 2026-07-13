@@ -17,12 +17,12 @@ function step(steps, name, ok, status, ms, note) {
 export async function runCheckout(task) {
   const t0 = now();
   const jar = createJar();
-  // Default to the Chrome-131 impersonated TLS client for every task. undici's
-  // Node-shaped JA3/H2 fingerprint clears Kmart's WWW edge but not the API
-  // edge (api.kmart.com.au → 403 on graphql). node-tls-client is already
-  // installed; this just switches it on. Opt out with EXECUTOR_HTTP_TRANSPORT=undici.
-  const forceTls = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "tls").toLowerCase() !== "undici";
-  const dispatcher = makeDispatcher(task.proxy, { forceTls });
+  // Keep the native TLS client opt-in. It is useful for Akamai experiments, but
+  // a native failure can terminate the process and surface as an empty 502.
+  const requestedTransport = String(task.transport ?? process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
+  const forceUndici = task.forceUndici === true || requestedTransport === "undici";
+  const forceTls = task.forceTls === true || requestedTransport === "tls";
+  const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
   const store = task.storeUrl.replace(/\/$/, "");
 
@@ -42,6 +42,7 @@ export async function runCheckout(task) {
         taskId: task.taskId,
         adapter: adapter.id,
         elapsedMs: now() - t0,
+        transport: dispatcher.transport,
         steps: out.steps ?? ctx.steps,
         trace: out.trace,
         finalUrl: out.finalUrl,
@@ -56,6 +57,7 @@ export async function runCheckout(task) {
         error: e?.message ?? String(e),
         failedStep: e?.code ?? "adapter_error",
         elapsedMs: now() - t0,
+        transport: dispatcher.transport,
         steps: ctx.steps,
         trace: ctx.requestTrace,
         cookies: ctx.jar?.dump?.() ?? {},
@@ -149,6 +151,7 @@ export async function runCheckout(task) {
       taskId: task.taskId,
       adapter: "shopify-generic-fallback",
       elapsedMs: now() - t0,
+      transport: dispatcher.transport,
       steps,
       finalUrl: lastUrl,
       dryRun: true,
@@ -162,6 +165,7 @@ export async function runCheckout(task) {
       error: e?.message ?? String(e),
       failedStep: steps[steps.length - 1]?.step ?? "unknown",
       elapsedMs: now() - t0,
+      transport: dispatcher.transport,
       steps,
     };
   } finally {
