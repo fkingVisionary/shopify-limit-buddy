@@ -1,16 +1,18 @@
-// Paydock / GPayments 3DS helper — matches @paydock/client-sdk GPaymentsService.
+// Paydock / GPayments 3DS helper.
 //
-// Flow:
-//   1. Method iframes (initialization_url + secondary_url)
-//   2. POST /handle event=InitAuthTimedOut
-//   3. POST /process { charge_3ds_id }
-//   4a. success → done
-//   4b. pending + challenge_url → load challenge iframe, poll secondary until
-//       AuthResultReady, THEN process again (do NOT process-poll during challenge)
-//   4c. pending + decoupled_challenge → poll process while user approves app push
+// Preferred path (matches @paydock/client-sdk Canvas3ds):
+//   1. Load widget.umd.js in Playwright
+//   2. new paydock.Canvas3ds('#el', outerBase64Token).setEnv('production').load()
+//   3. Wait for chargeAuthSuccess / chargeAuthReject
+//   4. chargeAuthChallenge / chargeAuthDecoupled → Revolut/bank push should fire
 //
-// Important: during a Visa/Mastercard challenge, calling /process again early
-// returns invalid_transaction / token_inactive and kills the Revolut push.
+// The SDK owns method iframes → /process → challenge iframe → secondary poll
+// → GET /handle. Hand-rolling those steps (InitAuthTimedOut then /process, then
+// re-/process during challenge) burns the token and never pings Revolut.
+//
+// Fallback helpers below remain for diagnostics / acsChallenge===false dry paths.
+
+const PAYDOCK_WIDGET_URL = "https://widget.paydock.com/sdk/latest/widget.umd.min.js";
 
 function parseProxy(raw) {
   if (!raw) return null;
@@ -119,7 +121,6 @@ function buildBrowserInfo(egressIp, userAgent) {
 async function postHandleInitAuthTimedOut(context, { paydockJwt, egressIp, userAgent, storeOrigin }) {
   const requestorTransId = globalThis.crypto.randomUUID();
   const param = Buffer.from(JSON.stringify(buildBrowserInfo(egressIp, userAgent)), "utf8").toString("base64");
-  // Prefer header token (SDK style). Query-token alone was 403'ing from Fly.
   const handleRes = await context.request.post("https://api.paydock.com/v1/charges/standalone-3ds/handle", {
     headers: {
       accept: "*/*",
@@ -151,7 +152,190 @@ async function postHandleInitAuthTimedOut(context, { paydockJwt, egressIp, userA
 }
 
 /**
+ * Official Paydock Canvas3ds path — one browser session drives the full GPayments
+ * method → process → challenge/decoupled → AuthResultReady → GET handle flow.
+ *
+ * @param {object} opts
+ * @param {string} opts.outerToken - base64 from create3DSToken (format standalone_3ds)
+ * @param {string|null} [opts.proxy]
+ * @param {number} [opts.timeoutMs]
+ * @param {string} [opts.storeOrigin]
+ */
+export async function runPaydockCanvas3ds({
+  outerToken,
+  proxy = null,
+  timeoutMs = 90_000,
+  storeOrigin = "https://www.kmart.com.au",
+} = {}) {
+  if (!outerToken || typeof outerToken !== "string") {
+    return { ok: false, note: "missing outerToken", events: [], mode: null };
+  }
+
+  // Quick structural check before launching Chromium.
+  try {
+    const outer = JSON.parse(Buffer.from(outerToken, "base64").toString("utf8"));
+    if (outer?.format !== "standalone_3ds" || !outer?.content) {
+      return {
+        ok: false,
+        note: `bad outer token format=${outer?.format ?? "?"} content=${Boolean(outer?.content)}`,
+        events: [],
+        mode: null,
+      };
+    }
+  } catch (e) {
+    return { ok: false, note: `outer token decode: ${e?.message ?? e}`, events: [], mode: null };
+  }
+
+  let browser;
+  try {
+    const launched = await launchBrowser(proxy);
+    browser = launched.browser;
+    const { page } = launched;
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
+
+    // Prefer store origin so referer/origin look like checkout; fall back to widget.
+    await page
+      .goto(`${storeOrigin}/checkout/payment`, { waitUntil: "domcontentloaded", timeout: 45_000 })
+      .catch(() => page.goto("https://widget.paydock.com/", { waitUntil: "domcontentloaded", timeout: 30_000 }));
+
+    await page.addScriptTag({ url: PAYDOCK_WIDGET_URL });
+
+    const boot = await page.evaluate(
+      ({ token, widgetUrl }) => {
+        if (!window.paydock?.Canvas3ds) {
+          return { ok: false, note: `paydock.Canvas3ds missing after ${widgetUrl}` };
+        }
+        const root = document.createElement("div");
+        root.id = "paydock-3ds";
+        root.style.cssText = "width:100%;min-height:420px;margin:0;padding:0;";
+        document.body.innerHTML = "";
+        document.body.appendChild(root);
+
+        window.__paydock3ds = {
+          events: [],
+          result: null,
+          challenge: false,
+          decoupled: false,
+          startedAt: Date.now(),
+        };
+
+        const canvas = new window.paydock.Canvas3ds("#paydock-3ds", token);
+        // CRITICAL: SDK defaults to sandbox → api-sandbox.paydock.com
+        canvas.setEnv("production");
+
+        const track = (name) => (data) => {
+          const snap = {
+            name,
+            t: Date.now() - window.__paydock3ds.startedAt,
+            status: data?.status ?? null,
+            charge_3ds_id: data?.charge_3ds_id ?? null,
+            info: data?.info ?? data?.result?.description ?? null,
+          };
+          window.__paydock3ds.events.push(snap);
+          if (name === "chargeAuthChallenge") window.__paydock3ds.challenge = true;
+          if (name === "chargeAuthDecoupled") window.__paydock3ds.decoupled = true;
+          if (name === "chargeAuthSuccess") {
+            window.__paydock3ds.result = { ok: true, name, data: snap };
+          }
+          if (name === "chargeAuthReject" || name === "error") {
+            window.__paydock3ds.result = { ok: false, name, data: snap };
+          }
+        };
+
+        canvas.on("chargeAuthSuccess", track("chargeAuthSuccess"));
+        canvas.on("chargeAuthReject", track("chargeAuthReject"));
+        canvas.on("chargeAuthChallenge", track("chargeAuthChallenge"));
+        canvas.on("chargeAuthDecoupled", track("chargeAuthDecoupled"));
+        canvas.on("chargeAuthInfo", track("chargeAuthInfo"));
+        canvas.on("error", track("error"));
+        canvas.load();
+        return { ok: true, note: "Canvas3ds loaded production" };
+      },
+      { token: outerToken, widgetUrl: PAYDOCK_WIDGET_URL },
+    );
+
+    if (!boot?.ok) {
+      return { ok: false, note: boot?.note || "Canvas3ds boot failed", events: [], mode: null };
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let last = { events: [], challenge: false, decoupled: false, result: null };
+    let sawStepUp = false;
+
+    while (Date.now() < deadline) {
+      last = await page.evaluate(() => ({
+        events: window.__paydock3ds?.events?.slice(-12) || [],
+        challenge: Boolean(window.__paydock3ds?.challenge),
+        decoupled: Boolean(window.__paydock3ds?.decoupled),
+        result: window.__paydock3ds?.result || null,
+        iframeCount: document.querySelectorAll("iframe").length,
+      }));
+
+      if (last.challenge || last.decoupled) sawStepUp = true;
+      if (last.result) break;
+      await page.waitForTimeout(1500);
+    }
+
+    const mode = last.decoupled ? "decoupled" : last.challenge ? "challenge" : sawStepUp ? "stepup" : "frictionless_or_method";
+    const eventSummary = (last.events || [])
+      .map((e) => `${e.name}${e.status ? `:${e.status}` : ""}@${e.t}ms`)
+      .join(",")
+      .slice(0, 180);
+
+    if (last.result?.ok) {
+      return {
+        ok: true,
+        note: `chargeAuthSuccess mode=${mode} iframes=${last.iframeCount} events=${eventSummary}`,
+        mode,
+        challenge: last.challenge,
+        decoupled: last.decoupled,
+        events: last.events,
+        authReady: true,
+      };
+    }
+
+    if (last.result && !last.result.ok) {
+      return {
+        ok: false,
+        note: `${last.result.name || "reject"} mode=${mode} iframes=${last.iframeCount} events=${eventSummary}`.slice(0, 280),
+        mode,
+        challenge: last.challenge,
+        decoupled: last.decoupled,
+        events: last.events,
+        authReady: false,
+      };
+    }
+
+    return {
+      ok: false,
+      note: `Canvas3ds timeout after ${timeoutMs}ms mode=${mode} stepUp=${sawStepUp} iframes=${last.iframeCount} events=${eventSummary} — approve Revolut if prompted`.slice(
+        0,
+        280,
+      ),
+      mode,
+      challenge: last.challenge,
+      decoupled: last.decoupled,
+      events: last.events,
+      authReady: false,
+      timedOut: true,
+      sawStepUp,
+    };
+  } catch (e) {
+    const msg = e?.message ?? String(e);
+    const certError = /ERR_CERT|CERT_AUTHORITY|BAD_SSL_CLIENT_AUTH|SSL|certificate/i.test(msg);
+    return { ok: false, note: `Canvas3ds error: ${msg}`.slice(0, 280), certError, events: [], mode: null };
+  } finally {
+    try {
+      await browser?.close?.();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
  * One Playwright session: method iframes → InitAuthTimedOut handle.
+ * @deprecated Prefer runPaydockCanvas3ds — manual InitAuthTimedOut often blocks Revolut.
  */
 export async function runMethodThenHandle({
   initializationUrl = null,
@@ -241,10 +425,8 @@ export async function runMethodThenHandle({
 }
 
 /**
- * Challenge / decoupled wait.
- * - challenge: load challenge_url iframe (incl. GPayments host via ignoreHTTPSErrors),
- *   poll secondary_url for AuthResultReady — do NOT call /process until ready.
- * - decoupled: poll /process while user approves bank app.
+ * Challenge / decoupled wait (fallback).
+ * Both modes poll secondary_url for AuthResultReady — never /process mid-challenge.
  */
 export async function completeAcsChallenge({
   authorizationUrl,
@@ -253,7 +435,7 @@ export async function completeAcsChallenge({
   proxy = null,
   timeoutMs = 75_000,
   referer = "https://www.kmart.com.au/checkout/payment",
-  mode = null, // "challenge" | "decoupled" | null
+  mode = null,
   pollProcess = null,
   paydockJwt = null,
 } = {}) {
@@ -263,8 +445,8 @@ export async function completeAcsChallenge({
   if (effectiveMode === "challenge" && !challenge) {
     return { ok: false, note: "challenge mode but no challenge_url", certError: false };
   }
-  if (effectiveMode === "decoupled" && typeof pollProcess !== "function") {
-    return { ok: false, note: "decoupled mode requires pollProcess", certError: false };
+  if (effectiveMode === "decoupled" && !secondaryUrl && typeof pollProcess !== "function") {
+    return { ok: false, note: "decoupled mode requires secondaryUrl or pollProcess", certError: false };
   }
 
   let browser;
@@ -280,7 +462,6 @@ export async function completeAcsChallenge({
       referer,
     });
 
-    // Secondary monitor (SDK doPolling target).
     if (secondaryUrl) {
       await page.evaluate((src) => {
         const f = document.createElement("iframe");
@@ -299,8 +480,6 @@ export async function completeAcsChallenge({
       } catch {
         challengeHost = String(challenge).slice(0, 40);
       }
-      // SDK loads challenge_url in an iframe even when it is on GPayments API
-      // hosts. ignoreHTTPSErrors covers private CA; client-cert is best-effort.
       const load = await page.evaluate(async (url) => {
         return await new Promise((resolve) => {
           const f = document.createElement("iframe");
@@ -323,7 +502,6 @@ export async function completeAcsChallenge({
       }, challenge);
       challengeLoadOk = Boolean(load?.ok);
       if (!challengeLoadOk) {
-        // Fallback: top-level navigation (still ignoreHTTPSErrors).
         try {
           const res = await page.goto(challenge, { waitUntil: "domcontentloaded", timeout: 30_000 });
           challengeLoadOk = Boolean(res && res.status() < 500);
@@ -345,7 +523,8 @@ export async function completeAcsChallenge({
     let authReady = false;
 
     while (Date.now() < deadline) {
-      if (effectiveMode === "challenge" && secondaryUrl) {
+      // SDK polls secondary for BOTH challenge and decoupled.
+      if (secondaryUrl) {
         try {
           const sec = await context.request.get(secondaryUrl, {
             headers: { accept: "application/json, text/plain, */*" },
@@ -367,9 +546,7 @@ export async function completeAcsChallenge({
         } catch (e) {
           lastPollNote = `secondary err: ${e?.message ?? e}`;
         }
-      }
-
-      if (effectiveMode === "decoupled" && typeof pollProcess === "function") {
+      } else if (effectiveMode === "decoupled" && typeof pollProcess === "function") {
         try {
           const p = await pollProcess();
           if (p?.frictionless) {
@@ -398,7 +575,6 @@ export async function completeAcsChallenge({
       await page.waitForTimeout(2000);
     }
 
-    // After challenge AuthResultReady, SDK calls GET /handle then considers auth done.
     if (authReady && paydockJwt) {
       try {
         const h = await context.request.get("https://api.paydock.com/v1/charges/standalone-3ds/handle", {
@@ -421,7 +597,7 @@ export async function completeAcsChallenge({
       return {
         ok: true,
         note: `AuthResultReady — ${lastPollNote}`,
-        mode: "challenge",
+        mode: effectiveMode,
         certError: false,
         finalUrl: page.url(),
         authReady: true,

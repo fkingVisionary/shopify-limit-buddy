@@ -121,9 +121,10 @@ export const runOnExecutor = createServerFn({ method: "POST" })
       card: data.card ?? envCard,
     };
     const t0 = Date.now();
-    // Kmart checkout can exceed 60s (Akamai + cart). Cap below typical
-    // platform gateway limits so we return JSON instead of opaque "failed to fetch".
-    const RUN_TIMEOUT_MS = 170_000;
+    // Kmart checkout + Paydock Canvas3ds (method → challenge → Revolut approve)
+    // often exceeds 3 minutes. Cap below typical platform gateway limits so we
+    // return JSON instead of opaque "failed to fetch".
+    const RUN_TIMEOUT_MS = 240_000;
     try {
       const res = await fetch(`${url}/run`, {
         method: "POST",

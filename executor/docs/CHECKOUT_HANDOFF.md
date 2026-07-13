@@ -71,8 +71,8 @@ Golden sequence (from captured HAR `www.kmart.com.au.har_1.json`, see `executor/
 | `getMyActiveCart` / `createMyCart` / `updateMyCart` ATC | Done | + probe reads between create and ATC |
 | Address + billing + C&C storeAddress | Done | Profile-driven; defaults to QLD C&C fixture |
 | Paydock tokenize | Done | `origin=widget.paydock.com` (HAR-critical) |
-| `create3DSToken` → init iframes → handle → process | Done | Hits GPayments init/secondary URLs before InitAuthTimedOut |
-| ACS step-up (Revolut / bank app) | Done | Playwright opens `authorization_url`, waits ~2 min for app approve, re-processes |
+| `create3DSToken` → Canvas3ds widget | Done | Official Paydock SDK: method → process → challenge/decoupled |
+| ACS step-up (Revolut / bank app) | Done | Inside Canvas3ds (`chargeAuthChallenge` / `chargeAuthDecoupled`); approve app push |
 | `chargePayDockWithToken` | Done | Gated: `placeOrder === true` **and** authenticated 3DS (frictionless OR ACS-complete) |
 | `resumeFrom: "api"` + `seedCookies` | Done (this turn) | Skip WWW warm; continue GraphQL |
 | `skipAtc` | Done (this turn) | Used after Playwright already ATC’d |
@@ -128,9 +128,9 @@ If ATC “succeeds” but verify misses SKU, you get `checkout_gate` and stop. I
 
 Revolut disposable cards are still 3DS-enrolled. “No confirm prompt” in a browser is usually **frictionless fingerprinting**, not “no 3DS”. When the issuer step-ups, the adapter opens ACS via Playwright (`paydock_3ds_acs`) and waits for app/OTP completion, then re-calls `/process`.
 
-**Challenge vs decoupled:** When `/process` returns `pending` + `challenge_url`, load that URL in an iframe (even on GPayments hosts) and poll `secondary_url` for `AuthResultReady`. Do **not** call `/process` again during the challenge — that yields `invalid_transaction` / `token_inactive` and prevents the Revolut push.
+**Challenge vs decoupled:** Prefer the official Paydock **Canvas3ds** widget (`paydock_3ds_widget`) with the outer `create3DSToken` base64 and `setEnv('production')`. The SDK owns method iframes → `/process` → challenge/decoupled → secondary `AuthResultReady` → GET `/handle`. Do **not** hand-roll `InitAuthTimedOut` then re-call `/process` during a challenge — that yields `invalid_transaction` / `token_inactive` and prevents the Revolut push.
 
-Opt out with `acsChallenge:false`. Timeout via `acsTimeoutMs` (30–180s, default 120s).
+Opt out with `acsChallenge:false`. Timeout via `acsTimeoutMs` (45–120s for widget, default 90s). Dashboard `/run` abort is 240s so cart + 3DS can finish.
 
 ### 4.5 TLS fingerprint drift
 

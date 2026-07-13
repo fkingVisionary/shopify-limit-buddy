@@ -13,7 +13,13 @@ import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
-import { completeAcsChallenge, pickAcsEntryUrl, isUuidLike, isGpaymentsApiHost, runMethodThenHandle } from "./kmart-3ds-acs.js";
+import {
+  completeAcsChallenge,
+  pickAcsEntryUrl,
+  isUuidLike,
+  runMethodThenHandle,
+  runPaydockCanvas3ds,
+} from "./kmart-3ds-acs.js";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -2348,116 +2354,10 @@ fragment LineItemFields on LineItem {
           });
         }
 
-        // 8f2. GPayments 3DS Method + monitor iframes. Real browsers load
-        //     secondary_url (monitor) and initialization_url (method) before
-        //     posting InitAuthTimedOut. Skipping these hurts frictionless
-        //     rates — issuers never see the method probe.
-        if (paydockJwt && charge3dsId && (threeDsSecondaryUrl || threeDsInitUrl)) {
-          await tStep("paydock_3ds_init", async () => {
-            const hits = [];
-            for (const [label, url] of [
-              ["secondary", threeDsSecondaryUrl],
-              ["initialization", threeDsInitUrl],
-            ]) {
-              if (!url) continue;
-              try {
-                const res = await tracedRequest(
-                  `paydock_3ds_${label}`,
-                  url,
-                  {
-                    method: "GET",
-                    headers: {
-                      "user-agent": UA,
-                      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                      "accept-language": ACCEPT_LANG,
-                      "upgrade-insecure-requests": "1",
-                      ...CHROME_CH,
-                      "sec-fetch-site": "cross-site",
-                      "sec-fetch-mode": "navigate",
-                      "sec-fetch-dest": "iframe",
-                      referer: origin + "/checkout/payment",
-                    },
-                  },
-                );
-                hits.push(`${label}=${res.status}`);
-                // Drain body so undici/connection reuse stays clean.
-                await res.text().catch(() => "");
-              } catch (e) {
-                hits.push(`${label}=err:${e?.message ?? e}`);
-              }
-              await sleep(80, 220);
-            }
-            return {
-              status: 200,
-              ok: hits.some((h) => /=\d{3}$/.test(h) && !h.includes("=err")),
-              note: hits.join(" ") || "no urls",
-            };
-          }).catch((e) => steps.push({ step: "paydock_3ds_init:error", ok: false, note: e?.message ?? String(e) }));
-        } else if (paydockJwt && charge3dsId) {
-          steps.push({
-            step: "paydock_3ds_init",
-            ok: false,
-            note: "skipped: JWT meta missing initialization_url/secondary_url",
-          });
-        }
-
-        // 8g. Paydock standalone-3ds handle — signals the 3DS orchestrator
-        //     that the browser's 3DS-method probe didn't complete
-        //     (InitAuthTimedOut). Real browsers hit this path whenever the
-        //     issuer's ACS doesn't respond within the SDK timeout; the
-        //     issuer then falls back to frictionless authentication or a
-        //     challenge. From a headless HTTP client we can never run the
-        //     3dsMethod iframe, so InitAuthTimedOut is legitimate here.
-        //
-        // Real HAR entry #788:
-        //   POST /v1/charges/standalone-3ds/handle?x-access-token=<JWT>
-        //   Content-Type: application/x-www-form-urlencoded
-        //   Body: requestorTransId=<uuid>&event=InitAuthTimedOut
-        //         &param=<base64(browser info JSON)>
-        //   → 302 Location: widget.paydock.com/3ds/standalone-3ds?...
-        //     &charge_3ds_id=<id>&info=InitAuthTimedOut
-        // 8g/8h0. 3DS Method iframes + InitAuthTimedOut handle in ONE Playwright
-        //     session (Paydock SDK order). Undici-only handle was 403'ing and we
-        //     then still burned 120s on ACS with no Revolut push.
-        let handleOk = false;
-        let handleLocation = null;
-        if (paydockJwt && charge3dsId && task.acsChallenge !== false) {
-          await tStep("paydock_3ds_method", async () => {
-            const method = await runMethodThenHandle({
-              initializationUrl: threeDsInitUrl,
-              secondaryUrl: threeDsSecondaryUrl,
-              paydockJwt,
-              charge3dsId,
-              egressIp,
-              userAgent: UA,
-              proxy: task.proxy ?? null,
-              methodWaitMs: 10_000,
-              storeOrigin: origin,
-            });
-            handleOk = method.ok;
-            handleLocation = method.handleLocation || null;
-            if (method.returnedCharge3dsId) charge3dsId = method.returnedCharge3dsId;
-            return {
-              status: method.handleStatus || (method.ok ? 200 : 500),
-              ok: method.ok || Boolean(threeDsInitUrl),
-              note: method.note,
-            };
-          }).catch((e) => steps.push({ step: "paydock_3ds_method:error", ok: false, note: e?.message ?? String(e) }));
-
-          steps.push({
-            step: "paydock_3ds_handle",
-            ok: handleOk,
-            note: handleOk
-              ? `ok via browser method+handle loc=${String(handleLocation || "").slice(0, 120)}`
-              : "browser handle did not return 2xx/3xx — process may ValidationError; will fail fast (no 2min ACS hang)",
-          });
-        } else if (paydockJwt && charge3dsId) {
-          steps.push({ step: "paydock_3ds_method", ok: false, note: "skipped: task.acsChallenge===false" });
-        } else {
-          steps.push({ step: "paydock_3ds_handle", ok: false, note: "skipped: no paydockJwt/charge3dsId from create3DSToken" });
-        }
-
-        // 8h. Paydock standalone-3ds process.
+        // 8f2–8h. Paydock 3DS via official Canvas3ds widget (preferred).
+        //     Hand-rolling InitAuthTimedOut → /process → ACS iframe burned the
+        //     token and never triggered Revolut. Canvas3ds owns method iframes,
+        //     /process, challenge/decoupled, secondary poll, and GET /handle.
         let processFrictionless = false;
         let processStatus = null;
         let processRawNote = "";
@@ -2469,6 +2369,10 @@ fragment LineItemFields on LineItem {
         let processValidationError = false;
         let acsOk = false;
         let acsCertError = false;
+        let handleOk = false;
+        let handleLocation = null;
+        let wantAcs = false;
+        let widgetUsed = false;
 
         const runPaydockProcess = async (label) => {
           if (!isUuidLike(charge3dsId)) {
@@ -2526,7 +2430,6 @@ fragment LineItemFields on LineItem {
             if (result?.challenge && typeof result.challenge === "string" && /^https?:/i.test(result.challenge)) {
               challengeUrl = result.challenge;
             }
-            // Paydock sometimes sets challenge:true with challenge_url alongside.
             if (!challengeUrl && result?.challenge === true && result?.challenge_url) {
               challengeUrl = result.challenge_url;
             }
@@ -2562,7 +2465,63 @@ fragment LineItemFields on LineItem {
           };
         };
 
-        if (paydockJwt && charge3dsId) {
+        if (create3dsRaw && charge3dsId && task.acsChallenge !== false) {
+          widgetUsed = true;
+          const widgetTimeoutMs = Math.min(Math.max(Number(task.acsTimeoutMs) || 90_000, 45_000), 120_000);
+          await tStep("paydock_3ds_widget", async () => {
+            steps.push({
+              step: "paydock_3ds_widget:hint",
+              ok: true,
+              note: `Canvas3ds production — watch Revolut for push/prompt (~${Math.round(widgetTimeoutMs / 1000)}s). Prefer no proxy for this step if GraphQL cart already succeeded.`,
+            });
+            // Direct egress for Paydock/GPayments unless task forces proxy on 3DS.
+            const widgetProxy = task.acsProxy === true ? (task.proxy ?? null) : null;
+            const w = await runPaydockCanvas3ds({
+              outerToken: create3dsRaw,
+              proxy: widgetProxy,
+              timeoutMs: widgetTimeoutMs,
+              storeOrigin: origin,
+            });
+            acsOk = Boolean(w.ok);
+            acsCertError = Boolean(w.certError);
+            processDecoupled = Boolean(w.decoupled);
+            wantAcs = Boolean(w.challenge || w.decoupled || w.sawStepUp);
+            if (w.ok) {
+              processFrictionless = true;
+              processStatus = "success";
+              processHttpStatus = 200;
+            } else if (w.timedOut) {
+              processStatus = "pending";
+              processHttpStatus = 408;
+            } else {
+              processStatus = "error";
+              processHttpStatus = w.certError ? 495 : 400;
+            }
+            processRawNote = w.note;
+            return {
+              status: w.ok ? 200 : w.timedOut ? 408 : 400,
+              ok: w.ok,
+              note: w.note,
+            };
+          }).catch((e) => steps.push({ step: "paydock_3ds_widget:error", ok: false, note: e?.message ?? String(e) }));
+
+          steps.push({
+            step: "paydock_3ds_process",
+            ok: processFrictionless,
+            note: processFrictionless
+              ? "authenticated inside Canvas3ds (SDK /process + handle)"
+              : `skipped: widget did not chargeAuthSuccess — ${String(processRawNote).slice(0, 160)}`,
+          });
+          steps.push({
+            step: "paydock_3ds_acs",
+            ok: acsOk || processFrictionless,
+            note: processFrictionless
+              ? `covered by Canvas3ds mode=${processDecoupled ? "decoupled" : wantAcs ? "challenge" : "frictionless"}`
+              : String(processRawNote).slice(0, 220),
+          });
+        } else if (paydockJwt && charge3dsId && task.acsChallenge === false) {
+          steps.push({ step: "paydock_3ds_widget", ok: false, note: "skipped: task.acsChallenge===false" });
+          // Dry diagnostic: still hit undici process once without ACS wait.
           await tStep("paydock_3ds_process", async () => {
             const out = await runPaydockProcess("paydock_process");
             processFrictionless = out.frictionless;
@@ -2576,104 +2535,169 @@ fragment LineItemFields on LineItem {
             if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
             return { status: out.status, ok: out.ok, note: out.note };
           }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
-        } else {
-          steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
-        }
+        } else if (paydockJwt && charge3dsId) {
+          // Fallback: legacy method+handle+process+ACS (no outer token).
+          steps.push({
+            step: "paydock_3ds_widget",
+            ok: false,
+            note: "skipped: no create3DSToken outer base64 — using legacy ACS path",
+          });
 
-        // ONLY wait for Revolut/bank when process says pending + decoupled/challenge.
-        // Blind waits (old bug) hung Railway for minutes → UI "failed to fetch", no push.
-        const processPending = String(processStatus || "").toLowerCase() === "pending";
-        const acsPick = pickAcsEntryUrl({
-          handleLocation,
-          authorizationUrl: processChallengeUrl || challengeAcsUrl || threeDsAuthUrl,
-          charge3dsId,
-          paydockJwt,
-        });
-        const wantAcs =
-          !processFrictionless &&
-          task.acsChallenge !== false &&
-          !processValidationError &&
-          processHttpStatus !== 400 &&
-          (processDecoupled || Boolean(processChallengeUrl) || processPending);
+          if (threeDsSecondaryUrl || threeDsInitUrl) {
+            await tStep("paydock_3ds_init", async () => {
+              const hits = [];
+              for (const [label, url] of [
+                ["secondary", threeDsSecondaryUrl],
+                ["initialization", threeDsInitUrl],
+              ]) {
+                if (!url) continue;
+                try {
+                  const res = await tracedRequest(
+                    `paydock_3ds_${label}`,
+                    url,
+                    {
+                      method: "GET",
+                      headers: {
+                        "user-agent": UA,
+                        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "accept-language": ACCEPT_LANG,
+                        "upgrade-insecure-requests": "1",
+                        ...CHROME_CH,
+                        "sec-fetch-site": "cross-site",
+                        "sec-fetch-mode": "navigate",
+                        "sec-fetch-dest": "iframe",
+                        referer: origin + "/checkout/payment",
+                      },
+                    },
+                  );
+                  hits.push(`${label}=${res.status}`);
+                  await res.text().catch(() => "");
+                } catch (e) {
+                  hits.push(`${label}=err:${e?.message ?? e}`);
+                }
+                await sleep(80, 220);
+              }
+              return { status: 200, ok: hits.some((h) => /=\d{3}$/.test(h) && !h.includes("=err")), note: hits.join(" ") || "no urls" };
+            }).catch((e) => steps.push({ step: "paydock_3ds_init:error", ok: false, note: e?.message ?? String(e) }));
+          }
 
-        if (wantAcs) {
-          const acsTimeoutMs = Math.min(Math.max(Number(task.acsTimeoutMs) || 75_000, 30_000), 90_000);
-          const acsMode = processDecoupled ? "decoupled" : processChallengeUrl ? "challenge" : "decoupled";
-          await tStep("paydock_3ds_acs", async () => {
-            steps.push({
-              step: "paydock_3ds_acs:hint",
-              ok: true,
-              note:
-                acsMode === "challenge"
-                  ? `Challenge iframe loading — approve in Revolut/bank app if prompted (~${Math.round(acsTimeoutMs / 1000)}s). Do not re-call /process until AuthResultReady.`
-                  : `Decoupled — approve Revolut/bank app push NOW (~${Math.round(acsTimeoutMs / 1000)}s)`,
-            });
-            const acs = await completeAcsChallenge({
-              mode: acsMode,
-              secondaryUrl: processSecondaryUrl || threeDsSecondaryUrl,
-              // Load challenge_url even on GPayments API hosts (SDK does this in an iframe).
-              challengeUrl: processChallengeUrl || null,
-              authorizationUrl: null,
-              proxy: task.proxy ?? null,
-              timeoutMs: acsTimeoutMs,
-              referer: origin + "/checkout/payment",
+          await tStep("paydock_3ds_method", async () => {
+            const method = await runMethodThenHandle({
+              initializationUrl: threeDsInitUrl,
+              secondaryUrl: threeDsSecondaryUrl,
               paydockJwt,
-              // ONLY poll /process for decoupled. Challenge must wait on secondary AuthResultReady.
-              pollProcess:
-                acsMode === "decoupled"
-                  ? async () => {
-                      const out = await runPaydockProcess("paydock_process_poll");
-                      processFrictionless = out.frictionless || processFrictionless;
-                      processStatus = out.processStatus ?? processStatus;
-                      processRawNote = out.note;
-                      processHttpStatus = out.status;
-                      processValidationError = out.validationError || processValidationError;
-                      if (out.decoupled) processDecoupled = true;
-                      if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
-                      if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
-                      return out;
-                    }
-                  : null,
+              charge3dsId,
+              egressIp,
+              userAgent: UA,
+              proxy: task.proxy ?? null,
+              methodWaitMs: 10_000,
+              storeOrigin: origin,
             });
-            acsOk = acs.ok || processFrictionless || acs.authReady === true;
-            acsCertError = Boolean(acs.certError);
+            handleOk = method.ok;
+            handleLocation = method.handleLocation || null;
+            if (method.returnedCharge3dsId) charge3dsId = method.returnedCharge3dsId;
             return {
-              status: acsOk ? 200 : acs.certError ? 495 : 408,
-              ok: acsOk,
-              note: `${acs.note} mode=${acsMode} challengeHost=${acs.challengeHost || "?"} loaded=${acs.challengeLoadOk ?? "n/a"}`,
+              status: method.handleStatus || (method.ok ? 200 : 500),
+              ok: method.ok || Boolean(threeDsInitUrl),
+              note: method.note,
             };
-          }).catch((e) => steps.push({ step: "paydock_3ds_acs:error", ok: false, note: e?.message ?? String(e) }));
+          }).catch((e) => steps.push({ step: "paydock_3ds_method:error", ok: false, note: e?.message ?? String(e) }));
 
-          if (acsOk && !processFrictionless) {
-            await tStep("paydock_3ds_process#2", async () => {
-              const out = await runPaydockProcess("paydock_process_after_acs");
-              processFrictionless = out.frictionless;
-              processStatus = out.processStatus;
-              processRawNote = out.note;
-              processHttpStatus = out.status;
-              return { status: out.status, ok: out.ok, note: out.note };
-            }).catch((e) =>
-              steps.push({ step: "paydock_3ds_process#2:error", ok: false, note: e?.message ?? String(e) }),
-            );
-          } else if (processFrictionless) {
-            steps.push({ step: "paydock_3ds_process#2", ok: true, note: "skipped: already authenticated" });
+          steps.push({
+            step: "paydock_3ds_handle",
+            ok: handleOk,
+            note: handleOk
+              ? `ok via browser method+handle loc=${String(handleLocation || "").slice(0, 120)}`
+              : "browser handle did not return 2xx/3xx — process may ValidationError; will fail fast",
+          });
+
+          await tStep("paydock_3ds_process", async () => {
+            const out = await runPaydockProcess("paydock_process");
+            processFrictionless = out.frictionless;
+            processStatus = out.processStatus;
+            processRawNote = out.note;
+            processHttpStatus = out.status;
+            processDecoupled = out.decoupled;
+            processValidationError = out.validationError;
+            if (out.acsFromBody) challengeAcsUrl = out.acsFromBody;
+            if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
+            if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
+            return { status: out.status, ok: out.ok, note: out.note };
+          }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
+
+          const processPending = String(processStatus || "").toLowerCase() === "pending";
+          wantAcs =
+            !processFrictionless &&
+            !processValidationError &&
+            processHttpStatus !== 400 &&
+            (processDecoupled || Boolean(processChallengeUrl) || processPending);
+
+          if (wantAcs) {
+            const acsTimeoutMs = Math.min(Math.max(Number(task.acsTimeoutMs) || 75_000, 30_000), 90_000);
+            const acsMode = processDecoupled ? "decoupled" : processChallengeUrl ? "challenge" : "decoupled";
+            await tStep("paydock_3ds_acs", async () => {
+              steps.push({
+                step: "paydock_3ds_acs:hint",
+                ok: true,
+                note:
+                  acsMode === "challenge"
+                    ? `Challenge iframe — approve Revolut/bank if prompted (~${Math.round(acsTimeoutMs / 1000)}s)`
+                    : `Decoupled — approve Revolut/bank app push NOW (~${Math.round(acsTimeoutMs / 1000)}s)`,
+              });
+              const acs = await completeAcsChallenge({
+                mode: acsMode,
+                secondaryUrl: processSecondaryUrl || threeDsSecondaryUrl,
+                challengeUrl: processChallengeUrl || null,
+                authorizationUrl: null,
+                proxy: task.proxy ?? null,
+                timeoutMs: acsTimeoutMs,
+                referer: origin + "/checkout/payment",
+                paydockJwt,
+                pollProcess: null,
+              });
+              acsOk = acs.ok || processFrictionless || acs.authReady === true;
+              acsCertError = Boolean(acs.certError);
+              return {
+                status: acsOk ? 200 : acs.certError ? 495 : 408,
+                ok: acsOk,
+                note: `${acs.note} mode=${acsMode} challengeHost=${acs.challengeHost || "?"} loaded=${acs.challengeLoadOk ?? "n/a"}`,
+              };
+            }).catch((e) => steps.push({ step: "paydock_3ds_acs:error", ok: false, note: e?.message ?? String(e) }));
+
+            if (acsOk && !processFrictionless) {
+              await tStep("paydock_3ds_process#2", async () => {
+                const out = await runPaydockProcess("paydock_process_after_acs");
+                processFrictionless = out.frictionless;
+                processStatus = out.processStatus;
+                processRawNote = out.note;
+                processHttpStatus = out.status;
+                return { status: out.status, ok: out.ok, note: out.note };
+              }).catch((e) =>
+                steps.push({ step: "paydock_3ds_process#2:error", ok: false, note: e?.message ?? String(e) }),
+              );
+            } else if (processFrictionless) {
+              steps.push({ step: "paydock_3ds_process#2", ok: true, note: "skipped: already authenticated" });
+            } else {
+              steps.push({
+                step: "paydock_3ds_process#2",
+                ok: false,
+                note: acsCertError
+                  ? "skipped: challenge TLS/client-cert failure"
+                  : "skipped: ACS did not reach AuthResultReady — calling /process now would token_inactive",
+              });
+            }
           } else {
             steps.push({
-              step: "paydock_3ds_process#2",
+              step: "paydock_3ds_acs",
               ok: false,
-              note: acsCertError
-                ? "skipped: challenge TLS/client-cert failure"
-                : "skipped: ACS did not reach AuthResultReady — calling /process now would token_inactive",
+              note: processValidationError || processHttpStatus === 400
+                ? `skipped fail-fast: process invalid (status=${processHttpStatus}). ${String(processRawNote).slice(0, 160)}`
+                : `skipped: process not pending/decoupled/challenge (status=${processStatus}). ${String(processRawNote).slice(0, 120)}`,
             });
           }
-        } else if (!processFrictionless && paydockJwt && charge3dsId) {
-          steps.push({
-            step: "paydock_3ds_acs",
-            ok: false,
-            note: processValidationError || processHttpStatus === 400
-              ? `skipped fail-fast: process invalid (status=${processHttpStatus}). ${String(processRawNote).slice(0, 160)}`
-              : `skipped: process not pending/decoupled/challenge (status=${processStatus}). ${String(processRawNote).slice(0, 120)}`,
-          });
+        } else {
+          steps.push({ step: "paydock_3ds_widget", ok: false, note: "skipped: no paydockJwt/charge3dsId from create3DSToken" });
+          steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
         }
 
         // 8i. Final stock-event custom field. The HAR sets `sohEvent` after
@@ -2775,6 +2799,12 @@ fragment LineItemFields on LineItem {
           });
         }
 
+        const acsPick = pickAcsEntryUrl({
+          handleLocation,
+          authorizationUrl: processChallengeUrl || challengeAcsUrl || threeDsAuthUrl,
+          charge3dsId,
+          paydockJwt,
+        });
         const paymentSummary = {
           card: cardNorm.ok ? `last4=${cardNumber.slice(-4)} mm=${cardMonth} yy=${cardYear}` : "missing",
           paydockPk: Boolean(paydockPublicKey),
@@ -2782,10 +2812,11 @@ fragment LineItemFields on LineItem {
           charge3dsId: charge3dsId ? charge3dsId.slice(0, 8) + "…" : null,
           frictionless: processFrictionless,
           processStatus,
-          acsAttempted: wantAcs === true,
+          widget: widgetUsed,
+          acsAttempted: wantAcs === true || widgetUsed,
           acsOk,
           acsCertError,
-          acsSource: wantAcs ? acsPick.source : null,
+          acsSource: widgetUsed ? "canvas3ds" : wantAcs ? acsPick.source : null,
           decoupled: processDecoupled,
           processValidationError,
           processHttpStatus,
@@ -2816,6 +2847,8 @@ fragment LineItemFields on LineItem {
       "paydock_3ds_init",
       "paydock_3ds_method",
       "paydock_3ds_handle",
+      "paydock_3ds_widget",
+      "paydock_3ds_widget:hint",
       "paydock_3ds_process",
       "paydock_3ds_acs",
       "paydock_3ds_acs:hint",
