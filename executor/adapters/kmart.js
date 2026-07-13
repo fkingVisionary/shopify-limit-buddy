@@ -404,6 +404,13 @@ export const kmartAdapter = {
       ok: true,
       note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)}`,
     });
+    steps.push({
+      step: "proxy_config",
+      ok: Boolean(ctx.dispatcher?.proxy) || !task.proxy,
+      note: ctx.dispatcher?.proxy
+        ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy).length}`
+        : "direct (no proxy on task — paste residential into Kmart UI Proxy field; empty field uses Fly egress)",
+    });
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
       return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
@@ -1230,14 +1237,12 @@ export const kmartAdapter = {
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
-    // Slim HAR (`public/kmart-slim.har`): every api.kmart GraphQL call —
-    // including createMyCart / updateMyCart ATC — uses referer
-    // https://www.kmart.com.au/ (homepage), NOT the PDP. Earlier comments
-    // assumed PDP referer; that mismatch correlates with cart_atc 403
-    // Access Denied while createMyCart still returned 200 (kmart-mriwd1up).
-    // HAR also omits apollographql-client-* and x-visitor-id on GraphQL
-    // (x-visitor-id is only on get-token). Keep New Relic headers.
-    const apiReferer = origin + "/";
+    // Empirically (kmart-mriwd1up): PDP referer + x-visitor-id + apollo-client
+    // headers cleared getMyActiveCart / createMyCart. Stripping them to match
+    // slim-HAR homepage referer (PR #10) immediately 403'd cart_get
+    // (kmart-mriwrjcy). Prefer the working browser-client stamp; ATC still
+    // has its own sensor-retry path on Access Denied.
+    const apiReferer = pdpUrl || (origin + "/");
     const gqlHeaders = {
       "user-agent": UA,
       "content-type": "application/json",
@@ -1252,6 +1257,10 @@ export const kmartAdapter = {
       "cache-control": "no-cache",
       pragma: "no-cache",
       priority: "u=1, i",
+      "x-country-code": "AU",
+      "x-visitor-id": apiVisitorId,
+      "apollographql-client-name": "kmart-web",
+      "apollographql-client-version": "nx14-10200",
     };
 
 

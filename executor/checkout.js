@@ -23,21 +23,29 @@ export async function runCheckout(task) {
   // a native failure can terminate the process and surface as an empty 502.
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  // Hyper docs: Akamai needs a Chrome-matching TLS client. Dashboard should
-  // send transport=tls when a proxy is set, but older Railway builds still
-  // arrive as undici. For Kmart + proxy, prefer TLS unless explicitly forced
-  // to undici (native TLS crashes → empty 502 are still possible — use
-  // forceUndici / transport=undici to roll back).
-  const isKmart = /kmart\.com\.au/i.test(store);
-  const forceTls =
-    task.forceTls === true ||
-    requestedTransport === "tls" ||
-    (isKmart && Boolean(task.proxy) && requestedTransport !== "undici");
+  // TLS is opt-in only. Auto-forcing TLS for Kmart+proxy caused empty HTTP 502s
+  // (node-tls-client native crash) whenever the UI sent transport=tls with a
+  // proxy. Undici is what cleared WWW Akamai through cart_create on recent runs.
+  const forceTls = task.forceTls === true || requestedTransport === "tls";
   const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
 
+  if (dispatcher.proxyParseFailed) {
+    return {
+      ok: false,
+      taskId: task.taskId,
+      adapter: "kmart",
+      error: `proxy string not recognized (len=${dispatcher.rawProxyLen}). Use http://user:pass@host:port or user:pass:host:port or host:port:user:pass`,
+      failedStep: "proxy_parse",
+      elapsedMs: now() - t0,
+      transport: dispatcher.transport,
+      steps: [{ step: "proxy_parse", ok: false, note: `rawLen=${dispatcher.rawProxyLen}` }],
+    };
+  }
+
   const closeDispatcher = async () => {
-    try { await dispatcher?.close?.(); } catch { /* ignore */ }
+    // Adapter may swap ctx.dispatcher (tls→undici fallback); close the active one.
+    try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
