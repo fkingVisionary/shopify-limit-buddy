@@ -40,6 +40,22 @@ const InputSchema = z.object({
   placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
   debugTrace: z.boolean().default(false),
   kmartMode: z.enum(["current", "cart-baseline", "diagnostic", "playwright"]).default("current"),
+  httpHandoff: z.boolean().default(true),
+  skipAtc: z.boolean().default(false),
+  resumeFrom: z.enum(["api"]).optional(),
+  profile: z
+    .object({
+      email: z.string().max(200).optional().nullable(),
+      first_name: z.string().max(100).optional().nullable(),
+      last_name: z.string().max(100).optional().nullable(),
+      address1: z.string().max(200).optional().nullable(),
+      city: z.string().max(100).optional().nullable(),
+      province: z.string().max(100).optional().nullable(),
+      zip: z.string().max(30).optional().nullable(),
+      phone: z.string().max(40).optional().nullable(),
+    })
+    .optional()
+    .nullable(),
 });
 
 const AkamaiLabInputSchema = z.object({
@@ -49,6 +65,18 @@ const AkamaiLabInputSchema = z.object({
   baselineTrace: z.unknown().optional().nullable(),
 });
 
+const DiagnoseInputSchema = z.object({
+  proxy: z.string().min(7).max(500).optional().nullable(),
+  targetUrl: z.string().url().max(500).optional(),
+  fingerprint: z.boolean().default(true),
+  proxyProbe: z.boolean().default(true),
+  directProbe: z.boolean().default(true),
+});
+
+function executorOrigin(rawUrl: string): string {
+  return rawUrl.replace(/\/$/, "").replace(/\/(health|health\/diagnose|run|recon|akamai\/lab|transport\/diagnose)$/i, "");
+}
+
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }) => {
@@ -57,8 +85,8 @@ export const runOnExecutor = createServerFn({ method: "POST" })
     if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
-    // Defensive: strip trailing slash and any accidental /health, /run, /recon suffix
-    const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
+    // Defensive: strip trailing slash and any accidental path suffix
+    const url = executorOrigin(rawUrl);
 
     const number = process.env.KMART_CARD_NUMBER;
     const cvv = process.env.KMART_CARD_CVV;
@@ -118,7 +146,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
 export const pingExecutor = createServerFn({ method: "GET" }).handler(async () => {
   const rawUrl = process.env.EXECUTOR_URL;
   if (!rawUrl) return { ok: false as const, error: "EXECUTOR_URL not set" };
-  const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon)$/i, "");
+  const url = executorOrigin(rawUrl);
   try {
     const res = await fetch(`${url}/health`);
     return { ok: res.ok, status: res.status, body: await res.json().catch(() => null) };
@@ -126,6 +154,56 @@ export const pingExecutor = createServerFn({ method: "GET" }).handler(async () =
     return { ok: false as const, error: e instanceof Error ? e.message : String(e) };
   }
 });
+
+export const diagnoseExecutor = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => DiagnoseInputSchema.parse(input))
+  .handler(async ({ data }) => {
+    const rawUrl = process.env.EXECUTOR_URL;
+    const token = process.env.EXECUTOR_TOKEN;
+    if (!rawUrl || !token) {
+      return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
+    }
+    const url = executorOrigin(rawUrl);
+    const t0 = Date.now();
+    try {
+      const res = await fetch(`${url}/health/diagnose`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          proxy: data.proxy?.trim() || null,
+          targetUrl: data.targetUrl,
+          fingerprint: data.fingerprint,
+          proxyProbe: data.proxyProbe,
+          directProbe: data.directProbe,
+        }),
+      });
+      const rawBody = await res.text().catch(() => "");
+      let body: any = {};
+      if (rawBody) {
+        try {
+          body = JSON.parse(rawBody);
+        } catch {
+          body = { rawBody: rawBody.slice(0, 2_000) };
+        }
+      }
+      return {
+        ok: res.ok && body?.ok !== false,
+        status: res.status,
+        elapsedMs: Date.now() - t0,
+        result: body,
+        ...( !res.ok && !body?.error ? { error: `Executor returned HTTP ${res.status}` } : {}),
+      };
+    } catch (e) {
+      return {
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
+        elapsedMs: Date.now() - t0,
+      };
+    }
+  });
 
 export const runAkamaiLab = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => AkamaiLabInputSchema.parse(input))
@@ -135,7 +213,7 @@ export const runAkamaiLab = createServerFn({ method: "POST" })
     if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
-    const url = rawUrl.replace(/\/$/, "").replace(/\/(health|run|recon|akamai\/lab)$/i, "");
+    const url = executorOrigin(rawUrl);
     const t0 = Date.now();
     try {
       const res = await fetch(`${url}/akamai/lab`, {

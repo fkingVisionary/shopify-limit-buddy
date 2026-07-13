@@ -14,19 +14,24 @@ with `undici` unblocks the proxy.
 
 ## Endpoints
 
-- `GET  /health` → `{ ok: true }`
+- `GET  /health` → `{ ok: true, transport, hyperApiKey, proxyConfigured, … }`
+- `POST /health/diagnose` (auth) → deep health: TLS fingerprint + proxy CONNECT probe + direct target fetch. Use this before `/run` when diagnosing `ERR_CONNECTION_CLOSED`.
 - `POST /run` (auth: `Authorization: Bearer $EXECUTOR_TOKEN`)
   ```json
   {
     "taskId": "abc",
-    "storeUrl": "https://www.jbhifi.com.au",
-    "variantId": 1234567890,
+    "storeUrl": "https://www.kmart.com.au/product/…",
+    "variantId": 1,
     "qty": 1,
     "proxy": "user:pass@host:port",
-    "dryRun": true
+    "dryRun": true,
+    "kmartMode": "current"
   }
   ```
-  Returns a per-step timeline: `warm_home → cart_add → cart_redirect → checkout_page`.
+  Returns a per-step timeline. Set `kmartMode:"playwright"` for the Chromium fallback lane.
+- `POST /transport/diagnose` — authenticated one-fetch transport check.
+- `POST /akamai/lab` — Akamai-only sensor lab (see `experiments/`).
+- `POST /jbhifi/recon` / `POST /jbhifi/probe` — JB Hi-Fi recon (not on checkout path).
 
 ## Env vars
 

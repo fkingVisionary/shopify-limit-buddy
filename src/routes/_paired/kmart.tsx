@@ -8,8 +8,8 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows } from "lucide-react";
-import { runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
+import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows, HeartPulse } from "lucide-react";
+import { diagnoseExecutor, pingExecutor, runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
 
 export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
@@ -45,8 +45,29 @@ type RunResult = {
     error?: string;
     failedStep?: string;
     adapter?: string;
+    transport?: string;
+    trace?: unknown;
   };
   error?: string;
+};
+
+type DiagnoseResult = {
+  ok: boolean;
+  status?: number;
+  elapsedMs?: number;
+  error?: string;
+  result?: {
+    ok?: boolean;
+    elapsedMs?: number;
+    hint?: string | null;
+    proxyUsed?: string | null;
+    checks?: {
+      env?: { ok?: boolean; hyperApiKey?: boolean; proxyUrlResiConfigured?: boolean; httpTransport?: string; node?: string };
+      direct?: { ok?: boolean; status?: number | null; error?: string; elapsedMs?: number };
+      proxy?: { ok?: boolean; skipped?: boolean; egressIp?: string | null; error?: string; target?: { status?: number | null; error?: string | null; ok?: boolean }; proxy?: string | null };
+      fingerprint?: { ok?: boolean; allMatch?: boolean; error?: string; match?: Record<string, boolean>; observed?: Record<string, unknown> };
+    };
+  };
 };
 
 type LabResult = {
@@ -157,6 +178,8 @@ function extractCandidatesFromSteps(steps: Step[]): string[] {
 function KmartPage() {
   const runFn = useServerFn(runOnExecutor);
   const labFn = useServerFn(runAkamaiLab);
+  const pingFn = useServerFn(pingExecutor);
+  const diagnoseFn = useServerFn(diagnoseExecutor);
 
   const [url, setUrl] = useState("");
   const [qty, setQty] = useState(1);
@@ -165,8 +188,11 @@ function KmartPage() {
   const [usePlaywright, setUsePlaywright] = useState(false);
   const [running, setRunning] = useState(false);
   const [labRunning, setLabRunning] = useState(false);
+  const [diagRunning, setDiagRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
   const [labResult, setLabResult] = useState<LabResult | null>(null);
+  const [diagResult, setDiagResult] = useState<DiagnoseResult | null>(null);
+  const [healthPing, setHealthPing] = useState<{ ok: boolean; body?: any; error?: string } | null>(null);
   const [akamaiBaseline, setAkamaiBaseline] = useState<AkamaiTrace | null>(null);
   const [akamaiBaselineText, setAkamaiBaselineText] = useState("");
 
@@ -191,19 +217,20 @@ function KmartPage() {
     const savedBaseline = readJSON<AkamaiTrace | null>(AKAMAI_BASELINE_KEY, null);
     setAkamaiBaseline(savedBaseline);
     if (savedBaseline) setAkamaiBaselineText(JSON.stringify(savedBaseline, null, 2));
-    const last = readJSON<{ url: string; qty: number; proxy: string; placeOrder: boolean } | null>(LAST_INPUT_KEY, null);
+    const last = readJSON<{ url: string; qty: number; proxy: string; placeOrder: boolean; usePlaywright?: boolean } | null>(LAST_INPUT_KEY, null);
     if (last) {
       setUrl(last.url ?? "");
       setQty(last.qty ?? 1);
       setProxy(last.proxy ?? "");
       setPlaceOrder(Boolean(last.placeOrder));
+      setUsePlaywright(Boolean(last.usePlaywright));
     }
   }, []);
 
   // Persist inputs.
   useEffect(() => {
-    writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder });
-  }, [url, qty, proxy, placeOrder]);
+    writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder, usePlaywright });
+  }, [url, qty, proxy, placeOrder, usePlaywright]);
 
   // Normalize: if the field contains an accidental duplication (e.g. user
   // pasted while the field was non-empty and the two got concatenated),
@@ -238,7 +265,7 @@ function KmartPage() {
           dryRun: !placeOrder,
           placeOrder,
           debugTrace: true,
-          kmartMode: usePlaywright ? "playwright" : "diagnostic",
+          kmartMode: usePlaywright ? "playwright" : "current",
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
@@ -294,6 +321,30 @@ function KmartPage() {
       setLabResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
       setLabRunning(false);
+    }
+  };
+
+  const handleDiagnose = async () => {
+    setDiagRunning(true);
+    setDiagResult(null);
+    setHealthPing(null);
+    try {
+      const ping = (await pingFn()) as { ok: boolean; body?: any; error?: string };
+      setHealthPing(ping);
+      const res = (await diagnoseFn({
+        data: {
+          proxy: proxy.trim() || null,
+          targetUrl: /^https:\/\/(www\.)?kmart\.com\.au\//i.test(cleanUrl) ? cleanUrl : "https://www.kmart.com.au/",
+          fingerprint: true,
+          proxyProbe: true,
+          directProbe: true,
+        },
+      })) as DiagnoseResult;
+      setDiagResult(res);
+    } catch (e) {
+      setDiagResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setDiagRunning(false);
     }
   };
 
@@ -365,7 +416,8 @@ function KmartPage() {
           </Link>
           <h1 className="text-2xl font-semibold tracking-tight">Kmart AU checkout</h1>
           <p className="text-sm text-muted-foreground">
-            Runs the full Kmart HTTP chain through the Fly executor: Akamai clear → cart → address → Paydock vault → 3DS → place order. Auto-captures the <code>placeOrder</code> mutation from checkout bundle JS.
+            Runs Kmart through the Fly executor. Default lane is raw HTTP + Hyper; toggle Playwright for the Chromium fallback.
+            Use <strong>Executor diagnose</strong> first when pages fail to load — it separates proxy CONNECT / TLS fingerprint issues from checkout logic.
           </p>
         </div>
 
@@ -419,7 +471,8 @@ function KmartPage() {
               <div>
                 <div className="text-sm font-medium">Attempt real place order</div>
                 <div className="text-xs text-muted-foreground">
-                  Off = dry-run (stops after 3DS token). On = calls saved placeOrder mutation, charges the card on file.
+                  Off = dry-run (stops after 3DS token). On = runs chargePayDockWithToken after frictionless 3DS.
+                  {usePlaywright ? " Playwright seeds Akamai cookies, then HTTP GraphQL completes checkout." : ""}
                 </div>
               </div>
               <Switch checked={placeOrder} onCheckedChange={setPlaceOrder} />
@@ -428,12 +481,16 @@ function KmartPage() {
               <div>
                 <div className="text-sm font-medium">Use Playwright fallback lane</div>
                 <div className="text-xs text-muted-foreground">
-                  Absolute backup: real Chromium + Hyper's Playwright handlers. Slower + heavier, but reproduces api-host <code>_abck</code> seeding that raw HTTP can't. Dry-run only for now (home → PDP → cart click → checkout page).
+                  Chromium + Hyper Playwright handlers seed api-host <code>_abck</code>, then hand off to the HTTP GraphQL checkout (address → Paydock → 3DS → place order).
                 </div>
               </div>
               <Switch checked={usePlaywright} onCheckedChange={setUsePlaywright} />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button onClick={handleDiagnose} disabled={diagRunning} variant="outline">
+                {diagRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <HeartPulse className="mr-2 h-4 w-4" />}
+                {diagRunning ? "Diagnosing…" : "Executor diagnose"}
+              </Button>
               <Button onClick={handleAkamaiLab} disabled={!canRun || labRunning} variant="outline">
                 {labRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-2 h-4 w-4" />}
                 {labRunning ? "Testing Akamai…" : "Akamai lab"}
@@ -452,9 +509,99 @@ function KmartPage() {
                   will submit via <code>{mutation.operationName}</code>
                 </Badge>
               )}
+              {usePlaywright && (
+                <Badge variant="outline" className="text-[10px]">
+                  lane=playwright
+                </Badge>
+              )}
             </div>
           </div>
         </Card>
+
+        {/* Executor deep health */}
+        {(diagResult || healthPing) && (
+          <Card className="mb-4 p-4">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Executor diagnose</div>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={diagResult?.ok ? "default" : "destructive"} className="text-[10px]">
+                  {diagResult?.ok ? "healthy" : "issues"}
+                </Badge>
+                {diagResult?.elapsedMs != null && (
+                  <Badge variant="outline" className="text-[10px]">{diagResult.elapsedMs}ms</Badge>
+                )}
+              </div>
+            </div>
+            {healthPing && (
+              <div className="mb-2 grid gap-1 text-xs md:grid-cols-4">
+                <div><span className="text-muted-foreground">Ping:</span> {healthPing.ok ? "ok" : healthPing.error ?? "fail"}</div>
+                <div><span className="text-muted-foreground">Transport:</span> <code>{healthPing.body?.transport ?? "—"}</code></div>
+                <div><span className="text-muted-foreground">Hyper key:</span> <code>{String(healthPing.body?.hyperApiKey ?? "—")}</code></div>
+                <div><span className="text-muted-foreground">Proxy env:</span> <code>{String(healthPing.body?.proxyConfigured ?? "—")}</code></div>
+              </div>
+            )}
+            {diagResult?.error && (
+              <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
+                {diagResult.error}
+              </div>
+            )}
+            {diagResult?.result?.hint && (
+              <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">
+                {diagResult.result.hint}
+              </div>
+            )}
+            <div className="mb-2 grid gap-2 text-xs md:grid-cols-2">
+              <div className="rounded border border-border/50 p-2">
+                <div className="mb-1 font-medium">Proxy CONNECT</div>
+                {diagResult?.result?.checks?.proxy?.skipped ? (
+                  <div className="text-muted-foreground">Skipped — no proxy on task and PROXY_URL_RESI unset</div>
+                ) : (
+                  <>
+                    <div>ok=<code>{String(diagResult?.result?.checks?.proxy?.ok ?? "—")}</code></div>
+                    <div>egress=<code>{diagResult?.result?.checks?.proxy?.egressIp ?? "—"}</code></div>
+                    <div>target=<code>{diagResult?.result?.checks?.proxy?.target?.status ?? diagResult?.result?.checks?.proxy?.target?.error ?? "—"}</code></div>
+                    {diagResult?.result?.checks?.proxy?.error && (
+                      <div className="mt-1 text-destructive">{diagResult.result.checks.proxy.error}</div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="rounded border border-border/50 p-2">
+                <div className="mb-1 font-medium">TLS fingerprint</div>
+                <div>ok=<code>{String(diagResult?.result?.checks?.fingerprint?.ok ?? "—")}</code></div>
+                <div>allMatch=<code>{String(diagResult?.result?.checks?.fingerprint?.allMatch ?? "—")}</code></div>
+                {diagResult?.result?.checks?.fingerprint?.match && (
+                  <div className="font-mono text-[11px] text-muted-foreground">
+                    {Object.entries(diagResult.result.checks.fingerprint.match).map(([k, v]) => `${k}=${v}`).join(" · ")}
+                  </div>
+                )}
+                {diagResult?.result?.checks?.fingerprint?.error && (
+                  <div className="mt-1 text-destructive">{diagResult.result.checks.fingerprint.error}</div>
+                )}
+              </div>
+              <div className="rounded border border-border/50 p-2">
+                <div className="mb-1 font-medium">Direct target</div>
+                <div>ok=<code>{String(diagResult?.result?.checks?.direct?.ok ?? "—")}</code></div>
+                <div>status=<code>{diagResult?.result?.checks?.direct?.status ?? "—"}</code></div>
+                {diagResult?.result?.checks?.direct?.error && (
+                  <div className="mt-1 text-destructive">{diagResult.result.checks.direct.error}</div>
+                )}
+              </div>
+              <div className="rounded border border-border/50 p-2">
+                <div className="mb-1 font-medium">Env</div>
+                <div>node=<code>{diagResult?.result?.checks?.env?.node ?? "—"}</code></div>
+                <div>transport=<code>{diagResult?.result?.checks?.env?.httpTransport ?? "—"}</code></div>
+                <div>proxyUsed=<code className="break-all">{diagResult?.result?.proxyUsed ?? "—"}</code></div>
+              </div>
+            </div>
+            <details className="rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
+              <summary className="cursor-pointer text-muted-foreground">Raw diagnose JSON</summary>
+              <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">
+                {JSON.stringify(diagResult?.result ?? diagResult, null, 2)}
+              </pre>
+            </details>
+          </Card>
+        )}
 
         {/* Akamai-only lab result */}
         {labResult && (
@@ -725,6 +872,12 @@ function KmartPage() {
                 <Badge variant={result.result?.ok ? "default" : "destructive"} className="text-[10px]">
                   {result.result?.ok ? "ok" : "failed"} · {result.result?.dryRun ? "dry-run" : "real"}
                 </Badge>
+                {result.result?.adapter && (
+                  <Badge variant="outline" className="text-[10px]">{result.result.adapter}</Badge>
+                )}
+                {result.result?.transport && (
+                  <Badge variant="outline" className="text-[10px]">transport={result.result.transport}</Badge>
+                )}
                 {result.status != null && (
                   <Badge variant="outline" className="text-[10px]">HTTP {result.status}</Badge>
                 )}
@@ -741,13 +894,13 @@ function KmartPage() {
                 </button>
               </div>
             </div>
-            {Array.isArray((result.result as any)?.trace) && (result.result as any).trace.length > 0 && (
+            {result.result?.trace != null && (
               <details className="mb-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
                 <summary className="cursor-pointer text-muted-foreground">
-                  Trace events ({(result.result as any).trace.length})
+                  Trace / hyperStatus
                 </summary>
                 <pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap break-all font-mono">
-                  {JSON.stringify((result.result as any).trace, null, 2)}
+                  {JSON.stringify(result.result.trace, null, 2)}
                 </pre>
               </details>
             )}

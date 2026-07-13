@@ -1,0 +1,18 @@
+# Dependencies & caches
+node_modules
+npm-debug.log*
+.npm
+.tmp
+
+# Git / IDE
+.git
+.gitignore
+.DS_Store
+*.md
+docs
+scripts
+
+# Local env (secrets come from Railway variables)
+.env
+.env.*
+!.env.example

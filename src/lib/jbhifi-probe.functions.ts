@@ -3,7 +3,7 @@ import { z } from "zod";
 
 // Per-SKU endpoint probe. Fans out across public Shopify surfaces and
 // returns an endpoint matrix showing which URLs leak data for each SKU.
-// See executor/adapters/jbhifi-probe.js.
+// See executor/experiments/jbhifi-probe.js.
 
 const InputSchema = z.object({
   skus: z.array(z.string().min(1).max(64)).max(50).default([]),

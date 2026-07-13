@@ -3,7 +3,7 @@ import { z } from "zod";
 
 // Calls the executor's /jbhifi/recon endpoint. Discovers products across
 // JB Hi-Fi's public Shopify surfaces (sitemap, products.json, per-collection
-// feeds, per-handle hydration). See executor/adapters/jbhifi-recon.js.
+// feeds, per-handle hydration). See executor/experiments/jbhifi-recon.js.
 
 const InputSchema = z.object({
   query: z.string().max(200).nullable().optional(),

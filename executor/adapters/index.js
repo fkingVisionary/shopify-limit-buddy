@@ -1,5 +1,9 @@
 // Adapter registry. Pick by hostname; return null when nothing matches so
 // the caller can fall back to the legacy generic-Shopify chain in checkout.js.
+//
+// Checkout path only: kmart (raw HTTP) + kmart-playwright (opt-in via
+// kmartMode="playwright" in checkout.js). Lab/recon modules live under
+// ../experiments/ and are mounted as separate HTTP endpoints.
 
 import { kmartAdapter } from "./kmart.js";
 
