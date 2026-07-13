@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as PairRouteImport } from './routes/pair'
+import { Route as HarveyRouteImport } from './routes/harvey'
 import { Route as PairedRouteImport } from './routes/_paired'
 import { Route as PairedIndexRouteImport } from './routes/_paired/index'
 import { Route as PairedKmartRouteImport } from './routes/_paired/kmart'
@@ -23,6 +24,11 @@ import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/run
 const PairRoute = PairRouteImport.update({
   id: '/pair',
   path: '/pair',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HarveyRoute = HarveyRouteImport.update({
+  id: '/harvey',
+  path: '/harvey',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PairedRoute = PairedRouteImport.update({
@@ -72,6 +78,7 @@ const ApiPublicRunnerPairRoute = ApiPublicRunnerPairRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof PairedIndexRoute
+  '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
@@ -82,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
 }
 export interface FileRoutesByTo {
+  '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
@@ -95,6 +103,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_paired': typeof PairedRouteWithChildren
+  '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/_paired/jbhifi': typeof PairedJbhifiRoute
   '/_paired/kmart': typeof PairedKmartRoute
@@ -109,6 +118,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/harvey'
     | '/pair'
     | '/jbhifi'
     | '/kmart'
@@ -119,6 +129,7 @@ export interface FileRouteTypes {
     | '/api/public/runner/report'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/harvey'
     | '/pair'
     | '/jbhifi'
     | '/kmart'
@@ -131,6 +142,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/_paired'
+    | '/harvey'
     | '/pair'
     | '/_paired/jbhifi'
     | '/_paired/kmart'
@@ -144,6 +156,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   PairedRoute: typeof PairedRouteWithChildren
+  HarveyRoute: typeof HarveyRoute
   PairRoute: typeof PairRoute
   ApiPublicExecTestRoute: typeof ApiPublicExecTestRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
@@ -159,6 +172,13 @@ declare module '@tanstack/react-router' {
       path: '/pair'
       fullPath: '/pair'
       preLoaderRoute: typeof PairRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/harvey': {
+      id: '/harvey'
+      path: '/harvey'
+      fullPath: '/harvey'
+      preLoaderRoute: typeof HarveyRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_paired': {
@@ -244,6 +264,7 @@ const PairedRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   PairedRoute: PairedRouteWithChildren,
+  HarveyRoute: HarveyRoute,
   PairRoute: PairRoute,
   ApiPublicExecTestRoute: ApiPublicExecTestRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
