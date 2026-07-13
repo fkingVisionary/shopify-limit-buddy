@@ -27,12 +27,33 @@ const UA_WIN =
 
 // Parse "user:pass@host:port" | "host:port" | "http://user:pass@host:port"
 // into the shape Playwright's launch({proxy}) wants.
+// Accepts:
+//   http(s)://user:pass@host:port
+//   user:pass@host:port
+//   host:port
+//   host:port:user:pass       (common residential-provider format)
+//   host:port:user:pass:extra (e.g. sticky-session token appended to pass)
 function parseProxy(raw) {
   if (!raw) return null;
-  let s = String(raw).trim();
-  if (!/^https?:\/\//i.test(s)) s = "http://" + s;
+  const s = String(raw).trim();
+  if (!s) return null;
+
+  // host:port:user:pass[:...] — no scheme, no `@`, 4+ colon-parts
+  if (!/^https?:\/\//i.test(s) && !s.includes("@")) {
+    const parts = s.split(":");
+    if (parts.length >= 4) {
+      const [host, port, user, ...rest] = parts;
+      return {
+        server: `http://${host}:${port || "80"}`,
+        username: user,
+        password: rest.join(":"),
+      };
+    }
+  }
+
+  const withScheme = /^https?:\/\//i.test(s) ? s : "http://" + s;
   try {
-    const u = new URL(s);
+    const u = new URL(withScheme);
     const out = { server: `http://${u.hostname}:${u.port || "80"}` };
     if (u.username) out.username = decodeURIComponent(u.username);
     if (u.password) out.password = decodeURIComponent(u.password);
@@ -40,6 +61,12 @@ function parseProxy(raw) {
   } catch {
     return null;
   }
+}
+
+function maskProxy(proxy, rawLen) {
+  if (!proxy) return `parsed=false rawLen=${rawLen}`;
+  const user = proxy.username ? `${proxy.username.slice(0, 3)}…` : "(no-auth)";
+  return `parsed=true server=${proxy.server} user=${user} rawLen=${rawLen}`;
 }
 
 function extractSkuFromUrl(pdpUrl) {
@@ -70,10 +97,9 @@ async function run(task, _ctx) {
     const { playwright, hyperPw, hyperSdk } = await loadDeps();
     step(steps, "deps_loaded", true, "playwright + hyper-sdk-playwright ready");
 
+    const rawLen = task.proxy ? String(task.proxy).length : 0;
     const proxy = parseProxy(task.proxy);
-    // NOTE: `channel: 'chrome'` requires the Google Chrome binary at
-    // /opt/google/chrome — the Playwright base image ships that. Fall back
-    // to bundled chromium if launch fails.
+    step(steps, "proxy_config", Boolean(proxy) || rawLen === 0, maskProxy(proxy, rawLen));
     const launchOpts = {
       headless: true,
       args: [
