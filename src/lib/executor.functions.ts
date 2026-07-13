@@ -77,11 +77,23 @@ function executorOrigin(rawUrl: string): string {
   return rawUrl.replace(/\/$/, "").replace(/\/(health|health\/diagnose|run|recon|akamai\/lab|transport\/diagnose)$/i, "");
 }
 
+function executorHostLabel(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(invalid EXECUTOR_URL)";
+  }
+}
+
+function trimToken(token: string | undefined): string {
+  return (token ?? "").trim();
+}
+
 export const runOnExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }) => {
     const rawUrl = process.env.EXECUTOR_URL;
-    const token = process.env.EXECUTOR_TOKEN;
+    const token = trimToken(process.env.EXECUTOR_TOKEN);
     if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
@@ -124,7 +136,11 @@ export const runOnExecutor = createServerFn({ method: "POST" })
           body = { rawBody: rawBody.slice(0, 2_000) };
         }
       }
-      const fallbackError = !res.ok && !body?.error
+      const host = executorHostLabel(url);
+      const authError = res.status === 401
+        ? `Executor unauthorized at ${host} — EXECUTOR_TOKEN on Railway must exactly match the token on Fly (no quotes/spaces). EXECUTOR_URL must be the Fly origin, not the Railway dashboard.`
+        : undefined;
+      const fallbackError = !res.ok && !body?.error && !authError
         ? `Executor returned HTTP ${res.status}${rawBody ? "" : " with an empty body"}`
         : undefined;
       return {
@@ -132,13 +148,15 @@ export const runOnExecutor = createServerFn({ method: "POST" })
         status: res.status,
         elapsedMs: Date.now() - t0,
         result: body,
-        ...(fallbackError ? { error: fallbackError } : {}),
+        executorHost: host,
+        ...(authError ? { error: authError } : fallbackError ? { error: fallbackError } : {}),
       };
     } catch (e) {
       return {
         ok: false as const,
         error: e instanceof Error ? e.message : String(e),
         elapsedMs: Date.now() - t0,
+        executorHost: executorHostLabel(url),
       };
     }
   });
@@ -159,7 +177,7 @@ export const diagnoseExecutor = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => DiagnoseInputSchema.parse(input))
   .handler(async ({ data }) => {
     const rawUrl = process.env.EXECUTOR_URL;
-    const token = process.env.EXECUTOR_TOKEN;
+    const token = trimToken(process.env.EXECUTOR_TOKEN);
     if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
@@ -189,18 +207,25 @@ export const diagnoseExecutor = createServerFn({ method: "POST" })
           body = { rawBody: rawBody.slice(0, 2_000) };
         }
       }
+      const host = executorHostLabel(url);
       return {
         ok: res.ok && body?.ok !== false,
         status: res.status,
         elapsedMs: Date.now() - t0,
         result: body,
-        ...( !res.ok && !body?.error ? { error: `Executor returned HTTP ${res.status}` } : {}),
+        executorHost: host,
+        ...(res.status === 401
+          ? { error: `Executor unauthorized at ${host} — EXECUTOR_TOKEN mismatch (Railway vs Fly)` }
+          : !res.ok && !body?.error
+            ? { error: `Executor returned HTTP ${res.status}` }
+            : {}),
       };
     } catch (e) {
       return {
         ok: false as const,
         error: e instanceof Error ? e.message : String(e),
         elapsedMs: Date.now() - t0,
+        executorHost: executorHostLabel(url),
       };
     }
   });
@@ -209,7 +234,7 @@ export const runAkamaiLab = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => AkamaiLabInputSchema.parse(input))
   .handler(async ({ data }) => {
     const rawUrl = process.env.EXECUTOR_URL;
-    const token = process.env.EXECUTOR_TOKEN;
+    const token = trimToken(process.env.EXECUTOR_TOKEN);
     if (!rawUrl || !token) {
       return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
     }
@@ -238,17 +263,23 @@ export const runAkamaiLab = createServerFn({ method: "POST" })
           body = { rawBody: rawBody.slice(0, 2_000) };
         }
       }
+      const host = executorHostLabel(url);
       return {
         ok: res.ok,
         status: res.status,
         elapsedMs: Date.now() - t0,
         result: body,
+        executorHost: host,
+        ...(res.status === 401
+          ? { error: `Executor unauthorized at ${host} — EXECUTOR_TOKEN mismatch (Railway vs Fly)` }
+          : {}),
       };
     } catch (e) {
       return {
         ok: false as const,
         error: e instanceof Error ? e.message : String(e),
         elapsedMs: Date.now() - t0,
+        executorHost: executorHostLabel(url),
       };
     }
   });

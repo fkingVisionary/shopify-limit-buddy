@@ -42,13 +42,39 @@ That’s it. No new project required.
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | same |
 | `VITE_SUPABASE_PROJECT_ID` | same |
 
-### Runtime
+### Runtime (dashboard Railway service)
 
 | Name | Value |
 |---|---|
-| `EXECUTOR_URL` | Fly origin, e.g. `https://j1ms-bot-executor.fly.dev` |
-| `EXECUTOR_TOKEN` | same secret as Fly |
-| Other Lovable server secrets | copy across as needed |
+| `EXECUTOR_URL` | **Fly** origin only, e.g. `https://j1ms-bot-executor.fly.dev` (no `/health`, not a `*.up.railway.app` URL) |
+| `EXECUTOR_TOKEN` | **Exact** same string as Fly `EXECUTOR_TOKEN` (no quotes, no trailing space/newline) |
+| `SUPABASE_URL` / service role / etc. | copy from Lovable server secrets as needed |
+
+### Not needed on the dashboard
+
+| Name | Where it belongs |
+|---|---|
+| `HYPER_API_KEY` | **Fly executor** only |
+| `PROXY_URL_RESI` | **Fly executor** only |
+| `KMART_CARD_*` | **Fly executor** only |
+
+### Fixing HTTP 401 `unauthorized`
+
+The dashboard reached an executor, but the Bearer token did not match.
+
+1. Confirm `EXECUTOR_URL` is the **Fly** URL (`*.fly.dev`), not Railway.
+2. On Fly: `fly secrets list -a j1ms-bot-executor` (or dashboard) — note `EXECUTOR_TOKEN` is set.
+3. Paste the **same** token into Railway `EXECUTOR_TOKEN` (re-paste carefully; rotating GitHub without updating Fly leaves Fly on the old value).
+4. Redeploy **dashboard** after changing Railway vars (runtime vars apply on next deploy/restart).
+5. Quick check from your phone/laptop:
+   ```bash
+   curl -sS -o /dev/null -w "%{http_code}\n" \
+     -X POST "https://YOUR-FLY-APP.fly.dev/akamai/lab" \
+     -H "authorization: Bearer YOUR_TOKEN" \
+     -H "content-type: application/json" \
+     -d '{"url":"https://www.kmart.com.au/"}'
+   ```
+   Expect `200` (or a lab JSON body), not `401`.
 
 ---
 
