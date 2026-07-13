@@ -45,7 +45,7 @@ app.post("/transport/diagnose", async (req, reply) => {
   }
 
   const resolvedProxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
-  const requestedTransport = String(body.transport ?? process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
+  const requestedTransport = typeof body.transport === "string" ? body.transport.toLowerCase() : null;
   const dispatcher = makeDispatcher(resolvedProxy, {
     forceTls: body.forceTls === true || requestedTransport === "tls",
     forceUndici: body.forceUndici === true || requestedTransport === "undici",

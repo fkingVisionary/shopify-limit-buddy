@@ -19,7 +19,7 @@ export async function runCheckout(task) {
   const jar = createJar();
   // Keep the native TLS client opt-in. It is useful for Akamai experiments, but
   // a native failure can terminate the process and surface as an empty 502.
-  const requestedTransport = String(task.transport ?? process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
+  const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
   const forceTls = task.forceTls === true || requestedTransport === "tls";
   const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
