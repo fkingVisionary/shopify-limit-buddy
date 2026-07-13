@@ -450,6 +450,10 @@ export const kmartAdapter = {
     // Hybrid resume: Playwright (or another lane) can seed a solved jar and
     // jump straight into the GraphQL checkout chain.
     const resumeFromApi = task.resumeFrom === "api";
+    // Hoisted: assigned inside the warm/PDP block (or resume path), then used
+    // for SKU scrape + cart GraphQL after that block ends.
+    let pdpStatus = 0;
+    let pdpHtml = "";
     if (task.seedCookies && typeof task.seedCookies === "object") {
       const n = ctx.jar.load(task.seedCookies);
       steps.push({
@@ -1003,8 +1007,6 @@ export const kmartAdapter = {
     await sleep(1500, 3000);
 
     // 5. Hit the PDP — this is the gated request and the real success signal.
-    let pdpStatus = 0;
-    let pdpHtml = "";
     {
       const pdpReferer = categoryOk ? catUrl : origin + "/";
       const pdpHeaders = navHeaders({ referer: pdpReferer, site: "same-origin" });

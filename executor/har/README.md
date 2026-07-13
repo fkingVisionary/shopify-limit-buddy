@@ -1,30 +1,38 @@
 # HAR reference files
 
-Drop a full browser HAR here (or link it) so we can diff executor traces
-against a real checkout.
+Canonical slim Kmart checkout HAR (241 entries, homepage → PDP → bag →
+Paydock GraphQL → `chargePayDockWithToken`):
 
-## Size limits
+```text
+public/kmart-slim.har
+```
 
-GitHub / chat uploads often reject multi‑MB HARs. Prefer one of:
+Symlink locally if you want it under this folder:
 
-1. **GitHub Release asset** — upload `kmart-checkout.har` on a release, paste the URL in an issue or chat.
-2. **This folder via Git LFS** — `git lfs track "executor/har/*.har"` then commit.
-3. **Private URL** — S3 / Drive link the agent can fetch.
+```bash
+ln -sf ../../public/kmart-slim.har executor/har/kmart-slim.har
+```
 
 ## Diff against a run
 
 ```bash
-# From repo root, with a HAR path and an executor run JSON (debugTrace:true):
-node --max-old-space-size=4096 executor/scripts/har-diff.mjs path/to/checkout.har --json path/to/run.json
+# From repo root, with debugTrace:true executor run JSON:
+node --max-old-space-size=4096 executor/scripts/har-diff.mjs public/kmart-slim.har --json path/to/run.json
 ```
 
-See `executor/scripts/README.md` for the golden checklist (get-token → cart → address → Paydock → 3DS → placeOrder).
+See `executor/scripts/README.md` for the golden checklist (get-token → cart →
+address → Paydock → 3DS → placeOrder).
 
-## What we need from your HAR
+## What this slim HAR covers
 
-Minimum useful extract if the full file won’t upload:
+| Checklist key   | Present | Notes |
+| --------------- | ------- | ----- |
+| seed (get-token)| yes     | Early API BM seed |
+| cart_*          | yes     | createMyCart / updateMyCart ATC |
+| addr_*          | yes     | shipping + billing |
+| create_3ds      | yes     | GraphQL create3DSToken |
+| place_order     | yes     | chargePayDockWithToken |
+| paydock_* HTTP  | no      | widget/api.paydock.com filtered out of slim export |
 
-- Entries for: homepage, Akamai sensor POSTs, SBSD POSTs, `get-token`, GraphQL cart ops, checkout pages, Paydock tokenize/3DS, placeOrder
-- Request URL, method, status, request headers (esp. cookie / sec-ch-ua / referer), and for GraphQL the operationName
-
-You can export a filtered HAR from Chrome DevTools (only `kmart.com.au` + `paydock.com` + `api.kmart.com.au`).
+For Paydock tokenize / handle / process header diffs, keep a fuller HAR
+(or re-export those hosts) and drop it beside this file via LFS / Release.
