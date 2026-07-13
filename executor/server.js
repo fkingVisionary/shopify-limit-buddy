@@ -13,7 +13,7 @@ import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
-const TOKEN = process.env.EXECUTOR_TOKEN;
+const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
 // Concurrency cap — protects the Fly VM from OOM under drop-time bursts.
 // Each in-flight checkout holds a cookie jar, undici dispatcher, and a few
 // KB of HTML in memory (~2-5 MB per task). Set generously; tune down if
@@ -136,7 +136,7 @@ app.post("/transport/diagnose", async (req, reply) => {
 });
 
 function checkAuth(req, reply) {
-  const auth = req.headers.authorization ?? "";
+  const auth = String(req.headers.authorization ?? "").trim();
   if (auth !== `Bearer ${TOKEN}`) {
     reply.code(401);
     return false;

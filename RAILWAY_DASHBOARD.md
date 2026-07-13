@@ -1,61 +1,86 @@
 # Deploy the dashboard to Railway (control plane)
 
-The **dashboard** (TanStack Start UI) and the **executor** (checkout Node service) are separate.
+## You do **not** have to start over
+
+Keep the same Railway project/service. The only fix is **where** it builds from.
+
+| Wrong (what you had) | Right |
+|---|---|
+| Root Directory = `executor` | Root Directory = **blank** (repo root) |
+| You get the API / blank JSON | You get the dashboard UI |
+
+Railway will **auto-detect** the root `Dockerfile`. You do not need a “change Dockerfile” UI option.
+
+### Exact clicks
+
+1. Open the Railway **service** (same one is fine).
+2. **Settings → Root Directory** → delete `executor` / leave empty → Save.
+3. If **Config as Code** points at `/executor/railway.toml`, change it to `/railway.toml` (or clear the override).
+4. Merge/deploy branch `cursor/railway-dashboard-deploy-424d` (PR #3).
+5. **Variables** (see below) → Redeploy.
+
+That’s it. No new project required.
+
+---
+
+## What goes where
 
 | Piece | Host | Root Directory |
 |---|---|---|
-| Dashboard / UI | **Railway** (this guide) | repo root `/` |
-| Executor | **Fly.io** (existing) | `executor/` |
+| Dashboard / UI | **Railway** | repo root (blank) |
+| Executor | **Fly.io** (keep) | n/a on Railway |
 
-Do **not** point the Railway dashboard service at `executor/` — that is what caused the `/app/dist` failure and the blank API-only site.
+---
 
-## 1. Railway service settings
+## Variables
 
-1. New Railway service → Deploy from this GitHub repo (or retarget the existing one).
-2. **Root Directory:** leave blank / `/` (repo root).
-3. **Builder:** Dockerfile (uses root `Dockerfile` + `railway.toml`).
-4. Generate a public domain (Networking). Leave target port default — Nitro binds `PORT`.
-
-## 2. Variables
-
-### Build-time (mark “Available at Build Time” in Railway)
-
-Vite bakes these into the client bundle:
+### Build-time (enable “Available at Build Time”)
 
 | Name | From Lovable |
 |---|---|
-| `VITE_SUPABASE_URL` | same as Lovable |
-| `VITE_SUPABASE_PUBLISHABLE_KEY` | same as Lovable |
-| `VITE_SUPABASE_PROJECT_ID` | same as Lovable |
+| `VITE_SUPABASE_URL` | same |
+| `VITE_SUPABASE_PUBLISHABLE_KEY` | same |
+| `VITE_SUPABASE_PROJECT_ID` | same |
 
-### Runtime
+### Runtime (dashboard Railway service)
 
 | Name | Value |
 |---|---|
-| `EXECUTOR_URL` | your Fly executor origin, e.g. `https://j1ms-bot-executor.fly.dev` |
-| `EXECUTOR_TOKEN` | same shared secret as Fly |
-| `SUPABASE_URL` / service keys | whatever server fns already use (see Lovable secrets) |
-| `NITRO_PRESET` | optional; Dockerfile already sets `node-server` at build |
+| `EXECUTOR_URL` | **Fly** origin only, e.g. `https://j1ms-bot-executor.fly.dev` (no `/health`, not a `*.up.railway.app` URL) |
+| `EXECUTOR_TOKEN` | **Exact** same string as Fly `EXECUTOR_TOKEN` (no quotes, no trailing space/newline) |
+| `SUPABASE_URL` / service role / etc. | copy from Lovable server secrets as needed |
 
-Copy any other server secrets you use today on Lovable (`KMART_CARD_*` is on the **executor**, not required here unless the dashboard injects cards).
+### Not needed on the dashboard
 
-## 3. Verify
+| Name | Where it belongs |
+|---|---|
+| `HYPER_API_KEY` | **Fly executor** only |
+| `PROXY_URL_RESI` | **Fly executor** only |
+| `KMART_CARD_*` | **Fly executor** only |
 
-After deploy:
+### Fixing HTTP 401 `unauthorized`
 
-1. Open `https://<railway-domain>/` — you should see the **pair / dashboard UI**, not JSON.
-2. Pair a device, open `/kmart`.
-3. **Executor diagnose** should hit Fly (`EXECUTOR_URL`).
+The dashboard reached an executor, but the Bearer token did not match.
 
-Local check:
+1. Confirm `EXECUTOR_URL` is the **Fly** URL (`*.fly.dev`), not Railway.
+2. On Fly: `fly secrets list -a j1ms-bot-executor` (or dashboard) — note `EXECUTOR_TOKEN` is set.
+3. Paste the **same** token into Railway `EXECUTOR_TOKEN` (re-paste carefully; rotating GitHub without updating Fly leaves Fly on the old value).
+4. Redeploy **dashboard** after changing Railway vars (runtime vars apply on next deploy/restart).
+5. Quick check from your phone/laptop:
+   ```bash
+   curl -sS -o /dev/null -w "%{http_code}\n" \
+     -X POST "https://YOUR-FLY-APP.fly.dev/akamai/lab" \
+     -H "authorization: Bearer YOUR_TOKEN" \
+     -H "content-type: application/json" \
+     -d '{"url":"https://www.kmart.com.au/"}'
+   ```
+   Expect `200` (or a lab JSON body), not `401`.
 
-```bash
-NITRO_PRESET=node-server npm run build
-npm start   # serves .output/server/index.mjs
-```
+---
 
-## 4. Cut over from Lovable
+## Verify
 
-1. Confirm Railway UI works against Fly executor.
-2. Point any bookmarks / Discord links at the Railway domain.
-3. Keep Lovable as a backup until you’re happy, then stop using it for day-to-day.
+- `https://<railway-domain>/` → **pair / dashboard UI** (not JSON)
+- `/kmart` → Executor diagnose hits **Fly**
+
+If you still see JSON like `{"service":"j1ms-bot-executor"...}`, Root Directory is still `executor` — clear it and redeploy.
