@@ -458,6 +458,10 @@ async function run(task, ctx) {
           orderNumber: cont?.orderNumber ?? null,
           orderId: cont?.orderId ?? null,
           paymentStatus: cont?.paymentStatus ?? null,
+          paymentSummary: cont?.paymentSummary ?? null,
+          checkoutStage: cont?.checkoutStage ?? null,
+          paymentTail: cont?.paymentTail ?? null,
+          lastSteps: cont?.lastSteps ?? null,
           trace: {
             elapsedMs: now() - t0,
             hyperStatus,
