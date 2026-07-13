@@ -636,7 +636,14 @@ export const kmartAdapter = {
         return { status: r.status, note: `uuid=${sbsdUuid.slice(0, 8)}${parsed.uuid ? "" : "(cached)"} ${sbsdBody.length}b t=${parsed.t || "-"}` };
       });
       const rounds = parsed.t ? 1 : 2; // hard = 1, passive = 2 (docs §3.3)
+      let sbsdRoundOk = 0;
       for (let i = 0; i < rounds; i++) {
+        if (i > 0) {
+          // Residential tunnels often die between SBSD POSTs; refresh the agent.
+          try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
+          await sleep(400, 900);
+        }
+        try {
         await tStep(`${label}:round#${i}`, async () => {
           const oInput = sbsdOCookieInput(ctx.jar);
           const beforeCookies = cookieTrustSnapshot(ctx.jar);
@@ -715,9 +722,18 @@ export const kmartAdapter = {
             note: `status=${res.status} setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} bodyBytes=${rawBody.length} srv=${server} grn=${akGrn} xCache=${xCache} ct=${ctType} payloadBytes=${String(payload ?? "").length} body="${bodyTxt}"`,
           };
 
-        }).catch(() => {});
+        });
+          sbsdRoundOk++;
+        } catch (e) {
+          steps.push({
+            step: `${label}:round#${i}:recover`,
+            ok: false,
+            note: `network after SBSD round — continuing (${e?.message ?? e})`,
+          });
+        }
       }
-      return true;
+      // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
+      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
     };
     // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
     // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
@@ -910,6 +926,8 @@ export const kmartAdapter = {
     let categoryHtml = "";
     let categoryOk = false;
     await sleep(700, 1400); // brief glance at homepage before the click
+    try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
+    try {
     await tStep("category_browse", async () => {
       const res = await request(
         catUrl,
@@ -932,6 +950,16 @@ export const kmartAdapter = {
       });
       return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
     });
+    } catch (e) {
+      // Do not abort the adapter — PDP can still succeed with home referer.
+      categoryOk = false;
+      categoryHtml = "";
+      steps.push({
+        step: "category_browse:soft_fail",
+        ok: false,
+        note: `continuing to PDP despite category network error (${e?.message ?? e})`,
+      });
+    }
 
     // If the category hop is the first route to expose the SBSD block, solve it
     // there and retry the category before moving on. A real browser cannot click
