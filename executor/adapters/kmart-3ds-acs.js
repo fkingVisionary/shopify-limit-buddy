@@ -2,16 +2,13 @@
 //
 // Correct flow (NOT top-level navigation to authorization_url):
 //   1. Hidden iframes: initialization_url + secondary_url (3DS Method)
-//   2. POST /standalone-3ds/process { charge_3ds_id }
-//   3a. success / frictionless → done
-//   3b. pending + decoupled_challenge → Revolut/bank app push; poll secondary_url
-//       until AuthResultReady, then process again
-//   3c. pending + challenge → load challenge_url in a visible iframe + poll
+//   2. POST /standalone-3ds/handle event=InitAuthTimedOut (method done/timeout)
+//   3. POST /standalone-3ds/process { charge_3ds_id }
+//   4a. success / frictionless → done
+//   4b. pending + decoupled_challenge → Revolut app push; poll process
+//   4c. pending + challenge → load challenge_url iframe + poll
 //
-// Why Revolut never prompted before:
-//   We page.goto'd paydock.api.as1.gpayments.net/authorization_url which demands
-//   a client TLS cert (ERR_BAD_SSL_CLIENT_AUTH_CERT). Revolut uses *decoupled*
-//   challenge — the push is triggered only after a successful method+process.
+// Never page.goto paydock.api.as*.gpayments.net (client TLS cert required).
 
 function parseProxy(raw) {
   if (!raw) return null;
@@ -54,10 +51,6 @@ function isGpaymentsApiHost(url) {
   }
 }
 
-/**
- * Pick a browser entry URL. Never return paydock.api.as*.gpayments.net —
- * that host requests a client TLS cert and cannot be page.goto'd.
- */
 export function pickAcsEntryUrl({ handleLocation, authorizationUrl, charge3dsId, paydockJwt } = {}) {
   if (handleLocation && /widget\.paydock\.com\/3ds\/standalone-3ds/i.test(handleLocation)) {
     return { url: handleLocation, source: "handle_location" };
@@ -69,7 +62,6 @@ export function pickAcsEntryUrl({ handleLocation, authorizationUrl, charge3dsId,
     u.searchParams.set("token", paydockJwt);
     return { url: u.toString(), source: "synthesized_widget" };
   }
-  // Deliberately ignore authorizationUrl when it is the GPayments API host.
   if (authorizationUrl && !isGpaymentsApiHost(authorizationUrl)) {
     return { url: authorizationUrl, source: "authorization_url" };
   }
@@ -106,33 +98,160 @@ async function launchBrowser(proxy) {
   return { browser, context, page };
 }
 
+function buildBrowserInfo(egressIp, userAgent) {
+  return {
+    browserAcceptHeader:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    browserIP: egressIp || "0.0.0.0",
+    browserJavaEnabled: false,
+    browserLanguage: "en-AU",
+    browserJavascriptEnabled: true,
+    browserColorDepth: "24",
+    browserScreenHeight: "900",
+    browserScreenWidth: "1280",
+    browserTZ: "-600",
+    browserUserAgent: userAgent || "Mozilla/5.0",
+  };
+}
+
 /**
- * Run GPayments 3DS Method iframes (initialization + secondary), then optionally
- * drive challenge / decoupled (Revolut) wait while caller re-processes.
- *
- * @returns {{ ok: boolean, note: string, mode?: string, certError?: boolean, finalUrl?: string }}
+ * One Playwright session: method iframes → InitAuthTimedOut handle.
+ * Uses context.request (no CORS) for the Paydock handle POST.
+ */
+export async function runMethodThenHandle({
+  initializationUrl = null,
+  secondaryUrl = null,
+  paydockJwt,
+  charge3dsId,
+  egressIp = null,
+  userAgent = null,
+  proxy = null,
+  methodWaitMs = 10_000,
+  storeOrigin = "https://www.kmart.com.au",
+} = {}) {
+  if (!paydockJwt || !isUuidLike(charge3dsId)) {
+    return { ok: false, note: "missing jwt/charge3dsId", handleStatus: 0, handleLocation: null };
+  }
+
+  let browser;
+  try {
+    const launched = await launchBrowser(proxy);
+    browser = launched.browser;
+    const { context, page } = launched;
+
+    await page.goto(`${storeOrigin}/checkout/payment`, {
+      waitUntil: "domcontentloaded",
+      timeout: 45_000,
+    }).catch(() =>
+      page.goto("https://widget.paydock.com/", { waitUntil: "domcontentloaded", timeout: 30_000 }),
+    );
+
+    let iframeNote = "no-init-urls";
+    if (initializationUrl || secondaryUrl) {
+      const frameResults = await page.evaluate(
+        async ({ init, secondary }) => {
+          const root = document.body;
+          const out = [];
+          async function add(id, src) {
+            if (!src) return;
+            await new Promise((resolve) => {
+              const f = document.createElement("iframe");
+              f.id = id;
+              f.title = id;
+              f.style.cssText = "width:1px;height:1px;opacity:0;border:0;position:absolute;";
+              f.onload = () => resolve({ id, ok: true });
+              f.onerror = () => resolve({ id, ok: false });
+              setTimeout(() => resolve({ id, ok: false, timeout: true }), 8000);
+              f.src = src;
+              root.appendChild(f);
+            }).then((r) => out.push(r));
+          }
+          await add("paydock_authorization_iframe", init);
+          await add("paydock_secondary_iframe", secondary);
+          return out;
+        },
+        { init: initializationUrl, secondary: secondaryUrl },
+      );
+      iframeNote = JSON.stringify(frameResults).slice(0, 160);
+      await page.waitForTimeout(methodWaitMs);
+    }
+
+    const requestorTransId = globalThis.crypto.randomUUID();
+    const param = Buffer.from(
+      JSON.stringify(buildBrowserInfo(egressIp, userAgent)),
+      "utf8",
+    ).toString("base64");
+    const body = new URLSearchParams({
+      requestorTransId,
+      event: "InitAuthTimedOut",
+      param,
+    }).toString();
+    const handleUrl = `https://api.paydock.com/v1/charges/standalone-3ds/handle?x-access-token=${encodeURIComponent(paydockJwt)}`;
+
+    // Playwright APIRequestContext bypasses CORS and uses the browser TLS stack.
+    const handleRes = await context.request.post(handleUrl, {
+      headers: {
+        accept: "*/*",
+        "content-type": "application/x-www-form-urlencoded",
+        origin: storeOrigin,
+        referer: `${storeOrigin}/checkout/payment`,
+      },
+      data: body,
+      maxRedirects: 0,
+      failOnStatusCode: false,
+      timeout: 30_000,
+    });
+    const handleStatus = handleRes.status();
+    const loc = handleRes.headers()?.location || handleRes.headers()?.Location || "";
+    const idMatch = String(loc).match(/charge_3ds_id=([a-f0-9-]{20,})/i);
+    const returnedId = idMatch?.[1] ?? null;
+
+    return {
+      ok: handleStatus >= 200 && handleStatus < 400,
+      note: `iframes=${iframeNote} handle=${handleStatus} loc=${String(loc).slice(0, 120)}`,
+      handleStatus,
+      handleLocation: loc || null,
+      returnedCharge3dsId: returnedId,
+      requestorTransId,
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      note: `method+handle error: ${e?.message ?? e}`,
+      handleStatus: 0,
+      handleLocation: null,
+    };
+  } finally {
+    try {
+      await browser?.close?.();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * Decoupled / challenge wait with process polling. Only call when /process
+ * already returned pending + decoupled/challenge — never as a blind 2min hang.
  */
 export async function completeAcsChallenge({
-  authorizationUrl, // legacy name — treated as optional challenge_url only if non-api host
+  authorizationUrl,
   initializationUrl = null,
   secondaryUrl = null,
   challengeUrl = null,
   proxy = null,
-  timeoutMs = 120_000,
+  timeoutMs = 60_000,
   referer = "https://www.kmart.com.au/checkout/payment",
-  // Called every ~2s during decoupled/challenge wait. Return { frictionless:true } to stop.
   pollProcess = null,
 } = {}) {
-  const methodInit = initializationUrl;
-  const methodSecondary = secondaryUrl;
   const challenge =
     challengeUrl ||
     (authorizationUrl && !isGpaymentsApiHost(authorizationUrl) ? authorizationUrl : null);
 
-  if (!methodInit && !challenge && !pollProcess) {
+  if (!challenge && typeof pollProcess !== "function") {
     return {
       ok: false,
-      note: "no initialization_url/challenge_url — cannot run GPayments method/ACS (refusing api.as* client-cert host)",
+      note: "no challenge_url and no pollProcess — refusing blind ACS wait",
       certError: false,
     };
   }
@@ -142,52 +261,22 @@ export async function completeAcsChallenge({
     const launched = await launchBrowser(proxy);
     browser = launched.browser;
     const { page } = launched;
-    page.setDefaultTimeout(Math.min(timeoutMs, 60_000));
+    page.setDefaultTimeout(Math.min(timeoutMs, 45_000));
 
-    // Bootstrap a same-origin-ish shell so we can inject iframes.
     await page.goto("https://widget.paydock.com/", {
       waitUntil: "domcontentloaded",
       timeout: 30_000,
       referer,
     });
 
-    if (methodInit || methodSecondary) {
-      await page.evaluate(
-        ({ init, secondary }) => {
-          const root = document.body;
-          root.innerHTML = "";
-          if (init) {
-            const f = document.createElement("iframe");
-            f.id = "paydock_authorization_iframe";
-            f.title = "3ds-method";
-            f.src = init;
-            f.style.cssText = "width:1px;height:1px;opacity:0;border:0;position:absolute;";
-            root.appendChild(f);
-          }
-          if (secondary) {
-            const f = document.createElement("iframe");
-            f.id = "paydock_secondary_iframe";
-            f.title = "3ds-monitor";
-            f.src = secondary;
-            f.style.cssText = "width:1px;height:1px;opacity:0;border:0;position:absolute;";
-            root.appendChild(f);
-          }
-        },
-        { init: methodInit, secondary: methodSecondary },
-      );
-      // 3DS Method collection window (ActiveServer monitor timeout ~15s).
-      await page.waitForTimeout(12_000);
-    }
-
-    // Method-only warm (no challenge / no poll): return so caller can /process.
-    if (!challenge && typeof pollProcess !== "function") {
-      return {
-        ok: true,
-        note: `method iframes loaded init=${Boolean(methodInit)} secondary=${Boolean(methodSecondary)}`,
-        mode: "method_only",
-        certError: false,
-        finalUrl: page.url(),
-      };
+    if (secondaryUrl) {
+      await page.evaluate((src) => {
+        const f = document.createElement("iframe");
+        f.id = "paydock_secondary_iframe";
+        f.src = src;
+        f.style.cssText = "width:1px;height:1px;opacity:0;border:0;";
+        document.body.appendChild(f);
+      }, secondaryUrl);
     }
 
     if (challenge) {
@@ -199,15 +288,12 @@ export async function completeAcsChallenge({
         };
       }
       await page.evaluate((url) => {
-        let f = document.getElementById("paydock_challenge_iframe");
-        if (!f) {
-          f = document.createElement("iframe");
-          f.id = "paydock_challenge_iframe";
-          f.title = "Authentication Challenge";
-          f.style.cssText = "width:100%;height:100%;border:0;";
-          document.body.appendChild(f);
-        }
+        const f = document.createElement("iframe");
+        f.id = "paydock_challenge_iframe";
+        f.title = "Authentication Challenge";
+        f.style.cssText = "width:100%;height:90vh;border:0;";
         f.src = url;
+        document.body.appendChild(f);
       }, challenge);
     }
 
@@ -220,10 +306,19 @@ export async function completeAcsChallenge({
           if (p?.frictionless) {
             return {
               ok: true,
-              note: `authenticated via poll while ACS/method open (${p.note || "process ok"})`,
+              note: `authenticated via poll (${p.note || "ok"})`,
               mode: "poll_process",
               certError: false,
               finalUrl: page.url(),
+            };
+          }
+          // Hard fail: ValidationError will never become Revolut push.
+          if (/validation=/i.test(String(p?.note || "")) || p?.status === 400) {
+            return {
+              ok: false,
+              note: `abort ACS wait — process still invalid: ${String(p?.note || "").slice(0, 180)}`,
+              mode: "process_invalid",
+              certError: false,
             };
           }
           lastPollNote = p?.note || lastPollNote;
@@ -231,40 +326,13 @@ export async function completeAcsChallenge({
           lastPollNote = e?.message ?? String(e);
         }
       }
-
-      // Decoupled: secondary monitor may expose AuthResultReady in frame URL/body.
-      try {
-        const ready = await page.evaluate(() => {
-          const frames = [...document.querySelectorAll("iframe")];
-          return frames.some((f) => {
-            try {
-              const u = f.contentWindow?.location?.href || f.src || "";
-              return /AuthResultReady|authenticated|success/i.test(u);
-            } catch {
-              return /AuthResultReady/i.test(f.src || "");
-            }
-          });
-        });
-        if (ready) {
-          return {
-            ok: true,
-            note: "secondary iframe signaled AuthResultReady",
-            mode: "secondary_ready",
-            certError: false,
-            finalUrl: page.url(),
-          };
-        }
-      } catch {
-        /* ignore */
-      }
-
       await page.waitForTimeout(2000);
     }
 
     return {
       ok: false,
-      note: `3DS wait timeout after ${timeoutMs}ms — approve Revolut/bank app push while method/challenge is open. lastPoll=${String(lastPollNote).slice(0, 120)}`,
-      mode: challenge ? "challenge" : "method_decoupled",
+      note: `3DS wait timeout after ${timeoutMs}ms. lastPoll=${String(lastPollNote).slice(0, 140)}`,
+      mode: challenge ? "challenge" : "decoupled",
       certError: false,
       finalUrl: page.url(),
     };

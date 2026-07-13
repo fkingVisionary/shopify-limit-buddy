@@ -121,6 +121,9 @@ export const runOnExecutor = createServerFn({ method: "POST" })
       card: data.card ?? envCard,
     };
     const t0 = Date.now();
+    // Kmart checkout can exceed 60s (Akamai + cart). Cap below typical
+    // platform gateway limits so we return JSON instead of opaque "failed to fetch".
+    const RUN_TIMEOUT_MS = 170_000;
     try {
       const res = await fetch(`${url}/run`, {
         method: "POST",
@@ -129,6 +132,7 @@ export const runOnExecutor = createServerFn({ method: "POST" })
           "content-type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(RUN_TIMEOUT_MS),
       });
       const rawBody = await res.text().catch(() => "");
       let body: any = {};
@@ -155,9 +159,15 @@ export const runOnExecutor = createServerFn({ method: "POST" })
         ...(authError ? { error: authError } : fallbackError ? { error: fallbackError } : {}),
       };
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const timedOut =
+        /TimeoutError|aborted|AbortError|timeout|The operation was aborted/i.test(msg) ||
+        (e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError"));
       return {
         ok: false as const,
-        error: e instanceof Error ? e.message : String(e),
+        error: timedOut
+          ? `Executor /run timed out after ${RUN_TIMEOUT_MS}ms (often hung 3DS). Check fail-fast deploy + paymentTail.`
+          : msg,
         elapsedMs: Date.now() - t0,
         executorHost: executorHostLabel(url),
       };
