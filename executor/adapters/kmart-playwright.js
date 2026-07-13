@@ -127,14 +127,23 @@ async function run(task, ctx) {
       extraHTTPHeaders: { "accept-language": "en-AU,en;q=0.9" },
     });
 
-    // Resolve egress IP for the Hyper session context.
+    // Resolve egress IP for the Hyper session context. Hyper recommends its
+    // own helper endpoint because the IP passed to the solver must exactly
+    // match the proxy egress used by the browser session.
     let ipAddress = "1.1.1.1";
     try {
       const ipPage = await context.newPage();
-      const r = await ipPage.goto("https://api.ipify.org?format=json", { timeout: 15_000 });
+      let r = await ipPage.goto("https://api.hypersolutions.co/ip", { timeout: 15_000 });
       if (r?.ok()) {
-        const j = await r.json();
-        if (j?.ip) ipAddress = j.ip;
+        const body = (await r.text()).trim();
+        const j = body.startsWith("{") ? JSON.parse(body) : null;
+        ipAddress = j?.ip || j?.origin || body.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || ipAddress;
+      } else {
+        r = await ipPage.goto("https://api.ipify.org?format=json", { timeout: 15_000 });
+        if (r?.ok()) {
+          const j = await r.json();
+          if (j?.ip) ipAddress = j.ip;
+        }
       }
       await ipPage.close();
       step(steps, "egress_ip", true, ipAddress);
@@ -142,21 +151,39 @@ async function run(task, ctx) {
       step(steps, "egress_ip", false, e?.message?.slice(0, 120) ?? "failed");
     }
 
-    const session = new hyperSdk.Session(apiKey);
-    const akamai = new hyperPw.AkamaiHandler({
-      session,
-      ipAddress,
-      userAgent: UA_WIN,
-      acceptLanguage: "en-AU,en;q=0.9",
+    const page = await context.newPage();
+    page.setDefaultTimeout(30_000);
+    const protectionEvents = [];
+    page.on("response", async (res) => {
+      const url = res.url();
+      if (/akamai|bm_|_abck|sensor|sbsd|sec-cpt|ips\.js|datadome|reese|incapsula|kasada/i.test(url)) {
+        protectionEvents.push(`${res.status()} ${url.slice(0, 120)}`);
+        if (protectionEvents.length > 8) protectionEvents.shift();
+      }
     });
 
-    const page = await context.newPage();
-    await akamai.initialize(page, context);
-    step(steps, "akamai_handler_ready", true, "sensor+sbsd interceptors installed");
+    const session = new hyperSdk.Session(apiKey);
+    const handlerConfigs = { session, ipAddress, acceptLanguage: "en-AU,en;q=0.9" };
+    const handlers = [
+      ["akamai", hyperPw.AkamaiHandler, { ...handlerConfigs, userAgent: UA_WIN }],
+      ["datadome", hyperPw.DataDomeHandler, handlerConfigs],
+      ["incapsula", hyperPw.IncapsulaHandler, handlerConfigs],
+      ["kasada", hyperPw.KasadaHandler, handlerConfigs],
+    ].filter(([, Handler]) => typeof Handler === "function")
+      .map(([name, Handler, config]) => ({ name, handler: new Handler(config) }));
+
+    await Promise.all(handlers.map(({ handler }) => handler.initialize(page, context)));
+    step(steps, "protection_handlers_ready", true, `${handlers.map((h) => h.name).join("+")} interceptors installed`);
 
     // 1) Warm home.
     const homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
     step(steps, "warm_home", homeRes?.ok() ?? false, `status=${homeRes?.status()}`);
+    if (homeRes && homeRes.status() >= 400) {
+      const html = await page.content().catch(() => "");
+      const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
+        .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
+      step(steps, "warm_home_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+    }
     await page.waitForTimeout(1500 + Math.random() * 1500);
 
     // 2) PDP.
@@ -164,6 +191,13 @@ async function run(task, ctx) {
     const pdpRes = await page.goto(pdpUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
     const pdpStatus = pdpRes?.status() ?? 0;
     step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()}`);
+    if (pdpStatus >= 400) {
+      const html = await page.content().catch(() => "");
+      const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
+        .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
+      step(steps, "pdp_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+    }
+    if (protectionEvents.length) step(steps, "protection_events", true, protectionEvents.join(" | "));
 
     const sku = extractSkuFromUrl(page.url()) ?? extractSkuFromUrl(pdpUrl);
     step(steps, "pdp_sku", Boolean(sku), sku ?? "sku not found in URL");
@@ -208,7 +242,10 @@ async function run(task, ctx) {
       finalUrl,
       cookies,
       dryRun,
-      trace: { elapsedMs: now() - t0, hyperStatus: akamai.getStatus?.() ?? null },
+      trace: {
+        elapsedMs: now() - t0,
+        hyperStatus: Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null])),
+      },
     };
   } finally {
     try { await browser?.close?.(); } catch { /* ignore */ }
