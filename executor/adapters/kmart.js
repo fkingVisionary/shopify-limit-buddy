@@ -627,9 +627,14 @@ export const kmartAdapter = {
             },
             ctx,
           );
-          const bodyTxt = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 180);
+          const rawBody = await res.text().catch(() => "");
+          const bodyTxt = rawBody.replace(/\s+/g, " ").slice(0, 180);
           const setCookieNames = cookieNamesFromResponse(res);
           const sbsdKeys = Object.keys(ctx.jar.dump()).filter((k) => /sbsd|bm_s/.test(k)).join(",");
+          const akGrn = res.headers.get("akamai-grn") || "-";
+          const server = res.headers.get("server") || "-";
+          const xCache = res.headers.get("x-cache") || "-";
+          const ctType = res.headers.get("content-type") || "-";
           recordTraceEvent(`${label}:round#${i}`, {
             type: "sbsd_round",
             label,
@@ -652,10 +657,21 @@ export const kmartAdapter = {
             },
             payload: { bytes: String(payload ?? "").length, hash: hashShort(payload) },
             beforeCookies,
-            response: { status: res.status, setCookieNames, bodyBytes: bodyTxt.length, bodyPreview: bodyTxt },
+            response: {
+              status: res.status,
+              setCookieNames,
+              bodyBytes: rawBody.length,
+              bodyPreview: bodyTxt,
+              headers: { server, "akamai-grn": akGrn, "x-cache": xCache, "content-type": ctType },
+            },
             afterCookies: cookieTrustSnapshot(ctx.jar),
           });
-          return { status: res.status, ok: res.status < 400, note: `setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}` };
+          return {
+            status: res.status,
+            ok: res.status < 400,
+            note: `status=${res.status} setCookies=[${setCookieNames.join(",") || "none"}] jarSbsd=${sbsdKeys} bm_sv=${ctx.jar.has("bm_sv")} bodyBytes=${rawBody.length} srv=${server} grn=${akGrn} xCache=${xCache} ct=${ctType} payloadBytes=${String(payload ?? "").length} body="${bodyTxt}"`,
+          };
+
         }).catch(() => {});
       }
       return true;
