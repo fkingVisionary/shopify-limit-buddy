@@ -1635,7 +1635,7 @@ export const kmartAdapter = {
       let cartAtcOk = false;
       let cartVerifyHasSku = false;
       if (cartId && sku) {
-        const updateQuery = `mutation updateMyBag($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
+        const updateQuery = `mutation updateMyCart($id: String!, $version: Long!, $actions: [MyCartUpdateAction!]!) {
   updateMyCart(id: $id, version: $version, actions: $actions) {
     ...BasicBagFields
     lineItems { ...LineItemFields __typename }
