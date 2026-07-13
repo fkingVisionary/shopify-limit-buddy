@@ -83,6 +83,9 @@ type RunResult = {
     orderId?: string | null;
     paymentStatus?: string | null;
     paymentSummary?: Record<string, unknown> | null;
+    checkoutStage?: string | null;
+    paymentTail?: Step[];
+    lastSteps?: Step[];
     error?: string;
     failedStep?: string;
     adapter?: string;
@@ -1093,6 +1096,11 @@ function KmartPage() {
                 <Badge variant={result.result?.ok ? "default" : "destructive"} className="text-[10px]">
                   {result.result?.ok ? "ok" : "failed"} · {result.result?.dryRun ? "dry-run" : "real"}
                 </Badge>
+                {result.result?.checkoutStage && (
+                  <Badge variant="outline" className="text-[10px]">
+                    stage={result.result.checkoutStage}
+                  </Badge>
+                )}
                 {result.result?.adapter && (
                   <Badge variant="outline" className="text-[10px]">{result.result.adapter}</Badge>
                 )}
@@ -1105,6 +1113,28 @@ function KmartPage() {
                 {result.elapsedMs != null && (
                   <Badge variant="outline" className="text-[10px]">{result.elapsedMs}ms</Badge>
                 )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const r = result.result ?? result;
+                    const compact = {
+                      taskId: result.taskId,
+                      ok: r?.ok,
+                      dryRun: r?.dryRun,
+                      checkoutStage: r?.checkoutStage,
+                      orderNumber: r?.orderNumber,
+                      paymentStatus: r?.paymentStatus,
+                      paymentSummary: r?.paymentSummary,
+                      paymentTail: r?.paymentTail,
+                      lastSteps: r?.lastSteps,
+                    };
+                    navigator.clipboard?.writeText(JSON.stringify(compact, null, 2));
+                  }}
+                  className="rounded border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] hover:bg-muted"
+                  title="Copy compact payment summary (best for chat)"
+                >
+                  Copy payment tail
+                </button>
                 <button
                   type="button"
                   onClick={() => navigator.clipboard?.writeText(JSON.stringify(result.result ?? result, null, 2))}
