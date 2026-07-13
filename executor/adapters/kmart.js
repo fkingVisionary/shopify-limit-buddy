@@ -815,6 +815,16 @@ export const kmartAdapter = {
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
 
+    // 3b. Proactive SBSD on the homepage HTML. RESTORED after diagnostic
+    //     evidence (`home_scripts_dump`) confirmed the homepage contains
+    //     exactly 1 real SBSD candidate (path `/…/0WLGJY?v=<uuid>`) and
+    //     the sensor script has no `?v=` param — so the old "SBSD_RE
+    //     matches the sensor script" concern was wrong. Without this,
+    //     `bm_sv` never mints and category_browse / pdp_get hard-403.
+    //     This gets us back to the pre-#860 flow where PDP passed and
+    //     ATC was the remaining focus.
+    await runSbsd(html, origin + "/", "sbsd_home");
+
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
