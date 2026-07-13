@@ -1,49 +1,52 @@
-## What’s most likely happening
+## Goal
 
-The current code has a mismatch:
+Get Harvey (hypersolutions.co/harvey) to tell us why our executor's Akamai flow is rejected on `api.kmart.com.au` (503 on `api_sensor#1`, then 403 Access Denied on `cart_get` / `cart_create` at `/gateway/graphql`), while a real browser sails through.
 
-- `executor/http.js` says the stable default is `undici` unless `EXECUTOR_HTTP_TRANSPORT=tls`.
-- `executor/checkout.js` overrides that and defaults every `/run` task to TLS unless `EXECUTOR_HTTP_TRANSPORT=undici` is explicitly set.
-- `executor/http.js` also forces TLS whenever any proxy URL is present.
+Harvey needs two inputs: a clean browser HAR of a working session, and the specific executor code that produces the failing sensor. Its rate limit is 5 submissions/day and files cap at 500 KB each (10 files max), so we curate before uploading.
 
-So deleting the transport secret did not fully revert to stable behavior. `/run` still uses the native TLS client, and proxied runs always use it. An empty 502 strongly suggests the native TLS process/library is crashing before Fastify can return JSON.
+## Step 1 — You record the HAR
 
-## Plan
+On a normal browser profile (no Lovable, no system proxy, no VPN):
 
-1. **Make transport behavior explicit and non-crashy**
-   - Stop `/run` from silently forcing TLS by default.
-   - Default to `undici` unless the env var or request explicitly asks for TLS.
-   - Keep TLS available for Kmart experiments, but make it opt-in rather than implicit.
+1. Open Chrome incognito → DevTools → Network tab.
+2. Check **Preserve log** and **Disable cache**. Right-click column headers → enable **Set-Cookie**.
+3. Go to `https://www.kmart.com.au/` (this seeds `_abck` / `bm_sz` on www).
+4. Open the same product our executor is testing (SKU 43552146, the sticker pad URL).
+5. Add to cart. Open cart. Proceed to checkout until the checkout page fully loads.
+6. Right-click any request in the Network panel → **Save all as HAR with content**.
 
-2. **Add a controlled TLS flag per task**
-   - Allow request bodies like `transport: "tls"` or `forceTls: true` for one-off tests.
-   - Allow `transport: "undici"` / `forceUndici: true` to force the stable path even when a proxy is supplied.
-   - Return the selected transport in the `/run` response/timeline so we know what actually ran.
+Upload the `.har` to this chat. Do not scrub it — Harvey needs the cookies and sensor payloads intact. It's a short-lived session on a throwaway incognito, safe to share with Hyper.
 
-3. **Wrap top-level `/run` failures**
-   - Add an outer catch around `runCheckout` in `server.js` so normal JS errors return JSON instead of opaque failures.
-   - This will not catch a true native hard-crash, which is useful signal: if it is still an empty 502 after this, we know the process is dying below JS.
+## Step 2 — I prep the code bundle (5 files, under 500 KB each)
 
-4. **Add a lightweight transport diagnostic endpoint**
-   - Add or extend a safe diagnostic route that initializes the chosen transport and performs one simple fetch.
-   - This lets us test direct/proxy + undici/tls separately without running the full Kmart chain.
+From our executor, only what touches Akamai on Kmart:
 
-5. **Update executor docs/secrets guidance**
-   - Document the immediate safe setting:
-     - set `EXECUTOR_HTTP_TRANSPORT=undici` to recover JSON responses
-     - only set `tls` when specifically testing native TLS
-   - Clarify that card secrets are unrelated to this failure.
+1. `executor/adapters/kmart.js` — the failing chain (warm → sensor loop → api_sensor → cart_get).
+2. `executor/antibot.js` — the Hyper SDK wrapper (`solveAkamaiSensor` inputs).
+3. `executor/http.js` — the transport / cookie jar / header defaults.
+4. A trimmed `failing-run.json` — the timeline from the screenshots you just shared (api_sensor#1 503, cart_get 403 edgesuite response, cart_create 403). I'll strip anything above 500 KB and remove card-related noise.
+5. `executor/docs/hyper-solutions-brief.md` — so Harvey sees what we already know about the intended flow.
 
-## How to proceed right now on Fly
+I'll drop them in `.lovable/harvey-bundle/` so you can drag-drop them into Harvey's UI in one go.
 
-Before code changes, the fastest test is to set this secret back explicitly:
+## Step 3 — The prompt for Harvey's "What's the issue?" box
 
-```bash
-EXECUTOR_HTTP_TRANSPORT=undici
-```
+Draft, tuned to what its docs say it wants (specific, one failure, one hypothesis to test):
 
-Then re-run.
+> Our Node executor solves Akamai sensor for `www.kmart.com.au` successfully (abck cookie validates), but the first sensor POST to the api host (`api.kmart.com.au`) returns 503, and every subsequent GraphQL request to `https://api.kmart.com.au/gateway/graphql` returns 403 Access Denied from edgesuite.net. The attached HAR shows a real browser doing the same call chain with a valid session. In the HAR, please identify:
+> 1. Which sensor endpoint on api.kmart.com.au the browser hits (path + method + headers) before the first GraphQL call.
+> 2. Whether the api-host `_abck` is seeded from a www→api navigation, a separate script fetch, or a cross-domain cookie copy.
+> 3. The exact header set (order + casing + values, especially `sec-ch-ua*`, `origin`, `referer`, `x-*`) the browser sends on `/gateway/graphql` that we're missing.
+> Compare against the attached `kmart.js` + `antibot.js` and tell us what to change.
 
-Expected outcome:
-- If the empty 502 disappears and you get a normal JSON timeline/403, the TLS native path is confirmed as the crash source.
-- If the empty 502 continues even with `undici`, the crash is outside the Kmart TLS path and we should inspect Fly logs/startup next.
+## Step 4 — After Harvey answers
+
+Harvey typically returns: (a) the missing sensor endpoint or (b) the wrong headers / cookie seeding. I'll turn its answer into a diff against `kmart.js` / `antibot.js` in a follow-up plan — no code changes this turn.
+
+## Budget
+
+You have 5 Harvey submissions/day. This plan uses 1. If the first answer is ambiguous, we iterate with a narrower prompt rather than re-uploading a fresh HAR.
+
+## What I need from you next
+
+The exported `.har` file. Once uploaded, I'll produce the bundle and the exact prompt text ready to paste.
