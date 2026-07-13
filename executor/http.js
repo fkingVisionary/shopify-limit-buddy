@@ -91,7 +91,7 @@ const CHROME_HEADER_ORDER = [
 // "host:port", or full "http://user:pass@host:port". Proxy providers often
 // include raw special characters in usernames/passwords, so do not rely on the
 // URL constructor until after credentials are split and encoded.
-function parseProxy(raw) {
+export function parseProxy(raw) {
   if (!raw) return null;
   let s = String(raw).trim();
   if (!s) return null;
@@ -212,7 +212,10 @@ export function makeDispatcher(rawProxy, opts = {}) {
   const useTls = !opts.forceUndici && (opts.forceTls || HTTP_TRANSPORT === "tls");
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
-  return new Dispatcher(url, useTls);
+  const dispatcher = new Dispatcher(url, useTls);
+  dispatcher.rawProxyLen = rawProxy ? String(rawProxy).length : 0;
+  dispatcher.proxyParseFailed = Boolean(rawProxy) && !url;
+  return dispatcher;
 }
 
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the

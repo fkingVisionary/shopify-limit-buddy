@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows, HeartPulse } from "lucide-react";
 import { diagnoseExecutor, pingExecutor, runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
+import { classifyProxy } from "@/lib/proxy-format";
 
 export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
@@ -282,6 +283,25 @@ function KmartPage() {
     setResult(null);
     try {
       const taskId = `kmart-${Date.now().toString(36)}`;
+      const proxyRaw = proxy.trim();
+      const classified = proxyRaw ? classifyProxy(proxyRaw) : null;
+      if (classified?.kind === "invalid") {
+        setResult({
+          ok: false,
+          error: `Proxy format invalid: ${classified.reason ?? "unrecognized"}. Use user:pass@host:port or host:port:user:pass`,
+          taskId,
+        } as RunResult);
+        return;
+      }
+      if (classified?.kind === "template") {
+        setResult({
+          ok: false,
+          error: "URL-template proxies are not supported on the Kmart HTTP lane. Paste a raw user:pass@host:port residential entry.",
+          taskId,
+        } as RunResult);
+        return;
+      }
+      const proxyUrl = classified?.kind === "raw" ? classified.url ?? null : null;
       const res = (await runFn({
         data: {
           taskId,
@@ -289,14 +309,14 @@ function KmartPage() {
           // Kmart adapter reads SKU from PDP; variantId is only shape-required.
           variantId: 1,
           qty,
-          proxy: proxy.trim() || null,
+          proxy: proxyUrl,
           dryRun: !placeOrder,
           placeOrder,
           debugTrace: true,
           kmartMode: usePlaywright ? "playwright" : "current",
-          // Proxied undici sessions often RST after SBSD; prefer Chrome TLS
-          // impersonation when a proxy is set (override with forceUndici later if needed).
-          ...(proxy.trim() && !usePlaywright ? { transport: "tls" as const } : {}),
+          // Stay on undici for the HTTP lane. Auto transport=tls with a proxy
+          // produced empty 502s (native TLS crash) — use forceTls / Playwright
+          // when deliberately testing Chrome TLS impersonation.
           profile: {
             email: profile.email || null,
             first_name: profile.first_name || null,
@@ -499,13 +519,16 @@ function KmartPage() {
                 />
               </div>
               <div>
-                <Label className="text-xs">Proxy (optional)</Label>
+                <Label className="text-xs">Proxy (optional — paste into this field)</Label>
                 <Input
                   value={proxy}
                   onChange={(e) => setProxy(e.target.value)}
                   placeholder="user:pass@host:port  or  host:port:user:pass"
                   className="font-mono text-xs"
                 />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Leave empty = Fly direct egress (often GraphQL 403). Filling this used to force TLS and empty 502s — runs now stay on undici.
+                </p>
               </div>
             </div>
             <details className="rounded-md border border-border/50 p-3">
