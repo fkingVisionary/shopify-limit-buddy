@@ -28,6 +28,20 @@ if (!TOKEN) {
 
 const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
+// Browser-friendly landing. This service is an API — visiting `/` in a browser
+// used to look "blank" (Fastify 404). Keep /health as the probe endpoint.
+app.get("/", async () => ({
+  ok: true,
+  service: "j1ms-bot-executor",
+  health: "/health",
+  diagnose: "POST /health/diagnose (Bearer auth)",
+  run: "POST /run (Bearer auth)",
+  transport: HTTP_TRANSPORT,
+  hyperApiKey: Boolean(process.env.HYPER_API_KEY),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  ts: Date.now(),
+}));
+
 app.get("/health", async () => ({
   ok: true,
   ts: Date.now(),
@@ -357,7 +371,16 @@ app.post("/jbhifi/probe", async (req, reply) => {
 
 app
   .listen({ host: "0.0.0.0", port: PORT })
-  .then(() => console.log(`executor listening on :${PORT}`))
+  .then(() => {
+    console.log(`executor listening on 0.0.0.0:${PORT}`);
+    console.log(
+      JSON.stringify({
+        hyperApiKey: Boolean(process.env.HYPER_API_KEY),
+        proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+        transport: HTTP_TRANSPORT,
+      }),
+    );
+  })
   .catch((e) => {
     console.error(e);
     process.exit(1);
