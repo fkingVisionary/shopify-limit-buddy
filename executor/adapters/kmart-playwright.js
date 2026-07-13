@@ -79,8 +79,10 @@ function step(steps, name, ok, note) {
   steps.push({ step: name, ok, ms: now(), note });
 }
 
-async function run(task, _ctx) {
-  const steps = [];
+async function run(task, ctx) {
+  // Share steps with checkout.js's catch handler so errors don't lose progress.
+  const steps = ctx?.steps ?? [];
+  if (ctx && !ctx.steps) ctx.steps = steps;
   const t0 = now();
   const dryRun = task.dryRun !== false;
   const storeUrl = String(task.storeUrl || "").replace(/\/$/, "");
