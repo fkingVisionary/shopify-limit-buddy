@@ -39,7 +39,7 @@ const InputSchema = z.object({
   placeOrder: z.boolean().default(false),
   placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
   debugTrace: z.boolean().default(false),
-  kmartMode: z.enum(["current", "cart-baseline", "diagnostic"]).default("current"),
+  kmartMode: z.enum(["current", "cart-baseline", "diagnostic", "playwright"]).default("current"),
 });
 
 const AkamaiLabInputSchema = z.object({
