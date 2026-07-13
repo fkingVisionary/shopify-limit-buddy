@@ -71,8 +71,8 @@ Golden sequence (from captured HAR `www.kmart.com.au.har_1.json`, see `executor/
 | `getMyActiveCart` / `createMyCart` / `updateMyCart` ATC | Done | + probe reads between create and ATC |
 | Address + billing + C&C storeAddress | Done | Profile-driven; defaults to QLD C&C fixture |
 | Paydock tokenize | Done | `origin=widget.paydock.com` (HAR-critical) |
-| `create3DSToken` → handle → process | Done | Frictionless path only for placeOrder |
-| `chargePayDockWithToken` | Done | Gated: `placeOrder === true` **and** frictionless 3DS |
+| `create3DSToken` → init iframes → handle → process | Done | Hits GPayments init/secondary URLs before InitAuthTimedOut; frictionless path only for placeOrder |
+| `chargePayDockWithToken` | Done | Gated: `placeOrder === true` **and** frictionless 3DS (built-in mutation — no UI-saved query required) |
 | `resumeFrom: "api"` + `seedCookies` | Done (this turn) | Skip WWW warm; continue GraphQL |
 | `skipAtc` | Done (this turn) | Used after Playwright already ATC’d |
 
@@ -149,10 +149,11 @@ Defaults in adapter (QLD postcode, store ids `1124` / `1241`, fixture identity).
 
 ### Phase B — Real submit (authorized test card)
 
-1. Set `KMART_CARD_*` on executor **or** pass `card` in `/run`.  
-2. Confirm frictionless 3DS on that card.  
-3. `placeOrder: true` — expect `orderNumber` in result.  
-4. Keep amounts small; log only last4.
+1. Paste card in `/kmart` Checkout profile panel (or set `KMART_CARD_*` on Fly).  
+2. Toggle **Attempt real place order** on — adapter uses built-in `chargePayDockWithToken` (saved recon mutation not required).  
+3. Confirm frictionless 3DS on that card (`paydock_3ds_process` ok).  
+4. Expect `orderNumber` + `payment_summary` in result.  
+5. Keep amounts small; log only last4.
 
 ### Phase C — Harden both lanes
 

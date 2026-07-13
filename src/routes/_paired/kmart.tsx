@@ -16,7 +16,7 @@ export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
     meta: [
       { title: "Kmart AU checkout — J1m's Bot" },
-      { name: "description", content: "Run Kmart AU HTTP checkouts through the executor. Auto-captures the placeOrder mutation from live traffic." },
+      { name: "description", content: "Run Kmart AU HTTP checkouts through the executor. Built-in chargePayDockWithToken for real submits." },
       { name: "robots", content: "noindex" },
     ],
   }),
@@ -82,6 +82,7 @@ type RunResult = {
     orderNumber?: string | null;
     orderId?: string | null;
     paymentStatus?: string | null;
+    paymentSummary?: Record<string, unknown> | null;
     error?: string;
     failedStep?: string;
     adapter?: string;
@@ -89,6 +90,7 @@ type RunResult = {
     trace?: unknown;
   };
   error?: string;
+  taskId?: string;
 };
 
 type DiagnoseResult = {
@@ -292,6 +294,14 @@ function KmartPage() {
   const cleanUrl = useMemo(() => normalizeKmartUrl(url), [url]);
   const urlWasCleaned = cleanUrl !== url.trim() && url.trim().length > 0;
 
+  const cardReady = useMemo(() => {
+    const pan = card.number.replace(/\s+/g, "");
+    const cvv = card.cvv.trim();
+    const mm = card.expMonth.trim();
+    const yy = card.expYear.trim();
+    return pan.length >= 12 && cvv.length >= 3 && mm.length >= 1 && yy.length >= 2;
+  }, [card]);
+
   const canRun = useMemo(() => {
     return /^https:\/\/(www\.)?kmart\.com\.au\//i.test(cleanUrl) && qty > 0 && !running;
   }, [cleanUrl, qty, running]);
@@ -320,6 +330,21 @@ function KmartPage() {
         return;
       }
       const proxyUrl = classified?.kind === "raw" ? classified.url ?? null : null;
+      if (placeOrder) {
+        const pan = card.number.replace(/\s+/g, "");
+        const cvv = card.cvv.trim();
+        const mm = card.expMonth.trim();
+        const yy = card.expYear.trim();
+        if (pan.length < 12 || cvv.length < 3 || !mm || yy.length < 2) {
+          setResult({
+            ok: false,
+            error:
+              "Real place order requires a complete test card (number, CVV, MM, YY) in the Checkout profile panel.",
+            taskId,
+          } as RunResult);
+          return;
+        }
+      }
       const holder =
         card.holder.trim() ||
         [profile.first_name, profile.last_name].filter(Boolean).join(" ").trim() ||
@@ -653,14 +678,19 @@ function KmartPage() {
               </div>
               <p className="mt-2 text-[11px] text-muted-foreground">
                 Empty address fields fall back to adapter fixtures. Card here overrides Fly <code>KMART_CARD_*</code>.
-                Dry-run still stops before place order; fill card to exercise Paydock + 3DS.
+                Dry-run still runs Paydock + 3DS when card is filled; place order stays off until you toggle it.
+                {placeOrder && !cardReady && (
+                  <span className="mt-1 block text-destructive">
+                    Real submit needs number + CVV + expiry MM/YY filled above.
+                  </span>
+                )}
               </p>
             </details>
             <div className="flex items-center justify-between rounded-md border border-border/50 p-3">
               <div>
                 <div className="text-sm font-medium">Attempt real place order</div>
                 <div className="text-xs text-muted-foreground">
-                  Off = dry-run (stops after 3DS token). On = runs chargePayDockWithToken after frictionless 3DS.
+                  Off = dry-run (stops after 3DS). On = runs built-in <code>chargePayDockWithToken</code> after frictionless 3DS.
                   {usePlaywright ? " Playwright seeds Akamai cookies, then HTTP GraphQL completes checkout." : ""}
                 </div>
               </div>
@@ -685,18 +715,18 @@ function KmartPage() {
                 {labRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FlaskConical className="mr-2 h-4 w-4" />}
                 {labRunning ? "Testing Akamai…" : "Akamai lab"}
               </Button>
-              <Button onClick={handleRun} disabled={!canRun}>
+              <Button onClick={handleRun} disabled={!canRun || (placeOrder && !cardReady)}>
                 {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
                 {running ? "Running…" : placeOrder ? "Run — real submit" : "Run — dry run"}
               </Button>
-              {placeOrder && !mutation && (
-                <Badge variant="destructive" className="text-[10px]">
-                  no saved mutation — will only capture candidates
+              {placeOrder && cardReady && (
+                <Badge variant="secondary" className="text-[10px]">
+                  will charge via <code>chargePayDockWithToken</code>
                 </Badge>
               )}
-              {placeOrder && mutation && (
-                <Badge variant="secondary" className="text-[10px]">
-                  will submit via <code>{mutation.operationName}</code>
+              {placeOrder && !cardReady && (
+                <Badge variant="destructive" className="text-[10px]">
+                  fill test card first
                 </Badge>
               )}
               {usePlaywright && (
@@ -1118,6 +1148,42 @@ function KmartPage() {
               <div className="mb-2 rounded border border-green-500/40 bg-green-500/5 p-2 text-xs">
                 <b>Order:</b> <code>{result.result.orderNumber}</code>
                 {result.result.paymentStatus && <> · payment: <code>{result.result.paymentStatus}</code></>}
+              </div>
+            )}
+            {(result.result?.paymentSummary ||
+              steps.some(
+                (s) =>
+                  s.step === "payment_summary" ||
+                  s.step.startsWith("paydock_") ||
+                  s.step === "place_order" ||
+                  s.step === "create_3ds_token",
+              )) && (
+              <div className="mb-2 rounded border border-border/50 bg-muted/20 p-2 text-xs">
+                <div className="mb-1 font-medium">Payment pipeline</div>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    "paydock_tokenize",
+                    "create_3ds_token",
+                    "paydock_3ds_init",
+                    "paydock_3ds_handle",
+                    "paydock_3ds_process",
+                    "place_order",
+                    "payment_summary",
+                  ].map((name) => {
+                    const s = steps.find((x) => x.step === name);
+                    if (!s) return null;
+                    return (
+                      <Badge key={name} variant={s.ok ? "secondary" : "destructive"} className="text-[10px] font-mono">
+                        {s.ok ? "✓" : "✗"} {name}
+                      </Badge>
+                    );
+                  })}
+                </div>
+                {result.result?.paymentSummary && (
+                  <pre className="mt-2 max-h-28 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-muted-foreground">
+                    {JSON.stringify(result.result.paymentSummary, null, 2)}
+                  </pre>
+                )}
               </div>
             )}
             <div className="overflow-x-auto">

@@ -90,6 +90,42 @@ const CHROME_CH_XHR = {
 //   - NO `cache-control` / `pragma` — those only appear on a hard reload
 //     (CMD+SHIFT+R). Sending them on every nav is a strong bot signal.
 //   - `priority: u=0, i` is sent on every top-level navigation.
+// Paydock card vault wants MM + YY (2-digit year). UI / env may send
+// "7" / "2029" / "29" — normalise before tokenize so we don't 400 on shape.
+function normalizePaydockCard({ number, cvv, expMonth, expYear, holder }) {
+  const pan = String(number ?? "").replace(/\s+/g, "");
+  const ccv = String(cvv ?? "").trim();
+  let month = String(expMonth ?? "").trim().replace(/\D/g, "");
+  let year = String(expYear ?? "").trim().replace(/\D/g, "");
+  if (month.length === 1) month = `0${month}`;
+  if (year.length === 4) year = year.slice(-2);
+  return {
+    number: pan,
+    cvv: ccv,
+    expMonth: month,
+    expYear: year,
+    holder: String(holder ?? "").trim(),
+    ok: pan.length >= 12 && ccv.length >= 3 && /^\d{2}$/.test(month) && /^\d{2}$/.test(year),
+  };
+}
+
+// Checkout HTML / Next chunks embed the Paydock widget public key. Prefer
+// env override (Fly secret) when scrape misses after a thin payment shell.
+function extractPaydockPublicKey(html) {
+  if (!html) return "";
+  const patterns = [
+    /"(?:publicKey|public_key|paydockPublicKey)"\s*:\s*"([^"]{16,})"/i,
+    /public[-_]?key["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{16,})/i,
+    /x-user-public-key["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{16,})/i,
+    /paydock[\s\S]{0,80}?publicKey["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{16,})/i,
+  ];
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (m?.[1]) return m[1];
+  }
+  return "";
+}
+
 function navHeaders({ referer, site }) {
   return {
     "user-agent": UA,
@@ -1885,9 +1921,10 @@ fragment LineItemFields on LineItem {
 
       // ===================================================================
       // 8. CHECKOUT FLOW
-      //    Address → billing → Paydock card vault → create3DSToken.
-      //    Stops short of placeOrder until task.placeOrder === true AND we
-      //    have the final mutation captured.
+      //    Address → billing → Paydock card vault → create3DSToken →
+      //    3DS handle/process → chargePayDockWithToken.
+      //    Stops short of placeOrder until task.placeOrder === true AND
+      //    Paydock process returns frictionless (issuer step-up needs ACS).
       // ===================================================================
       const wantCheckout = task.checkout !== false && cartId && sku && cartAtcOk && cartVerifyHasSku;
       if (task.checkout !== false && cartId && sku && (!cartAtcOk || !cartVerifyHasSku)) {
@@ -2099,16 +2136,68 @@ fragment LineItemFields on LineItem {
         // This keeps the PAN out of the executor's secret store and matches
         // the future profiles-sourced flow.
         const reqCard = task.card ?? {};
-        const cardNumber = String(reqCard.number ?? process.env.KMART_CARD_NUMBER ?? "");
-        const cardCcv = String(reqCard.cvv ?? process.env.KMART_CARD_CVV ?? "");
-        const cardMonth = String(reqCard.expMonth ?? process.env.KMART_CARD_EXPIRY_MONTH ?? "");
-        const cardYear = String(reqCard.expYear ?? process.env.KMART_CARD_EXPIRY_YEAR ?? "");
-        const cardHolder = String(reqCard.holder ?? process.env.KMART_CARD_HOLDER ?? `${identity.firstName} ${identity.lastName}`);
-        const paydockPublicKey =
-          process.env.PAYDOCK_PUBLIC_KEY ||
-          checkoutHtml.match(/"(?:publicKey|public_key|paydockPublicKey)"\s*:\s*"([^"]+)"/i)?.[1] ||
-          checkoutHtml.match(/public[-_]?key["']?\s*[:=]\s*["']([a-zA-Z0-9._-]{20,})/)?.[1] ||
-          "";
+        const cardNorm = normalizePaydockCard({
+          number: reqCard.number ?? process.env.KMART_CARD_NUMBER ?? "",
+          cvv: reqCard.cvv ?? process.env.KMART_CARD_CVV ?? "",
+          expMonth: reqCard.expMonth ?? process.env.KMART_CARD_EXPIRY_MONTH ?? "",
+          expYear: reqCard.expYear ?? process.env.KMART_CARD_EXPIRY_YEAR ?? "",
+          holder:
+            reqCard.holder ??
+            process.env.KMART_CARD_HOLDER ??
+            `${identity.firstName} ${identity.lastName}`,
+        });
+        const { number: cardNumber, cvv: cardCcv, expMonth: cardMonth, expYear: cardYear, holder: cardHolder } =
+          cardNorm;
+
+        let paydockPublicKey = process.env.PAYDOCK_PUBLIC_KEY || extractPaydockPublicKey(checkoutHtml);
+        // Payment shell is often a thin Next document; public key lives in a
+        // deferred chunk. Pull a couple of likely scripts when scrape misses.
+        if (!paydockPublicKey && checkoutHtml) {
+          const scriptHrefs = [
+            ...checkoutHtml.matchAll(/src="(\/_next\/static\/[^"]+\.js)"/g),
+          ]
+            .map((m) => m[1])
+            .filter((p) => /paydock|payment|checkout|chunk/i.test(p) || p.includes("/chunks/"))
+            .slice(0, 8);
+          for (const href of scriptHrefs) {
+            try {
+              const sr = await request(
+                origin + href,
+                {
+                  method: "GET",
+                  headers: {
+                    "user-agent": UA,
+                    accept: "*/*",
+                    "accept-language": ACCEPT_LANG,
+                    referer: origin + "/checkout/payment",
+                    ...CHROME_CH_XHR,
+                    "sec-fetch-site": "same-origin",
+                    "sec-fetch-mode": "cors",
+                    "sec-fetch-dest": "script",
+                  },
+                },
+                ctx,
+              );
+              const body = await sr.text();
+              paydockPublicKey = extractPaydockPublicKey(body);
+              if (paydockPublicKey) {
+                steps.push({
+                  step: "paydock_pk_script",
+                  ok: true,
+                  note: `pk from ${href.slice(0, 80)}…`,
+                });
+                break;
+              }
+            } catch {}
+          }
+        }
+        steps.push({
+          step: "paydock_pk",
+          ok: Boolean(paydockPublicKey),
+          note: paydockPublicKey
+            ? `pk=${paydockPublicKey.slice(0, 12)}… source=${process.env.PAYDOCK_PUBLIC_KEY ? "env" : "scrape"}`
+            : "missing — set PAYDOCK_PUBLIC_KEY on Fly or ensure /checkout/payment embeds the widget key",
+        });
 
         // Kmart's Paydock account is configured with a single gateway named
         // "MasterCard" that processes all card brands — real HAR entry #766
@@ -2118,13 +2207,22 @@ fragment LineItemFields on LineItem {
         // configured. Hardcode per HAR.
         const gatewayType = "MasterCard";
 
+        if (task.placeOrder === true && !cardNorm.ok) {
+          steps.push({
+            step: "place_order_gate",
+            ok: false,
+            note: "placeOrder=true but card incomplete (need number+cvv+MM+YY). Fill the test card panel or set KMART_CARD_*.",
+          });
+        }
 
         let oneTimeToken = null;
-        if (!cardNumber || !cardCcv) {
+        if (!cardNorm.ok) {
           steps.push({
             step: "paydock_tokenize",
             ok: false,
-            note: "skipped: no card on task and KMART_CARD_NUMBER / KMART_CARD_CVV unset — paste a test card in the Kmart UI profile panel",
+            note: cardNumber && cardCcv
+              ? `skipped: card expiry shape invalid after normalize (mm=${cardMonth || "?"} yy=${cardYear || "?"})`
+              : "skipped: no card on task and KMART_CARD_NUMBER / KMART_CARD_CVV unset — paste a test card in the Kmart UI profile panel",
           });
         } else {
           await tStep("paydock_tokenize", async () => {
@@ -2174,7 +2272,7 @@ fragment LineItemFields on LineItem {
             return {
               status: res.status,
               ok: res.status < 400 && Boolean(oneTimeToken),
-              note: `gateway=${gatewayType} pk=${paydockPublicKey ? paydockPublicKey.slice(0, 12) + "…" : "(none)"} token=${oneTimeToken ? oneTimeToken.slice(0, 12) + "…" : "null"} : ${txt.slice(0, 250)}`,
+              note: `gateway=${gatewayType} mm=${cardMonth} yy=${cardYear} last4=${cardNumber.slice(-4)} pk=${paydockPublicKey ? paydockPublicKey.slice(0, 12) + "…" : "(none)"} token=${oneTimeToken ? oneTimeToken.slice(0, 12) + "…" : "null"} : ${txt.slice(0, 250)}`,
             };
           });
         }
@@ -2196,6 +2294,9 @@ fragment LineItemFields on LineItem {
         let paydockJwt = null;           // x-access-token for /process
         let charge3dsId = null;          // used by chargePayDockWithToken
         let create3dsRaw = null;
+        let threeDsInitUrl = null;
+        let threeDsSecondaryUrl = null;
+        let threeDsAuthUrl = null;
         if (oneTimeToken) {
           await tStep("create_3ds_token", async () => {
             const res = await gqlPost({
@@ -2224,6 +2325,9 @@ fragment LineItemFields on LineItem {
                     ? JSON.parse(Buffer.from(payload.meta, "base64").toString("utf8"))
                     : {};
                   charge3dsId = meta.charge_3ds_id ?? null;
+                  threeDsInitUrl = meta.initialization_url ?? null;
+                  threeDsSecondaryUrl = meta.secondary_url ?? null;
+                  threeDsAuthUrl = meta.authorization_url ?? null;
                 }
               }
             } catch (e) {
@@ -2232,7 +2336,7 @@ fragment LineItemFields on LineItem {
             return {
               status: res.status,
               ok: res.status < 400 && Boolean(charge3dsId),
-              note: `charge_3ds_id=${charge3dsId ?? "null"} jwtLen=${paydockJwt?.length ?? 0} : ${txt.slice(0, 300)}`,
+              note: `charge_3ds_id=${charge3dsId ?? "null"} jwtLen=${paydockJwt?.length ?? 0} init=${Boolean(threeDsInitUrl)} secondary=${Boolean(threeDsSecondaryUrl)} : ${txt.slice(0, 300)}`,
             };
           });
         } else {
@@ -2240,6 +2344,59 @@ fragment LineItemFields on LineItem {
             step: "create_3ds_token",
             ok: false,
             note: "skipped: no oneTimeToken from Paydock",
+          });
+        }
+
+        // 8f2. GPayments 3DS Method + monitor iframes. Real browsers load
+        //     secondary_url (monitor) and initialization_url (method) before
+        //     posting InitAuthTimedOut. Skipping these hurts frictionless
+        //     rates — issuers never see the method probe.
+        if (paydockJwt && charge3dsId && (threeDsSecondaryUrl || threeDsInitUrl)) {
+          await tStep("paydock_3ds_init", async () => {
+            const hits = [];
+            for (const [label, url] of [
+              ["secondary", threeDsSecondaryUrl],
+              ["initialization", threeDsInitUrl],
+            ]) {
+              if (!url) continue;
+              try {
+                const res = await tracedRequest(
+                  `paydock_3ds_${label}`,
+                  url,
+                  {
+                    method: "GET",
+                    headers: {
+                      "user-agent": UA,
+                      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                      "accept-language": ACCEPT_LANG,
+                      "upgrade-insecure-requests": "1",
+                      ...CHROME_CH,
+                      "sec-fetch-site": "cross-site",
+                      "sec-fetch-mode": "navigate",
+                      "sec-fetch-dest": "iframe",
+                      referer: origin + "/checkout/payment",
+                    },
+                  },
+                );
+                hits.push(`${label}=${res.status}`);
+                // Drain body so undici/connection reuse stays clean.
+                await res.text().catch(() => "");
+              } catch (e) {
+                hits.push(`${label}=err:${e?.message ?? e}`);
+              }
+              await sleep(80, 220);
+            }
+            return {
+              status: 200,
+              ok: hits.some((h) => /=\d{3}$/.test(h) && !h.includes("=err")),
+              note: hits.join(" ") || "no urls",
+            };
+          }).catch((e) => steps.push({ step: "paydock_3ds_init:error", ok: false, note: e?.message ?? String(e) }));
+        } else if (paydockJwt && charge3dsId) {
+          steps.push({
+            step: "paydock_3ds_init",
+            ok: false,
+            note: "skipped: JWT meta missing initialization_url/secondary_url",
           });
         }
 
@@ -2356,14 +2513,24 @@ fragment LineItemFields on LineItem {
             const txt = await res.text();
             try {
               const j = JSON.parse(txt);
-              const result = j?.resource?.data?.result;
-              processFrictionless = Boolean(result?.frictionless);
-              processStatus = result?.status ?? null;
+              const result = j?.resource?.data?.result ?? j?.resource?.data ?? {};
+              processStatus = result?.status ?? result?.authentication_status ?? null;
+              if (result?.frictionless === true) {
+                processFrictionless = true;
+              } else if (
+                result?.frictionless !== false &&
+                /^(authenticated|complete|success|approved)$/i.test(String(processStatus ?? ""))
+              ) {
+                // Some Paydock payloads omit frictionless:true but still mark auth done.
+                processFrictionless = true;
+              } else {
+                processFrictionless = false;
+              }
             } catch {}
             return {
               status: res.status,
               ok: res.status < 400 && processFrictionless,
-              note: `frictionless=${processFrictionless} status=${processStatus} : ${txt.slice(0, 300)}`,
+              note: `frictionless=${processFrictionless} status=${processStatus} authUrl=${threeDsAuthUrl ? "yes" : "no"} : ${txt.slice(0, 300)}`,
             };
           }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
         } else {
@@ -2461,11 +2628,28 @@ fragment LineItemFields on LineItem {
           steps.push({
             step: "place_order",
             ok: true,
-            note: "skipped: task.placeOrder !== true (dry-run stop)",
+            note: "skipped: task.placeOrder !== true (dry-run stop) — toggle Attempt real place order + fill card to charge",
           });
         }
 
-        ctx.__kmart_order = { orderNumber, orderId, paymentStatus };
+        const paymentSummary = {
+          card: cardNorm.ok ? `last4=${cardNumber.slice(-4)} mm=${cardMonth} yy=${cardYear}` : "missing",
+          paydockPk: Boolean(paydockPublicKey),
+          oneTimeToken: Boolean(oneTimeToken),
+          charge3dsId: charge3dsId ? charge3dsId.slice(0, 8) + "…" : null,
+          frictionless: processFrictionless,
+          processStatus,
+          placeOrder: task.placeOrder === true,
+          orderNumber,
+          paymentStatus,
+        };
+        steps.push({
+          step: "payment_summary",
+          ok: Boolean(orderNumber) || (task.placeOrder !== true && processFrictionless),
+          note: JSON.stringify(paymentSummary),
+        });
+
+        ctx.__kmart_order = { orderNumber, orderId, paymentStatus, paymentSummary };
       }
     }
 
@@ -2482,6 +2666,7 @@ fragment LineItemFields on LineItem {
       orderNumber: orderInfo.orderNumber ?? null,
       orderId: orderInfo.orderId ?? null,
       paymentStatus: orderInfo.paymentStatus ?? null,
+      paymentSummary: orderInfo.paymentSummary ?? null,
     };
   },
 };
