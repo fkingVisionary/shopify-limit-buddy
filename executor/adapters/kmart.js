@@ -1270,13 +1270,20 @@ export const kmartAdapter = {
           },
           { requestBody: { sessionId } },
         );
-        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
+        const bodyTxt = (await res.text().catch(() => "")).slice(0, 2000);
         const setCookieNames = cookieNamesFromResponse(res);
+        try {
+          const parsed = JSON.parse(bodyTxt);
+          if (parsed?.token) {
+            ctx.__kmart_bearer = parsed.token;
+            ctx.__kmart_bearer_session = parsed.sessionId ?? sessionId;
+          }
+        } catch {}
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} bearer=${ctx.__kmart_bearer ? "yes" : "no"} body=${bodyTxt.slice(0,200)}`,
         };
       });
       if (!apiSeedOk) {
