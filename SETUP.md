@@ -134,6 +134,7 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 | `pdp_get` returns 403 | Proxy isn't residential AU — swap proxy provider |
 | `antibot_misconfigured` in chain output | `HYPER_API_KEY` missing or rejected on Fly — re-check the GitHub secret and re-run workflow |
 | Want to scale down / stop spending | Fly dashboard → app → Scale → set min machines to 0 (already the default) |
+| `ERR_CONNECTION_CLOSED` / pages never load | In the Kmart UI click **Executor diagnose**, or `POST /health/diagnose` with the same proxy. If the CONNECT probe fails, fix proxy auth/plan before retrying checkout. |
 
 ---
 

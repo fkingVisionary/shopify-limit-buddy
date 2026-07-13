@@ -75,8 +75,9 @@ function extractSkuFromUrl(pdpUrl) {
 }
 
 const now = () => Date.now();
-function step(steps, name, ok, note) {
-  steps.push({ step: name, ok, ms: now(), note });
+function step(steps, name, ok, note, startedAt = null) {
+  const ms = startedAt != null ? now() - startedAt : undefined;
+  steps.push({ step: name, ok, ...(ms != null ? { ms } : {}), note });
 }
 
 async function run(task, ctx) {
@@ -96,8 +97,9 @@ async function run(task, ctx) {
 
   let browser = null;
   try {
+    let s0 = now();
     const { playwright, hyperPw, hyperSdk } = await loadDeps();
-    step(steps, "deps_loaded", true, "playwright + hyper-sdk-playwright ready");
+    step(steps, "deps_loaded", true, "playwright + hyper-sdk-playwright ready", s0);
 
     const rawLen = task.proxy ? String(task.proxy).length : 0;
     const proxy = parseProxy(task.proxy);
@@ -111,12 +113,13 @@ async function run(task, ctx) {
       ],
       ...(proxy ? { proxy } : {}),
     };
+    s0 = now();
     try {
       browser = await playwright.chromium.launch({ channel: "chrome", ...launchOpts });
-      step(steps, "browser_launch", true, `channel=chrome proxy=${Boolean(proxy)}`);
+      step(steps, "browser_launch", true, `channel=chrome proxy=${Boolean(proxy)}`, s0);
     } catch (e) {
       browser = await playwright.chromium.launch(launchOpts);
-      step(steps, "browser_launch", true, `channel=bundled proxy=${Boolean(proxy)} note=${e?.message?.slice(0, 80)}`);
+      step(steps, "browser_launch", true, `channel=bundled proxy=${Boolean(proxy)} note=${e?.message?.slice(0, 80)}`, s0);
     }
 
     const context = await browser.newContext({
@@ -131,6 +134,7 @@ async function run(task, ctx) {
     // own helper endpoint because the IP passed to the solver must exactly
     // match the proxy egress used by the browser session.
     let ipAddress = "1.1.1.1";
+    s0 = now();
     try {
       const ipPage = await context.newPage();
       let r = await ipPage.goto("https://api.hypersolutions.co/ip", { timeout: 15_000 });
@@ -146,9 +150,9 @@ async function run(task, ctx) {
         }
       }
       await ipPage.close();
-      step(steps, "egress_ip", true, ipAddress);
+      step(steps, "egress_ip", true, ipAddress, s0);
     } catch (e) {
-      step(steps, "egress_ip", false, e?.message?.slice(0, 120) ?? "failed");
+      step(steps, "egress_ip", false, e?.message?.slice(0, 120) ?? "failed", s0);
     }
 
     const page = await context.newPage();
@@ -172,30 +176,66 @@ async function run(task, ctx) {
     ].filter(([, Handler]) => typeof Handler === "function")
       .map(([name, Handler, config]) => ({ name, handler: new Handler(config) }));
 
+    s0 = now();
     await Promise.all(handlers.map(({ handler }) => handler.initialize(page, context)));
-    step(steps, "protection_handlers_ready", true, `${handlers.map((h) => h.name).join("+")} interceptors installed`);
+    step(steps, "protection_handlers_ready", true, `${handlers.map((h) => h.name).join("+")} interceptors installed`, s0);
 
-    // 1) Warm home.
-    const homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
-    step(steps, "warm_home", homeRes?.ok() ?? false, `status=${homeRes?.status()}`);
-    if (homeRes && homeRes.status() >= 400) {
-      const html = await page.content().catch(() => "");
-      const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
-        .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
-      step(steps, "warm_home_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+    // 1) Warm home — catch network errors so earlier steps survive in the timeline.
+    s0 = now();
+    let homeRes = null;
+    try {
+      homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      step(steps, "warm_home", homeRes?.ok() ?? false, `status=${homeRes?.status()}`, s0);
+      if (homeRes && homeRes.status() >= 400) {
+        const html = await page.content().catch(() => "");
+        const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
+          .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
+        step(steps, "warm_home_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+      }
+    } catch (e) {
+      step(steps, "warm_home", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+      return {
+        ok: false,
+        steps,
+        finalUrl: storeUrl,
+        cookies: {},
+        dryRun,
+        trace: {
+          elapsedMs: now() - t0,
+          hyperStatus: Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null])),
+          hint: "warm_home failed — run POST /health/diagnose with the same proxy to separate CONNECT/auth from Playwright.",
+        },
+      };
     }
     await page.waitForTimeout(1500 + Math.random() * 1500);
 
     // 2) PDP.
     const pdpUrl = /^https?:\/\//i.test(storeUrl) ? storeUrl : `${origin}/`;
-    const pdpRes = await page.goto(pdpUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    const pdpStatus = pdpRes?.status() ?? 0;
-    step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()}`);
-    if (pdpStatus >= 400) {
-      const html = await page.content().catch(() => "");
-      const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
-        .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
-      step(steps, "pdp_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+    s0 = now();
+    let pdpStatus = 0;
+    try {
+      const pdpRes = await page.goto(pdpUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      pdpStatus = pdpRes?.status() ?? 0;
+      step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()}`, s0);
+      if (pdpStatus >= 400) {
+        const html = await page.content().catch(() => "");
+        const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
+          .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
+        step(steps, "pdp_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+      }
+    } catch (e) {
+      step(steps, "pdp_get", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+      return {
+        ok: false,
+        steps,
+        finalUrl: page.url(),
+        cookies: Object.fromEntries((await context.cookies()).map((c) => [c.name, c.value])),
+        dryRun,
+        trace: {
+          elapsedMs: now() - t0,
+          hyperStatus: Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null])),
+        },
+      };
     }
     if (protectionEvents.length) step(steps, "protection_events", true, protectionEvents.join(" | "));
 
@@ -206,6 +246,7 @@ async function run(task, ctx) {
     // GraphQL mutation from the page context. Selector is intentionally
     // permissive — Kmart's markup shifts.
     let cartOk = false;
+    s0 = now();
     try {
       const btn = page.locator(
         'button:has-text("Add to cart"), button:has-text("ADD TO CART"), [data-testid*="add-to-cart" i]'
@@ -217,16 +258,21 @@ async function run(task, ctx) {
       // Wait briefly for the mini-cart / GraphQL round trip.
       await page.waitForTimeout(2500);
       cartOk = true;
-      step(steps, "cart_add_click", true, "clicked add-to-cart");
+      step(steps, "cart_add_click", true, "clicked add-to-cart", s0);
     } catch (e) {
-      step(steps, "cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed");
+      step(steps, "cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed", s0);
     }
 
     // 4) Checkout page (dry-run stops here).
     if (cartOk) {
-      const coRes = await page.goto(`${origin}/checkout`, { waitUntil: "domcontentloaded", timeout: 60_000 });
-      const coStatus = coRes?.status() ?? 0;
-      step(steps, "checkout_page", coStatus < 400, `status=${coStatus} url=${page.url()}`);
+      s0 = now();
+      try {
+        const coRes = await page.goto(`${origin}/checkout`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        const coStatus = coRes?.status() ?? 0;
+        step(steps, "checkout_page", coStatus < 400, `status=${coStatus} url=${page.url()}`, s0);
+      } catch (e) {
+        step(steps, "checkout_page", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+      }
     }
 
     const finalUrl = page.url();

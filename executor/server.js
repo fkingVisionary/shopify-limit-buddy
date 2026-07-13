@@ -2,13 +2,15 @@
 // Single endpoint: POST /run  → runs one checkout task, returns timeline.
 // Auth: shared-secret bearer token (EXECUTOR_TOKEN env var).
 // Health: GET /health → { ok: true }
+// Deep health: POST /health/diagnose → fingerprint + proxy CONNECT probe
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
 import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT } from "./http.js";
-import { runKmartAkamaiLab } from "./adapters/kmart-akamai-lab.js";
-import { runJbhifiRecon } from "./adapters/jbhifi-recon.js";
-import { runJbhifiProbe } from "./adapters/jbhifi-probe.js";
+import { runDeepHealth } from "./health.js";
+import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
+import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
+import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = process.env.EXECUTOR_TOKEN;
@@ -33,7 +35,29 @@ app.get("/health", async () => ({
   cap: MAX_CONCURRENT,
   transport: HTTP_TRANSPORT,
   proxyTransport: HTTP_TRANSPORT,
+  hyperApiKey: Boolean(process.env.HYPER_API_KEY),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
 }));
+
+// Authenticated deep health: TLS fingerprint + proxy CONNECT + direct target.
+// Use this instead of a full /run when diagnosing ERR_CONNECTION_CLOSED /
+// missing Hyper key / fingerprint drift.
+app.post("/health/diagnose", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  try {
+    return await runDeepHealth({
+      proxy: body.proxy ?? null,
+      targetUrl: typeof body.targetUrl === "string" ? body.targetUrl : "https://www.kmart.com.au/",
+      fingerprint: body.fingerprint !== false,
+      proxyProbe: body.proxyProbe !== false,
+      directProbe: body.directProbe !== false,
+    });
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message ?? String(e) };
+  }
+});
 
 app.post("/transport/diagnose", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
