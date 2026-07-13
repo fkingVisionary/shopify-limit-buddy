@@ -238,7 +238,7 @@ function KmartPage() {
           dryRun: !placeOrder,
           placeOrder,
           debugTrace: true,
-          kmartMode: "diagnostic",
+          kmartMode: usePlaywright ? "playwright" : "diagnostic",
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
