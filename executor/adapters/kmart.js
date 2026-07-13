@@ -410,7 +410,19 @@ export const kmartAdapter = {
     }
 
     const origin = "https://www.kmart.com.au";
-    const pdpUrl = task.storeUrl;
+    // Sanitize task.storeUrl. Users occasionally paste PDP URLs with a
+    // trailing sub-path (e.g. "…-43552146/status") which is not a real
+    // Kmart page — Akamai 301s it to canonical, we get 0-byte HTML, SKU
+    // extract fails, and worse, that fake URL becomes the referer on every
+    // api.kmart.com.au GraphQL call → 403 Access Denied at the api edge.
+    // Strip any trailing non-standard segment after the -<keycode>/ chunk.
+    const pdpUrl = (() => {
+      const raw = String(task.storeUrl || "");
+      const m = raw.match(/^(https?:\/\/[^/]+\/product\/[^/?#]*-\d{6,9})(?:\/[^?#]*)?(\?[^#]*)?/i);
+      return m ? `${m[1]}/${m[2] ?? ""}` : raw;
+    })();
+    steps.push({ step: "pdp_url_sanitize", ok: true, note: `raw=${task.storeUrl} → clean=${pdpUrl}` });
+
     let scriptPath = null;
     let scriptBody = null;
     let html = "";
