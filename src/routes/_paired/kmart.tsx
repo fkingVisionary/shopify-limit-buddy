@@ -232,11 +232,6 @@ function KmartPage() {
     writeJSON(LAST_INPUT_KEY, { url, qty, proxy, placeOrder, usePlaywright });
   }, [url, qty, proxy, placeOrder, usePlaywright]);
 
-  // Playwright lane is dry-run recon only — force placeOrder off.
-  useEffect(() => {
-    if (usePlaywright && placeOrder) setPlaceOrder(false);
-  }, [usePlaywright, placeOrder]);
-
   // Normalize: if the field contains an accidental duplication (e.g. user
   // pasted while the field was non-empty and the two got concatenated),
   // keep only the LAST valid https://…kmart.com.au/… occurrence.
@@ -476,18 +471,17 @@ function KmartPage() {
               <div>
                 <div className="text-sm font-medium">Attempt real place order</div>
                 <div className="text-xs text-muted-foreground">
-                  {usePlaywright
-                    ? "Disabled while Playwright lane is on (dry-run recon only)."
-                    : "Off = dry-run (stops after 3DS token). On = calls saved placeOrder mutation, charges the card on file."}
+                  Off = dry-run (stops after 3DS token). On = runs chargePayDockWithToken after frictionless 3DS.
+                  {usePlaywright ? " Playwright seeds Akamai cookies, then HTTP GraphQL completes checkout." : ""}
                 </div>
               </div>
-              <Switch checked={placeOrder} onCheckedChange={setPlaceOrder} disabled={usePlaywright} />
+              <Switch checked={placeOrder} onCheckedChange={setPlaceOrder} />
             </div>
             <div className="flex items-center justify-between rounded-md border border-border/50 p-3">
               <div>
                 <div className="text-sm font-medium">Use Playwright fallback lane</div>
                 <div className="text-xs text-muted-foreground">
-                  Absolute backup: real Chromium + Hyper's Playwright handlers. Slower + heavier, but reproduces api-host <code>_abck</code> seeding that raw HTTP can't. Dry-run only for now (home → PDP → cart click → checkout page).
+                  Chromium + Hyper Playwright handlers seed api-host <code>_abck</code>, then hand off to the HTTP GraphQL checkout (address → Paydock → 3DS → place order).
                 </div>
               </div>
               <Switch checked={usePlaywright} onCheckedChange={setUsePlaywright} />

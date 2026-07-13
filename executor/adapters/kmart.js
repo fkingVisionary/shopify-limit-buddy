@@ -447,6 +447,27 @@ export const kmartAdapter = {
     // resolveEgressIp doesn't stash on ctx; re-read from cache via helper.
     const egressIp = await resolveEgressIp(ctx);
 
+    // Hybrid resume: Playwright (or another lane) can seed a solved jar and
+    // jump straight into the GraphQL checkout chain.
+    const resumeFromApi = task.resumeFrom === "api";
+    if (task.seedCookies && typeof task.seedCookies === "object") {
+      const n = ctx.jar.load(task.seedCookies);
+      steps.push({
+        step: "seed_cookies",
+        ok: n > 0,
+        note: `loaded=${n} abckValid=${/\~0\~/.test(ctx.jar.get("_abck") ?? "")}`,
+      });
+    }
+
+    if (resumeFromApi) {
+      pdpStatus = 200;
+      steps.push({
+        step: "resume_from_api",
+        ok: Boolean(ctx.jar.get("_abck")),
+        note: "skipped WWW warm/sensor/PDP; continuing api GraphQL checkout with seeded cookies",
+      });
+    } else {
+
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
     await tStep("warm_home", async () => {
@@ -1148,6 +1169,8 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_pixel", ok: false, note: e?.message ?? String(e) });
     }
 
+    } // end !resumeFromApi warm/sensor/PDP block
+
     // 7. Cart steps — commercetools-style GraphQL on api.kmart.com.au.
     //    Auth is cookie-only (Akamai session from kmart.com.au). Real ops
     //    captured from DevTools: getActiveBag / createMyBag / updateMyBag.
@@ -1514,7 +1537,15 @@ fragment LineItemFields on LineItem {
           return { status: res.status, ok: res.status < 400, note: `${txt.length}b` };
         });
 
-        await tStep("cart_atc", async () => {
+        if (task.skipAtc === true) {
+          steps.push({
+            step: "cart_atc",
+            ok: true,
+            note: "skipped: task.skipAtc (browser lane already added line item)",
+          });
+          cartAtcOk = true;
+          ctx.__kmart_cart.cartAtcOk = true;
+        } else await tStep("cart_atc", async () => {
           const res = await gqlPost({
             operationName: "updateMyBag",
             variables: {

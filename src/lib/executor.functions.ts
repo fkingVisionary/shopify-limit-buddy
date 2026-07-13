@@ -40,6 +40,22 @@ const InputSchema = z.object({
   placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
   debugTrace: z.boolean().default(false),
   kmartMode: z.enum(["current", "cart-baseline", "diagnostic", "playwright"]).default("current"),
+  httpHandoff: z.boolean().default(true),
+  skipAtc: z.boolean().default(false),
+  resumeFrom: z.enum(["api"]).optional(),
+  profile: z
+    .object({
+      email: z.string().max(200).optional().nullable(),
+      first_name: z.string().max(100).optional().nullable(),
+      last_name: z.string().max(100).optional().nullable(),
+      address1: z.string().max(200).optional().nullable(),
+      city: z.string().max(100).optional().nullable(),
+      province: z.string().max(100).optional().nullable(),
+      zip: z.string().max(30).optional().nullable(),
+      phone: z.string().max(40).optional().nullable(),
+    })
+    .optional()
+    .nullable(),
 });
 
 const AkamaiLabInputSchema = z.object({

@@ -248,6 +248,21 @@ export function createJar() {
     get(name) {
       return store.get(name);
     },
+    set(name, value) {
+      if (!name) return;
+      store.set(String(name), String(value ?? ""));
+    },
+    // Bulk-load name→value cookies (e.g. Playwright context → HTTP jar handoff).
+    load(obj) {
+      if (!obj || typeof obj !== "object") return 0;
+      let n = 0;
+      for (const [k, v] of Object.entries(obj)) {
+        if (!k || v == null) continue;
+        store.set(String(k), String(v));
+        n++;
+      }
+      return n;
+    },
     dump() {
       return Object.fromEntries(store);
     },

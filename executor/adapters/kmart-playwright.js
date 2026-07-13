@@ -5,12 +5,12 @@
 // when the raw-HTTP kmart adapter is blocked by Akamai (typically the
 // api.kmart.com.au api-host `_abck` seeding that raw HTTP can't reproduce).
 //
-// Scope of this adapter (v1): dry-run recon only.
-//   home → PDP → cart-add (real button click) → checkout page load
-// Return: same {ok, steps, finalUrl, cookies} shape as kmart.js so the
-// server layer treats it interchangeably.
-//
 // Enabled per-task via `kmartMode: "playwright"`.
+//
+// Scope (v2): browser seeds Akamai trust (home → PDP → ATC → checkout warm),
+// then hands cookies to the HTTP kmart adapter (`resumeFrom:"api"`) which
+// runs address → Paydock → 3DS → placeOrder. Set `httpHandoff:false` to stop
+// after the browser recon only.
 
 let _playwright = null;
 let _hyperPw = null;
@@ -263,7 +263,7 @@ async function run(task, ctx) {
       step(steps, "cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed", s0);
     }
 
-    // 4) Checkout page (dry-run stops here).
+    // 4) Checkout warm in browser (keeps referer chain / cookies fresh).
     if (cartOk) {
       s0 = now();
       try {
@@ -282,15 +282,66 @@ async function run(task, ctx) {
     const abckValid = /~0~/.test(abck);
     step(steps, "abck_check", abckValid, abckValid ? "_abck valid (~0~)" : `_abck=${abck.slice(0, 60)}…`);
 
+    const hyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
+
+    // 5) Hybrid handoff: close Chromium, seed the HTTP jar, resume the
+    //    GraphQL checkout chain (address → Paydock → 3DS → placeOrder).
+    //    Opt out with task.httpHandoff === false.
+    const wantHandoff = task.httpHandoff !== false && cartOk && abckValid && ctx?.jar;
+    if (wantHandoff) {
+      try { await browser?.close?.(); } catch { /* ignore */ }
+      browser = null;
+      s0 = now();
+      step(steps, "http_handoff_start", true, "closing browser; resuming GraphQL checkout via kmart HTTP adapter");
+      try {
+        const { kmartAdapter } = await import("./kmart.js");
+        // Shares ctx.steps / ctx.jar so continuation appends to this timeline.
+        const cont = await kmartAdapter.run(
+          {
+            ...task,
+            resumeFrom: "api",
+            seedCookies: cookies,
+            // Re-run GraphQL ATC with the seeded jar. Browser cart state is
+            // not always visible to api.kmart.com.au via cookies alone.
+            skipAtc: task.skipAtc === true,
+            keycode: sku ?? undefined,
+          },
+          ctx,
+        );
+        step(steps, "http_handoff", cont?.ok !== false, `ok=${Boolean(cont?.ok)} order=${cont?.orderNumber ?? "null"}`, s0);
+        return {
+          ok: Boolean(cont?.ok),
+          steps,
+          finalUrl: cont?.finalUrl ?? finalUrl,
+          cookies: cont?.cookies ?? cookies,
+          dryRun: cont?.dryRun ?? dryRun,
+          orderNumber: cont?.orderNumber ?? null,
+          orderId: cont?.orderId ?? null,
+          paymentStatus: cont?.paymentStatus ?? null,
+          trace: {
+            elapsedMs: now() - t0,
+            hyperStatus,
+            httpHandoff: true,
+            httpTrace: cont?.trace,
+          },
+        };
+      } catch (e) {
+        step(steps, "http_handoff", false, e?.message?.slice(0, 200) ?? "handoff failed", s0);
+      }
+    } else if (task.httpHandoff !== false && cartOk && !abckValid) {
+      step(steps, "http_handoff", false, "skipped: _abck not valid (~0~) — fix proxy/Akamai before GraphQL resume");
+    }
+
     return {
-      ok: true,
+      ok: cartOk && abckValid,
       steps,
       finalUrl,
       cookies,
       dryRun,
       trace: {
         elapsedMs: now() - t0,
-        hyperStatus: Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null])),
+        hyperStatus,
+        httpHandoff: false,
       },
     };
   } finally {

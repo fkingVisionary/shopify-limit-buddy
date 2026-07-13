@@ -190,6 +190,10 @@ app.post("/run", async (req, reply) => {
       transport: typeof task.transport === "string" ? task.transport : undefined,
       forceTls: task.forceTls === true,
       forceUndici: task.forceUndici === true,
+      resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
+      seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
+      httpHandoff: task.httpHandoff !== false,
+      skipAtc: task.skipAtc === true,
     });
     return result;
   } catch (e) {
