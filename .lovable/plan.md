@@ -1,52 +1,41 @@
-## Goal
+## Problem
 
-Get Harvey (hypersolutions.co/harvey) to tell us why our executor's Akamai flow is rejected on `api.kmart.com.au` (503 on `api_sensor#1`, then 403 Access Denied on `cart_get` / `cart_create` at `/gateway/graphql`), while a real browser sails through.
+Harvey's UI is only accepting a single file up to 10 MB right now. Your raw HAR is 56 MB (Chrome HARs embed every response body — images, fonts, CSS, JS bundles — as base64, which is where the bulk lives). We need to (a) strip the HAR down to just the requests Harvey actually needs, and (b) get the code bundle + HAR into one file.
 
-Harvey needs two inputs: a clean browser HAR of a working session, and the specific executor code that produces the failing sensor. Its rate limit is 5 submissions/day and files cap at 500 KB each (10 files max), so we curate before uploading.
+## Plan
 
-## Step 1 — You record the HAR
+### Step 1 — Slim the HAR (done by me, in build mode)
 
-On a normal browser profile (no Lovable, no system proxy, no VPN):
+I'll add a small Node script at `scripts/slim-har.mjs` that reads your uploaded HAR and writes `public/kmart-slim.har` keeping only what Harvey needs:
 
-1. Open Chrome incognito → DevTools → Network tab.
-2. Check **Preserve log** and **Disable cache**. Right-click column headers → enable **Set-Cookie**.
-3. Go to `https://www.kmart.com.au/` (this seeds `_abck` / `bm_sz` on www).
-4. Open the same product our executor is testing (SKU 43552146, the sticker pad URL).
-5. Add to cart. Open cart. Proceed to checkout until the checkout page fully loads.
-6. Right-click any request in the Network panel → **Save all as HAR with content**.
+- **Keep** any request whose URL host is `www.kmart.com.au` or `api.kmart.com.au`, plus any URL containing `akamai`, `_bm`, `abck`, `sensor`, or `edgesuite`.
+- **Drop** all other hosts (analytics, ads, fonts, CDN images, Segment, GTM, etc.).
+- **Strip response bodies** for `image/*`, `font/*`, `text/css`, and any JS bundle over 50 KB — replace `content.text` with `""` and keep `content.mimeType` + `size`. Sensor POST bodies and GraphQL JSON responses stay intact (that's what Harvey needs).
+- **Keep** all request headers, all cookies, all `Set-Cookie`, all timings.
 
-Upload the `.har` to this chat. Do not scrub it — Harvey needs the cookies and sensor payloads intact. It's a short-lived session on a throwaway incognito, safe to share with Hyper.
+Target output: well under 10 MB. If it's still too big, the script has a second pass that also drops non-Kmart-host entries entirely and truncates any remaining body over 200 KB.
 
-## Step 2 — I prep the code bundle (5 files, under 500 KB each)
+### Step 2 — Combine into one uploadable file
 
-From our executor, only what touches Akamai on Kmart:
+Two options depending on what Harvey's uploader accepts — I'll produce both so you can try whichever works:
 
-1. `executor/adapters/kmart.js` — the failing chain (warm → sensor loop → api_sensor → cart_get).
-2. `executor/antibot.js` — the Hyper SDK wrapper (`solveAkamaiSensor` inputs).
-3. `executor/http.js` — the transport / cookie jar / header defaults.
-4. A trimmed `failing-run.json` — the timeline from the screenshots you just shared (api_sensor#1 503, cart_get 403 edgesuite response, cart_create 403). I'll strip anything above 500 KB and remove card-related noise.
-5. `executor/docs/hyper-solutions-brief.md` — so Harvey sees what we already know about the intended flow.
+1. `public/harvey-bundle.zip` — the slim HAR + `kmart.js` + `antibot.js` + `http.js` + `failing-run.json` + `hyper-solutions-brief.md` + `PROMPT.md`, zipped. This is the ideal single-file upload.
+2. `public/kmart-slim.har` on its own — if Harvey rejects `.zip`, upload just the slim HAR and paste the code inline into the prompt box (I'll prepare a version of `PROMPT.md` with the three JS files inlined in fenced code blocks).
 
-I'll drop them in `.lovable/harvey-bundle/` so you can drag-drop them into Harvey's UI in one go.
+Both will be linked from a tiny download page at `/harvey` so you can tap them from mobile.
 
-## Step 3 — The prompt for Harvey's "What's the issue?" box
+### Step 3 — You upload
 
-Draft, tuned to what its docs say it wants (specific, one failure, one hypothesis to test):
+1. Drop your 56 MB `.har` into this chat.
+2. I run the slim script, produce the zip, and give you two mobile-friendly download links.
+3. You upload whichever Harvey accepts and paste the prompt.
 
-> Our Node executor solves Akamai sensor for `www.kmart.com.au` successfully (abck cookie validates), but the first sensor POST to the api host (`api.kmart.com.au`) returns 503, and every subsequent GraphQL request to `https://api.kmart.com.au/gateway/graphql` returns 403 Access Denied from edgesuite.net. The attached HAR shows a real browser doing the same call chain with a valid session. In the HAR, please identify:
-> 1. Which sensor endpoint on api.kmart.com.au the browser hits (path + method + headers) before the first GraphQL call.
-> 2. Whether the api-host `_abck` is seeded from a www→api navigation, a separate script fetch, or a cross-domain cookie copy.
-> 3. The exact header set (order + casing + values, especially `sec-ch-ua*`, `origin`, `referer`, `x-*`) the browser sends on `/gateway/graphql` that we're missing.
-> Compare against the attached `kmart.js` + `antibot.js` and tell us what to change.
+### What I need from you
 
-## Step 4 — After Harvey answers
+Just the raw HAR file uploaded to this chat. Don't try to trim it yourself — the script will do a better job and keep the sensor payloads intact.
 
-Harvey typically returns: (a) the missing sensor endpoint or (b) the wrong headers / cookie seeding. I'll turn its answer into a diff against `kmart.js` / `antibot.js` in a follow-up plan — no code changes this turn.
+## Technical notes
 
-## Budget
-
-You have 5 Harvey submissions/day. This plan uses 1. If the first answer is ambiguous, we iterate with a narrower prompt rather than re-uploading a fresh HAR.
-
-## What I need from you next
-
-The exported `.har` file. Once uploaded, I'll produce the bundle and the exact prompt text ready to paste.
+- HAR is JSON, so slimming is a straightforward `JSON.parse` → filter `log.entries` → `JSON.stringify`. Bun can run the script directly.
+- We do not touch cookies or request/response headers — Harvey needs those to see the abck seeding flow. Only large binary-ish response bodies get zeroed out.
+- Zip uses Bun's built-in `Bun.write` + a tiny zip lib (or `zip` shelled out if available); either way the output stays under 10 MB because the slim HAR is the only large member.
