@@ -23,21 +23,19 @@ export async function runCheckout(task) {
   // a native failure can terminate the process and surface as an empty 502.
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  // Hyper docs: Akamai needs a Chrome-matching TLS client. Dashboard should
-  // send transport=tls when a proxy is set, but older Railway builds still
-  // arrive as undici. For Kmart + proxy, prefer TLS unless explicitly forced
-  // to undici (native TLS crashes → empty 502 are still possible — use
-  // forceUndici / transport=undici to roll back).
-  const isKmart = /kmart\.com\.au/i.test(store);
-  const forceTls =
-    task.forceTls === true ||
-    requestedTransport === "tls" ||
-    (isKmart && Boolean(task.proxy) && requestedTransport !== "undici");
+  // TLS is opt-in only (`transport=tls` / `forceTls`). Forcing TLS for
+  // Kmart+proxy (PR #8) immediately hard-403'd warm_home (Access Denied,
+  // no bm_* cookies) on the same proxy where undici reached PDP + get-token.
+  // Adapter may still fall back tls→undici on Access Denied if the UI asks
+  // for TLS. Native TLS crashes can still surface as empty 502s.
+  const forceTls = task.forceTls === true || requestedTransport === "tls";
   const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
 
   const closeDispatcher = async () => {
-    try { await dispatcher?.close?.(); } catch { /* ignore */ }
+    // Adapter may swap ctx.dispatcher (tls→undici fallback); always close the
+    // active one, not the original const.
+    try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
