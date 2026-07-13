@@ -13,7 +13,7 @@ import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
-import { completeAcsChallenge, pickAcsEntryUrl, isUuidLike } from "./kmart-3ds-acs.js";
+import { completeAcsChallenge, pickAcsEntryUrl, isUuidLike, isGpaymentsApiHost } from "./kmart-3ds-acs.js";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -2484,20 +2484,16 @@ fragment LineItemFields on LineItem {
         //     Paydock's side. Without this, chargePayDockWithToken will
         //     reject the charge_3ds_id as "not yet processed".
         //
-        // Real HAR entry #802:
-        //   POST /v1/charges/standalone-3ds/process
-        //   x-access-token: <JWT from create3DSToken>
-        //   Body: {"charge_3ds_id": "<id>"}
-        //   → 200 { resource.data.result.frictionless: true }
-        //
-        // Revolut / many issuers: first process is often NOT frictionless.
-        // "Sometimes it doesn't ask" in a real browser is still 3DS — the
-        // bank just fingerprint-approved. When it step-ups, we open ACS in
-        // Chromium and wait for app/OTP completion, then process again.
+        // Paydock GPayments SDK order (NOT top-level authorization_url):
+        //   method iframes (init+secondary) → process →
+        //     success | pending+decoupled (Revolut push) | pending+challenge
         let processFrictionless = false;
         let processStatus = null;
         let processRawNote = "";
         let challengeAcsUrl = threeDsAuthUrl;
+        let processChallengeUrl = null;
+        let processSecondaryUrl = threeDsSecondaryUrl;
+        let processDecoupled = false;
         let acsOk = false;
         let acsCertError = false;
 
@@ -2509,6 +2505,9 @@ fragment LineItemFields on LineItem {
               frictionless: false,
               processStatus: null,
               acsFromBody: null,
+              challengeUrl: null,
+              secondaryUrl: null,
+              decoupled: false,
               txt: "",
               note: `refusing process: charge3dsId not UUID (len=${String(charge3dsId ?? "").length} val=${String(charge3dsId ?? "").slice(0, 24)})`,
             };
@@ -2530,7 +2529,6 @@ fragment LineItemFields on LineItem {
                 "sec-fetch-mode": "cors",
                 "sec-fetch-dest": "empty",
               },
-              // HAR #802 exact body — flat charge_3ds_id UUID only (never JWT).
               body: JSON.stringify({ charge_3ds_id: String(charge3dsId) }),
             },
           );
@@ -2538,6 +2536,9 @@ fragment LineItemFields on LineItem {
           let frictionless = false;
           let status = null;
           let acsFromBody = null;
+          let challengeUrl = null;
+          let secondaryUrl = null;
+          let decoupled = false;
           let validationError = null;
           try {
             const j = JSON.parse(txt);
@@ -2546,7 +2547,7 @@ fragment LineItemFields on LineItem {
             }
             const data = j?.resource?.data ?? {};
             const result = data?.result ?? data;
-            status = result?.status ?? result?.authentication_status ?? data?.status ?? null;
+            status = result?.status ?? data?.status ?? result?.authentication_status ?? null;
             acsFromBody =
               result?.redirect_url ||
               result?.acs_url ||
@@ -2554,7 +2555,13 @@ fragment LineItemFields on LineItem {
               data?.redirect_url ||
               data?.acs_url ||
               null;
-            if (result?.frictionless === true) {
+            challengeUrl = result?.challenge_url || (result?.challenge ? result?.challenge_url : null) || null;
+            if (result?.challenge && typeof result.challenge === "string" && /^https?:/i.test(result.challenge)) {
+              challengeUrl = result.challenge;
+            }
+            secondaryUrl = result?.secondary_url || null;
+            decoupled = Boolean(result?.decoupled_challenge);
+            if (result?.frictionless === true || String(status).toLowerCase() === "success") {
               frictionless = true;
             } else if (
               result?.frictionless !== false &&
@@ -2569,12 +2576,35 @@ fragment LineItemFields on LineItem {
             frictionless,
             processStatus: status,
             acsFromBody,
+            challengeUrl,
+            secondaryUrl,
+            decoupled,
             txt,
             note: validationError
               ? `validation=${validationError.code} path=${validationError.details?.path ?? "?"} charge3dsIdLen=${String(charge3dsId).length} : ${txt.slice(0, 280)}`
-              : `frictionless=${frictionless} status=${status} acs=${(acsFromBody || threeDsAuthUrl) ? "yes" : "no"} id=${String(charge3dsId).slice(0, 8)}… : ${txt.slice(0, 280)}`,
+              : `frictionless=${frictionless} status=${status} decoupled=${decoupled} challenge=${Boolean(challengeUrl)} id=${String(charge3dsId).slice(0, 8)}… : ${txt.slice(0, 280)}`,
           };
         };
+
+        // 8h0. 3DS Method iframes — required before process (SDK GPaymentsService).
+        //     Undici GETs to these URLs often 403; browser iframe nav works.
+        if (paydockJwt && charge3dsId && (threeDsInitUrl || threeDsSecondaryUrl) && task.acsChallenge !== false) {
+          await tStep("paydock_3ds_method", async () => {
+            const method = await completeAcsChallenge({
+              initializationUrl: threeDsInitUrl,
+              secondaryUrl: threeDsSecondaryUrl,
+              proxy: task.proxy ?? null,
+              timeoutMs: 18_000,
+              referer: origin + "/checkout/payment",
+              pollProcess: null,
+            });
+            return {
+              status: method.ok ? 200 : 408,
+              ok: true, // method wait always proceeds to process
+              note: `init=${Boolean(threeDsInitUrl)} secondary=${Boolean(threeDsSecondaryUrl)} ${method.note}`,
+            };
+          }).catch((e) => steps.push({ step: "paydock_3ds_method:error", ok: false, note: e?.message ?? String(e) }));
+        }
 
         if (paydockJwt && charge3dsId) {
           await tStep("paydock_3ds_process", async () => {
@@ -2582,62 +2612,79 @@ fragment LineItemFields on LineItem {
             processFrictionless = out.frictionless;
             processStatus = out.processStatus;
             processRawNote = out.note;
+            processDecoupled = out.decoupled;
             if (out.acsFromBody) challengeAcsUrl = out.acsFromBody;
+            if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
+            if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
             return { status: out.status, ok: out.ok, note: out.note };
           }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
         } else {
           steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
         }
 
-        // 8h2. Issuer ACS step-up (Revolut app push / OTP / bank page).
-        // Prefer widget.paydock.com from /handle Location (public DigiCert).
-        // Nested GPayments API frames use a private root CA — Playwright must
-        // ignoreHTTPSErrors or you get ERR_CERT_AUTHORITY_INVALID.
+        // 8h2. Revolut/bank step-up: decoupled app push OR visible challenge iframe.
+        // Never page.goto paydock.api.as*.gpayments.net (client cert required).
         const acsPick = pickAcsEntryUrl({
           handleLocation,
-          authorizationUrl: challengeAcsUrl || threeDsAuthUrl,
+          authorizationUrl: processChallengeUrl || challengeAcsUrl || threeDsAuthUrl,
           charge3dsId,
           paydockJwt,
         });
         const wantAcs =
           !processFrictionless &&
-          Boolean(acsPick.url) &&
-          task.acsChallenge !== false;
-        if (wantAcs) {
+          task.acsChallenge !== false &&
+          (processDecoupled || Boolean(processChallengeUrl) || Boolean(threeDsInitUrl) || Boolean(acsPick.url));
+        if (wantAcs && !processFrictionless) {
           const acsTimeoutMs = Math.min(
             Math.max(Number(task.acsTimeoutMs) || 120_000, 30_000),
             180_000,
           );
           await tStep("paydock_3ds_acs", async () => {
+            const mode = processDecoupled
+              ? "decoupled (approve Revolut/bank app push now)"
+              : processChallengeUrl
+                ? "challenge iframe"
+                : `entry=${acsPick.source}`;
             steps.push({
               step: "paydock_3ds_acs:hint",
               ok: true,
-              note: `Approve in Revolut/bank app now — ACS via ${acsPick.source} open ~${Math.round(acsTimeoutMs / 1000)}s (GPayments private CA ignored)`,
+              note: `Approve in Revolut/bank app now — ${mode} open ~${Math.round(acsTimeoutMs / 1000)}s`,
             });
             const acs = await completeAcsChallenge({
-              authorizationUrl: acsPick.url,
+              initializationUrl: null, // already ran method step
+              secondaryUrl: processSecondaryUrl || threeDsSecondaryUrl,
+              challengeUrl: processChallengeUrl && !isGpaymentsApiHost(processChallengeUrl) ? processChallengeUrl : null,
+              authorizationUrl: null,
               proxy: task.proxy ?? null,
               timeoutMs: acsTimeoutMs,
               referer: origin + "/checkout/payment",
+              pollProcess: async () => {
+                const out = await runPaydockProcess("paydock_process_poll");
+                processFrictionless = out.frictionless || processFrictionless;
+                processStatus = out.processStatus ?? processStatus;
+                processRawNote = out.note;
+                if (out.decoupled) processDecoupled = true;
+                if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
+                if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
+                return out;
+              },
             });
-            acsOk = acs.ok;
+            acsOk = acs.ok || processFrictionless;
             acsCertError = Boolean(acs.certError);
             return {
-              status: acs.ok ? 200 : acs.certError ? 495 : 408,
-              ok: acs.ok,
-              note: `${acs.note} source=${acsPick.source}`,
+              status: acsOk ? 200 : acs.certError ? 495 : 408,
+              ok: acsOk,
+              note: `${acs.note} source=${acsPick.source} decoupled=${processDecoupled}`,
             };
           }).catch((e) => steps.push({ step: "paydock_3ds_acs:error", ok: false, note: e?.message ?? String(e) }));
 
-          if (acsCertError) {
+          if (acsCertError && !processFrictionless) {
             steps.push({
               step: "paydock_3ds_process#2",
               ok: false,
-              note: "skipped: ACS hit ERR_CERT_AUTHORITY_INVALID — redeploy with ignoreHTTPSErrors fix; do not re-process until ACS loads",
+              note: "skipped: ACS/TLS client-cert failure on GPayments API host — use method+decoupled flow, never goto api.as*",
             });
-          } else {
-            // Re-process after ACS. Even if settle heuristic missed, Revolut
-            // app approve can complete server-side first.
+          } else if (!processFrictionless) {
             await tStep("paydock_3ds_process#2", async () => {
               const out = await runPaydockProcess("paydock_process_after_acs");
               processFrictionless = out.frictionless;
@@ -2647,14 +2694,18 @@ fragment LineItemFields on LineItem {
             }).catch((e) =>
               steps.push({ step: "paydock_3ds_process#2:error", ok: false, note: e?.message ?? String(e) }),
             );
+          } else {
+            steps.push({
+              step: "paydock_3ds_process#2",
+              ok: true,
+              note: "skipped: already authenticated during ACS poll",
+            });
           }
         } else if (!processFrictionless && paydockJwt && charge3dsId) {
           steps.push({
             step: "paydock_3ds_acs",
             ok: false,
-            note: acsPick.url
-              ? "skipped: task.acsChallenge===false"
-              : `skipped: no ACS url (status=${processStatus}). ${processRawNote.slice(0, 120)}`,
+            note: "skipped: task.acsChallenge===false or no 3DS method/challenge URLs",
           });
         }
 
@@ -2713,8 +2764,8 @@ fragment LineItemFields on LineItem {
               step: "place_order",
               ok: false,
               note: acsCertError
-                ? "skipped: ACS cert failure (GPayments private CA) — need ignoreHTTPSErrors deploy"
-                : `skipped: 3DS not authenticated after ACS (status=${processStatus}). Approve Revolut push while paydock_3ds_acs is open (~2 min).`,
+                ? "skipped: GPayments API host needs client TLS cert — use method+decoupled flow (not authorization_url goto)"
+                : `skipped: 3DS not authenticated (status=${processStatus}, decoupled=${processDecoupled}). Approve Revolut push when paydock_3ds_acs:hint shows.`,
             });
           } else {
             await tStep("place_order", async () => {
@@ -2766,7 +2817,8 @@ fragment LineItemFields on LineItem {
           acsOk,
           acsCertError,
           acsSource: wantAcs ? acsPick.source : null,
-          acsUrl: Boolean(acsPick.url || challengeAcsUrl),
+          decoupled: processDecoupled,
+          acsUrl: Boolean(acsPick.url || challengeAcsUrl || processChallengeUrl),
           placeOrder: task.placeOrder === true,
           orderNumber,
           paymentStatus,
@@ -2791,6 +2843,7 @@ fragment LineItemFields on LineItem {
       "paydock_tokenize",
       "create_3ds_token",
       "paydock_3ds_init",
+      "paydock_3ds_method",
       "paydock_3ds_handle",
       "paydock_3ds_process",
       "paydock_3ds_acs",

@@ -1,16 +1,17 @@
-// Paydock / GPayments ACS challenge helper.
+// Paydock / GPayments 3DS helper — matches @paydock/client-sdk GPaymentsService.
 //
-// Revolut (and many AU issuers) enrol cards in 3DS. Sometimes the bank
-// frictionlessly fingerprints the device; sometimes it step-ups to an ACS
-// page + Revolut app push / OTP. Raw HTTP cannot finish that step-up — we
-// open Chromium and wait for the ACS to settle while the cardholder
-// approves on their phone.
+// Correct flow (NOT top-level navigation to authorization_url):
+//   1. Hidden iframes: initialization_url + secondary_url (3DS Method)
+//   2. POST /standalone-3ds/process { charge_3ds_id }
+//   3a. success / frictionless → done
+//   3b. pending + decoupled_challenge → Revolut/bank app push; poll secondary_url
+//       until AuthResultReady, then process again
+//   3c. pending + challenge → load challenge_url in a visible iframe + poll
 //
-// IMPORTANT: `paydock.api.as1.gpayments.net` presents a cert chained to the
-// private "GPayments Root CA" (not in public trust stores). Real checkout
-// loads ACS through widget.paydock.com (public DigiCert) with that API host
-// in an iframe — Chromium still needs ignoreHTTPSErrors for the nested
-// private-CA frame, otherwise you get net::ERR_CERT_AUTHORITY_INVALID.
+// Why Revolut never prompted before:
+//   We page.goto'd paydock.api.as1.gpayments.net/authorization_url which demands
+//   a client TLS cert (ERR_BAD_SSL_CLIENT_AUTH_CERT). Revolut uses *decoupled*
+//   challenge — the push is triggered only after a successful method+process.
 
 function parseProxy(raw) {
   if (!raw) return null;
@@ -41,71 +42,42 @@ function parseProxy(raw) {
   }
 }
 
-function looksSettled(url, bodyText) {
-  const u = String(url || "");
-  const t = String(bodyText || "").slice(0, 4000);
-  if (/net::ERR_CERT|ERR_CERT_AUTHORITY_INVALID|Your connection is not private/i.test(t)) {
-    return false;
-  }
-  if (/threeDSMethodData|creq=|challengeWindowSize/i.test(t) && /Approve|OTP|One.?Time|push notification|Open your.*app/i.test(t)) {
-    // Still on the challenge UI — not settled.
-    return false;
-  }
-  if (/\/3ds\/.*(?:success|complete|result|return)/i.test(u)) return true;
-  if (/standalone-3ds/i.test(u) && /info=(?:Auth|Success|Complete|ChallengeComplete)/i.test(u)) return true;
-  if (/authenticated|authentication.?success|challenge.?complet|transaction.?approved/i.test(t)) return true;
-  if (/paydock\.com\/v1\/charges\/standalone-3ds/i.test(u)) return true;
-  return false;
-}
-
 function isUuidLike(id) {
   return /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(String(id || ""));
 }
 
+function isGpaymentsApiHost(url) {
+  try {
+    return /\.api\.as\d*\.gpayments\.net$/i.test(new URL(url).hostname);
+  } catch {
+    return /api\.as\d*\.gpayments\.net/i.test(String(url || ""));
+  }
+}
+
 /**
- * Prefer the Paydock widget URL from /handle's 302 Location (public cert).
- * Fall back to raw GPayments authorization_url (private CA — needs ignoreHTTPSErrors).
+ * Pick a browser entry URL. Never return paydock.api.as*.gpayments.net —
+ * that host requests a client TLS cert and cannot be page.goto'd.
  */
 export function pickAcsEntryUrl({ handleLocation, authorizationUrl, charge3dsId, paydockJwt } = {}) {
   if (handleLocation && /widget\.paydock\.com\/3ds\/standalone-3ds/i.test(handleLocation)) {
     return { url: handleLocation, source: "handle_location" };
   }
-  if (authorizationUrl) {
-    return { url: authorizationUrl, source: "authorization_url" };
-  }
-  // Last resort: synthesize widget URL the way /handle redirects.
   if (charge3dsId && paydockJwt && isUuidLike(charge3dsId)) {
     const u = new URL("https://widget.paydock.com/3ds/standalone-3ds");
     u.searchParams.set("charge_3ds_id", charge3dsId);
     u.searchParams.set("info", "InitAuthTimedOut");
-    // Widget reads access token from query in the HAR redirect.
-    u.searchParams.set("x-access-token", paydockJwt);
+    u.searchParams.set("token", paydockJwt);
     return { url: u.toString(), source: "synthesized_widget" };
+  }
+  // Deliberately ignore authorizationUrl when it is the GPayments API host.
+  if (authorizationUrl && !isGpaymentsApiHost(authorizationUrl)) {
+    return { url: authorizationUrl, source: "authorization_url" };
   }
   return { url: null, source: "none" };
 }
 
-/**
- * Open ACS / Paydock standalone-3ds and wait for issuer completion.
- * @returns {{ ok: boolean, note: string, finalUrl?: string, certError?: boolean }}
- */
-export async function completeAcsChallenge({
-  authorizationUrl,
-  proxy = null,
-  timeoutMs = 120_000,
-  referer = "https://www.kmart.com.au/checkout/payment",
-} = {}) {
-  if (!authorizationUrl) {
-    return { ok: false, note: "no authorization_url", certError: false };
-  }
-
-  let playwright;
-  try {
-    playwright = await import("playwright");
-  } catch (e) {
-    return { ok: false, note: `playwright import failed: ${e?.message ?? e}`, certError: false };
-  }
-
+async function launchBrowser(proxy) {
+  const playwright = await import("playwright");
   const proxyCfg = parseProxy(proxy);
   const launchOpts = {
     headless: true,
@@ -113,85 +85,193 @@ export async function completeAcsChallenge({
       "--disable-blink-features=AutomationControlled",
       "--no-sandbox",
       "--disable-dev-shm-usage",
-      // GPayments ActiveServer API hosts use a private root CA.
       "--ignore-certificate-errors",
     ],
     ...(proxyCfg ? { proxy: proxyCfg } : {}),
   };
+  let browser;
+  try {
+    browser = await playwright.chromium.launch({ channel: "chrome", ...launchOpts });
+  } catch {
+    browser = await playwright.chromium.launch(launchOpts);
+  }
+  const context = await browser.newContext({
+    locale: "en-AU",
+    timezoneId: "Australia/Sydney",
+    viewport: { width: 1280, height: 900 },
+    extraHTTPHeaders: { "accept-language": "en-AU,en;q=0.9" },
+    ignoreHTTPSErrors: true,
+  });
+  const page = await context.newPage();
+  return { browser, context, page };
+}
+
+/**
+ * Run GPayments 3DS Method iframes (initialization + secondary), then optionally
+ * drive challenge / decoupled (Revolut) wait while caller re-processes.
+ *
+ * @returns {{ ok: boolean, note: string, mode?: string, certError?: boolean, finalUrl?: string }}
+ */
+export async function completeAcsChallenge({
+  authorizationUrl, // legacy name — treated as optional challenge_url only if non-api host
+  initializationUrl = null,
+  secondaryUrl = null,
+  challengeUrl = null,
+  proxy = null,
+  timeoutMs = 120_000,
+  referer = "https://www.kmart.com.au/checkout/payment",
+  // Called every ~2s during decoupled/challenge wait. Return { frictionless:true } to stop.
+  pollProcess = null,
+} = {}) {
+  const methodInit = initializationUrl;
+  const methodSecondary = secondaryUrl;
+  const challenge =
+    challengeUrl ||
+    (authorizationUrl && !isGpaymentsApiHost(authorizationUrl) ? authorizationUrl : null);
+
+  if (!methodInit && !challenge && !pollProcess) {
+    return {
+      ok: false,
+      note: "no initialization_url/challenge_url — cannot run GPayments method/ACS (refusing api.as* client-cert host)",
+      certError: false,
+    };
+  }
 
   let browser;
   try {
-    try {
-      browser = await playwright.chromium.launch({ channel: "chrome", ...launchOpts });
-    } catch {
-      browser = await playwright.chromium.launch(launchOpts);
-    }
-
-    const context = await browser.newContext({
-      locale: "en-AU",
-      timezoneId: "Australia/Sydney",
-      viewport: { width: 1280, height: 900 },
-      extraHTTPHeaders: { "accept-language": "en-AU,en;q=0.9" },
-      // Required: nested ACS iframes hit paydock.api.as1.gpayments.net
-      // which chains to private "GPayments Root CA".
-      ignoreHTTPSErrors: true,
-    });
-    const page = await context.newPage();
+    const launched = await launchBrowser(proxy);
+    browser = launched.browser;
+    const { page } = launched;
     page.setDefaultTimeout(Math.min(timeoutMs, 60_000));
 
-    await page.goto(authorizationUrl, {
+    // Bootstrap a same-origin-ish shell so we can inject iframes.
+    await page.goto("https://widget.paydock.com/", {
       waitUntil: "domcontentloaded",
-      timeout: Math.min(timeoutMs, 45_000),
+      timeout: 30_000,
       referer,
     });
 
-    const deadline = Date.now() + timeoutMs;
-    let settled = false;
-    let lastUrl = page.url();
-    let lastSnippet = "";
-
-    while (Date.now() < deadline) {
-      lastUrl = page.url();
-      try {
-        lastSnippet = await page.evaluate(() => document.body?.innerText?.slice(0, 800) || "");
-      } catch {
-        lastSnippet = "";
-      }
-      if (looksSettled(lastUrl, lastSnippet)) {
-        settled = true;
-        break;
-      }
-      // Revolut / bank-app step-up: ACS page sits on "approve in app" until
-      // the phone push is accepted, then redirects. Poll gently.
-      await page.waitForTimeout(1500);
+    if (methodInit || methodSecondary) {
+      await page.evaluate(
+        ({ init, secondary }) => {
+          const root = document.body;
+          root.innerHTML = "";
+          if (init) {
+            const f = document.createElement("iframe");
+            f.id = "paydock_authorization_iframe";
+            f.title = "3ds-method";
+            f.src = init;
+            f.style.cssText = "width:1px;height:1px;opacity:0;border:0;position:absolute;";
+            root.appendChild(f);
+          }
+          if (secondary) {
+            const f = document.createElement("iframe");
+            f.id = "paydock_secondary_iframe";
+            f.title = "3ds-monitor";
+            f.src = secondary;
+            f.style.cssText = "width:1px;height:1px;opacity:0;border:0;position:absolute;";
+            root.appendChild(f);
+          }
+        },
+        { init: methodInit, secondary: methodSecondary },
+      );
+      // 3DS Method collection window (ActiveServer monitor timeout ~15s).
+      await page.waitForTimeout(12_000);
     }
 
-    // Brief settle after redirect so Paydock cookies/callbacks land.
-    if (settled) {
+    // Method-only warm (no challenge / no poll): return so caller can /process.
+    if (!challenge && typeof pollProcess !== "function") {
+      return {
+        ok: true,
+        note: `method iframes loaded init=${Boolean(methodInit)} secondary=${Boolean(methodSecondary)}`,
+        mode: "method_only",
+        certError: false,
+        finalUrl: page.url(),
+      };
+    }
+
+    if (challenge) {
+      if (isGpaymentsApiHost(challenge)) {
+        return {
+          ok: false,
+          note: `refusing challenge_url on GPayments API host (client cert): ${String(challenge).slice(0, 80)}`,
+          certError: true,
+        };
+      }
+      await page.evaluate((url) => {
+        let f = document.getElementById("paydock_challenge_iframe");
+        if (!f) {
+          f = document.createElement("iframe");
+          f.id = "paydock_challenge_iframe";
+          f.title = "Authentication Challenge";
+          f.style.cssText = "width:100%;height:100%;border:0;";
+          document.body.appendChild(f);
+        }
+        f.src = url;
+      }, challenge);
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    let lastPollNote = "";
+    while (Date.now() < deadline) {
+      if (typeof pollProcess === "function") {
+        try {
+          const p = await pollProcess();
+          if (p?.frictionless) {
+            return {
+              ok: true,
+              note: `authenticated via poll while ACS/method open (${p.note || "process ok"})`,
+              mode: "poll_process",
+              certError: false,
+              finalUrl: page.url(),
+            };
+          }
+          lastPollNote = p?.note || lastPollNote;
+        } catch (e) {
+          lastPollNote = e?.message ?? String(e);
+        }
+      }
+
+      // Decoupled: secondary monitor may expose AuthResultReady in frame URL/body.
       try {
-        await page.waitForTimeout(1200);
-        lastUrl = page.url();
+        const ready = await page.evaluate(() => {
+          const frames = [...document.querySelectorAll("iframe")];
+          return frames.some((f) => {
+            try {
+              const u = f.contentWindow?.location?.href || f.src || "";
+              return /AuthResultReady|authenticated|success/i.test(u);
+            } catch {
+              return /AuthResultReady/i.test(f.src || "");
+            }
+          });
+        });
+        if (ready) {
+          return {
+            ok: true,
+            note: "secondary iframe signaled AuthResultReady",
+            mode: "secondary_ready",
+            certError: false,
+            finalUrl: page.url(),
+          };
+        }
       } catch {
         /* ignore */
       }
+
+      await page.waitForTimeout(2000);
     }
 
     return {
-      ok: settled,
-      note: settled
-        ? `acs settled url=${lastUrl.slice(0, 160)}`
-        : `acs timeout after ${timeoutMs}ms — approve in Revolut/bank app while ACS is open. lastUrl=${lastUrl.slice(0, 120)} body=${lastSnippet.slice(0, 80).replace(/\s+/g, " ")}`,
-      finalUrl: lastUrl,
+      ok: false,
+      note: `3DS wait timeout after ${timeoutMs}ms — approve Revolut/bank app push while method/challenge is open. lastPoll=${String(lastPollNote).slice(0, 120)}`,
+      mode: challenge ? "challenge" : "method_decoupled",
       certError: false,
+      finalUrl: page.url(),
     };
   } catch (e) {
     const msg = e?.message ?? String(e);
-    const certError = /ERR_CERT|CERT_AUTHORITY|SSL|certificate/i.test(msg);
-    return {
-      ok: false,
-      note: `acs error: ${msg}`,
-      certError,
-    };
+    const certError = /ERR_CERT|CERT_AUTHORITY|BAD_SSL_CLIENT_AUTH|SSL|certificate/i.test(msg);
+    return { ok: false, note: `acs error: ${msg}`, certError };
   } finally {
     try {
       await browser?.close?.();
@@ -201,4 +281,4 @@ export async function completeAcsChallenge({
   }
 }
 
-export { isUuidLike };
+export { isUuidLike, isGpaymentsApiHost };

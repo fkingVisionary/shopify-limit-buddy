@@ -694,7 +694,7 @@ function KmartPage() {
                 <div className="text-sm font-medium">Attempt real place order</div>
                 <div className="text-xs text-muted-foreground">
                   Off = dry-run (stops after 3DS). On = runs built-in <code>chargePayDockWithToken</code> after 3DS auth.
-                  Revolut/disposable cards are almost always 3DS — if the bank step-ups, watch your phone and approve the push while <code>paydock_3ds_acs</code> is open (~2 min).
+                  Revolut cards use a <em>decoupled</em> 3DS push — when you see <code>paydock_3ds_acs:hint</code>, approve in the Revolut app (you will not get a prompt if ACS dies on a cert error).
                   {usePlaywright ? " Playwright seeds Akamai cookies, then HTTP GraphQL completes checkout." : ""}
                 </div>
               </div>
@@ -1116,10 +1116,10 @@ function KmartPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    const r = result.result ?? result;
+                    const r = result.result;
                     const compact = {
                       taskId: result.taskId,
-                      ok: r?.ok,
+                      ok: r?.ok ?? result.ok,
                       dryRun: r?.dryRun,
                       checkoutStage: r?.checkoutStage,
                       orderNumber: r?.orderNumber,
