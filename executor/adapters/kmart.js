@@ -2740,9 +2740,54 @@ fragment LineItemFields on LineItem {
 
     const orderInfo = ctx.__kmart_order ?? {};
     const cartInfo = ctx.__kmart_cart ?? {};
+    const paymentStepNames = new Set([
+      "paydock_pk",
+      "paydock_pk_script",
+      "place_order_gate",
+      "paydock_tokenize",
+      "create_3ds_token",
+      "paydock_3ds_init",
+      "paydock_3ds_handle",
+      "paydock_3ds_process",
+      "paydock_3ds_acs",
+      "paydock_3ds_acs:hint",
+      "paydock_3ds_process#2",
+      "checkout_soh_event",
+      "place_order",
+      "payment_summary",
+    ]);
+    const paymentTail = steps
+      .filter((s) => paymentStepNames.has(s.step) || String(s.step).startsWith("paydock_"))
+      .map((s) => ({
+        step: s.step,
+        ok: s.ok,
+        status: s.status ?? null,
+        note: String(s.note ?? "").slice(0, 220),
+      }));
+    const lastSteps = steps.slice(-12).map((s) => ({
+      step: s.step,
+      ok: s.ok,
+      status: s.status ?? null,
+      note: String(s.note ?? "").slice(0, 180),
+    }));
+    let checkoutStage = "pre_cart";
+    if (orderInfo.orderNumber) checkoutStage = "ordered";
+    else if (paymentTail.some((s) => s.step === "place_order")) checkoutStage = "place_order";
+    else if (paymentTail.some((s) => s.step.startsWith("paydock_3ds") || s.step === "create_3ds_token")) checkoutStage = "3ds";
+    else if (paymentTail.some((s) => s.step === "paydock_tokenize")) checkoutStage = "tokenize";
+    else if (steps.some((s) => s.step === "checkout_set_billing" && s.ok)) checkoutStage = "billing";
+    else if (steps.some((s) => s.step === "checkout_set_address" && s.ok)) checkoutStage = "address";
+    else if (cartInfo.cartVerifyHasSku) checkoutStage = "cart_verified";
+    else if (cartInfo.cartAtcOk) checkoutStage = "cart_atc";
+
     return {
       ok: pdpStatus > 0 && pdpStatus < 400 && cartInfo.cartAtcOk === true && cartInfo.cartVerifyHasSku === true,
       steps,
+      // Compact fields first so truncated JSON pastes still show the payment answer.
+      checkoutStage,
+      paymentSummary: orderInfo.paymentSummary ?? null,
+      paymentTail,
+      lastSteps,
       finalUrl: pdpUrl,
       cookies: ctx.jar.dump(),
       trace: traceEnabled ? requestTrace : undefined,
@@ -2750,7 +2795,6 @@ fragment LineItemFields on LineItem {
       orderNumber: orderInfo.orderNumber ?? null,
       orderId: orderInfo.orderId ?? null,
       paymentStatus: orderInfo.paymentStatus ?? null,
-      paymentSummary: orderInfo.paymentSummary ?? null,
     };
   },
 };
