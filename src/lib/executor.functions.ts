@@ -33,9 +33,9 @@ const InputSchema = z.object({
   // Optional caller-supplied card. When omitted, falls back to env-injected
   // card on the server. Future: comes from the calling user's profile row.
   card: CardSchema.optional().nullable(),
-  // Real submit gates: both must be truthy to place a real order.
-  //   placeOrder=true tells the adapter to attempt the final GraphQL call.
-  //   placeOrderMutation supplies the op captured via bundle_recon / HAR.
+  // Real submit gates: placeOrder=true tells the adapter to attempt
+  // chargePayDockWithToken after frictionless 3DS. placeOrderMutation is
+  // optional recon baggage — Kmart adapter hardcodes the charge mutation.
   placeOrder: z.boolean().default(false),
   placeOrderMutation: PlaceOrderMutationSchema.optional().nullable(),
   debugTrace: z.boolean().default(false),
