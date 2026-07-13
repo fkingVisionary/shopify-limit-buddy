@@ -76,6 +76,16 @@ const CHROME_CH = {
   "sec-ch-ua-platform": '"macOS"',
   "sec-ch-ua-platform-version": '"14.6.1"',
 };
+// CORS XHRs to api.kmart.com.au (get-token / GraphQL) only emit the low-entropy
+// Client Hints trio in real Chrome (slim HAR). High-entropy hints are for
+// document navigations after Accept-CH — stuffing them onto every GraphQL call
+// is a bot tell and correlates with api GraphQL Access Denied while get-token
+// (same host, lighter BM) still returns 200.
+const CHROME_CH_XHR = {
+  "sec-ch-ua": CHROME_CH["sec-ch-ua"],
+  "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
+  "sec-ch-ua-platform": CHROME_CH["sec-ch-ua-platform"],
+};
 // Real Chrome 133 link-click navigation header set. Notable absences:
 //   - NO `cache-control` / `pragma` — those only appear on a hard reload
 //     (CMD+SHIFT+R). Sending them on every nav is a strong bot signal.
@@ -1238,42 +1248,15 @@ export const kmartAdapter = {
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
-    // Referer MUST be the PDP URL, not the homepage. Real Chrome fires
-    // GraphQL/get-token XHRs from the product page, and Akamai Bot Manager
-    // scores same-site XHRs where referer path is `/` (homepage) far lower
-    // than XHRs whose referer matches the PDP the shopper is on. This was
-    // the last remaining www→api asymmetry vs the HAR.
+    // Referer for api XHRs: PDP is the mriwd1up baseline that cleared
+    // cart_get/create. Slim HAR sometimes shows `/` — kept as a fallback
+    // profile below when the baseline is Access-Denied.
     const apiReferer = pdpUrl || (origin + "/");
-    const gqlHeaders = {
-      "user-agent": UA,
-      "content-type": "application/json",
-      accept: "*/*",
-      "accept-language": ACCEPT_LANG,
-      origin,
-      referer: apiReferer,
-      ...CHROME_CH,
-      "sec-fetch-site": "same-site",
-      "sec-fetch-mode": "cors",
-      "sec-fetch-dest": "empty",
-      "cache-control": "no-cache",
-      pragma: "no-cache",
-      priority: "u=1, i",
-      // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
-      "x-country-code": "AU",
-      // Kmart's browser Apollo client stamps every GraphQL op with these
-      // and x-visitor-id. Missing them is a strong "not a real browser"
-      // signal to Akamai Bot Manager and correlates with cart_get 403s.
-      "x-visitor-id": apiVisitorId,
-      "apollographql-client-name": "kmart-web",
-      "apollographql-client-version": "nx14-10200",
-    };
-
+    const homeReferer = origin + "/";
 
     // New Relic RUM headers — real Kmart pages carry these on every api.*
-    // GraphQL call. Akamai's Bot Manager reportedly scores requests that
-    // are missing them lower on the "real browser" heuristic. Constants
-    // (ac / ap / tk) come from HAR entry #368; per-request ids are freshly
-    // random per call (traceparent / newrelic.id / newrelic.tr).
+    // GraphQL call. Constants (ac / ap / tk) come from slim HAR; per-request
+    // ids are freshly random per call (traceparent / newrelic.id / newrelic.tr).
     const NR_AC = "1065151";
     const NR_AP = "1564950200";
     const NR_TK = "1647451";
@@ -1296,6 +1279,56 @@ export const kmartAdapter = {
         tracestate: `${NR_TK}@nr=0-1-${NR_AC}-${ap}-${id}----${ti}`,
       };
     };
+
+    // Shared CORS base for api.kmart.com.au XHRs. No cache-control/pragma
+    // (those are hard-reload only) and low-entropy Client Hints only.
+    const apiXhrBase = (referer) => ({
+      "user-agent": UA,
+      accept: "*/*",
+      "accept-language": ACCEPT_LANG,
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "content-type": "application/json",
+      origin,
+      referer,
+      ...CHROME_CH_XHR,
+      "sec-fetch-site": "same-site",
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+      priority: "u=1, i",
+    });
+
+    // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
+    // on the same jar/IP — so request shape matters more than proxy vs direct.
+    // Try baseline first; on Access Denied rotate through HAR-aligned variants
+    // before declaring cart dead.
+    const gqlProfiles = {
+      // mriwd1up: PDP referer + visitor + apollo + country (no hard-reload cache headers)
+      baseline: {
+        ...apiXhrBase(apiReferer),
+        "x-country-code": "AU",
+        "x-visitor-id": apiVisitorId,
+        "apollographql-client-name": "kmart-web",
+        "apollographql-client-version": "nx14-10200",
+      },
+      // Match get-token stamps (visitor, no apollo/country) — same host just cleared BM seed.
+      seed_match: {
+        ...apiXhrBase(apiReferer),
+        "x-visitor-id": apiVisitorId,
+      },
+      // Slim HAR getMyActiveCart: homepage referer, no visitor/apollo/country.
+      har_slim: {
+        ...apiXhrBase(homeReferer),
+      },
+      // PDP + visitor without apollo client stamps.
+      pdp_visitor: {
+        ...apiXhrBase(apiReferer),
+        "x-visitor-id": apiVisitorId,
+        "x-country-code": "AU",
+      },
+    };
+    let activeGqlProfile = "baseline";
+    let gqlHeaders = gqlProfiles[activeGqlProfile];
+
     const gqlPost = async (body, traceKey = body?.operationName ?? "graphql") =>
       tracedRequest(
         traceKey,
@@ -1307,6 +1340,9 @@ export const kmartAdapter = {
         },
         { operationName: body?.operationName ?? null, variables: body?.variables ?? null, query: body?.query ?? null },
       );
+
+    const isAkamaiAccessDenied = (status, txt) =>
+      status === 403 && /access denied|errors\.edgesuite\.net|AkamaiGHost/i.test(String(txt ?? ""));
 
 
     if (pdpStatus > 0 && pdpStatus < 400) {
@@ -1335,17 +1371,7 @@ export const kmartAdapter = {
       let apiSeedOk = false;
       await tStep("api_get_token", async () => {
         const getTokenHeaders = {
-          "user-agent": UA,
-          accept: "*/*",
-          "accept-language": ACCEPT_LANG,
-          "content-type": "application/json",
-          origin,
-          referer: apiReferer,
-          ...CHROME_CH,
-          "sec-fetch-site": "same-site",
-          "sec-fetch-mode": "cors",
-          "sec-fetch-dest": "empty",
-          priority: "u=1, i",
+          ...apiXhrBase(apiReferer),
           "x-visitor-id": apiVisitorId,
           ...nrHeaders("1834777981"),
         };
@@ -1465,6 +1491,7 @@ export const kmartAdapter = {
       // 7b. getActiveBag — me.activeCart may be null on first run.
       let cartId = null;
       let cartVersion = null;
+      let gqlCartBlocked = false;
       // Trim hdrs note: full cookieHeader was truncating run JSON in the UI
       // right as cart steps began (seen on kmart-mriv5eyf).
       steps.push({
@@ -1472,32 +1499,80 @@ export const kmartAdapter = {
         ok: true,
         note: JSON.stringify({
           url: gqlUrl,
+          profile: activeGqlProfile,
           headerKeys: Object.keys(gqlHeaders),
           referer: gqlHeaders.referer,
-          visitor: gqlHeaders["x-visitor-id"],
+          visitor: gqlHeaders["x-visitor-id"] ?? null,
           cookieNames: Object.keys(ctx.jar.dump()),
           abck: marker(ctx.jar.get("_abck")),
           bmsz: marker(ctx.jar.get("bm_sz")),
         }),
       });
+      const GET_ACTIVE_CART = {
+        operationName: "getMyActiveCart",
+        variables: {},
+        query:
+          "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+      };
       await tStep("cart_get", async () => {
-        const res = await gqlPost({
-          operationName: "getMyActiveCart",
-          variables: {},
-          query:
-            "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
-        }, "cart_get_initial");
-        const txt = await res.text();
+        const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
+        let txt = await res.text();
         try {
           const j = JSON.parse(txt);
           const ac = j?.data?.me?.activeCart;
           if (ac) { cartId = ac.id; cartVersion = ac.version; }
         } catch {}
-        steps.push({ step: "cart_get_body_full", ok: true, note: `srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} | ${txt.slice(0, 4500)}` });
+        steps.push({ step: "cart_get_body_full", ok: true, note: `srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} profile=${activeGqlProfile} | ${txt.slice(0, 4500)}` });
+
+        // get-token 200 + GraphQL 403 on the same jar/IP ⇒ request-shape, not
+        // missing rollback / proxy. Rotate HAR-aligned header profiles once.
+        if (isAkamaiAccessDenied(res.status, txt)) {
+          const fallbackOrder = ["seed_match", "har_slim", "pdp_visitor"];
+          for (const name of fallbackOrder) {
+            await sleep(250, 550);
+            activeGqlProfile = name;
+            gqlHeaders = gqlProfiles[name];
+            const retry = await gqlPost(GET_ACTIVE_CART, `cart_get_${name}`);
+            txt = await retry.text();
+            cartId = null;
+            cartVersion = null;
+            try {
+              const j = JSON.parse(txt);
+              const ac = j?.data?.me?.activeCart;
+              if (ac) { cartId = ac.id; cartVersion = ac.version; }
+            } catch {}
+            const denied = isAkamaiAccessDenied(retry.status, txt);
+            steps.push({
+              step: `cart_get:profile_${name}`,
+              ok: !denied && retry.status < 400,
+              status: retry.status,
+              note: `denied=${denied} activeCart=${cartId ? `${cartId.slice(0, 8)}` : "null"} srv=${retry.headers.get("server") ?? "-"} body=${txt.slice(0, 220).replace(/\s+/g, " ")}`,
+            });
+            if (!denied && retry.status < 400) {
+              return {
+                status: retry.status,
+                ok: true,
+                note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"} profile=${activeGqlProfile}`,
+              };
+            }
+          }
+          steps.push({
+            step: "cart_get:all_profiles_denied",
+            ok: false,
+            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — try kmartMode=playwright (browser seeds api trust) rather than more adapter rollbacks",
+          });
+          gqlCartBlocked = true;
+          return {
+            status: res.status,
+            ok: false,
+            note: `${txt.length}b activeCart=null profile=all_denied`,
+          };
+        }
+
         return {
           status: res.status,
           ok: res.status < 400,
-          note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"}`,
+          note: `${txt.length}b activeCart=${cartId ? `${cartId.slice(0, 8)} v${cartVersion}` : "null"} profile=${activeGqlProfile}`,
         };
       });
 
@@ -1516,7 +1591,13 @@ export const kmartAdapter = {
         state: cartState,
         country: "AU",
       });
-      if (!cartId) {
+      if (!cartId && gqlCartBlocked) {
+        steps.push({
+          step: "cart_create",
+          ok: false,
+          note: "skipped: GraphQL Access Denied on all header profiles (same session as successful get-token)",
+        });
+      } else if (!cartId) {
         await tStep("cart_create", async () => {
           const res = await gqlPost({
             operationName: "createMyBag",
@@ -1544,7 +1625,7 @@ export const kmartAdapter = {
           return {
             status: res.status,
             ok: res.status < 400 && Boolean(cartId),
-            note: `id=${cartId ?? "null"} v=${cartVersion ?? "?"} postcode=${cartPostcode} : ${txt.slice(0, 400)}`,
+            note: `id=${cartId ?? "null"} v=${cartVersion ?? "?"} postcode=${cartPostcode} profile=${activeGqlProfile} : ${txt.slice(0, 400)}`,
           };
         });
       }
