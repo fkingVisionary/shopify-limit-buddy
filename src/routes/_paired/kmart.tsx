@@ -294,6 +294,9 @@ function KmartPage() {
           placeOrder,
           debugTrace: true,
           kmartMode: usePlaywright ? "playwright" : "current",
+          // Proxied undici sessions often RST after SBSD; prefer Chrome TLS
+          // impersonation when a proxy is set (override with forceUndici later if needed).
+          ...(proxy.trim() && !usePlaywright ? { transport: "tls" as const } : {}),
           profile: {
             email: profile.email || null,
             first_name: profile.first_name || null,

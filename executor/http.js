@@ -39,13 +39,20 @@ function sleep(ms) {
 
 function isRetryableNetworkError(error) {
   const msg = String(error?.message ?? error).toLowerCase();
+  const causeMsg = String(error?.cause?.message ?? "").toLowerCase();
   const code = error?.code ?? error?.cause?.code;
+  const combined = `${msg} ${causeMsg}`;
   return (
     code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
     code === "UND_ERR_SOCKET" ||
     code === "UND_ERR_CONNECT_TIMEOUT" ||
-    msg.includes("client network socket disconnected") ||
-    msg.includes("fetch failed")
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_BODY_TIMEOUT" ||
+    combined.includes("client network socket disconnected") ||
+    combined.includes("other side closed") ||
+    combined.includes("socket hang up") ||
+    combined.includes("fetch failed")
   );
 }
 
@@ -345,7 +352,10 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    const attempts = method === "GET" || method === "HEAD" ? 2 : 1;
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GETs
+    // and POSTs a few times with a fresh ProxyAgent — Akamai "other side
+    // closed" is usually the tunnel dying, not a permanent 403.
+    const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -362,7 +372,7 @@ export async function request(url, opts, ctx) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
         try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(250 + attempt * 500);
+        await sleep(400 + attempt * 700);
       }
     }
     throw lastError;
