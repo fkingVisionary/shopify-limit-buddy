@@ -208,6 +208,7 @@ app.post("/run", async (req, reply) => {
       seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
       httpHandoff: task.httpHandoff !== false,
       skipAtc: task.skipAtc === true,
+      apiSensor: task.apiSensor === true,
     });
     return result;
   } catch (e) {
