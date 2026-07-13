@@ -2526,6 +2526,10 @@ fragment LineItemFields on LineItem {
             if (result?.challenge && typeof result.challenge === "string" && /^https?:/i.test(result.challenge)) {
               challengeUrl = result.challenge;
             }
+            // Paydock sometimes sets challenge:true with challenge_url alongside.
+            if (!challengeUrl && result?.challenge === true && result?.challenge_url) {
+              challengeUrl = result.challenge_url;
+            }
             secondaryUrl = result?.secondary_url || null;
             decoupled = Boolean(result?.decoupled_challenge);
             if (result?.frictionless === true || String(status).toLowerCase() === "success") {
@@ -2536,6 +2540,10 @@ fragment LineItemFields on LineItem {
             ) {
               frictionless = true;
             }
+          } catch {}
+          let challengeHost = "";
+          try {
+            if (challengeUrl) challengeHost = new URL(challengeUrl).hostname;
           } catch {}
           return {
             status: res.status,
@@ -2550,7 +2558,7 @@ fragment LineItemFields on LineItem {
             txt,
             note: validationError
               ? `validation=${validationError.code} path=${validationError.details?.path ?? "?"} : ${txt.slice(0, 280)}`
-              : `frictionless=${frictionless} status=${status} decoupled=${decoupled} challenge=${Boolean(challengeUrl)} pending=${String(status).toLowerCase() === "pending"} id=${String(charge3dsId).slice(0, 8)}… : ${txt.slice(0, 220)}`,
+              : `frictionless=${frictionless} status=${status} decoupled=${decoupled} challenge=${Boolean(challengeUrl)} host=${challengeHost || "-"} pending=${String(status).toLowerCase() === "pending"} id=${String(charge3dsId).slice(0, 8)}… : ${txt.slice(0, 200)}`,
           };
         };
 
@@ -2589,65 +2597,73 @@ fragment LineItemFields on LineItem {
           (processDecoupled || Boolean(processChallengeUrl) || processPending);
 
         if (wantAcs) {
-          const acsTimeoutMs = Math.min(Math.max(Number(task.acsTimeoutMs) || 60_000, 20_000), 90_000);
+          const acsTimeoutMs = Math.min(Math.max(Number(task.acsTimeoutMs) || 75_000, 30_000), 90_000);
+          const acsMode = processDecoupled ? "decoupled" : processChallengeUrl ? "challenge" : "decoupled";
           await tStep("paydock_3ds_acs", async () => {
-            const mode = processDecoupled
-              ? "decoupled (approve Revolut push NOW)"
-              : processChallengeUrl
-                ? "challenge iframe"
-                : "pending poll";
             steps.push({
               step: "paydock_3ds_acs:hint",
               ok: true,
-              note: `Approve in Revolut/bank app now — ${mode} ~${Math.round(acsTimeoutMs / 1000)}s`,
+              note:
+                acsMode === "challenge"
+                  ? `Challenge iframe loading — approve in Revolut/bank app if prompted (~${Math.round(acsTimeoutMs / 1000)}s). Do not re-call /process until AuthResultReady.`
+                  : `Decoupled — approve Revolut/bank app push NOW (~${Math.round(acsTimeoutMs / 1000)}s)`,
             });
             const acs = await completeAcsChallenge({
+              mode: acsMode,
               secondaryUrl: processSecondaryUrl || threeDsSecondaryUrl,
-              challengeUrl: processChallengeUrl && !isGpaymentsApiHost(processChallengeUrl) ? processChallengeUrl : null,
+              // Load challenge_url even on GPayments API hosts (SDK does this in an iframe).
+              challengeUrl: processChallengeUrl || null,
+              authorizationUrl: null,
               proxy: task.proxy ?? null,
               timeoutMs: acsTimeoutMs,
               referer: origin + "/checkout/payment",
-              pollProcess: async () => {
-                const out = await runPaydockProcess("paydock_process_poll");
-                processFrictionless = out.frictionless || processFrictionless;
-                processStatus = out.processStatus ?? processStatus;
-                processRawNote = out.note;
-                processHttpStatus = out.status;
-                processValidationError = out.validationError || processValidationError;
-                if (out.decoupled) processDecoupled = true;
-                if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
-                if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
-                return out;
-              },
+              paydockJwt,
+              // ONLY poll /process for decoupled. Challenge must wait on secondary AuthResultReady.
+              pollProcess:
+                acsMode === "decoupled"
+                  ? async () => {
+                      const out = await runPaydockProcess("paydock_process_poll");
+                      processFrictionless = out.frictionless || processFrictionless;
+                      processStatus = out.processStatus ?? processStatus;
+                      processRawNote = out.note;
+                      processHttpStatus = out.status;
+                      processValidationError = out.validationError || processValidationError;
+                      if (out.decoupled) processDecoupled = true;
+                      if (out.challengeUrl) processChallengeUrl = out.challengeUrl;
+                      if (out.secondaryUrl) processSecondaryUrl = out.secondaryUrl;
+                      return out;
+                    }
+                  : null,
             });
-            acsOk = acs.ok || processFrictionless;
+            acsOk = acs.ok || processFrictionless || acs.authReady === true;
             acsCertError = Boolean(acs.certError);
             return {
               status: acsOk ? 200 : acs.certError ? 495 : 408,
               ok: acsOk,
-              note: `${acs.note} source=${acsPick.source} decoupled=${processDecoupled}`,
+              note: `${acs.note} mode=${acsMode} challengeHost=${acs.challengeHost || "?"} loaded=${acs.challengeLoadOk ?? "n/a"}`,
             };
           }).catch((e) => steps.push({ step: "paydock_3ds_acs:error", ok: false, note: e?.message ?? String(e) }));
 
-          if (!processFrictionless && !acsCertError && !processValidationError) {
+          if (acsOk && !processFrictionless) {
             await tStep("paydock_3ds_process#2", async () => {
               const out = await runPaydockProcess("paydock_process_after_acs");
               processFrictionless = out.frictionless;
               processStatus = out.processStatus;
               processRawNote = out.note;
+              processHttpStatus = out.status;
               return { status: out.status, ok: out.ok, note: out.note };
             }).catch((e) =>
               steps.push({ step: "paydock_3ds_process#2:error", ok: false, note: e?.message ?? String(e) }),
             );
           } else if (processFrictionless) {
-            steps.push({ step: "paydock_3ds_process#2", ok: true, note: "skipped: already authenticated during poll" });
+            steps.push({ step: "paydock_3ds_process#2", ok: true, note: "skipped: already authenticated" });
           } else {
             steps.push({
               step: "paydock_3ds_process#2",
               ok: false,
-              note: processValidationError
-                ? "skipped: process ValidationError — method/handle did not establish 3DS session (no Revolut push possible)"
-                : "skipped: ACS TLS failure",
+              note: acsCertError
+                ? "skipped: challenge TLS/client-cert failure"
+                : "skipped: ACS did not reach AuthResultReady — calling /process now would token_inactive",
             });
           }
         } else if (!processFrictionless && paydockJwt && charge3dsId) {
@@ -2655,8 +2671,8 @@ fragment LineItemFields on LineItem {
             step: "paydock_3ds_acs",
             ok: false,
             note: processValidationError || processHttpStatus === 400
-              ? `skipped fail-fast: process invalid (status=${processHttpStatus}). ${String(processRawNote).slice(0, 160)} — no Revolut push will fire until method+handle succeeds`
-              : `skipped: process not pending/decoupled (status=${processStatus}). ${String(processRawNote).slice(0, 120)}`,
+              ? `skipped fail-fast: process invalid (status=${processHttpStatus}). ${String(processRawNote).slice(0, 160)}`
+              : `skipped: process not pending/decoupled/challenge (status=${processStatus}). ${String(processRawNote).slice(0, 120)}`,
           });
         }
 

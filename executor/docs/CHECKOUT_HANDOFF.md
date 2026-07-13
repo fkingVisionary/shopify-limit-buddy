@@ -128,7 +128,7 @@ If ATC “succeeds” but verify misses SKU, you get `checkout_gate` and stop. I
 
 Revolut disposable cards are still 3DS-enrolled. “No confirm prompt” in a browser is usually **frictionless fingerprinting**, not “no 3DS”. When the issuer step-ups, the adapter opens ACS via Playwright (`paydock_3ds_acs`) and waits for app/OTP completion, then re-calls `/process`.
 
-**Hang / “failed to fetch”:** Do not enter the long ACS wait unless `/process` returns `pending` + `decoupled_challenge` / `challenge_url`. ValidationError → fail fast (no Revolut push is possible until method+handle succeeds). Railway UI fetch aborts at ~170s with an explicit timeout error.
+**Challenge vs decoupled:** When `/process` returns `pending` + `challenge_url`, load that URL in an iframe (even on GPayments hosts) and poll `secondary_url` for `AuthResultReady`. Do **not** call `/process` again during the challenge — that yields `invalid_transaction` / `token_inactive` and prevents the Revolut push.
 
 Opt out with `acsChallenge:false`. Timeout via `acsTimeoutMs` (30–180s, default 120s).
 
