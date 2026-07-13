@@ -73,6 +73,30 @@ If the health check fails, open the job log and look for the failing step.
 
 ---
 
+## Optional: Deploy executor to Railway instead of Fly
+
+If you prefer Railway over Fly for the Node executor:
+
+1. New Railway project → Deploy from GitHub → this repo.
+2. **Critical:** Service → Settings → **Root Directory** = `executor`  
+   (If this is blank, Railway builds the Lovable UI at the repo root, looks for `/app/dist`, and fails with `"/app/dist": not found`.)
+3. Builder: Dockerfile (see `executor/railway.toml`).
+4. Variables (same as Fly secrets):
+
+   | Name | Value |
+   |---|---|
+   | `EXECUTOR_TOKEN` | shared secret (32+ chars) |
+   | `HYPER_API_KEY` | Hyper Solutions key |
+   | `PROXY_URL_RESI` | `http://user:pass@host:port` (optional default proxy) |
+   | `PORT` | Railway sets this; leave alone |
+
+5. After deploy, open `https://<your-service>.up.railway.app/health`.
+6. In Lovable secrets set `EXECUTOR_URL` to that origin (no trailing path) and the same `EXECUTOR_TOKEN`.
+
+The Playwright base image is large (~2GB+). Railway hobby plans can deploy it, but first builds are slow. If the build OOMs, bump the service memory or stick with Fly (`SETUP.md` steps 1–4).
+
+---
+
 ## 5. Wire the executor into Lovable
 
 Back in Lovable chat, say:
