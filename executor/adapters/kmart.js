@@ -13,6 +13,7 @@ import { request, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
+import { completeAcsChallenge } from "./kmart-3ds-acs.js";
 
 // Detects the SBSD script tag served inside Akamai SBSD challenge HTML
 // (often returned with 403 or 429 status). Pattern per Hyper docs §3.4:
@@ -2486,55 +2487,136 @@ fragment LineItemFields on LineItem {
         //   x-access-token: <JWT from create3DSToken>
         //   Body: {"charge_3ds_id": "<id>"}
         //   → 200 { resource.data.result.frictionless: true }
+        //
+        // Revolut / many issuers: first process is often NOT frictionless.
+        // "Sometimes it doesn't ask" in a real browser is still 3DS — the
+        // bank just fingerprint-approved. When it step-ups, we open ACS in
+        // Chromium and wait for app/OTP completion, then process again.
         let processFrictionless = false;
         let processStatus = null;
+        let processRawNote = "";
+        let challengeAcsUrl = threeDsAuthUrl;
+
+        const runPaydockProcess = async (label) => {
+          const res = await tracedRequest(
+            label,
+            "https://api.paydock.com/v1/charges/standalone-3ds/process",
+            {
+              method: "POST",
+              headers: {
+                "user-agent": UA,
+                accept: "application/json, text/plain, */*",
+                "content-type": "application/json; charset=UTF-8",
+                "x-access-token": paydockJwt,
+                origin,
+                referer: origin + "/",
+                ...CHROME_CH,
+                "sec-fetch-site": "cross-site",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+              },
+              body: JSON.stringify({ charge_3ds_id: charge3dsId }),
+            },
+          );
+          const txt = await res.text();
+          let frictionless = false;
+          let status = null;
+          let acsFromBody = null;
+          try {
+            const j = JSON.parse(txt);
+            const data = j?.resource?.data ?? {};
+            const result = data?.result ?? data;
+            status = result?.status ?? result?.authentication_status ?? data?.status ?? null;
+            acsFromBody =
+              result?.redirect_url ||
+              result?.acs_url ||
+              result?.authorization_url ||
+              data?.redirect_url ||
+              data?.acs_url ||
+              null;
+            if (result?.frictionless === true) {
+              frictionless = true;
+            } else if (
+              result?.frictionless !== false &&
+              /^(authenticated|complete|success|approved)$/i.test(String(status ?? ""))
+            ) {
+              frictionless = true;
+            }
+          } catch {}
+          return {
+            status: res.status,
+            ok: res.status < 400 && frictionless,
+            frictionless,
+            processStatus: status,
+            acsFromBody,
+            txt,
+            note: `frictionless=${frictionless} status=${status} acs=${(acsFromBody || threeDsAuthUrl) ? "yes" : "no"} : ${txt.slice(0, 300)}`,
+          };
+        };
+
         if (paydockJwt && charge3dsId) {
           await tStep("paydock_3ds_process", async () => {
-            const res = await tracedRequest(
-              "paydock_process",
-              "https://api.paydock.com/v1/charges/standalone-3ds/process",
-              {
-                method: "POST",
-                headers: {
-                  "user-agent": UA,
-                  accept: "application/json, text/plain, */*",
-                  "content-type": "application/json; charset=UTF-8",
-                  "x-access-token": paydockJwt,
-                  origin,
-                  referer: origin + "/",
-                  ...CHROME_CH,
-                  "sec-fetch-site": "cross-site",
-                  "sec-fetch-mode": "cors",
-                  "sec-fetch-dest": "empty",
-                },
-                body: JSON.stringify({ charge_3ds_id: charge3dsId }),
-              },
-            );
-            const txt = await res.text();
-            try {
-              const j = JSON.parse(txt);
-              const result = j?.resource?.data?.result ?? j?.resource?.data ?? {};
-              processStatus = result?.status ?? result?.authentication_status ?? null;
-              if (result?.frictionless === true) {
-                processFrictionless = true;
-              } else if (
-                result?.frictionless !== false &&
-                /^(authenticated|complete|success|approved)$/i.test(String(processStatus ?? ""))
-              ) {
-                // Some Paydock payloads omit frictionless:true but still mark auth done.
-                processFrictionless = true;
-              } else {
-                processFrictionless = false;
-              }
-            } catch {}
-            return {
-              status: res.status,
-              ok: res.status < 400 && processFrictionless,
-              note: `frictionless=${processFrictionless} status=${processStatus} authUrl=${threeDsAuthUrl ? "yes" : "no"} : ${txt.slice(0, 300)}`,
-            };
+            const out = await runPaydockProcess("paydock_process");
+            processFrictionless = out.frictionless;
+            processStatus = out.processStatus;
+            processRawNote = out.note;
+            if (out.acsFromBody) challengeAcsUrl = out.acsFromBody;
+            return { status: out.status, ok: out.ok, note: out.note };
           }).catch((e) => steps.push({ step: "paydock_3ds_process:error", ok: false, note: e?.message ?? String(e) }));
         } else {
           steps.push({ step: "paydock_3ds_process", ok: false, note: "skipped: no paydockJwt/charge3dsId" });
+        }
+
+        // 8h2. Issuer ACS step-up (Revolut app push / OTP / bank page).
+        // Default on whenever we have an ACS URL and process wasn't
+        // frictionless. Opt out with task.acsChallenge === false.
+        const wantAcs =
+          !processFrictionless &&
+          Boolean(challengeAcsUrl) &&
+          task.acsChallenge !== false;
+        if (wantAcs) {
+          const acsTimeoutMs = Math.min(
+            Math.max(Number(task.acsTimeoutMs) || 120_000, 30_000),
+            180_000,
+          );
+          await tStep("paydock_3ds_acs", async () => {
+            steps.push({
+              step: "paydock_3ds_acs:hint",
+              ok: true,
+              note: `Approve the payment in Revolut/bank app now — ACS open for ~${Math.round(acsTimeoutMs / 1000)}s`,
+            });
+            const acs = await completeAcsChallenge({
+              authorizationUrl: challengeAcsUrl,
+              proxy: task.proxy ?? null,
+              timeoutMs: acsTimeoutMs,
+              referer: origin + "/checkout/payment",
+            });
+            return {
+              status: acs.ok ? 200 : 408,
+              ok: acs.ok,
+              note: acs.note,
+            };
+          }).catch((e) => steps.push({ step: "paydock_3ds_acs:error", ok: false, note: e?.message ?? String(e) }));
+
+          // Re-process after ACS whether or not our settle heuristic fired —
+          // Revolut app approve sometimes completes server-side first.
+          await tStep("paydock_3ds_process#2", async () => {
+            const out = await runPaydockProcess("paydock_process_after_acs");
+            processFrictionless = out.frictionless;
+            processStatus = out.processStatus;
+            processRawNote = out.note;
+            return { status: out.status, ok: out.ok, note: out.note };
+          }).catch((e) =>
+            steps.push({ step: "paydock_3ds_process#2:error", ok: false, note: e?.message ?? String(e) }),
+          );
+        } else if (!processFrictionless && paydockJwt && charge3dsId) {
+          steps.push({
+            step: "paydock_3ds_acs",
+            ok: false,
+            note: challengeAcsUrl
+              ? "skipped: task.acsChallenge===false"
+              : `skipped: no ACS url (status=${processStatus}). ${processRawNote.slice(0, 120)}`,
+          });
         }
 
         // 8i. Final stock-event custom field. The HAR sets `sohEvent` after
@@ -2591,7 +2673,7 @@ fragment LineItemFields on LineItem {
             steps.push({
               step: "place_order",
               ok: false,
-              note: `skipped: 3DS not frictionless (status=${processStatus}). Issuer step-up would require a real browser to complete the ACS challenge.`,
+              note: `skipped: 3DS not authenticated after ACS (status=${processStatus}). Revolut/bank step-up needs app approve while paydock_3ds_acs is open — watch for the push and approve within ~2 min.`,
             });
           } else {
             await tStep("place_order", async () => {
@@ -2639,6 +2721,8 @@ fragment LineItemFields on LineItem {
           charge3dsId: charge3dsId ? charge3dsId.slice(0, 8) + "…" : null,
           frictionless: processFrictionless,
           processStatus,
+          acsAttempted: wantAcs === true,
+          acsUrl: Boolean(challengeAcsUrl),
           placeOrder: task.placeOrder === true,
           orderNumber,
           paymentStatus,
