@@ -2,7 +2,7 @@
 # refuse to load it, so we must use a glibc base image. Playwright's official
 # jammy image already includes Chromium + all system libs Playwright needs,
 # so we use it as the base for the executor. Node 20 is preinstalled.
-FROM mcr.microsoft.com/playwright:v1.54.1-jammy
+FROM mcr.microsoft.com/playwright:v1.61.1-jammy
 WORKDIR /app
 RUN mkdir -p /app/.tmp && chmod 1777 /app/.tmp
 ENV TMPDIR=/app/.tmp
