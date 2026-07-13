@@ -17,7 +17,12 @@ function step(steps, name, ok, status, ms, note) {
 export async function runCheckout(task) {
   const t0 = now();
   const jar = createJar();
-  const dispatcher = makeDispatcher(task.proxy);
+  // Default to the Chrome-131 impersonated TLS client for every task. undici's
+  // Node-shaped JA3/H2 fingerprint clears Kmart's WWW edge but not the API
+  // edge (api.kmart.com.au → 403 on graphql). node-tls-client is already
+  // installed; this just switches it on. Opt out with EXECUTOR_HTTP_TRANSPORT=undici.
+  const forceTls = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "tls").toLowerCase() !== "undici";
+  const dispatcher = makeDispatcher(task.proxy, { forceTls });
   const ctx = { dispatcher, jar };
   const store = task.storeUrl.replace(/\/$/, "");
 
