@@ -197,6 +197,7 @@ async function run(task, ctx) {
     let lastHyperStatus = {};
     let lastUrl = storeUrl;
     let successContext = null;
+    let lastFailureKind = "edge_deny";
 
     // Rotating residential pools often hand Playwright a different egress than
     // undici (kmart-mriyj1y1: 202.87.* edge-denied; HTTP lane got 1.147.* AU).
@@ -258,7 +259,20 @@ async function run(task, ctx) {
         homeHtml = await page.content().catch(() => "");
         step(steps, `${attemptTag}:warm_home`, homeStatus > 0 && homeStatus < 400, `status=${homeStatus}`, s0);
       } catch (e) {
-        step(steps, `${attemptTag}:warm_home`, false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+        const msg = e?.message?.slice(0, 200) ?? "goto failed";
+        const connClosed = /ERR_CONNECTION_CLOSED|ERR_PROXY|ERR_TUNNEL|ECONNRESET|ECONNREFUSED/i.test(msg);
+        step(steps, `${attemptTag}:warm_home`, false, msg, s0);
+        if (connClosed) {
+          step(
+            steps,
+            `${attemptTag}:proxy_connect`,
+            false,
+            `Playwright Chrome cannot CONNECT via this proxy (${msg.split("\n")[0]}). HTTP undici may still work — use sticky HTTPS-capable residential, or leave Playwright off.`,
+          );
+          lastFailureKind = "proxy_connect";
+        } else {
+          lastFailureKind = "nav_error";
+        }
         lastHyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
         await context.close().catch(() => {});
         continue;
@@ -278,6 +292,7 @@ async function run(task, ctx) {
           false,
           `IP ${ipAddress} blocked before Bot Manager (no sensor script for Hyper). cookies=[${Object.keys(lastCookies).join(",")}] markers=${markers.join(",") || "none"} — rotating context`,
         );
+        lastFailureKind = "edge_deny";
         if (protectionEvents.length) step(steps, `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
         await context.close().catch(() => {});
         continue;
@@ -310,12 +325,11 @@ async function run(task, ctx) {
     }
 
     if (!successContext) {
-      step(
-        steps,
-        "warm_home",
-        false,
-        `all ${maxEdgeRetries} Playwright attempts hard-denied at WWW edge (Hyper scriptUrl never captured). Same proxy often works on the HTTP lane with a different egress IP — use a sticky AU residential session, or clear Playwright and keep debugging api GraphQL on HTTP.`,
-      );
+      const proxyHint =
+        lastFailureKind === "proxy_connect"
+          ? `all ${maxEdgeRetries} Playwright attempts failed proxy CONNECT (ERR_CONNECTION_CLOSED). Chrome cannot tunnel this proxy — sticky HTTPS residential required, or leave Playwright off and use the HTTP lane (direct Fly egress currently clears cart_get/create).`
+          : `all ${maxEdgeRetries} Playwright attempts hard-denied at WWW edge (Hyper scriptUrl never captured). Use a sticky AU residential session, or leave Playwright off and keep the HTTP lane.`;
+      step(steps, "warm_home", false, proxyHint);
       return {
         ok: false,
         steps,
@@ -326,7 +340,10 @@ async function run(task, ctx) {
           elapsedMs: now() - t0,
           hyperStatus: lastHyperStatus,
           httpHandoff: false,
-          hint: "edge Access Denied before BM — not an ATC/header problem; rotate sticky AU proxy or stay on HTTP lane for WWW",
+          hint:
+            lastFailureKind === "proxy_connect"
+              ? "Playwright proxy CONNECT failed — not Akamai ATC; fix proxy tunnel or use HTTP lane without proxy"
+              : "edge Access Denied before BM — not an ATC/header problem; rotate sticky AU proxy or stay on HTTP lane for WWW",
         },
       };
     }
