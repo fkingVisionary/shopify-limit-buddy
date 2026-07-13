@@ -259,6 +259,9 @@ export function createJar() {
       if (!name) return;
       store.set(String(name), String(value ?? ""));
     },
+    clear() {
+      store.clear();
+    },
     // Bulk-load name→value cookies (e.g. Playwright context → HTTP jar handoff).
     load(obj) {
       if (!obj || typeof obj !== "object") return 0;

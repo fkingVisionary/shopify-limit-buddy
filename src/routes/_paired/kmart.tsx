@@ -294,9 +294,9 @@ function KmartPage() {
           placeOrder,
           debugTrace: true,
           kmartMode: usePlaywright ? "playwright" : "current",
-          // Proxied undici sessions often RST after SBSD; prefer Chrome TLS
-          // impersonation when a proxy is set (override with forceUndici later if needed).
-          ...(proxy.trim() && !usePlaywright ? { transport: "tls" as const } : {}),
+          // Default undici for Kmart HTTP lane. node-tls-client is opt-in
+          // (transport=tls) — forced TLS hard-403'd warm_home on residential
+          // proxies where undici already clears Akamai through PDP.
           profile: {
             email: profile.email || null,
             first_name: profile.first_name || null,

@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA } from "../http.js";
+import { request, UA, makeDispatcher } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -445,7 +445,7 @@ export const kmartAdapter = {
       return { note: v ?? "(no ip)", ok: Boolean(v) };
     }).then(() => ctx._ip ?? null).catch(() => null);
     // resolveEgressIp doesn't stash on ctx; re-read from cache via helper.
-    const egressIp = await resolveEgressIp(ctx);
+    let egressIp = await resolveEgressIp(ctx);
 
     // Hybrid resume: Playwright (or another lane) can seed a solved jar and
     // jump straight into the GraphQL checkout chain.
@@ -471,6 +471,78 @@ export const kmartAdapter = {
         note: "skipped WWW warm/sensor/PDP; continuing api GraphQL checkout with seeded cookies",
       });
     } else {
+
+    // If TLS fingerprint is blocked at warm (classic Access Denied HTML, no
+    // bm_* seeds, no sensor script), swap the dispatcher to undici and retry
+    // once. Empirically undici clears Kmart Akamai on the same residential
+    // proxies where node-tls-client chrome_131 is hard-denied (kmart-mrivt1l1).
+    const swapDispatcherToUndici = async (reason) => {
+      if (ctx.dispatcher?.transport !== "tls") return false;
+      if (ctx._undiciFallbackTried) return false;
+      ctx._undiciFallbackTried = true;
+      const proxyUrl = ctx.dispatcher.proxy ?? null;
+      try { await ctx.dispatcher.close?.(); } catch { /* ignore */ }
+      ctx.dispatcher = makeDispatcher(proxyUrl, { forceUndici: true });
+      try { ctx.jar.clear?.(); } catch { /* ignore */ }
+      steps.push({
+        step: "transport_fallback",
+        ok: true,
+        note: `tls→undici (${reason}) mode=${ctx.dispatcher.transport} proxy=${Boolean(proxyUrl)}`,
+      });
+      return true;
+    };
+
+    const dumpHomeScripts = () => {
+      try {
+        const tagRe = /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
+        const seen = [];
+        let mm;
+        while ((mm = tagRe.exec(html)) && seen.length < 60) {
+          const raw = mm[1];
+          if (!/^\//.test(raw) && !/kmart\.com\.au/i.test(raw)) continue;
+          let pathPart = raw;
+          let query = "";
+          const qi = raw.indexOf("?");
+          if (qi >= 0) { pathPart = raw.slice(0, qi); query = raw.slice(qi + 1); }
+          const qparams = query
+            ? Object.fromEntries(
+                query.split("&").filter(Boolean).map((p) => {
+                  const [k, v = ""] = p.split("=");
+                  return [k, v ? `${v.length}b:${hashShort(v)}` : "(empty)"];
+                }),
+              )
+            : {};
+          const endsJs = /\.js(?:$|\?)/i.test(raw);
+          const sbsdReMatch = SBSD_RE.test(`src="${raw}"`);
+          const sbsdParsed = parseSbsd(`<script src="${raw}">`);
+          seen.push({
+            path: pathPart,
+            endsJs,
+            hasV: "v" in qparams,
+            hasT: "t" in qparams,
+            qparams,
+            matchesSbsdRe: sbsdReMatch,
+            parsedAsSbsd: Boolean(sbsdParsed),
+          });
+        }
+        const sbsdCandidates = seen.filter((s) => s.hasV && !s.endsJs);
+        const sensorLike = seen.filter((s) => s.endsJs && s.hasV);
+        recordTraceEvent("home_scripts_dump", {
+          type: "diag_home_scripts",
+          totalTags: seen.length,
+          sbsdCandidates,
+          sensorLike,
+          allTags: seen,
+        });
+        steps.push({
+          step: "home_scripts_dump",
+          ok: true,
+          note: `scriptTags=${seen.length} sbsdCandidates=${sbsdCandidates.length} sensorLike=${sensorLike.length}`,
+        });
+      } catch (e) {
+        steps.push({ step: "home_scripts_dump", ok: false, note: `err=${e?.message ?? e}` });
+      }
+    };
 
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
@@ -521,61 +593,65 @@ export const kmartAdapter = {
       };
     });
 
-    // 2a-DIAG. Homepage script-tag dump. Diagnostic-only: enumerates every
-    // <script src="…"> found in the homepage HTML with its path, whether
-    // the path ends in `.js`, and which query params it carries. We hash
-    // the token values so nothing sensitive leaks. Use this to identify
-    // the real SBSD script tag Kmart serves so we can tighten SBSD_RE
-    // without re-poisoning the session by matching the sensor script.
-    try {
-      const tagRe = /<script\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi;
-      const seen = [];
-      let mm;
-      while ((mm = tagRe.exec(html)) && seen.length < 60) {
-        const raw = mm[1];
-        // Only report internal/relative script srcs — third-party CDNs are noise here.
-        if (!/^\//.test(raw) && !/kmart\.com\.au/i.test(raw)) continue;
-        let path = raw;
-        let query = "";
-        const qi = raw.indexOf("?");
-        if (qi >= 0) { path = raw.slice(0, qi); query = raw.slice(qi + 1); }
-        const qparams = query
-          ? Object.fromEntries(
-              query.split("&").filter(Boolean).map((p) => {
-                const [k, v = ""] = p.split("=");
-                return [k, v ? `${v.length}b:${hashShort(v)}` : "(empty)"];
-              }),
-            )
-          : {};
-        const endsJs = /\.js(?:$|\?)/i.test(raw);
-        const sbsdReMatch = SBSD_RE.test(`src="${raw}"`);
-        const sbsdParsed = parseSbsd(`<script src="${raw}">`);
-        seen.push({
-          path,
-          endsJs,
-          hasV: "v" in qparams,
-          hasT: "t" in qparams,
-          qparams,
-          matchesSbsdRe: sbsdReMatch,
-          parsedAsSbsd: Boolean(sbsdParsed),
+    dumpHomeScripts();
+
+    if (!scriptPath && /Access\s+Denied|Reference\s*#/i.test(html)) {
+      const swapped = await swapDispatcherToUndici("warm_home Access Denied");
+      if (swapped) {
+        // Hyper IP must match the transport that posts sensors.
+        await tStep("resolve_ip#undici", async () => {
+          const v = await resolveEgressIp(ctx, { force: true });
+          return { note: v ?? "(no ip)", ok: Boolean(v) };
+        });
+        await tStep("warm_home#undici", async () => {
+          const warmHeaders = navHeaders({ site: "none" });
+          steps.push({
+            step: "warm_home#undici:hdrs",
+            ok: true,
+            note: JSON.stringify({ url: origin + "/", headers: warmHeaders, cookieHeader: ctx.jar.header() }),
+          });
+          const res = await request(
+            origin + "/",
+            { method: "GET", headers: warmHeaders },
+            ctx,
+          );
+          html = await res.text();
+          scriptPath = findAkamaiScriptPath(html);
+          recordTraceEvent("nav_warm_home_undici", {
+            type: "document_get",
+            url: origin + "/",
+            status: res.status,
+            htmlBytes: html.length,
+            scriptPath,
+            setCookieNames: cookieNamesFromResponse(res),
+            jar: cookieTrustSnapshot(ctx.jar),
+          });
+          const setCookies =
+            typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
+          const setCookieNames = setCookies
+            .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
+            .filter(Boolean);
+          const seedOk = setCookieNames.includes("bm_sz") || ctx.jar.has("bm_sz");
+          steps.push({
+            step: "warm_home#undici:cookies",
+            ok: seedOk,
+            note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}] abckExpectedAfterSensor=${!setCookieNames.includes("_abck")}`,
+          });
+          const snippet = html.replace(/\s+/g, " ").trim().slice(0, 240);
+          return {
+            status: res.status,
+            ok: res.status >= 200 && res.status < 400 && Boolean(scriptPath),
+            note: `${html.length}b, abck=${ctx.jar.has("_abck")} bmsz=${ctx.jar.has("bm_sz")} script=${scriptPath ?? "(none)"} srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} body=${snippet}`,
+          };
+        });
+        dumpHomeScripts();
+        egressIp = await resolveEgressIp(ctx);
+        steps.push({
+          step: "transport",
+          ok: true,
+          note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)} (after fallback)`,
         });
       }
-      const sbsdCandidates = seen.filter((s) => s.hasV && !s.endsJs);
-      const sensorLike = seen.filter((s) => s.endsJs && s.hasV);
-      recordTraceEvent("home_scripts_dump", {
-        type: "diag_home_scripts",
-        totalTags: seen.length,
-        sbsdCandidates,
-        sensorLike,
-        allTags: seen,
-      });
-      steps.push({
-        step: "home_scripts_dump",
-        ok: true,
-        note: `scriptTags=${seen.length} sbsdCandidates=${sbsdCandidates.length} sensorLike=${sensorLike.length}`,
-      });
-    } catch (e) {
-      steps.push({ step: "home_scripts_dump", ok: false, note: `err=${e?.message ?? e}` });
     }
 
     if (!scriptPath) {
