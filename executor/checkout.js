@@ -7,6 +7,7 @@
 
 import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
+import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 
 const now = () => Date.now();
 
