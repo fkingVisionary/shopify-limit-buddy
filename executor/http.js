@@ -1,8 +1,8 @@
 // Proxy-aware HTTP client. Default transport is undici because it is stable and
 // returns adapter timelines instead of crashing the executor. The native
-// node-tls-client path is still available behind EXECUTOR_HTTP_TRANSPORT=tls for
-// controlled TLS experiments, but it is not the default after repeated empty
-// 502s from native crashes.
+// node-tls-client path is still available behind EXECUTOR_HTTP_TRANSPORT=tls or
+// per-task transport=tls for controlled TLS experiments, but it is not the
+// default after repeated empty 502s from native crashes.
 //
 // Module surface:
 //   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
@@ -198,10 +198,11 @@ class Dispatcher {
 
 export function makeDispatcher(rawProxy, opts = {}) {
   const url = parseProxy(rawProxy);
-  // Any explicit residential proxy must use the Chrome TLS client. A sticky
-  // residential IP with undici's non-browser TLS fingerprint still fails Akamai
-  // sensors with success=false, so never silently downgrade proxied runs.
-  const useTls = !opts.forceUndici && (opts.forceTls || HTTP_TRANSPORT === "tls" || Boolean(url));
+  // TLS is intentionally opt-in. A native node-tls-client crash can kill the
+  // whole process before Fastify serializes an error, which appears upstream as
+  // an empty 502. Proxies no longer imply TLS; use EXECUTOR_HTTP_TRANSPORT=tls
+  // or per-task transport=tls/forceTls=true when deliberately testing it.
+  const useTls = !opts.forceUndici && (opts.forceTls || HTTP_TRANSPORT === "tls");
   // Even direct (no-proxy) requests need a Session so they share the Chrome
   // fingerprint; we always return a Dispatcher, never null.
   return new Dispatcher(url, useTls);

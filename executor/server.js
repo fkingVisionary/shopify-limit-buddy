@@ -32,8 +32,70 @@ app.get("/health", async () => ({
   inflight,
   cap: MAX_CONCURRENT,
   transport: HTTP_TRANSPORT,
-  explicitProxyTransport: "tls",
+  proxyTransport: HTTP_TRANSPORT,
 }));
+
+app.post("/transport/diagnose", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  const url = String(body.url ?? "https://www.kmart.com.au/");
+  if (!/^https?:\/\//i.test(url)) {
+    reply.code(400);
+    return { ok: false, error: "url must be http(s)" };
+  }
+
+  const resolvedProxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const requestedTransport = typeof body.transport === "string" ? body.transport.toLowerCase() : null;
+  const dispatcher = makeDispatcher(resolvedProxy, {
+    forceTls: body.forceTls === true || requestedTransport === "tls",
+    forceUndici: body.forceUndici === true || requestedTransport === "undici",
+  });
+  const jar = createJar();
+  const t0 = Date.now();
+
+  try {
+    const res = await request(
+      url,
+      {
+        method: "GET",
+        headers: {
+          "user-agent": UA,
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "accept-language": "en-AU,en;q=0.9",
+          "upgrade-insecure-requests": "1",
+        },
+      },
+      { dispatcher, jar },
+    );
+    const bodyText = await res.text();
+    return {
+      ok: res.ok,
+      status: res.status,
+      elapsedMs: Date.now() - t0,
+      transport: dispatcher.transport,
+      usedProxy: Boolean(resolvedProxy),
+      finalUrl: res.url ?? url,
+      bodyBytes: bodyText.length,
+      cookies: Object.keys(jar.dump()),
+      headers: {
+        server: res.headers.get("server"),
+        "content-type": res.headers.get("content-type"),
+      },
+    };
+  } catch (e) {
+    reply.code(500);
+    req.log.error({ err: e, transport: dispatcher.transport, usedProxy: Boolean(resolvedProxy) }, "transport diagnose failed");
+    return {
+      ok: false,
+      error: e?.message ?? String(e),
+      elapsedMs: Date.now() - t0,
+      transport: dispatcher.transport,
+      usedProxy: Boolean(resolvedProxy),
+    };
+  } finally {
+    try { await dispatcher?.close?.(); } catch { /* ignore */ }
+  }
+});
 
 function checkAuth(req, reply) {
   const auth = req.headers.authorization ?? "";
@@ -101,8 +163,15 @@ app.post("/run", async (req, reply) => {
       placeOrderMutation,
       debugTrace: task.debugTrace === true,
       kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
+      transport: typeof task.transport === "string" ? task.transport : undefined,
+      forceTls: task.forceTls === true,
+      forceUndici: task.forceUndici === true,
     });
     return result;
+  } catch (e) {
+    reply.code(500);
+    req.log.error({ err: e }, "run failed");
+    return { ok: false, error: e?.message ?? String(e), failedStep: "run_error" };
   } finally {
     inflight--;
   }
