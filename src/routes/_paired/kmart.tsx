@@ -42,6 +42,14 @@ type CheckoutProfile = {
   phone: string;
 };
 
+type TestCard = {
+  number: string;
+  cvv: string;
+  expMonth: string;
+  expYear: string;
+  holder: string;
+};
+
 const EMPTY_PROFILE: CheckoutProfile = {
   email: "",
   first_name: "",
@@ -51,6 +59,14 @@ const EMPTY_PROFILE: CheckoutProfile = {
   province: "",
   zip: "",
   phone: "",
+};
+
+const EMPTY_CARD: TestCard = {
+  number: "",
+  cvv: "",
+  expMonth: "",
+  expYear: "",
+  holder: "",
 };
 
 type Step = { step: string; ok: boolean; status: number | null; ms?: number; note?: string };
@@ -227,6 +243,8 @@ function KmartPage() {
   const [mutExtraVars, setMutExtraVars] = useState("");
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [profile, setProfile] = useState<CheckoutProfile>(EMPTY_PROFILE);
+  // Test card stays in memory only — never written to localStorage.
+  const [card, setCard] = useState<TestCard>(EMPTY_CARD);
 
   // Hydrate from localStorage after mount (SSR safety).
   useEffect(() => {
@@ -302,6 +320,22 @@ function KmartPage() {
         return;
       }
       const proxyUrl = classified?.kind === "raw" ? classified.url ?? null : null;
+      const holder =
+        card.holder.trim() ||
+        [profile.first_name, profile.last_name].filter(Boolean).join(" ").trim() ||
+        "Test Cardholder";
+      const pan = card.number.replace(/\s+/g, "");
+      const cvv = card.cvv.trim();
+      const cardPayload =
+        pan.length >= 12 && cvv.length >= 3
+          ? {
+              number: pan,
+              cvv,
+              expMonth: card.expMonth.trim() || "12",
+              expYear: card.expYear.trim() || "29",
+              holder,
+            }
+          : null;
       const res = (await runFn({
         data: {
           taskId,
@@ -327,6 +361,7 @@ function KmartPage() {
             zip: profile.zip || null,
             phone: profile.phone || null,
           },
+          card: cardPayload,
           placeOrderMutation: mutation
             ? { operationName: mutation.operationName, query: mutation.query, extraVars: mutation.extraVars ?? {} }
             : null,
@@ -531,8 +566,8 @@ function KmartPage() {
                 </p>
               </div>
             </div>
-            <details className="rounded-md border border-border/50 p-3">
-              <summary className="cursor-pointer text-sm font-medium">Checkout profile (shipping / billing)</summary>
+            <details className="rounded-md border border-border/50 p-3" open>
+              <summary className="cursor-pointer text-sm font-medium">Checkout profile + test card</summary>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
                 {(
                   [
@@ -556,8 +591,69 @@ function KmartPage() {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 border-t border-border/40 pt-3">
+                <div className="mb-2 text-xs font-medium">Test card (Paydock) — not saved to browser storage</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <Label className="text-xs">Card number</Label>
+                    <Input
+                      value={card.number}
+                      onChange={(e) => setCard((c) => ({ ...c, number: e.target.value }))}
+                      placeholder="4111 1111 1111 1111"
+                      inputMode="numeric"
+                      autoComplete="cc-number"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Exp month (MM)</Label>
+                    <Input
+                      value={card.expMonth}
+                      onChange={(e) => setCard((c) => ({ ...c, expMonth: e.target.value.replace(/\D/g, "").slice(0, 2) }))}
+                      placeholder="12"
+                      inputMode="numeric"
+                      autoComplete="cc-exp-month"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Exp year (YY)</Label>
+                    <Input
+                      value={card.expYear}
+                      onChange={(e) => setCard((c) => ({ ...c, expYear: e.target.value.replace(/\D/g, "").slice(0, 4) }))}
+                      placeholder="29"
+                      inputMode="numeric"
+                      autoComplete="cc-exp-year"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">CVV</Label>
+                    <Input
+                      value={card.cvv}
+                      onChange={(e) => setCard((c) => ({ ...c, cvv: e.target.value.replace(/\D/g, "").slice(0, 4) }))}
+                      placeholder="123"
+                      inputMode="numeric"
+                      autoComplete="cc-csc"
+                      type="password"
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Cardholder (optional)</Label>
+                    <Input
+                      value={card.holder}
+                      onChange={(e) => setCard((c) => ({ ...c, holder: e.target.value }))}
+                      placeholder="Defaults to first + last name"
+                      autoComplete="cc-name"
+                      className="text-xs"
+                    />
+                  </div>
+                </div>
+              </div>
               <p className="mt-2 text-[11px] text-muted-foreground">
-                Empty fields fall back to adapter fixtures. Card still comes from executor env <code>KMART_CARD_*</code> unless supplied by the server.
+                Empty address fields fall back to adapter fixtures. Card here overrides Fly <code>KMART_CARD_*</code>.
+                Dry-run still stops before place order; fill card to exercise Paydock + 3DS.
               </p>
             </details>
             <div className="flex items-center justify-between rounded-md border border-border/50 p-3">

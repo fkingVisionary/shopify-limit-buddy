@@ -2124,7 +2124,7 @@ fragment LineItemFields on LineItem {
           steps.push({
             step: "paydock_tokenize",
             ok: false,
-            note: "skipped: KMART_CARD_NUMBER / KMART_CARD_CVV not set",
+            note: "skipped: no card on task and KMART_CARD_NUMBER / KMART_CARD_CVV unset — paste a test card in the Kmart UI profile panel",
           });
         } else {
           await tStep("paydock_tokenize", async () => {
