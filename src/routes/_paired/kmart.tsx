@@ -1196,6 +1196,7 @@ function KmartPage() {
                     "paydock_tokenize",
                     "create_3ds_token",
                     "paydock_3ds_init",
+                    "paydock_3ds_method",
                     "paydock_3ds_handle",
                     "paydock_3ds_process",
                     "paydock_3ds_acs",
