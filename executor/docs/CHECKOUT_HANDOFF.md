@@ -128,6 +128,8 @@ If ATC “succeeds” but verify misses SKU, you get `checkout_gate` and stop. I
 
 Revolut disposable cards are still 3DS-enrolled. “No confirm prompt” in a browser is usually **frictionless fingerprinting**, not “no 3DS”. When the issuer step-ups, the adapter opens ACS via Playwright (`paydock_3ds_acs`) and waits for app/OTP completion, then re-calls `/process`.
 
+**GPayments TLS:** `paydock.api.as1.gpayments.net` chains to a private `GPayments Root CA`. Playwright must use `ignoreHTTPSErrors` (and prefer the DigiCert `widget.paydock.com/3ds/standalone-3ds` URL from `/handle` Location). Without that you get `net::ERR_CERT_AUTHORITY_INVALID` and a useless `/process` 400.
+
 Opt out with `acsChallenge:false`. Timeout via `acsTimeoutMs` (30–180s, default 120s).
 
 ### 4.5 TLS fingerprint drift
