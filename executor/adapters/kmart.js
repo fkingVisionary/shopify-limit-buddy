@@ -395,21 +395,22 @@ export const kmartAdapter = {
     steps.push({
       step: "kmart_mode",
       ok: true,
-      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "cart-baseline-mriwd1up" }),
+      note: JSON.stringify({ requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" }),
     });
-    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "cart-baseline-mriwd1up" } });
+    recordTraceEvent("kmart_mode", { mode: { requested: requestedKmartMode, normalized: kmartMode, branch: "single-adapter-current" } });
 
     steps.push({
       step: "transport",
       ok: true,
       note: `mode=${ctx.dispatcher?.transport ?? "unknown"} explicitProxy=${Boolean(ctx.dispatcher?.proxy)} tls=${Boolean(ctx.dispatcher?.useTls)}`,
     });
+    // Diagnostic only — does not change request behavior vs kmart-mriwd1up.
     steps.push({
       step: "proxy_config",
       ok: Boolean(ctx.dispatcher?.proxy) || !task.proxy,
       note: ctx.dispatcher?.proxy
-        ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy).length}`
-        : "direct (no proxy on task — paste residential into Kmart UI Proxy field; empty field uses Fly egress)",
+        ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy ?? "").length}`
+        : "direct (no proxy on task — same as kmart-mriwd1up / 5:25 run)",
     });
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
@@ -1237,9 +1238,11 @@ export const kmartAdapter = {
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
 
-    // Working baseline (kmart-mriwd1up): PDP referer + x-visitor-id +
-    // apollo-client headers → cart_get / cart_create 200. Do not strip these
-    // for slim-HAR homepage referer experiments — that 403'd cart_get.
+    // Referer MUST be the PDP URL, not the homepage. Real Chrome fires
+    // GraphQL/get-token XHRs from the product page, and Akamai Bot Manager
+    // scores same-site XHRs where referer path is `/` (homepage) far lower
+    // than XHRs whose referer matches the PDP the shopper is on. This was
+    // the last remaining www→api asymmetry vs the HAR.
     const apiReferer = pdpUrl || (origin + "/");
     const gqlHeaders = {
       "user-agent": UA,
@@ -1255,7 +1258,11 @@ export const kmartAdapter = {
       "cache-control": "no-cache",
       pragma: "no-cache",
       priority: "u=1, i",
+      // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
       "x-country-code": "AU",
+      // Kmart's browser Apollo client stamps every GraphQL op with these
+      // and x-visitor-id. Missing them is a strong "not a real browser"
+      // signal to Akamai Bot Manager and correlates with cart_get 403s.
       "x-visitor-id": apiVisitorId,
       "apollographql-client-name": "kmart-web",
       "apollographql-client-version": "nx14-10200",
@@ -1605,11 +1612,13 @@ fragment LineItemFields on LineItem {
           ctx.__kmart_cart.cartAtcOk = true;
         } else await tStep("cart_atc", async () => {
           const res = await gqlPost({
-            operationName: "updateMyCart",
+            operationName: "updateMyBag",
             variables: {
               id: cartId,
               version: cartVersion,
               // HAR entry #368: addLineItem + setCustomField selectedCncStoreId.
+              // We include the custom field verbatim — real browsers always
+              // send it and the extra action is harmless for home delivery.
               actions: [
                 { addLineItem: { sku, quantity: task.qty ?? 1, addToCartSource: "PDP" } },
                 { setCustomField: { name: "selectedCncStoreId", value: "1241" } },
@@ -1683,7 +1692,8 @@ fragment LineItemFields on LineItem {
           };
         });
 
-        // If verify missed the SKU, force a GraphQL ATC once (same query as baseline).
+        // If verify missed the SKU (common after Playwright cookie handoff when
+        // the browser cart isn't visible to api.*), force a GraphQL ATC once.
         if (!cartVerifyHasSku && cartId && sku) {
           steps.push({
             step: "cart_verify_miss",
@@ -1692,7 +1702,7 @@ fragment LineItemFields on LineItem {
           });
           await tStep("cart_atc_recover", async () => {
             const res = await gqlPost({
-              operationName: "updateMyCart",
+              operationName: "updateMyBag",
               variables: {
                 id: cartId,
                 version: cartVersion,
