@@ -97,10 +97,9 @@ async function run(task, _ctx) {
     const { playwright, hyperPw, hyperSdk } = await loadDeps();
     step(steps, "deps_loaded", true, "playwright + hyper-sdk-playwright ready");
 
+    const rawLen = task.proxy ? String(task.proxy).length : 0;
     const proxy = parseProxy(task.proxy);
-    // NOTE: `channel: 'chrome'` requires the Google Chrome binary at
-    // /opt/google/chrome — the Playwright base image ships that. Fall back
-    // to bundled chromium if launch fails.
+    step(steps, "proxy_config", Boolean(proxy) || rawLen === 0, maskProxy(proxy, rawLen));
     const launchOpts = {
       headless: true,
       args: [
