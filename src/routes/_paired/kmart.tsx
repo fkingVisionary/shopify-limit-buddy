@@ -574,7 +574,8 @@ function KmartPage() {
               <div>
                 <div className="text-sm font-medium">Use Playwright fallback lane</div>
                 <div className="text-xs text-muted-foreground">
-                  Chromium + Hyper Playwright handlers seed api-host <code>_abck</code>, then hand off to the HTTP GraphQL checkout (address → Paydock → 3DS → place order).
+                  Real Chrome + Hyper Playwright handlers for WWW/api trust, then HTTP GraphQL handoff.
+                  Needs a sticky AU residential proxy — rotating exits that hard-deny at the edge never load Bot Manager (Hyper cannot solve that).
                 </div>
               </div>
               <Switch checked={usePlaywright} onCheckedChange={setUsePlaywright} />

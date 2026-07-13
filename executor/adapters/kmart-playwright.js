@@ -1,9 +1,8 @@
 // Kmart AU — Playwright fallback lane.
 //
-// Runs a real Chromium via Playwright and lets `hyper-sdk-playwright`
-// auto-handle Akamai sensor / SBSD challenges. Purpose: absolute backup
-// when the raw-HTTP kmart adapter is blocked by Akamai (typically the
-// api.kmart.com.au api-host `_abck` seeding that raw HTTP can't reproduce).
+// Runs Chromium via Playwright and lets `hyper-sdk-playwright` auto-handle
+// Akamai sensor / SBSD challenges. Purpose: absolute backup when the raw-HTTP
+// kmart adapter clears WWW but api GraphQL stays Access Denied.
 //
 // Enabled per-task via `kmartMode: "playwright"`.
 //
@@ -22,23 +21,13 @@ async function loadDeps() {
   return { playwright: _playwright, hyperPw: _hyperPw, hyperSdk: _hyperSdk };
 }
 
-const UA_WIN =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
-
 // Parse "user:pass@host:port" | "host:port" | "http://user:pass@host:port"
 // into the shape Playwright's launch({proxy}) wants.
-// Accepts:
-//   http(s)://user:pass@host:port
-//   user:pass@host:port
-//   host:port
-//   host:port:user:pass       (common residential-provider format)
-//   host:port:user:pass:extra (e.g. sticky-session token appended to pass)
 function parseProxy(raw) {
   if (!raw) return null;
   const s = String(raw).trim();
   if (!s) return null;
 
-  // host:port:user:pass[:...] — no scheme, no `@`, 4+ colon-parts
   if (!/^https?:\/\//i.test(s) && !s.includes("@")) {
     const parts = s.split(":");
     if (parts.length >= 4) {
@@ -74,6 +63,67 @@ function extractSkuFromUrl(pdpUrl) {
   return m ? m[1] : null;
 }
 
+function chromeUaFromVersion(version) {
+  // Match the real Chromium build Playwright launched. Lying about Chrome/138
+  // while the binary is 149+ is an instant Akamai tell (kmart-mriyj1y1).
+  const major = String(version || "149").split(".")[0] || "149";
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+function isHardAccessDenied(html, status) {
+  if (status === 403 && /access denied|errors\.edgesuite\.net|AkamaiGHost/i.test(html || "")) return true;
+  return false;
+}
+
+function cookieMap(jarArr) {
+  return Object.fromEntries((jarArr || []).map((c) => [c.name, c.value]));
+}
+
+function hasBotManagerSeed(cookies) {
+  return Boolean(cookies.bm_sz || cookies.ak_bmsc || cookies._abck || cookies.bm_ss);
+}
+
+async function fetchEgressIp(page, apiKey) {
+  // Prefer Hyper's authenticated IP endpoint (must match proxy egress exactly
+  // for sensor generation). Fall back to ipify.
+  try {
+    const ip = await page.evaluate(async (key) => {
+      const response = await fetch("https://ip.hypersolutions.co/ip", {
+        method: "GET",
+        headers: {
+          "x-api-key": key,
+          "Content-Type": "application/json",
+        },
+      });
+      if (!response.ok) throw new Error(`hyper-ip ${response.status}`);
+      const j = await response.json();
+      return j?.ip || null;
+    }, apiKey);
+    if (ip) return { ip, source: "ip.hypersolutions.co" };
+  } catch {
+    /* fall through */
+  }
+  const r = await page.goto("https://api.ipify.org?format=json", { timeout: 15_000, waitUntil: "domcontentloaded" });
+  if (r?.ok()) {
+    const j = await r.json();
+    if (j?.ip) return { ip: j.ip, source: "ipify" };
+  }
+  throw new Error("egress IP resolve failed");
+}
+
+async function waitForAbck(context, { timeoutMs = 25_000 } = {}) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeoutMs) {
+    const cookies = cookieMap(await context.cookies());
+    if (/~0~/.test(cookies._abck || "")) return { ok: true, cookies };
+    if (cookies._abck && hasBotManagerSeed(cookies)) {
+      // Sensor posts in flight — keep waiting for ~0~.
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return { ok: false, cookies: cookieMap(await context.cookies()) };
+}
+
 const now = () => Date.now();
 function step(steps, name, ok, note, startedAt = null) {
   const ms = startedAt != null ? now() - startedAt : undefined;
@@ -88,6 +138,7 @@ async function run(task, ctx) {
   const dryRun = task.dryRun !== false;
   const storeUrl = String(task.storeUrl || "").replace(/\/$/, "");
   const origin = "https://www.kmart.com.au";
+  const maxEdgeRetries = Math.max(1, Math.min(Number(task.pwEdgeRetries) || 3, 5));
 
   const apiKey = process.env.HYPER_API_KEY;
   if (!apiKey) {
@@ -104,110 +155,183 @@ async function run(task, ctx) {
     const rawLen = task.proxy ? String(task.proxy).length : 0;
     const proxy = parseProxy(task.proxy);
     step(steps, "proxy_config", Boolean(proxy) || rawLen === 0, maskProxy(proxy, rawLen));
+    if (rawLen > 0 && !proxy) {
+      step(steps, "proxy_parse", false, `unrecognized proxy string (len=${rawLen})`);
+      return { ok: false, steps, finalUrl: storeUrl, cookies: {}, dryRun };
+    }
+
     const launchOpts = {
       headless: true,
       args: [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-dev-shm-usage",
+        "--disable-features=IsolateOrigins,site-per-process",
       ],
       ...(proxy ? { proxy } : {}),
     };
     s0 = now();
+    let launchChannel = "bundled";
     try {
       browser = await playwright.chromium.launch({ channel: "chrome", ...launchOpts });
+      launchChannel = "chrome";
       step(steps, "browser_launch", true, `channel=chrome proxy=${Boolean(proxy)}`, s0);
     } catch (e) {
       browser = await playwright.chromium.launch(launchOpts);
-      step(steps, "browser_launch", true, `channel=bundled proxy=${Boolean(proxy)} note=${e?.message?.slice(0, 80)}`, s0);
+      launchChannel = "bundled";
+      step(
+        steps,
+        "browser_launch",
+        true,
+        `channel=bundled proxy=${Boolean(proxy)} note=${e?.message?.slice(0, 100)} — install google-chrome-stable on the image for channel=chrome`,
+        s0,
+      );
     }
 
-    const context = await browser.newContext({
-      userAgent: UA_WIN,
-      locale: "en-AU",
-      timezoneId: "Australia/Sydney",
-      viewport: { width: 1440, height: 900 },
-      extraHTTPHeaders: { "accept-language": "en-AU,en;q=0.9" },
-    });
-
-    // Resolve egress IP for the Hyper session context. Hyper recommends its
-    // own helper endpoint because the IP passed to the solver must exactly
-    // match the proxy egress used by the browser session.
-    let ipAddress = "1.1.1.1";
-    s0 = now();
-    try {
-      const ipPage = await context.newPage();
-      let r = await ipPage.goto("https://api.hypersolutions.co/ip", { timeout: 15_000 });
-      if (r?.ok()) {
-        const body = (await r.text()).trim();
-        const j = body.startsWith("{") ? JSON.parse(body) : null;
-        ipAddress = j?.ip || j?.origin || body.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] || ipAddress;
-      } else {
-        r = await ipPage.goto("https://api.ipify.org?format=json", { timeout: 15_000 });
-        if (r?.ok()) {
-          const j = await r.json();
-          if (j?.ip) ipAddress = j.ip;
-        }
-      }
-      await ipPage.close();
-      step(steps, "egress_ip", true, ipAddress, s0);
-    } catch (e) {
-      step(steps, "egress_ip", false, e?.message?.slice(0, 120) ?? "failed", s0);
-    }
-
-    const page = await context.newPage();
-    page.setDefaultTimeout(30_000);
-    const protectionEvents = [];
-    page.on("response", async (res) => {
-      const url = res.url();
-      if (/akamai|bm_|_abck|sensor|sbsd|sec-cpt|ips\.js|datadome|reese|incapsula|kasada/i.test(url)) {
-        protectionEvents.push(`${res.status()} ${url.slice(0, 120)}`);
-        if (protectionEvents.length > 8) protectionEvents.shift();
-      }
-    });
+    const browserVersion = browser.version();
+    const userAgent = chromeUaFromVersion(browserVersion);
+    step(steps, "browser_ua", true, `version=${browserVersion} ua=${userAgent.slice(0, 90)} channel=${launchChannel}`);
 
     const session = new hyperSdk.Session(apiKey);
-    const handlerConfigs = { session, ipAddress, acceptLanguage: "en-AU,en;q=0.9" };
-    const handlers = [
-      ["akamai", hyperPw.AkamaiHandler, { ...handlerConfigs, userAgent: UA_WIN }],
-      ["datadome", hyperPw.DataDomeHandler, handlerConfigs],
-      ["incapsula", hyperPw.IncapsulaHandler, handlerConfigs],
-      ["kasada", hyperPw.KasadaHandler, handlerConfigs],
-    ].filter(([, Handler]) => typeof Handler === "function")
-      .map(([name, Handler, config]) => ({ name, handler: new Handler(config) }));
+    let lastCookies = {};
+    let lastHyperStatus = {};
+    let lastUrl = storeUrl;
+    let successContext = null;
 
-    s0 = now();
-    await Promise.all(handlers.map(({ handler }) => handler.initialize(page, context)));
-    step(steps, "protection_handlers_ready", true, `${handlers.map((h) => h.name).join("+")} interceptors installed`, s0);
+    // Rotating residential pools often hand Playwright a different egress than
+    // undici (kmart-mriyj1y1: 202.87.* edge-denied; HTTP lane got 1.147.* AU).
+    // Hard Access Denied means BM never loaded — Hyper cannot solve it. Retry
+    // with a fresh context so the proxy can mint a new exit IP.
+    for (let attempt = 1; attempt <= maxEdgeRetries; attempt++) {
+      const attemptTag = `pw_attempt#${attempt}`;
+      s0 = now();
+      const context = await browser.newContext({
+        userAgent,
+        locale: "en-AU",
+        timezoneId: "Australia/Sydney",
+        viewport: { width: 1440, height: 900 },
+        extraHTTPHeaders: { "accept-language": "en-AU,en;q=0.9" },
+      });
 
-    // 1) Warm home — catch network errors so earlier steps survive in the timeline.
-    s0 = now();
-    let homeRes = null;
-    try {
-      homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
-      step(steps, "warm_home", homeRes?.ok() ?? false, `status=${homeRes?.status()}`, s0);
-      if (homeRes && homeRes.status() >= 400) {
-        const html = await page.content().catch(() => "");
-        const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
-          .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
-        step(steps, "warm_home_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+      let ipAddress = "1.1.1.1";
+      try {
+        const ipPage = await context.newPage();
+        const { ip, source } = await fetchEgressIp(ipPage, apiKey);
+        ipAddress = ip;
+        await ipPage.close();
+        step(steps, `${attemptTag}:egress_ip`, true, `${ipAddress} via=${source}`, s0);
+      } catch (e) {
+        step(steps, `${attemptTag}:egress_ip`, false, e?.message?.slice(0, 120) ?? "failed", s0);
       }
-    } catch (e) {
-      step(steps, "warm_home", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+
+      const page = await context.newPage();
+      page.setDefaultTimeout(30_000);
+      const protectionEvents = [];
+      page.on("response", (res) => {
+        const url = res.url();
+        if (/akamai|bm_|_abck|sensor|sbsd|sec-cpt|\/[A-Za-z0-9_\-/]{20,}$/i.test(url) && res.url().includes("kmart.com.au")) {
+          protectionEvents.push(`${res.status()} ${url.slice(0, 120)}`);
+          if (protectionEvents.length > 10) protectionEvents.shift();
+        }
+      });
+
+      const handlerConfigs = { session, ipAddress, acceptLanguage: "en-AU,en;q=0.9", userAgent };
+      const handlers = [
+        ["akamai", hyperPw.AkamaiHandler, { ...handlerConfigs }],
+        ["datadome", hyperPw.DataDomeHandler, handlerConfigs],
+        ["incapsula", hyperPw.IncapsulaHandler, handlerConfigs],
+        ["kasada", hyperPw.KasadaHandler, handlerConfigs],
+      ]
+        .filter(([, Handler]) => typeof Handler === "function")
+        .map(([name, Handler, config]) => ({ name, handler: new Handler(config) }));
+
+      s0 = now();
+      await Promise.all(handlers.map(({ handler }) => handler.initialize(page, context)));
+      step(steps, `${attemptTag}:handlers`, true, handlers.map((h) => h.name).join("+"), s0);
+
+      s0 = now();
+      let homeStatus = 0;
+      let homeHtml = "";
+      try {
+        const homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
+        homeStatus = homeRes?.status() ?? 0;
+        homeHtml = await page.content().catch(() => "");
+        step(steps, `${attemptTag}:warm_home`, homeStatus > 0 && homeStatus < 400, `status=${homeStatus}`, s0);
+      } catch (e) {
+        step(steps, `${attemptTag}:warm_home`, false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+        lastHyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
+        await context.close().catch(() => {});
+        continue;
+      }
+
+      lastCookies = cookieMap(await context.cookies());
+      lastHyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
+      lastUrl = page.url();
+
+      if (isHardAccessDenied(homeHtml, homeStatus) || (homeStatus >= 400 && !hasBotManagerSeed(lastCookies))) {
+        const htmlLc = homeHtml.toLowerCase();
+        const markers = ["access denied", "akamai", "bm_sz", "_abck", "edgesuite"]
+          .filter((m) => htmlLc.includes(m));
+        step(
+          steps,
+          `${attemptTag}:edge_deny`,
+          false,
+          `IP ${ipAddress} blocked before Bot Manager (no sensor script for Hyper). cookies=[${Object.keys(lastCookies).join(",")}] markers=${markers.join(",") || "none"} — rotating context`,
+        );
+        if (protectionEvents.length) step(steps, `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
+        await context.close().catch(() => {});
+        continue;
+      }
+
+      // Give Hyper's route interceptor time to post sensors and mint ~0~.
+      s0 = now();
+      const abckWait = await waitForAbck(context, { timeoutMs: 25_000 });
+      lastCookies = abckWait.cookies;
+      step(
+        steps,
+        `${attemptTag}:abck_wait`,
+        abckWait.ok,
+        abckWait.ok
+          ? `_abck ~0~ after ${now() - s0}ms`
+          : `_abck=${(lastCookies._abck || "").slice(0, 48)}… bm=${hasBotManagerSeed(lastCookies)}`,
+        s0,
+      );
+      if (protectionEvents.length) step(steps, `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
+
+      if (!abckWait.ok) {
+        step(steps, `${attemptTag}:sensor_unsolved`, false, "Hyper handlers installed but _abck never reached ~0~ — retrying fresh context");
+        await context.close().catch(() => {});
+        continue;
+      }
+
+      successContext = { context, page, handlers, ipAddress, protectionEvents };
+      step(steps, "warm_home_ok", true, `attempt=${attempt}/${maxEdgeRetries} ip=${ipAddress}`);
+      break;
+    }
+
+    if (!successContext) {
+      step(
+        steps,
+        "warm_home",
+        false,
+        `all ${maxEdgeRetries} Playwright attempts hard-denied at WWW edge (Hyper scriptUrl never captured). Same proxy often works on the HTTP lane with a different egress IP — use a sticky AU residential session, or clear Playwright and keep debugging api GraphQL on HTTP.`,
+      );
       return {
         ok: false,
         steps,
-        finalUrl: storeUrl,
-        cookies: {},
+        finalUrl: lastUrl,
+        cookies: lastCookies,
         dryRun,
         trace: {
           elapsedMs: now() - t0,
-          hyperStatus: Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null])),
-          hint: "warm_home failed — run POST /health/diagnose with the same proxy to separate CONNECT/auth from Playwright.",
+          hyperStatus: lastHyperStatus,
+          httpHandoff: false,
+          hint: "edge Access Denied before BM — not an ATC/header problem; rotate sticky AU proxy or stay on HTTP lane for WWW",
         },
       };
     }
-    await page.waitForTimeout(1500 + Math.random() * 1500);
+
+    const { context, page, handlers, ipAddress } = successContext;
 
     // 2) PDP.
     const pdpUrl = /^https?:\/\//i.test(storeUrl) ? storeUrl : `${origin}/`;
@@ -216,7 +340,7 @@ async function run(task, ctx) {
     try {
       const pdpRes = await page.goto(pdpUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
       pdpStatus = pdpRes?.status() ?? 0;
-      step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()}`, s0);
+      step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()} ip=${ipAddress}`, s0);
       if (pdpStatus >= 400) {
         const html = await page.content().catch(() => "");
         const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
@@ -229,7 +353,7 @@ async function run(task, ctx) {
         ok: false,
         steps,
         finalUrl: page.url(),
-        cookies: Object.fromEntries((await context.cookies()).map((c) => [c.name, c.value])),
+        cookies: cookieMap(await context.cookies()),
         dryRun,
         trace: {
           elapsedMs: now() - t0,
@@ -237,25 +361,26 @@ async function run(task, ctx) {
         },
       };
     }
-    if (protectionEvents.length) step(steps, "protection_events", true, protectionEvents.join(" | "));
+
+    // Re-check trust after PDP nav (sensor may refresh).
+    await waitForAbck(context, { timeoutMs: 12_000 });
 
     const sku = extractSkuFromUrl(page.url()) ?? extractSkuFromUrl(pdpUrl);
     step(steps, "pdp_sku", Boolean(sku), sku ?? "sku not found in URL");
 
-    // 3) Add-to-cart: click the real button so browser executes Kmart's own
-    // GraphQL mutation from the page context. Selector is intentionally
-    // permissive — Kmart's markup shifts.
+    // 3) Add-to-cart in page context so api GraphQL runs inside Chromium.
     let cartOk = false;
     s0 = now();
     try {
-      const btn = page.locator(
-        'button:has-text("Add to cart"), button:has-text("ADD TO CART"), [data-testid*="add-to-cart" i]'
-      ).first();
-      await btn.waitFor({ state: "visible", timeout: 15_000 });
+      const btn = page
+        .locator(
+          'button:has-text("Add to cart"), button:has-text("ADD TO CART"), [data-testid*="add-to-cart" i], button:has-text("Add to bag"), button:has-text("ADD TO BAG")',
+        )
+        .first();
+      await btn.waitFor({ state: "visible", timeout: 20_000 });
       await btn.scrollIntoViewIfNeeded();
       await page.waitForTimeout(400 + Math.random() * 600);
       await btn.click();
-      // Wait briefly for the mini-cart / GraphQL round trip.
       await page.waitForTimeout(2500);
       cartOk = true;
       step(steps, "cart_add_click", true, "clicked add-to-cart", s0);
@@ -263,7 +388,7 @@ async function run(task, ctx) {
       step(steps, "cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed", s0);
     }
 
-    // 4) Checkout warm in browser (keeps referer chain / cookies fresh).
+    // 4) Checkout warm in browser.
     if (cartOk) {
       s0 = now();
       try {
@@ -276,33 +401,31 @@ async function run(task, ctx) {
     }
 
     const finalUrl = page.url();
-    const jarArr = await context.cookies();
-    const cookies = Object.fromEntries(jarArr.map((c) => [c.name, c.value]));
-    const abck = cookies["_abck"] || "";
+    const cookies = cookieMap(await context.cookies());
+    const abck = cookies._abck || "";
     const abckValid = /~0~/.test(abck);
     step(steps, "abck_check", abckValid, abckValid ? "_abck valid (~0~)" : `_abck=${abck.slice(0, 60)}…`);
 
     const hyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
 
-    // 5) Hybrid handoff: close Chromium, seed the HTTP jar, resume the
-    //    GraphQL checkout chain (address → Paydock → 3DS → placeOrder).
-    //    Opt out with task.httpHandoff === false.
+    // 5) Hybrid handoff → HTTP GraphQL checkout.
     const wantHandoff = task.httpHandoff !== false && cartOk && abckValid && ctx?.jar;
     if (wantHandoff) {
-      try { await browser?.close?.(); } catch { /* ignore */ }
+      try {
+        await browser?.close?.();
+      } catch {
+        /* ignore */
+      }
       browser = null;
       s0 = now();
       step(steps, "http_handoff_start", true, "closing browser; resuming GraphQL checkout via kmart HTTP adapter");
       try {
         const { kmartAdapter } = await import("./kmart.js");
-        // Shares ctx.steps / ctx.jar so continuation appends to this timeline.
         const cont = await kmartAdapter.run(
           {
             ...task,
             resumeFrom: "api",
             seedCookies: cookies,
-            // Re-run GraphQL ATC with the seeded jar. Browser cart state is
-            // not always visible to api.kmart.com.au via cookies alone.
             skipAtc: task.skipAtc === true,
             keycode: sku ?? undefined,
           },
@@ -345,7 +468,11 @@ async function run(task, ctx) {
       },
     };
   } finally {
-    try { await browser?.close?.(); } catch { /* ignore */ }
+    try {
+      await browser?.close?.();
+    } catch {
+      /* ignore */
+    }
   }
 }
 
