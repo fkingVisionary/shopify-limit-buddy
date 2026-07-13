@@ -497,18 +497,21 @@ export const kmartAdapter = {
         setCookieNames: cookieNamesFromResponse(res),
         jar: cookieTrustSnapshot(ctx.jar),
       });
-      // Diagnostic: expose which cookies Kmart actually set —
-      // if _abck/bm_sz aren't here, Hyper's sensor call will reject with
-      // "missing abck" and none of the downstream steps can succeed.
+      // Diagnostic: homepage GET seeds Bot Manager cookies (bm_sz / ak_bmsc /
+      // bm_s / bm_so / bm_ss). `_abck` is NOT expected here — Hyper's sensor
+      // rounds mint it afterward (see Hyper "Getting started": POST sensor_data
+      // → Set-Cookie _abck). Marking ok:false for missing _abck was a false
+      // alarm that made every successful warm look like a cookie failure.
       const setCookies =
         typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
       const setCookieNames = setCookies
         .map((sc) => String(sc).split(";")[0].split("=")[0].trim())
         .filter(Boolean);
+      const seedOk = setCookieNames.includes("bm_sz") || ctx.jar.has("bm_sz");
       steps.push({
         step: "warm_home:cookies",
-        ok: setCookieNames.includes("_abck"),
-        note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}]`,
+        ok: seedOk,
+        note: `set-cookie count=${setCookies.length} names=[${setCookieNames.join(",")}] jar=[${Object.keys(ctx.jar.dump()).join(",")}] abckExpectedAfterSensor=${!setCookieNames.includes("_abck")}`,
       });
       const snippet = html.replace(/\s+/g, " ").trim().slice(0, 240);
       return {
@@ -1363,29 +1366,25 @@ export const kmartAdapter = {
       }
       }
 
-      // 7a.1. API-host Akamai sensor solve.
-      // Kmart's api.kmart.com.au sits behind its own Akamai edge. The parent
-      // `.kmart.com.au` `_abck` set on WWW is sent to api.* by the jar, but
-      // Akamai scores that _abck against the origin that produced its
-      // validated sensor payload — WWW — and treats the first api.* graphql
-      // POST as unvalidated (→ 403 Access Denied). We fix that by posting a
-      // Hyper-solved sensor payload to the same Akamai script path served
-      // under api.kmart.com.au, so the response Set-Cookies an api-origin
-      // validated _abck alongside the WWW one.
+      // 7a.1. API-host Akamai sensor — OPT-IN only (`task.apiSensor === true`).
       //
-      // Prior regression note (kept for future readers): an api-host sensor
-      // was tried before get-token was in place and appeared to *overwrite*
-      // the WWW _abck, worsening ATC. Ordering is now: WWW sensor rounds →
-      // PDP → get-token → api sensor rounds → graphql. If the regression
-      // pattern re-appears (WWW _abck marker changes across api_sensor),
-      // disable this block by sending task.apiSensor=false from the caller.
-      const apiSensorEnabled = task.apiSensor !== false && Boolean(scriptPath);
+      // Slim HAR (`public/kmart-slim.har`) posts every `sensor_data` body to
+      // www.kmart.com.au, never api.kmart.com.au. Real browsers seed api.* via
+      // POST /shopping-agent/v1/get-token (done above), then go straight to
+      // GraphQL. Posting Hyper payloads to `apiOrigin + wwwScriptPath` returns
+      // 503 (run kmart-mriv5eyf) and previously false-claimed "solved" because
+      // WWW `_abck` was already `~0~` / ind=0 before the failed POST.
+      //
+      // Keep the block for controlled experiments only.
+      const apiSensorEnabled = task.apiSensor === true && Boolean(scriptPath);
       if (apiSensorEnabled) {
         const apiScriptUrl = apiOrigin + scriptPath;
         let apiCtxToken = null;
         let apiSensorSolved = false;
         for (let i = 0; i < 3; i++) {
           const beforeWwwAbck = marker(ctx.jar.get("_abck"));
+          const beforeAbckRaw = ctx.jar.get("_abck") ?? "";
+          let postOk = false;
           await tStep(`api_sensor#${i + 1}`, async () => {
             const r = await solveAkamaiSensor({
               jar: ctx.jar,
@@ -1411,13 +1410,27 @@ export const kmartAdapter = {
             const body = await res.text().catch(() => "");
             const setCookieNames = cookieNamesFromResponse(res);
             const afterWwwAbck = marker(ctx.jar.get("_abck"));
+            postOk = res.status < 400 && sensorBodySuccess(body) !== "false";
             return {
               status: res.status,
-              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+              ok: postOk,
               note: `apiHostSensor payload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] wwwAbckBefore=${beforeWwwAbck} wwwAbckAfter=${afterWwwAbck} abck=${marker(ctx.jar.get("_abck"))} body=${body.replace(/\s+/g, " ").slice(0, 160)}`,
             };
           });
-          if (abckSolved(ctx.jar, i + 1)) {
+          // Abort on edge 5xx — the api host is not serving this script path.
+          if (!postOk) {
+            steps.push({
+              step: "api_sensor:abort",
+              ok: false,
+              note: "api-host sensor POST failed (often 503); HAR never posts sensor_data to api.* — continuing to cart_get with WWW _abck + get-token seed",
+            });
+            break;
+          }
+          // Only treat as solved if this POST actually refreshed _abck (or kept
+          // a valid one after a successful 2xx sensor body) — not merely because
+          // WWW already had ind=0 before we touched api.*.
+          const afterAbckRaw = ctx.jar.get("_abck") ?? "";
+          if (postOk && abckSolved(ctx.jar, i + 1) && afterAbckRaw !== beforeAbckRaw) {
             apiSensorSolved = true;
             steps.push({ step: "api_sensor:solved", ok: true, note: `rounds=${i + 1}` });
             break;
@@ -1425,10 +1438,14 @@ export const kmartAdapter = {
           await sleep(200, 400);
         }
         if (!apiSensorSolved) {
-          steps.push({ step: "api_sensor:unsolved", ok: false, note: "api-host _abck not valid after 3 rounds (continuing to cart_get anyway)" });
+          steps.push({ step: "api_sensor:unsolved", ok: false, note: "api-host sensor did not refresh _abck (continuing to cart_get anyway)" });
         }
       } else {
-        steps.push({ step: "api_sensor:skipped", ok: true, note: `scriptPath=${scriptPath ?? "none"} apiSensorFlag=${task.apiSensor}` });
+        steps.push({
+          step: "api_sensor:skipped",
+          ok: true,
+          note: `default-off (HAR has no api-host sensor). scriptPath=${scriptPath ?? "none"} apiSensorFlag=${task.apiSensor}`,
+        });
       }
 
 
@@ -1440,10 +1457,20 @@ export const kmartAdapter = {
       // 7b. getActiveBag — me.activeCart may be null on first run.
       let cartId = null;
       let cartVersion = null;
+      // Trim hdrs note: full cookieHeader was truncating run JSON in the UI
+      // right as cart steps began (seen on kmart-mriv5eyf).
       steps.push({
         step: "cart_get:hdrs",
         ok: true,
-        note: JSON.stringify({ url: gqlUrl, headers: gqlHeaders, cookieHeader: ctx.jar.header() }),
+        note: JSON.stringify({
+          url: gqlUrl,
+          headerKeys: Object.keys(gqlHeaders),
+          referer: gqlHeaders.referer,
+          visitor: gqlHeaders["x-visitor-id"],
+          cookieNames: Object.keys(ctx.jar.dump()),
+          abck: marker(ctx.jar.get("_abck")),
+          bmsz: marker(ctx.jar.get("bm_sz")),
+        }),
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost({
