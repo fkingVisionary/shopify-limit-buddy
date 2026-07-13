@@ -1159,7 +1159,14 @@ export const kmartAdapter = {
       priority: "u=1, i",
       // Real HAR includes x-country-code on payment-adjacent GraphQL calls.
       "x-country-code": "AU",
+      // Kmart's browser Apollo client stamps every GraphQL op with these
+      // and x-visitor-id. Missing them is a strong "not a real browser"
+      // signal to Akamai Bot Manager and correlates with cart_get 403s.
+      "x-visitor-id": apiVisitorId,
+      "apollographql-client-name": "kmart-web",
+      "apollographql-client-version": "nx14-10200",
     };
+
 
     // New Relic RUM headers — real Kmart pages carry these on every api.*
     // GraphQL call. Akamai's Bot Manager reportedly scores requests that
