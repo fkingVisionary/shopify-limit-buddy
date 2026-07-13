@@ -67,7 +67,7 @@ Golden sequence (from captured HAR `www.kmart.com.au.har_1.json`, see `executor/
 | SBSD / pixel | Done | Proactive + challenge paths |
 | PDP GET + SKU scrape | Done | `__NEXT_DATA__` sku, URL keycode fallback |
 | `POST /shopping-agent/v1/get-token` | Done | Seeds `ak_bmsc` / `bm_sv` for api host |
-| api-host sensor rounds | Done | Can overwrite WWW `_abck`; disable with `apiSensor:false` |
+| api-host sensor rounds | Off by default | HAR never posts `sensor_data` to api.*; opt-in with `apiSensor:true` |
 | `getMyActiveCart` / `createMyCart` / `updateMyCart` ATC | Done | + probe reads between create and ATC |
 | Address + billing + C&C storeAddress | Done | Profile-driven; defaults to QLD C&C fixture |
 | Paydock tokenize | Done | `origin=widget.paydock.com` (HAR-critical) |
@@ -108,7 +108,7 @@ Ordered by how often they kill a run:
 
 - WWW `_abck` solved but `api.kmart.com.au/gateway/graphql` still 403.  
 - Code already: get-token seed + optional api-host sensor.  
-- If api sensor **worsens** ATC (WWW `_abck` marker flips), set `apiSensor: false` and compare traces.  
+- API-host sensor is **off by default** (HAR + 503s). Only set `apiSensor: true` for controlled experiments.  
 - Playwright hybrid exists specifically because pure HTTP often cannot reproduce api-host trust.
 
 ### 4.3 Cart gate
@@ -181,7 +181,7 @@ Defaults in adapter (QLD postcode, store ids `1124` / `1241`, fixture identity).
   "debugTrace": true,
   "kmartMode": "current",         // or "playwright"
   "httpHandoff": true,            // playwright → HTTP
-  "apiSensor": true,              // set false if api sensor regresses ATC
+  "apiSensor": false,             // opt-in only; HAR has no api-host sensor POSTs
   "resumeFrom": "api",            // internal / hybrid
   "seedCookies": { "_abck": "…", "bm_sz": "…" },
   "skipAtc": false,

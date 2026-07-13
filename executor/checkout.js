@@ -18,14 +18,23 @@ function step(steps, name, ok, status, ms, note) {
 export async function runCheckout(task) {
   const t0 = now();
   const jar = createJar();
+  const store = task.storeUrl.replace(/\/$/, "");
   // Keep the native TLS client opt-in. It is useful for Akamai experiments, but
   // a native failure can terminate the process and surface as an empty 502.
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  const forceTls = task.forceTls === true || requestedTransport === "tls";
+  // Hyper docs: Akamai needs a Chrome-matching TLS client. Dashboard should
+  // send transport=tls when a proxy is set, but older Railway builds still
+  // arrive as undici. For Kmart + proxy, prefer TLS unless explicitly forced
+  // to undici (native TLS crashes → empty 502 are still possible — use
+  // forceUndici / transport=undici to roll back).
+  const isKmart = /kmart\.com\.au/i.test(store);
+  const forceTls =
+    task.forceTls === true ||
+    requestedTransport === "tls" ||
+    (isKmart && Boolean(task.proxy) && requestedTransport !== "undici");
   const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
-  const store = task.storeUrl.replace(/\/$/, "");
 
   const closeDispatcher = async () => {
     try { await dispatcher?.close?.(); } catch { /* ignore */ }
