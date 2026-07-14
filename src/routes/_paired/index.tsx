@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,6 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
@@ -1824,7 +1823,7 @@ function Index() {
   const tabLabel = { tasks: "Tasks", profiles: "Profiles", proxies: "Proxies", stores: "Stores", captcha: "Captcha", analytics: "Analytics", settings: "Settings", help: "Help" }[tab];
 
   const tipMap: Record<typeof tab, { key: string; text: string } | null> = {
-    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, checkout progress stays on the task page." },
+    tasks: { key: "tip-tasks", text: "Each task watches one product. Tap ▶ to start — when stock appears, checkout runs automatically on the task." },
     profiles: { key: "tip-profiles", text: "Profiles autofill the Shopify checkout. Add one profile per checkout you want fired in parallel." },
     proxies: { key: "tip-proxies", text: "Optional. Add proxy URL templates (one per line) to rotate requests and avoid rate limits during drops." },
     stores: { key: "tip-stores", text: "Pick a preset or add any public Shopify store by URL — that's the storefront your tasks will watch." },
@@ -1844,10 +1843,6 @@ function Index() {
             <div>
               <div className="text-[10px] uppercase tracking-wider text-primary">J1m's Bot</div>
               <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
-              <div className="mt-0.5 flex gap-1">
-                <Link to="/jbhifi" className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] hover:bg-muted">JB Hi-Fi</Link>
-                <Link to="/kmart" className="rounded border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] hover:bg-muted">Kmart</Link>
-              </div>
             </div>
           </div>
           {tab === "tasks" && (
@@ -2459,9 +2454,9 @@ function TasksView({
           switch (t.status) {
             case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
             case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
-            case "checkout_ready": return { label: isKmartCard ? (t.message ?? "Kmart dry-run OK") : "Checkout ready", color: "text-green-400" };
+            case "checkout_ready": return { label: isKmartCard ? (t.message ?? "Checkout ready") : "Checkout ready", color: "text-green-400" };
             case "opened":         return { label: "Checkout opened", color: "text-primary" };
-            case "checking_out":   return { label: t.message ?? (isKmartCard ? "Kmart checkout…" : "Submitting order…"), color: "text-amber-400" };
+            case "checking_out":   return { label: t.message ?? (isKmartCard ? "Checking out…" : "Submitting order…"), color: "text-amber-400" };
             case "confirmed":      return { label: `ORDER ${t.orderId ?? "CONFIRMED"}`, color: "text-emerald-400" };
             case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
             case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
@@ -2523,7 +2518,7 @@ function TasksView({
                     {t.storeName} · <span className="text-foreground/80">{profile?.name ?? "no profile"}</span>
                     {isKmartCard && (
                       <Badge variant="outline" className="ml-1 text-[9px]">
-                        kmart{t.placeOrder ? " · live" : " · dry"}
+                        Kmart
                       </Badge>
                     )}
                   </div>
@@ -2651,8 +2646,6 @@ function CreateTaskSheet({
   const [addingStore, setAddingStore] = useState(false);
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreUrl, setNewStoreUrl] = useState("");
-  const [kmartPlaceOrder, setKmartPlaceOrder] = useState(false);
-  const [kmartPlaywright, setKmartPlaywright] = useState(false);
 
   useEffect(() => { if (!stores.find((s) => s.id === storeId) && stores[0]) setStoreId(stores[0].id); }, [stores, storeId]);
   useEffect(() => { if (!profiles.find((p) => p.id === profileId) && profiles[0]) setProfileId(profiles[0].id); }, [profiles, profileId]);
@@ -2684,8 +2677,9 @@ function CreateTaskSheet({
       executionMode: isKmart ? "fast" : execMode,
       sizes: isKmart || sizes.length === 0 ? undefined : sizes,
       retailer: isKmart ? "kmart" : "shopify",
-      placeOrder: isKmart ? kmartPlaceOrder : undefined,
-      kmartMode: isKmart ? (kmartPlaywright ? "playwright" : "current") : undefined,
+      // Public Kmart tasks always place a real order via the working checkout path.
+      placeOrder: isKmart ? true : undefined,
+      kmartMode: isKmart ? "current" : undefined,
     }, Math.max(1, taskQty));
     setInput("");
   };
@@ -2721,8 +2715,8 @@ function CreateTaskSheet({
       </div>
 
       <div className="space-y-4 overflow-y-auto px-4 pb-4 pt-4">
-        {/* Row 1: Store + Mode */}
-        <div className="grid grid-cols-2 gap-4">
+        {/* Row 1: Store (+ Sizes for Shopify only) */}
+        <div className={isKmart ? "grid grid-cols-1 gap-4" : "grid grid-cols-2 gap-4"}>
           <Field label="Store">
             {addingStore ? (
               <Input className="h-8 border-0 bg-transparent px-0 focus-visible:ring-0" placeholder="Display name" value={newStoreName} onChange={(e) => setNewStoreName(e.target.value)} />
@@ -2740,11 +2734,7 @@ function CreateTaskSheet({
               </Select>
             )}
           </Field>
-          {isKmart ? (
-            <Field label="Lane">
-              <div className="flex h-8 items-center text-base">Fly executor</div>
-            </Field>
-          ) : (
+          {!isKmart && (
             <Field label="Sizes">
               <button
                 type="button"
@@ -2793,7 +2783,7 @@ function CreateTaskSheet({
         )}
         {isKmart && (
           <p className="text-[11px] text-muted-foreground">
-            Starts immediately on the proven executor path (cart → details → 3DS → order). Use Task Quantity for mass runs. Prefer Direct proxy.
+            Uses the card and address on your selected profile. Create multiple tasks with Task Quantity, then start them from the list. If your bank asks to approve, open your banking app — keep this page open if you can.
           </p>
         )}
 
@@ -2811,13 +2801,13 @@ function CreateTaskSheet({
               </SelectContent>
             </Select>
           </Field>
-          <Field label="Proxies">
+          <Field label={isKmart ? "Connection" : "Proxies"}>
             <Select value={proxyGroupSel} onValueChange={setProxyGroupSel}>
               <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="__direct">Direct (no proxy)</SelectItem>
+                <SelectItem value="__direct">{isKmart ? "Automatic" : "Direct (no proxy)"}</SelectItem>
                 {proxyGroups.map((g) => (
                   <SelectItem key={g.id} value={g.id}>{g.name} ({g.proxies.length})</SelectItem>
                 ))}
@@ -2849,27 +2839,8 @@ function CreateTaskSheet({
           </Field>
         </div>
 
-        {/* Row 5: Mode (Shopify) or Kmart place-order toggles */}
-        {isKmart ? (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2">
-              <div>
-                <div className="text-sm font-medium">Place order</div>
-                <div className="text-[11px] text-muted-foreground">
-                  Off = dry-run through 3DS. On = charge after Revolut approve (profile card required).
-                </div>
-              </div>
-              <Switch checked={kmartPlaceOrder} onCheckedChange={setKmartPlaceOrder} />
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2">
-              <div>
-                <div className="text-sm font-medium">Playwright lane</div>
-                <div className="text-[11px] text-muted-foreground">Usually off — HTTP lane is the working path.</div>
-              </div>
-              <Switch checked={kmartPlaywright} onCheckedChange={setKmartPlaywright} />
-            </div>
-          </div>
-        ) : (
+        {/* Row 5: Mode — Shopify only. Kmart public tasks always run a real checkout. */}
+        {!isKmart && (
           <Field label="Mode">
             <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
               <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
