@@ -11,6 +11,7 @@ import { runDeepHealth } from "./health.js";
 import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
+import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -36,6 +37,7 @@ app.get("/", async () => ({
   health: "/health",
   diagnose: "POST /health/diagnose (Bearer auth)",
   run: "POST /run (Bearer auth)",
+  progress: "GET /progress/:taskId (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
@@ -143,6 +145,21 @@ function checkAuth(req, reply) {
   }
   return true;
 }
+
+// Live workflow progress for an in-flight (or recently finished) /run.
+app.get("/progress/:taskId", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const taskId = String(req.params?.taskId ?? "").slice(0, 100);
+  if (!taskId) {
+    reply.code(400);
+    return { ok: false, error: "missing taskId" };
+  }
+  const progress = getTaskProgress(taskId);
+  if (!progress) {
+    return { ok: true, found: false, taskId, progress: null, stages: WORKFLOW_STAGES };
+  }
+  return { ok: true, found: true, taskId, progress, stages: WORKFLOW_STAGES };
+});
 
 app.post("/run", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };

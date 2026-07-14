@@ -77,7 +77,9 @@ const DiagnoseInputSchema = z.object({
 });
 
 function executorOrigin(rawUrl: string): string {
-  return rawUrl.replace(/\/$/, "").replace(/\/(health|health\/diagnose|run|recon|akamai\/lab|transport\/diagnose)$/i, "");
+  return rawUrl
+    .replace(/\/$/, "")
+    .replace(/\/(health|health\/diagnose|run|progress\/[^/]+|recon|akamai\/lab|transport\/diagnose)$/i, "");
 }
 
 function executorHostLabel(url: string): string {
@@ -170,6 +172,48 @@ export const runOnExecutor = createServerFn({ method: "POST" })
           ? `Executor /run timed out after ${RUN_TIMEOUT_MS}ms (often hung 3DS). Check fail-fast deploy + paymentTail.`
           : msg,
         elapsedMs: Date.now() - t0,
+        executorHost: executorHostLabel(url),
+      };
+    }
+  });
+
+export const pollExecutorProgress = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) =>
+    z.object({ taskId: z.string().min(1).max(100) }).parse(input),
+  )
+  .handler(async ({ data }) => {
+    const rawUrl = process.env.EXECUTOR_URL;
+    const token = trimToken(process.env.EXECUTOR_TOKEN);
+    if (!rawUrl || !token) {
+      return { ok: false as const, error: "EXECUTOR_URL or EXECUTOR_TOKEN not configured" };
+    }
+    const url = executorOrigin(rawUrl);
+    try {
+      const res = await fetch(`${url}/progress/${encodeURIComponent(data.taskId)}`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(8_000),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        return {
+          ok: false as const,
+          status: res.status,
+          error: body?.error ?? `HTTP ${res.status}`,
+          executorHost: executorHostLabel(url),
+        };
+      }
+      return {
+        ok: true as const,
+        status: res.status,
+        found: Boolean(body?.found),
+        progress: body?.progress ?? null,
+        stages: body?.stages ?? null,
+        executorHost: executorHostLabel(url),
+      };
+    } catch (e) {
+      return {
+        ok: false as const,
+        error: e instanceof Error ? e.message : String(e),
         executorHost: executorHostLabel(url),
       };
     }
