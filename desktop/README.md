@@ -57,7 +57,16 @@ HYPER_API_KEY=...   # on the control plane only
 Add an adapter under `desktop/adapters/` and extend `buildPayload` in
 `job-runner.cjs`. Same profiles/proxies/tasks UI.
 
-## Package
+## Debugging a failed run
+
+The Results log now prints:
+1. Payload summary (proxy / placeOrder / card present)
+2. Stage changes with **step name + detail** (not just "Loading product")
+3. On failure: `checkoutStage`, failed step notes from the executor (`lastSteps`)
+
+If you see `proxy=(direct — this machine's egress)` and PDP 403 Access Denied,
+that is expected vs Fly AU — attach an AU residential or local proxy manager
+entry. The checkout engine itself is the same `executor/` code as Fly.
 
 ```bash
 npm run package:win    # .exe folder
