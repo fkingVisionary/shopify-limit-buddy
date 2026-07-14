@@ -18,10 +18,12 @@ import {
   buildKmartExecutorPayload,
   isValidKmartPdpUrl,
   loadStoredKmartMutation,
+  mapKmartRunToTaskPatch,
   normalizeKmartPdpUrl,
   progressMessage,
   type KmartProfileLike,
 } from "@/lib/kmart-task";
+import { recordCheckoutOutcome } from "@/lib/checkout-analytics";
 
 type TaskRow = {
   id: string;
@@ -149,22 +151,42 @@ export function KmartTaskPoolCard({
               checkoutStage?: string | null;
               error?: string;
               failedStep?: string;
+              paymentStatus?: string | null;
+              paymentSummary?: Record<string, unknown> | null;
+              steps?: Array<{ step: string; ok: boolean; note?: string }>;
+              paymentTail?: Array<{ step: string; ok: boolean; note?: string }>;
             };
           };
 
           const elapsed = res.elapsedMs ?? Date.now() - t0;
-          const orderNumber = res.result?.orderNumber ?? null;
-          if (orderNumber || (res.result?.ok && !placeOrder)) {
+          const patch = mapKmartRunToTaskPatch(res);
+          recordCheckoutOutcome({
+            taskId: row.id,
+            storeUrl: cleanUrl,
+            storeName: "Kmart AU",
+            productTitle: cleanUrl,
+            orderId: patch.orderId ?? null,
+            ok: patch.outcome === "confirmed",
+            declined: patch.declined === true || patch.outcome === "declined",
+            error: patch.outcome === "confirmed" || patch.outcome === "dry_run" ? null : patch.message,
+            qty: Number(qty) || 1,
+            retailer: "kmart",
+            profileName: profile.name,
+            elapsedMs: elapsed,
+            currency: "AUD",
+          });
+
+          if (patch.outcome === "confirmed" || patch.outcome === "dry_run") {
             setTasks((prev) =>
               prev.map((t, idx) =>
                 idx === i
                   ? {
                       ...t,
                       status: "ok",
-                      currentStep: orderNumber
-                        ? `Order ${orderNumber}`
-                        : `dry-run (${res.result?.checkoutStage ?? "ok"})`,
-                      orderId: orderNumber,
+                      currentStep: patch.orderId
+                        ? `Order ${patch.orderId}`
+                        : patch.message,
+                      orderId: patch.orderId ?? null,
                       elapsedMs: elapsed,
                     }
                   : t,
@@ -177,8 +199,8 @@ export function KmartTaskPoolCard({
                   ? {
                       ...t,
                       status: "failed",
-                      currentStep: res.result?.failedStep ?? res.result?.checkoutStage ?? "failed",
-                      error: res.error || res.result?.error || "failed",
+                      currentStep: patch.declined ? "declined" : "failed",
+                      error: patch.message,
                       elapsedMs: elapsed,
                     }
                   : t,

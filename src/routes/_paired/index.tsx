@@ -53,6 +53,7 @@ import {
   progressMessage,
 } from "@/lib/kmart-task";
 import type { LiveProgress } from "@/lib/kmart-workflow";
+import { recordCheckoutOutcome } from "@/lib/checkout-analytics";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { JobsPanel } from "@/components/JobsPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
@@ -866,9 +867,11 @@ function Index() {
   // Schedule editor
   const [scheduleTaskId, setScheduleTaskId] = useState<string | null>(null);
   const [bulkScheduleOpen, setBulkScheduleOpen] = useState(false);
-  // Refs to avoid double-firing webhooks / pre-warm
+  // Refs to avoid double-firing webhooks / pre-warm / double checkout starts
   const notifiedRef = useRef<Map<string, Set<NotifyEvent>>>(new Map());
   const preWarmedRef = useRef<Set<string>>(new Set());
+  const checkoutInFlightRef = useRef<Set<string>>(new Set());
+  const scheduledFiredRef = useRef<Set<string>>(new Set());
 
   const dismissTip = (key: string) => {
     const next = { ...dismissedTips, [key]: true };
@@ -1061,6 +1064,9 @@ function Index() {
     const t = tasksRef.current.find((x) => x.id === id);
     if (!t) return;
 
+    // Hard stop: never re-enter while a checkout is already in flight for this task.
+    if (checkoutInFlightRef.current.has(id) || t.running) return;
+
     // ── Kmart AU: fire-on-start via Fly executor (no Shopify stock poll) ──
     const kmartTask =
       t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input);
@@ -1097,6 +1103,9 @@ function Index() {
         return;
       }
 
+      checkoutInFlightRef.current.add(id);
+      // Allow a fresh webhook set if the user manually restarts after a terminal outcome.
+      notifiedRef.current.delete(id);
       triggeredRef.current.add(id);
       updateTask(id, {
         running: true,
@@ -1107,17 +1116,89 @@ function Index() {
         storeUrl: KMART_STORE_URL,
         storeName: t.storeName || KMART_STORE_NAME,
         checkoutStartedAt: Date.now(),
+        scheduledAt: null,
         message: "Starting Kmart checkout…",
         lastChecked: Date.now(),
+        orderId: null,
       });
-      fireWebhook("in_stock", { ...t, productTitle: t.productTitle || kmartProductLabel(pdpUrl), input: pdpUrl });
+      fireWebhook(
+        "in_stock",
+        { ...t, productTitle: t.productTitle || kmartProductLabel(pdpUrl), input: pdpUrl },
+        { paymentMethod: "Kmart executor", mode: placeOrder ? "Place order" : "Dry-run" },
+      );
 
       const bStart = Date.now();
       let pollTimer: ReturnType<typeof setInterval> | null = null;
+      const finishKmart = (patch: ReturnType<typeof mapKmartRunToTaskPatch>) => {
+        const elapsed = Date.now() - bStart;
+        updateTask(id, {
+          ...patch,
+          running: false,
+          scheduledAt: null,
+          checkoutElapsedMs: elapsed,
+          browserlessElapsedMs: patch.browserlessElapsedMs ?? elapsed,
+        });
+        const title = t.productTitle || kmartProductLabel(pdpUrl);
+        const profileName = [profile.first_name, profile.last_name].filter(Boolean).join(" ").trim() || profile.name;
+        recordCheckoutOutcome({
+          taskId: id,
+          storeUrl: pdpUrl,
+          storeName: KMART_STORE_NAME,
+          productTitle: title,
+          orderId: patch.orderId ?? null,
+          ok: patch.outcome === "confirmed",
+          declined: patch.declined === true || patch.outcome === "declined",
+          error: patch.outcome === "confirmed" || patch.outcome === "dry_run" ? null : patch.message,
+          qty: t.qty,
+          retailer: "kmart",
+          profileName,
+          elapsedMs: elapsed,
+          currency: "AUD",
+        });
+        if (patch.outcome === "confirmed") {
+          notify("ORDER CONFIRMED", title);
+          fireWebhook(
+            "confirmed",
+            { ...t, productTitle: title, orderId: patch.orderId ?? null },
+            {
+              checkoutElapsedMs: elapsed,
+              message: patch.message,
+              paymentMethod: "Kmart executor",
+              mode: "Place order",
+            },
+          );
+        } else if (patch.outcome === "dry_run") {
+          fireWebhook(
+            "checkout_ready",
+            { ...t, productTitle: title },
+            {
+              checkoutElapsedMs: elapsed,
+              message: patch.message,
+              paymentMethod: "Kmart executor",
+              mode: "Dry-run",
+            },
+          );
+        } else {
+          notify(patch.declined ? "PAYMENT DECLINED" : "CHECKOUT FAILED", title);
+          fireWebhook(
+            "failed",
+            { ...t, productTitle: title },
+            {
+              checkoutElapsedMs: elapsed,
+              message: patch.message,
+              paymentMethod: "Kmart executor",
+              mode: placeOrder ? "Place order" : "Dry-run",
+            },
+          );
+        }
+      };
       try {
         pollTimer = setInterval(() => {
           void (async () => {
             try {
+              // Don't overwrite a terminal status if the run already finished.
+              const cur = tasksRef.current.find((x) => x.id === id);
+              if (!cur?.running || !checkoutInFlightRef.current.has(id)) return;
               const p = (await pollKmartProgressFn({ data: { taskId: execTaskId } })) as {
                 progress?: LiveProgress | null;
               };
@@ -1139,37 +1220,18 @@ function Index() {
           elapsedMs?: number;
           result?: any;
         };
-        const patch = mapKmartRunToTaskPatch(res);
-        updateTask(id, {
-          ...patch,
-          checkoutElapsedMs: Date.now() - bStart,
-          browserlessElapsedMs: patch.browserlessElapsedMs ?? Date.now() - bStart,
-        });
-        if (patch.status === "confirmed") {
-          notify("ORDER CONFIRMED", `${t.productTitle || kmartProductLabel(pdpUrl)}`);
-          fireWebhook("confirmed", {
-            ...t,
-            orderId: patch.orderId ?? null,
-            checkoutElapsedMs: Date.now() - bStart,
-            message: patch.message,
-          });
-        } else if (patch.status === "failed") {
-          fireWebhook("failed", {
-            ...t,
-            checkoutElapsedMs: Date.now() - bStart,
-            message: patch.message,
-          });
-        }
+        finishKmart(mapKmartRunToTaskPatch(res));
       } catch (err: any) {
-        updateTask(id, {
-          running: false,
-          status: "failed",
-          browserlessElapsedMs: Date.now() - bStart,
-          message: `Kmart executor error: ${err?.message ?? "error"}`,
-        });
-        fireWebhook("failed", { ...t, message: err?.message ?? "kmart executor error" });
+        finishKmart(
+          mapKmartRunToTaskPatch({
+            ok: false,
+            error: `Kmart executor error: ${err?.message ?? "error"}`,
+            elapsedMs: Date.now() - bStart,
+          }),
+        );
       } finally {
         if (pollTimer) clearInterval(pollTimer);
+        checkoutInFlightRef.current.delete(id);
       }
       return;
     }
@@ -1204,9 +1266,21 @@ function Index() {
     }
   };
 
-  const stopTask = (id: string) => updateTask(id, { running: false, status: "idle", message: undefined });
-  const startAll = () => tasksRef.current.forEach((t) => !t.running && startTask(t.id));
-  const stopAll = () => tasksRef.current.forEach((t) => t.running && stopTask(t.id));
+  const stopTask = (id: string) => {
+    checkoutInFlightRef.current.delete(id);
+    updateTask(id, { running: false, status: "idle", message: undefined, scheduledAt: null });
+  };
+  const startAll = () =>
+    tasksRef.current.forEach((t) => {
+      if (t.running || checkoutInFlightRef.current.has(t.id)) return;
+      // Don't mass-restart tasks that already finished (confirmed / declined / failed).
+      if (t.status === "confirmed" || t.status === "failed" || t.status === "error" || t.status === "checkout_ready") return;
+      void startTask(t.id);
+    });
+  const stopAll = () =>
+    tasksRef.current.forEach((t) => {
+      if (t.running || checkoutInFlightRef.current.has(t.id)) stopTask(t.id);
+    });
   const deleteTask = (id: string) => setTasks((prev) => prev.filter((t) => t.id !== id));
 
   // ─── Bulk task ops (used by select mode) ───
@@ -1226,7 +1300,9 @@ function Index() {
   const bulkStartTasks = (ids: Set<string>) => {
     ids.forEach((id) => {
       const t = tasksRef.current.find((x) => x.id === id);
-      if (t && !t.running) startTask(id);
+      if (!t || t.running || checkoutInFlightRef.current.has(id)) return;
+      if (t.status === "confirmed") return;
+      void startTask(id);
     });
     exitSelectMode();
   };
@@ -1283,7 +1359,12 @@ function Index() {
     const id = setInterval(() => {
       const now = Date.now();
       for (const t of tasksRef.current) {
-        if (t.running || t.status === "confirmed") continue;
+        // Never auto-restart terminal or in-flight checkouts.
+        if (t.running || checkoutInFlightRef.current.has(t.id)) continue;
+        if (t.status === "confirmed" || t.status === "failed" || t.status === "error" || t.status === "checkout_ready") {
+          // Terminal outcomes stay put unless the user sets a NEW schedule later.
+          if (!t.scheduledAt) continue;
+        }
         const ts = t.scheduledAt;
         if (!ts) continue;
         const pre = t.preWarmMs ?? 2000;
@@ -1297,10 +1378,14 @@ function Index() {
           }
         }
         if (now >= ts) {
-          // Clear schedule and fire
+          // Fire at most once per scheduledAt value (setState is async — without
+          // this guard the 500ms tick re-starts the same task repeatedly).
+          const fireKey = `${t.id}:${ts}`;
+          if (scheduledFiredRef.current.has(fireKey)) continue;
+          scheduledFiredRef.current.add(fireKey);
           updateTask(t.id, { scheduledAt: null });
           preWarmedRef.current.delete(t.id);
-          startTask(t.id);
+          void startTask(t.id);
         }
       }
     }, 500);
