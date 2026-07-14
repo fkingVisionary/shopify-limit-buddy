@@ -59,14 +59,24 @@ Add an adapter under `desktop/adapters/` and extend `buildPayload` in
 
 ## Debugging a failed run
 
-The Results log now prints:
-1. Payload summary (proxy / placeOrder / card present)
-2. Stage changes with **step name + detail** (not just "Loading product")
-3. On failure: `checkoutStage`, failed step notes from the executor (`lastSteps`)
+Logs are **oldest → newest** (scroll to bottom for latest).
 
-If you see `proxy=(direct — this machine's egress)` and PDP 403 Access Denied,
-that is expected vs Fly AU — attach an AU residential or local proxy manager
-entry. The checkout engine itself is the same `executor/` code as Fly.
+Each attempt prints:
+1. `proxy=` / `transport=` / `mode=`
+2. Stage changes with **step name + detail**
+3. On failure: `checkoutStage` + failed step notes
+
+### Access Denied on category/PDP
+
+This is **not** a broken payload vs the web app. The same `executor/` hits Akamai
+`Access Denied` from this PC’s egress (`verify_ip` shows your home IP). Fly works
+because Linux undici + AU egress is a different trust path.
+
+- If `proxy=` is set but egress IP stays your home IP, the proxy is **not** changing exit.
+- SBSD can return HTTP 200 while `bm_sv=false` — that usually precedes hard 403s.
+- Desktop **auto-retries** undici → TLS → Playwright when Settings → “On Access Denied, retry…” is on (default).
+
+## Package
 
 ```bash
 npm run package:win    # .exe folder

@@ -4,16 +4,26 @@
 //
 // Payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
+//
+// Desktop-only: on Akamai WWW Access Denied (common on Windows home egress
+// vs Fly Linux), optionally retry with TLS impersonation then Playwright warm
+// — same executor endpoints, no architecture rewrite.
 
 const sidecar = require("./executor-sidecar.cjs");
 const { id } = require("./store.cjs");
 const { normalizeKmartProxy } = require("./proxy-format.cjs");
-const { formatExecutorFailure, summarizePayload, stageLogLine } = require("./run-format.cjs");
+const {
+  formatExecutorFailure,
+  isAkamaiWwwBlocked,
+  summarizePayload,
+  stageLogLine,
+} = require("./run-format.cjs");
 
 let queue = [];
 let inflight = 0;
 let running = false;
 let maxConcurrent = 5;
+let akamaiRetry = true; // settings: retryTlsPlaywright
 let emit = () => {};
 let onFinished = null;
 
@@ -25,8 +35,9 @@ function setFinishedHandler(fn) {
   onFinished = typeof fn === "function" ? fn : null;
 }
 
-function configure({ maxConcurrent: n } = {}) {
+function configure({ maxConcurrent: n, akamaiRetry: retry } = {}) {
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
+  if (typeof retry === "boolean") akamaiRetry = retry;
 }
 
 function state() {
@@ -35,6 +46,7 @@ function state() {
     inflight,
     queued: queue.length,
     maxConcurrent,
+    akamaiRetry,
   };
 }
 
@@ -44,7 +56,7 @@ function normalizeProxy(raw) {
   return r.ok ? r.proxy : null;
 }
 
-function buildKmartPayload({ task, profile, proxyRaw, placeOrder }) {
+function buildKmartPayload({ task, profile, proxyRaw, placeOrder, transport, kmartMode, forceTls }) {
   const pdp = String(task.pdpUrl || task.storeUrl || "").trim();
   if (!/^https:\/\/(www\.)?kmart\.com\.au\//i.test(pdp)) {
     return { ok: false, error: "Kmart PDP URL required" };
@@ -62,7 +74,6 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder }) {
     [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim() ||
     "Cardholder";
 
-  // Match web: place order requires a complete card on the profile.
   if (placeOrder && (pan.length < 12 || cvv.length < 3 || !mm || yy.length < 2)) {
     return { ok: false, error: "Place order needs complete card on the profile" };
   }
@@ -78,7 +89,10 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder }) {
         }
       : null;
 
-  // Same field set as buildKmartExecutorPayload / runOnExecutor InputSchema.
+  const mode =
+    kmartMode === "playwright" || task.kmartMode === "playwright" ? "playwright" : "current";
+  const wantTls = forceTls === true || transport === "tls";
+
   return {
     ok: true,
     data: {
@@ -90,9 +104,10 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder }) {
       dryRun: !placeOrder,
       placeOrder: Boolean(placeOrder),
       debugTrace: true,
-      kmartMode: task.kmartMode === "playwright" ? "playwright" : "current",
+      kmartMode: mode,
       httpHandoff: true,
       skipAtc: false,
+      ...(wantTls ? { transport: "tls", forceTls: true } : { forceUndici: true }),
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -109,7 +124,6 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder }) {
   };
 }
 
-/** Build executor payload by store adapter id. */
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
@@ -169,50 +183,94 @@ function emitLog(runId, taskId, level, message, extra) {
   });
 }
 
-async function runOne(job) {
-  const built = buildPayload(job);
-  if (!built.ok) {
-    const result = {
-      ok: false,
-      taskId: job.task?.id,
+function finishResult(job, res, summary, attemptLabel) {
+  const errorText = res?.ok ? null : formatExecutorFailure(res);
+  console.log(
+    "[desktop:run]",
+    JSON.stringify({
       runId: job.runId,
-      error: built.error,
-      at: Date.now(),
-    };
-    emitLog(job.runId, job.task?.id, "err", `payload rejected: ${built.error}`);
-    emit({ type: "job", phase: "done", ...result });
-    onFinished?.(result);
-    return;
-  }
-
-  const payload = built.data;
-  payload.taskId = job.runId;
-
-  const summary = summarizePayload(payload);
-  emit({
-    type: "job",
-    phase: "start",
+      attempt: attemptLabel,
+      ok: res?.ok,
+      checkoutStage: res?.checkoutStage,
+      failedStep: res?.failedStep,
+      error: errorText,
+      lastSteps: res?.lastSteps ?? res?.steps?.slice?.(-8),
+      elapsedMs: res?.elapsedMs,
+      proxy: summary.proxy,
+      transport: summary.transport,
+      kmartMode: summary.kmartMode,
+    }),
+  );
+  return {
+    ok: Boolean(res?.ok),
     taskId: job.task?.id,
     runId: job.runId,
-    label: job.task?.label || payload.storeUrl,
-    summary,
-  });
+    orderNumber: res?.orderNumber ?? null,
+    error: errorText,
+    checkoutStage: res?.checkoutStage ?? null,
+    failedStep: res?.failedStep ?? null,
+    elapsedMs: res?.elapsedMs ?? null,
+    at: Date.now(),
+    lastSteps: Array.isArray(res?.lastSteps) ? res.lastSteps : null,
+    paymentTail: Array.isArray(res?.paymentTail) ? res.paymentTail : null,
+    attempt: attemptLabel,
+    raw: {
+      ok: res?.ok,
+      checkoutStage: res?.checkoutStage,
+      orderNumber: res?.orderNumber,
+      failedStep: res?.failedStep,
+      adapter: res?.adapter,
+      transport: res?.transport,
+    },
+  };
+}
+
+function logResultTail(job, result) {
+  if (result.ok) {
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "ok",
+      `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms (${result.attempt || "run"})`,
+    );
+    return;
+  }
+  emitLog(job.runId, job.task?.id, "err", `done FAIL (${result.attempt || "run"}) — ${result.error}`);
+  for (const s of (result.lastSteps || []).slice(-8)) {
+    emitLog(
+      job.runId,
+      job.task?.id,
+      s.ok ? "info" : "err",
+      `  step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
+    );
+  }
+}
+
+async function executeAttempt(job, overrides, attemptLabel) {
+  const built = buildPayload({ ...job, ...overrides });
+  if (!built.ok) {
+    return { ok: false, error: built.error, attempt: attemptLabel };
+  }
+  const payload = built.data;
+  // Unique taskId per attempt so progress doesn't collide.
+  payload.taskId = `${job.runId}-${attemptLabel}`;
+  const summary = summarizePayload(payload);
+
   emitLog(
     job.runId,
     job.task?.id,
     "info",
-    `dispatch → local executor | proxy=${summary.proxy} | placeOrder=${summary.placeOrder} | mode=${summary.kmartMode}`,
+    `attempt=${attemptLabel} → executor | proxy=${summary.proxy} | transport=${summary.transport} | mode=${summary.kmartMode} | placeOrder=${summary.placeOrder}`,
   );
   emitLog(job.runId, job.task?.id, "info", `pdp=${summary.storeUrl}`);
 
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
     try {
-      const p = await sidecar.progress(job.runId);
+      const p = await sidecar.progress(payload.taskId);
       if (p?.found && p.progress) {
         const line = stageLogLine(p.progress);
         const key = `${p.progress.stage}|${p.progress.step || ""}|${p.progress.detail || ""}`;
-        // Only emit when stage/step/detail changes — avoids flooding the log.
         if (key !== lastStageKey) {
           lastStageKey = key;
           emit({
@@ -221,7 +279,7 @@ async function runOne(job) {
             taskId: job.task?.id,
             runId: job.runId,
             progress: p.progress,
-            message: line,
+            message: `[${attemptLabel}] ${line}`,
           });
         }
       }
@@ -232,60 +290,51 @@ async function runOne(job) {
 
   try {
     const res = await sidecar.runTask(payload);
-    const errorText = res?.ok ? null : formatExecutorFailure(res);
-    // Main-process console (DevTools → Console / terminal that launched Electron)
-    console.log(
-      "[desktop:run]",
-      JSON.stringify({
-        runId: job.runId,
-        ok: res?.ok,
-        checkoutStage: res?.checkoutStage,
-        failedStep: res?.failedStep,
-        error: errorText,
-        lastSteps: res?.lastSteps ?? res?.steps?.slice?.(-8),
-        elapsedMs: res?.elapsedMs,
-        proxy: summary.proxy,
-      }),
-    );
-    const result = {
-      ok: Boolean(res?.ok),
-      taskId: job.task?.id,
-      runId: job.runId,
-      orderNumber: res?.orderNumber ?? null,
-      error: errorText,
-      checkoutStage: res?.checkoutStage ?? null,
-      failedStep: res?.failedStep ?? null,
-      elapsedMs: res?.elapsedMs ?? null,
-      at: Date.now(),
-      lastSteps: Array.isArray(res?.lastSteps) ? res.lastSteps : null,
-      paymentTail: Array.isArray(res?.paymentTail) ? res.paymentTail : null,
-      raw: {
-        ok: res?.ok,
-        checkoutStage: res?.checkoutStage,
-        orderNumber: res?.orderNumber,
-        failedStep: res?.failedStep,
-        adapter: res?.adapter,
-        transport: res?.transport,
-      },
-    };
+    return finishResult(job, res, summary, attemptLabel);
+  } finally {
+    clearInterval(progressTimer);
+  }
+}
 
-    if (result.ok) {
-      emitLog(
-        job.runId,
-        job.task?.id,
-        "ok",
-        `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms`,
-      );
-    } else {
-      emitLog(job.runId, job.task?.id, "err", `done FAIL — ${errorText}`);
-      const tail = result.lastSteps || [];
-      for (const s of tail.slice(-8)) {
+async function runOne(job) {
+  emit({
+    type: "job",
+    phase: "start",
+    taskId: job.task?.id,
+    runId: job.runId,
+    label: job.task?.label || job.task?.pdpUrl,
+  });
+
+  // Attempt ladder (desktop only). Same executor; different transport/mode.
+  // 1) undici (Fly-default path)
+  // 2) on Akamai WWW block → tls impersonation
+  // 3) still blocked → playwright warm handoff
+  const attempts = [{ label: "undici", overrides: { forceTls: false, transport: "undici", kmartMode: "current" } }];
+  if (akamaiRetry) {
+    attempts.push({ label: "tls", overrides: { forceTls: true, transport: "tls", kmartMode: "current" } });
+    attempts.push({ label: "playwright", overrides: { forceTls: false, transport: "undici", kmartMode: "playwright" } });
+  }
+
+  try {
+    let result = null;
+    for (let i = 0; i < attempts.length; i++) {
+      const { label, overrides } = attempts[i];
+      result = await executeAttempt(job, overrides, label);
+      logResultTail(job, result);
+      if (result.ok) break;
+      const more = i < attempts.length - 1;
+      if (more && isAkamaiWwwBlocked(result)) {
         emitLog(
           job.runId,
           job.task?.id,
-          s.ok ? "info" : "err",
-          `  step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
+          "warn",
+          `Akamai WWW block after ${label} — retrying with ${attempts[i + 1].label} (Windows/home egress often needs this; Fly undici may not)`,
         );
+        continue;
+      }
+      if (more && !isAkamaiWwwBlocked(result)) {
+        // Non-Akamai failure (card, etc.) — don't burn TLS/Playwright retries.
+        break;
       }
     }
 
@@ -302,8 +351,6 @@ async function runOne(job) {
     emitLog(job.runId, job.task?.id, "err", `executor threw: ${result.error}`);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
-  } finally {
-    clearInterval(progressTimer);
   }
 }
 
@@ -317,4 +364,5 @@ module.exports = {
   stop,
   buildPayload,
   normalizeProxy,
+  isAkamaiWwwBlocked,
 };

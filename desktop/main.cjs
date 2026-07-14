@@ -98,7 +98,10 @@ ipcMain.handle("desktop:get-state", () => snapshot());
 
 ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = { ...state.settings, ...patch };
-  runner.configure({ maxConcurrent: state.settings.maxConcurrent });
+  runner.configure({
+    maxConcurrent: state.settings.maxConcurrent,
+    akamaiRetry: state.settings.akamaiRetry !== false,
+  });
   persistSettings();
   return snapshot();
 });
@@ -149,7 +152,10 @@ ipcMain.handle("desktop:start-engine", async () => {
   });
   if (!started.ok) return { ...started, snapshot: snapshot() };
 
-  runner.configure({ maxConcurrent: state.settings.maxConcurrent });
+  runner.configure({
+    maxConcurrent: state.settings.maxConcurrent,
+    akamaiRetry: state.settings.akamaiRetry !== false,
+  });
   runner.start();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot() };
@@ -276,7 +282,10 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 app.whenReady().then(() => {
-  runner.configure({ maxConcurrent: state.settings.maxConcurrent });
+  runner.configure({
+    maxConcurrent: state.settings.maxConcurrent,
+    akamaiRetry: state.settings.akamaiRetry !== false,
+  });
   createWindow();
 });
 

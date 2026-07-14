@@ -166,6 +166,8 @@
         <label>Max concurrent checkouts</label>
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
+        <label class="check"><input id="setAkamaiRetry" type="checkbox" checked /> On Access Denied, retry TLS then Playwright (recommended on Windows)</label>
+        <p class="hint">Fly uses Linux undici + AU egress. Your PC often gets Akamai 403 on category/PDP even after sensors — retries use the same executor with Chrome TLS impersonation, then Playwright warm. A proxy only helps if egress IP actually changes (check the attempt log).</p>
         <div class="row">
           <button type="button" id="btnSaveSettings">Save settings</button>
           <button type="button" class="secondary" id="btnValidate">Validate API key</button>

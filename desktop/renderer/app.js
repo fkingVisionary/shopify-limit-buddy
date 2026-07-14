@@ -171,6 +171,7 @@ function renderSettings() {
   $("setHyper").value = s.hyperApiKey || "";
   $("setMax").value = s.maxConcurrent ?? 5;
   $("setPlaceOrder").checked = s.placeOrderDefault !== false;
+  $("setAkamaiRetry").checked = s.akamaiRetry !== false;
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
@@ -189,10 +190,12 @@ function applyState(next) {
 
 function appendLog(html, cls) {
   const log = $("liveLog");
+  // Chronological: oldest at top, newest at bottom (was reverse with prepend).
   const line = document.createElement("div");
   if (cls) line.className = cls;
   line.innerHTML = html;
-  log.prepend(line);
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
 }
 
 async function refresh() {
@@ -363,6 +366,7 @@ $("btnSaveSettings").onclick = async () => {
       hyperApiKey: $("setHyper").value.trim(),
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
+      akamaiRetry: $("setAkamaiRetry").checked,
     }),
   );
   appendLog("Settings saved", "muted");

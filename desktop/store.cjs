@@ -41,6 +41,8 @@ const DEFAULT_SETTINGS = {
   hyperApiKey: "", // BYO Hyper; empty = try control-plane provision later
   maxConcurrent: 5,
   placeOrderDefault: true,
+  /** On PDP/category Access Denied, retry TLS then Playwright (desktop vs Fly). */
+  akamaiRetry: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
 };
