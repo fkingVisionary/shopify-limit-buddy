@@ -63,7 +63,19 @@ function createWindow() {
 
 runner.setEmitter((evt) => send(evt));
 runner.setFinishedHandler((result) => {
-  state.db.results.unshift(result);
+  // Keep step tail for Results UI (same info the web dashboard surfaces).
+  state.db.results.unshift({
+    ok: result.ok,
+    taskId: result.taskId,
+    runId: result.runId,
+    orderNumber: result.orderNumber || null,
+    error: result.error || null,
+    checkoutStage: result.checkoutStage || null,
+    failedStep: result.failedStep || null,
+    elapsedMs: result.elapsedMs ?? null,
+    lastSteps: result.lastSteps || null,
+    at: result.at || Date.now(),
+  });
   state.db.results = state.db.results.slice(0, 200);
   // Mirror status onto task row
   if (result.taskId) {
@@ -72,6 +84,7 @@ runner.setFinishedHandler((result) => {
       t.lastStatus = result.ok ? (result.orderNumber ? "confirmed" : "ok") : "failed";
       t.lastError = result.error || null;
       t.lastOrderNumber = result.orderNumber || null;
+      t.lastCheckoutStage = result.checkoutStage || null;
       t.updatedAt = Date.now();
     }
   }
