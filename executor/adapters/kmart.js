@@ -376,8 +376,22 @@ export const kmartAdapter = {
     const tStep = async (name, fn) => {
       const t0 = Date.now();
       try {
+        if (typeof ctx.onProgress === "function") {
+          try {
+            ctx.onProgress(name);
+          } catch {
+            /* ignore progress errors */
+          }
+        }
         const out = await fn();
         steps.push({ step: name, ok: out.ok !== false, status: out.status ?? null, ms: Date.now() - t0, note: out.note });
+        if (typeof ctx.onProgress === "function") {
+          try {
+            ctx.onProgress(name, out?.note ? String(out.note).slice(0, 120) : null);
+          } catch {
+            /* ignore */
+          }
+        }
         return out;
       } catch (e) {
         const detail = (() => {
@@ -401,6 +415,13 @@ export const kmartAdapter = {
           ms: Date.now() - t0,
           note: detail,
         });
+        if (typeof ctx.onProgress === "function") {
+          try {
+            ctx.onProgress(name, detail.slice(0, 120));
+          } catch {
+            /* ignore */
+          }
+        }
         throw e;
       }
     };

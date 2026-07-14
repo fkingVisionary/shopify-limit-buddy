@@ -9,8 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows, HeartPulse } from "lucide-react";
-import { diagnoseExecutor, pingExecutor, runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
+import { diagnoseExecutor, pingExecutor, pollExecutorProgress, runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
 import { classifyProxy } from "@/lib/proxy-format";
+import {
+  WORKFLOW_STAGES,
+  furthestStageFromSteps,
+  stageFromCheckoutStage,
+  stageRank,
+  type LiveProgress,
+  type WorkflowStageId,
+} from "@/lib/kmart-workflow";
 
 export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
@@ -220,11 +228,105 @@ function extractCandidatesFromSteps(steps: Step[]): string[] {
   return Array.from(out);
 }
 
+function WorkflowPanel({
+  activeStage,
+  live,
+  running,
+  failed,
+  orderNumber,
+}: {
+  activeStage: WorkflowStageId;
+  live?: LiveProgress | null;
+  running?: boolean;
+  failed?: boolean;
+  orderNumber?: string | null;
+}) {
+  const activeRank = stageRank(activeStage);
+  const headline =
+    live?.label ||
+    WORKFLOW_STAGES.find((s) => s.id === activeStage)?.label ||
+    "Checkout";
+  const sub =
+    live?.hint ||
+    WORKFLOW_STAGES.find((s) => s.id === activeStage)?.hint ||
+    "";
+  const detail = live?.detail || live?.step || null;
+
+  return (
+    <Card className="mb-4 border-border/60 p-4">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <div className="text-sm font-medium">Checkout workflow</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            {running ? (
+              <>
+                Now: <span className="font-medium text-foreground">{headline}</span>
+                {sub ? <> — {sub}</> : null}
+              </>
+            ) : failed ? (
+              <>Stopped at <span className="font-medium text-destructive">{headline}</span></>
+            ) : orderNumber ? (
+              <>Order <code className="font-mono">{orderNumber}</code></>
+            ) : (
+              <>Reached <span className="font-medium text-foreground">{headline}</span></>
+            )}
+          </div>
+          {detail && (
+            <div className="mt-1 font-mono text-[10px] text-muted-foreground truncate max-w-[42rem]">
+              {detail}
+            </div>
+          )}
+        </div>
+        {running && (
+          <Badge variant="secondary" className="text-[10px]">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+            live
+          </Badge>
+        )}
+      </div>
+      <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {WORKFLOW_STAGES.filter((s) => s.id !== "done").map((s) => {
+          const rank = stageRank(s.id);
+          const isActive = s.id === activeStage && (running || failed);
+          const isDone = rank < activeRank || (activeStage === "done" && !failed) || (Boolean(orderNumber) && rank <= stageRank("order"));
+          return (
+            <li
+              key={s.id}
+              className={[
+                "rounded-md border px-3 py-2 text-xs transition-colors",
+                isActive
+                  ? "border-foreground/40 bg-foreground/5"
+                  : isDone
+                    ? "border-green-500/30 bg-green-500/5"
+                    : "border-border/40 bg-muted/20 text-muted-foreground",
+              ].join(" ")}
+            >
+              <div className="flex items-center gap-2 font-medium">
+                <span className={isDone && !isActive ? "text-green-600" : isActive ? "text-foreground" : ""}>
+                  {isActive && running ? "●" : isDone ? "✓" : "○"}
+                </span>
+                {s.label}
+              </div>
+              <div className="mt-0.5 text-[10px] text-muted-foreground">{s.hint}</div>
+            </li>
+          );
+        })}
+      </ol>
+      {activeStage === "threeds" && running && (
+        <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs">
+          Approve the payment in your <b>Revolut</b> app if a push appears. Keep this tab open.
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function KmartPage() {
   const runFn = useServerFn(runOnExecutor);
   const labFn = useServerFn(runAkamaiLab);
   const pingFn = useServerFn(pingExecutor);
   const diagnoseFn = useServerFn(diagnoseExecutor);
+  const progressFn = useServerFn(pollExecutorProgress);
 
   const [url, setUrl] = useState("");
   const [qty, setQty] = useState(1);
@@ -235,6 +337,8 @@ function KmartPage() {
   const [labRunning, setLabRunning] = useState(false);
   const [diagRunning, setDiagRunning] = useState(false);
   const [result, setResult] = useState<RunResult | null>(null);
+  const [liveProgress, setLiveProgress] = useState<LiveProgress | null>(null);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [labResult, setLabResult] = useState<LabResult | null>(null);
   const [diagResult, setDiagResult] = useState<DiagnoseResult | null>(null);
   const [healthPing, setHealthPing] = useState<{ ok: boolean; body?: any; error?: string } | null>(null);
@@ -312,8 +416,25 @@ function KmartPage() {
   const handleRun = async () => {
     setRunning(true);
     setResult(null);
+    setLiveProgress({ stage: "warm", label: "Warming session", hint: "Starting executor…", running: true, done: false });
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
     try {
       const taskId = `kmart-${Date.now().toString(36)}`;
+      setActiveTaskId(taskId);
+      pollTimer = setInterval(() => {
+        void (async () => {
+          try {
+            const p = (await progressFn({ data: { taskId } })) as {
+              ok?: boolean;
+              progress?: LiveProgress | null;
+            };
+            if (p?.progress) setLiveProgress(p.progress);
+          } catch {
+            /* ignore poll errors while run continues */
+          }
+        })();
+      }, 1500);
+
       const proxyRaw = proxy.trim();
       const classified = proxyRaw ? classifyProxy(proxyRaw) : null;
       if (classified?.kind === "invalid") {
@@ -397,6 +518,14 @@ function KmartPage() {
       })) as RunResult;
       setResult(res);
 
+      // Final progress snapshot from executor (covers race where last poll missed done).
+      try {
+        const p = (await progressFn({ data: { taskId } })) as { progress?: LiveProgress | null };
+        if (p?.progress) setLiveProgress(p.progress);
+      } catch {
+        /* ignore */
+      }
+
       // Auto-capture: merge any new op-name candidates into storage.
       const steps = res?.result?.steps ?? [];
       const found = extractCandidatesFromSteps(steps);
@@ -424,6 +553,7 @@ function KmartPage() {
     } catch (e) {
       setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
     } finally {
+      if (pollTimer) clearInterval(pollTimer);
       setRunning(false);
     }
   };
@@ -506,6 +636,19 @@ function KmartPage() {
   };
 
   const steps = result?.result?.steps ?? [];
+  const workflowStage: WorkflowStageId = (() => {
+    if (running && liveProgress?.stage) {
+      const id = liveProgress.stage as WorkflowStageId;
+      if (WORKFLOW_STAGES.some((s) => s.id === id)) return id;
+    }
+    if (result?.result?.orderNumber) return "done";
+    if (result?.result?.checkoutStage) return stageFromCheckoutStage(result.result.checkoutStage);
+    if (steps.length) return furthestStageFromSteps(steps);
+    if (liveProgress?.stage && WORKFLOW_STAGES.some((s) => s.id === liveProgress.stage)) {
+      return liveProgress.stage as WorkflowStageId;
+    }
+    return "warm";
+  })();
   const labTrace = labResult?.result?.trace;
   const labDiff = labResult?.result?.diff;
   const saveAkamaiBaseline = () => {
@@ -721,7 +864,13 @@ function KmartPage() {
               </Button>
               <Button onClick={handleRun} disabled={!canRun || (placeOrder && !cardReady)}>
                 {running ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
-                {running ? "Running…" : placeOrder ? "Run — real submit" : "Run — dry run"}
+                {running
+                  ? liveProgress?.label
+                    ? `${liveProgress.label}…`
+                    : "Running…"
+                  : placeOrder
+                    ? "Run — real submit"
+                    : "Run — dry run"}
               </Button>
               {placeOrder && cardReady && (
                 <Badge variant="secondary" className="text-[10px]">
@@ -741,6 +890,19 @@ function KmartPage() {
             </div>
           </div>
         </Card>
+
+        {(running || result || liveProgress) && (
+          <WorkflowPanel
+            activeStage={workflowStage}
+            live={liveProgress}
+            running={running}
+            failed={Boolean(result && !result.result?.ok && !result.result?.orderNumber)}
+            orderNumber={result?.result?.orderNumber ?? liveProgress?.orderNumber ?? null}
+          />
+        )}
+        {activeTaskId && running && (
+          <div className="mb-3 font-mono text-[10px] text-muted-foreground">task {activeTaskId}</div>
+        )}
 
         {/* Executor deep health */}
         {(diagResult || healthPing) && (
@@ -1195,6 +1357,7 @@ function KmartPage() {
                   {[
                     "paydock_tokenize",
                     "create_3ds_token",
+                    "paydock_3ds_widget",
                     "paydock_3ds_init",
                     "paydock_3ds_method",
                     "paydock_3ds_handle",

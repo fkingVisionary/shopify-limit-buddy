@@ -125,15 +125,24 @@ async function waitForAbck(context, { timeoutMs = 25_000 } = {}) {
 }
 
 const now = () => Date.now();
-function step(steps, name, ok, note, startedAt = null) {
+function recordStep(steps, name, ok, note, startedAt = null, onProgress = null) {
   const ms = startedAt != null ? now() - startedAt : undefined;
   steps.push({ step: name, ok, ...(ms != null ? { ms } : {}), note });
+  if (typeof onProgress === "function") {
+    try {
+      onProgress(name, note ? String(note).slice(0, 120) : null);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 async function run(task, ctx) {
   // Share steps with checkout.js's catch handler so errors don't lose progress.
   const steps = ctx?.steps ?? [];
   if (ctx && !ctx.steps) ctx.steps = steps;
+  const push = (name, ok, note, startedAt = null) =>
+    recordStep(steps, name, ok, note, startedAt, ctx?.onProgress);
   const t0 = now();
   const dryRun = task.dryRun !== false;
   const storeUrl = String(task.storeUrl || "").replace(/\/$/, "");
@@ -142,7 +151,7 @@ async function run(task, ctx) {
 
   const apiKey = process.env.HYPER_API_KEY;
   if (!apiKey) {
-    step(steps, "antibot_misconfigured", false, "HYPER_API_KEY missing on executor");
+    push("antibot_misconfigured", false, "HYPER_API_KEY missing on executor");
     return { ok: false, steps, finalUrl: storeUrl, cookies: {}, dryRun };
   }
 
@@ -150,13 +159,13 @@ async function run(task, ctx) {
   try {
     let s0 = now();
     const { playwright, hyperPw, hyperSdk } = await loadDeps();
-    step(steps, "deps_loaded", true, "playwright + hyper-sdk-playwright ready", s0);
+    push("deps_loaded", true, "playwright + hyper-sdk-playwright ready", s0);
 
     const rawLen = task.proxy ? String(task.proxy).length : 0;
     const proxy = parseProxy(task.proxy);
-    step(steps, "proxy_config", Boolean(proxy) || rawLen === 0, maskProxy(proxy, rawLen));
+    push("proxy_config", Boolean(proxy) || rawLen === 0, maskProxy(proxy, rawLen));
     if (rawLen > 0 && !proxy) {
-      step(steps, "proxy_parse", false, `unrecognized proxy string (len=${rawLen})`);
+      push("proxy_parse", false, `unrecognized proxy string (len=${rawLen})`);
       return { ok: false, steps, finalUrl: storeUrl, cookies: {}, dryRun };
     }
 
@@ -175,7 +184,7 @@ async function run(task, ctx) {
     try {
       browser = await playwright.chromium.launch({ channel: "chrome", ...launchOpts });
       launchChannel = "chrome";
-      step(steps, "browser_launch", true, `channel=chrome proxy=${Boolean(proxy)}`, s0);
+      push("browser_launch", true, `channel=chrome proxy=${Boolean(proxy)}`, s0);
     } catch (e) {
       browser = await playwright.chromium.launch(launchOpts);
       launchChannel = "bundled";
@@ -190,7 +199,7 @@ async function run(task, ctx) {
 
     const browserVersion = browser.version();
     const userAgent = chromeUaFromVersion(browserVersion);
-    step(steps, "browser_ua", true, `version=${browserVersion} ua=${userAgent.slice(0, 90)} channel=${launchChannel}`);
+    push("browser_ua", true, `version=${browserVersion} ua=${userAgent.slice(0, 90)} channel=${launchChannel}`);
 
     const session = new hyperSdk.Session(apiKey);
     let lastCookies = {};
@@ -220,9 +229,9 @@ async function run(task, ctx) {
         const { ip, source } = await fetchEgressIp(ipPage, apiKey);
         ipAddress = ip;
         await ipPage.close();
-        step(steps, `${attemptTag}:egress_ip`, true, `${ipAddress} via=${source}`, s0);
+        push( `${attemptTag}:egress_ip`, true, `${ipAddress} via=${source}`, s0);
       } catch (e) {
-        step(steps, `${attemptTag}:egress_ip`, false, e?.message?.slice(0, 120) ?? "failed", s0);
+        push( `${attemptTag}:egress_ip`, false, e?.message?.slice(0, 120) ?? "failed", s0);
       }
 
       const page = await context.newPage();
@@ -248,7 +257,7 @@ async function run(task, ctx) {
 
       s0 = now();
       await Promise.all(handlers.map(({ handler }) => handler.initialize(page, context)));
-      step(steps, `${attemptTag}:handlers`, true, handlers.map((h) => h.name).join("+"), s0);
+      push( `${attemptTag}:handlers`, true, handlers.map((h) => h.name).join("+"), s0);
 
       s0 = now();
       let homeStatus = 0;
@@ -257,11 +266,11 @@ async function run(task, ctx) {
         const homeRes = await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
         homeStatus = homeRes?.status() ?? 0;
         homeHtml = await page.content().catch(() => "");
-        step(steps, `${attemptTag}:warm_home`, homeStatus > 0 && homeStatus < 400, `status=${homeStatus}`, s0);
+        push( `${attemptTag}:warm_home`, homeStatus > 0 && homeStatus < 400, `status=${homeStatus}`, s0);
       } catch (e) {
         const msg = e?.message?.slice(0, 200) ?? "goto failed";
         const connClosed = /ERR_CONNECTION_CLOSED|ERR_PROXY|ERR_TUNNEL|ECONNRESET|ECONNREFUSED/i.test(msg);
-        step(steps, `${attemptTag}:warm_home`, false, msg, s0);
+        push( `${attemptTag}:warm_home`, false, msg, s0);
         if (connClosed) {
           step(
             steps,
@@ -293,7 +302,7 @@ async function run(task, ctx) {
           `IP ${ipAddress} blocked before Bot Manager (no sensor script for Hyper). cookies=[${Object.keys(lastCookies).join(",")}] markers=${markers.join(",") || "none"} — rotating context`,
         );
         lastFailureKind = "edge_deny";
-        if (protectionEvents.length) step(steps, `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
+        if (protectionEvents.length) push( `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
         await context.close().catch(() => {});
         continue;
       }
@@ -311,16 +320,16 @@ async function run(task, ctx) {
           : `_abck=${(lastCookies._abck || "").slice(0, 48)}… bm=${hasBotManagerSeed(lastCookies)}`,
         s0,
       );
-      if (protectionEvents.length) step(steps, `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
+      if (protectionEvents.length) push( `${attemptTag}:protection_events`, true, protectionEvents.join(" | "));
 
       if (!abckWait.ok) {
-        step(steps, `${attemptTag}:sensor_unsolved`, false, "Hyper handlers installed but _abck never reached ~0~ — retrying fresh context");
+        push( `${attemptTag}:sensor_unsolved`, false, "Hyper handlers installed but _abck never reached ~0~ — retrying fresh context");
         await context.close().catch(() => {});
         continue;
       }
 
       successContext = { context, page, handlers, ipAddress, protectionEvents };
-      step(steps, "warm_home_ok", true, `attempt=${attempt}/${maxEdgeRetries} ip=${ipAddress}`);
+      push("warm_home_ok", true, `attempt=${attempt}/${maxEdgeRetries} ip=${ipAddress}`);
       break;
     }
 
@@ -329,7 +338,7 @@ async function run(task, ctx) {
         lastFailureKind === "proxy_connect"
           ? `all ${maxEdgeRetries} Playwright attempts failed proxy CONNECT (ERR_CONNECTION_CLOSED). Chrome cannot tunnel this proxy — sticky HTTPS residential required, or leave Playwright off and use the HTTP lane (direct Fly egress currently clears cart_get/create).`
           : `all ${maxEdgeRetries} Playwright attempts hard-denied at WWW edge (Hyper scriptUrl never captured). Use a sticky AU residential session, or leave Playwright off and keep the HTTP lane.`;
-      step(steps, "warm_home", false, proxyHint);
+      push("warm_home", false, proxyHint);
       return {
         ok: false,
         steps,
@@ -357,15 +366,15 @@ async function run(task, ctx) {
     try {
       const pdpRes = await page.goto(pdpUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
       pdpStatus = pdpRes?.status() ?? 0;
-      step(steps, "pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()} ip=${ipAddress}`, s0);
+      push("pdp_get", pdpStatus < 400, `status=${pdpStatus} url=${page.url()} ip=${ipAddress}`, s0);
       if (pdpStatus >= 400) {
         const html = await page.content().catch(() => "");
         const markers = ["akamai", "_abck", "bm_sz", "sbsd", "sec-cpt", "Access Denied"]
           .filter((m) => html.toLowerCase().includes(m.toLowerCase()));
-        step(steps, "pdp_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
+        push("pdp_block", false, markers.length ? `markers=${markers.join(",")}` : html.replace(/\s+/g, " ").slice(0, 140));
       }
     } catch (e) {
-      step(steps, "pdp_get", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+      push("pdp_get", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
       return {
         ok: false,
         steps,
@@ -383,7 +392,7 @@ async function run(task, ctx) {
     await waitForAbck(context, { timeoutMs: 12_000 });
 
     const sku = extractSkuFromUrl(page.url()) ?? extractSkuFromUrl(pdpUrl);
-    step(steps, "pdp_sku", Boolean(sku), sku ?? "sku not found in URL");
+    push("pdp_sku", Boolean(sku), sku ?? "sku not found in URL");
 
     // 3) Add-to-cart in page context so api GraphQL runs inside Chromium.
     let cartOk = false;
@@ -400,9 +409,9 @@ async function run(task, ctx) {
       await btn.click();
       await page.waitForTimeout(2500);
       cartOk = true;
-      step(steps, "cart_add_click", true, "clicked add-to-cart", s0);
+      push("cart_add_click", true, "clicked add-to-cart", s0);
     } catch (e) {
-      step(steps, "cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed", s0);
+      push("cart_add_click", false, e?.message?.slice(0, 160) ?? "click failed", s0);
     }
 
     // 4) Checkout warm in browser.
@@ -411,9 +420,9 @@ async function run(task, ctx) {
       try {
         const coRes = await page.goto(`${origin}/checkout`, { waitUntil: "domcontentloaded", timeout: 60_000 });
         const coStatus = coRes?.status() ?? 0;
-        step(steps, "checkout_page", coStatus < 400, `status=${coStatus} url=${page.url()}`, s0);
+        push("checkout_page", coStatus < 400, `status=${coStatus} url=${page.url()}`, s0);
       } catch (e) {
-        step(steps, "checkout_page", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
+        push("checkout_page", false, e?.message?.slice(0, 200) ?? "goto failed", s0);
       }
     }
 
@@ -421,7 +430,7 @@ async function run(task, ctx) {
     const cookies = cookieMap(await context.cookies());
     const abck = cookies._abck || "";
     const abckValid = /~0~/.test(abck);
-    step(steps, "abck_check", abckValid, abckValid ? "_abck valid (~0~)" : `_abck=${abck.slice(0, 60)}…`);
+    push("abck_check", abckValid, abckValid ? "_abck valid (~0~)" : `_abck=${abck.slice(0, 60)}…`);
 
     const hyperStatus = Object.fromEntries(handlers.map(({ name, handler }) => [name, handler.getStatus?.() ?? null]));
 
@@ -435,7 +444,7 @@ async function run(task, ctx) {
       }
       browser = null;
       s0 = now();
-      step(steps, "http_handoff_start", true, "closing browser; resuming GraphQL checkout via kmart HTTP adapter");
+      push("http_handoff_start", true, "closing browser; resuming GraphQL checkout via kmart HTTP adapter");
       try {
         const { kmartAdapter } = await import("./kmart.js");
         const cont = await kmartAdapter.run(
@@ -448,7 +457,7 @@ async function run(task, ctx) {
           },
           ctx,
         );
-        step(steps, "http_handoff", cont?.ok !== false, `ok=${Boolean(cont?.ok)} order=${cont?.orderNumber ?? "null"}`, s0);
+        push("http_handoff", cont?.ok !== false, `ok=${Boolean(cont?.ok)} order=${cont?.orderNumber ?? "null"}`, s0);
         return {
           ok: Boolean(cont?.ok),
           steps,
@@ -470,10 +479,10 @@ async function run(task, ctx) {
           },
         };
       } catch (e) {
-        step(steps, "http_handoff", false, e?.message?.slice(0, 200) ?? "handoff failed", s0);
+        push("http_handoff", false, e?.message?.slice(0, 200) ?? "handoff failed", s0);
       }
     } else if (task.httpHandoff !== false && cartOk && !abckValid) {
-      step(steps, "http_handoff", false, "skipped: _abck not valid (~0~) — fix proxy/Akamai before GraphQL resume");
+      push("http_handoff", false, "skipped: _abck not valid (~0~) — fix proxy/Akamai before GraphQL resume");
     }
 
     return {

@@ -8,12 +8,52 @@
 import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
+import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
 
 const now = () => Date.now();
 
 function step(steps, name, ok, status, ms, note) {
   steps.push({ step: name, ok, status, ms, note });
 }
+
+function wireProgress(ctx, taskId) {
+  let lastRank = -1;
+  ctx.onProgress = (stageOrStep, detail = null) => {
+    const known = WORKFLOW_STAGE_IDS.has(stageOrStep) ? stageOrStep : stageForStep(stageOrStep);
+    if (!known) return;
+    const rank = stageRank(known);
+    if (rank < lastRank) return;
+    lastRank = rank;
+    const meta = stageMeta(known);
+    setTaskProgress(taskId, {
+      stage: known,
+      label: meta.label,
+      hint: meta.hint,
+      detail: detail || null,
+      step: typeof stageOrStep === "string" && stageOrStep !== known ? stageOrStep : null,
+      running: true,
+      done: false,
+    });
+  };
+  setTaskProgress(taskId, {
+    stage: "warm",
+    label: stageMeta("warm").label,
+    hint: stageMeta("warm").hint,
+    running: true,
+    done: false,
+  });
+}
+
+const WORKFLOW_STAGE_IDS = new Set([
+  "warm",
+  "product",
+  "cart",
+  "details",
+  "tokenize",
+  "threeds",
+  "order",
+  "done",
+]);
 
 export async function runCheckout(task) {
   const t0 = now();
@@ -31,6 +71,7 @@ export async function runCheckout(task) {
   const ctx = { dispatcher, jar };
 
   if (dispatcher.proxyParseFailed) {
+    markTaskDone(task.taskId, { ok: false, detail: "proxy_parse" });
     return {
       ok: false,
       taskId: task.taskId,
@@ -40,6 +81,7 @@ export async function runCheckout(task) {
       elapsedMs: now() - t0,
       transport: dispatcher.transport,
       steps: [{ step: "proxy_parse", ok: false, note: `rawLen=${dispatcher.rawProxyLen}` }],
+      checkoutStage: "pre_cart",
     };
   }
 
@@ -58,8 +100,14 @@ export async function runCheckout(task) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.
     ctx.steps = [];
+    wireProgress(ctx, task.taskId);
     try {
       const out = await adapter.run(task, ctx);
+      markTaskDone(task.taskId, {
+        ok: Boolean(out.ok),
+        orderNumber: out.orderNumber ?? null,
+        detail: out.checkoutStage ?? null,
+      });
       return {
         ok: out.ok,
         taskId: task.taskId,
@@ -71,8 +119,18 @@ export async function runCheckout(task) {
         finalUrl: out.finalUrl,
         cookies: out.cookies,
         dryRun: Boolean(out.dryRun ?? task.dryRun),
+        // Pass through payment/order fields — previously dropped here, which
+        // made successful Revolut charges look like empty UI failures.
+        checkoutStage: out.checkoutStage ?? null,
+        paymentSummary: out.paymentSummary ?? null,
+        paymentTail: out.paymentTail ?? null,
+        lastSteps: out.lastSteps ?? null,
+        orderNumber: out.orderNumber ?? null,
+        orderId: out.orderId ?? null,
+        paymentStatus: out.paymentStatus ?? null,
       };
     } catch (e) {
+      markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
       return {
         ok: false,
         taskId: task.taskId,
