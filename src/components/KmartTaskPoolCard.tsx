@@ -10,10 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Play, Square, Store } from "lucide-react";
 import { pollExecutorProgress, runOnExecutor } from "@/lib/executor.functions";
-import {
-  WORKFLOW_STAGES,
-  type LiveProgress,
-} from "@/lib/kmart-workflow";
+import type { LiveProgress } from "@/lib/kmart-workflow";
 import {
   buildKmartExecutorPayload,
   isValidKmartPdpUrl,
@@ -256,14 +253,13 @@ export function KmartTaskPoolCard({
     <Card className="p-3">
       <div className="flex items-center gap-1.5 text-sm font-medium">
         <Store className="h-4 w-4" />
-        Kmart AU task pool
+        Kmart task pool
         <Badge variant="outline" className="text-[10px]">
-          executor
+          advanced
         </Badge>
       </div>
       <p className="mt-1 text-[11px] text-muted-foreground">
-        Mass-run the proven Fly Kmart lane (Canvas3ds / Revolut). Prefer empty proxy for GraphQL cart.
-        Stages: {WORKFLOW_STAGES.filter((s) => s.id !== "done").map((s) => s.label).join(" → ")}.
+        Internal mass runner for Kmart. Public Create Tasks already places real orders — use this only for diagnostics (dry-run / Playwright).
       </p>
 
       <div className="mt-3 space-y-2">
