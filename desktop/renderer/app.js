@@ -145,11 +145,19 @@ function renderResults() {
   el.innerHTML = rows
     .map((r) => {
       const cls = r.ok ? "ok" : "err";
+      const stepTail = Array.isArray(r.lastSteps)
+        ? r.lastSteps
+            .filter((s) => !s.ok)
+            .slice(-3)
+            .map((s) => `${s.step}: ${s.note || ""}`)
+            .join(" · ")
+        : "";
       return `<div class="item">
         <div>
           <span class="badge ${cls}">${r.ok ? "OK" : "FAIL"}</span>
           <strong>${esc(r.runId || r.taskId)}</strong>
           <div class="meta">${r.orderNumber ? `Order ${esc(r.orderNumber)}` : esc(r.error || r.checkoutStage || "")}${r.elapsedMs != null ? ` · ${r.elapsedMs}ms` : ""}</div>
+          ${stepTail ? `<div class="meta">${esc(stepTail)}</div>` : ""}
         </div>
       </div>`;
     })
@@ -403,16 +411,30 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "job") {
     if (evt.phase === "start") {
       appendLog(`START ${esc(evt.runId)} — ${esc(evt.label || "")}`, "muted");
+      if (evt.summary) {
+        appendLog(
+          `${esc(evt.runId)} payload proxy=${esc(evt.summary.proxy)} placeOrder=${evt.summary.placeOrder} card=${evt.summary.hasCard}`,
+          "muted",
+        );
+      }
+    } else if (evt.phase === "log") {
+      const cls = evt.level === "err" ? "err" : evt.level === "ok" ? "ok" : "muted";
+      appendLog(`${esc(evt.runId)} ${esc(evt.message || "")}`, cls);
     } else if (evt.phase === "progress" && evt.progress) {
-      appendLog(
-        `${esc(evt.runId)} · ${esc(evt.progress.label || evt.progress.stage)}${evt.progress.hint ? " — " + esc(evt.progress.hint) : ""}`,
-        "muted",
-      );
+      // Prefer runner-built message (includes step + detail); fall back to label/hint.
+      const line =
+        evt.message ||
+        `${evt.progress.label || evt.progress.stage}${evt.progress.step ? " [" + evt.progress.step + "]" : ""}${
+          evt.progress.detail || evt.progress.hint ? " — " + (evt.progress.detail || evt.progress.hint) : ""
+        }`;
+      appendLog(`${esc(evt.runId)} · ${esc(line)}`, "muted");
     } else if (evt.phase === "done") {
       appendLog(
         evt.ok
-          ? `OK ${esc(evt.runId)}${evt.orderNumber ? " order " + esc(evt.orderNumber) : ""}`
-          : `FAIL ${esc(evt.runId)} — ${esc(evt.error || "")}`,
+          ? `OK ${esc(evt.runId)}${evt.orderNumber ? " order " + esc(evt.orderNumber) : ""}${
+              evt.checkoutStage ? " · " + esc(evt.checkoutStage) : ""
+            }`
+          : `FAIL ${esc(evt.runId)} — ${esc(evt.error || "checkout failed")}`,
         evt.ok ? "ok" : "err",
       );
       refresh();
