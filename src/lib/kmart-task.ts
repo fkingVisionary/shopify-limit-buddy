@@ -224,6 +224,7 @@ export function mapKmartRunToTaskPatch(res: {
     orderId?: string | null;
     paymentStatus?: string | null;
     checkoutStage?: string | null;
+    paymentSummary?: Record<string, unknown> | null;
     steps?: Array<{ step: string; ok: boolean; status?: number | null; ms?: number; note?: string }>;
     finalUrl?: string;
     error?: string;
@@ -238,6 +239,9 @@ export function mapKmartRunToTaskPatch(res: {
   browserlessElapsedMs?: number;
   message: string;
   running: boolean;
+  /** True when bank/user rejected 3DS or issuer declined the charge. */
+  declined?: boolean;
+  outcome: "confirmed" | "dry_run" | "declined" | "failed";
 } {
   const body = res.result;
   const elapsed = res.elapsedMs ?? 0;
@@ -250,6 +254,24 @@ export function mapKmartRunToTaskPatch(res: {
       }))
     : undefined;
 
+  const textBlob = [
+    res.error,
+    body?.error,
+    body?.failedStep,
+    body?.checkoutStage,
+    body?.paymentStatus,
+    JSON.stringify(body?.paymentSummary ?? {}),
+    ...(body?.steps ?? []).map((s) => `${s.step} ${s.note ?? ""}`),
+    ...(body?.paymentTail ?? []).map((s) => `${s.step} ${s.note ?? ""}`),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  const declined = /chargeauthreject|auth.?reject|payment declined|declined|user.?cancel|cancelled|canceled|reject(?:ed)? the payment|3ds (?:reject|fail)|token_inactive|invalid_transaction/.test(
+    textBlob,
+  );
+
   if (res.error && !body) {
     return {
       status: "failed",
@@ -257,6 +279,8 @@ export function mapKmartRunToTaskPatch(res: {
       browserlessElapsedMs: elapsed,
       steps: stepsArr,
       message: res.error,
+      declined,
+      outcome: declined ? "declined" : "failed",
     };
   }
 
@@ -270,6 +294,8 @@ export function mapKmartRunToTaskPatch(res: {
       browserlessElapsedMs: elapsed,
       running: false,
       message: `Order ${orderNumber} · ${Math.round(elapsed / 1000)}s`,
+      declined: false,
+      outcome: "confirmed",
     };
   }
 
@@ -282,6 +308,8 @@ export function mapKmartRunToTaskPatch(res: {
       browserlessElapsedMs: elapsed,
       running: false,
       message: `Kmart dry-run OK (${body.checkoutStage ?? "done"}) · ${Math.round(elapsed / 1000)}s`,
+      declined: false,
+      outcome: "dry_run",
     };
   }
 
@@ -294,18 +322,24 @@ export function mapKmartRunToTaskPatch(res: {
       browserlessElapsedMs: elapsed,
       running: false,
       message: `Payment captured · ${Math.round(elapsed / 1000)}s`,
+      declined: false,
+      outcome: "confirmed",
     };
   }
 
   const failedAt = body?.failedStep ?? body?.checkoutStage ?? "kmart";
-  const errText = body?.error || res.error || "Kmart checkout failed";
+  const errText = body?.error || res.error || (declined ? "Payment declined or 3DS rejected" : "Kmart checkout failed");
   return {
     status: "failed",
     finalUrl: body?.finalUrl,
     steps: stepsArr,
     browserlessElapsedMs: elapsed,
     running: false,
-    message: `Failed at ${failedAt}: ${errText}`,
+    declined,
+    outcome: declined ? "declined" : "failed",
+    message: declined
+      ? `Payment declined / rejected · ${errText} · ${Math.round(elapsed / 1000)}s`
+      : `Failed at ${failedAt}: ${errText}`,
   };
 }
 

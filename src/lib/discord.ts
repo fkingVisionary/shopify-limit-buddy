@@ -79,7 +79,7 @@ const BRAND_GOLD = 0xEAD24A;
 const EVENT_META: Record<NotifyEvent, { title: string; subtitle: string; color: number }> = {
   in_stock:       { title: "Stock Detected",       subtitle: "Variant came in stock.",          color: 0x3B82F6 },
   checkout_ready: { title: "Checkout Ready",       subtitle: "Cart prepared, awaiting submit.", color: 0xF59E0B },
-  confirmed:      { title: "Successful Checkout!", subtitle: "Your Webhook works!",             color: BRAND_GOLD },
+  confirmed:      { title: "Successful Checkout!", subtitle: "Order confirmed.",                color: BRAND_GOLD },
   failed:         { title: "Checkout Failed",      subtitle: "Task could not complete.",        color: 0xEF4444 },
 };
 
@@ -113,6 +113,11 @@ function v(value: string | number | null | undefined): string {
 
 function buildEmbed(event: NotifyEvent, t: NotifyTaskShape) {
   const meta = EVENT_META[event];
+  const declined = event === "failed" && /declin|reject/i.test(t.message ?? "");
+  const title = declined ? "Payment Declined" : meta.title;
+  const subtitle = declined
+    ? "Bank/app rejected the payment — task stopped."
+    : meta.subtitle;
   const product = t.productTitle ?? t.input;
   const storeLink = t.storeUrl
     ? (t.storeUrl.startsWith("http") ? t.storeUrl : `https://${t.storeUrl}`)
@@ -146,10 +151,10 @@ function buildEmbed(event: NotifyEvent, t: NotifyTaskShape) {
   return {
     // `url` on the title makes Discord render the title in its accent blue
     // (matches the SecuredBot reference). Color bar still uses `color`.
-    title: meta.title,
+    title,
     url: storeLink,
-    description: meta.subtitle,
-    color: meta.color,
+    description: subtitle,
+    color: declined ? 0xF97316 : meta.color,
     fields,
     footer: {
       text: `${BOT_NAME} — ${BOT_VERSION}${t.groupName ? ` • ${t.groupName}` : ""}`,
