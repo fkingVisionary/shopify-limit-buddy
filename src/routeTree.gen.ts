@@ -20,6 +20,8 @@ import { Route as ApiPublicExecTestRouteImport } from './routes/api/public/exec-
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
 import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
 import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/runner.pair'
+import { Route as ApiPublicDesktopValidateKeyRouteImport } from './routes/api/public/desktop.validate-key'
+import { Route as ApiPublicDesktopHyperProvisionRouteImport } from './routes/api/public/desktop.hyper-provision'
 
 const PairRoute = PairRouteImport.update({
   id: '/pair',
@@ -75,6 +77,18 @@ const ApiPublicRunnerPairRoute = ApiPublicRunnerPairRouteImport.update({
   path: '/api/public/runner/pair',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiPublicDesktopValidateKeyRoute =
+  ApiPublicDesktopValidateKeyRouteImport.update({
+    id: '/api/public/desktop/validate-key',
+    path: '/api/public/desktop/validate-key',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const ApiPublicDesktopHyperProvisionRoute =
+  ApiPublicDesktopHyperProvisionRouteImport.update({
+    id: '/api/public/desktop/hyper-provision',
+    path: '/api/public/desktop/hyper-provision',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof PairedIndexRoute
@@ -87,6 +101,8 @@ export interface FileRoutesByFullPath {
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRoutesByTo {
   '/harvey': typeof HarveyRoute
@@ -99,6 +115,8 @@ export interface FileRoutesByTo {
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -113,6 +131,8 @@ export interface FileRoutesById {
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -127,6 +147,8 @@ export interface FileRouteTypes {
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
+    | '/api/public/desktop/validate-key'
+    | '/api/public/desktop/hyper-provision'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/harvey'
@@ -139,6 +161,8 @@ export interface FileRouteTypes {
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
+    | '/api/public/desktop/validate-key'
+    | '/api/public/desktop/hyper-provision'
   id:
     | '__root__'
     | '/_paired'
@@ -152,6 +176,8 @@ export interface FileRouteTypes {
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
+    | '/api/public/desktop/validate-key'
+    | '/api/public/desktop/hyper-provision'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -163,6 +189,8 @@ export interface RootRouteChildren {
   ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
   ApiPublicRunnerPollRoute: typeof ApiPublicRunnerPollRoute
   ApiPublicRunnerReportRoute: typeof ApiPublicRunnerReportRoute
+  ApiPublicDesktopValidateKeyRoute: typeof ApiPublicDesktopValidateKeyRoute
+  ApiPublicDesktopHyperProvisionRoute: typeof ApiPublicDesktopHyperProvisionRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -244,6 +272,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicRunnerPairRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/desktop/validate-key': {
+      id: '/api/public/desktop/validate-key'
+      path: '/api/public/desktop/validate-key'
+      fullPath: '/api/public/desktop/validate-key'
+      preLoaderRoute: typeof ApiPublicDesktopValidateKeyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/desktop/hyper-provision': {
+      id: '/api/public/desktop/hyper-provision'
+      path: '/api/public/desktop/hyper-provision'
+      fullPath: '/api/public/desktop/hyper-provision'
+      preLoaderRoute: typeof ApiPublicDesktopHyperProvisionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -271,6 +313,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
   ApiPublicRunnerPollRoute: ApiPublicRunnerPollRoute,
   ApiPublicRunnerReportRoute: ApiPublicRunnerReportRoute,
+  ApiPublicDesktopValidateKeyRoute: ApiPublicDesktopValidateKeyRoute,
+  ApiPublicDesktopHyperProvisionRoute: ApiPublicDesktopHyperProvisionRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
