@@ -18,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   AlertCircle, Settings, Plus, Trash2, Play, Square,
   Server, Store, Users, ListChecks, X, HelpCircle, Info, ChevronLeft, ChevronRight,
@@ -35,6 +36,23 @@ import { runCheckoutCompatTest, type CompatReport } from "@/lib/checkout-selftes
 
 import { classifyProxy } from "@/lib/proxy-format";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
+import { KmartTaskPoolCard } from "@/components/KmartTaskPoolCard";
+import { pollExecutorProgress, runOnExecutor } from "@/lib/executor.functions";
+import {
+  KMART_STORE_ID,
+  KMART_STORE_NAME,
+  KMART_STORE_URL,
+  buildKmartExecutorPayload,
+  isKmartHost,
+  isKmartStoreId,
+  isValidKmartPdpUrl,
+  kmartProductLabel,
+  loadStoredKmartMutation,
+  mapKmartRunToTaskPatch,
+  normalizeKmartPdpUrl,
+  progressMessage,
+} from "@/lib/kmart-task";
+import type { LiveProgress } from "@/lib/kmart-workflow";
 import { DevicesPanel } from "@/components/DevicesPanel";
 import { JobsPanel } from "@/components/JobsPanel";
 import { AnalyticsPanel } from "@/components/AnalyticsPanel";
@@ -450,6 +468,7 @@ function buildCheckoutUrl(storeUrl: string, variantId: number, qty: number, p: P
 type StoreEntry = { id: string; name: string; url: string; preset?: boolean };
 
 const PRESET_STORES: StoreEntry[] = [
+  { id: KMART_STORE_ID, name: KMART_STORE_NAME, url: KMART_STORE_URL, preset: true },
   { id: "preset-jbhifi", name: "JB Hi-Fi", url: "https://www.jbhifi.com.au", preset: true },
   { id: "preset-allbirds", name: "Allbirds", url: "https://www.allbirds.com", preset: true },
   { id: "preset-gymshark", name: "Gymshark", url: "https://www.gymshark.com", preset: true },
@@ -521,6 +540,12 @@ type Task = {
   // Optional size filter (clothing letters, shoe sizes, "One Size", etc.).
   // Empty / undefined means "any size".
   sizes?: string[];
+  // Retailer backend. Default / missing = Shopify monitor + Browserless/runner.
+  // "kmart" uses the Fly executor (Canvas3ds / Revolut) — fire-on-start, no Shopify poll.
+  retailer?: "shopify" | "kmart";
+  kmartMode?: "current" | "playwright";
+  /** When true, executor attempts chargePayDockWithToken after 3DS. */
+  placeOrder?: boolean;
 };
 export type ExecutionMode = "fast" | "fast_preload" | "safe" | "safe_preload";
 export const EXECUTION_MODE_LABEL: Record<ExecutionMode, string> = {
@@ -911,6 +936,8 @@ function Index() {
   const dispatchRunner = useServerFn(dispatchRunnerJob);
   const pollRunnerResult = useServerFn(pollRunnerJobResult);
   const fetchRunnerStatus = useServerFn(getRunnerStatus);
+  const runKmartExecutorFn = useServerFn(runOnExecutor);
+  const pollKmartProgressFn = useServerFn(pollExecutorProgress);
 
   // Polled runner status so the trigger can branch (runner vs. Browserless).
   const runnerOnlineRef = useRef(false);
@@ -1031,10 +1058,124 @@ function Index() {
     if ("Notification" in window && Notification.permission === "default") {
       try { await Notification.requestPermission(); } catch {}
     }
-    updateTask(id, { running: true, status: "monitoring", message: "Resolving…", lastChecked: Date.now() });
-    // Resolve handle if not yet resolved
     const t = tasksRef.current.find((x) => x.id === id);
     if (!t) return;
+
+    // ── Kmart AU: fire-on-start via Fly executor (no Shopify stock poll) ──
+    const kmartTask =
+      t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input);
+    if (kmartTask) {
+      const pdpUrl = normalizeKmartPdpUrl(t.input);
+      if (!isValidKmartPdpUrl(pdpUrl)) {
+        updateTask(id, {
+          running: false,
+          status: "error",
+          message: "Kmart tasks need a full PDP URL (https://www.kmart.com.au/product/…)",
+        });
+        return;
+      }
+      const profile = profiles.find((p) => p.id === t.profileId);
+      if (!profile) {
+        updateTask(id, { running: false, status: "error", message: "Profile missing" });
+        return;
+      }
+      const placeOrder = t.placeOrder === true;
+      const rawProxy = pickRawProxy(t.proxyGroupId);
+      const execTaskId = `kmart-${id}-${Date.now().toString(36)}`;
+      const built = buildKmartExecutorPayload({
+        taskId: execTaskId,
+        pdpUrl,
+        qty: t.qty,
+        proxy: rawProxy,
+        placeOrder,
+        kmartMode: t.kmartMode === "playwright" ? "playwright" : "current",
+        profile,
+        placeOrderMutation: loadStoredKmartMutation(),
+      });
+      if (!built.ok) {
+        updateTask(id, { running: false, status: "error", message: built.error });
+        return;
+      }
+
+      triggeredRef.current.add(id);
+      updateTask(id, {
+        running: true,
+        status: "checking_out",
+        retailer: "kmart",
+        productHandle: pdpUrl,
+        productTitle: t.productTitle || kmartProductLabel(pdpUrl),
+        storeUrl: KMART_STORE_URL,
+        storeName: t.storeName || KMART_STORE_NAME,
+        checkoutStartedAt: Date.now(),
+        message: "Starting Kmart checkout…",
+        lastChecked: Date.now(),
+      });
+      fireWebhook("in_stock", { ...t, productTitle: t.productTitle || kmartProductLabel(pdpUrl), input: pdpUrl });
+
+      const bStart = Date.now();
+      let pollTimer: ReturnType<typeof setInterval> | null = null;
+      try {
+        pollTimer = setInterval(() => {
+          void (async () => {
+            try {
+              const p = (await pollKmartProgressFn({ data: { taskId: execTaskId } })) as {
+                progress?: LiveProgress | null;
+              };
+              if (p?.progress) {
+                updateTask(id, {
+                  lastChecked: Date.now(),
+                  message: progressMessage(p.progress),
+                });
+              }
+            } catch {
+              /* ignore poll errors */
+            }
+          })();
+        }, 1500);
+
+        const res = (await runKmartExecutorFn({ data: built.data })) as {
+          ok?: boolean;
+          error?: string;
+          elapsedMs?: number;
+          result?: any;
+        };
+        const patch = mapKmartRunToTaskPatch(res);
+        updateTask(id, {
+          ...patch,
+          checkoutElapsedMs: Date.now() - bStart,
+          browserlessElapsedMs: patch.browserlessElapsedMs ?? Date.now() - bStart,
+        });
+        if (patch.status === "confirmed") {
+          notify("ORDER CONFIRMED", `${t.productTitle || kmartProductLabel(pdpUrl)}`);
+          fireWebhook("confirmed", {
+            ...t,
+            orderId: patch.orderId ?? null,
+            checkoutElapsedMs: Date.now() - bStart,
+            message: patch.message,
+          });
+        } else if (patch.status === "failed") {
+          fireWebhook("failed", {
+            ...t,
+            checkoutElapsedMs: Date.now() - bStart,
+            message: patch.message,
+          });
+        }
+      } catch (err: any) {
+        updateTask(id, {
+          running: false,
+          status: "failed",
+          browserlessElapsedMs: Date.now() - bStart,
+          message: `Kmart executor error: ${err?.message ?? "error"}`,
+        });
+        fireWebhook("failed", { ...t, message: err?.message ?? "kmart executor error" });
+      } finally {
+        if (pollTimer) clearInterval(pollTimer);
+      }
+      return;
+    }
+
+    updateTask(id, { running: true, status: "monitoring", message: "Resolving…", lastChecked: Date.now() });
+    // Resolve handle if not yet resolved
     if (!t.productHandle) {
       try {
         const handle = handleFromUrl(t.input);
@@ -1149,7 +1290,11 @@ function Index() {
         // Pre-warm window: fire one cheap request to warm DNS / proxy session
         if (now >= ts - pre && now < ts && !preWarmedRef.current.has(t.id)) {
           preWarmedRef.current.add(t.id);
-          fetchShopify(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId, 8000).catch(() => {});
+          const isKmart =
+            t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input);
+          if (!isKmart) {
+            fetchShopify(`${t.storeUrl}/products.json?limit=1`, t.proxyGroupId, 8000).catch(() => {});
+          }
         }
         if (now >= ts) {
           // Clear schedule and fire
@@ -1206,7 +1351,14 @@ function Index() {
   const triggeredRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const id = setInterval(async () => {
-      const running = tasksRef.current.filter((t) => t.running && t.productHandle);
+      const running = tasksRef.current.filter((t) => {
+        if (!t.running || !t.productHandle) return false;
+        // Kmart tasks fire-on-start via executor — never Shopify-monitor them.
+        if (t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input)) {
+          return false;
+        }
+        return true;
+      });
       if (running.length === 0) return;
       await Promise.all(running.map(async (t) => {
         try {
@@ -2216,13 +2368,15 @@ function TasksView({
       {visibleTasks.map((t) => {
         const profile = profiles.find((p) => p.id === t.profileId);
         const selected = selectedIds.has(t.id);
+        const isKmartCard =
+          t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input);
         const statusInfo = (() => {
           switch (t.status) {
             case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
             case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
-            case "checkout_ready": return { label: "Checkout ready", color: "text-green-400" };
+            case "checkout_ready": return { label: isKmartCard ? (t.message ?? "Kmart dry-run OK") : "Checkout ready", color: "text-green-400" };
             case "opened":         return { label: "Checkout opened", color: "text-primary" };
-            case "checking_out":   return { label: t.message ?? "Submitting order…", color: "text-amber-400" };
+            case "checking_out":   return { label: t.message ?? (isKmartCard ? "Kmart checkout…" : "Submitting order…"), color: "text-amber-400" };
             case "confirmed":      return { label: `ORDER ${t.orderId ?? "CONFIRMED"}`, color: "text-emerald-400" };
             case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
             case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
@@ -2231,13 +2385,19 @@ function TasksView({
           }
         })();
         // Engine phase stepper — only shown once the engine fires.
-        const phases: { key: TaskStatus; label: string }[] = [
-          { key: "in_stock", label: "Stock" },
-          { key: "adding_to_cart", label: "Cart" },
-          { key: "checkout_ready", label: "Checkout" },
-          { key: "checking_out", label: "Pay" },
-          { key: "confirmed", label: "Done" },
-        ];
+        const phases: { key: TaskStatus; label: string }[] = isKmartCard
+          ? [
+              { key: "checking_out", label: "Run" },
+              { key: "checkout_ready", label: "3DS" },
+              { key: "confirmed", label: "Done" },
+            ]
+          : [
+              { key: "in_stock", label: "Stock" },
+              { key: "adding_to_cart", label: "Cart" },
+              { key: "checkout_ready", label: "Checkout" },
+              { key: "checking_out", label: "Pay" },
+              { key: "confirmed", label: "Done" },
+            ];
         const phaseIdx = phases.findIndex((p) => p.key === t.status);
         const showStepper = phaseIdx >= 0 || t.status === "opened" || t.status === "failed";
         return (
@@ -2276,6 +2436,11 @@ function TasksView({
                   </div>
                   <div className="truncate text-[11px] text-muted-foreground">
                     {t.storeName} · <span className="text-foreground/80">{profile?.name ?? "no profile"}</span>
+                    {isKmartCard && (
+                      <Badge variant="outline" className="ml-1 text-[9px]">
+                        kmart{t.placeOrder ? " · live" : " · dry"}
+                      </Badge>
+                    )}
                   </div>
                 </div>
                 {showStepper && (
@@ -2401,6 +2566,8 @@ function CreateTaskSheet({
   const [addingStore, setAddingStore] = useState(false);
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreUrl, setNewStoreUrl] = useState("");
+  const [kmartPlaceOrder, setKmartPlaceOrder] = useState(false);
+  const [kmartPlaywright, setKmartPlaywright] = useState(false);
 
   useEffect(() => { if (!stores.find((s) => s.id === storeId) && stores[0]) setStoreId(stores[0].id); }, [stores, storeId]);
   useEffect(() => { if (!profiles.find((p) => p.id === profileId) && profiles[0]) setProfileId(profiles[0].id); }, [profiles, profileId]);
@@ -2411,20 +2578,29 @@ function CreateTaskSheet({
 
   const store = stores.find((s) => s.id === storeId);
   const profile = profiles.find((p) => p.id === profileId);
-  const canCreate = !!store && !!profile && input.trim().length > 0;
+  const isKmart = Boolean(
+    store && (isKmartStoreId(store.id) || isKmartHost(store.url) || storeId === KMART_STORE_ID),
+  );
+  const inputClean = isKmart ? normalizeKmartPdpUrl(input) : input.trim();
+  const canCreate = !!store && !!profile && (
+    isKmart ? isValidKmartPdpUrl(inputClean) : input.trim().length > 0
+  );
 
   const submit = () => {
     if (!canCreate) return;
     onCreate({
       storeId: store!.id,
-      storeUrl: store!.url,
+      storeUrl: isKmart ? KMART_STORE_URL : store!.url,
       storeName: store!.name,
-      input: input.trim(),
+      input: isKmart ? inputClean : input.trim(),
       profileId: profile!.id,
       proxyGroupId: proxyGroupSel === "__direct" ? null : proxyGroupSel,
       qty: Math.max(1, qty),
-      executionMode: execMode,
-      sizes: sizes.length > 0 ? sizes : undefined,
+      executionMode: isKmart ? "fast" : execMode,
+      sizes: isKmart || sizes.length === 0 ? undefined : sizes,
+      retailer: isKmart ? "kmart" : "shopify",
+      placeOrder: isKmart ? kmartPlaceOrder : undefined,
+      kmartMode: isKmart ? (kmartPlaywright ? "playwright" : "current") : undefined,
     }, Math.max(1, taskQty));
     setInput("");
   };
@@ -2479,22 +2655,28 @@ function CreateTaskSheet({
               </Select>
             )}
           </Field>
-          <Field label="Sizes">
-            <button
-              type="button"
-              onClick={() => setSizesOpen(true)}
-              className="flex h-8 w-full items-center justify-between bg-transparent px-0 text-left text-base"
-            >
-              <span className={sizes.length === 0 ? "text-muted-foreground" : ""}>
-                {sizes.length === 0
-                  ? "Select sizes"
-                  : sizes.length <= 2
-                    ? sizes.join(", ")
-                    : `${sizes.length} selected`}
-              </span>
-              <ChevronDown className="h-4 w-4 text-muted-foreground" />
-            </button>
-          </Field>
+          {isKmart ? (
+            <Field label="Lane">
+              <div className="flex h-8 items-center text-base">Fly executor</div>
+            </Field>
+          ) : (
+            <Field label="Sizes">
+              <button
+                type="button"
+                onClick={() => setSizesOpen(true)}
+                className="flex h-8 w-full items-center justify-between bg-transparent px-0 text-left text-base"
+              >
+                <span className={sizes.length === 0 ? "text-muted-foreground" : ""}>
+                  {sizes.length === 0
+                    ? "Select sizes"
+                    : sizes.length <= 2
+                      ? sizes.join(", ")
+                      : `${sizes.length} selected`}
+                </span>
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
+              </button>
+            </Field>
+          )}
         </div>
 
         {/* Inline custom-store URL when adding */}
@@ -2511,16 +2693,24 @@ function CreateTaskSheet({
         )}
 
         {/* Row 2: Input (full width) */}
-        <Field label="Input">
+        <Field label={isKmart ? "Product URL" : "Input"}>
           <Input
             className="h-8 border-0 bg-transparent px-0 text-base focus-visible:ring-0"
-            placeholder="URL, SKU, or keywords"
+            placeholder={isKmart ? "https://www.kmart.com.au/product/…" : "URL, SKU, or keywords"}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             autoCapitalize="none"
             autoCorrect="off"
           />
         </Field>
+        {isKmart && input.trim() && !isValidKmartPdpUrl(inputClean) && (
+          <p className="text-[11px] text-destructive">Paste a full Kmart product URL.</p>
+        )}
+        {isKmart && (
+          <p className="text-[11px] text-muted-foreground">
+            Starts immediately on the proven executor path (cart → details → 3DS → order). Use Task Quantity for mass runs. Prefer Direct proxy.
+          </p>
+        )}
 
         {/* Row 3: Profile + Proxy */}
         <div className="grid grid-cols-2 gap-4">
@@ -2574,19 +2764,40 @@ function CreateTaskSheet({
           </Field>
         </div>
 
-        {/* Row 5: Mode (full width) */}
-        <Field label="Mode">
-          <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
-            <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(EXECUTION_MODE_CYCLE).map((m) => (
-                <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </Field>
+        {/* Row 5: Mode (Shopify) or Kmart place-order toggles */}
+        {isKmart ? (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2">
+              <div>
+                <div className="text-sm font-medium">Place order</div>
+                <div className="text-[11px] text-muted-foreground">
+                  Off = dry-run through 3DS. On = charge after Revolut approve (profile card required).
+                </div>
+              </div>
+              <Switch checked={kmartPlaceOrder} onCheckedChange={setKmartPlaceOrder} />
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-border/50 px-3 py-2">
+              <div>
+                <div className="text-sm font-medium">Playwright lane</div>
+                <div className="text-[11px] text-muted-foreground">Usually off — HTTP lane is the working path.</div>
+              </div>
+              <Switch checked={kmartPlaywright} onCheckedChange={setKmartPlaywright} />
+            </div>
+          </div>
+        ) : (
+          <Field label="Mode">
+            <Select value={execMode} onValueChange={(v) => setExecMode(v as ExecutionMode)}>
+              <SelectTrigger className="h-8 border-0 bg-transparent px-0 text-base focus:ring-0">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(EXECUTION_MODE_CYCLE).map((m) => (
+                  <SelectItem key={m} value={m}>{EXECUTION_MODE_LABEL[m]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
       </div>
 
       <DrawerFooter className="pt-2">
@@ -3495,6 +3706,7 @@ function SettingsView({
       <LocalRunnerCard runnerPreferred={runnerPreferred} setRunnerPreferred={setRunnerPreferred} />
 
       <TaskPoolCard profiles={profiles} />
+      <KmartTaskPoolCard profiles={profiles} />
 
       <Card className="p-3">
         <div className="flex items-center gap-1.5 text-sm font-medium">
