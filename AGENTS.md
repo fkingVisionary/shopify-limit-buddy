@@ -5,8 +5,9 @@
 ### Product overview
 This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is the
 primary product: a TanStack Start + Vite + React 19 web app (the "control plane").
-Subdirectories `executor/` (Node/Fastify checkout engine) and `runner/` (Electron
-desktop agent) are **optional** auxiliary services. `supabase/` holds hosted DB
+Subdirectories `executor/` (Node/Fastify checkout engine), `runner/` (legacy
+Electron Shopify agent), and `desktop/` (Cyber-style local Kmart app) are
+**optional** auxiliary services. `supabase/` holds hosted DB
 migrations + one Deno edge function.
 
 ### Root web app (primary service)
@@ -37,5 +38,9 @@ migrations + one Deno edge function.
   `SETUP.md`. Not needed to boot the UI (server fns return a "not configured" message).
 - `runner/`: Electron **desktop GUI** app (`cd runner && npm install && npm run
   install-browsers && npm start`). Requires a display; not practical to run headless.
+- `desktop/`: **J1m's Bot desktop v1** — local Kmart checkout with profiles/proxies/tasks
+  on disk, API-key license (Whop-ready, not gated), localhost proxies. Spawns
+  `executor/` as a sidecar so the Kmart flow stays identical to Fly.
+  (`cd desktop && npm run setup && npm start`). See `desktop/README.md`.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.

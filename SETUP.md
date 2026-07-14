@@ -177,6 +177,8 @@ To disable Oxylabs, delete any one of those three repo secrets and re-run the wo
 - **Kmart AU only** for now — that's the only domain whitelisted on the current Hyper key.
 - **Browserless** stays in the codebase but is recon-only; it is NOT in the checkout path.
 - **JB Hi-Fi / Shopify** flows are paused until Hyper whitelists those Akamai/Shopify profiles.
+- **Desktop app (local checkout):** see `desktop/README.md`. Runs the same `executor/` Kmart
+  chain on the user's machine (localhost proxies, API-key license). Does not replace Fly yet.
 
 ---
 

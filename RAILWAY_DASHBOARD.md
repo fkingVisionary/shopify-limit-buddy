@@ -54,9 +54,19 @@ That’s it. No new project required.
 
 | Name | Where it belongs |
 |---|---|
-| `HYPER_API_KEY` | **Fly executor** only |
+| `HYPER_API_KEY` | **Fly executor** only (also on Railway **only if** you enable desktop `DESKTOP_HYPER_PROVISION=1`) |
 | `PROXY_URL_RESI` | **Fly executor** only |
 | `KMART_CARD_*` | **Fly executor** only |
+
+### Optional — desktop app license (Whop-ready, default open)
+
+| Name | Value |
+|---|---|
+| `DESKTOP_AUTH_MODE` | `open` (default) · `allowlist` · `whop` (stub) |
+| `DESKTOP_API_KEYS` | comma-separated keys when mode=`allowlist` |
+| `DESKTOP_HYPER_PROVISION` | `1` to allow licensed desktop apps to fetch operator Hyper key |
+
+See `desktop/README.md`.
 
 ### Fixing HTTP 401 `unauthorized`
 

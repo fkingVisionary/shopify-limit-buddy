@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>J1m's Bot</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <span id="engineDot" class="dot"></span>
+      <div>
+        <div class="brand-name">J1m's Bot</div>
+        <div class="brand-sub" id="engineLabel">Engine offline — app must stay open to run</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <button id="btnStartEngine" type="button">Start engine</button>
+      <button id="btnStopEngine" class="secondary" type="button">Stop</button>
+      <button id="btnRunAll" type="button">Run enabled tasks</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button type="button" data-tab="tasks" class="active">Tasks</button>
+    <button type="button" data-tab="profiles">Profiles</button>
+    <button type="button" data-tab="proxies">Proxies</button>
+    <button type="button" data-tab="results">Results</button>
+    <button type="button" data-tab="settings">Settings</button>
+  </nav>
+
+  <main>
+    <!-- TASKS -->
+    <section id="tab-tasks" class="panel active">
+      <div class="split">
+        <div>
+          <h2>Kmart tasks</h2>
+          <p class="hint">Full checkout runs on this machine (localhost proxies OK). Future stores use the same task list.</p>
+          <div id="taskList" class="list"></div>
+        </div>
+        <form id="taskForm" class="form-card">
+          <h3 id="taskFormTitle">New task</h3>
+          <input type="hidden" id="taskId" />
+          <label>Label</label>
+          <input id="taskLabel" placeholder="Drop SKU name" />
+          <label>Store</label>
+          <select id="taskStore">
+            <option value="kmart">Kmart AU</option>
+          </select>
+          <label>Product URL (PDP)</label>
+          <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
+          <div class="grid2">
+            <div>
+              <label>Qty per checkout</label>
+              <input id="taskQty" type="number" min="1" max="20" value="1" />
+            </div>
+            <div>
+              <label>Task quantity</label>
+              <input id="taskQuantity" type="number" min="1" max="50" value="1" />
+            </div>
+          </div>
+          <label>Profile</label>
+          <select id="taskProfile"></select>
+          <label>Proxy group</label>
+          <select id="taskProxy">
+            <option value="">Direct (no proxy)</option>
+          </select>
+          <label class="check"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
+          <div class="row">
+            <button type="submit">Save task</button>
+            <button type="button" class="secondary" id="taskReset">Clear</button>
+            <button type="button" id="taskRunOne">Run this</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- PROFILES -->
+    <section id="tab-profiles" class="panel">
+      <div class="split">
+        <div>
+          <h2>Profiles</h2>
+          <p class="hint">Stored only on this computer. Used for address + card on checkout.</p>
+          <div id="profileList" class="list"></div>
+        </div>
+        <form id="profileForm" class="form-card">
+          <h3>Profile</h3>
+          <input type="hidden" id="profId" />
+          <label>Name</label>
+          <input id="profName" placeholder="Main" />
+          <div class="grid2">
+            <div><label>First</label><input id="profFirst" /></div>
+            <div><label>Last</label><input id="profLast" /></div>
+          </div>
+          <label>Email</label>
+          <input id="profEmail" type="email" />
+          <label>Phone</label>
+          <input id="profPhone" />
+          <label>Address</label>
+          <input id="profAddress1" />
+          <div class="grid2">
+            <div><label>City</label><input id="profCity" /></div>
+            <div><label>State</label><input id="profProvince" placeholder="NSW" /></div>
+          </div>
+          <label>Postcode</label>
+          <input id="profZip" />
+          <hr />
+          <label>Card number</label>
+          <input id="profCardNumber" autocomplete="off" />
+          <label>Name on card</label>
+          <input id="profCardName" />
+          <div class="grid3">
+            <div><label>MM</label><input id="profMm" maxlength="2" /></div>
+            <div><label>YY</label><input id="profYy" maxlength="4" /></div>
+            <div><label>CVV</label><input id="profCvv" maxlength="4" /></div>
+          </div>
+          <div class="row">
+            <button type="submit">Save profile</button>
+            <button type="button" class="secondary" id="profReset">Clear</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- PROXIES -->
+    <section id="tab-proxies" class="panel">
+      <div class="split">
+        <div>
+          <h2>Proxy groups</h2>
+          <p class="hint">One entry per line. Supports <code>127.0.0.1:PORT</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>.</p>
+          <div id="proxyList" class="list"></div>
+        </div>
+        <form id="proxyForm" class="form-card">
+          <h3>Proxy group</h3>
+          <input type="hidden" id="pxId" />
+          <label>Name</label>
+          <input id="pxName" placeholder="Local manager" />
+          <label>Entries</label>
+          <textarea id="pxEntries" rows="10" placeholder="127.0.0.1:60000&#10;user:pass@host:8000"></textarea>
+          <div class="row">
+            <button type="submit">Save group</button>
+            <button type="button" class="secondary" id="pxReset">Clear</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- RESULTS -->
+    <section id="tab-results" class="panel">
+      <h2>Results</h2>
+      <div id="liveLog" class="log"></div>
+      <div id="resultList" class="list"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="panel">
+      <div class="form-card wide">
+        <h2>Settings</h2>
+        <p class="hint">API key is Whop-ready: validation hits the control plane when a URL is set. Leave URL empty for local/dev mode. Pairing codes are not used.</p>
+        <label>API key</label>
+        <input id="setApiKey" placeholder="Your license API key" autocomplete="off" />
+        <label>Control plane URL (optional for now)</label>
+        <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
+        <label>Hyper API key (BYO — recommended for v1)</label>
+        <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
+        <label>Max concurrent checkouts</label>
+        <input id="setMax" type="number" min="1" max="50" value="5" />
+        <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
+        <div class="row">
+          <button type="button" id="btnSaveSettings">Save settings</button>
+          <button type="button" class="secondary" id="btnValidate">Validate API key</button>
+        </div>
+        <p id="licenseMsg" class="hint"></p>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
