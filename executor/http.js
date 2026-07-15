@@ -145,17 +145,29 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
+/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
+function isStickyProxyUrl(proxyUrl) {
+  return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
+}
+
 class Dispatcher {
   constructor(proxyUrl, useTls) {
     this.proxy = proxyUrl;
     this.useTls = useTls;
     this.transport = useTls ? "tls" : "undici";
+    this.sticky = isStickyProxyUrl(proxyUrl);
     this._tlsSession = null;
     this._proxyAgent = null;
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
-    if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
+    if (!this._proxyAgent) {
+      // Longer connect timeout for residential CONNECT tunnels.
+      this._proxyAgent = new ProxyAgent({
+        uri: this.proxy,
+        connect: { timeout: this.sticky ? 45_000 : 20_000 },
+      });
+    }
     return this._proxyAgent;
   }
   async tlsSession() {
@@ -193,6 +205,8 @@ class Dispatcher {
   }
 
   async resetUndici() {
+    // Sticky residential: recreating the agent can still keep session-id but
+    // often drops mid-challenge TCP state; prefer reuse unless forced.
     if (!this._proxyAgent) return;
     try {
       await this._proxyAgent.close();
@@ -202,6 +216,8 @@ class Dispatcher {
     this._proxyAgent = null;
   }
 }
+
+export { isStickyProxyUrl };
 
 export function makeDispatcher(rawProxy, opts = {}) {
   const url = parseProxy(rawProxy);
@@ -355,9 +371,9 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GETs
-    // and POSTs a few times with a fresh ProxyAgent — Akamai "other side
-    // closed" is usually the tunnel dying, not a permanent 403.
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
+    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
+    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
     const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -374,8 +390,11 @@ export async function request(url, opts, ctx) {
       } catch (e) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
-        try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(400 + attempt * 700);
+        const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
+        if (rebuildAgent) {
+          try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
+        }
+        await sleep(500 + attempt * 800);
       }
     }
     throw lastError;

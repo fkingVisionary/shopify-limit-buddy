@@ -69,12 +69,16 @@ Each attempt prints:
 ### Access Denied on category/PDP
 
 This is **not** a broken payload vs the web app. The same `executor/` hits Akamai
-`Access Denied` from this PC’s egress (`verify_ip` shows your home IP). Fly works
-because Linux undici + AU egress is a different trust path.
+`Access Denied` from this PC’s egress (`verify_ip` / `resolve_ip` show your home IP).
+Fly works because Linux undici + AU egress is a different trust path.
 
-- If `proxy=` is set but egress IP stays your home IP, the proxy is **not** changing exit.
+- **`proxy_egress`**: when a proxy is set, the executor compares proxied vs direct
+  ipify. If `same=true`, the run **fails before** warm/sensors — fix the proxy
+  entry or local manager so exit IP actually changes.
+- Confirm exit change in the attempt log: `proxy_egress proxied=… direct=… same=false`.
 - SBSD can return HTTP 200 while `bm_sv=false` — that usually precedes hard 403s.
-- Desktop **auto-retries** undici → TLS → Playwright when Settings → “On Access Denied, retry…” is on (default).
+- Desktop uses the **same undici `kmartMode=current` path** as the dashboard → Fly.
+  No TLS/Playwright auto-retry ladder (not scalable).
 
 ## Package
 

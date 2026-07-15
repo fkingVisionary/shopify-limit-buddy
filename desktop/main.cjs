@@ -100,7 +100,6 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = { ...state.settings, ...patch };
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    akamaiRetry: state.settings.akamaiRetry !== false,
   });
   persistSettings();
   return snapshot();
@@ -148,13 +147,13 @@ ipcMain.handle("desktop:start-engine", async () => {
 
   const started = await sidecar.startSidecar({
     hyperApiKey: hyper,
+    paydockPublicKey: state.settings.paydockPublicKey,
     maxConcurrent: state.settings.maxConcurrent,
   });
   if (!started.ok) return { ...started, snapshot: snapshot() };
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    akamaiRetry: state.settings.akamaiRetry !== false,
   });
   runner.start();
   send({ type: "snapshot", data: snapshot() });
@@ -227,7 +226,7 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     profileId: task.profileId || null,
     proxyGroupId: task.proxyGroupId || null,
     placeOrder: task.placeOrder !== false,
-    kmartMode: task.kmartMode === "playwright" ? "playwright" : "current",
+    kmartMode: "current",
     enabled: task.enabled !== false,
     updatedAt: now,
   };
@@ -262,11 +261,14 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     const entries = group?.entries?.length ? group.entries : [null];
     const n = Math.max(1, Math.min(50, Number(task.quantity) || 1));
     for (let i = 0; i < n; i++) {
-      const proxyRaw = entries[i % entries.length];
+      const proxyIndex = i % entries.length;
+      const proxyRaw = entries[proxyIndex];
       jobs.push({
         task: { ...task },
         profile,
         proxyRaw,
+        proxyEntries: entries.filter(Boolean),
+        proxyIndex,
         placeOrder: task.placeOrder !== false,
       });
     }
@@ -281,12 +283,137 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+async function e2eAutorun() {
+  // DESKTOP_E2E_AUTORUN=1 — start engine, enqueue enabled tasks (dry-run unless
+  // DESKTOP_E2E_PLACE_ORDER=1), wait for completion, write result JSON, quit.
+  const outPath = process.env.DESKTOP_E2E_OUT || require("path").join(app.getPath("userData"), "j1ms-desktop", "e2e-last.json");
+  console.log("[e2e] autorun starting →", outPath);
+
+  const started = await (async () => {
+    // Reuse start-engine handler logic without license round-trip duplication.
+    const lic = await license.validateApiKey({
+      controlPlaneUrl: state.settings.controlPlaneUrl,
+      apiKey: state.settings.apiKey,
+    });
+    if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
+    let hyper = String(state.settings.hyperApiKey || "").trim();
+    if (!hyper) return { ok: false, error: "Hyper API key required in Settings" };
+    return sidecar.startSidecar({
+      hyperApiKey: hyper,
+      maxConcurrent: state.settings.maxConcurrent,
+    });
+  })();
+
+  if (!started.ok) {
+    require("fs").writeFileSync(outPath, JSON.stringify({ ok: false, phase: "engine", error: started.error }, null, 2));
+    console.error("[e2e] engine failed:", started.error);
+    app.quit();
+    return;
+  }
+
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    akamaiRetry: state.settings.akamaiRetry !== false,
+  });
+  runner.start();
+
+  const placeOrder = process.env.DESKTOP_E2E_PLACE_ORDER === "1";
+  const jobs = [];
+  for (const task of state.db.tasks.filter((t) => t.enabled !== false)) {
+    const profile = state.db.profiles.find((p) => p.id === task.profileId);
+    if (!profile) {
+      console.error("[e2e] task missing profile", task.id);
+      continue;
+    }
+    const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
+    const entries = group?.entries?.length ? group.entries : [null];
+    // One attempt for e2e (ignore quantity) — sticky retries can advance entries.
+    jobs.push({
+      task: { ...task, placeOrder, pwEdgeRetries: 5 },
+      profile,
+      proxyRaw: entries[0] ?? null,
+      proxyEntries: entries.filter(Boolean),
+      proxyIndex: 0,
+      placeOrder,
+    });
+  }
+
+  if (!jobs.length) {
+    require("fs").writeFileSync(outPath, JSON.stringify({ ok: false, phase: "enqueue", error: "no enabled tasks with profiles" }, null, 2));
+    console.error("[e2e] no jobs");
+    app.quit();
+    return;
+  }
+
+  let remaining = jobs.length;
+  const results = [];
+  runner.setFinishedHandler((result) => {
+    // Preserve normal persist path then capture for e2e.
+    state.db.results.unshift({
+      ok: result.ok,
+      taskId: result.taskId,
+      runId: result.runId,
+      orderNumber: result.orderNumber || null,
+      error: result.error || null,
+      checkoutStage: result.checkoutStage || null,
+      failedStep: result.failedStep || null,
+      elapsedMs: result.elapsedMs ?? null,
+      lastSteps: result.lastSteps || null,
+      at: result.at || Date.now(),
+    });
+    state.db.results = state.db.results.slice(0, 200);
+    if (result.taskId) {
+      const t = state.db.tasks.find((x) => x.id === result.taskId);
+      if (t) {
+        t.lastStatus = result.ok ? (result.orderNumber ? "confirmed" : "ok") : "failed";
+        t.lastError = result.error || null;
+        t.lastOrderNumber = result.orderNumber || null;
+        t.lastCheckoutStage = result.checkoutStage || null;
+        t.updatedAt = Date.now();
+      }
+    }
+    persistDb();
+    results.push({
+      ok: result.ok,
+      taskId: result.taskId,
+      runId: result.runId,
+      checkoutStage: result.checkoutStage,
+      failedStep: result.failedStep,
+      error: result.error,
+      elapsedMs: result.elapsedMs,
+      lastSteps: (result.lastSteps || []).slice(-15).map((s) => ({
+        step: s.step,
+        ok: s.ok,
+        status: s.status,
+        note: String(s.note || "").slice(0, 240),
+      })),
+    });
+    remaining -= 1;
+    console.log("[e2e] job done", JSON.stringify({ ok: result.ok, failedStep: result.failedStep, stage: result.checkoutStage, remaining }));
+    if (remaining <= 0) {
+      const payload = { ok: results.every((r) => r.ok), results, at: Date.now() };
+      require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
+      console.log("[e2e] wrote", outPath, "ok=", payload.ok);
+      setTimeout(() => app.quit(), 500);
+    }
+  });
+
+  runner.enqueue(jobs);
+  console.log("[e2e] enqueued", jobs.length, "dryRun=", !placeOrder);
+}
+
+app.whenReady().then(async () => {
+  runner.configure({
+    maxConcurrent: state.settings.maxConcurrent,
   });
   createWindow();
+  if (process.env.DESKTOP_E2E_AUTORUN === "1") {
+    try {
+      await e2eAutorun();
+    } catch (e) {
+      console.error("[e2e] fatal", e);
+      app.quit();
+    }
+  }
 });
 
 app.on("window-all-closed", async () => {

@@ -163,11 +163,13 @@
         <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
         <label>Hyper API key (BYO — recommended for v1)</label>
         <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
+        <label>Paydock public key (Kmart widget — static)</label>
+        <input id="setPaydockPk" placeholder="Paste once; used for card tokenize" autocomplete="off" />
+        <p class="hint">This is Kmart’s client-side Paydock public key (same value the browser widget uses). It does not rotate. Leave blank to use PAYDOCK_PUBLIC_KEY from the environment / baked-in default.</p>
         <label>Max concurrent checkouts</label>
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
-        <label class="check"><input id="setAkamaiRetry" type="checkbox" checked /> On Access Denied, retry TLS then Playwright (recommended on Windows)</label>
-        <p class="hint">Fly uses Linux undici + AU egress. Your PC often gets Akamai 403 on category/PDP even after sensors — retries use the same executor with Chrome TLS impersonation, then Playwright warm. A proxy only helps if egress IP actually changes (check the attempt log).</p>
+        <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
         <div class="row">
           <button type="button" id="btnSaveSettings">Save settings</button>
           <button type="button" class="secondary" id="btnValidate">Validate API key</button>

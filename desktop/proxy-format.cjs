@@ -63,16 +63,17 @@ function classifyProxy(entryRaw) {
   if (parts.length === 2) {
     return buildProxyUrl(scheme, parts[0], parts[1]);
   }
-  if (parts.length === 4) {
-    const portFirst = validPort(parts[1]);
-    const portLast = validPort(parts[3]);
-    if (portFirst && !portLast) {
-      return buildProxyUrl(scheme, parts[0], parts[1], parts[2], parts[3]);
-    }
-    if (portLast) {
-      return buildProxyUrl(scheme, parts[2], parts[3], parts[0], parts[1]);
-    }
-    return { kind: "invalid", reason: "neither segment looks like a port" };
+  // host:port:user:pass — password may contain ':' (join remainder).
+  if (parts.length >= 4 && validPort(parts[1])) {
+    const [host, port, user, ...passParts] = parts;
+    return buildProxyUrl(scheme, host, port, user, passParts.join(":"));
+  }
+  if (parts.length >= 4 && validPort(parts[parts.length - 1])) {
+    const port = parts[parts.length - 1];
+    const host = parts[parts.length - 2];
+    const user = parts[0];
+    const pass = parts.slice(1, -2).join(":");
+    return buildProxyUrl(scheme, host, port, user, pass);
   }
   return {
     kind: "invalid",

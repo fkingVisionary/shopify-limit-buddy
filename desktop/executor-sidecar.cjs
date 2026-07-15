@@ -4,13 +4,51 @@ const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
 const http = require("http");
+const fs = require("fs");
 
 const EXECUTOR_DIR = path.join(__dirname, "..", "executor");
+
+// Kmart AU Paydock widget public key (client-side; safe to embed). Override via
+// Settings or PAYDOCK_PUBLIC_KEY. Filled once we have a known-good value.
+let KMART_PAYDOCK_PUBLIC_KEY_DEFAULT = "";
+try {
+  // Optional committed default — public widget key only.
+  const def = require(path.join(EXECUTOR_DIR, "paydock-defaults.cjs"));
+  if (def?.PAYDOCK_PUBLIC_KEY) KMART_PAYDOCK_PUBLIC_KEY_DEFAULT = String(def.PAYDOCK_PUBLIC_KEY).trim();
+} catch {
+  /* optional */
+}
 
 let child = null;
 let token = null;
 let port = null;
 let hyperKeyInUse = null;
+let paydockKeyInUse = null;
+
+function loadDotEnv(filePath) {
+  const out = {};
+  try {
+    const raw = fs.readFileSync(filePath, "utf8");
+    for (const line of raw.split(/\r?\n/)) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const eq = t.indexOf("=");
+      if (eq <= 0) continue;
+      const key = t.slice(0, eq).trim();
+      let val = t.slice(eq + 1).trim();
+      if (
+        (val.startsWith('"') && val.endsWith('"')) ||
+        (val.startsWith("'") && val.endsWith("'"))
+      ) {
+        val = val.slice(1, -1);
+      }
+      if (key) out[key] = val;
+    }
+  } catch {
+    /* missing .env is fine */
+  }
+  return out;
+}
 
 function freePort() {
   return new Promise((resolve, reject) => {
@@ -66,9 +104,15 @@ function waitHealth(p, timeoutMs = 45_000) {
   });
 }
 
-async function startSidecar({ hyperApiKey, maxConcurrent = 5 } = {}) {
+async function startSidecar({ hyperApiKey, paydockPublicKey, maxConcurrent = 5 } = {}) {
+  const nextPaydock =
+    String(paydockPublicKey || "").trim() ||
+    String(process.env.PAYDOCK_PUBLIC_KEY || "").trim() ||
+    KMART_PAYDOCK_PUBLIC_KEY_DEFAULT;
   if (child && !child.killed) {
-    if (hyperApiKey && hyperApiKey !== hyperKeyInUse) {
+    const hyperChanged = hyperApiKey && hyperApiKey !== hyperKeyInUse;
+    const paydockChanged = nextPaydock && nextPaydock !== paydockKeyInUse;
+    if (hyperChanged || paydockChanged) {
       await stopSidecar();
     } else {
       return { ok: true, ...status() };
@@ -79,16 +123,29 @@ async function startSidecar({ hyperApiKey, maxConcurrent = 5 } = {}) {
   token = crypto.randomBytes(24).toString("hex");
   hyperKeyInUse = hyperApiKey || null;
 
+  // Load repo-root .env into sidecar without overriding explicit settings.
+  const envFromFile = loadDotEnv(path.join(__dirname, "..", ".env"));
+
   const env = {
     ...process.env,
+    ...envFromFile,
     PORT: String(port),
     HOST: "127.0.0.1",
     EXECUTOR_TOKEN: token,
     MAX_CONCURRENT: String(Math.max(1, Math.min(50, Number(maxConcurrent) || 5))),
     PROXY_URL_RESI: "",
+    // Desktop defaults to per-task forceTls; keep env from forcing undici here.
   };
   if (hyperApiKey) env.HYPER_API_KEY = hyperApiKey;
   else delete env.HYPER_API_KEY;
+
+  const paydockPk =
+    String(paydockPublicKey || "").trim() ||
+    String(env.PAYDOCK_PUBLIC_KEY || envFromFile.PAYDOCK_PUBLIC_KEY || "").trim() ||
+    KMART_PAYDOCK_PUBLIC_KEY_DEFAULT;
+  paydockKeyInUse = paydockPk || null;
+  if (paydockPk) env.PAYDOCK_PUBLIC_KEY = paydockPk;
+  else delete env.PAYDOCK_PUBLIC_KEY;
 
   let stderr = "";
   child = spawn("node", ["server.js"], {

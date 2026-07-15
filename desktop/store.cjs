@@ -39,10 +39,10 @@ const DEFAULT_SETTINGS = {
   apiKey: "",
   controlPlaneUrl: "",
   hyperApiKey: "", // BYO Hyper; empty = try control-plane provision later
+  /** Kmart Paydock widget public key (static client key — not a secret). */
+  paydockPublicKey: "",
   maxConcurrent: 5,
   placeOrderDefault: true,
-  /** On PDP/category Access Denied, retry TLS then Playwright (desktop vs Fly). */
-  akamaiRetry: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
 };

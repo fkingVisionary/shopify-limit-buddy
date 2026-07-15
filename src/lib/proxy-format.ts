@@ -46,6 +46,17 @@ function safeDecode(value: string): string {
  *  - `http(s)://user:pass@host:port`
  *  - `socks5://user:pass@host:port`
  */
+/**
+ * Mint a fresh sticky-session token (Noontide `session-TOKEN`). ISP / static
+ * proxies have no session- marker and are returned unchanged.
+ */
+export function rotateStickyProxySession(proxyUrl: string | null | undefined): string | null {
+  if (!proxyUrl) return proxyUrl ?? null;
+  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return proxyUrl.replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+}
+
 export function classifyProxy(entryRaw: string): ProxyClassification {
   const entry = String(entryRaw || "").trim();
   if (!entry) return { kind: "invalid", reason: "empty" };
@@ -107,6 +118,18 @@ export type ProxyParts = {
   username?: string;
   password?: string;
 };
+
+/**
+ * Mint a fresh sticky-session token (Noontide `session-…`). ISP / non-sticky
+ * URLs are returned unchanged. Burned residential exits keep the old token
+ * forever, so each checkout run should call this once.
+ */
+export function rotateStickyProxySession(proxyUrl: string | null | undefined): string {
+  const s = String(proxyUrl || "");
+  if (!/session-[A-Za-z0-9]+/i.test(s)) return s;
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return s.replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+}
 
 /** Parse a normalised proxy URL (`http://user:pass@host:port`) into parts. */
 export function parseProxyParts(url: string): ProxyParts | null {

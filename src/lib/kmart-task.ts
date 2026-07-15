@@ -1,6 +1,6 @@
 /** Shared helpers for running the proven Kmart AU executor flow from Tasks / pools. */
 
-import { classifyProxy } from "@/lib/proxy-format";
+import { classifyProxy, rotateStickyProxySession } from "@/lib/proxy-format";
 import type { LiveProgress, WorkflowStageId } from "@/lib/kmart-workflow";
 import { WORKFLOW_STAGES, stageRank } from "@/lib/kmart-workflow";
 
@@ -124,6 +124,12 @@ export function buildKmartExecutorPayload(opts: {
       return { ok: false, error: "URL-template proxies are not supported on the Kmart lane" };
     }
     proxy = classified.kind === "raw" ? classified.url ?? null : null;
+    // Keep listed sticky session- tokens as written. Desktop retries mint a
+    // fresh token / advance group entries only after tunnel or Akamai failure.
+    // Always rotating here ignored user-provided Noontide exits.
+    if (proxy && process.env.KMART_ROTATE_STICKY_SESSION === "1") {
+      proxy = rotateStickyProxySession(proxy);
+    }
   }
 
   const placeOrder = opts.placeOrder === true;

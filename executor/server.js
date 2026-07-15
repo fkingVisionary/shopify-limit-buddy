@@ -226,6 +226,7 @@ app.post("/run", async (req, reply) => {
       httpHandoff: task.httpHandoff !== false,
       skipAtc: task.skipAtc === true,
       apiSensor: task.apiSensor === true,
+      skipCategory: task.skipCategory === true,
     });
     return result;
   } catch (e) {

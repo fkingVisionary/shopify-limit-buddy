@@ -125,6 +125,7 @@ export async function runCheckout(task) {
         paymentSummary: out.paymentSummary ?? null,
         paymentTail: out.paymentTail ?? null,
         lastSteps: out.lastSteps ?? null,
+        failedStep: out.failedStep ?? null,
         orderNumber: out.orderNumber ?? null,
         orderId: out.orderId ?? null,
         paymentStatus: out.paymentStatus ?? null,

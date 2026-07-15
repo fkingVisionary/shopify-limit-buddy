@@ -169,9 +169,9 @@ function renderSettings() {
   $("setApiKey").value = s.apiKey || "";
   $("setControlPlane").value = s.controlPlaneUrl || "";
   $("setHyper").value = s.hyperApiKey || "";
+  $("setPaydockPk").value = s.paydockPublicKey || "";
   $("setMax").value = s.maxConcurrent ?? 5;
   $("setPlaceOrder").checked = s.placeOrderDefault !== false;
-  $("setAkamaiRetry").checked = s.akamaiRetry !== false;
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
@@ -364,9 +364,9 @@ $("btnSaveSettings").onclick = async () => {
       apiKey: $("setApiKey").value.trim(),
       controlPlaneUrl: $("setControlPlane").value.trim().replace(/\/$/, ""),
       hyperApiKey: $("setHyper").value.trim(),
+      paydockPublicKey: $("setPaydockPk").value.trim(),
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
-      akamaiRetry: $("setAkamaiRetry").checked,
     }),
   );
   appendLog("Settings saved", "muted");

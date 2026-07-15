@@ -1,6 +1,25 @@
 // Map local executor /run JSON the same way the web UI uses mapKmartRunToTaskPatch.
 // The adapter often returns ok:false with lastSteps/checkoutStage and NO top-level error.
 
+function stepBlob(res) {
+  const steps = Array.isArray(res?.steps) ? res.steps : [];
+  const lastSteps = Array.isArray(res?.lastSteps) ? res.lastSteps : [];
+  return [...steps, ...lastSteps];
+}
+
+/** True when proxy was set but exit IP matched direct (or parse failed). */
+function isProxyEgressFailed(res) {
+  if (!res || res.ok) return false;
+  if (res.failedStep === "proxy_egress" || res.failedStep === "proxy_parse") return true;
+  return stepBlob(res).some(
+    (s) =>
+      s &&
+      s.ok === false &&
+      /^(proxy_egress|proxy_parse|proxy_config)$/.test(String(s.step || "")) &&
+      /same=true|parseFailed/i.test(String(s.note || "")),
+  );
+}
+
 function formatExecutorFailure(res) {
   if (!res || typeof res !== "object") return "checkout failed (empty response)";
   if (res.error) return String(res.error);
@@ -21,12 +40,20 @@ function formatExecutorFailure(res) {
     if (failed && s.step === failed.step && s.note === failed.note) continue;
     bits.push(`${s.step}${s.status != null ? ` HTTP ${s.status}` : ""}: ${String(s.note || "").slice(0, 120)}`);
   }
-  if (/Access Denied|AkamaiGHost|pdp_get.*403|category_browse.*403/i.test(blob)) {
+  if (isProxyEgressFailed(res)) {
     bits.push(
-      "hint: Akamai blocked WWW (category/PDP). Fly AU egress ≠ this PC. If proxy was set but egress IP stayed your home IP, the proxy is not changing exit. Try an AU residential exit, or enable TLS/Playwright retry in Settings.",
+      "hint: Proxy is configured but exit IP matches direct egress — the tunnel is not changing exit. Fix the proxy entry / local manager so exit IP actually changes.",
+    );
+  } else if (/resolve_ip:required|resolve_ip:warn/i.test(blob)) {
+    bits.push(
+      "hint: IP-echo hosts failed through this proxy (common on some residential pools). Run continues; try ISP or another resi provider if Akamai still 403s.",
+    );
+  } else if (/Access Denied|AkamaiGHost|pdp_get.*403|category_browse.*403/i.test(blob)) {
+    bits.push(
+      "hint: Akamai blocked WWW (category/PDP). Proxy must change egress — ISP exits often clear this when residential does not.",
     );
   }
-  if (/bm_sv=false/i.test(blob) && /Access Denied/i.test(blob)) {
+  if (/bm_sv=false/i.test(blob) && /Access Denied/i.test(blob) && !isProxyEgressFailed(res)) {
     bits.push("hint: SBSD posted OK but bm_sv never minted — classic prelude to hard 403 on category/PDP.");
   }
   if (!bits.length && res.ok === false) {
@@ -35,9 +62,10 @@ function formatExecutorFailure(res) {
   return bits.join(" | ") || "checkout failed";
 }
 
-/** True when this looks like the desktop-vs-Fly Akamai WWW wall (not a card/3DS fail). */
+/** True when this looks like an Akamai WWW wall (not a card/3DS/proxy fail). */
 function isAkamaiWwwBlocked(res) {
   if (!res || res.ok) return false;
+  if (isProxyEgressFailed(res)) return false;
   const text = [
     res.error,
     res.checkoutStage,
@@ -80,6 +108,7 @@ function stageLogLine(progress) {
 module.exports = {
   formatExecutorFailure,
   isAkamaiWwwBlocked,
+  isProxyEgressFailed,
   summarizePayload,
   stageLogLine,
 };

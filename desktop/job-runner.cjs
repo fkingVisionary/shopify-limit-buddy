@@ -4,10 +4,7 @@
 //
 // Payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
-//
-// Desktop-only: on Akamai WWW Access Denied (common on Windows home egress
-// vs Fly Linux), optionally retry with TLS impersonation then Playwright warm
-// — same executor endpoints, no architecture rewrite.
+// Single undici attempt — no TLS/Playwright auto-retry ladder (not scalable).
 
 const sidecar = require("./executor-sidecar.cjs");
 const { id } = require("./store.cjs");
@@ -15,6 +12,7 @@ const { normalizeKmartProxy } = require("./proxy-format.cjs");
 const {
   formatExecutorFailure,
   isAkamaiWwwBlocked,
+  isProxyEgressFailed,
   summarizePayload,
   stageLogLine,
 } = require("./run-format.cjs");
@@ -23,7 +21,6 @@ let queue = [];
 let inflight = 0;
 let running = false;
 let maxConcurrent = 5;
-let akamaiRetry = true; // settings: retryTlsPlaywright
 let emit = () => {};
 let onFinished = null;
 
@@ -35,9 +32,8 @@ function setFinishedHandler(fn) {
   onFinished = typeof fn === "function" ? fn : null;
 }
 
-function configure({ maxConcurrent: n, akamaiRetry: retry } = {}) {
+function configure({ maxConcurrent: n } = {}) {
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
-  if (typeof retry === "boolean") akamaiRetry = retry;
 }
 
 function state() {
@@ -46,7 +42,6 @@ function state() {
     inflight,
     queued: queue.length,
     maxConcurrent,
-    akamaiRetry,
   };
 }
 
@@ -56,7 +51,25 @@ function normalizeProxy(raw) {
   return r.ok ? r.proxy : null;
 }
 
-function buildKmartPayload({ task, profile, proxyRaw, placeOrder, transport, kmartMode, forceTls }) {
+/** Sticky residential session marker (Noontide / similar). ISP has none. */
+function isStickyProxy(proxyUrl) {
+  return /session-[A-Za-z0-9]+|sessid=/i.test(String(proxyUrl || ""));
+}
+
+/**
+ * Mint a fresh sticky-session token. ISP URLs are unchanged (no session-).
+ * Burned Noontide exits keep the old token forever — each job needs a new one.
+ */
+function rotateStickyProxySession(proxyUrl, { force = false } = {}) {
+  if (!proxyUrl) return proxyUrl;
+  if (!force && process.env.DESKTOP_ROTATE_PROXY_SESSION !== "1") return proxyUrl;
+  // Noontide-style: ...-session-TOKEN-sessTime-N — only replace TOKEN.
+  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  return String(proxyUrl).replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+}
+
+function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession }) {
   const pdp = String(task.pdpUrl || task.storeUrl || "").trim();
   if (!/^https:\/\/(www\.)?kmart\.com\.au\//i.test(pdp)) {
     return { ok: false, error: "Kmart PDP URL required" };
@@ -89,10 +102,13 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder, transport, kma
         }
       : null;
 
-  const mode =
-    kmartMode === "playwright" || task.kmartMode === "playwright" ? "playwright" : "current";
-  const wantTls = forceTls === true || transport === "tls";
-
+  // Match src/lib/kmart-task.ts buildKmartExecutorPayload (dashboard → Fly).
+  // Proxy is always the task's proxy group entry. Sticky resi mints a fresh
+  // session- token when rotateSession is set (dead exits stay burned forever).
+  // ISP has no session- marker — rotate is a no-op.
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
   return {
     ok: true,
     data: {
@@ -100,14 +116,11 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder, transport, kma
       storeUrl: pdp,
       variantId: Number(task.variantId) || 1,
       qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
-      proxy: proxyNorm.proxy,
+      proxy,
       dryRun: !placeOrder,
       placeOrder: Boolean(placeOrder),
       debugTrace: true,
-      kmartMode: mode,
-      httpHandoff: true,
-      skipAtc: false,
-      ...(wantTls ? { transport: "tls", forceTls: true } : { forceUndici: true }),
+      kmartMode: "current",
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -183,18 +196,26 @@ function emitLog(runId, taskId, level, message, extra) {
   });
 }
 
-function finishResult(job, res, summary, attemptLabel) {
+function finishResult(job, res, summary) {
   const errorText = res?.ok ? null : formatExecutorFailure(res);
+  const lastSteps = Array.isArray(res?.lastSteps)
+    ? res.lastSteps
+    : Array.isArray(res?.steps)
+      ? res.steps.slice(-40)
+      : null;
+  const failedStep =
+    res?.failedStep ??
+    (Array.isArray(res?.steps) ? [...res.steps].reverse().find((s) => s && s.ok === false)?.step : null) ??
+    null;
   console.log(
     "[desktop:run]",
     JSON.stringify({
       runId: job.runId,
-      attempt: attemptLabel,
       ok: res?.ok,
       checkoutStage: res?.checkoutStage,
-      failedStep: res?.failedStep,
+      failedStep,
       error: errorText,
-      lastSteps: res?.lastSteps ?? res?.steps?.slice?.(-8),
+      lastSteps: lastSteps?.slice?.(-8) ?? lastSteps,
       elapsedMs: res?.elapsedMs,
       proxy: summary.proxy,
       transport: summary.transport,
@@ -208,17 +229,18 @@ function finishResult(job, res, summary, attemptLabel) {
     orderNumber: res?.orderNumber ?? null,
     error: errorText,
     checkoutStage: res?.checkoutStage ?? null,
-    failedStep: res?.failedStep ?? null,
+    failedStep,
     elapsedMs: res?.elapsedMs ?? null,
     at: Date.now(),
-    lastSteps: Array.isArray(res?.lastSteps) ? res.lastSteps : null,
+    lastSteps,
+    steps: Array.isArray(res?.steps) ? res.steps : null,
     paymentTail: Array.isArray(res?.paymentTail) ? res.paymentTail : null,
-    attempt: attemptLabel,
+    attempt: "undici",
     raw: {
       ok: res?.ok,
       checkoutStage: res?.checkoutStage,
       orderNumber: res?.orderNumber,
-      failedStep: res?.failedStep,
+      failedStep,
       adapter: res?.adapter,
       transport: res?.transport,
     },
@@ -231,11 +253,11 @@ function logResultTail(job, result) {
       job.runId,
       job.task?.id,
       "ok",
-      `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms (${result.attempt || "run"})`,
+      `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms`,
     );
     return;
   }
-  emitLog(job.runId, job.task?.id, "err", `done FAIL (${result.attempt || "run"}) — ${result.error}`);
+  emitLog(job.runId, job.task?.id, "err", `done FAIL — ${result.error}`);
   for (const s of (result.lastSteps || []).slice(-8)) {
     emitLog(
       job.runId,
@@ -246,13 +268,56 @@ function logResultTail(job, result) {
   }
 }
 
-async function executeAttempt(job, overrides, attemptLabel) {
-  const built = buildPayload({ ...job, ...overrides });
+/** Sticky-only: Akamai / soft-API denial worth a fresh exit. */
+function isResidentialAkamaiBlock(result) {
+  if (!result || result.ok) return false;
+  const blob = [
+    result.error,
+    result.failedStep,
+    result.checkoutStage,
+    ...(result.lastSteps || []).map((s) => `${s.step} ${s.note}`),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /Access Denied|AkamaiGHost|akamai_unsolved|pdp_get|cart_get:all_profiles_denied|pdp_soft_api|category_browse/i.test(
+    blob,
+  );
+}
+
+/** Sticky-only: dead tunnel / TLS CONNECT failure (burned sticky exit). */
+function isStickyTunnelDead(result) {
+  if (!result || result.ok) return false;
+  if (isProxyEgressFailed(result)) return false;
+  const blob = [
+    result.error,
+    result.failedStep,
+    ...(result.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note}`),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /sticky_tunnel|fetch failed|socket disconnected|UND_ERR_CONNECT_TIMEOUT|ECONNRESET|ECONNREFUSED|other side closed|socket hang up|Client network socket disconnected/i.test(
+    blob,
+  );
+}
+
+function shouldStickyResiRetry(result) {
+  return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
+}
+
+async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
-    return { ok: false, error: built.error, attempt: attemptLabel };
+    return {
+      ok: false,
+      taskId: job.task?.id,
+      runId: job.runId,
+      error: built.error,
+      at: Date.now(),
+      attempt: attemptLabel,
+    };
   }
+
   const payload = built.data;
-  // Unique taskId per attempt so progress doesn't collide.
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
 
@@ -260,7 +325,7 @@ async function executeAttempt(job, overrides, attemptLabel) {
     job.runId,
     job.task?.id,
     "info",
-    `attempt=${attemptLabel} → executor | proxy=${summary.proxy} | transport=${summary.transport} | mode=${summary.kmartMode} | placeOrder=${summary.placeOrder}`,
+    `→ executor (${attemptLabel}) | proxy=${summary.proxy} | transport=${summary.transport} | mode=${summary.kmartMode} | placeOrder=${summary.placeOrder}`,
   );
   emitLog(job.runId, job.task?.id, "info", `pdp=${summary.storeUrl}`);
 
@@ -290,7 +355,7 @@ async function executeAttempt(job, overrides, attemptLabel) {
 
   try {
     const res = await sidecar.runTask(payload);
-    return finishResult(job, res, summary, attemptLabel);
+    return finishResult(job, res, summary);
   } finally {
     clearInterval(progressTimer);
   }
@@ -305,37 +370,70 @@ async function runOne(job) {
     label: job.task?.label || job.task?.pdpUrl,
   });
 
-  // Attempt ladder (desktop only). Same executor; different transport/mode.
-  // 1) undici (Fly-default path)
-  // 2) on Akamai WWW block → tls impersonation
-  // 3) still blocked → playwright warm handoff
-  const attempts = [{ label: "undici", overrides: { forceTls: false, transport: "undici", kmartMode: "current" } }];
-  if (akamaiRetry) {
-    attempts.push({ label: "tls", overrides: { forceTls: true, transport: "tls", kmartMode: "current" } });
-    attempts.push({ label: "playwright", overrides: { forceTls: false, transport: "undici", kmartMode: "playwright" } });
-  }
-
   try {
-    let result = null;
-    for (let i = 0; i < attempts.length; i++) {
-      const { label, overrides } = attempts[i];
-      result = await executeAttempt(job, overrides, label);
-      logResultTail(job, result);
-      if (result.ok) break;
-      const more = i < attempts.length - 1;
-      if (more && isAkamaiWwwBlocked(result)) {
+    const entries = Array.isArray(job.proxyEntries)
+      ? job.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean)
+      : [];
+    if (job.proxyIndex == null) job.proxyIndex = 0;
+    if (!job.proxyRaw && entries.length) {
+      job.proxyRaw = entries[job.proxyIndex % entries.length];
+    }
+
+    const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
+
+    // Sticky: use the listed session- token first (user-provided exits).
+    // Always minting a random session on attempt 1 ignored the proxy list and
+    // often landed on worse Noontide exits. ISP has no session- → unchanged.
+    let result = await executeOnce(job, {
+      rotateSession: false,
+      attemptLabel: sticky ? "resi" : "run",
+    });
+    logResultTail(job, result);
+
+    // Sticky only: advance through group entries, then mint a fresh session-
+    // on the last entry. ISP never enters this loop.
+    const maxStickyRetries = Math.min(4, Math.max(2, entries.length || 2));
+    let stickyRetries = 0;
+    while (
+      !result.ok &&
+      sticky &&
+      shouldStickyResiRetry(result) &&
+      stickyRetries < maxStickyRetries
+    ) {
+      stickyRetries += 1;
+      const why = isStickyTunnelDead(result)
+        ? "tunnel/TLS failure"
+        : /akamai_unsolved/i.test(`${result.failedStep} ${result.error}`)
+          ? "unsolved _abck"
+          : "Akamai denial";
+
+      let rotateSession = false;
+      if (entries.length > 1) {
+        job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
+        job.proxyRaw = entries[job.proxyIndex];
+        // After one full pass of listed exits, mint a fresh session- token.
+        rotateSession = stickyRetries >= entries.length;
         emitLog(
           job.runId,
           job.task?.id,
           "warn",
-          `Akamai WWW block after ${label} — retrying with ${attempts[i + 1].label} (Windows/home egress often needs this; Fly undici may not)`,
+          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} entry ${job.proxyIndex + 1}/${entries.length}${rotateSession ? " (fresh session)" : ""} (ISP unchanged)`,
         );
-        continue;
+      } else {
+        rotateSession = true;
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "warn",
+          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} with a fresh session exit (ISP unchanged)`,
+        );
       }
-      if (more && !isAkamaiWwwBlocked(result)) {
-        // Non-Akamai failure (card, etc.) — don't burn TLS/Playwright retries.
-        break;
-      }
+
+      result = await executeOnce(job, {
+        rotateSession,
+        attemptLabel: stickyRetries === 1 ? "resi-retry" : `resi-retry#${stickyRetries}`,
+      });
+      logResultTail(job, result);
     }
 
     emit({ type: "job", phase: "done", ...result });
@@ -365,4 +463,5 @@ module.exports = {
   buildPayload,
   normalizeProxy,
   isAkamaiWwwBlocked,
+  isProxyEgressFailed,
 };
