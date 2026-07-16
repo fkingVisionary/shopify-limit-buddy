@@ -227,12 +227,69 @@ app.post("/run", async (req, reply) => {
       skipAtc: task.skipAtc === true,
       apiSensor: task.apiSensor === true,
       skipCategory: task.skipCategory === true,
+      probeOnly: task.probeOnly === true,
     });
     return result;
   } catch (e) {
     reply.code(500);
     req.log.error({ err: e }, "run failed");
     return { ok: false, error: e?.message ?? String(e), failedStep: "run_error" };
+  } finally {
+    inflight--;
+  }
+});
+
+// ─── Kmart stock probe (Hyper warm → PDP → parse, never cart) ────────
+// Used by the global monitor service. Same Akamai/Hyper path as checkout.
+app.post("/kmart/stock-probe", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body ?? {};
+  const storeUrl = String(body.url || body.storeUrl || "").trim();
+  if (!/^https:\/\/(www\.)?kmart\.com\.au\//i.test(storeUrl)) {
+    reply.code(400);
+    return { ok: false, error: "url must be a kmart.com.au https URL" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
+  }
+  inflight++;
+  try {
+    const result = await runCheckout({
+      taskId: String(body.taskId || `probe-${Date.now()}`),
+      storeUrl,
+      variantId: Number(body.variantId) || 1,
+      qty: 1,
+      proxy: body.proxy ?? null,
+      dryRun: true,
+      placeOrder: false,
+      probeOnly: true,
+      debugTrace: body.debugTrace === true,
+      transport: typeof body.transport === "string" ? body.transport : undefined,
+      forceTls: body.forceTls === true,
+      forceUndici: body.forceUndici === true,
+      skipCategory: body.skipCategory === true,
+    });
+    return {
+      ok: result.ok === true,
+      probeOnly: true,
+      inStock: result.inStock ?? null,
+      sku: result.sku ?? null,
+      title: result.title ?? null,
+      url: result.url || storeUrl,
+      price: result.price ?? null,
+      imageUrl: result.imageUrl ?? null,
+      blocked: result.blocked === true,
+      error: result.error ?? null,
+      pdpStatus: result.pdpStatus ?? null,
+      elapsedMs: result.elapsedMs ?? null,
+      steps: result.steps ?? null,
+      transport: result.transport ?? null,
+    };
+  } catch (e) {
+    reply.code(500);
+    req.log.error({ err: e }, "stock-probe failed");
+    return { ok: false, error: e?.message ?? String(e), blocked: false };
   } finally {
     inflight--;
   }

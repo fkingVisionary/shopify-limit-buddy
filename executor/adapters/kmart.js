@@ -373,6 +373,111 @@ function abckSolved(jar, roundCount) {
   return isAkamaiCookieValid(v, roundCount);
 }
 
+/** Walk __NEXT_DATA__ / JSON for product fields (same idea as desktop probe). */
+function walkKmartProductFields(node, acc, depth = 0) {
+  if (!node || depth > 12) return;
+  if (Array.isArray(node)) {
+    for (const item of node) walkKmartProductFields(item, acc, depth + 1);
+    return;
+  }
+  if (typeof node !== "object") return;
+  const o = node;
+  if (!acc.title && typeof o.name === "string" && o.name.length > 2) acc.title = o.name;
+  if (!acc.title && typeof o.title === "string" && o.title.length > 2) acc.title = o.title;
+  if (!acc.sku && typeof o.sku === "string" && /^\d{6,9}$/.test(o.sku)) acc.sku = o.sku;
+  if (!acc.imageUrl && typeof o.imageUrl === "string" && /^https?:\/\//i.test(o.imageUrl)) acc.imageUrl = o.imageUrl;
+  if (acc.price == null) {
+    if (typeof o.centAmount === "number") acc.price = o.centAmount / 100;
+    else if (o.price && typeof o.price === "object" && typeof o.price.centAmount === "number") {
+      acc.price = o.price.centAmount / 100;
+    } else if (typeof o.price === "number") acc.price = o.price;
+  }
+  if (acc.inStock == null) {
+    if (typeof o.inStock === "boolean") acc.inStock = o.inStock;
+    else if (typeof o.available === "boolean") acc.inStock = o.available;
+    else if (typeof o.purchasable === "boolean") acc.inStock = o.purchasable;
+  }
+  for (const v of Object.values(o)) {
+    if (v && typeof v === "object") walkKmartProductFields(v, acc, depth + 1);
+  }
+}
+
+/** Parse title/price/stock from a cleared Kmart PDP HTML body (monitor probe). */
+function parseKmartPdpProbe(html, pdpUrl, { sku: skuHint = null, pdpStatus = 0 } = {}) {
+  const denied =
+    /access denied|pardon our interruption/i.test(html || "") ||
+    pdpStatus === 403 ||
+    pdpStatus === 401;
+  const acc = { title: null, sku: skuHint, price: null, imageUrl: null, inStock: null };
+
+  const nextBlock = (html || "").match(
+    /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
+  );
+  if (nextBlock?.[1]) {
+    try {
+      walkKmartProductFields(JSON.parse(nextBlock[1]), acc);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!acc.title) {
+    const ogTitle =
+      html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+    if (ogTitle?.[1]) acc.title = ogTitle[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
+  }
+  if (!acc.title) {
+    const t = (html || "").match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (t?.[1]) acc.title = t[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
+  }
+  if (acc.title && /access denied/i.test(acc.title)) acc.title = null;
+
+  if (!acc.imageUrl) {
+    const ogImg =
+      (html || "").match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
+      (html || "").match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);
+    if (ogImg?.[1]) acc.imageUrl = ogImg[1];
+  }
+
+  if (!acc.sku) {
+    const m = /"sku"\s*:\s*"(\d{6,9})"/.exec(html || "");
+    if (m) acc.sku = m[1];
+  }
+
+  if (acc.price == null) {
+    const cent = /"centAmount"\s*:\s*(\d+)/.exec(html || "");
+    if (cent) acc.price = Number(cent[1]) / 100;
+  }
+
+  if (acc.inStock == null) {
+    if (/"inStock"\s*:\s*true/.test(html || "") || /"available"\s*:\s*true/.test(html || "") || /"purchasable"\s*:\s*true/.test(html || "")) {
+      acc.inStock = true;
+    } else if (/"inStock"\s*:\s*false/.test(html || "") || /"available"\s*:\s*false/.test(html || "")) {
+      acc.inStock = false;
+    } else if (/out of stock|sold out|currently unavailable/i.test(html || "") && !/add to (cart|bag|trolley)/i.test(html || "")) {
+      acc.inStock = false;
+    } else if (/add to (cart|bag|trolley)|buy now/i.test(html || "")) {
+      acc.inStock = true;
+    }
+  }
+
+  const hasRealProduct =
+    Boolean(acc.title) &&
+    !/access denied/i.test(acc.title) &&
+    (Boolean(acc.sku) || /__NEXT_DATA__/i.test(html || ""));
+  const ok = !denied && hasRealProduct && pdpStatus > 0 && pdpStatus < 400;
+  return {
+    ok,
+    inStock: acc.inStock,
+    title: acc.title,
+    sku: acc.sku,
+    price: acc.price,
+    imageUrl: acc.imageUrl,
+    blocked: denied || undefined,
+    error: denied ? "Akamai / Access Denied on PDP" : ok ? null : "PDP parse incomplete",
+  };
+}
 
 export const kmartAdapter = {
   id: "kmart",
@@ -511,7 +616,14 @@ export const kmartAdapter = {
     }
     if (!hyperConfigured()) {
       steps.push({ step: "antibot_misconfigured", ok: false, note: "HYPER_API_KEY missing on executor" });
-      return { ok: false, steps, finalUrl: task.storeUrl, cookies: ctx.jar.dump() };
+      return {
+        ok: false,
+        error: "HYPER_API_KEY missing on executor",
+        steps,
+        finalUrl: task.storeUrl,
+        cookies: ctx.jar.dump(),
+        checkoutStage: "pre_cart",
+      };
     }
 
     const origin = "https://www.kmart.com.au";
@@ -1617,6 +1729,44 @@ export const kmartAdapter = {
     }
     if (!sku && urlKeycode) { sku = urlKeycode; skuSource = "url-fallback"; }
     steps.push({ step: "sku_extract", ok: Boolean(sku), note: `sku=${sku ?? "(none)"} source=${skuSource}` });
+
+    // ── Stock probe: prefer HTML PDP parse; if Akamai blocks WWW HTML, fall
+    //    through to the same soft-API + ATC path checkout already uses.
+    if (task.probeOnly === true) {
+      const probe = parseKmartPdpProbe(pdpHtml || "", pdpUrl, { sku, pdpStatus });
+      if (probe.ok) {
+        steps.push({
+          step: "stock_probe",
+          ok: true,
+          note: `html inStock=${probe.inStock} title=${(probe.title || "").slice(0, 60)}`,
+        });
+        return {
+          ok: true,
+          probeOnly: true,
+          inStock: probe.inStock,
+          sku: probe.sku || sku,
+          title: probe.title,
+          url: pdpUrl,
+          price: probe.price,
+          imageUrl: probe.imageUrl,
+          currency: "AUD",
+          pdpStatus,
+          blocked: false,
+          error: null,
+          steps,
+          finalUrl: pdpUrl,
+          cookies: ctx.jar.dump(),
+          dryRun: true,
+          checkoutStage: "product",
+        };
+      }
+      steps.push({
+        step: "stock_probe_html",
+        ok: false,
+        note: `${probe.error || "html parse failed"} — continuing via soft API / ATC (checkout path)`,
+      });
+    }
+
     ctx.__kmart_cart = { cartAtcOk: false, cartVerifyHasSku: false };
 
     const apiVisitorId = ensureKmartVisitorIdentity(ctx.jar);
@@ -1631,9 +1781,11 @@ export const kmartAdapter = {
     // Access Denied even with bm_sv + solved _abck while api.kmart.com.au still
     // accepts GraphQL — allow API cart when cookies + URL SKU are present.
     const wwwHtmlOk = pdpStatus > 0 && pdpStatus < 400;
+    // Stock probes and sticky resi share this lane: WWW HTML can stay denied
+    // while api.kmart.com.au GraphQL still accepts the jar.
     const apiSoftEntry =
       !wwwHtmlOk &&
-      stickyProxy &&
+      (stickyProxy || task.probeOnly === true) &&
       Boolean(sku) &&
       abckSolved(ctx.jar, 3) &&
       ctx.jar.has("bm_sv");
@@ -1641,7 +1793,7 @@ export const kmartAdapter = {
       steps.push({
         step: "pdp_soft_api",
         ok: true,
-        note: `WWW HTML blocked (pdp=${pdpStatus}) but sticky+abck+bm_sv+sku — attempting api cart with home referer`,
+        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${task.probeOnly ? " (probeOnly)" : ""}`,
       });
     }
     // Soft entry must not advertise a 403 PDP as document referer — Akamai
@@ -2358,6 +2510,47 @@ fragment LineItemFields on LineItem {
           ok: false,
           note: `skipped: cartId=${cartId ?? "null"} sku=${sku ?? "null"}`,
         });
+      }
+
+      // Stock probe via soft API: ATC proves availability; never pay.
+      if (task.probeOnly === true) {
+        const atcNotes = steps
+          .filter((s) => /cart_atc|cart_verify|cart_create|get.?token|gateway/i.test(String(s.step || "")))
+          .map((s) => String(s.note || ""))
+          .join(" | ");
+        const oos = /out of stock|insufficient|not available|Inventory|no stock|sold out/i.test(atcNotes);
+        const apiDenied = /Access\s+Denied|denied=true/i.test(atcNotes) && !cartAtcOk;
+        const inStock = cartAtcOk && cartVerifyHasSku ? true : oos ? false : null;
+        const ok = inStock === true || inStock === false;
+        const htmlProbe = parseKmartPdpProbe(pdpHtml || "", pdpUrl, { sku, pdpStatus });
+        steps.push({
+          step: "stock_probe",
+          ok,
+          note: `via=soft_api inStock=${inStock} cartAtcOk=${cartAtcOk} verify=${cartVerifyHasSku} oos=${oos} denied=${apiDenied}`,
+        });
+        return {
+          ok,
+          probeOnly: true,
+          inStock,
+          sku,
+          title: htmlProbe.title || null,
+          url: pdpUrl,
+          price: htmlProbe.price,
+          imageUrl: htmlProbe.imageUrl,
+          currency: "AUD",
+          pdpStatus,
+          blocked: Boolean(apiDenied && inStock == null),
+          error: ok
+            ? null
+            : apiDenied
+              ? "Akamai denied soft API / ATC (same lane as checkout)"
+              : `soft API stock unknown (cartId=${cartId ?? "null"} atc=${cartAtcOk})`,
+          steps,
+          finalUrl: pdpUrl,
+          cookies: ctx.jar.dump(),
+          dryRun: true,
+          checkoutStage: "product",
+        };
       }
 
       // ===================================================================

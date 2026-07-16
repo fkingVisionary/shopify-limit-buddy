@@ -1,6 +1,6 @@
-# J1m's Bot — Desktop (v1)
+# Vanta — Desktop (v1)
 
-Cyber-style local app: **must stay open** to run checkouts. Kmart full flow
+Local Electron app: **must stay open** to run checkouts. Kmart full flow
 (Akamai → cart → Paydock → 3DS → place order) runs on **this machine** via the
 existing `executor/` engine as a local sidecar — same checkout code as Fly.
 
@@ -27,15 +27,29 @@ npm start
 ┌─────────────────────────┐     localhost HTTP      ┌──────────────────────┐
 │  Electron UI            │ ─────────────────────▶  │  executor/ (sidecar) │
 │  profiles / proxies /    │     POST /run           │  kmart adapter       │
-│  tasks / job queue      │ ◀──── progress ──────── │  Hyper + Playwright  │
-└──────────┬──────────────┘                         └──────────────────────┘
-           │ optional
+│  private monitor /      │ ◀──── progress ──────── │  Hyper + Playwright  │
+│  global feed matcher    │                         └──────────────────────┘
+└──────────┬──────────────┘
+           │ optional SSE
            ▼
-┌─────────────────────────┐
-│  Control plane          │  validate-key (Whop-ready)
-│  (Railway dashboard)    │  hyper-provision (opt-in)
+┌─────────────────────────┐     optional
+│  monitor/ (Fly syd)     │ ◀── control plane validate-key (Whop-ready)
+│  operator watchlist     │
+│  ISP poll → /feed       │
 └─────────────────────────┘
 ```
+
+### Monitor input (Cyber-style)
+
+Task creator accepts **keywords**, **PDP URL**, or **SKU**, plus source:
+
+- **Private** — poll Kmart on your proxies; auto-checkout when in stock
+- **Global** — match the in-house operator SSE feed (baked into the app; ISP fleet). Proxies are checkout egress only.
+- **Private** — poll Kmart on your proxies; auto-checkout when in stock
+
+Keyword syntax: `pokemon,etb,-plush` (AND / negatives), `a/b` for OR within a slot.
+
+See [`../monitor/README.md`](../monitor/README.md) for the operator-run global service (Fly syd). Local ops can override the baked feed with `MONITOR_FEED_URL`.
 
 ## API key / Whop (not gated yet)
 

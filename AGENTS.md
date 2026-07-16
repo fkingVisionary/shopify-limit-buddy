@@ -6,9 +6,9 @@
 This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is the
 primary product: a TanStack Start + Vite + React 19 web app (the "control plane").
 Subdirectories `executor/` (Node/Fastify checkout engine), `runner/` (legacy
-Electron Shopify agent), and `desktop/` (Cyber-style local Kmart app) are
-**optional** auxiliary services. `supabase/` holds hosted DB
-migrations + one Deno edge function.
+Electron Shopify agent), `desktop/` (Cyber-style local Kmart app), and
+`monitor/` (operator Kmart stock feed) are **optional** auxiliary services.
+`supabase/` holds hosted DB migrations + one Deno edge function.
 
 ### Root web app (primary service)
 - Package manager is **Bun** (`bun.lock`, `bunfig.toml`); do not use npm/pnpm here.
@@ -40,7 +40,11 @@ migrations + one Deno edge function.
   install-browsers && npm start`). Requires a display; not practical to run headless.
 - `desktop/`: **J1m's Bot desktop v1** — local Kmart checkout with profiles/proxies/tasks
   on disk, API-key license (Whop-ready, not gated), localhost proxies. Spawns
-  `executor/` as a sidecar so the Kmart flow stays identical to Fly.
+  `executor/` as a sidecar so the Kmart flow stays identical to Fly. Supports
+  Cyber-style monitor input (keywords/URL/SKU) with Private or Global source.
   (`cd desktop && npm run setup && npm start`). See `desktop/README.md`.
+- `monitor/`: **Operator Kmart monitor** — ISP poll + SSE `/feed` (detect only, never
+  checkout). Deploy on Fly `syd`. (`cd monitor && npm install && npm start`).
+  See `monitor/README.md`.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.

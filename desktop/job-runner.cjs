@@ -23,6 +23,8 @@ let running = false;
 let maxConcurrent = 5;
 let emit = () => {};
 let onFinished = null;
+/** Soft-cancelled task ids — queued jobs dropped; in-flight runs finish as cancelled. */
+const cancelledTasks = new Set();
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -148,6 +150,7 @@ function buildPayload(job) {
 function enqueue(jobs) {
   const list = Array.isArray(jobs) ? jobs : [jobs];
   for (const job of list) {
+    if (job.task?.id) cancelledTasks.delete(job.task.id);
     queue.push({
       ...job,
       runId: job.runId || id("run"),
@@ -167,7 +170,26 @@ function start() {
 function stop() {
   running = false;
   queue = [];
+  cancelledTasks.clear();
   emit({ type: "runner", ...state(), message: "stopped — queue cleared" });
+}
+
+/** Soft-cancel: drop queued jobs for a task. In-flight checkouts finish but are marked cancelled. */
+function cancelTask(taskId) {
+  if (!taskId) return { removed: 0 };
+  const before = queue.length;
+  queue = queue.filter((j) => j.task?.id !== taskId);
+  cancelledTasks.add(taskId);
+  emit({ type: "queue", ...state(), cancelledTaskId: taskId });
+  return { removed: before - queue.length };
+}
+
+function isCancelled(taskId) {
+  return taskId ? cancelledTasks.has(taskId) : false;
+}
+
+function clearCancelled(taskId) {
+  if (taskId) cancelledTasks.delete(taskId);
 }
 
 function pump() {
@@ -332,6 +354,7 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
     try {
+      if (isCancelled(job.task?.id)) return;
       const p = await sidecar.progress(payload.taskId);
       if (p?.found && p.progress) {
         const line = stageLogLine(p.progress);
@@ -436,6 +459,18 @@ async function runOne(job) {
       logResultTail(job, result);
     }
 
+    if (isCancelled(job.task?.id)) {
+      clearCancelled(job.task.id);
+      result = {
+        ...result,
+        ok: false,
+        cancelled: true,
+        error: "Stopped",
+        checkoutStage: result.checkoutStage || "cancelled",
+      };
+      emitLog(job.runId, job.task?.id, "muted", "stopped by user");
+    }
+
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   } catch (e) {
@@ -446,6 +481,11 @@ async function runOne(job) {
       error: e.message || String(e),
       at: Date.now(),
     };
+    if (isCancelled(job.task?.id)) {
+      clearCancelled(job.task.id);
+      result.cancelled = true;
+      result.error = "Stopped";
+    }
     emitLog(job.runId, job.task?.id, "err", `executor threw: ${result.error}`);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
@@ -460,6 +500,8 @@ module.exports = {
   enqueue,
   start,
   stop,
+  cancelTask,
+  isCancelled,
   buildPayload,
   normalizeProxy,
   isAkamaiWwwBlocked,

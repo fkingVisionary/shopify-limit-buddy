@@ -2,182 +2,389 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>J1m's Bot</title>
+  <title>Vanta</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span id="engineDot" class="dot"></span>
-      <div>
-        <div class="brand-name">J1m's Bot</div>
-        <div class="brand-sub" id="engineLabel">Engine offline — app must stay open to run</div>
+  <div class="app">
+    <header class="topnav">
+      <div class="topnav-left">
+        <img class="topnav-logo" src="assets/icon.png" alt="" width="28" height="28" />
+        <span class="topnav-brand">VANTA</span>
+        <nav class="topnav-tabs" aria-label="Main">
+          <button type="button" data-tab="home">Home</button>
+          <button type="button" data-tab="tasks" class="active">Tasks</button>
+          <button type="button" data-tab="monitor">Monitor</button>
+          <button type="button" data-tab="proxies">Proxies</button>
+          <button type="button" data-tab="profiles">Profiles</button>
+          <button type="button" data-tab="settings">Settings</button>
+        </nav>
       </div>
-    </div>
-    <div class="top-actions">
-      <button id="btnStartEngine" type="button">Start engine</button>
-      <button id="btnStopEngine" class="secondary" type="button">Stop</button>
-      <button id="btnRunAll" type="button">Run enabled tasks</button>
-    </div>
-  </header>
+      <div class="topnav-right">
+        <span id="clock" class="clock">--:--:--</span>
+      </div>
+    </header>
 
-  <nav class="tabs">
-    <button type="button" data-tab="tasks" class="active">Tasks</button>
-    <button type="button" data-tab="profiles">Profiles</button>
-    <button type="button" data-tab="proxies">Proxies</button>
-    <button type="button" data-tab="results">Results</button>
-    <button type="button" data-tab="settings">Settings</button>
-  </nav>
-
-  <main>
-    <!-- TASKS -->
-    <section id="tab-tasks" class="panel active">
-      <div class="split">
-        <div>
-          <h2>Kmart tasks</h2>
-          <p class="hint">Full checkout runs on this machine (localhost proxies OK). Future stores use the same task list.</p>
-          <div id="taskList" class="list"></div>
-        </div>
-        <form id="taskForm" class="form-card">
-          <h3 id="taskFormTitle">New task</h3>
-          <input type="hidden" id="taskId" />
-          <label>Label</label>
-          <input id="taskLabel" placeholder="Drop SKU name" />
-          <label>Store</label>
-          <select id="taskStore">
-            <option value="kmart">Kmart AU</option>
-          </select>
-          <label>Product URL (PDP)</label>
-          <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
-          <div class="grid2">
-            <div>
-              <label>Qty per checkout</label>
-              <input id="taskQty" type="number" min="1" max="20" value="1" />
+    <div class="workspace">
+      <!-- HOME -->
+      <section id="tab-home" class="panel home-panel">
+        <div class="home-main">
+          <div class="home-card">
+            <div class="home-card-tabs">
+              <button type="button" class="seg active" data-home-metric="checkouts">Checkouts</button>
+              <button type="button" class="seg" data-home-metric="spend">Spend</button>
+              <div class="seg-spacer"></div>
+              <button type="button" class="seg tiny active" data-home-period="today">Today</button>
+              <button type="button" class="seg tiny" data-home-period="week">Week</button>
+              <button type="button" class="seg tiny" data-home-period="month">Month</button>
             </div>
-            <div>
-              <label>Task quantity</label>
-              <input id="taskQuantity" type="number" min="1" max="50" value="1" />
+            <div class="home-stat">
+              <div id="homeStatLabel" class="home-stat-label">0 Checkouts</div>
+              <div id="homeEmpty" class="home-empty">
+                <strong>Nothing to see here</strong>
+                <p>No checkouts for this period yet.</p>
+              </div>
             </div>
           </div>
-          <label>Profile</label>
-          <select id="taskProfile"></select>
-          <label>Proxy group</label>
-          <select id="taskProxy">
-            <option value="">Direct (no proxy)</option>
+          <div class="home-card">
+            <div class="home-card-head">
+              <h2>Activity</h2>
+            </div>
+            <div id="liveLog" class="log home-log"></div>
+          </div>
+        </div>
+        <aside class="home-feed">
+          <h2>Checkout feed</h2>
+          <div id="checkoutFeed" class="feed-list"></div>
+        </aside>
+      </section>
+
+      <!-- TASKS -->
+      <section id="tab-tasks" class="panel split-panel active">
+        <aside class="group-rail">
+          <div class="rail-head">
+            <span>Task groups</span>
+          </div>
+          <div id="taskGroupList" class="rail-list"></div>
+          <div class="rail-foot">
+            <button type="button" class="rail-add" id="btnAddGroup">+ New group</button>
+          </div>
+        </aside>
+        <div class="stage">
+          <div class="stage-head">
+            <div>
+              <h2 id="taskGroupTitle">Tasks</h2>
+              <p id="taskGroupMeta" class="stage-meta">0 tasks</p>
+            </div>
+            <div class="stage-stats" id="taskGroupStats"></div>
+            <input id="taskSearch" class="search" type="search" placeholder="Search tasks" />
+          </div>
+          <div id="taskEmpty" class="empty-gate" hidden></div>
+          <div class="table-wrap">
+            <table class="data-table" id="taskTable">
+              <thead>
+                <tr>
+                  <th>Store</th>
+                  <th>Product</th>
+                  <th>Profile</th>
+                  <th>Proxies</th>
+                  <th>Status</th>
+                  <th class="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="taskList"></tbody>
+            </table>
+          </div>
+          <footer class="action-bar">
+            <div class="action-bar-left">
+              <button type="button" id="btnOpenCreateTask" class="btn-accent">+ Task creator</button>
+              <button type="button" id="btnClearTasks" class="btn-danger-soft">Clear tasks</button>
+            </div>
+            <div class="action-bar-center">
+              <button type="button" id="btnStartGroup" class="btn-start">Start tasks</button>
+              <button type="button" id="btnStopGroup" class="btn-stop">Stop tasks</button>
+            </div>
+            <div class="action-bar-right"></div>
+          </footer>
+        </div>
+      </section>
+
+      <!-- PROXIES -->
+      <section id="tab-proxies" class="panel split-panel">
+        <aside class="group-rail">
+          <div class="rail-head"><span>Proxy groups</span></div>
+          <div id="proxyGroupList" class="rail-list"></div>
+          <div class="rail-foot">
+            <button type="button" class="rail-add" id="btnOpenCreateProxy">+ New group</button>
+          </div>
+        </aside>
+        <div class="stage">
+          <div class="stage-head">
+            <div>
+              <h2 id="proxyGroupTitle">Proxies</h2>
+              <p id="proxyGroupMeta" class="stage-meta">0 proxies loaded</p>
+            </div>
+            <div class="stage-actions">
+              <select id="proxyProbeStore" class="inline-select" title="Test store"></select>
+              <input id="proxyProbeCustomUrl" class="search narrow" placeholder="Custom probe URL" autocomplete="off" />
+              <button type="button" id="btnAddProxies" class="btn-accent">Add proxies</button>
+              <button type="button" id="btnTestProxies" class="btn-secondary">Test</button>
+              <button type="button" id="btnClearProxies" class="btn-danger-soft">Clear all</button>
+            </div>
+          </div>
+          <p id="proxyProbeNotes" class="hint pad-x"></p>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Entry</th>
+                  <th>Status</th>
+                  <th>Exit IP</th>
+                  <th>Latency</th>
+                  <th class="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="proxyEntryList"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- PROFILES -->
+      <section id="tab-profiles" class="panel split-panel">
+        <aside class="group-rail">
+          <div class="rail-head"><span>Profiles</span></div>
+          <div class="rail-list">
+            <button type="button" class="rail-item active" id="profileRailAll">
+              <span>All profiles</span>
+              <span id="profileRailCount" class="rail-count">0</span>
+            </button>
+          </div>
+        </aside>
+        <div class="stage">
+          <div class="stage-head">
+            <div>
+              <h2>Profiles</h2>
+              <p id="profileMeta" class="stage-meta">0 profiles loaded</p>
+            </div>
+            <div class="stage-actions">
+              <input id="profileSearch" class="search" type="search" placeholder="Search profiles" />
+              <button type="button" id="btnOpenCreateProfile" class="btn-accent">Add profile</button>
+              <button type="button" id="btnClearProfiles" class="btn-danger-soft">Clear profiles</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Profile</th>
+                  <th>Email</th>
+                  <th>Card holder</th>
+                  <th>Card</th>
+                  <th>Shipping</th>
+                  <th class="col-actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="profileList"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- GLOBAL MONITOR (Cyber-style feed) -->
+      <section id="tab-monitor" class="panel monitor-panel">
+        <div class="mf-shell">
+          <header class="mf-header">
+            <div class="mf-tabs">
+              <button type="button" class="mf-tab active" data-mf-pane="feed">Monitor Feed</button>
+              <button type="button" class="mf-tab" data-mf-pane="smart" title="Coming later">Smart Actions</button>
+            </div>
+            <div class="mf-header-meta">
+              <span id="monitorConnBadge" class="badge">Offline</span>
+              <span id="monitorRate" class="mf-rate">0/min</span>
+              <button type="button" id="btnMonitorConnect" class="mf-icon-btn" title="Reconnect">↻</button>
+            </div>
+          </header>
+
+          <div id="mfPaneFeed" class="mf-pane active">
+            <div class="mf-toolbar">
+              <div class="mf-search-wrap">
+                <span class="mf-search-icon" aria-hidden="true">⌕</span>
+                <input id="monitorFilter" class="mf-search" type="search" placeholder="Search feed" />
+              </div>
+            </div>
+            <div id="monitorEmpty" class="mf-empty">
+              <strong>Listening for drops</strong>
+              <p>In-house Kmart monitor on our ISP fleet. Events appear here the moment we detect them.</p>
+            </div>
+            <div id="monitorList" class="mf-list" role="list"></div>
+          </div>
+
+          <div id="mfPaneSmart" class="mf-pane">
+            <div class="mf-empty">
+              <strong>Smart Actions — soon</strong>
+              <p>Rule engine on this shared feed (create/start tasks on ping). Feed first; rules next.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section id="tab-settings" class="panel settings-panel">
+        <div class="form-card wide">
+          <h2>Settings</h2>
+          <p class="hint">API key is Whop-ready: validation hits the control plane when a URL is set. Leave URL empty for local/dev mode.</p>
+          <label>API key</label>
+          <input id="setApiKey" placeholder="Your license API key" autocomplete="off" />
+          <label>Control plane URL (optional for now)</label>
+          <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
+          <label>Hyper API key (BYO — recommended for v1)</label>
+          <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
+          <label>Max concurrent checkouts</label>
+          <input id="setMax" type="number" min="1" max="50" value="5" />
+          <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
+          <div class="row">
+            <button type="button" id="btnSaveSettings" class="btn-accent">Save settings</button>
+            <button type="button" class="btn-secondary" id="btnValidate">Validate API key</button>
+          </div>
+          <p id="licenseMsg" class="hint"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Create / Edit Task -->
+  <dialog id="taskDialog" class="modal">
+    <form id="taskForm" method="dialog" class="modal-card">
+      <div class="modal-header">
+        <h3 id="taskFormTitle">+ New task</h3>
+        <button type="button" class="icon-btn" id="taskDialogClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-section">Setup</div>
+      <div class="modal-body">
+        <input type="hidden" id="taskId" />
+        <label>Store</label>
+        <select id="taskStore"></select>
+        <div id="addStoreFields" class="add-store" hidden>
+          <label>Store name</label>
+          <input id="newStoreName" placeholder="Display name" />
+          <label>Store URL</label>
+          <input id="newStoreUrl" placeholder="https://store.com" />
+          <div class="row">
+            <button type="button" id="btnSaveCustomStore" class="btn-accent">Save store</button>
+            <button type="button" class="btn-secondary" id="btnCancelCustomStore">Cancel</button>
+          </div>
+        </div>
+        <label id="taskInputLabel">Product</label>
+        <input id="taskPdp" placeholder="URL, SKU, or keywords — e.g. pokemon,etb,-plush" />
+        <p id="taskInputHint" class="field-hint">URL/SKU preferred. Keywords need Monitor for restock. Start always checks stock first when possible.</p>
+        <label class="check" id="taskMonitorEnabledWrap">
+          <input id="taskMonitorEnabled" type="checkbox" /> Monitor for restock
+        </label>
+        <p class="field-hint">Off = check stock once and checkout if available. On = wait (Private or Global) when OOS.</p>
+        <div id="taskMonitorSourceWrap">
+          <label>Monitor source</label>
+          <select id="taskMonitorSource">
+            <option value="global">Global (in-house feed)</option>
+            <option value="private">Private (your proxies)</option>
           </select>
-          <label class="check"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
-          <div class="row">
-            <button type="submit">Save task</button>
-            <button type="button" class="secondary" id="taskReset">Clear</button>
-            <button type="button" id="taskRunOne">Run this</button>
-          </div>
-        </form>
-      </div>
-    </section>
-
-    <!-- PROFILES -->
-    <section id="tab-profiles" class="panel">
-      <div class="split">
-        <div>
-          <h2>Profiles</h2>
-          <p class="hint">Stored only on this computer. Used for address + card on checkout.</p>
-          <div id="profileList" class="list"></div>
         </div>
-        <form id="profileForm" class="form-card">
-          <h3>Profile</h3>
-          <input type="hidden" id="profId" />
-          <label>Name</label>
-          <input id="profName" placeholder="Main" />
-          <div class="grid2">
-            <div><label>First</label><input id="profFirst" /></div>
-            <div><label>Last</label><input id="profLast" /></div>
+        <label>Label <span class="optional">(optional)</span></label>
+        <input id="taskLabel" placeholder="Drop SKU name" />
+        <div class="grid2">
+          <div>
+            <label>Profile</label>
+            <select id="taskProfile"></select>
           </div>
-          <label>Email</label>
-          <input id="profEmail" type="email" />
-          <label>Phone</label>
-          <input id="profPhone" />
-          <label>Address</label>
-          <input id="profAddress1" />
-          <div class="grid2">
-            <div><label>City</label><input id="profCity" /></div>
-            <div><label>State</label><input id="profProvince" placeholder="NSW" /></div>
+          <div>
+            <label id="taskProxyLabel">Connection</label>
+            <select id="taskProxy">
+              <option value="">Automatic</option>
+            </select>
           </div>
-          <label>Postcode</label>
-          <input id="profZip" />
-          <hr />
-          <label>Card number</label>
-          <input id="profCardNumber" autocomplete="off" />
-          <label>Name on card</label>
-          <input id="profCardName" />
-          <div class="grid3">
-            <div><label>MM</label><input id="profMm" maxlength="2" /></div>
-            <div><label>YY</label><input id="profYy" maxlength="4" /></div>
-            <div><label>CVV</label><input id="profCvv" maxlength="4" /></div>
-          </div>
-          <div class="row">
-            <button type="submit">Save profile</button>
-            <button type="button" class="secondary" id="profReset">Clear</button>
-          </div>
-        </form>
-      </div>
-    </section>
-
-    <!-- PROXIES -->
-    <section id="tab-proxies" class="panel">
-      <div class="split">
-        <div>
-          <h2>Proxy groups</h2>
-          <p class="hint">One entry per line. Supports <code>127.0.0.1:PORT</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>.</p>
-          <div id="proxyList" class="list"></div>
         </div>
-        <form id="proxyForm" class="form-card">
-          <h3>Proxy group</h3>
-          <input type="hidden" id="pxId" />
-          <label>Name</label>
-          <input id="pxName" placeholder="Local manager" />
-          <label>Entries</label>
-          <textarea id="pxEntries" rows="10" placeholder="127.0.0.1:60000&#10;user:pass@host:8000"></textarea>
-          <div class="row">
-            <button type="submit">Save group</button>
-            <button type="button" class="secondary" id="pxReset">Clear</button>
+        <p id="taskProxyHint" class="field-hint">Used for stock check + checkout. Global detect uses the in-house feed.</p>
+        <div class="grid2">
+          <div>
+            <label>Qty per checkout</label>
+            <input id="taskQty" type="number" min="1" max="20" value="1" />
           </div>
-        </form>
-      </div>
-    </section>
-
-    <!-- RESULTS -->
-    <section id="tab-results" class="panel">
-      <h2>Results</h2>
-      <div id="liveLog" class="log"></div>
-      <div id="resultList" class="list"></div>
-    </section>
-
-    <!-- SETTINGS -->
-    <section id="tab-settings" class="panel">
-      <div class="form-card wide">
-        <h2>Settings</h2>
-        <p class="hint">API key is Whop-ready: validation hits the control plane when a URL is set. Leave URL empty for local/dev mode. Pairing codes are not used.</p>
-        <label>API key</label>
-        <input id="setApiKey" placeholder="Your license API key" autocomplete="off" />
-        <label>Control plane URL (optional for now)</label>
-        <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
-        <label>Hyper API key (BYO — recommended for v1)</label>
-        <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
-        <label>Paydock public key (Kmart widget — static)</label>
-        <input id="setPaydockPk" placeholder="Paste once; used for card tokenize" autocomplete="off" />
-        <p class="hint">This is Kmart’s client-side Paydock public key (same value the browser widget uses). It does not rotate. Leave blank to use PAYDOCK_PUBLIC_KEY from the environment / baked-in default.</p>
-        <label>Max concurrent checkouts</label>
-        <input id="setMax" type="number" min="1" max="50" value="5" />
-        <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
-        <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
-        <div class="row">
-          <button type="button" id="btnSaveSettings">Save settings</button>
-          <button type="button" class="secondary" id="btnValidate">Validate API key</button>
+          <div id="taskQuantityWrap">
+            <label>Task quantity</label>
+            <input id="taskQuantity" type="number" min="1" max="100" value="1" />
+          </div>
         </div>
-        <p id="licenseMsg" class="hint"></p>
+        <label class="check" id="taskPlaceOrderWrap"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
       </div>
-    </section>
-  </main>
+      <div class="modal-footer">
+        <button type="submit" id="taskSubmitBtn" class="btn-accent wide">Create task</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Create / Edit Profile -->
+  <dialog id="profileDialog" class="modal">
+    <form id="profileForm" method="dialog" class="modal-card">
+      <div class="modal-header">
+        <h3 id="profileFormTitle">New profile</h3>
+        <button type="button" class="icon-btn" id="profileDialogClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="profId" />
+        <label>Name</label>
+        <input id="profName" placeholder="Main" />
+        <div class="grid2">
+          <div><label>First</label><input id="profFirst" /></div>
+          <div><label>Last</label><input id="profLast" /></div>
+        </div>
+        <label>Email</label>
+        <input id="profEmail" type="email" />
+        <label>Phone</label>
+        <input id="profPhone" />
+        <label>Address</label>
+        <input id="profAddress1" />
+        <div class="grid2">
+          <div><label>City</label><input id="profCity" /></div>
+          <div><label>State</label><input id="profProvince" placeholder="NSW" /></div>
+        </div>
+        <label>Postcode</label>
+        <input id="profZip" />
+        <hr />
+        <label>Card number</label>
+        <input id="profCardNumber" autocomplete="off" />
+        <label>Name on card</label>
+        <input id="profCardName" />
+        <div class="grid3">
+          <div><label>MM</label><input id="profMm" maxlength="2" /></div>
+          <div><label>YY</label><input id="profYy" maxlength="4" /></div>
+          <div><label>CVV</label><input id="profCvv" maxlength="4" /></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="submit" class="btn-accent wide">Save profile</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Create / Edit Proxy group -->
+  <dialog id="proxyDialog" class="modal">
+    <form id="proxyForm" method="dialog" class="modal-card">
+      <div class="modal-header">
+        <h3 id="proxyFormTitle">Proxy group</h3>
+        <button type="button" class="icon-btn" id="proxyDialogClose" aria-label="Close">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="pxId" />
+        <label>Name</label>
+        <input id="pxName" placeholder="Local manager" />
+        <label>Entries</label>
+        <textarea id="pxEntries" rows="10" placeholder="127.0.0.1:60000&#10;user:pass@host:8000"></textarea>
+      </div>
+      <div class="modal-footer">
+        <button type="submit" class="btn-accent wide">Save group</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="app.js"></script>
 </body>
