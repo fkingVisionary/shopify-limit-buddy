@@ -729,70 +729,22 @@ export const kmartAdapter = {
     let prevContext = null;
     let lastSbsdUuid = "";
 
-    // 1. Resolve egress IP for Hyper fingerprinting. Proxy comes from the
-    //    task payload only — never a hard-coded / env default in this adapter.
-    //    Some residential pools block ipify; resolveEgressIp tries several hosts.
+    // 1. Resolve egress IP — PR #32: single soft resolve, no pre-warm ProxyAgent
+    //    reset. Electron Update's ISP second-pass resetUndici altered the tunnel
+    //    before sensors and is gone.
     const stickyProxy = isStickyProxyUrl(task.proxy);
     let egressIp = null;
-    // Parallel IP race (ip-resolve.js) — one pass is enough for sticky; ISP
-    // gets a second pass with agent reset if the first echo host flaked.
-    const ipAttempts = stickyProxy ? 1 : 2;
-    for (let attempt = 0; attempt < ipAttempts && !egressIp; attempt++) {
-      if (attempt > 0) {
-        try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(400, 900);
-      }
-      await tStep(attempt === 0 ? "resolve_ip" : `resolve_ip#${attempt + 1}`, async () => {
-        const v = await resolveEgressIp(ctx, { force: true });
-        egressIp = v;
-        const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
-        return {
-          note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}${stickyProxy ? " sticky=1" : ""}`,
-          ok: Boolean(v),
-        };
-      });
-    }
-    // Soft: missing IP is a Hyper quality hit, not a hard stop. Residential
-    // tunnels often block IP-echo hosts while Kmart still works (ISP proved
-    // the rest of the path). Abort only when proxied IP equals direct IP.
+    await tStep("resolve_ip", async () => {
+      const v = await resolveEgressIp(ctx);
+      egressIp = v;
+      return { note: v ?? "(no ip)", ok: Boolean(v) };
+    });
     if (task.proxy && !egressIp) {
       steps.push({
         step: "resolve_ip:warn",
         ok: true,
         note: "proxy set but no IP echo host answered — continuing; Hyper may get empty ip",
       });
-    }
-
-    // When a proxy is configured and we have both IPs, confirm exit changed.
-    if (task.proxy && egressIp) {
-      let directIp = null;
-      const directDispatcher = makeDispatcher(null, { forceUndici: true });
-      try {
-        directIp = await resolveEgressIp({ dispatcher: directDispatcher }, { force: true });
-      } catch {
-        directIp = null;
-      } finally {
-        try {
-          await directDispatcher.close?.();
-        } catch {
-          /* ignore */
-        }
-      }
-      const same = Boolean(egressIp && directIp && egressIp === directIp);
-      await tStep("proxy_egress", async () => ({
-        ok: !same,
-        note: `proxied=${egressIp ?? "?"} direct=${directIp ?? "?"} same=${same}`,
-      }));
-      if (same) {
-        return {
-          ok: false,
-          steps,
-          failedStep: "proxy_egress",
-          checkoutStage: "pre_cart",
-          finalUrl: task.storeUrl,
-          cookies: ctx.jar.dump(),
-        };
-      }
     }
 
     // Hybrid resume: Playwright (or another lane) can seed a solved jar and
@@ -980,12 +932,12 @@ export const kmartAdapter = {
           {
             method: "GET",
             headers: {
+              // PR #32 fingerprint: no Client-Hints / accept-encoding on SBSD script GET.
+              // Electron Update added CHROME_CH here and WWW trust collapsed after solve.
               "user-agent": UA,
               referer: pageUrl,
               "accept-language": ACCEPT_LANG,
-              "accept-encoding": "gzip, deflate, br, zstd",
               accept: "*/*",
-              ...CHROME_CH,
               "sec-fetch-dest": "script",
               "sec-fetch-mode": "no-cors",
               "sec-fetch-site": "same-origin",
@@ -1016,8 +968,9 @@ export const kmartAdapter = {
       let sbsdRoundOk = 0;
       for (let i = 0; i < rounds; i++) {
         if (i > 0) {
-          // Keep the same ProxyAgent sticky session across SBSD rounds —
-          // resetting undici here often rotates exit IP and prevents bm_sv.
+          // PR #32: refresh ProxyAgent between passive SBSD POSTs. Electron Update
+          // removed this for sticky resi and ISP lost the proven mid-SBSD refresh.
+          try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
           await sleep(400, 900);
         }
         try {
@@ -1040,13 +993,13 @@ export const kmartAdapter = {
             {
               method: "POST",
               headers: {
+                // PR #32: no Client-Hints on SBSD POST.
                 "user-agent": UA,
                 "content-type": "application/json",
                 accept: "*/*",
                 "accept-language": ACCEPT_LANG,
                 origin,
                 referer: pageUrl,
-                ...CHROME_CH,
                 "sec-fetch-dest": "empty",
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
@@ -1110,42 +1063,10 @@ export const kmartAdapter = {
           });
         }
       }
-      // Passive SBSD must mint bm_sv for WWW HTML trust. Hard challenge (t=)
-      // is a single round and may not always set bm_sv the same way.
-      let bmSvMinted = ctx.jar.has("bm_sv");
-      if (!parsed.t && sbsdRoundOk >= 2 && !bmSvMinted) {
-        // Some edges mint bm_sv on the follow-up document GET, not the SBSD POST.
-        try {
-          const follow = await request(
-            pageUrl,
-            { method: "GET", headers: navHeaders({ referer: pageUrl, site: "same-origin" }) },
-            ctx,
-          );
-          const followHtml = await follow.text().catch(() => "");
-          bmSvMinted = ctx.jar.has("bm_sv");
-          steps.push({
-            step: `${label}:follow_get`,
-            ok: follow.status < 400,
-            status: follow.status,
-            note: `bm_sv=${bmSvMinted} setCookies=[${cookieNamesFromResponse(follow).join(",") || "none"}] htmlBytes=${followHtml.length}`,
-          });
-        } catch (e) {
-          steps.push({
-            step: `${label}:follow_get`,
-            ok: false,
-            note: `err=${e?.message ?? e}`,
-          });
-        }
-      }
-      if (!parsed.t && sbsdRoundOk >= 2 && !bmSvMinted) {
-        steps.push({
-          step: `${label}:no_bm_sv`,
-          ok: false,
-          note: "passive SBSD rounds returned 200 but bm_sv never minted — WWW category/PDP will Access Denied",
-        });
-        return false;
-      }
-      return bmSvMinted || sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
+      // PR #32: do NOT re-GET the document after SBSD (follow_get). That Electron
+      // Update addition rewrote cookies post-solve and poisoned category/PDP.
+      // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
+      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
     };
 
     // NOTE: SBSD runs AFTER sensors below (Kmart needs a solved _abck before
@@ -1339,21 +1260,9 @@ export const kmartAdapter = {
       }
     }
 
-    // 3b. Proactive SBSD after sensors. ISP path succeeds even when homepage
-    //     SBSD leaves bm_sv=false and mints later on PDP — do not hard-stop.
-    //     Skip if sticky already ran sbsd_home_presolve above.
-    const alreadySbsd = steps.some((s) => String(s.step || "").startsWith("sbsd_home_presolve"));
-    const sbsdHomeOk = alreadySbsd ? ctx.jar.has("bm_sv") : await runSbsd(html, origin + "/", "sbsd_home");
-    if (!sbsdHomeOk && !ctx.jar.has("bm_sv")) {
-      const ranPassive = steps.some((s) => String(s.step || "").startsWith("sbsd_home:round") || String(s.step || "").startsWith("sbsd_home_presolve:round"));
-      if (ranPassive) {
-        steps.push({
-          step: "sbsd_home:warn",
-          ok: true,
-          note: "bm_sv not minted on homepage SBSD — continuing (PDP SBSD / ISP path may still clear)",
-        });
-      }
-    }
+    // 3b. Proactive SBSD on the homepage HTML — PR #32 shape (always run once
+    //     after sensors; no follow_get / no bm_sv hard-stop).
+    await runSbsd(html, origin + "/", "sbsd_home");
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
@@ -1386,37 +1295,8 @@ export const kmartAdapter = {
     // (step 6 below) still runs when the PDP actually embeds a pixel.
 
 
-    // Verify egress IP held. Soft-warn on sticky resi (echo hosts flake /
-    // brief drift). Hard-fail only for non-sticky (ISP) when IP clearly changed.
-    let verifyIpAbort = false;
-    await tStep("verify_ip", async () => {
-      if (!egressIp) {
-        return { ok: true, note: "start=? skipped (no initial ip)" };
-      }
-      const ipNow = await resolveEgressIp(ctx, { force: true });
-      const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-      const hardDrift = Boolean(task.proxy && !same && !stickyProxy && ipNow);
-      if (hardDrift) verifyIpAbort = true;
-      return {
-        ok: !hardDrift,
-        note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${same}${stickyProxy ? " sticky=1" : ""}${hardDrift ? " abort=1" : ""}`,
-      };
-    });
-    if (verifyIpAbort) {
-      return {
-        ok: false,
-        steps,
-        failedStep: "verify_ip",
-        checkoutStage: "pre_cart",
-        finalUrl: origin,
-        cookies: ctx.jar.dump(),
-      };
-    }
-
-    // 4c. Intermediate category browse is OPTIONAL. On some residential exits
-    //     /category/* is hard-blocked even with bm_sv, while PDP with a home
-    //     referer still returns 200. Prefer home → PDP when task.skipCategory
-    //     is set; otherwise try category once, then fall through to PDP.
+    // 4c. Intermediate category browse — PR #32 always does this hop (optional
+    //     skipCategory remains for experiments). Refresh ProxyAgent first.
     const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
     const catUrl = origin + catPath;
     let categoryStatus = 0;
@@ -1427,6 +1307,7 @@ export const kmartAdapter = {
       steps.push({ step: "category_browse", ok: true, note: "skipped (home→PDP)" });
     } else {
     await sleep(700, 1400); // brief glance at homepage before the click
+    try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
     try {
     await tStep("category_browse", async () => {
       const res = await request(
@@ -1623,12 +1504,20 @@ export const kmartAdapter = {
       }
     }
 
-
+    // PR #32: verify egress after first PDP (and optional sensor retry), before
+    // PDP SBSD. Soft signal only — do not hard-abort (Electron Update moved a
+    // hard ISP verify before category and poisoned the nav order).
+    await tStep("verify_ip", async () => {
+      const ipNow = await resolveEgressIp(ctx, { force: true });
+      const same = ipNow && egressIp && ipNow === egressIp;
+      return { ok: Boolean(same), note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${Boolean(same)}` };
+    });
 
     // 5b. SBSD challenge — the PDP response (200 OR 403/429) carries a
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
+    //     PR #32 stops at pdp_get#2 — no #3/#4 / sticky_unlock cookie rewrites.
     if (parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
@@ -1646,86 +1535,6 @@ export const kmartAdapter = {
         };
         return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
       });
-      // Residential often needs an extra dwell after bm_sv mints before WWW
-      // HTML unlocks. ISP usually clears on #2 — this is a no-op then.
-      if (pdpStatus >= 400 && ctx.jar.has("bm_sv")) {
-        await sleep(stickyProxy ? 1800 : 900, stickyProxy ? 3200 : 1600);
-        const pdp3Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
-        await tStep("pdp_get#3", async () => {
-          const res = await request(pdpUrl, { method: "GET", headers: pdp3Headers }, ctx);
-          pdpStatus = res.status;
-          pdpHtml = await res.text();
-          const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
-          return {
-            status: res.status,
-            ok: res.status < 400,
-            note: `bm_sv=${ctx.jar.has("bm_sv")} sticky=${stickyProxy ? 1 : 0} | ${snippet}`,
-          };
-        });
-      }
-      // Sticky only: one more WWW sensor + PDP attempt before soft-API.
-      // Real PDP HTML (wwwHtmlOk) clears GraphQL far more often than soft entry.
-      if (stickyProxy && pdpStatus >= 400 && scriptPath && scriptBody) {
-        steps.push({
-          step: "pdp_get:sticky_unlock",
-          ok: true,
-          note: "PDP still blocked — refreshing WWW sensor then pdp_get#4 before soft API",
-        });
-        const wwwScriptUrl = origin + scriptPath;
-        let unlockCtx = prevContext;
-        for (let i = 0; i < 2; i++) {
-          try {
-            await tStep(`pdp_get:sticky_sensor#${i + 1}`, async () => {
-              const r = await solveAkamaiSensor({
-                jar: ctx.jar,
-                pageUrl: pdpUrl,
-                userAgent: UA,
-                ip: egressIp,
-                acceptLanguage: ACCEPT_LANG,
-                scriptUrl: wwwScriptUrl,
-                scriptBody: i === 0 ? scriptBody : "",
-                prevContext: unlockCtx,
-                version: "3",
-              });
-              unlockCtx = r.context;
-              prevContext = r.context;
-              const sRes = await request(
-                wwwScriptUrl,
-                {
-                  method: "POST",
-                  headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
-                  body: akamaiSensorBody(r.payload),
-                },
-                ctx,
-              );
-              const body = await sRes.text().catch(() => "");
-              return {
-                status: sRes.status,
-                ok: sRes.status < 400 && sensorBodySuccess(body) !== "false",
-                note: `abck=${marker(ctx.jar.get("_abck"))} bodySuccess=${sensorBodySuccess(body)}`,
-              };
-            });
-            if (abckSolved(ctx.jar, i + 1)) break;
-            await sleep(200, 400);
-          } catch (e) {
-            steps.push({ step: `pdp_get:sticky_sensor#${i + 1}:error`, ok: false, note: e?.message ?? String(e) });
-            break;
-          }
-        }
-        await sleep(1200, 2400);
-        const pdp4Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
-        await tStep("pdp_get#4", async () => {
-          const res = await request(pdpUrl, { method: "GET", headers: pdp4Headers }, ctx);
-          pdpStatus = res.status;
-          pdpHtml = await res.text();
-          const snippet = pdpHtml.replace(/\s+/g, " ").trim().slice(0, 300);
-          return {
-            status: res.status,
-            ok: res.status < 400,
-            note: `sticky_unlock abck=${marker(ctx.jar.get("_abck"))} | ${snippet}`,
-          };
-        });
-      }
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
@@ -1850,26 +1659,12 @@ export const kmartAdapter = {
     const apiReferer = pdpUrl || (origin + "/");
     const homeReferer = origin + "/";
 
-    // Prefer real PDP HTML (ISP historically clears www). When WWW HTML stays
-    // Access Denied after a solved _abck + bm_sv (seen on some ISP exits and
-    // sticky resi), api.kmart.com.au GraphQL can still accept the jar — continue
-    // via soft entry with home referer instead of stopping at sku_extract.
+    // PR #32 gate: GraphQL only after real PDP HTML. Soft-API (home referer)
+    // after Access Denied was an Electron/monitor workaround that never cleared
+    // cart_get on ISP — it just hid the WWW trust failure.
     const wwwHtmlOk = pdpStatus > 0 && pdpStatus < 400;
-    const apiSoftEntry =
-      !wwwHtmlOk &&
-      Boolean(sku) &&
-      abckSolved(ctx.jar, 3) &&
-      ctx.jar.has("bm_sv");
-    if (apiSoftEntry) {
-      steps.push({
-        step: "pdp_soft_api",
-        ok: true,
-        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${stickyProxy ? " sticky=1" : ""}${task.probeOnly ? " (probeOnly)" : ""}`,
-      });
-    }
-    // Soft entry must not advertise a 403 PDP as document referer — Akamai
-    // scores that harder on GraphQL. ISP (wwwHtmlOk) keeps the PDP referer.
-    const apiDocReferer = apiSoftEntry ? homeReferer : apiReferer;
+    const apiSoftEntry = false;
+    const apiDocReferer = apiReferer;
 
     // New Relic RUM headers — real Kmart pages carry these on every api.*
     // GraphQL call. Constants (ac / ap / tk) come from slim HAR; per-request

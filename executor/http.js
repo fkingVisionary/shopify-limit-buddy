@@ -165,13 +165,9 @@ class Dispatcher {
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
-    if (!this._proxyAgent) {
-      // Longer connect timeout for residential CONNECT tunnels.
-      this._proxyAgent = new ProxyAgent({
-        uri: this.proxy,
-        connect: { timeout: this.sticky ? 45_000 : 20_000 },
-      });
-    }
+    // PR #32: string-form ProxyAgent. Object-form `{ uri, connect }` was added
+    // later for sticky timeouts and changed tunnel behavior on ISP exits.
+    if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
     return this._proxyAgent;
   }
   async tlsSession() {
@@ -375,12 +371,9 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential/ISP sessions often RST mid-SBSD / mid-nav. Retry with
-    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
-    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    // ISP tunnels also surface undici "Request was cancelled" — give them more
-    // attempts than sticky resi so SBSD/script fetch can survive brief blips.
-    const attempts = dispatcher.proxy ? 5 : 3;
+    // PR #32 retry shape: always rebuild ProxyAgent between attempts.
+    // Keep "Request was cancelled" / aborted as retryable (undici blips).
+    const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -396,11 +389,8 @@ export async function request(url, opts, ctx) {
       } catch (e) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
-        const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
-        if (rebuildAgent) {
-          try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
-        }
-        await sleep(500 + attempt * 800);
+        try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
+        await sleep(400 + attempt * 700);
       }
     }
     throw lastError;

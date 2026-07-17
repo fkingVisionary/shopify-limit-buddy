@@ -48,3 +48,22 @@ Electron Shopify agent), `desktop/` (Cyber-style local Kmart app), and
   See `monitor/README.md`.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.
+
+### Kmart Akamai regression note (code, not proxies)
+ISP checkouts cleared WWW→cart around **PR #32** (`600b40f`). The later **Electron Update**
+(`a1d9f9c`) and monitor soft-API work regressed Akamai trust in `executor/adapters/kmart.js`
+even when `_abck` still solved. When WWW stays Access Denied after a clean solve, treat it as
+a **code path / solve-context** bug first — do not default to blaming proxy quality.
+
+Proven-path anchors to keep (see PR #35 restore work):
+- Hyper sensor `pageUrl` + sensor POST referer = **PDP URL** (not homepage `/`)
+- SBSD `o` cookie = **`bm_so` first**, then `sbsd_o`
+- No SBSD `follow_get` re-document after passive rounds
+- `resetUndici` between SBSD rounds and before `category_browse`
+- Soft `verify_ip` **after first PDP**, not a hard ISP abort before category
+- GraphQL only after real PDP HTML (`wwwHtmlOk`); soft-API home-referer entry hides WWW failure
+- `http.js`: string-form `new ProxyAgent(proxyUrl)` (not `{ uri, connect }` object form)
+
+Local executor smoke (avoid clashing with Vite on 8080):
+`PORT=8081 EXECUTOR_TOKEN=devtoken HYPER_API_KEY=… MONITOR_ENABLE=0 node server.js`
+(from `executor/`).
