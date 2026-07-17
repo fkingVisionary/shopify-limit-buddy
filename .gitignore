@@ -36,9 +36,4 @@ desktop/release/
 desktop/node_modules/
 
 # Monitor service
-monitor/node_modules/
-monitor/watchlist.json
-monitor/isp.proxies
-monitor/.env
-monitor/*.proxies
 

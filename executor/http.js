@@ -49,10 +49,14 @@ function isRetryableNetworkError(error) {
     code === "UND_ERR_CONNECT_TIMEOUT" ||
     code === "UND_ERR_HEADERS_TIMEOUT" ||
     code === "UND_ERR_BODY_TIMEOUT" ||
+    code === "UND_ERR_ABORTED" ||
+    code === "ABORT_ERR" ||
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed")
+    combined.includes("fetch failed") ||
+    combined.includes("request was cancelled") ||
+    combined.includes("aborted")
   );
 }
 
@@ -145,27 +149,21 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
-function isStickyProxyUrl(proxyUrl) {
-  return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
-}
-
 class Dispatcher {
   constructor(proxyUrl, useTls) {
     this.proxy = proxyUrl;
     this.useTls = useTls;
     this.transport = useTls ? "tls" : "undici";
-    this.sticky = isStickyProxyUrl(proxyUrl);
     this._tlsSession = null;
     this._proxyAgent = null;
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
     if (!this._proxyAgent) {
-      // Longer connect timeout for residential CONNECT tunnels.
+      // Connect timeout only — ISP tunnels otherwise abort as "Request was cancelled".
       this._proxyAgent = new ProxyAgent({
         uri: this.proxy,
-        connect: { timeout: this.sticky ? 45_000 : 20_000 },
+        connect: { timeout: 20_000 },
       });
     }
     return this._proxyAgent;
@@ -205,8 +203,6 @@ class Dispatcher {
   }
 
   async resetUndici() {
-    // Sticky residential: recreating the agent can still keep session-id but
-    // often drops mid-challenge TCP state; prefer reuse unless forced.
     if (!this._proxyAgent) return;
     try {
       await this._proxyAgent.close();
@@ -216,8 +212,6 @@ class Dispatcher {
     this._proxyAgent = null;
   }
 }
-
-export { isStickyProxyUrl };
 
 export function makeDispatcher(rawProxy, opts = {}) {
   const url = parseProxy(rawProxy);
@@ -371,10 +365,10 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
-    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
-    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GETs
+    // and POSTs a few times with a fresh ProxyAgent — Akamai "other side
+    // closed" is usually the tunnel dying, not a permanent 403.
+    const attempts = dispatcher.proxy ? 5 : 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -390,11 +384,8 @@ export async function request(url, opts, ctx) {
       } catch (e) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
-        const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
-        if (rebuildAgent) {
-          try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
-        }
-        await sleep(500 + attempt * 800);
+        try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }
+        await sleep(400 + attempt * 700);
       }
     }
     throw lastError;
