@@ -2,17 +2,16 @@
   "name": "j1ms-bot-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Vanta desktop app — local Kmart checkout (localhost proxies, API-key license, store adapters).",
+  "description": "J1m's Bot desktop app — local Kmart checkout (localhost proxies, API-key license, store adapters).",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "test": "node --test keyword-parse.test.cjs kmart-stock-probe.test.cjs global-matcher.test.cjs",
     "install-browsers": "cd ../executor && npx playwright install chromium",
     "install-executor": "cd ../executor && npm install",
     "setup": "npm install && npm run install-executor && npm run install-browsers",
-    "package:linux": "electron-packager . Vanta --platform=linux --arch=x64 --out=release --overwrite --icon=renderer/assets/icon.png",
-    "package:mac": "electron-packager . Vanta --platform=darwin --arch=x64 --out=release --overwrite --icon=renderer/assets/icon.png",
-    "package:win": "electron-packager . Vanta --platform=win32 --arch=x64 --out=release --overwrite --icon=renderer/assets/icon.png"
+    "package:linux": "electron-packager . J1msBot --platform=linux --arch=x64 --out=release --overwrite",
+    "package:mac": "electron-packager . J1msBot --platform=darwin --arch=x64 --out=release --overwrite",
+    "package:win": "electron-packager . J1msBot --platform=win32 --arch=x64 --out=release --overwrite"
   },
   "dependencies": {},
   "devDependencies": {
