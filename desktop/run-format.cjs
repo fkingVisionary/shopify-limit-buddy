@@ -105,10 +105,45 @@ function stageLogLine(progress) {
   return parts.join(" — ");
 }
 
+/** Compact one-line timeline for every executor step (UI + console + e2e). */
+function formatStepLine(s, { maxNote = 220 } = {}) {
+  if (!s) return "";
+  const mark = s.ok === false ? "FAIL" : s.ok === true ? "OK  " : "----";
+  const status = s.status != null ? ` HTTP ${s.status}` : "";
+  const ms = s.ms != null ? ` ${s.ms}ms` : "";
+  const note = String(s.note || "").replace(/\s+/g, " ").trim().slice(0, maxNote);
+  return `${mark} ${s.step || "?"}${status}${ms}${note ? ` — ${note}` : ""}`;
+}
+
+function formatStepTimeline(steps, { maxNote = 220 } = {}) {
+  if (!Array.isArray(steps) || !steps.length) return [];
+  return steps.map((s) => formatStepLine(s, { maxNote }));
+}
+
+/** Pull cookie / SoftBlock signals out of step notes for a quick scan. */
+function extractAkamaiSignals(steps) {
+  const blob = (Array.isArray(steps) ? steps : [])
+    .map((s) => `${s.step} ${s.note || ""}`)
+    .join("\n");
+  const abck = blob.match(/abck=(\d+b\s+ind=-?\d+|[^,\s]+)/i);
+  const bmSv = /bm_sv=true/i.test(blob) ? true : /bm_sv=false/i.test(blob) ? false : null;
+  const denied = /Access Denied|AkamaiGHost|denied=true/i.test(blob);
+  const sensorSolved = /ind=0|~0~|abck_raw/i.test(blob) && /ind=0|abck_raw/i.test(blob);
+  return {
+    abckHint: abck?.[1] || null,
+    bm_sv: bmSv,
+    accessDeniedSeen: denied,
+    sensorSolvedHint: sensorSolved,
+  };
+}
+
 module.exports = {
   formatExecutorFailure,
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
   summarizePayload,
   stageLogLine,
+  formatStepLine,
+  formatStepTimeline,
+  extractAkamaiSignals,
 };

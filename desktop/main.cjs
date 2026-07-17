@@ -9,6 +9,11 @@ const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
 
+// Cloud / container VMs (Cursor agents): Electron needs these or GPU/sandbox dies.
+app.commandLine.appendSwitch("no-sandbox");
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-dev-shm-usage");
+
 let win = null;
 let state = store.loadAll();
 
@@ -372,6 +377,8 @@ async function e2eAutorun() {
       }
     }
     persistDb();
+    const { formatStepTimeline, extractAkamaiSignals } = require("./run-format.cjs");
+    const steps = Array.isArray(result.steps) ? result.steps : result.lastSteps || [];
     results.push({
       ok: result.ok,
       taskId: result.taskId,
@@ -380,15 +387,27 @@ async function e2eAutorun() {
       failedStep: result.failedStep,
       error: result.error,
       elapsedMs: result.elapsedMs,
-      lastSteps: (result.lastSteps || []).slice(-15).map((s) => ({
+      signals: extractAkamaiSignals(steps),
+      timeline: formatStepTimeline(steps, { maxNote: 320 }),
+      steps: steps.map((s) => ({
         step: s.step,
         ok: s.ok,
         status: s.status,
-        note: String(s.note || "").slice(0, 240),
+        ms: s.ms,
+        note: String(s.note || "").slice(0, 400),
       })),
     });
     remaining -= 1;
-    console.log("[e2e] job done", JSON.stringify({ ok: result.ok, failedStep: result.failedStep, stage: result.checkoutStage, remaining }));
+    console.log(
+      "[e2e] job done",
+      JSON.stringify({
+        ok: result.ok,
+        failedStep: result.failedStep,
+        stage: result.checkoutStage,
+        signals: extractAkamaiSignals(steps),
+        remaining,
+      }),
+    );
     if (remaining <= 0) {
       const payload = { ok: results.every((r) => r.ok), results, at: Date.now() };
       require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));

@@ -138,6 +138,10 @@ async function startSidecar({ hyperApiKey, paydockPublicKey, maxConcurrent = 5 }
   };
   if (hyperApiKey) env.HYPER_API_KEY = hyperApiKey;
   else delete env.HYPER_API_KEY;
+  // Richer adapter step/trace when desktop is in verbose/e2e mode.
+  if (process.env.DESKTOP_VERBOSE === "1" || process.env.DESKTOP_E2E_AUTORUN === "1") {
+    env.KMART_TRACE = process.env.KMART_TRACE || "1";
+  }
 
   const paydockPk =
     String(paydockPublicKey || "").trim() ||

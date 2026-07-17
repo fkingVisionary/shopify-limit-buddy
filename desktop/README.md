@@ -65,6 +65,18 @@ Each attempt prints:
 1. `proxy=` / `transport=` / `mode=`
 2. Stage changes with **step name + detail**
 3. On failure: `checkoutStage` + failed step notes
+4. Full step timeline + Akamai signals (`abck` / `bm_sv` / denied)
+5. JSON artifact under `userData/j1ms-desktop/runs/<runId>.json`
+
+Verbose / headless e2e:
+
+```bash
+# Full timeline in UI + console + run JSON
+DESKTOP_VERBOSE=1 npm start
+
+# Autorun enabled tasks (dry-run), write e2e-last.json, quit
+DESKTOP_E2E_AUTORUN=1 DESKTOP_VERBOSE=1 DESKTOP_E2E_OUT=/tmp/kmart-e2e.json npm start
+```
 
 ### Access Denied on category/PDP
 

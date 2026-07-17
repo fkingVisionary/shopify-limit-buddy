@@ -9,13 +9,70 @@
 const sidecar = require("./executor-sidecar.cjs");
 const { id } = require("./store.cjs");
 const { normalizeKmartProxy } = require("./proxy-format.cjs");
+const fs = require("fs");
+const path = require("path");
 const {
   formatExecutorFailure,
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
   summarizePayload,
   stageLogLine,
+  formatStepLine,
+  formatStepTimeline,
+  extractAkamaiSignals,
 } = require("./run-format.cjs");
+
+const VERBOSE =
+  process.env.DESKTOP_VERBOSE === "1" ||
+  process.env.KMART_TRACE === "1" ||
+  process.env.DESKTOP_E2E_AUTORUN === "1";
+
+function runsDir() {
+  try {
+    const { app } = require("electron");
+    const dir = path.join(app.getPath("userData"), "j1ms-desktop", "runs");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  } catch {
+    const dir = path.join(__dirname, ".runs");
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+}
+
+function writeRunArtifact(job, res, summary, result) {
+  try {
+    const file = path.join(runsDir(), `${job.runId || "run"}.json`);
+    const steps = Array.isArray(res?.steps) ? res.steps : result.steps || [];
+    const payload = {
+      at: new Date().toISOString(),
+      runId: job.runId,
+      taskId: job.task?.id,
+      summary,
+      ok: result.ok,
+      error: result.error,
+      checkoutStage: result.checkoutStage,
+      failedStep: result.failedStep,
+      elapsedMs: result.elapsedMs,
+      transport: res?.transport || summary.transport,
+      signals: extractAkamaiSignals(steps),
+      timeline: formatStepTimeline(steps, { maxNote: 320 }),
+      steps,
+      paymentTail: result.paymentTail || null,
+      cookies: res?.cookies || null,
+      trace: res?.trace || null,
+    };
+    fs.writeFileSync(file, JSON.stringify(payload, null, 2), "utf8");
+    emitLog(job.runId, job.task?.id, "info", `run artifact → ${file}`);
+    if (VERBOSE) {
+      console.log("[desktop:timeline]", job.runId);
+      for (const line of payload.timeline) console.log(" ", line);
+      console.log("[desktop:signals]", JSON.stringify(payload.signals));
+    }
+  } catch (e) {
+    emitLog(job.runId, job.task?.id, "warn", `run artifact write failed: ${e.message || e}`);
+  }
+}
 
 let queue = [];
 let inflight = 0;
@@ -248,6 +305,17 @@ function finishResult(job, res, summary) {
 }
 
 function logResultTail(job, result) {
+  const steps = Array.isArray(result.steps) && result.steps.length
+    ? result.steps
+    : result.lastSteps || [];
+  const signals = extractAkamaiSignals(steps);
+  emitLog(
+    job.runId,
+    job.task?.id,
+    "info",
+    `signals abck=${signals.abckHint || "?"} bm_sv=${signals.bm_sv} denied=${signals.accessDeniedSeen} sensorSolved~=${signals.sensorSolvedHint}`,
+  );
+
   if (result.ok) {
     emitLog(
       job.runId,
@@ -255,15 +323,18 @@ function logResultTail(job, result) {
       "ok",
       `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms`,
     );
-    return;
+  } else {
+    emitLog(job.runId, job.task?.id, "err", `done FAIL — ${result.error}`);
   }
-  emitLog(job.runId, job.task?.id, "err", `done FAIL — ${result.error}`);
-  for (const s of (result.lastSteps || []).slice(-8)) {
+
+  // Verbose / e2e: full timeline. Normal UI: last 20 so SoftBlock path is visible.
+  const slice = VERBOSE ? steps : steps.slice(-20);
+  for (const s of slice) {
     emitLog(
       job.runId,
       job.task?.id,
-      s.ok ? "info" : "err",
-      `  step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
+      s.ok === false ? "err" : "info",
+      formatStepLine(s, { maxNote: VERBOSE ? 320 : 200 }),
     );
   }
 }
@@ -355,7 +426,9 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
   try {
     const res = await sidecar.runTask(payload);
-    return finishResult(job, res, summary);
+    const result = finishResult(job, res, summary);
+    writeRunArtifact(job, res, summary, result);
+    return result;
   } finally {
     clearInterval(progressTimer);
   }
