@@ -8,12 +8,14 @@
 //   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
 //   createJar()              → name-keyed cookie jar (same shape as before)
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
-//   UA                       → Chrome / macOS user-agent string
+//   UA                       → Chrome / Windows user-agent string (HAR-aligned)
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
+// Match kmart-slim.har OS family (Windows) + node-tls-client chrome_131 profile.
+// Hyper: UA / sec-ch-ua / TLS profile majors must agree.
 const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 // Lazy global TLS init. node-tls-client spawns a piscina worker pool that
 // hosts the Go shared library; initTLS must be awaited once before the first
@@ -60,22 +62,18 @@ function isRetryableNetworkError(error) {
   );
 }
 
-// Chrome 124 request header order. The exact ordering matters — Akamai
-// inspects it as part of the bot score. This matches a real Chrome 124
-// navigation/CORS request (cookie always last).
+// Chrome header order for node-tls-client (undici ignores this list).
+// Hyper tls-and-headers.md: when `priority` is present, `cookie` MUST sit
+// immediately before it — TLS clients auto-append cookie last, so omitting
+// cookie from the order yields `…, priority, cookie` (bot tell).
+// Navigation shape (low-entropy CH only; high-entropy omitted until Accept-CH).
 const CHROME_HEADER_ORDER = [
   "host",
   "connection",
   "cache-control",
   "sec-ch-ua",
-  "sec-ch-ua-arch",
-  "sec-ch-ua-bitness",
-  "sec-ch-ua-full-version",
-  "sec-ch-ua-full-version-list",
   "sec-ch-ua-mobile",
-  "sec-ch-ua-model",
   "sec-ch-ua-platform",
-  "sec-ch-ua-platform-version",
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
@@ -87,8 +85,8 @@ const CHROME_HEADER_ORDER = [
   "referer",
   "accept-encoding",
   "accept-language",
-  "priority",
   "cookie",
+  "priority",
 ];
 
 // Accept "user:pass@host:port", "host:port:user:pass", "user:pass:host:port",

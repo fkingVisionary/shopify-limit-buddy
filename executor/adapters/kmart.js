@@ -63,36 +63,18 @@ const CATEGORY_PATHS = [
   "/category/kitchen-dining/D250000",
 ];
 
-// Chrome 124 / macOS navigation header shape. Akamai scores requests on the
-// presence + ordering of these client hints; a Chrome UA without matching
-// sec-ch-ua + sec-fetch-* is an instant bot tag.
-// Chrome 131 macOS client hints — basic (low entropy) + high entropy.
-// Real Chrome sends the high-entropy hints (arch/bitness/full-version-list/
-// model/platform-version) on navigation requests whenever the origin has
-// previously responded with Accept-CH (Kmart does). Sending only the low-
-// entropy trio is a classic headless-Chrome tell.
+// Chrome 131 Client Hints. Hyper request-rules + kmart-slim.har:
+// - WWW DOC / sensor / SBSD send ONLY the low-entropy trio
+//   (sec-ch-ua, -mobile, -platform). High-entropy hints wait for Accept-CH.
+// - sec-ch-ua GREASE brand/order must match the UA major exactly
+//   (scripts/sec_ch_ua.py 131) — stale grease + bumped version is SoftBlock bait.
+// HAR capture OS is Windows; keep platform aligned with UA.
 const CHROME_CH = {
-  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
-  "sec-ch-ua-arch": '"x86"',
-  "sec-ch-ua-bitness": '"64"',
-  "sec-ch-ua-full-version": '"131.0.6778.265"',
-  "sec-ch-ua-full-version-list":
-    '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="131.0.6778.265", "Chromium";v="131.0.6778.265"',
+  "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
   "sec-ch-ua-mobile": "?0",
-  "sec-ch-ua-model": '""',
-  "sec-ch-ua-platform": '"macOS"',
-  "sec-ch-ua-platform-version": '"14.6.1"',
+  "sec-ch-ua-platform": '"Windows"',
 };
-// CORS XHRs to api.kmart.com.au (get-token / GraphQL) only emit the low-entropy
-// Client Hints trio in real Chrome (slim HAR). High-entropy hints are for
-// document navigations after Accept-CH — stuffing them onto every GraphQL call
-// is a bot tell and correlates with api GraphQL Access Denied while get-token
-// (same host, lighter BM) still returns 200.
-const CHROME_CH_XHR = {
-  "sec-ch-ua": CHROME_CH["sec-ch-ua"],
-  "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
-  "sec-ch-ua-platform": CHROME_CH["sec-ch-ua-platform"],
-};
+const CHROME_CH_XHR = { ...CHROME_CH };
 // Real Chrome 133 link-click navigation header set. Notable absences:
 //   - NO `cache-control` / `pragma` — those only appear on a hard reload
 //     (CMD+SHIFT+R). Sending them on every nav is a strong bot signal.
@@ -220,10 +202,9 @@ function cookieTrustSnapshot(jar) {
 function sbsdOCookieInput(jar) {
   const bmSo = jar.get("bm_so");
   const sbsdO = jar.get("sbsd_o");
-  // Preserve current behavior in this diagnostic batch; trace the source so
-  // the HAR diff can prove whether this needs to become sbsd_o-first later.
-  const source = bmSo ? "bm_so" : (sbsdO ? "sbsd_o" : "none");
-  const value = bmSo ?? sbsdO ?? "";
+  // Hyper akamai.md / SBSD hard challenge: o = sbsd_o first, else bm_so.
+  const source = sbsdO ? "sbsd_o" : (bmSo ? "bm_so" : "none");
+  const value = sbsdO ?? bmSo ?? "";
   return { source, value, bytes: String(value).length, hash: hashShort(value) };
 }
 
@@ -859,15 +840,12 @@ export const kmartAdapter = {
       // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
       return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3) || ctx.jar.has("bm_sv");
     };
-    // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
-    // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
-    // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
-    // was firing on Akamai's own bot-manager script tag (SBSD_RE matches
-    // any `?v=` script) and POSTing bogus SBSD payloads to the sensor
-    // endpoint, poisoning the session. Reactive SBSD on pdp_get remains.
-
-    // Human pause: glance at homepage before the browser pulls the sensor script.
+    // kmart-slim.har bootstrap order (entries #0/#3 SBSD → #5 sensor → #6
+    // category DOC with abck~0~ + bm_sv): SBSD on home FIRST, then sensor.
+    // Hyper §3.5 / plugin akamai.md also describe SBSD as a page-load step.
+    // Sensor pageUrl/referer = homepage (HAR #5), not the PDP.
     await sleep(800, 1500);
+    await runSbsd(html, origin + "/", "sbsd_home");
 
     // 3. Fetch the Akamai sensor script. Headers must match a real Chrome
     //    script-tag load — the lab uses these exact headers and consistently
@@ -915,6 +893,7 @@ export const kmartAdapter = {
     // endpoint rejects empty abck with `{"error":"missing abck"}`. The
     // sentinel is Akamai's own "unsolved" placeholder; the sensor POST
     // response Set-Cookies the real `_abck` back.
+    const sensorPageUrl = origin + "/";
     if (!ctx.jar.has("_abck")) {
       ctx.jar.ingest({ "set-cookie": ["_abck=-1~-1~-1~-1~-1~-1~-1; Path=/"] });
       steps.push({
@@ -926,7 +905,7 @@ export const kmartAdapter = {
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
-      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0}`,
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} pageUrl=home bm_sv=${ctx.jar.has("bm_sv")}`,
     });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
@@ -935,8 +914,7 @@ export const kmartAdapter = {
         const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
-          pageUrl: pdpUrl,
-
+          pageUrl: sensorPageUrl,
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
@@ -951,7 +929,7 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: sensorPageUrl }),
             body: akamaiSensorBody(r.payload),
           },
           ctx,
@@ -961,7 +939,7 @@ export const kmartAdapter = {
         recordTraceEvent(`akamai_sensor#${i + 1}`, {
           type: "akamai_sensor_round",
           round: i + 1,
-          pageUrl: pdpUrl,
+          pageUrl: sensorPageUrl,
           scriptUrl,
           input: {
             scriptBytes: prevContext ? 0 : scriptBody?.length ?? 0,
@@ -997,16 +975,6 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_unsolved", ok: false, note: "_abck never reached ~0~ after 3 rounds" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-
-    // 3b. Proactive SBSD on the homepage HTML. RESTORED after diagnostic
-    //     evidence (`home_scripts_dump`) confirmed the homepage contains
-    //     exactly 1 real SBSD candidate (path `/…/0WLGJY?v=<uuid>`) and
-    //     the sensor script has no `?v=` param — so the old "SBSD_RE
-    //     matches the sensor script" concern was wrong. Without this,
-    //     `bm_sv` never mints and category_browse / pdp_get hard-403.
-    //     This gets us back to the pre-#860 flow where PDP passed and
-    //     ATC was the remaining focus.
-    await runSbsd(html, origin + "/", "sbsd_home");
 
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
