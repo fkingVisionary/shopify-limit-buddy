@@ -821,32 +821,8 @@ export const kmartAdapter = {
           });
         }
       }
-      // Current Akamai edge often mints bm_sv on a follow-up document GET, not
-      // the SBSD POST. Soft follow only when bm_sv is still missing.
-      if (!ctx.jar.has("bm_sv") && sbsdRoundOk > 0) {
-        try {
-          const follow = await request(
-            pageUrl,
-            { method: "GET", headers: navHeaders({ referer: pageUrl, site: "same-origin" }) },
-            ctx,
-          );
-          const followHtml = await follow.text().catch(() => "");
-          steps.push({
-            step: `${label}:follow_get`,
-            ok: follow.status < 400,
-            status: follow.status,
-            note: `bm_sv=${ctx.jar.has("bm_sv")} setCookies=[${cookieNamesFromResponse(follow).join(",") || "none"}] htmlBytes=${followHtml.length}`,
-          });
-        } catch (e) {
-          steps.push({
-            step: `${label}:follow_get`,
-            ok: false,
-            note: `err=${e?.message ?? e}`,
-          });
-        }
-      }
       // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
-      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3) || ctx.jar.has("bm_sv");
+      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
     };
     // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
     // (kmart-akamai-lab.js) proves the sensor solves cleanly with just

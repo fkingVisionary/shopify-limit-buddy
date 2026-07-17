@@ -49,14 +49,10 @@ function isRetryableNetworkError(error) {
     code === "UND_ERR_CONNECT_TIMEOUT" ||
     code === "UND_ERR_HEADERS_TIMEOUT" ||
     code === "UND_ERR_BODY_TIMEOUT" ||
-    code === "UND_ERR_ABORTED" ||
-    code === "ABORT_ERR" ||
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed") ||
-    combined.includes("request was cancelled") ||
-    combined.includes("aborted")
+    combined.includes("fetch failed")
   );
 }
 
@@ -159,8 +155,9 @@ class Dispatcher {
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
+    // Connect timeout only — ISP tunnels otherwise abort as "Request was cancelled".
+    // Not a SoftBlock retry; same single attempt budget as PR #32 (3 network retries).
     if (!this._proxyAgent) {
-      // Connect timeout only — ISP tunnels otherwise abort as "Request was cancelled".
       this._proxyAgent = new ProxyAgent({
         uri: this.proxy,
         connect: { timeout: 20_000 },
@@ -368,7 +365,7 @@ export async function request(url, opts, ctx) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GETs
     // and POSTs a few times with a fresh ProxyAgent — Akamai "other side
     // closed" is usually the tunnel dying, not a permanent 403.
-    const attempts = dispatcher.proxy ? 5 : 3;
+    const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
