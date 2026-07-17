@@ -49,10 +49,14 @@ function isRetryableNetworkError(error) {
     code === "UND_ERR_CONNECT_TIMEOUT" ||
     code === "UND_ERR_HEADERS_TIMEOUT" ||
     code === "UND_ERR_BODY_TIMEOUT" ||
+    code === "UND_ERR_ABORTED" ||
+    code === "ABORT_ERR" ||
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed")
+    combined.includes("fetch failed") ||
+    combined.includes("request was cancelled") ||
+    combined.includes("aborted")
   );
 }
 
@@ -371,10 +375,12 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
+    // Proxied residential/ISP sessions often RST mid-SBSD / mid-nav. Retry with
     // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
     // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // ISP tunnels also surface undici "Request was cancelled" — give them more
+    // attempts than sticky resi so SBSD/script fetch can survive brief blips.
+    const attempts = dispatcher.proxy ? 5 : 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {

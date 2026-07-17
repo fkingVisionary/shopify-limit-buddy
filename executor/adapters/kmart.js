@@ -1850,15 +1850,13 @@ export const kmartAdapter = {
     const apiReferer = pdpUrl || (origin + "/");
     const homeReferer = origin + "/";
 
-    // ISP clears WWW HTML (pdp 200). Sticky residential sometimes keeps HTML
-    // Access Denied even with bm_sv + solved _abck while api.kmart.com.au still
-    // accepts GraphQL — allow API cart when cookies + URL SKU are present.
+    // Prefer real PDP HTML (ISP historically clears www). When WWW HTML stays
+    // Access Denied after a solved _abck + bm_sv (seen on some ISP exits and
+    // sticky resi), api.kmart.com.au GraphQL can still accept the jar — continue
+    // via soft entry with home referer instead of stopping at sku_extract.
     const wwwHtmlOk = pdpStatus > 0 && pdpStatus < 400;
-    // Stock probes and sticky resi share this lane: WWW HTML can stay denied
-    // while api.kmart.com.au GraphQL still accepts the jar.
     const apiSoftEntry =
       !wwwHtmlOk &&
-      (stickyProxy || task.probeOnly === true) &&
       Boolean(sku) &&
       abckSolved(ctx.jar, 3) &&
       ctx.jar.has("bm_sv");
@@ -1866,7 +1864,7 @@ export const kmartAdapter = {
       steps.push({
         step: "pdp_soft_api",
         ok: true,
-        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${task.probeOnly ? " (probeOnly)" : ""}`,
+        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${stickyProxy ? " sticky=1" : ""}${task.probeOnly ? " (probeOnly)" : ""}`,
       });
     }
     // Soft entry must not advertise a 403 PDP as document referer — Akamai
