@@ -19,8 +19,10 @@ undici Kmart checkout path (it can be reintroduced later once checkout is stable
 - `cd executor && npm install && npm run dev` (default PORT 8080).
 - Cloud smoke without clashing Vite: `PORT=8081 EXECUTOR_TOKEN=devtoken HYPER_API_KEY=… node server.js`
 - **Do not use Playwright** for Kmart (`kmartMode: "playwright"`) — out of scope.
-- Checkout adapter baseline on this branch is **PR #32** `executor/adapters/kmart.js`
-  (`600b40f`) after stripping Electron Update + monitor regressions.
+- SoftBlock Access Denied HTML can `Set-Cookie` a fresh `_abck` with `ind=-1`. The
+  name-keyed jar in `http.js` **refuses to demote** a solved `~0~` `_abck`.
+- `skipCategory` / `KMART_SKIP_CATEGORY=1` skips `/category/*` (home→PDP) when category
+  SoftBlock is poisoning the nav chain.
 
 ### Desktop
 - `cd desktop && npm run setup && npm start` — local Kmart checkout via executor sidecar.
