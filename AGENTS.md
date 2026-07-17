@@ -30,12 +30,24 @@ migrations + one Deno edge function.
     These are pre-existing repo state, not a setup problem; `bun run format` would
     rewrite files, so don't run it unless intentionally reformatting.
 
-### Optional services (not required to run/test the web app)
+### Optional services
 - `executor/`: Node ≥20 Fastify service. Uses **npm** (`cd executor && npm install`,
   then `npm run dev`, listens on `PORT` 8080). Real Kmart checkouts require external
   secrets (`EXECUTOR_TOKEN`, `HYPER_API_KEY`, residential `PROXY_URL_RESI`); see
   `SETUP.md`. Not needed to boot the UI (server fns return a "not configured" message).
-- `runner/`: Electron **desktop GUI** app (`cd runner && npm install && npm run
-  install-browsers && npm start`). Requires a display; not practical to run headless.
+- `runner/` (Electron desktop agent): uses **npm** (has its own `package.json`, no lockfile
+  committed). See `runner/README.md` for pairing flow.
+  - Install: `cd runner && npm install`. For actual checkout job execution also run
+    `npm run install-browsers` (Playwright Chromium → `~/.cache/ms-playwright`, ~300MB).
+  - **Launch in Cloud Agent VMs** (sandbox is required off, otherwise Chromium fails):
+    ```bash
+    cd runner
+    DISPLAY=:1 ELECTRON_DISABLE_SANDBOX=1 ./node_modules/.bin/electron . --no-sandbox
+    ```
+    Plain `npm start` without `--no-sandbox` will not work in this environment. D-Bus /
+    GPU init errors in the log are expected and harmless; the window still opens.
+  - Pairing: web app → **Settings → Local runner → Generate pairing code**, then paste
+    control-plane URL (`http://localhost:8080` for local) + code into the Electron UI
+    and click **Pair**, then **Start**.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.
