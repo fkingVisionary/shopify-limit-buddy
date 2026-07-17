@@ -2,10 +2,13 @@
 
 Operator-owned global Kmart detector. **Detect + publish only** — never places orders.
 
+**Production:** co-located on `j1ms-bot-executor` (`MONITOR_ENABLE=1`).  
+Feed: `https://j1ms-bot-executor.fly.dev/feed` — no separate Fly monitor app.
+
 **Start here (non-dev friendly):** see [HOW-TO-RUN.md](./HOW-TO-RUN.md).
 
-Desktop apps can subscribe to a local feed (`MONITOR_FEED_URL=http://127.0.0.1:8091/feed`)
-or later to a Fly-hosted feed. Users never configure a monitor URL in the UI.
+This `monitor/` folder remains for **local laptop testing** only. Desktop Global mode
+uses the executor feed by default; override with `MONITOR_FEED_URL` for local ops.
 
 ## Quick start
 
@@ -29,8 +32,8 @@ and polls Kmart. No separate “new executor release” required for local use.
 | Var | Purpose |
 |-----|---------|
 | `PORT` | Listen port (default `8091`) |
-| `MONITOR_API_KEYS` | Comma-separated API keys (or `MONITOR_AUTH_MODE=open`) |
-| `MONITOR_AUTH_MODE` | `allowlist` (default) or `open` |
+| `MONITOR_AUTH_MODE` | `open` (default — any non-empty API key) or `allowlist` |
+| `MONITOR_API_KEYS` | Only if mode=`allowlist` |
 | `MONITOR_ISP_PROXIES` | Comma-separated http proxies for polling |
 | `MONITOR_EXECUTOR_URL` | Checkout executor base URL (required for Hyper probes) |
 | `MONITOR_EXECUTOR_TOKEN` | Bearer token matching executor `EXECUTOR_TOKEN` |
@@ -39,15 +42,18 @@ and polls Kmart. No separate “new executor release” required for local use.
 | `MONITOR_DISCOVERY_MS` | Discovery poll interval (default `60000`) |
 | `MONITOR_PROBE_TIMEOUT_MS` | Per-SKU Hyper probe timeout (default `90000`) |
 
-## Deploy (Fly Sydney)
+## Deploy
+
+Do **not** deploy this folder as its own Fly app anymore.
+
+Redeploy `executor/` (same `j1ms-bot-executor`). Set secrets there:
 
 ```bash
-fly apps create j1ms-kmart-monitor   # once
-fly secrets set MONITOR_API_KEYS=... MONITOR_ISP_PROXIES=...
-fly deploy
+# optional ISP pool — otherwise PROXY_URL_RESI is used
+fly secrets set MONITOR_ISP_PROXIES=... -a j1ms-bot-executor
 ```
 
-See `fly.toml`. Keep this process separate from the checkout executor so poll rate ≠ checkout budget.
+See `executor/fly.toml` (`MONITOR_ENABLE=1`, `MONITOR_AUTH_MODE=open`, always-on).
 
 ## Architecture
 

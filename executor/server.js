@@ -12,6 +12,7 @@ import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { attachMonitor } from "./monitor-runtime.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -31,6 +32,9 @@ const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
 // Browser-friendly landing. This service is an API — visiting `/` in a browser
 // used to look "blank" (Fastify 404). Keep /health as the probe endpoint.
+/** Filled after routes are registered (see bottom). */
+let monitor = { enabled: false, stop: () => {}, stats: null };
+
 app.get("/", async () => ({
   ok: true,
   service: "j1ms-bot-executor",
@@ -38,9 +42,12 @@ app.get("/", async () => ({
   diagnose: "POST /health/diagnose (Bearer auth)",
   run: "POST /run (Bearer auth)",
   progress: "GET /progress/:taskId (Bearer auth)",
+  feed: monitor.enabled ? "GET /feed (monitor API key)" : null,
+  probe: monitor.enabled ? "GET /probe (monitor API key)" : null,
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  monitorEnabled: monitor.enabled,
   ts: Date.now(),
 }));
 
@@ -53,6 +60,8 @@ app.get("/health", async () => ({
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  monitorEnabled: monitor.enabled,
+  ...(monitor.enabled && typeof monitor.stats === "function" ? { monitor: monitor.stats() } : {}),
 }));
 
 // Authenticated deep health: TLS fingerprint + proxy CONNECT + direct target.
@@ -445,6 +454,20 @@ app.post("/jbhifi/probe", async (req, reply) => {
 
 
 
+monitor = attachMonitor({ app, port: PORT, executorToken: TOKEN });
+
+function shutdown(signal) {
+  console.log(`shutting down (${signal})`);
+  try {
+    monitor.stop();
+  } catch {
+    /* ignore */
+  }
+  app.close().then(() => process.exit(0)).catch(() => process.exit(1));
+}
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+
 app
   .listen({ host: "0.0.0.0", port: PORT })
   .then(() => {
@@ -454,6 +477,7 @@ app
         hyperApiKey: Boolean(process.env.HYPER_API_KEY),
         proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
         transport: HTTP_TRANSPORT,
+        monitorEnabled: monitor.enabled,
       }),
     );
   })

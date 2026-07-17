@@ -33,9 +33,9 @@ npm start
            │ optional SSE
            ▼
 ┌─────────────────────────┐     optional
-│  monitor/ (Fly syd)     │ ◀── control plane validate-key (Whop-ready)
+│  executor /feed (Fly)   │ ◀── same j1ms-bot-executor app
 │  operator watchlist     │
-│  ISP poll → /feed       │
+│  ISP poll → SSE         │
 └─────────────────────────┘
 ```
 
@@ -49,7 +49,7 @@ Task creator accepts **keywords**, **PDP URL**, or **SKU**, plus source:
 
 Keyword syntax: `pokemon,etb,-plush` (AND / negatives), `a/b` for OR within a slot.
 
-See [`../monitor/README.md`](../monitor/README.md) for the operator-run global service (Fly syd). Local ops can override the baked feed with `MONITOR_FEED_URL`.
+Global feed is baked to `https://j1ms-bot-executor.fly.dev/feed` (monitor co-located on the executor). Local ops can override with `MONITOR_FEED_URL`. See [`../monitor/HOW-TO-RUN.md`](../monitor/HOW-TO-RUN.md).
 
 ## API key / Whop (not gated yet)
 

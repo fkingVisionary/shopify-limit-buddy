@@ -6,13 +6,18 @@ primary_region = "syd"
 
 [env]
   PORT = "8080"
+  # Global monitor co-located on this app (no separate Fly monitor).
+  MONITOR_ENABLE = "1"
+  # Same idea as desktop license: any non-empty API key can subscribe.
+  MONITOR_AUTH_MODE = "open"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # Stay warm for checkout bursts + continuous stock polling.
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
 [[vm]]
   size = "shared-cpu-2x"

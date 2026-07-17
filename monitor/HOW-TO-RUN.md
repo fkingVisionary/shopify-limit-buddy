@@ -2,34 +2,51 @@
 
 ## The short version
 
-You do **not** need a new executor product.
+There is **no separate monitor Fly app**.
 
-1. Your **Fly checkout executor already exists** and already has Hyper  
-   (`https://j1ms-bot-executor.fly.dev` — health checks OK).
-2. The monitor reuses that same Kmart + Hyper code from the `executor/` folder.
-3. On your PC, one command starts everything:
+Global feed runs on the **same** executor you already have:
+
+`https://j1ms-bot-executor.fly.dev/feed`
+
+Desktop Global mode is already pointed there.
+
+## Secrets
+
+Already on Fly (unchanged): `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `PROXY_URL_RESI`.
+
+Feed auth matches desktop: **any non-empty API key** works (`MONITOR_AUTH_MODE=open`).  
+No separate monitor whitelist.
+
+Optional later: `MONITOR_ISP_PROXIES` if you want a dedicated ISP pool (else uses `PROXY_URL_RESI`).
+
+`MONITOR_ENABLE=1` is baked into `executor/fly.toml`.
+
+Redeploy executor after pulling this change:
+
+```powershell
+# From GitHub Actions: Actions → Deploy executor → Run workflow
+# or locally if you have flyctl:
+cd executor
+fly deploy
+```
+
+## Check it’s alive
+
+- Health: `https://j1ms-bot-executor.fly.dev/health` → `"monitorEnabled": true`
+- Monitor detail: `https://j1ms-bot-executor.fly.dev/monitor/health`
+- Manual probe (any desktop API key as Bearer / `?access_token=`):  
+  `https://j1ms-bot-executor.fly.dev/probe?url=https://www.kmart.com.au/product/...`
+
+## Local-only (optional)
+
+`monitor/` is still useful as a **standalone local** poller for laptop testing:
 
 ```powershell
 cd monitor
 npm start
 ```
 
-That auto-starts the local checkout engine using the Hyper key already saved in
-your desktop Settings.
-
-## What you should see
-
-When it starts:
-
-- `Executor: local-sidecar → http://127.0.0.1:….`
-- `listening on :8091`
-- Feed URL: `http://127.0.0.1:8091/feed`
-
-Test in a browser:
-
-`http://127.0.0.1:8091/probe`
-
-## See it in the desktop Monitor tab
+That starts a local sidecar + `:8091` feed. Point desktop at it only if needed:
 
 ```powershell
 cd desktop
@@ -37,46 +54,13 @@ $env:MONITOR_FEED_URL="http://127.0.0.1:8091/feed"
 npm start
 ```
 
-Open the **Monitor** tab.
+Desktop’s own executor sidecar does **not** run the global poller (`MONITOR_ENABLE` off by default).
 
 ## Edit what it watches
 
-Edit `monitor/watchlist.json` (product URLs), then restart `npm start`.
+Edit `executor/watchlist.json` (deployed with the executor image), then redeploy.
+Or set `MONITOR_WATCH_SKUS` / `MONITOR_DISCOVERY_QUERIES` secrets.
 
-## Honest status (read this)
+## Honest status
 
-The wiring is done. What still bites us is **Akamai on the proxy exits**:
-
-- Hyper sensors often succeed
-- Kmart PDP / GraphQL still returns Access Denied on the ISP list and on the
-  desktop proxies we tried from this machine
-- Your **Fly** executor checkouts work because Fly has a known-good residential
-  proxy (`PROXY_URL_RESI`) baked into that server
-
-So for a monitor that actually detects stock reliably, the next move is:
-
-### Option A — use the Fly executor for probes (best)
-
-1. Redeploy `executor/` to Fly so it includes the new `/kmart/stock-probe` route  
-   (right now Fly returns 404 for that path — old deploy).
-2. Put this in `monitor/.env`:
-
-```
-EXECUTOR_TOKEN=same_token_as_fly
-```
-
-3. Run `npm start` again — it will call Fly instead of the local sidecar.
-
-### Option B — keep running locally
-
-Leave `npm start` running on a PC that stays on. It will keep probing. As soon
-as a proxy exit clears Akamai, events show up on the feed.
-
-## Files that matter
-
-| File | What |
-|------|------|
-| `monitor/watchlist.json` | SKUs / URLs to watch |
-| `monitor/isp.proxies` | ISP list (gitignored) |
-| `monitor/.env` | optional `EXECUTOR_TOKEN` or `HYPER_API_KEY` |
-| desktop Settings → Hyper | already used automatically |
+Akamai on proxy exits is still the hard part. Hyper + a known-good `PROXY_URL_RESI` on Fly is why cloud probes work better than burned ISP exits.
