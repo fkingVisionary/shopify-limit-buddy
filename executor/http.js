@@ -8,14 +8,12 @@
 //   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
 //   createJar()              → name-keyed cookie jar (same shape as before)
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
-//   UA                       → Chrome / Windows user-agent string (HAR-aligned)
+//   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
-// Match kmart-slim.har OS family (Windows) + node-tls-client chrome_131 profile.
-// Hyper: UA / sec-ch-ua / TLS profile majors must agree.
 const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 // Lazy global TLS init. node-tls-client spawns a piscina worker pool that
 // hosts the Go shared library; initTLS must be awaited once before the first
@@ -30,18 +28,6 @@ async function ensureTls() {
   const { initTLS } = await loadTlsClient();
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
-}
-// bogdanfinn pool can stick in a bad CONNECT state after undici ProxyAgent
-// activity or a proxy 403 — destroy + re-init before opening a fresh Session.
-async function refreshTlsPool() {
-  const mod = await loadTlsClient();
-  try {
-    if (typeof mod.destroyTLS === "function") await mod.destroyTLS();
-  } catch {
-    /* ignore */
-  }
-  tlsInitPromise = null;
-  await ensureTls();
 }
 
 const RAW_TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
@@ -63,29 +49,29 @@ function isRetryableNetworkError(error) {
     code === "UND_ERR_CONNECT_TIMEOUT" ||
     code === "UND_ERR_HEADERS_TIMEOUT" ||
     code === "UND_ERR_BODY_TIMEOUT" ||
-    code === "UND_ERR_ABORTED" ||
-    code === "ABORT_ERR" ||
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed") ||
-    combined.includes("request was cancelled") ||
-    combined.includes("aborted")
+    combined.includes("fetch failed")
   );
 }
 
-// Chrome header order for node-tls-client (undici ignores this list).
-// Hyper tls-and-headers.md: when `priority` is present, `cookie` MUST sit
-// immediately before it — TLS clients auto-append cookie last, so omitting
-// cookie from the order yields `…, priority, cookie` (bot tell).
-// Navigation shape (low-entropy CH only; high-entropy omitted until Accept-CH).
+// Chrome 124 request header order. The exact ordering matters — Akamai
+// inspects it as part of the bot score. This matches a real Chrome 124
+// navigation/CORS request (cookie always last).
 const CHROME_HEADER_ORDER = [
   "host",
   "connection",
   "cache-control",
   "sec-ch-ua",
+  "sec-ch-ua-arch",
+  "sec-ch-ua-bitness",
+  "sec-ch-ua-full-version",
+  "sec-ch-ua-full-version-list",
   "sec-ch-ua-mobile",
+  "sec-ch-ua-model",
   "sec-ch-ua-platform",
+  "sec-ch-ua-platform-version",
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
@@ -97,8 +83,8 @@ const CHROME_HEADER_ORDER = [
   "referer",
   "accept-encoding",
   "accept-language",
-  "cookie",
   "priority",
+  "cookie",
 ];
 
 // Accept "user:pass@host:port", "host:port:user:pass", "user:pass:host:port",
@@ -166,12 +152,12 @@ class Dispatcher {
     this.transport = useTls ? "tls" : "undici";
     this._tlsSession = null;
     this._proxyAgent = null;
-    this._tlsBootstrapped = false;
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
+    // Connect timeout only — ISP tunnels otherwise abort as "Request was cancelled".
+    // Not a SoftBlock retry; same single attempt budget as PR #32 (3 network retries).
     if (!this._proxyAgent) {
-      // Connect timeout only — ISP tunnels otherwise abort as "Request was cancelled".
       this._proxyAgent = new ProxyAgent({
         uri: this.proxy,
         connect: { timeout: 20_000 },
@@ -179,30 +165,10 @@ class Dispatcher {
     }
     return this._proxyAgent;
   }
-  async tlsSession({ refresh = false } = {}) {
-    if (this._tlsSession && !refresh) return this._tlsSession;
-    if (this._tlsSession) {
-      try {
-        await this._tlsSession.close();
-      } catch {
-        /* ignore */
-      }
-      this._tlsSession = null;
-    }
-    // First Session on a dispatcher (and explicit refresh) re-inits the pool.
-    // IP resolve runs undici first; without a refresh, CONNECT often 403s.
-    if (refresh || !this._tlsBootstrapped) {
-      await refreshTlsPool();
-      this._tlsBootstrapped = true;
-    } else {
-      await ensureTls();
-    }
+  async tlsSession() {
+    if (this._tlsSession) return this._tlsSession;
+    await ensureTls();
     const { Session, ClientIdentifier } = await loadTlsClient();
-    // node-tls-client (bogdanfinn) rejects CONNECT on some ISP proxies unless
-    // the proxy URL has a trailing slash — undici ProxyAgent does not want it.
-    const tlsProxy = this.proxy
-      ? (this.proxy.endsWith("/") ? this.proxy : `${this.proxy}/`)
-      : undefined;
     this._tlsSession = new Session({
       // node-tls-client@2.1.0 only ships Chrome profiles up to 131. Passing an
       // unsupported identifier silently falls back while our headers still say
@@ -210,9 +176,7 @@ class Dispatcher {
       clientIdentifier: ClientIdentifier.chrome_131,
       timeout: 30_000,
       headerOrder: CHROME_HEADER_ORDER,
-      // Hyper tls-and-headers.md baseline: randomize TLS extension order.
-      randomTlsExtensionOrder: true,
-      ...(tlsProxy ? { proxy: tlsProxy } : {}),
+      ...(this.proxy ? { proxy: this.proxy } : {}),
     });
     return this._tlsSession;
   }
@@ -261,26 +225,11 @@ export function makeDispatcher(rawProxy, opts = {}) {
   return dispatcher;
 }
 
-function abckMarkerIndex(value) {
-  const m = String(value ?? "").match(/~(-?\d+)~/);
-  return m ? Number(m[1]) : null;
-}
-
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
 // www.kmart.com.au → api.kmart.com.au _abck handoff in kmart.js still works
 // the way it did under undici.
 export function createJar() {
   const store = new Map(); // name -> value
-  // SoftBlock Access Denied pages Set-Cookie a fresh `_abck` with ind=-1.
-  // Because the jar is name-keyed (no Domain), that clobber wipes a Hyper-
-  // solved ~0~ cookie and every later WWW/API call looks unsolved. Refuse
-  // demotions once we hold a solved cookie (explicit set/load still wins).
-  const shouldKeepExistingAbck = (incoming) => {
-    const prev = store.get("_abck");
-    const prevIdx = abckMarkerIndex(prev);
-    const nextIdx = abckMarkerIndex(incoming);
-    return prevIdx === 0 && nextIdx !== 0;
-  };
   const ingestSetCookie = (arr) => {
     if (!arr) return;
     const list = Array.isArray(arr) ? arr : [arr];
@@ -291,7 +240,6 @@ export function createJar() {
       if (eq > 0) {
         const name = pair.slice(0, eq).trim();
         const value = pair.slice(eq + 1).trim();
-        if (name === "_abck" && shouldKeepExistingAbck(value)) continue;
         store.set(name, value);
       }
     }
@@ -417,7 +365,7 @@ export async function request(url, opts, ctx) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GETs
     // and POSTs a few times with a fresh ProxyAgent — Akamai "other side
     // closed" is usually the tunnel dying, not a permanent 403.
-    const attempts = dispatcher.proxy ? 5 : 3;
+    const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
@@ -442,40 +390,35 @@ export async function request(url, opts, ctx) {
 
   // Native TLS experiment path. Kept opt-in because a native library failure
   // can terminate the process before Fastify can return JSON.
+  const session = await dispatcher.tlsSession();
   const reqOpts = {
     headers,
     followRedirects: false,
     ...(opts?.body !== undefined ? { body: opts.body } : {}),
   };
 
-  const doTls = async (refresh) => {
-    const session = await dispatcher.tlsSession({ refresh });
-    switch (method) {
-      case "GET":
-        return session.get(url, reqOpts);
-      case "POST":
-        return session.post(url, reqOpts);
-      case "PUT":
-        return session.put(url, reqOpts);
-      case "DELETE":
-        return session.delete(url, reqOpts);
-      case "PATCH":
-        return session.patch(url, reqOpts);
-      case "HEAD":
-        return session.head(url, reqOpts);
-      default:
-        throw new Error(`unsupported method: ${method}`);
-    }
-  };
-
-  let res = await doTls(false);
-  const bodyPreview = String(res?.body ?? res?.text ?? "");
-  const proxyDenied =
-    (res?.status === 0 || res?.status === 403) &&
-    /Proxy responded with non 200|CONNECT/i.test(bodyPreview);
-  if (proxyDenied) {
-    await sleep(200);
-    res = await doTls(true);
+  let res;
+  switch (method) {
+    case "GET":
+      res = await session.get(url, reqOpts);
+      break;
+    case "POST":
+      res = await session.post(url, reqOpts);
+      break;
+    case "PUT":
+      res = await session.put(url, reqOpts);
+      break;
+    case "DELETE":
+      res = await session.delete(url, reqOpts);
+      break;
+    case "PATCH":
+      res = await session.patch(url, reqOpts);
+      break;
+    case "HEAD":
+      res = await session.head(url, reqOpts);
+      break;
+    default:
+      throw new Error(`unsupported method: ${method}`);
   }
 
   // Capture cookies from this response into the jar.

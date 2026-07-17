@@ -55,9 +55,7 @@ const sleep = (min, max) =>
 // Realistic intermediate browsing pages — pick one at random to fetch
 // between warm_home and pdp_get so the nav path is home → category → PDP
 // instead of a straight home → PDP jump.
-// Prefer HAR-proven slug path first (kmart-slim.har #6), then department IDs.
 const CATEGORY_PATHS = [
-  "/category/toys/toys-latest-arrivals/",
   "/category/toys/D110000",
   "/category/home/D100000",
   "/category/kids-clothing/D170000",
@@ -65,18 +63,36 @@ const CATEGORY_PATHS = [
   "/category/kitchen-dining/D250000",
 ];
 
-// Chrome 131 Client Hints. Hyper request-rules + kmart-slim.har:
-// - WWW DOC / sensor / SBSD send ONLY the low-entropy trio
-//   (sec-ch-ua, -mobile, -platform). High-entropy hints wait for Accept-CH.
-// - sec-ch-ua GREASE brand/order must match the UA major exactly
-//   (scripts/sec_ch_ua.py 131) — stale grease + bumped version is SoftBlock bait.
-// HAR capture OS is Windows; keep platform aligned with UA.
+// Chrome 124 / macOS navigation header shape. Akamai scores requests on the
+// presence + ordering of these client hints; a Chrome UA without matching
+// sec-ch-ua + sec-fetch-* is an instant bot tag.
+// Chrome 131 macOS client hints — basic (low entropy) + high entropy.
+// Real Chrome sends the high-entropy hints (arch/bitness/full-version-list/
+// model/platform-version) on navigation requests whenever the origin has
+// previously responded with Accept-CH (Kmart does). Sending only the low-
+// entropy trio is a classic headless-Chrome tell.
 const CHROME_CH = {
-  "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+  "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
+  "sec-ch-ua-arch": '"x86"',
+  "sec-ch-ua-bitness": '"64"',
+  "sec-ch-ua-full-version": '"131.0.6778.265"',
+  "sec-ch-ua-full-version-list":
+    '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="131.0.6778.265", "Chromium";v="131.0.6778.265"',
   "sec-ch-ua-mobile": "?0",
-  "sec-ch-ua-platform": '"Windows"',
+  "sec-ch-ua-model": '""',
+  "sec-ch-ua-platform": '"macOS"',
+  "sec-ch-ua-platform-version": '"14.6.1"',
 };
-const CHROME_CH_XHR = { ...CHROME_CH };
+// CORS XHRs to api.kmart.com.au (get-token / GraphQL) only emit the low-entropy
+// Client Hints trio in real Chrome (slim HAR). High-entropy hints are for
+// document navigations after Accept-CH — stuffing them onto every GraphQL call
+// is a bot tell and correlates with api GraphQL Access Denied while get-token
+// (same host, lighter BM) still returns 200.
+const CHROME_CH_XHR = {
+  "sec-ch-ua": CHROME_CH["sec-ch-ua"],
+  "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
+  "sec-ch-ua-platform": CHROME_CH["sec-ch-ua-platform"],
+};
 // Real Chrome 133 link-click navigation header set. Notable absences:
 //   - NO `cache-control` / `pragma` — those only appear on a hard reload
 //     (CMD+SHIFT+R). Sending them on every nav is a strong bot signal.
@@ -204,9 +220,10 @@ function cookieTrustSnapshot(jar) {
 function sbsdOCookieInput(jar) {
   const bmSo = jar.get("bm_so");
   const sbsdO = jar.get("sbsd_o");
-  // Hyper akamai.md / SBSD hard challenge: o = sbsd_o first, else bm_so.
-  const source = sbsdO ? "sbsd_o" : (bmSo ? "bm_so" : "none");
-  const value = sbsdO ?? bmSo ?? "";
+  // Preserve current behavior in this diagnostic batch; trace the source so
+  // the HAR diff can prove whether this needs to become sbsd_o-first later.
+  const source = bmSo ? "bm_so" : (sbsdO ? "sbsd_o" : "none");
+  const value = bmSo ?? sbsdO ?? "";
   return { source, value, bytes: String(value).length, hash: hashShort(value) };
 }
 
@@ -804,50 +821,18 @@ export const kmartAdapter = {
           });
         }
       }
-      // Current Akamai edge often mints bm_sv on a follow-up document GET, not
-      // the SBSD POST. Soft follow only when bm_sv is still missing. SoftBlock
-      // HTML may try to demote `_abck`; the jar refuses that overwrite.
-      // Retry a few times — ISP CONNECT cancels mid-follow are common and WWW
-      // SoftBlock stays hard without bm_sv even when _abck is ~0~.
-      if (!ctx.jar.has("bm_sv") && sbsdRoundOk > 0) {
-        for (let fi = 0; fi < 3 && !ctx.jar.has("bm_sv"); fi++) {
-          try {
-            if (fi > 0) {
-              try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-              await sleep(400, 900);
-            }
-            const follow = await request(
-              pageUrl,
-              { method: "GET", headers: navHeaders({ referer: pageUrl, site: "same-origin" }) },
-              ctx,
-            );
-            const followHtml = await follow.text().catch(() => "");
-            const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(followHtml);
-            steps.push({
-              step: `${label}:follow_get${fi ? `#${fi + 1}` : ""}`,
-              ok: follow.status < 400 && !denied,
-              status: follow.status,
-              note: `bm_sv=${ctx.jar.has("bm_sv")} denied=${denied} abck=${marker(ctx.jar.get("_abck"))} setCookies=[${cookieNamesFromResponse(follow).join(",") || "none"}] htmlBytes=${followHtml.length}`,
-            });
-            if (denied) break;
-          } catch (e) {
-            steps.push({
-              step: `${label}:follow_get${fi ? `#${fi + 1}` : ""}`,
-              ok: false,
-              note: `err=${e?.message ?? e} abck=${marker(ctx.jar.get("_abck"))}`,
-            });
-          }
-        }
-      }
       // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
-      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3) || ctx.jar.has("bm_sv");
+      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
     };
-    // kmart-slim.har bootstrap order (entries #0/#3 SBSD → #5 sensor → #6
-    // category DOC with abck~0~ + bm_sv): SBSD on home FIRST, then sensor.
-    // Hyper §3.5 / plugin akamai.md also describe SBSD as a page-load step.
-    // Sensor pageUrl/referer = homepage (HAR #5), not the PDP.
+    // NOTE: proactive SBSD on the homepage was REMOVED. The Akamai lab
+    // (kmart-akamai-lab.js) proves the sensor solves cleanly with just
+    // {initial GET → script fetch → sensor rounds}. The old `sbsd_home`
+    // was firing on Akamai's own bot-manager script tag (SBSD_RE matches
+    // any `?v=` script) and POSTing bogus SBSD payloads to the sensor
+    // endpoint, poisoning the session. Reactive SBSD on pdp_get remains.
+
+    // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
-    await runSbsd(html, origin + "/", "sbsd_home");
 
     // 3. Fetch the Akamai sensor script. Headers must match a real Chrome
     //    script-tag load — the lab uses these exact headers and consistently
@@ -895,7 +880,6 @@ export const kmartAdapter = {
     // endpoint rejects empty abck with `{"error":"missing abck"}`. The
     // sentinel is Akamai's own "unsolved" placeholder; the sensor POST
     // response Set-Cookies the real `_abck` back.
-    const sensorPageUrl = origin + "/";
     if (!ctx.jar.has("_abck")) {
       ctx.jar.ingest({ "set-cookie": ["_abck=-1~-1~-1~-1~-1~-1~-1; Path=/"] });
       steps.push({
@@ -907,7 +891,7 @@ export const kmartAdapter = {
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
-      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} pageUrl=home bm_sv=${ctx.jar.has("bm_sv")}`,
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0}`,
     });
     for (let i = 0; i < 3; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
@@ -916,7 +900,8 @@ export const kmartAdapter = {
         const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
-          pageUrl: sensorPageUrl,
+          pageUrl: pdpUrl,
+
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
@@ -931,7 +916,7 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: sensorPageUrl }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
             body: akamaiSensorBody(r.payload),
           },
           ctx,
@@ -941,7 +926,7 @@ export const kmartAdapter = {
         recordTraceEvent(`akamai_sensor#${i + 1}`, {
           type: "akamai_sensor_round",
           round: i + 1,
-          pageUrl: sensorPageUrl,
+          pageUrl: pdpUrl,
           scriptUrl,
           input: {
             scriptBytes: prevContext ? 0 : scriptBody?.length ?? 0,
@@ -978,6 +963,16 @@ export const kmartAdapter = {
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
 
+    // 3b. Proactive SBSD on the homepage HTML. RESTORED after diagnostic
+    //     evidence (`home_scripts_dump`) confirmed the homepage contains
+    //     exactly 1 real SBSD candidate (path `/…/0WLGJY?v=<uuid>`) and
+    //     the sensor script has no `?v=` param — so the old "SBSD_RE
+    //     matches the sensor script" concern was wrong. Without this,
+    //     `bm_sv` never mints and category_browse / pdp_get hard-403.
+    //     This gets us back to the pre-#860 flow where PDP passed and
+    //     ATC was the remaining focus.
+    await runSbsd(html, origin + "/", "sbsd_home");
+
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
@@ -1010,28 +1005,15 @@ export const kmartAdapter = {
     // (step 6 below) still runs when the PDP actually embeds a pixel.
 
 
-    // 4c. Intermediate category browse. SoftBlock often hard-403s /category/*
-    //     even with a solved `_abck`+`bm_sv`; that 403 used to demote `_abck`
-    //     via Set-Cookie (jar now protects). Prefer home→PDP when skipCategory
-    //     is set (task or KMART_SKIP_CATEGORY=1) — flag was previously dead.
-    // Bias toward HAR-proven category (index 0); occasional other paths for jitter.
-    const catPath =
-      Math.random() < 0.75
-        ? CATEGORY_PATHS[0]
-        : CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
+    // 4c. Intermediate category browse. Real users don't teleport from the
+    //     homepage to a deep PDP — they click into a category first. Hitting
+    //     /category/* gives Akamai a same-origin nav with a sensible referer
+    //     chain (none → home → category → pdp) and an extra 200 to learn from.
+    const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
     const catUrl = origin + catPath;
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    const skipCategory = task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1";
-    if (skipCategory) {
-      steps.push({
-        step: "category_browse",
-        ok: true,
-        note: `skipped (home→PDP) abck=${marker(ctx.jar.get("_abck"))} bm_sv=${ctx.jar.has("bm_sv")}`,
-      });
-      await sleep(900, 1800);
-    } else {
     await sleep(700, 1400); // brief glance at homepage before the click
     try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
     try {
@@ -1043,10 +1025,8 @@ export const kmartAdapter = {
       );
       categoryStatus = res.status;
       categoryHtml = await res.text();
-      // Manual redirects (301/302) are not a successful category document.
-      categoryOk = res.status >= 200 && res.status < 300;
+      categoryOk = res.status < 400;
       const hasSbsd = Boolean(parseSbsd(categoryHtml));
-      const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(categoryHtml);
       recordTraceEvent("nav_category", {
         type: "document_get",
         url: catUrl,
@@ -1057,11 +1037,7 @@ export const kmartAdapter = {
         setCookieNames: cookieNamesFromResponse(res),
         jar: cookieTrustSnapshot(ctx.jar),
       });
-      return {
-        status: res.status,
-        ok: categoryOk,
-        note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd} denied=${denied} abck=${marker(ctx.jar.get("_abck"))} bm_sv=${ctx.jar.has("bm_sv")}`,
-      };
+      return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b sbsd=${hasSbsd}` };
     });
     } catch (e) {
       // Do not abort the adapter — PDP can still succeed with home referer.
@@ -1091,7 +1067,7 @@ export const kmartAdapter = {
             );
             categoryStatus = res.status;
             categoryHtml = await res.text();
-            categoryOk = res.status >= 200 && res.status < 300;
+            categoryOk = res.status < 400;
             const snippet = categoryHtml.replace(/\s+/g, " ").trim().slice(0, 180);
             recordTraceEvent("nav_category_retry", {
               type: "document_get",
@@ -1103,11 +1079,7 @@ export const kmartAdapter = {
               setCookieNames: cookieNamesFromResponse(res),
               jar: cookieTrustSnapshot(ctx.jar),
             });
-            return {
-              status: res.status,
-              ok: categoryOk,
-              note: `${catPath} ${categoryHtml.length}b abck=${marker(ctx.jar.get("_abck"))} | ${snippet}`,
-            };
+            return { status: res.status, ok: categoryOk, note: `${catPath} ${categoryHtml.length}b | ${snippet}` };
           });
         }
       } catch (e) {
@@ -1118,7 +1090,6 @@ export const kmartAdapter = {
     // 1.5–3s is the critical gap — Akamai's risk model is sensitive to the
     // home→PDP interval being unrealistically short.
     await sleep(1500, 3000);
-    } // end !skipCategory
 
     // 5. Hit the PDP — this is the gated request and the real success signal.
     {
@@ -1166,27 +1137,10 @@ export const kmartAdapter = {
         });
         return {
           status: res.status,
-          ok: res.status >= 200 && res.status < 300,
-          note: `${pdpHtml.length}b srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} refMk=${hasRefMarker} refScr=${hasRefScript} abck=${marker(ctx.jar.get("_abck"))} bm_sv=${ctx.jar.has("bm_sv")} | ${snippet}`,
+          ok: res.status < 400,
+          note: `${pdpHtml.length}b srv=${res.headers.get("server") ?? "-"} ct=${res.headers.get("content-type") ?? "-"} refMk=${hasRefMarker} refScr=${hasRefScript} | ${snippet}`,
         };
       });
-      // SoftBlock can flake on the first PDP even with ~0~ + bm_sv. Retry a few
-      // times with a fresh ProxyAgent before falling into SBSD / giving up.
-      for (let ri = 0; ri < 3 && (pdpStatus >= 400 || /Access Denied|AkamaiGHost/i.test(pdpHtml)); ri++) {
-        await sleep(500 + ri * 350, 900 + ri * 400);
-        try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-        await tStep(`pdp_get:retry#${ri + 1}`, async () => {
-          const res = await request(pdpUrl, { method: "GET", headers: pdpHeaders }, ctx);
-          pdpStatus = res.status;
-          pdpHtml = await res.text();
-          const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(pdpHtml);
-          return {
-            status: res.status,
-            ok: res.status >= 200 && res.status < 300 && !denied,
-            note: `${pdpHtml.length}b denied=${denied} abck=${marker(ctx.jar.get("_abck"))} bm_sv=${ctx.jar.has("bm_sv")}`,
-          };
-        });
-      }
       if (pdpHtml && pdpHtml.length < 10000) {
         steps.push({ step: "pdp_body_full", ok: true, note: pdpHtml });
       }
@@ -1261,51 +1215,22 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    //
-    // If first PDP already returned real product HTML, skip SBSD re-GET.
-    // SoftBlock on pdp_get#2 has been wiping good 200 HTML (and cart/sku).
-    const pdpHtmlAlreadyOk =
-      pdpStatus >= 200 &&
-      pdpStatus < 300 &&
-      pdpHtml.length > 50_000 &&
-      !/Access Denied|AkamaiGHost/i.test(pdpHtml);
-    if (parseSbsd(pdpHtml) && !pdpHtmlAlreadyOk) {
+    if (parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
-      const htmlBefore = pdpHtml;
-      const statusBefore = pdpStatus;
       await tStep("pdp_get#2", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-        const body = await res.text();
-        const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(body);
-        if (res.status >= 200 && res.status < 300 && !denied && body.length > 50_000) {
-          pdpStatus = res.status;
-          pdpHtml = body;
-        } else if (statusBefore >= 200 && statusBefore < 300 && htmlBefore.length > 50_000) {
-          steps.push({
-            step: "pdp_get#2:keep_prior",
-            ok: true,
-            note: `re-GET status=${res.status} denied=${denied} — kept prior ${statusBefore} HTML (${htmlBefore.length}b) abck=${marker(ctx.jar.get("_abck"))}`,
-          });
-        } else {
-          pdpStatus = res.status;
-          pdpHtml = body;
-        }
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
         const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
         const respHeaders = {
           server: res.headers.get("server"),
           "akamai-grn": res.headers.get("akamai-grn"),
           "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
         };
-        return { status: pdpStatus, ok: pdpStatus >= 200 && pdpStatus < 300, note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} | ${snippet}` };
-      });
-    } else if (parseSbsd(pdpHtml) && pdpHtmlAlreadyOk) {
-      steps.push({
-        step: "sbsd_pdp:skipped",
-        ok: true,
-        note: `PDP HTML already clear (${pdpHtml.length}b status=${pdpStatus}) — skip SBSD re-GET`,
+        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
       });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
