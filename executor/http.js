@@ -165,9 +165,15 @@ class Dispatcher {
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
-    // PR #32: string-form ProxyAgent. Object-form `{ uri, connect }` was added
-    // later for sticky timeouts and changed tunnel behavior on ISP exits.
-    if (!this._proxyAgent) this._proxyAgent = new ProxyAgent(this.proxy);
+    if (!this._proxyAgent) {
+      // Connect timeout only — keeps ISP/resi CONNECT from aborting as
+      // "Request was cancelled". Akamai trust regressions live in kmart.js
+      // (pageUrl / bm_so / follow_get / soft-API), not this timeout knob.
+      this._proxyAgent = new ProxyAgent({
+        uri: this.proxy,
+        connect: { timeout: this.sticky ? 45_000 : 20_000 },
+      });
+    }
     return this._proxyAgent;
   }
   async tlsSession() {
@@ -371,9 +377,10 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // PR #32 retry shape: always rebuild ProxyAgent between attempts.
-    // Keep "Request was cancelled" / aborted as retryable (undici blips).
-    const attempts = 3;
+    // PR #32: always rebuild ProxyAgent between attempts (ProxyAgent with connect timeout).
+    // Extra attempts for proxied runs — undici often surfaces "Request was cancelled"
+    // on ISP CONNECT without that being an Akamai reject.
+    const attempts = dispatcher.proxy ? 5 : 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {

@@ -1063,10 +1063,32 @@ export const kmartAdapter = {
           });
         }
       }
-      // PR #32: do NOT re-GET the document after SBSD (follow_get). That Electron
-      // Update addition rewrote cookies post-solve and poisoned category/PDP.
-      // Passive SBSD wants 2 rounds, but round0 + valid _abck is enough to keep moving.
-      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3);
+      // Current Akamai edge often mints bm_sv on a follow-up document GET, not
+      // the SBSD POST (PR #32 POSTs used to set it). Soft follow_get only when
+      // bm_sv is still missing — never hard-fail, never require it.
+      if (!ctx.jar.has("bm_sv") && sbsdRoundOk > 0) {
+        try {
+          const follow = await request(
+            pageUrl,
+            { method: "GET", headers: navHeaders({ referer: pageUrl, site: "same-origin" }) },
+            ctx,
+          );
+          const followHtml = await follow.text().catch(() => "");
+          steps.push({
+            step: `${label}:follow_get`,
+            ok: follow.status < 400,
+            status: follow.status,
+            note: `bm_sv=${ctx.jar.has("bm_sv")} setCookies=[${cookieNamesFromResponse(follow).join(",") || "none"}] htmlBytes=${followHtml.length}`,
+          });
+        } catch (e) {
+          steps.push({
+            step: `${label}:follow_get`,
+            ok: false,
+            note: `err=${e?.message ?? e}`,
+          });
+        }
+      }
+      return sbsdRoundOk > 0 || abckSolved(ctx.jar, 3) || ctx.jar.has("bm_sv");
     };
 
     // NOTE: SBSD runs AFTER sensors below (Kmart needs a solved _abck before

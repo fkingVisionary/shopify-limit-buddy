@@ -49,20 +49,20 @@ Electron Shopify agent), `desktop/` (Cyber-style local Kmart app), and
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.
 
-### Kmart Akamai regression note (code, not proxies)
-ISP checkouts cleared WWW→cart around **PR #32** (`600b40f`). The later **Electron Update**
-(`a1d9f9c`) and monitor soft-API work regressed Akamai trust in `executor/adapters/kmart.js`
-even when `_abck` still solved. When WWW stays Access Denied after a clean solve, treat it as
-a **code path / solve-context** bug first — do not default to blaming proxy quality.
+### Kmart Akamai regression note (undici/HTTP only — no Playwright)
+ISP checkouts cleared WWW→cart around **PR #32** (`600b40f`). **Electron Update**
+(`a1d9f9c`) regressed `executor/adapters/kmart.js` solve context. Treat WWW Access Denied
+after a solved `_abck` as a **code-path** bug first.
 
-Proven-path anchors to keep (see PR #35 restore work):
-- Hyper sensor `pageUrl` + sensor POST referer = **PDP URL** (not homepage `/`)
-- SBSD `o` cookie = **`bm_so` first**, then `sbsd_o`
-- No SBSD `follow_get` re-document after passive rounds
-- `resetUndici` between SBSD rounds and before `category_browse`
-- Soft `verify_ip` **after first PDP**, not a hard ISP abort before category
-- GraphQL only after real PDP HTML (`wwwHtmlOk`); soft-API home-referer entry hides WWW failure
-- `http.js`: string-form `new ProxyAgent(proxyUrl)` (not `{ uri, connect }` object form)
+**Do not use Playwright** (`kmartMode: "playwright"`, TLS→Playwright ladders, or
+`httpHandoff` warm). It is out of scope for this product — too slow, expensive, and
+unscalable. Fix the undici Hyper sensor / SBSD / nav path only.
+
+Anchors for the HTTP path:
+- Sensor `pageUrl` + POST referer = **PDP URL**; SBSD `o` = **`bm_so` first**
+- Soft `verify_ip` after first PDP; GraphQL only after real PDP HTML (no soft-API lie)
+- Soft SBSD `follow_get` only when `bm_sv` still missing (current edge often mints there)
+- `http.js` may use `ProxyAgent({ uri, connect })` timeouts for ISP CONNECT stability
 
 Local executor smoke (avoid clashing with Vite on 8080):
 `PORT=8081 EXECUTOR_TOKEN=devtoken HYPER_API_KEY=… MONITOR_ENABLE=0 node server.js`
