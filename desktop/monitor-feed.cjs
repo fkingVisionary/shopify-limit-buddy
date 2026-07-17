@@ -101,8 +101,6 @@ async function connect() {
 
     status = "live";
     emit({ type: "monitor-feed", phase: "status", status, ...getStatus() });
-    seedDemoEventsIfNeeded();
-
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -158,47 +156,6 @@ function handleSseBlock(block) {
   pushRecent(evt);
   emit({ type: "monitor-feed", phase: "event", event: evt, ...getStatus() });
   if (onEvent) onEvent(evt);
-}
-
-/** Local UI showcase cards when MONITOR_FEED_DEMO=1 and feed has no real events yet. */
-function seedDemoEventsIfNeeded() {
-  if (process.env.MONITOR_FEED_DEMO !== "1") return;
-  if (recent.length) return;
-  const now = Date.now();
-  const demos = [
-    {
-      id: "demo-restock-1",
-      store: "kmart",
-      type: "restock",
-      title: "Pokemon TCG Scarlet & Violet Elite Trainer Box",
-      url: "https://www.kmart.com.au/product/pokemon-etb-43671588/",
-      sku: "43671588",
-      inStock: true,
-      price: 89.0,
-      currency: "AUD",
-      sizes: ["ETB", "Scarlet & Violet"],
-      detectedAt: new Date(now - 1200).toISOString(),
-      source: "sku_poll",
-    },
-    {
-      id: "demo-new-1",
-      store: "kmart",
-      type: "new",
-      title: "Pokemon Trading Card Game Booster Bundle",
-      url: "https://www.kmart.com.au/product/pokemon-booster-43552146/",
-      sku: "43552146",
-      inStock: true,
-      price: 49.0,
-      currency: "AUD",
-      sizes: ["Booster Bundle", "24 packs"],
-      detectedAt: new Date(now - 4200).toISOString(),
-      source: "discovery",
-    },
-  ];
-  for (const evt of demos) {
-    pushRecent(evt);
-    emit({ type: "monitor-feed", phase: "event", event: evt, ...getStatus() });
-  }
 }
 
 function stop(emitOffline = true) {

@@ -32,10 +32,15 @@ function loadIspEntries() {
     process.env.MONITOR_ISP_FILE ||
     path.join(__dirname, "..", "isp.proxies");
   try {
-    return parseProxyList(fs.readFileSync(file, "utf8"));
+    const fromFile = parseProxyList(fs.readFileSync(file, "utf8"));
+    if (fromFile.length) return fromFile;
   } catch {
-    return [];
+    /* optional */
   }
+
+  // Fly already has checkout resi — use it so monitor isn't stuck on direct/Akamai.
+  const resi = String(process.env.MONITOR_FALLBACK_PROXY || process.env.PROXY_URL_RESI || "").trim();
+  return resi ? [resi] : [];
 }
 
 /**
@@ -58,8 +63,9 @@ class IspPool {
       blocked: 0,
     }));
     this.i = 0;
-    this.cooldownMs = Math.max(30_000, Number(opts.cooldownMs) || Number(process.env.MONITOR_ISP_COOLDOWN_MS) || 180_000);
-    this.minReuseMs = Math.max(5_000, Number(opts.minReuseMs) || Number(process.env.MONITOR_ISP_MIN_REUSE_MS) || 45_000);
+    this.cooldownMs = Math.max(15_000, Number(opts.cooldownMs) || Number(process.env.MONITOR_ISP_COOLDOWN_MS) || 90_000);
+    // Faster reuse for monitor cadence (was 45s — too slow vs Zephyr-style loops).
+    this.minReuseMs = Math.max(1_000, Number(opts.minReuseMs) || Number(process.env.MONITOR_ISP_MIN_REUSE_MS) || 5_000);
   }
 
   size() {

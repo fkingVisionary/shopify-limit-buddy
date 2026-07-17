@@ -1,12 +1,10 @@
 {
-  "skus": [
-    {
-      "sku": "43671588",
-      "url": "https://www.kmart.com.au/product/junk-journal-sticker-pad-43671588/"
-    }
-  ],
+  "skus": [],
   "discovery": [
     { "query": "pokemon" },
-    { "query": "tcg" }
+    { "query": "trading cards" },
+    { "query": "tcg" },
+    { "query": "elite trainer box" },
+    { "query": "booster" }
   ]
 }

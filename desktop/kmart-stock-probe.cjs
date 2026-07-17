@@ -35,9 +35,23 @@ function walkProductFields(node, acc, depth = 0) {
 
   const o = /** @type {Record<string, unknown>} */ (node);
 
-  if (!acc.title && typeof o.name === "string" && o.name.length > 2) acc.title = o.name;
-  if (!acc.title && typeof o.title === "string" && o.title.length > 2) acc.title = o.title;
-  if (!acc.title && typeof o.productName === "string") acc.title = o.productName;
+  const productish =
+    (typeof o.sku === "string" && /^\d{6,9}$/.test(o.sku)) ||
+    (typeof o.keyCode === "string" && /^\d{6,9}$/.test(o.keyCode)) ||
+    (typeof o.keycode === "string" && /^\d{6,9}$/.test(o.keycode)) ||
+    (typeof o.productName === "string" && o.productName.length > 4) ||
+    (typeof o.__typename === "string" && /product/i.test(o.__typename));
+  const chromeTitle = (t) =>
+    !t ||
+    t.length < 5 ||
+    /^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories)$/i.test(t.trim());
+
+  // Only take titles from product-shaped nodes — first `name:"footer"` poisoned the feed.
+  if (productish) {
+    if (!acc.title && typeof o.productName === "string" && !chromeTitle(o.productName)) acc.title = o.productName;
+    if (!acc.title && typeof o.name === "string" && !chromeTitle(o.name)) acc.title = o.name;
+    if (!acc.title && typeof o.title === "string" && !chromeTitle(o.title)) acc.title = o.title;
+  }
 
   if (!acc.sku && typeof o.sku === "string" && /^\d{6,9}$/.test(o.sku)) acc.sku = o.sku;
   if (!acc.sku && typeof o.keyCode === "string" && /^\d{6,9}$/.test(o.keyCode)) acc.sku = o.keyCode;
@@ -137,6 +151,25 @@ function parseKmartPdpHtml(html, url) {
   const acc = /** @type {{ title?: string; sku?: string; price?: number; inStock?: boolean; imageUrl?: string; sizes?: string[] }} */ ({
     sizes: [],
   });
+  const chromeTitle = (t) =>
+    !t ||
+    String(t).trim().length < 5 ||
+    /^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories)$/i.test(String(t).trim());
+
+  // Prefer document meta first — JSON walk used to grab name:"footer".
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+    || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+  if (og?.[1]) {
+    const t = og[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
+    if (!chromeTitle(t)) acc.title = t;
+  }
+  if (!acc.title) {
+    const t = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (t?.[1]) {
+      const cleaned = t[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
+      if (!chromeTitle(cleaned)) acc.title = cleaned;
+    }
+  }
 
   const nextBlock = html.match(
     /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i,
@@ -157,16 +190,7 @@ function parseKmartPdpHtml(html, url) {
   if (!acc.sku) {
     acc.sku = extractKeycodeFromUrl(cleanUrl) || undefined;
   }
-
-  if (!acc.title) {
-    const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
-      || html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
-    if (og?.[1]) acc.title = og[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
-  }
-  if (!acc.title) {
-    const t = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    if (t?.[1]) acc.title = t[1].replace(/\s*[|\-–]\s*Kmart.*$/i, "").trim();
-  }
+  if (acc.title && chromeTitle(acc.title)) acc.title = undefined;
 
   if (!acc.imageUrl) {
     const ogImg =

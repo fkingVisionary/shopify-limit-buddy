@@ -1,8 +1,29 @@
-// Fast-path SKU/PDP poller — Hyper-backed via checkout executor (never ATC).
-// Soft on the ISP fleet: one proxy per SKU, report blocks, generous delays.
+// Fast SKU/PDP poller — lightweight WWW HTML via ISP/resi (Zephyr-style).
+// Hyper is optional fallback only (MONITOR_HYPER_FALLBACK=1).
 
-const { probeViaExecutor, executorConfig } = require("../executor-probe.cjs");
+const { probeKmartPdp } = require("../../lib/kmart-stock-probe.cjs");
+const { probeViaExecutor } = require("../executor-probe.cjs");
 const { makeMonitorEvent } = require("../events.cjs");
+
+function isPublishableTitle(title) {
+  const t = String(title || "").trim();
+  if (t.length < 5) return false;
+  if (
+    /^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories|untitled)/i.test(
+      t,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function pickProxy(ispPool, fallbackProxy) {
+  const mode = String(process.env.MONITOR_PROXY_MODE || "auto").toLowerCase();
+  if (mode === "direct") return null;
+  if (mode === "desktop" && fallbackProxy) return fallbackProxy;
+  return ispPool.next() || fallbackProxy || null;
+}
 
 /**
  * @param {{
@@ -19,32 +40,24 @@ async function pollSkuOnce(ctx) {
   const items = watchlist.skus || [];
   if (!items.length) return { polled: 0, published: 0 };
 
-  const cfg = executorConfig();
-  if (!cfg.configured) {
-    log("sku_poll SKIP — set MONITOR_EXECUTOR_URL + MONITOR_EXECUTOR_TOKEN (Hyper lives on executor)");
-    return { polled: 0, published: 0, skipped: true };
-  }
-
   let published = 0;
-  const staggerMs = Math.max(800, Number(process.env.MONITOR_SKU_STAGGER_MS) || 2500);
-
-  const fallbackProxy = String(process.env.MONITOR_FALLBACK_PROXY || process.env.PROXY_URL_RESI || "").trim() || null;
+  const staggerMs = Math.max(200, Number(process.env.MONITOR_SKU_STAGGER_MS) || 400);
+  const timeoutMs = Math.max(4000, Number(process.env.MONITOR_PROBE_TIMEOUT_MS) || 12_000);
+  const fallbackProxy =
+    String(process.env.MONITOR_FALLBACK_PROXY || process.env.PROXY_URL_RESI || "").trim() || null;
   const allowDirect = process.env.MONITOR_PROBE_ALLOW_DIRECT !== "0";
-  const proxyMode = String(process.env.MONITOR_PROXY_MODE || "auto").toLowerCase();
+  const hyperFallback = ["1", "true", "yes"].includes(
+    String(process.env.MONITOR_HYPER_FALLBACK || "").toLowerCase(),
+  );
 
   for (const item of items) {
-    // desktop = checkout-proven proxies first; isp = ISP pool only; auto = ISP then fallback
-    let proxyUrl =
-      proxyMode === "desktop" && fallbackProxy
-        ? fallbackProxy
-        : proxyMode === "direct"
-          ? null
-          : ispPool.next();
-    let probe = await probeViaExecutor({
+    let proxyUrl = pickProxy(ispPool, fallbackProxy);
+    let probe = await probeKmartPdp({
       url: item.url,
       proxyUrl,
-      timeoutMs: Number(process.env.MONITOR_PROBE_TIMEOUT_MS) || 90_000,
+      timeoutMs,
     });
+    let via = "html";
 
     if (typeof ispPool.reportResult === "function") {
       ispPool.reportResult(proxyUrl, {
@@ -54,17 +67,27 @@ async function pollSkuOnce(ctx) {
       });
     }
 
-    // ISPs often get harder Akamai than checkout resi — retry once.
     if (!probe.ok && (probe.blocked || /access denied|akamai/i.test(String(probe.error || "")))) {
-      const retryProxy = fallbackProxy || (allowDirect ? null : undefined);
+      const retryProxy = fallbackProxy && fallbackProxy !== proxyUrl ? fallbackProxy : allowDirect ? null : undefined;
       if (retryProxy !== undefined) {
-        log(`sku_poll retry ${item.sku} via=${fallbackProxy ? "fallback_proxy" : "direct"}`);
-        probe = await probeViaExecutor({
-          url: item.url,
-          proxyUrl: retryProxy,
-          timeoutMs: Number(process.env.MONITOR_PROBE_TIMEOUT_MS) || 90_000,
-        });
+        log(`sku_poll retry ${item.sku} via=html fallback`);
+        probe = await probeKmartPdp({ url: item.url, proxyUrl: retryProxy, timeoutMs });
+        via = "html_fallback";
       }
+    }
+
+    if (
+      hyperFallback &&
+      !probe.ok &&
+      (probe.blocked || /access denied|akamai/i.test(String(probe.error || "")))
+    ) {
+      log(`sku_poll hyper fallback ${item.sku}`);
+      probe = await probeViaExecutor({
+        url: item.url,
+        proxyUrl: fallbackProxy || proxyUrl,
+        timeoutMs: Math.max(timeoutMs, 60_000),
+      });
+      via = "hyper";
     }
 
     const sku = probe.sku || item.sku;
@@ -73,7 +96,7 @@ async function pollSkuOnce(ctx) {
 
     if (probe.ok) {
       log(
-        `sku_poll ok sku=${sku} inStock=${inStock} title=${(probe.title || "").slice(0, 40)} via=hyper proxy=${proxyUrl ? "yes" : "direct"}`,
+        `sku_poll ok sku=${sku} inStock=${inStock} title=${(probe.title || "").slice(0, 40)} via=${via}`,
       );
     } else if (probe.blocked) {
       log(`sku_poll blocked ${sku}: ${probe.error || "blocked"}`);
@@ -82,10 +105,12 @@ async function pollSkuOnce(ctx) {
     }
 
     if (probe.ok && inStock === true) {
-      if (prev !== true) {
+      if (!isPublishableTitle(probe.title)) {
+        log(`sku_poll DROP restock ${sku} — garbage/missing title "${probe.title || ""}"`);
+      } else if (prev !== true) {
         const evt = makeMonitorEvent({
           type: "restock",
-          title: probe.title || `SKU ${sku}`,
+          title: probe.title,
           url: probe.url || item.url,
           sku,
           inStock: true,
@@ -96,7 +121,7 @@ async function pollSkuOnce(ctx) {
         });
         if (feed.publish(evt)) {
           published += 1;
-          log(`PUBLISH restock ${sku} ${probe.title || ""}`);
+          log(`PUBLISH restock ${sku} ${probe.title}`);
         }
       }
       state.set(sku, true);
@@ -111,8 +136,8 @@ async function pollSkuOnce(ctx) {
 }
 
 function startSkuPoller(ctx) {
-  // Hyper probes are heavier — default slower. Override with MONITOR_POLL_MS.
-  const ms = Math.max(4000, Number(process.env.MONITOR_POLL_MS) || 20_000);
+  // Fast loop — light HTML probes. Override with MONITOR_POLL_MS.
+  const ms = Math.max(1500, Number(process.env.MONITOR_POLL_MS) || 4000);
   let stopped = false;
 
   const tick = async () => {
@@ -125,7 +150,7 @@ function startSkuPoller(ctx) {
     if (!stopped) setTimeout(tick, ms);
   };
 
-  setTimeout(tick, 800);
+  setTimeout(tick, 500);
   return {
     stop: () => {
       stopped = true;

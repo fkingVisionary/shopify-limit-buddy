@@ -113,10 +113,15 @@ export function attachMonitor(opts) {
       probe._retried = retryProxy ? "fallback_proxy" : "direct";
     }
 
-    if (probe.ok && probe.inStock === true) {
+    const titleOk =
+      String(probe.title || "").trim().length >= 5 &&
+      !/^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories|untitled)/i.test(
+        String(probe.title || "").trim(),
+      );
+    if (probe.ok && probe.inStock === true && titleOk) {
       const evt = makeMonitorEvent({
         type: "restock",
-        title: probe.title || `SKU ${probe.sku}`,
+        title: probe.title,
         url: probe.url || target,
         sku: probe.sku || "",
         inStock: true,

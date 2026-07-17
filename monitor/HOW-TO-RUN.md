@@ -1,66 +1,47 @@
-# Kmart monitor — how to run (plain English)
+# Kmart monitor — how it works
 
-## The short version
+## Zephyr-style model (what we run now)
 
-There is **no separate monitor Fly app**.
+Kmart does **not** push restocks to anyone. Fast monitors poll light endpoints hard, then push to you.
 
-Global feed runs on the **same** executor you already have:
-
-`https://j1ms-bot-executor.fly.dev/feed`
-
-Desktop Global mode is already pointed there.
-
-## Secrets
-
-Already on Fly (unchanged): `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `PROXY_URL_RESI`.
-
-Feed auth matches desktop: **any non-empty API key** works (`MONITOR_AUTH_MODE=open`).  
-No separate monitor whitelist.
-
-Optional later: `MONITOR_ISP_PROXIES` if you want a dedicated ISP pool (else uses `PROXY_URL_RESI`).
-
-`MONITOR_ENABLE=1` is baked into `executor/fly.toml`.
-
-Redeploy executor after pulling this change:
-
-```powershell
-# From GitHub Actions: Actions → Deploy executor → Run workflow
-# or locally if you have flyctl:
-cd executor
-fly deploy
+```
+Fly executor (same app as checkout)
+  ├─ discovery: search HTML every ~8s (keywords in watchlist)
+  ├─ confirm: light PDP HTML via resi/ISP (~seconds, NOT Hyper)
+  ├─ SKU re-probe: promoted products every ~4s
+  └─ /feed SSE → desktop
+         │
+         ▼
+Desktop Global tasks filter with keywords (pokemon,etb,-plush)
 ```
 
-## Check it’s alive
+Hyper checkout path is **not** used for routine detect. Optional only:
 
-- Health: `https://j1ms-bot-executor.fly.dev/health` → `"monitorEnabled": true`
-- Monitor detail: `https://j1ms-bot-executor.fly.dev/monitor/health`
-- Manual probe (any desktop API key as Bearer / `?access_token=`):  
-  `https://j1ms-bot-executor.fly.dev/probe?url=https://www.kmart.com.au/product/...`
+`MONITOR_HYPER_FALLBACK=1`
 
-## Local-only (optional)
+## Catch restocks + filter
 
-`monitor/` is still useful as a **standalone local** poller for laptop testing:
+| Layer | Who | What |
+|-------|-----|------|
+| Net | Operator `executor/watchlist.json` | discovery queries (+ optional pinned SKUs) |
+| Detect | Fly pollers | new / restock when stock flips to in-stock |
+| Filter | Your Global task | keywords / URL / SKU |
 
-```powershell
-cd monitor
-npm start
-```
+Widen coverage = add more `discovery` queries.  
+Your keywords only decide which feed events start checkout.
 
-That starts a local sidecar + `:8091` feed. Point desktop at it only if needed:
+## Deploy
 
-```powershell
-cd desktop
-$env:MONITOR_FEED_URL="http://127.0.0.1:8091/feed"
-npm start
-```
+Commit → push → GitHub Actions → **Deploy executor**.
 
-Desktop’s own executor sidecar does **not** run the global poller (`MONITOR_ENABLE` off by default).
+Health: `https://j1ms-bot-executor.fly.dev/health` → `"monitorEnabled": true`
 
-## Edit what it watches
+Optional secret: `MONITOR_ISP_PROXIES` (comma list). If unset, monitor uses `PROXY_URL_RESI`.
 
-Edit `executor/watchlist.json` (deployed with the executor image), then redeploy.
-Or set `MONITOR_WATCH_SKUS` / `MONITOR_DISCOVERY_QUERIES` secrets.
+## Desktop
 
-## Honest status
+1. Settings → API key  
+2. Task → Monitor on → **Global** → e.g. `pokemon,etb,-plush`  
+3. Start task — waits on feed; matching in-stock events fire checkout  
 
-Akamai on proxy exits is still the hard part. Hyper + a known-good `PROXY_URL_RESI` on Fly is why cloud probes work better than burned ISP exits.
+Monitor tab search = browse/filter the feed only.

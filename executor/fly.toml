@@ -10,6 +10,12 @@ primary_region = "syd"
   MONITOR_ENABLE = "1"
   # Same idea as desktop license: any non-empty API key can subscribe.
   MONITOR_AUTH_MODE = "open"
+  # Fast HTML/ISP loop (not Hyper-per-SKU). Set MONITOR_HYPER_FALLBACK=1 only if needed.
+  MONITOR_POLL_MS = "4000"
+  MONITOR_DISCOVERY_MS = "8000"
+  MONITOR_SKU_STAGGER_MS = "400"
+  MONITOR_DISCOVERY_STAGGER_MS = "700"
+  MONITOR_PROBE_TIMEOUT_MS = "12000"
 
 [http_service]
   internal_port = 8080

@@ -489,6 +489,15 @@ function renderMonitorFeed() {
 
   const q = ($("monitorFilter")?.value || "").trim().toLowerCase();
   let rows = Array.isArray(feed.recent) ? feed.recent.slice() : [];
+  // Never show chrome/garbage titles (bad server parses or stale feed).
+  rows = rows.filter((e) => {
+    const t = String(e?.title || "").trim();
+    if (t.length < 5) return false;
+    if (/^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories|untitled)/i.test(t)) {
+      return false;
+    }
+    return true;
+  });
   if (q) {
     rows = rows.filter((e) =>
       [e.title, e.sku, e.url, e.type, ...(e.sizes || [])].join(" ").toLowerCase().includes(q),

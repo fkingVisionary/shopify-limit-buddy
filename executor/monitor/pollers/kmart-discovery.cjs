@@ -1,14 +1,28 @@
-// Operator discovery poller — search/newest surfaces → type:"new" + promote to SKU list.
+// Fast discovery — search HTML + light PDP confirm (no Hyper by default).
+// Promotes in-stock hits onto the SKU list for restock watching.
 
-const { searchKmartProducts } = require("../../lib/kmart-stock-probe.cjs");
-const { probeViaExecutor, executorConfig } = require("../executor-probe.cjs");
+const { searchKmartProducts, probeKmartPdp } = require("../../lib/kmart-stock-probe.cjs");
+const { probeViaExecutor } = require("../executor-probe.cjs");
 const { makeMonitorEvent } = require("../events.cjs");
 const { promoteSku } = require("../watchlist.cjs");
+
+function isPublishableTitle(title) {
+  const t = String(title || "").trim();
+  if (t.length < 5) return false;
+  if (
+    /^(footer|header|menu|nav|home|search|cart|login|account|kmart|shop|categories|untitled)/i.test(
+      t,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
 
 /**
  * @param {{
  *   watchlist: { skus: { sku: string; url: string }[]; discovery: { query: string }[] };
- *   ispPool: { next: () => string | null };
+ *   ispPool: { next: () => string | null; reportResult?: Function };
  *   feed: { publish: (e: object) => boolean };
  *   seenSkus: Set<string>;
  *   stockState: Map<string, boolean | null>;
@@ -21,18 +35,26 @@ async function pollDiscoveryOnce(ctx) {
   const queries = watchlist.discovery || [];
   if (!queries.length) return { queries: 0, published: 0 };
 
-  if (!executorConfig().configured) {
-    log("discovery SKIP confirm — set MONITOR_EXECUTOR_URL + MONITOR_EXECUTOR_TOKEN");
-    return { queries: 0, published: 0, skipped: true };
-  }
-
   let published = 0;
-  const staggerMs = Math.max(1500, Number(process.env.MONITOR_DISCOVERY_STAGGER_MS) || 4000);
+  const staggerMs = Math.max(300, Number(process.env.MONITOR_DISCOVERY_STAGGER_MS) || 700);
+  const timeoutMs = Math.max(4000, Number(process.env.MONITOR_PROBE_TIMEOUT_MS) || 12_000);
+  const fallbackProxy =
+    String(process.env.MONITOR_FALLBACK_PROXY || process.env.PROXY_URL_RESI || "").trim() || null;
+  const hyperFallback = ["1", "true", "yes"].includes(
+    String(process.env.MONITOR_HYPER_FALLBACK || "").toLowerCase(),
+  );
+  // Cap how many brand-new SKUs we confirm per query per tick (keep loop snappy).
+  const maxNewPerQuery = Math.max(1, Number(process.env.MONITOR_DISCOVERY_MAX_NEW) || 8);
+
   for (const { query } of queries) {
-    const proxyUrl = ispPool.next();
-    const found = await searchKmartProducts({ query, proxyUrl, timeoutMs: 18_000 });
+    const searchProxy = ispPool.next() || fallbackProxy;
+    const found = await searchKmartProducts({
+      query,
+      proxyUrl: searchProxy,
+      timeoutMs: Math.min(timeoutMs, 15_000),
+    });
     if (typeof ispPool.reportResult === "function") {
-      ispPool.reportResult(proxyUrl, {
+      ispPool.reportResult(searchProxy, {
         ok: found.ok === true && !found.blocked,
         blocked: found.blocked === true,
         softFail: !found.ok,
@@ -44,14 +66,19 @@ async function pollDiscoveryOnce(ctx) {
       continue;
     }
 
-    for (const p of found.products || []) {
-      if (!p.sku || seenSkus.has(p.sku)) continue;
+    const products = found.products || [];
+    log(`discovery "${query}": ${products.length} hits`);
+    let confirmed = 0;
 
-      const probeProxy = ispPool.next();
-      const probe = await probeViaExecutor({
+    for (const p of products) {
+      if (!p.sku || seenSkus.has(p.sku)) continue;
+      if (confirmed >= maxNewPerQuery) break;
+
+      const probeProxy = ispPool.next() || fallbackProxy;
+      let probe = await probeKmartPdp({
         url: p.url,
         proxyUrl: probeProxy,
-        timeoutMs: Number(process.env.MONITOR_PROBE_TIMEOUT_MS) || 90_000,
+        timeoutMs,
       });
       if (typeof ispPool.reportResult === "function") {
         ispPool.reportResult(probeProxy, {
@@ -60,24 +87,50 @@ async function pollDiscoveryOnce(ctx) {
           softFail: !probe.ok && !probe.blocked,
         });
       }
-      if (!probe.ok) {
-        log(`discovery confirm fail ${p.sku}: ${probe.error || "fail"}`);
-        continue;
+
+      if (
+        hyperFallback &&
+        !probe.ok &&
+        (probe.blocked || /access denied|akamai/i.test(String(probe.error || "")))
+      ) {
+        probe = await probeViaExecutor({
+          url: p.url,
+          proxyUrl: fallbackProxy || probeProxy,
+          timeoutMs: Math.max(timeoutMs, 60_000),
+        });
       }
 
       const title = probe.title || p.title;
       const url = probe.url || p.url;
       const sku = probe.sku || p.sku;
 
+      if (!probe.ok || !isPublishableTitle(title) || probe.inStock !== true) {
+        // Still mark seen if we got a real OOS read — so we can catch restock later via SKU poll.
+        if (probe.ok && probe.inStock === false && sku) {
+          seenSkus.add(sku);
+          promoteSku(watchlist, { sku, url });
+          stockState.set(sku, false);
+          log(`discovery track OOS ${sku} ${(title || "").slice(0, 40)}`);
+        } else {
+          log(
+            `discovery DROP ${sku || "?"} titleOk=${isPublishableTitle(title)} inStock=${probe.inStock} ok=${probe.ok}`,
+          );
+        }
+        confirmed += 1;
+        await new Promise((r) => setTimeout(r, staggerMs));
+        continue;
+      }
+
       seenSkus.add(sku);
       promoteSku(watchlist, { sku, url });
+      confirmed += 1;
 
       const evt = makeMonitorEvent({
         type: "new",
         title,
         url,
         sku,
-        inStock: probe.inStock !== false,
+        inStock: true,
         price: probe.price ?? undefined,
         imageUrl: probe.imageUrl || undefined,
         sizes: probe.sizes || undefined,
@@ -87,9 +140,7 @@ async function pollDiscoveryOnce(ctx) {
         published += 1;
         log(`PUBLISH new ${sku} ${title}`);
       }
-      if (probe.inStock === true || probe.inStock === false) {
-        stockState.set(sku, probe.inStock);
-      }
+      stockState.set(sku, true);
       await new Promise((r) => setTimeout(r, staggerMs));
     }
 
@@ -100,7 +151,7 @@ async function pollDiscoveryOnce(ctx) {
 }
 
 function startDiscoveryPoller(ctx) {
-  const ms = Math.max(20_000, Number(process.env.MONITOR_DISCOVERY_MS) || 60_000);
+  const ms = Math.max(3000, Number(process.env.MONITOR_DISCOVERY_MS) || 8000);
   let stopped = false;
 
   const tick = async () => {
@@ -113,7 +164,7 @@ function startDiscoveryPoller(ctx) {
     if (!stopped) setTimeout(tick, ms);
   };
 
-  setTimeout(tick, 2000);
+  setTimeout(tick, 800);
   return {
     stop: () => {
       stopped = true;
