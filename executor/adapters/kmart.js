@@ -230,9 +230,10 @@ function cookieTrustSnapshot(jar) {
 function sbsdOCookieInput(jar) {
   const bmSo = jar.get("bm_so");
   const sbsdO = jar.get("sbsd_o");
-  // Hyper docs: o = sbsd_o, fallback bm_so.
-  const source = sbsdO ? "sbsd_o" : bmSo ? "bm_so" : "none";
-  const value = sbsdO ?? bmSo ?? "";
+  // PR #32 / proven ISP path: bm_so-first. Electron Update flipped to sbsd_o-first
+  // ("Hyper docs") and WWW trust collapsed — keep bm_so unless HAR proves otherwise.
+  const source = bmSo ? "bm_so" : (sbsdO ? "sbsd_o" : "none");
+  const value = bmSo ?? sbsdO ?? "";
   return { source, value, bytes: String(value).length, hash: hashShort(value) };
 }
 
@@ -1222,7 +1223,7 @@ export const kmartAdapter = {
         const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
-          pageUrl: origin + "/",
+          pageUrl: pdpUrl,
 
           userAgent: UA,
           ip: egressIp,
@@ -1238,7 +1239,7 @@ export const kmartAdapter = {
           r.postUrl,
           {
             method: "POST",
-            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+            headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
             body: akamaiSensorBody(r.payload),
           },
           ctx,
@@ -1248,7 +1249,7 @@ export const kmartAdapter = {
         recordTraceEvent(`akamai_sensor#${i + 1}`, {
           type: "akamai_sensor_round",
           round: i + 1,
-          pageUrl: origin + "/",
+          pageUrl: pdpUrl,
           scriptUrl,
           input: {
             scriptBytes: prevContext ? 0 : scriptBody?.length ?? 0,
@@ -1295,7 +1296,7 @@ export const kmartAdapter = {
             const beforeAbck = marker(ctx.jar.get("_abck"));
             const r = await solveAkamaiSensor({
               jar: ctx.jar,
-              pageUrl: origin + "/",
+              pageUrl: pdpUrl,
               userAgent: UA,
               ip: egressIp,
               acceptLanguage: ACCEPT_LANG,
@@ -1309,7 +1310,7 @@ export const kmartAdapter = {
               r.postUrl,
               {
                 method: "POST",
-                headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+                headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
                 body: akamaiSensorBody(r.payload),
               },
               ctx,
@@ -1677,7 +1678,7 @@ export const kmartAdapter = {
             await tStep(`pdp_get:sticky_sensor#${i + 1}`, async () => {
               const r = await solveAkamaiSensor({
                 jar: ctx.jar,
-                pageUrl: origin + "/",
+                pageUrl: pdpUrl,
                 userAgent: UA,
                 ip: egressIp,
                 acceptLanguage: ACCEPT_LANG,
@@ -1692,7 +1693,7 @@ export const kmartAdapter = {
                 wwwScriptUrl,
                 {
                   method: "POST",
-                  headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+                  headers: akamaiSensorHeaders({ requestOrigin: origin, referer: pdpUrl }),
                   body: akamaiSensorBody(r.payload),
                 },
                 ctx,
