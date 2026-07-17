@@ -48,10 +48,7 @@ Do **not** deploy this folder as its own Fly app anymore.
 
 Redeploy `executor/` (same `j1ms-bot-executor`). Set secrets there:
 
-```bash
-# optional ISP pool — otherwise PROXY_URL_RESI is used
-fly secrets set MONITOR_ISP_PROXIES=... -a j1ms-bot-executor
-```
+ISP list: edit `executor/isp.proxies` (ships with the image). No Fly secret.
 
 See `executor/fly.toml` (`MONITOR_ENABLE=1`, `MONITOR_AUTH_MODE=open`, always-on).
 

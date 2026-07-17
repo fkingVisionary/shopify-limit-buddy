@@ -36,7 +36,10 @@ Commit → push → GitHub Actions → **Deploy executor**.
 
 Health: `https://j1ms-bot-executor.fly.dev/health` → `"monitorEnabled": true`
 
-Optional secret: `MONITOR_ISP_PROXIES` (comma list). If unset, monitor uses `PROXY_URL_RESI`.
+### ISP fleet
+
+List lives in `executor/isp.proxies` (one per line) and deploys with the executor image.  
+Edit that file → commit → redeploy. Rotation is automatic — no Fly secret.
 
 ## Desktop
 
