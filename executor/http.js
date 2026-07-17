@@ -31,6 +31,18 @@ async function ensureTls() {
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
 }
+// bogdanfinn pool can stick in a bad CONNECT state after undici ProxyAgent
+// activity or a proxy 403 — destroy + re-init before opening a fresh Session.
+async function refreshTlsPool() {
+  const mod = await loadTlsClient();
+  try {
+    if (typeof mod.destroyTLS === "function") await mod.destroyTLS();
+  } catch {
+    /* ignore */
+  }
+  tlsInitPromise = null;
+  await ensureTls();
+}
 
 const RAW_TRANSPORT = (process.env.EXECUTOR_HTTP_TRANSPORT ?? "undici").toLowerCase();
 export const HTTP_TRANSPORT = RAW_TRANSPORT === "tls" ? "tls" : "undici";
@@ -154,6 +166,7 @@ class Dispatcher {
     this.transport = useTls ? "tls" : "undici";
     this._tlsSession = null;
     this._proxyAgent = null;
+    this._tlsBootstrapped = false;
   }
   undiciDispatcher() {
     if (!this.proxy) return undefined;
@@ -166,10 +179,30 @@ class Dispatcher {
     }
     return this._proxyAgent;
   }
-  async tlsSession() {
-    if (this._tlsSession) return this._tlsSession;
-    await ensureTls();
+  async tlsSession({ refresh = false } = {}) {
+    if (this._tlsSession && !refresh) return this._tlsSession;
+    if (this._tlsSession) {
+      try {
+        await this._tlsSession.close();
+      } catch {
+        /* ignore */
+      }
+      this._tlsSession = null;
+    }
+    // First Session on a dispatcher (and explicit refresh) re-inits the pool.
+    // IP resolve runs undici first; without a refresh, CONNECT often 403s.
+    if (refresh || !this._tlsBootstrapped) {
+      await refreshTlsPool();
+      this._tlsBootstrapped = true;
+    } else {
+      await ensureTls();
+    }
     const { Session, ClientIdentifier } = await loadTlsClient();
+    // node-tls-client (bogdanfinn) rejects CONNECT on some ISP proxies unless
+    // the proxy URL has a trailing slash — undici ProxyAgent does not want it.
+    const tlsProxy = this.proxy
+      ? (this.proxy.endsWith("/") ? this.proxy : `${this.proxy}/`)
+      : undefined;
     this._tlsSession = new Session({
       // node-tls-client@2.1.0 only ships Chrome profiles up to 131. Passing an
       // unsupported identifier silently falls back while our headers still say
@@ -177,7 +210,9 @@ class Dispatcher {
       clientIdentifier: ClientIdentifier.chrome_131,
       timeout: 30_000,
       headerOrder: CHROME_HEADER_ORDER,
-      ...(this.proxy ? { proxy: this.proxy } : {}),
+      // Hyper tls-and-headers.md baseline: randomize TLS extension order.
+      randomTlsExtensionOrder: true,
+      ...(tlsProxy ? { proxy: tlsProxy } : {}),
     });
     return this._tlsSession;
   }
@@ -407,35 +442,40 @@ export async function request(url, opts, ctx) {
 
   // Native TLS experiment path. Kept opt-in because a native library failure
   // can terminate the process before Fastify can return JSON.
-  const session = await dispatcher.tlsSession();
   const reqOpts = {
     headers,
     followRedirects: false,
     ...(opts?.body !== undefined ? { body: opts.body } : {}),
   };
 
-  let res;
-  switch (method) {
-    case "GET":
-      res = await session.get(url, reqOpts);
-      break;
-    case "POST":
-      res = await session.post(url, reqOpts);
-      break;
-    case "PUT":
-      res = await session.put(url, reqOpts);
-      break;
-    case "DELETE":
-      res = await session.delete(url, reqOpts);
-      break;
-    case "PATCH":
-      res = await session.patch(url, reqOpts);
-      break;
-    case "HEAD":
-      res = await session.head(url, reqOpts);
-      break;
-    default:
-      throw new Error(`unsupported method: ${method}`);
+  const doTls = async (refresh) => {
+    const session = await dispatcher.tlsSession({ refresh });
+    switch (method) {
+      case "GET":
+        return session.get(url, reqOpts);
+      case "POST":
+        return session.post(url, reqOpts);
+      case "PUT":
+        return session.put(url, reqOpts);
+      case "DELETE":
+        return session.delete(url, reqOpts);
+      case "PATCH":
+        return session.patch(url, reqOpts);
+      case "HEAD":
+        return session.head(url, reqOpts);
+      default:
+        throw new Error(`unsupported method: ${method}`);
+    }
+  };
+
+  let res = await doTls(false);
+  const bodyPreview = String(res?.body ?? res?.text ?? "");
+  const proxyDenied =
+    (res?.status === 0 || res?.status === 403) &&
+    /Proxy responded with non 200|CONNECT/i.test(bodyPreview);
+  if (proxyDenied) {
+    await sleep(200);
+    res = await doTls(true);
   }
 
   // Capture cookies from this response into the jar.

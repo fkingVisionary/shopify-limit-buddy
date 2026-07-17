@@ -23,15 +23,18 @@ undici Kmart checkout path (it can be reintroduced later once checkout is stable
   name-keyed jar in `http.js` **refuses to demote** a solved `~0~` `_abck`.
 - `skipCategory` / `KMART_SKIP_CATEGORY=1` skips `/category/*` (home→PDP) when category
   SoftBlock is poisoning the nav chain.
-- Hyper (blog + Claude plugin refs under research clones): use AI to **build** the
-  request scraper, never to run it. If `_abck` solves (`~0~`) but WWW still SoftBlocks,
-  focus TLS fingerprint / header order / CH grease — not more Hyper sensor rounds.
-  `forceTls` / `transport: "tls"` uses `node-tls-client` `chrome_131` (request-based,
-  not Playwright). Undici ignores `CHROME_HEADER_ORDER`; TLS path honors it
-  (`cookie` immediately before `priority`).
-- Bootstrap order from `public/kmart-slim.har`: home SBSD → sensor (pageUrl=`/`) →
-  category/PDP. Keep low-entropy Client Hints only on DOC/sensor/SBSD; `sec-ch-ua`
-  grease must match UA major (`sec_ch_ua.py`). SBSD `o` cookie: `sbsd_o` then `bm_so`.
+- Hyper (blog + Claude plugin refs): use AI to **build** the request scraper, never
+  to run it. If `_abck` solves (`~0~`) but WWW still SoftBlocks, focus TLS /
+  header order / CH grease — not more Hyper sensor rounds.
+  `forceTls` / `transport: "tls"` uses `node-tls-client` `chrome_131` (not Playwright).
+  TLS path requires a **trailing slash** on the proxy URL (bogdanfinn CONNECT quirk);
+  undici must keep the URL without it. Undici ignores `CHROME_HEADER_ORDER`; TLS
+  honors `cookie` immediately before `priority`.
+- Bootstrap from `public/kmart-slim.har`: home SBSD → sensor (pageUrl=`/`) →
+  category (prefer `/category/toys/toys-latest-arrivals/`) → PDP. Low-entropy CH
+  only on DOC/sensor/SBSD; `sec-ch-ua` grease must match UA major. SBSD `o`:
+  `sbsd_o` then `bm_so`. Do **not** leave `KMART_SKIP_CATEGORY=1` on the executor
+  unless intentionally testing home→PDP — it overrides `skipCategory: false`.
 
 ### Desktop
 - `cd desktop && npm run setup && npm start` — local Kmart checkout via executor sidecar.

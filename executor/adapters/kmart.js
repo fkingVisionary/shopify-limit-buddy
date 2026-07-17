@@ -55,7 +55,9 @@ const sleep = (min, max) =>
 // Realistic intermediate browsing pages — pick one at random to fetch
 // between warm_home and pdp_get so the nav path is home → category → PDP
 // instead of a straight home → PDP jump.
+// Prefer HAR-proven slug path first (kmart-slim.har #6), then department IDs.
 const CATEGORY_PATHS = [
+  "/category/toys/toys-latest-arrivals/",
   "/category/toys/D110000",
   "/category/home/D100000",
   "/category/kids-clothing/D170000",
@@ -1012,7 +1014,11 @@ export const kmartAdapter = {
     //     even with a solved `_abck`+`bm_sv`; that 403 used to demote `_abck`
     //     via Set-Cookie (jar now protects). Prefer home→PDP when skipCategory
     //     is set (task or KMART_SKIP_CATEGORY=1) — flag was previously dead.
-    const catPath = CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
+    // Bias toward HAR-proven category (index 0); occasional other paths for jitter.
+    const catPath =
+      Math.random() < 0.75
+        ? CATEGORY_PATHS[0]
+        : CATEGORY_PATHS[Math.floor(Math.random() * CATEGORY_PATHS.length)];
     const catUrl = origin + catPath;
     let categoryStatus = 0;
     let categoryHtml = "";
