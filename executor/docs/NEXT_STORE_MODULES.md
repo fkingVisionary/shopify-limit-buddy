@@ -1,6 +1,6 @@
 # Next Store Modules — Research & Plan
 
-_Date: 2026-07-18 (research day pass 2)_  
+_Date: 2026-07-18 (research day pass 3)_  
 _Status: planning only (no adapters yet)_  
 _Baseline: Kmart AU (`adapters/kmart.js`) — Akamai Bot Manager v3 + Hyper sensor/SBSD/pixel + undici TLS_
 
@@ -9,6 +9,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 ### Yield / strategy note (owner input)
 - **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
 - **Australia Post Shop** — still high yield (~2–3 coin drops/year, 200–300% ROI) but **parked** while Bandai is the differentiator; full dig: `AUSPOST_SHOP_MODULE.md`. Revisit after Bandai ATC/GE path exists (or forced by coin season).
+- **Costco AU** — Hyper whitelist already has **Akamai + Kasada**; full dig: `COSTCO_AU_MODULE.md`. Strong antibot reuse, but **paid membership gate** + DC hard-block → backlog until member HAR + Bandai ships.
 - Other stores remain on the backlog for Akamai reuse (Target) etc.
 
 ---
@@ -32,10 +33,10 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ |
 | 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
 | 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M — see `AUSPOST_SHOP_MODULE.md` |
-| 4 | Big W | Backlog | Akamai BM | SAP + AEM | M |
-| 5 | Toymate | Backlog | Cloudflare | BigCommerce + EQL | M–L |
-| 6 | EB Games | Backlog | CF challenge | Custom .NET | L |
-| 7 | Costco | Backlog | Akamai + membership | SAP | L |
+| 4 | **Costco AU** | Backlog (Hyper Akamai+Kasada ✅) | Akamai BM (+ Kasada claimed) + Queue-it | Spartacus + SAP `australia` | L — membership — see `COSTCO_AU_MODULE.md` |
+| 5 | Big W | Backlog | Akamai BM | SAP + AEM | M |
+| 6 | Toymate | Backlog | Cloudflare | BigCommerce + EQL | M–L |
+| 7 | EB Games | Backlog | CF challenge | Custom .NET | L |
 | 8 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
 
 **Active track:** Bandai monitor ∥ **account gen** → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
@@ -180,8 +181,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - CF managed challenge; custom .NET on AWS.
 - Browser‑heavy.
 
-### Costco AU — `costco.com.au`
-- Akamai; **membership required** online. Park unless membership ops ready.
+### Costco AU — `costco.com.au` — **full dig:** [`COSTCO_AU_MODULE.md`](./COSTCO_AU_MODULE.md)
+- **SAP Commerce + Angular Spartacus**; OCC base site **`australia`** (`/rest/v2|v3/australia/…`).
+- **Akamai BM** sensor+pixel (`/akam/13/11939384`) confirmed; DC **hard 403** (soft `/favicon.ico` SPA leak only).
+- **Kasada:** Hyper whitelist (owner) for Costco; **not seen** on anonymous AU PDP urlscan — confirm on login/ATC HAR.
+- **Queue-it** `costcointl` (idle integrations on quiet scan); Hot Buys / hype days.
+- **Membership required** online (card → register + reCAPTCHA). No free agen — membership vault.
+- Pay: Visa / Mastercard / Apple Pay. Best Hyper reuse after Target once Kasada wired.
 
 ### Disney Store AU — `disneystore.com.au`
 - SFCC `Sites-DisneyStoreAUNZ` + `_abck`/`bm_sz` + CF + reCAPTCHA Enterprise + Global‑e.
@@ -193,12 +199,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 
 | Need | Status |
 |---|---|
-| Akamai sensor/SBSD/pixel | ✅ in `antibot.js` (Kmart) |
-| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired in executor yet → **AusPost blocker #1** |
+| Akamai sensor/SBSD/pixel | ✅ in `antibot.js` (Kmart) → reuse Costco / Target |
+| Kasada CT + CD | ✅ Hyper API · ❌ not wired → **Costco blocker #1** (when unparked) |
+| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost blocker #1** |
 | Cloudflare Turnstile / managed challenge | ❌ → Toymate / EB |
 | F5 / Volterra / Shape | ❌ → Bandai HTML edge; APIs may bypass |
 | Global‑e checkout | N/A vendor · custom work → Bandai / Disney |
-| Auth0 MyPost / BNID | Custom session machines |
+| Auth0 MyPost / BNID / Costco membership | Custom session machines |
 
 ---
 
@@ -218,13 +225,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | **B2** | Login + ATC dry-run (`placeOrder:false`) |
 | **B3** | Chance entry pool (`applyDraw` from agen vault) |
 | **B4** | Global‑e checkout / pay |
-| *later* | Target Akamai · AusPost DataDome |
+| *later* | Target Akamai · AusPost DataDome · Costco Kasada+membership |
 
 ### Success criteria
 - **Bandai agen:** vault of SMS-cleared accounts with shipping addresses.
 - **Bandai FCFS:** logged-in ATC + GE complete on a live/restock SKU.
 - **Bandai Chance:** multi-account `applyDraw` + winner→purchase path.
-- AusPost/Target: deferred until Bandai ships.
+- AusPost/Target/Costco: deferred until Bandai ships.
 
 ---
 
@@ -238,8 +245,35 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | bigw.com.au | Timeout |
 | toymate.com.au | CF Request Blocked |
 | ebgames.com.au | CF Just a moment |
-| costco.com.au | Akamai 403 |
+| costco.com.au | Akamai 403 almost everywhere; `/favicon.ico` → Spartacus shell; REST baseSite `australia` from urlscan |
 | disneystore.com.au | 200 SFCC + Akamai cookies + Global‑e + reCAPTCHA |
+
+---
+
+## Deep dive — Costco AU
+
+**Canonical:** `https://www.costco.com.au/` · **Full dig:** [`COSTCO_AU_MODULE.md`](./COSTCO_AU_MODULE.md)
+
+### Why it matters
+- Hot Buys / limited electronics sell out; Queue-it + dual antibot raise the bar.
+- Hyper already allowlisted **Akamai + Kasada** for Costco → best antibot reuse after Kmart/Target.
+
+### Stack (confirmed / claimed)
+| Layer | Detail |
+|---|---|
+| Storefront | Angular **Spartacus** + SAP Commerce; Envoy |
+| OCC | baseSite **`australia`** — `/rest/v2/australia/products/{code}`, `/rest/v3/australia/cms/…`, `/session` |
+| Antibot | **Akamai** sensor+pixel confirmed; **Kasada** per Hyper whitelist (not on guest PDP scan) |
+| Waiting room | Queue-it **`costcointl`** |
+| Auth / buy | **Membership required**; `Membership-Data` header on XHR |
+| Pay | Visa / Mastercard / Apple Pay |
+
+### Module plan — Costco (when un-parked)
+1. Member AU ISP HAR (login → ATC → checkout) — Kasada surface + OAuth + cart bodies.
+2. Kasada in `antibot.js`; reuse Akamai warm.
+3. Monitor via OCC product JSON; membership vault (not free agen).
+
+**Feasibility:** High once HAR + Kasada wired; **ops-bound** by real membership cards.
 
 ---
 
@@ -252,6 +286,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 6. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
 7. Bandai agen: OnlineSim rent vs slug for Bandai SMS; IMAP From/Subject patterns; +tag email OK?
 8. Target: OCC vs form checkout; Paydock or other.
+9. Costco: Kasada on which surfaces? OAuth client + ATC entry body? Pixel enforced? Queue-it under Hot Buy load?
 
 ### Shared agen OTP infra (all future signup modules)
 User provides once in Desktop Settings:
