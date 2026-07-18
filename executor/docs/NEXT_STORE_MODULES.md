@@ -2,7 +2,8 @@
 
 _Date: 2026-07-18 (research day pass 4)_  
 _Status: planning only (no adapters yet)_  
-_Baseline: Kmart AU (`adapters/kmart.js`) — Akamai Bot Manager v3 + Hyper sensor/SBSD/pixel + undici TLS_
+_Baseline: Kmart AU at hard-reset tip **`a1d9f9c` (“Electron Update”)** — Akamai BM v3 + Hyper + undici.  
+_Ops plan:_ [`FUTURE_ROADMAP.md`](./FUTURE_ROADMAP.md) — **Phase 0 = prove Kmart green before any new adapter code.**
 
 Findings combine live edge/API probes (Cursor cloud DC egress) with public platform signals. **Confirm on sticky AU ISP/residential + desktop before build** — several sites hard‑block or black‑hole DC IPs. Homepage ≠ PDP ≠ ATC protection.
 
