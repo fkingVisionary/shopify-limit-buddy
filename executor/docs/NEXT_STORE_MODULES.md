@@ -8,7 +8,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 
 ### Yield / strategy note (owner input)
 - **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
-- **Australia Post Shop** — still high yield (~2–3 coin drops/year, 200–300% ROI) but **parked** while Bandai is the differentiator; revisit after Bandai ATC/GE path exists.
+- **Australia Post Shop** — still high yield (~2–3 coin drops/year, 200–300% ROI) but **parked** while Bandai is the differentiator; full dig: `AUSPOST_SHOP_MODULE.md`. Revisit after Bandai ATC/GE path exists (or forced by coin season).
 - Other stores remain on the backlog for Akamai reuse (Target) etc.
 
 ---
@@ -31,7 +31,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 |---|---|---|---|---|---|
 | **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ |
 | 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
-| 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M |
+| 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M — see `AUSPOST_SHOP_MODULE.md` |
 | 4 | Big W | Backlog | Akamai BM | SAP + AEM | M |
 | 5 | Toymate | Backlog | Cloudflare | BigCommerce + EQL | M–L |
 | 6 | EB Games | Backlog | CF challenge | Custom .NET | L |
@@ -45,58 +45,34 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 
 ## Deep dive — Australia Post Shop
 
-**Canonical:** `https://auspost.com.au/shop/` (`shop.auspost.com.au` → 301)
+**Canonical:** `https://auspost.com.au/shop/` · **Full dig:** [`AUSPOST_SHOP_MODULE.md`](./AUSPOST_SHOP_MODULE.md)
 
 ### Why it matters
-- Limited coin / collectable releases (RAM partnerships, Bluey, etc.) sell out in minutes; site has publicly crashed under load.
-- Cart copy on limited PDPs: **“Products in your cart are not reserved until you checkout”** — classic ATC→pay race.
-- Terms: **MyPost account required** to place an order; order‑limit circumvention via multi‑order is explicitly rejected; coins support **pre‑order** (dispatch after release, up to ~6 weeks).
+- Limited coin / collectable releases sell out in minutes; site crashes under load.
+- Cart: items **not reserved until checkout**; MyPost required to place order; multi‑account is the scale model.
 
 ### Stack (confirmed live)
 | Layer | Detail |
 |---|---|
 | CDN | CloudFront |
-| Commerce | **Intershop 7** — `ishconfig.appType = auspost.B2CWebShop`, `appVersion = 6.3.6`, pipelines under `/shop/web/WFS/AusPost-Shop-Site/en_AU/-/AUD/…` |
-| Auth | **Auth0** via `auth0-ui-integration-module`; `clientId=MaempCMHXE2AMFiGMAKDnb6eiNyoKRKk`; redirect `ViewUserAccountAuth0-ProcessLogin`; issuer family `welcome.auspost.com.au`; also FingerprintJS in auth module |
-| Antibot | **DataDome** — not on soft homepage; **hard on PDP / category / ATC** |
-| Payments | Icons strip + CSP/urlscan: **SecurePay** + **PayPal** (confirm in HAR) |
+| Commerce | **Intershop 7** — `auspost.B2CWebShop` / `6.3.6` |
+| Auth | **Auth0** `clientId=MaempCMHXE2AMFiGMAKDnb6eiNyoKRKk` → `welcome.auspost.com.au` → `ViewUserAccountAuth0-Dispatch` |
+| Antibot | **DataDome** — soft home/suggest/cart-dispatch ATC; **hard** PDP/category/HTML search/express-XHR ATC (`t:fe` slider) |
+| Payments | **SecurePay** + **PayHive** (card/ApplePay/AliPay/WeChat) + **PayPal**; **3DS v2** |
 
-### DataDome behaviour (DC probe)
-| Surface | Result |
-|---|---|
-| `GET /shop/` homepage | **200**, full HTML, no DD challenge |
-| `GET /shop/product/…` coin PDP | **403** `x-datadome: protected`, body `rt:'c'` + `ct.captcha-delivery.com/c.js`, `t:'fe'` → **slider captcha** (Hyper `/slider`) |
-| `POST …/ViewExpressShop-AddProduct` (XHR) | **403** JSON with `geo.captcha-delivery.com/interstitial/…`, `t:'it'` → **interstitial** (Hyper `/interstitial`) |
-| `GET …/ViewSuggestSearch-Suggest?SearchTerm=bluey%20coin` | **200** suggestions (incl. live Bluey coin titles) |
-| `GET /shop/cart` | **200** empty cart (session cookies `sid`, `pgid-AusPost-Shop-Site`, `SecureSessionID-*`) |
+### Highest-signal findings (this dig)
+- **Guest ATC works** via `POST /shop/cart-dispatch` (`SKU` + `SynchronizerToken` + `addToCartBehavior=expresscart`) — no DD in DC.
+- **Guest checkout blocked** (checkout submit returns to cart) → Auth0 login; relay often `ViewCheckoutAddresses`.
+- **Monitor without DD:** `ViewSuggestSearch-Suggest` + `SearchProduct` (live Bluey coin SKUs e.g. `2336507INT-AusPost`).
+- Express XHR `ViewExpressShop-AddProduct` is DD-hard — prefer cart-dispatch until cookie warm.
 
-Homepage soft / PDP+ATC hard is important: monitor via suggest/search; clear DD before PDP/ATC.
+### Module plan — AusPost (when un-parked)
+1. Hyper DataDome in `antibot.js` (slider + interstitial); allowlist `auspost.com.au`.
+2. Monitor (suggest/search) → soft ATC → Auth0 → SecurePay/3DS HAR.
+3. `auspost-agen` via Auth0/MyPost + shared IMAP/OnlineSim OTP Settings.
+4. Expect 5xx under drop load; multi-proxy + retry.
 
-### Intershop pipelines of interest
-- `ViewExpressShop-AddProduct` — ATC
-- `ViewExpressShop-ViewProduct` / `ViewProduct-Start`
-- `ViewCart-View` (via `/shop/cart` → `/shop/viewdata/{id}?JumpTarget=ViewCart-View`)
-- `ViewSuggestSearch-Suggest` / `ViewSuggestSearch-SearchProduct`
-- `ViewSavedCarts-SimpleCartSearch`
-- `ViewUserAccountAuth0-ProcessLogin` / `LogoutUser`
-- Homepage express forms post to `/shop/cart-dispatch` with `SynchronizerToken` + `SKU` + `addToCartBehavior=expresscart`
-
-SKU shape observed: `{id}-AusPost` (e.g. `45303-AusPost`, product images `2336509INT-AusPost`).
-
-### Drop / ops realities
-- Release times often **08:30 AEST/AEDT**.
-- No Queue‑it observed on AusPost Shop (unlike RAM’s own site). Protection = capacity meltdown + DataDome + account/limits.
-- Multi‑account MyPost + per‑SKU qty caps are first‑class product requirements.
-
-### Module plan — AusPost
-1. **Hyper DataDome** — extend `antibot.js` with interstitial + slider solvers (not only Akamai). Allowlist `auspost.com.au` on Hyper key.
-2. Session warm: homepage → DD clear → PDP → CSRF `SynchronizerToken` → ATC → checkout.
-3. Auth0/MyPost login machine (token refresh via `welcome.auspost.com.au` / digitalapi).
-4. Payment HAR: SecurePay tokenize + place order; 3DS path unknown.
-5. Monitor: Stamp Bulletin / collectables pages + SuggestSearch for SKU discovery pre‑drop.
-6. Load strategy: expect 5xx/“temporarily unavailable”; retry/backoff + multi‑proxy.
-
-**Feasibility:** Strong — DataDome is Hyper‑native; Intershop form ATC is old‑school and HAR‑friendly once DD is cleared. Highest yield/feasibility ratio in this set.
+**Feasibility:** Strong once DD wired — Intershop forms are HAR-friendly. Parked only for competitive/priority reasons, not technical dead-end.
 
 ---
 
@@ -268,13 +244,14 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 ---
 
 ## Open questions (for local HAR day)
-1. AusPost: exact SecurePay / card fields + whether DD tags.js runs on every page after first clear.
-2. AusPost: guest vs forced login timing (terms say MyPost to place order — is ATC allowed logged‑out?).
-3. Bandai: logged-in ATC response + whether Volterra challenges fire on ISP POSTs (schema known from JS).
-4. Bandai: live GE captcha sitekey + whether Forter loads at payment; `globaleMerchantCartTokenSuffix` mint.
-5. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
-6. Bandai agen: OnlineSim rent vs slug for Bandai SMS; IMAP From/Subject patterns; +tag email OK?
-7. Target: OCC vs form checkout; Paydock or other.
+1. AusPost: ISP — does soft `cart-dispatch` ATC hold under residential + drop load?
+2. AusPost: checkout after Auth0 (`ViewCheckoutAddresses` → SecurePay/PayHive + 3DS bodies).
+3. AusPost agen: MyPost Auth0 signup OTP channels (email/SMS) vs shared IMAP/OnlineSim.
+4. Bandai: logged-in ATC response + whether Volterra challenges fire on ISP POSTs (schema known from JS).
+5. Bandai: live GE captcha sitekey + whether Forter loads at payment; `globaleMerchantCartTokenSuffix` mint.
+6. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
+7. Bandai agen: OnlineSim rent vs slug for Bandai SMS; IMAP From/Subject patterns; +tag email OK?
+8. Target: OCC vs form checkout; Paydock or other.
 
 ### Shared agen OTP infra (all future signup modules)
 User provides once in Desktop Settings:
