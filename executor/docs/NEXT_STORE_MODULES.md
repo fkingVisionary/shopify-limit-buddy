@@ -38,7 +38,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 7 | Costco | Backlog | Akamai + membership | SAP | L |
 | 8 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
 
-**Active track:** Bandai monitor → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
+**Active track:** Bandai monitor ∥ **account gen** → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
 **Later:** Target Akamai twin; AusPost DataDome when we want coin season.
 
 ---
@@ -173,10 +173,11 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - Example titles: 3rd Anniversary Set (~AUD 200), Heroines Special Set (~340), Premium Card Collections (~18–43).
 
 ### Module plan — Bandai
-1. Desktop HAR: login (BNID) → addToCart body → checkout → Global‑e payment (and Chance applyDraw).
-2. Adapter phases: **monitor/search** → **ATC dry‑run** → **Chance entry** → **Global‑e pay** (hardest).
-3. Account pool: BNID + per‑user qty 1 is the scaling model.
-4. Share Global‑e learnings with Disney later.
+1. Desktop HAR: **signup (agen)** + login → addToCart → checkout → Global‑e (and Chance applyDraw).
+2. Adapter phases: **monitor** ∥ **account gen** → **ATC dry‑run** → **Chance entry** → **Global‑e pay**.
+3. Account pool: agen vault (email+AU SMS); `maxByPerUser: 1` is the scaling model.
+4. Desktop task types: `bandai`, **`bandai-agen`**.
+5. Share Global‑e learnings with Disney later.
 
 **Feasibility:** Medium‑hard technically, but APIs are unusually well exposed once headers are right — rare for a “high value / low support” target.
 
@@ -228,21 +229,23 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 ## Recommended program (Bandai-first)
 
 ### When back at desk (critical path)
-1. **Bandai HAR (logged-in, AU ISP):** BNID → `addToCart` → cart checkout → Global‑e (and Chance `applyDraw` if any window open). See `BANDAI_AU_MODULE.md`.
+1. **Bandai HAR (logged-in, AU ISP):** ideally **one signup** + login → `addToCart` → cart checkout → Global‑e (and Chance `applyDraw` if open). See `BANDAI_AU_MODULE.md`.
 2. Confirm guest vs login ATC (DC got 501 on POST).
 3. Optional: Target Akamai lab only if spare time.
 
 ### Build order
 | Phase | Work |
 |---|---|
-| **B0** | HAR + slim notes (blocker) |
+| **B0** | HAR + slim notes (blocker; include signup if possible) |
 | **B1** | Bandai monitor (search/product poll + notify) |
+| **B1b** | **Account gen** (`bandai-agen`: email + AU SMS → vault) |
 | **B2** | Login + ATC dry-run (`placeOrder:false`) |
-| **B3** | Chance entry pool (`applyDraw`) |
+| **B3** | Chance entry pool (`applyDraw` from agen vault) |
 | **B4** | Global‑e checkout / pay |
 | *later* | Target Akamai · AusPost DataDome |
 
 ### Success criteria
+- **Bandai agen:** vault of SMS-cleared accounts with shipping addresses.
 - **Bandai FCFS:** logged-in ATC + GE complete on a live/restock SKU.
 - **Bandai Chance:** multi-account `applyDraw` + winner→purchase path.
 - AusPost/Target: deferred until Bandai ships.
@@ -270,4 +273,5 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 3. Bandai: logged-in ATC response + whether Volterra challenges fire on ISP POSTs (schema known from JS).
 4. Bandai: live GE captcha sitekey + whether Forter loads at payment; `globaleMerchantCartTokenSuffix` mint.
 5. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
-6. Target: OCC vs form checkout; Paydock or other.
+6. Bandai agen: catch-all/+tag email OK? SMS provider vs `SmsRateLimitExceeded`; full `registerVerification` HAR.
+7. Target: OCC vs form checkout; Paydock or other.

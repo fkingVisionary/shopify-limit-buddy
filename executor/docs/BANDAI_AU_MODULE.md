@@ -18,7 +18,9 @@ Two buy modes:
 1. **FCFS / PreOrder ATC** → cart → Global-e checkout  
 2. **Chance to Buy** raffle (`POST /api/my/campaign/apply/{sn}/apply{campaignType}`) → Chance uses **`applyDraw`** → later purchase window for winners  
 
-**This dig closed several prior open questions from JS alone** (login field names, signup DTO, AU address map, checkout `items` shape, GE captcha/fingerprint). Remaining blocker for build is still a **logged-in AU ISP HAR** (ATC + GE).
+**Account generation is required** — `maxByPerUser` often 1 and Chance both scale on BNID/email accounts; AU forces **email + SMS** (`multiAuth: true`).
+
+**This dig closed several prior open questions from JS alone** (login field names, signup DTO, AU address map, checkout `items` shape, GE captcha/fingerprint, full agen flow). Remaining blocker for build is still a **logged-in AU ISP HAR** (ATC + GE; ideally one signup too).
 
 Competitive angle: APIs and payload shapes are largely reverse-engineered from public JS. A working module here is differentiation.
 
@@ -153,7 +155,131 @@ After register, UI auto-logs in:
 
 ---
 
-## 4. Shipping address (AU field map)
+## 4. Account generation module (required)
+
+**Yes — build this.** Bandai scales on accounts, not on cart qty:
+
+| Constraint | Implication |
+|---|---|
+| `maxByPerUser` / `maxByPerOrder` often **1** | One checkout unit per account per SKU |
+| Chance to Buy | Entry pool = account pool |
+| AU `multiAuth: true` | Every new AU account needs **email + SMS** |
+| Phone uniqueness | `POST api/phoneNo` → `{ exists: true }` blocks reuse |
+
+Treat gen as a **first-class task type** (`bandai-agen` / vault filler), not a one-off script. Monitor can ship without it; ATC / Chance / pay cannot scale without it.
+
+### 4.1 End-to-end AU signup flow (from JS)
+
+Routes: `/register` → `/register/mailaddress/auth` → `/register/memberregistration` → `/sms/auth` → `/register/confirm` → `/register/complete`
+
+```
+1. Warm          GET /au/ + GET /api/context/member  → SESSION, TS*, CSRF
+2. Email code    POST /api/signUp/email/auth
+                   { email, agreeAgeTerms: true }          # resend adds resend:true
+                 ← { authSn, expireMinutes, … }  (stored client-side as authCode)
+3. Verify email  POST /api/signUp/email/validate
+                   { authCode: "<6digit>", authSn }
+                 ← auth result; UI sets memberId = emailAddress = email
+4. Profile form  Collect name, homeAddress, phone1, DOB (≥18), gender, password,
+                 marketingConsent, termsAgreeList
+5. Phone unique  POST api/phoneNo   body = phone1 { countryNo, phoneNo }
+                 ← { exists: bool }  — if true → PHONE_NUMBER_DUPLICATED
+6. Terms         GET /api/terms/termsofuse
+                 ← { termsCode, termsVersion, areaCode, … }
+                 UI: termsAgreeList=[{ termsCode:"termsofuse", version, areaCode, agree:true }]
+                 Live AU: termsCode=termsofuse, termsVersion=1.7 (as of probe)
+7. SMS (AU)      Because multiAuth=true:
+                 POST /api/phoneNo/auth  { phoneNo: { countryNo, phoneNo } }
+                 ← { authSn, expireMinutes, expiredDt, … }
+                 User/SMS provider enters code
+                 POST /api/phoneNo/validate  { authCode, authSn }
+                 ← smsAuthResult → attached as smsAuthInfo { authSn, authResultCode }
+8. Register      POST /api/signUp/registerVerification   body = full signUpData
+                 (skip-SMS path exists: POST /api/signUp/register — NOT used for AU)
+9. Auto-login    POST /login  grantType=password&memberId=email&password=…&saveLoginId=false&autoLogin=false
+10. Optional     POST /api/my/shippingAddresses  (shipping profile for checkout)
+                 PUT  /api/cookie/consent / POST /api/terms/consent as needed
+```
+
+**BNID/SNS alternate:** popup → `GET /api/member/bnid/user?token=` → `POST api/signUp/sns/check` → prefill → same SMS/confirm path → `snsLogin`. Lower priority for agen (harder to automate BNID than email+SMS).
+
+### 4.2 Password rules (signup `input-password`)
+
+| Rule | Detail |
+|---|---|
+| Length | **> 7** and `maxlength=20` |
+| No triple repeat | ban `(.)\1{2,}` (e.g. `aaa`) |
+| No sequential runs | 3+ ascending/descending letters or digits |
+| Not email local-part | password must not contain `email.split("@")[0]` |
+| Char classes (AU/non-TW) | upper + lower + number + symbol (half-width) |
+| Encoding | half-width only |
+
+### 4.3 External dependencies (agen stack)
+
+| Dependency | Why | Notes |
+|---|---|---|
+| **Email inbox API** | Step 2–3 codes | Catch-all / +tag may or may not work — confirm; dedicated mailbox pool safer |
+| **AU SMS numbers** | Step 7; phone must be unique forever | Biggest cost/rate-limit surface (`SmsRateLimitExceeded`, `TOO_MANY_REQUEST`) |
+| **Sticky AU ISP/residential proxy** | Edge + geo consistency | Same class as checkout tasks |
+| **Identity data** | Name, DOB ≥18, AU home address | Can synthesize; keep consistent with shipping later |
+| **Account vault** | Store email/pass/phone/member status/SMS-cleared flag | Shared with checkout + Chance tasks |
+
+### 4.4 Error codes agen must handle
+
+| Code / signal | Stage | Action |
+|---|---|---|
+| Email `detail` / already registered | email auth | Mark email burned; next |
+| `TooManyRequest` / mail resend limit | email | Backoff |
+| `MemberAuthCodeExpired` / mismatch | email/SMS validate | Resend or fail attempt |
+| `MemberAuthLimitExceeded` | validate | Kill attempt → cool account/IP |
+| `PHONE_NUMBER_DUPLICATED` / `exists:true` | phone check | Next phone |
+| `SmsRateLimitExceeded` / `TOO_MANY_REQUEST` | SMS send | Backoff; rotate number/IP |
+| `SMS_AUTH_FAIL` | SMS send | Retry / fail |
+| Post-login `x-restricted-type` | login | Complete SMS/terms/temp-password gates before vaulting as “ready” |
+
+### 4.5 Module shape (executor / desktop)
+
+```
+adapters/bandai-agen.js   # or bandai.js createAccount()
+  warm()
+  requestEmailCode(email)
+  verifyEmail(authSn, code)     # code from inbox provider
+  buildProfile({ name, phone, address, dob, password })
+  ensurePhoneUnique(phone1)
+  loadTerms("termsofuse")
+  requestSmsCode(phone1)        # code from SMS provider
+  verifySms(authSn, code)
+  registerVerification(signUpData)
+  loginPassword(email, password)
+  ensureShippingAddress(addr)   # optional but recommended
+  vault.save({ status: "ready"|"needs_sms"|"banned", … })
+```
+
+Desktop: task type **`bandai-agen`** — batch N accounts, concurrency low (SMS + Volterra), write into same account vault checkout/Chance read.
+
+### 4.6 Readiness definition (“vault ready”)
+
+An account is **checkout/Chance ready** only when:
+1. `registerVerification` succeeded  
+2. Password login returns 200 with **no** blocking `x-restricted-type` (or gates cleared)  
+3. Shipping address present (for GE ship)  
+4. Phone/SMS verified (AU multiAuth)
+
+### 4.7 Ordering vs other Bandai phases
+
+| Phase | Depends on agen? |
+|---|---|
+| Monitor | No |
+| **Account gen** | — (parallel with monitor) |
+| ATC dry-run | Yes (at least 1 ready account) |
+| Chance pool | Yes (many ready accounts) |
+| GE pay | Yes + payment instruments |
+
+HAR day should also capture **one full signup** (email+SMS+registerVerification) if possible — validates payloads better than JS alone.
+
+---
+
+## 5. Shipping address (AU field map)
 
 **CRUD (login required)**
 | Method | Path |
@@ -207,7 +333,7 @@ Zip autocomplete: `GET /api/address/global?langCode=en&countryCode=AU&zipCode=20
 
 ---
 
-## 5. API surface
+## 6. API surface
 
 ### Session / context
 | Method | Path | Guest? | Notes |
@@ -387,7 +513,7 @@ POST /api/checkout/{checkoutSn}/preComplete
 
 ---
 
-## 6. Global-e (mid 1925) — client dig
+## 7. Global-e (mid 1925) — client dig
 
 **Bootstrap**
 ```html
@@ -425,7 +551,7 @@ CONFIG also exposes:
 
 ---
 
-## 7. Protections & what Hyper helps with
+## 8. Protections & what Hyper helps with
 
 | Control | Present? | Hyper? | Strategy |
 |---|---|---|---|
@@ -442,7 +568,7 @@ Akamai/DataDome **not** observed as primary on Bandai AU.
 
 ---
 
-## 8. One Piece / drop modes
+## 9. One Piece / drop modes
 
 | Mode | When | Bot job |
 |---|---|---|
@@ -457,17 +583,18 @@ Live `topSearched` (probe): `one piece`, `30th celebration`, `black bolt`, `pitc
 
 ---
 
-## 9. Proposed module phases (build when ready)
+## 10. Proposed module phases (build when ready)
 
 ### Phase 0 — Local HAR day (blocker)
 On **desktop + AU residential/ISP**:
-1. BNID login (one real account) — capture `POST /login` form body + Set-Cookie
-2. Find any `purchaseAvailable:true` SKU (or wait for restock of `N2903432003`)
-3. Capture: `POST /api/cart/addToCart` (confirm array body + cookies + response JSON)
-4. Capture: cart detail → checkout POST → Global-e network (captcha sitekey, Forter?, fingerprint)
-5. If any Chance open: capture `applyDraw`
-6. Note `globaleMerchantCartTokenSuffix` from cart PRELOAD
-7. Save HAR → slim like Kmart pipeline
+1. BNID/password login (one real account) — capture `POST /login` form body + Set-Cookie
+2. Ideally: **one full signup** (email code → SMS → `registerVerification`) for agen payloads
+3. Find any `purchaseAvailable:true` SKU (or wait for restock of `N2903432003`)
+4. Capture: `POST /api/cart/addToCart` (confirm array body + cookies + response JSON)
+5. Capture: cart detail → checkout POST → Global-e network (captcha sitekey, Forter?, fingerprint)
+6. If any Chance open: capture `applyDraw`
+7. Note `globaleMerchantCartTokenSuffix` from cart PRELOAD
+8. Save HAR → slim like Kmart pipeline
 
 ### Phase 1 — Monitor (ship first, low risk)
 - Poll `/api/search` + `/api/products/{code}`
@@ -475,13 +602,19 @@ On **desktop + AU residential/ISP**:
 - Webhook / desktop notify
 - No pay; proves headers + TLS + proxy
 
+### Phase 1b — Account generation (parallel with monitor)
+- Task type `bandai-agen`: email inbox + AU SMS → `registerVerification` → vault
+- Enforce password rules, unique phones, terms version, post-login gate clearance
+- Seed shipping addresses on ready accounts
+- See §4 — **required before ATC/Chance scale**
+
 ### Phase 2 — ATC dry-run
 - Login: `grantType=password` with `memberId=email`
 - `addToCart` + `cart/detail` assert
 - `placeOrder:false` stop before GE
 
 ### Phase 3 — Chance entry pool
-- Multi-account `applyDraw`
+- Multi-account `applyDraw` from agen vault
 - Deduped history via `applied/products`
 - Winner watch → human or auto purchase handoff
 
@@ -493,17 +626,19 @@ On **desktop + AU residential/ISP**:
 - AusPost (parked — competitors exist)
 - Disney Global-e until Bandai GE works
 - Solving F5 HTML challenges unless API path fails on ISP
+- BNID popup signup automation (email+SMS path first)
 
 ---
 
-## 10. Executor integration sketch
+## 11. Executor integration sketch
 
 ```
-antibot.js          # no Bandai vendor yet — TLS/jar only
-adapters/bandai.js  # matches p-bandai.com
-  warm()            # GET /au/ → SESSION + TS* + CSRF
-  login()           # POST /login grantType=password|sns
-                    #   memberId=email, password, saveLoginId=false, autoLogin=false
+antibot.js               # no Bandai vendor yet — TLS/jar only
+adapters/bandai.js       # matches p-bandai.com
+  warm()                 # GET /au/ → SESSION + TS* + CSRF
+  login()                # POST /login grantType=password|sns
+                         #   memberId=email, password, saveLoginId=false, autoLogin=false
+  createAccount()        # agen: email→SMS→registerVerification→login→shipping
   getProduct(code)
   addToCart([{areaItemNo, qty}])
   checkout(cartSn, merchantCartToken, shippingAreaCode, items:[{cartItemSn}])
@@ -511,17 +646,19 @@ adapters/bandai.js  # matches p-bandai.com
   # pay via GE — phase 4
 ```
 
-Desktop: task type `bandai` alongside `kmart`; proxy sticky AU; account vault for BNID (SMS-cleared).
+Desktop task types: `bandai` (checkout/Chance), **`bandai-agen`** (account gen), alongside `kmart`.  
+Proxy sticky AU; shared account vault (ready / needs_sms / banned).
 
 Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.global-e.com`.
 
 ---
 
-## 11. Open questions (updated)
+## 12. Open questions (updated)
 
 ### Closed this dig (JS + guest API)
 - [x] Exact `POST /login` field names → `memberId` (=email), `password`, `saveLoginId`, `autoLogin`
-- [x] Signup / shipping address DTO shapes
+- [x] Signup / shipping address DTO shapes + **full agen step sequence**
+- [x] Password rules, phone uniqueness check, AU terms `termsofuse` v1.7
 - [x] Checkout `items: [{ cartItemSn }]` (not areaItemNo)
 - [x] `merchantCartToken` formula (`${cartId}_Checkout_${suffix}`)
 - [x] ATC success fields used by UI (`items[].addedNewCart`, `totalCartCount`)
@@ -531,6 +668,9 @@ Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.
 - [x] AU `multiAuth: true`
 
 ### Still need HAR / live account
+- [ ] Full signup HAR (email + SMS + `registerVerification` response)
+- [ ] Whether catch-all / +tag emails work vs dedicated mailboxes
+- [ ] SMS provider reliability vs Bandai rate limits
 - [ ] Does guest ATC ever work, or is login mandatory? (DC says login/edge)
 - [ ] Full `addToCart` response JSON
 - [ ] How / when `globaleMerchantCartTokenSuffix` is minted into PRELOAD
@@ -542,7 +682,7 @@ Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.
 
 ---
 
-## 12. Probe log (DC, 2026-07-18)
+## 13. Probe log (DC, 2026-07-18)
 
 | Call | Result |
 |---|---|
@@ -569,6 +709,6 @@ Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.
 
 ---
 
-## 13. Recommendation
+## 14. Recommendation
 
-**Proceed Bandai-first.** Research density is now high enough to scaffold Phase 1 monitor + Phase 2 login/ATC against a HAR. Next concrete step when local: one logged-in AU ISP HAR covering ATC + checkout (and Chance if any window is open). Until then, keep watching for `purchaseAvailable:true` / open Chance via public search APIs — no adapter code until HAR validates the gated POSTs.
+**Proceed Bandai-first.** Research density is now high enough to scaffold Phase 1 monitor + **Phase 1b account gen** + Phase 2 login/ATC against a HAR. Next concrete step when local: one logged-in AU ISP HAR covering **signup (ideal) + ATC + checkout** (and Chance if any window is open). Until then, keep watching for `purchaseAvailable:true` / open Chance via public search APIs — no adapter code until HAR validates the gated POSTs.
