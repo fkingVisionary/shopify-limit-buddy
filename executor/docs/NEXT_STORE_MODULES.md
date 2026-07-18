@@ -1,6 +1,6 @@
 # Next Store Modules — Research & Plan
 
-_Date: 2026-07-18 (research day pass 3)_  
+_Date: 2026-07-18 (research day pass 4)_  
 _Status: planning only (no adapters yet)_  
 _Baseline: Kmart AU (`adapters/kmart.js`) — Akamai Bot Manager v3 + Hyper sensor/SBSD/pixel + undici TLS_
 
@@ -10,7 +10,8 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 - **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
 - **Australia Post Shop** — still high yield (~2–3 coin drops/year, 200–300% ROI) but **parked** while Bandai is the differentiator; full dig: `AUSPOST_SHOP_MODULE.md`. Revisit after Bandai ATC/GE path exists (or forced by coin season).
 - **Costco AU** — Hyper whitelist already has **Akamai + Kasada**; full dig: `COSTCO_AU_MODULE.md`. Strong antibot reuse, but **paid membership gate** + DC hard-block → backlog until member HAR + Bandai ships.
-- Other stores remain on the backlog for Akamai reuse (Target) etc.
+- **JB Hi-Fi** — high Pokémon/electronics yield at MSRP, but **Shopify + Cloudflare + reCAPTCHA** (not Akamai). Full dig: `JB_HIFI_MODULE.md`. Weak Hyper fit.
+- Broader AU contenders scored below (Hyper fit × drop $).
 
 ---
 
@@ -34,13 +35,21 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
 | 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M — see `AUSPOST_SHOP_MODULE.md` |
 | 4 | **Costco AU** | Backlog (Hyper Akamai+Kasada ✅) | Akamai BM (+ Kasada claimed) + Queue-it | Spartacus + SAP `australia` | L — membership — see `COSTCO_AU_MODULE.md` |
-| 5 | Big W | Backlog | Akamai BM | SAP + AEM | M |
-| 6 | Toymate | Backlog | Cloudflare | BigCommerce + EQL | M–L |
-| 7 | EB Games | Backlog | CF challenge | Custom .NET | L |
-| 8 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| 5 | Harvey Norman | Contender (Incapsula ✅) | Imperva/Incapsula + Forter | Custom / WCS-family | M — Hyper Reese84 |
+| 6 | Foot Locker AU | Contender (Kasada ✅) | Kasada | Custom React | M — sneakers |
+| 7 | Platypus | Contender (DataDome ✅) | DataDome + Forter + reCAPTCHA | Magento-class | M — sneakers |
+| 8 | Uniqlo AU | Contender (Akamai ✅) | Akamai BM | Uniqlo SPA | M — UT/collab drops |
+| 9 | Big W | Backlog | Akamai BM | SAP + AEM | M |
+| 10 | **JB Hi-Fi** | Backlog (yield high / Hyper ❌) | **CF + reCAPTCHA Enterprise** + Riskified | **Shopify Plus** custom | L — see `JB_HIFI_MODULE.md` |
+| 11 | Toymate | Backlog | Cloudflare + EQL | BigCommerce | M–L |
+| 12 | EB Games | Backlog | CF challenge | Custom .NET | L |
+| 13 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| 14 | Pop Mart AU | Watch (Labubu $) | Cloudflare | Custom / CF | L — Hyper ❌ |
+| 15 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
 
 **Active track:** Bandai monitor ∥ **account gen** → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
-**Later:** Target Akamai twin; AusPost DataDome when we want coin season.
+**Later (Hyper-native):** Target Akamai · AusPost DD · Costco Kasada · HN Incapsula · FL Kasada · Platypus DD.  
+**Avoid full ATC until CF productized:** JB · EB · Toymate · Pop Mart · Culture Kings.
 
 ---
 
@@ -162,15 +171,61 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 
 ## Other dossiers (condensed)
 
-### Target AU — `target.com.au`
-- Akamai (`shop.target.com.au.edgekey.net`); DC 403 `AkamaiGHost`.
-- SAP Commerce on AWS; Kmart Group sibling but **not** Kmart GraphQL/Paydock.
-- Best pure Akamai reuse after/alongside AusPost DataDome work.
+### JB Hi-Fi — `jbhifi.com.au` — **full dig:** [`JB_HIFI_MODULE.md`](./JB_HIFI_MODULE.md)
+- **Shopify Plus** custom + **Cloudflare Workers** (robots.txt explicit). **Not Akamai.**
+- reCAPTCHA Enterprise `6LewUkQo…` + **Riskified**; DC **429/503** on home/products/collections.
+- Highest Pokémon MSRP channel vs EB (~2× markup on 30th Celebration). Yield ✅ · Hyper ❌.
+- Monitor-only possible; full ATC needs CF + captcha outside Hyper.
+
+### Harvey Norman — `harveynorman.com.au` (+ Domayne / Joyce Mayne)
+- **Imperva/Incapsula** “Pardon Our Interruption” from DC (`visid_incap_*`); Hyper Reese84/UTMVC ✅.
+- Forter + CyberSource + reCAPTCHA in CSP; electronics / some TCG listings.
+- Strong **Hyper-native** contender after AusPost DD wiring (same Incapsula family).
+
+### Foot Locker AU — `footlocker.com.au`
+- **Kasada** confirmed (`kpsdk-load` / `KPSDK.configure` in HTML). Homepage 200 from DC.
+- Sneaker / collab drops — pairs with Costco Kasada work in `antibot.js`.
+
+### Platypus — `platypusshoes.com.au`
+- **DataDome** (`js.datadome.co`) + Forter + reCAPTCHA; Magento-class Accent Group stack.
+- Sneaker drops; Hyper DD reuse with AusPost.
+
+### Uniqlo AU — `uniqlo.com/au`
+- **Akamai BM** (`_abck`, `bm_sz`, `bm_s`) live; UT / collab drops.
+- Pure Akamai twin after Target / Kmart patterns.
 
 ### Big W — `bigw.com.au`
 - Akamai edgekey; DC **timeouts** (silent drop).
 - Akamai BM + SAP + AEM; Woolworths decoupling risk.
 - Prove on ISP before committing.
+
+### Target AU — `target.com.au`
+- Akamai (`shop.target.com.au.edgekey.net`); DC 403 `AkamaiGHost`.
+- SAP Commerce on AWS; Kmart Group sibling but **not** Kmart GraphQL/Paydock.
+- Best pure Akamai reuse after/alongside AusPost DataDome work.
+
+### The Good Guys — `thegoodguys.com.au`
+- **Shopify Hydrogen/Oxygen** + Cloudflare (`powered-by: Shopify, Oxygen, Hydrogen`).
+- Soft homepage from DC; same CF class risk as JB on drop days. Lower TCG urgency.
+
+### Officeworks — `officeworks.com.au`
+- IBM **WebSphere Commerce** paths in robots (`/webapp/wcs/stores/servlet/…`); CloudFront.
+- Soft from DC; Auth0 cookie present. Stationery / print exclusives — lower $ than TCG.
+
+### Myer — `myer.com.au`
+- **Next.js** on CloudFront/API Gateway; soft from DC. Department-store toys/beauty.
+- Antibot lighter at edge than HN/Costco — dig ATC before ranking up.
+
+### David Jones / Smyths Toys
+- Both **Incapsula**-fronted (DJ “Pardon Our Interruption”; Smyths soft-block). Hyper Incapsula reuse.
+- DJ fashion/beauty; Smyths toys (UK chain AU) — secondary to HN.
+
+### Rebel Sport — `rebelsport.com.au`
+- **SFCC** (`dwac_*`, `dwsid`) behind Cloudflare. Soft page, CF risk under load. Sneakers/apparel.
+
+### Pop Mart AU — `popmart.com/au`
+- Labubu / blind-box **high $**; Cloudflare edge (`__cf_bm`). Hyper ❌ same as JB/EB.
+- Watch for AU drop calendar; browser module only.
 
 ### Toymate — `toymate.com.au`
 - Cloudflare **Request Blocked** from DC; **BigCommerce** (`cdn11.bigcommerce.com/s-cf7jv97qb3`).
@@ -179,7 +234,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 
 ### EB Games — `ebgames.com.au`
 - CF managed challenge; custom .NET on AWS.
-- Browser‑heavy.
+- World Plus membership + premium pricing vs JB. Browser‑heavy.
 
 ### Costco AU — `costco.com.au` — **full dig:** [`COSTCO_AU_MODULE.md`](./COSTCO_AU_MODULE.md)
 - **SAP Commerce + Angular Spartacus**; OCC base site **`australia`** (`/rest/v2|v3/australia/…`).
@@ -193,16 +248,40 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - SFCC `Sites-DisneyStoreAUNZ` + `_abck`/`bm_sz` + CF + reCAPTCHA Enterprise + Global‑e.
 - Same Global‑e class as Bandai; lower OP‑style urgency.
 
+### Niche TCG (Drop Store / Grailborne / GengStore)
+- Mostly **Shopify + CF**; membership gates common. Crowded small-bot space — low priority vs Bandai/JB MSRP.
+
+---
+
+## AU high-value matrix (Hyper × yield)
+
+| Store | Drop $ | Hyper antibot | Account friction | Verdict |
+|---|---|---|---|---|
+| Bandai AU | OP / exclusives ★★★★★ | F5 (API soft) | BNID + SMS agen | **Build first** |
+| AusPost Shop | Coins ★★★★ | DataDome ✅ | MyPost Auth0 | Parked |
+| Costco | Hot Buys ★★★★ | Akamai+Kasada ✅ | Paid membership | Backlog |
+| Target / Big W / Uniqlo | Electronics / UT ★★★ | Akamai ✅ | Low | Akamai reuse |
+| Harvey Norman | Electronics / TCG ★★★ | Incapsula ✅ | Low–med | Strong next Hyper |
+| Foot Locker / Platypus | Sneakers ★★★★ | Kasada / DD ✅ | Low–med | After Kasada/DD wired |
+| JB Hi-Fi | Pokémon MSRP ★★★★★ | CF + reCAPTCHA ❌ | Low | Monitor / later browser |
+| EB / Toymate / Pop Mart | TCG / Labubu ★★★★ | CF ❌ | Membership / EQL | Browser-only |
+| Good Guys | Electronics ★★ | CF + Shopify ❌ | Low | Skip |
+| Officeworks / Myer | Low–med exclusives ★★ | Soft / unclear | Auth0 / account | Low priority |
+
+**Rule of thumb:** prefer stores where Hyper already sells a solver (Akamai / DD / Incapsula / Kasada). CF + Google captcha stores are **monitor or desktop-browser**, not undici+Hyper twins of Kmart.
+
 ---
 
 ## Hyper capability gaps
 
 | Need | Status |
 |---|---|
-| Akamai sensor/SBSD/pixel | ✅ in `antibot.js` (Kmart) → reuse Costco / Target |
-| Kasada CT + CD | ✅ Hyper API · ❌ not wired → **Costco blocker #1** (when unparked) |
-| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost blocker #1** |
-| Cloudflare Turnstile / managed challenge | ❌ → Toymate / EB |
+| Akamai sensor/SBSD/pixel | ✅ in `antibot.js` (Kmart) → Target / Costco / Uniqlo / Big W |
+| Kasada CT + CD | ✅ Hyper API · ❌ not wired → **Costco + Foot Locker** |
+| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost + Platypus** |
+| Incapsula Reese84 / UTMVC | ✅ Hyper API · ❌ not wired → **Harvey Norman / DJ / Smyths** |
+| Cloudflare Turnstile / managed challenge | ❌ → JB / EB / Toymate / Pop Mart / Good Guys / Rebel |
+| Google reCAPTCHA Enterprise | ❌ (not Hyper) → JB / Disney / many checkouts |
 | F5 / Volterra / Shape | ❌ → Bandai HTML edge; APIs may bypass |
 | Global‑e checkout | N/A vendor · custom work → Bandai / Disney |
 | Auth0 MyPost / BNID / Costco membership | Custom session machines |
@@ -225,13 +304,14 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | **B2** | Login + ATC dry-run (`placeOrder:false`) |
 | **B3** | Chance entry pool (`applyDraw` from agen vault) |
 | **B4** | Global‑e checkout / pay |
-| *later* | Target Akamai · AusPost DataDome · Costco Kasada+membership |
+| *later* | Target Akamai · AusPost DD · Costco Kasada · HN Incapsula · FL Kasada · Platypus DD |
+| *browser/CF track* | JB monitor · EB · Pop Mart (only if CF path exists) |
 
 ### Success criteria
 - **Bandai agen:** vault of SMS-cleared accounts with shipping addresses.
 - **Bandai FCFS:** logged-in ATC + GE complete on a live/restock SKU.
 - **Bandai Chance:** multi-account `applyDraw` + winner→purchase path.
-- AusPost/Target/Costco: deferred until Bandai ships.
+- Hyper-native backlog (AusPost/Target/Costco/HN/FL): deferred until Bandai ships.
 
 ---
 
@@ -246,6 +326,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | toymate.com.au | CF Request Blocked |
 | ebgames.com.au | CF Just a moment |
 | costco.com.au | Akamai 403 almost everywhere; `/favicon.ico` → Spartacus shell; REST baseSite `australia` from urlscan |
+| jbhifi.com.au | CF 429/503; robots = Shopify + CF Workers; reCAPTCHA Enterprise + Riskified (urlscan) |
+| harveynorman.com.au | Incapsula “Pardon Our Interruption” |
+| footlocker.com.au | 200 + Kasada `KPSDK.configure` |
+| platypusshoes.com.au | 200 + DataDome + Forter |
+| uniqlo.com/au | 200 + Akamai `_abck`/`bm_sz` |
+| thegoodguys.com.au | Shopify Oxygen/Hydrogen + CF |
+| popmart.com/au | CF `__cf_bm` |
 | disneystore.com.au | 200 SFCC + Akamai cookies + Global‑e + reCAPTCHA |
 
 ---
@@ -287,6 +374,8 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 7. Bandai agen: OnlineSim rent vs slug for Bandai SMS; IMAP From/Subject patterns; +tag email OK?
 8. Target: OCC vs form checkout; Paydock or other.
 9. Costco: Kasada on which surfaces? OAuth client + ATC entry body? Pixel enforced? Queue-it under Hot Buy load?
+10. JB: `/cart/add.js` vs themeapis ATC? Captcha always-on vs Shopify bot-protection windows?
+11. HN: Reese84 vs UTMVC after Incapsula clear; CyberSource checkout body?
 
 ### Shared agen OTP infra (all future signup modules)
 User provides once in Desktop Settings:
