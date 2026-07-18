@@ -6,11 +6,10 @@ _Baseline: Kmart AU (`adapters/kmart.js`) — Akamai Bot Manager v3 + Hyper sens
 
 Findings combine live edge/API probes (Cursor cloud DC egress) with public platform signals. **Confirm on sticky AU ISP/residential + desktop before build** — several sites hard‑block or black‑hole DC IPs. Homepage ≠ PDP ≠ ATC protection.
 
-### Yield note (owner input)
-- **Australia Post Shop** — high yield: ~2–3 profitable coin drops/year, historically 200–300% ROI, site gets hammered / crashes (e.g. Bluey May 2026).
-- **Premium Bandai AU** — high yield: One Piece TCG / exclusives; thin botting support in AU; market still heating up. Mix of FCFS ATC and **Chance to Buy** raffles.
-
-That does **not** mean only those two — it reorders priority toward **profit × feasibility**, not pure antibot reuse.
+### Yield / strategy note (owner input)
+- **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
+- **Australia Post Shop** — still high yield (~2–3 coin drops/year, 200–300% ROI) but **parked** while Bandai is the differentiator; revisit after Bandai ATC/GE path exists.
+- Other stores remain on the backlog for Akamai reuse (Target) etc.
 
 ---
 
@@ -26,20 +25,21 @@ That does **not** mean only those two — it reorders priority toward **profit �
 
 ---
 
-## Scoreboard (yield‑weighted)
+## Scoreboard (Bandai-first)
 
-| Rank | Store | Why here | Antibot | Platform | Diff |
+| Rank | Store | Status | Antibot | Platform | Diff |
 |---|---|---|---|---|---|
-| **1** | **AusPost Shop** | Coin drop ROI + Hyper **DataDome** fit + Intershop ATC map started | DataDome (slider + interstitial) on CloudFront | Intershop 7 (`appVersion` 6.3.6) + Auth0/MyPost | M |
-| **2** | **Target AU** | Best Akamai reuse; volume toys | Akamai BM | SAP Commerce | S–M |
-| **3** | **Premium Bandai** | OP yield; APIs mapped; Global‑e pay | Volterra/F5 edge + item‑page obfuscation; BNID | Custom Vue SPA + Global‑e mid **1925** | L (but high $) |
-| **4** | **Big W** | Catalog; Akamai twin | Akamai BM | SAP + AEM | M |
-| **5** | **Toymate** | TCG; EQL on hyped drops | Cloudflare WAF | BigCommerce | M–L |
-| **6** | **EB Games** | Games/pop | CF managed challenge | Custom .NET/AWS | L |
-| **7** | **Costco** | Occasional exclusives | Akamai | SAP + membership | L |
-| **8** | **Disney Store** | Merch | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ |
+| 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
+| 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M |
+| 4 | Big W | Backlog | Akamai BM | SAP + AEM | M |
+| 5 | Toymate | Backlog | Cloudflare | BigCommerce + EQL | M–L |
+| 6 | EB Games | Backlog | CF challenge | Custom .NET | L |
+| 7 | Costco | Backlog | Akamai + membership | SAP | L |
+| 8 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
 
-**Parallel tracks recommended:** Track A = AusPost (DataDome + Intershop). Track B = Target (Akamai). Track C = Bandai recon → cart/API → Global‑e (shared later with Disney).
+**Active track:** Bandai monitor → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
+**Later:** Target Akamai twin; AusPost DataDome when we want coin season.
 
 ---
 
@@ -221,29 +221,27 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 
 ---
 
-## Recommended research‑day → build program
+## Recommended program (Bandai-first)
 
-### Now (still research / when back at desk)
-1. Desktop + AU ISP: AusPost coin PDP DD clear → ATC → login → checkout HAR.
-2. Desktop: Bandai BNID login → `addToCart` payload → `cart/.../checkout` → Global‑e HAR; one Chance campaign apply if any open.
-3. Target Akamai lab on ISP (compare to Kmart baseline).
-4. Add Hyper allowlist domains: `auspost.com.au`, `p-bandai.com`, `target.com.au`, `global-e.com` / captcha‑delivery as needed.
+### When back at desk (critical path)
+1. **Bandai HAR (logged-in, AU ISP):** BNID → `addToCart` → cart checkout → Global‑e (and Chance `applyDraw` if any window open). See `BANDAI_AU_MODULE.md`.
+2. Confirm guest vs login ATC (DC got 501 on POST).
+3. Optional: Target Akamai lab only if spare time.
 
 ### Build order
 | Phase | Work |
 |---|---|
-| **A1** | `antibot.js` DataDome interstitial + slider |
-| **A2** | `adapters/auspost.js` — warm → DD → ATC dry‑run (no pay) |
-| **A3** | AusPost Auth0 + SecurePay place‑order |
-| **B1** | `adapters/target.js` Akamai ATC dry‑run (parallel if capacity) |
-| **C1** | Bandai monitor + search + stock flags |
-| **C2** | Bandai ATC + Chance apply |
-| **C3** | Global‑e payment subsystem |
+| **B0** | HAR + slim notes (blocker) |
+| **B1** | Bandai monitor (search/product poll + notify) |
+| **B2** | Login + ATC dry-run (`placeOrder:false`) |
+| **B3** | Chance entry pool (`applyDraw`) |
+| **B4** | Global‑e checkout / pay |
+| *later* | Target Akamai · AusPost DataDome |
 
-### Success criteria (drops)
-- **AusPost:** clear DD on residential, ATC under load, checkout before cart steal; multi‑profile within published limits.
-- **Bandai FCFS:** addToCart + Global‑e complete within stock.
-- **Bandai Chance:** reliable applyDraw across account pool (different product).
+### Success criteria
+- **Bandai FCFS:** logged-in ATC + GE complete on a live/restock SKU.
+- **Bandai Chance:** multi-account `applyDraw` + winner→purchase path.
+- AusPost/Target: deferred until Bandai ships.
 
 ---
 
