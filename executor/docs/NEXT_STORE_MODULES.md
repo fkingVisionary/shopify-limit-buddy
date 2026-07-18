@@ -175,8 +175,8 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 ### Module plan — Bandai
 1. Desktop HAR: **signup (agen)** + login → addToCart → checkout → Global‑e (and Chance applyDraw).
 2. Adapter phases: **monitor** ∥ **account gen** → **ATC dry‑run** → **Chance entry** → **Global‑e pay**.
-3. Account pool: agen vault (email+AU SMS); `maxByPerUser: 1` is the scaling model.
-4. Desktop task types: `bandai`, **`bandai-agen`**.
+3. Account pool: agen vault via **OnlineSim + IMAP app password** (user Settings); `maxByPerUser: 1` scales accounts.
+4. Desktop task types: `bandai`, **`bandai-agen`**; shared `executor/otp/*` for future stores.
 5. Share Global‑e learnings with Disney later.
 
 **Feasibility:** Medium‑hard technically, but APIs are unusually well exposed once headers are right — rare for a “high value / low support” target.
@@ -238,7 +238,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 |---|---|
 | **B0** | HAR + slim notes (blocker; include signup if possible) |
 | **B1** | Bandai monitor (search/product poll + notify) |
-| **B1b** | **Account gen** (`bandai-agen`: email + AU SMS → vault) |
+| **B1b** | **Account gen** (`bandai-agen`: user OnlineSim key + IMAP app password → vault) |
 | **B2** | Login + ATC dry-run (`placeOrder:false`) |
 | **B3** | Chance entry pool (`applyDraw` from agen vault) |
 | **B4** | Global‑e checkout / pay |
@@ -273,5 +273,12 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 3. Bandai: logged-in ATC response + whether Volterra challenges fire on ISP POSTs (schema known from JS).
 4. Bandai: live GE captcha sitekey + whether Forter loads at payment; `globaleMerchantCartTokenSuffix` mint.
 5. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
-6. Bandai agen: catch-all/+tag email OK? SMS provider vs `SmsRateLimitExceeded`; full `registerVerification` HAR.
+6. Bandai agen: OnlineSim rent vs slug for Bandai SMS; IMAP From/Subject patterns; +tag email OK?
 7. Target: OCC vs form checkout; Paydock or other.
+
+### Shared agen OTP infra (all future signup modules)
+User provides once in Desktop Settings:
+- **OnlineSim API key** — SMS numbers / OTP poll (`country` per store; Bandai AU = `61`)
+- **IMAP host + mailbox + app password** — email OTP poll
+
+Executor helpers `otp/imapInbox.js` + `otp/onlinesim.js` are store-agnostic; each `*-agen` adapter only implements that site’s signup API.

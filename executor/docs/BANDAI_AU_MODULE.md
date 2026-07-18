@@ -214,17 +214,80 @@ Routes: `/register` → `/register/mailaddress/auth` → `/register/memberregist
 | Char classes (AU/non-TW) | upper + lower + number + symbol (half-width) |
 | Encoding | half-width only |
 
-### 4.3 External dependencies (agen stack)
+### 4.3 OTP providers (user-supplied — shared across modules)
+
+Agen does **not** ship with SMS/email credentials. The user pastes providers in Desktop **Settings** (same pattern as license `apiKey`); secrets stay local and are passed into agen tasks. This stack is **store-agnostic** — Bandai first, then AusPost / Target / others reuse the same helpers.
+
+| Setting (planned) | Purpose |
+|---|---|
+| `onlinesimApiKey` | [OnlineSim](https://onlinesim.io) API key — buy AU numbers + poll SMS OTP |
+| `imapHost` / `imapPort` | Mailbox for signup email OTP (e.g. `imap.gmail.com:993`) |
+| `imapUser` | Full email address used as Bandai `memberId` |
+| `imapAppPassword` | Provider **app password** (not the normal login password) |
+| `imapMailbox` | Optional folder (default `INBOX`) |
+
+#### Email OTP — IMAP app password
+
+```
+agen requests Bandai email code
+  → POST /api/signUp/email/auth { email: imapUser, agreeAgeTerms: true }
+  → poll IMAP (IDLE or short poll) for message from Premium Bandai / p-bandai
+  → extract 6-digit (or documented) auth code + match authSn window
+  → POST /api/signUp/email/validate { authCode, authSn }
+```
+
+Notes:
+- Prefer **dedicated mailboxes** (or a pool) over public catch-alls; app passwords are the supported automation path (Gmail/Outlook/etc.).
+- One mailbox can often create one Bandai account (`memberId` = email). For pools, either many IMAP accounts or a catch-all domain with unique local-parts **if** Bandai accepts them (confirm in HAR — open question).
+- Shared helper: `otp/imapInbox.js` → `waitForCode({ from?, subject?, regex, since, timeout })`.
+
+#### SMS OTP — OnlineSim API key
+
+OnlineSim [API v1.1](https://onlinesim.io/openapi_docs/Onlinesim-API-UN/info): auth via `apikey` query param.
+
+Typical single-activation loop:
+```
+GET /api/getNum.php?apikey=…&service=<slug>&country=61&number=true&lang=en
+  → { tzid, number, … }     # country 61 = Australia (listed & enabled)
+→ Bandai POST /api/phoneNo/auth { phoneNo: { countryNo:"+61", phoneNo:"4…" } }
+→ poll GET /api/getState.php?apikey=…&tzid=…   (or all active)
+  → read msg / code
+→ Bandai POST /api/phoneNo/validate { authCode, authSn }
+→ GET /api/setOperationOk.php?apikey=…&tzid=…   # close & settle
+```
+
+**Bandai is not in OnlineSim’s named service list** (Facebook/Google/… only). Plan:
+1. Prefer **rent** (`getRentNum` / `getRentState`) for AU when single-service slug won’t receive Bandai SMS, **or**
+2. Use whatever OnlineSim “other / custom” slug works once validated with a live key, **or**
+3. Per-store config: `onlinesimServiceSlug` + `onlinesimCountry` (Bandai AU default `country=61`).
+
+Shared helper: `otp/onlinesim.js` → `acquireNumber({ country, service })`, `waitForSms({ tzid, regex, timeout })`, `release(tzid)`.
+
+**Risks to budget for:** virtual-number blocks by Bandai, AU stock gaps, `SmsRateLimitExceeded` / `WARNING_LOW_BALANCE`, 15‑minute activation windows, phone uniqueness forever on Bandai (`exists: true`).
+
+#### Reuse for future store modules
+
+```
+executor/otp/
+  imapInbox.js      # app-password IMAP OTP waiter
+  onlinesim.js      # number acquire + SMS poll + close
+adapters/<store>-agen.js   # store-specific signup; calls otp/*
+desktop Settings    # onlinesimApiKey + IMAP fields (one place for all agen)
+```
+
+Any future agen (AusPost MyPost, Target, etc.) plugs the same Settings + `otp/*` and only swaps the store’s request/validate endpoints / code regex.
+
+### 4.4 External dependencies (agen stack)
 
 | Dependency | Why | Notes |
 |---|---|---|
-| **Email inbox API** | Step 2–3 codes | Catch-all / +tag may or may not work — confirm; dedicated mailbox pool safer |
-| **AU SMS numbers** | Step 7; phone must be unique forever | Biggest cost/rate-limit surface (`SmsRateLimitExceeded`, `TOO_MANY_REQUEST`) |
+| **OnlineSim API key** (user) | AU SMS OTP | See §4.3; country `61` |
+| **IMAP + app password** (user) | Email OTP | Same mailbox becomes `memberId` unless pool strategy differs |
 | **Sticky AU ISP/residential proxy** | Edge + geo consistency | Same class as checkout tasks |
-| **Identity data** | Name, DOB ≥18, AU home address | Can synthesize; keep consistent with shipping later |
-| **Account vault** | Store email/pass/phone/member status/SMS-cleared flag | Shared with checkout + Chance tasks |
+| **Identity data** | Name, DOB ≥18, AU home address | Synthesize; keep consistent with shipping |
+| **Account vault** | Store email/pass/phone/member status/SMS-cleared | Shared with checkout + Chance |
 
-### 4.4 Error codes agen must handle
+### 4.5 Error codes agen must handle
 
 | Code / signal | Stage | Action |
 |---|---|---|
@@ -232,32 +295,38 @@ Routes: `/register` → `/register/mailaddress/auth` → `/register/memberregist
 | `TooManyRequest` / mail resend limit | email | Backoff |
 | `MemberAuthCodeExpired` / mismatch | email/SMS validate | Resend or fail attempt |
 | `MemberAuthLimitExceeded` | validate | Kill attempt → cool account/IP |
-| `PHONE_NUMBER_DUPLICATED` / `exists:true` | phone check | Next phone |
+| `PHONE_NUMBER_DUPLICATED` / `exists:true` | phone check | Next phone / new OnlineSim number |
 | `SmsRateLimitExceeded` / `TOO_MANY_REQUEST` | SMS send | Backoff; rotate number/IP |
 | `SMS_AUTH_FAIL` | SMS send | Retry / fail |
+| OnlineSim `WARNING_LOW_BALANCE` / `ERROR_WRONG_KEY` | SMS provider | Surface to user; stop batch |
+| OnlineSim timeout (no SMS in window) | SMS poll | `setOperationOk`/cancel; retry new number |
+| IMAP auth failure / no mail | email poll | Surface bad app password / host; stop |
 | Post-login `x-restricted-type` | login | Complete SMS/terms/temp-password gates before vaulting as “ready” |
 
-### 4.5 Module shape (executor / desktop)
+### 4.6 Module shape (executor / desktop)
 
 ```
-adapters/bandai-agen.js   # or bandai.js createAccount()
+executor/otp/imapInbox.js      # shared — waitForCode via IMAP app password
+executor/otp/onlinesim.js      # shared — acquire AU number, waitForSms, release
+
+adapters/bandai-agen.js
   warm()
-  requestEmailCode(email)
-  verifyEmail(authSn, code)     # code from inbox provider
+  requestEmailCode(email)       # Bandai API
+  verifyEmail(authSn, code)     # code ← otp/imapInbox
   buildProfile({ name, phone, address, dob, password })
   ensurePhoneUnique(phone1)
   loadTerms("termsofuse")
-  requestSmsCode(phone1)        # code from SMS provider
-  verifySms(authSn, code)
+  requestSmsCode(phone1)        # Bandai API; phone ← otp/onlinesim
+  verifySms(authSn, code)       # code ← otp/onlinesim
   registerVerification(signUpData)
   loginPassword(email, password)
-  ensureShippingAddress(addr)   # optional but recommended
+  ensureShippingAddress(addr)
   vault.save({ status: "ready"|"needs_sms"|"banned", … })
 ```
 
-Desktop: task type **`bandai-agen`** — batch N accounts, concurrency low (SMS + Volterra), write into same account vault checkout/Chance read.
+Desktop: Settings holds `onlinesimApiKey` + IMAP fields; task type **`bandai-agen`** reads them, batch N, low concurrency.
 
-### 4.6 Readiness definition (“vault ready”)
+### 4.7 Readiness definition (“vault ready”)
 
 An account is **checkout/Chance ready** only when:
 1. `registerVerification` succeeded  
@@ -265,7 +334,7 @@ An account is **checkout/Chance ready** only when:
 3. Shipping address present (for GE ship)  
 4. Phone/SMS verified (AU multiAuth)
 
-### 4.7 Ordering vs other Bandai phases
+### 4.8 Ordering vs other Bandai phases
 
 | Phase | Depends on agen? |
 |---|---|
@@ -603,7 +672,9 @@ On **desktop + AU residential/ISP**:
 - No pay; proves headers + TLS + proxy
 
 ### Phase 1b — Account generation (parallel with monitor)
-- Task type `bandai-agen`: email inbox + AU SMS → `registerVerification` → vault
+- Task type `bandai-agen`: **IMAP app password** (email OTP) + **OnlineSim API key** (AU SMS) → `registerVerification` → vault
+- Shared `executor/otp/{imapInbox,onlinesim}.js` (reuse for future store agen)
+- Desktop Settings: user pastes OnlineSim key + IMAP host/user/app password
 - Enforce password rules, unique phones, terms version, post-login gate clearance
 - Seed shipping addresses on ready accounts
 - See §4 — **required before ATC/Chance scale**
@@ -634,11 +705,13 @@ On **desktop + AU residential/ISP**:
 
 ```
 antibot.js               # no Bandai vendor yet — TLS/jar only
+executor/otp/
+  imapInbox.js           # SHARED agen — IMAP app-password OTP waiter
+  onlinesim.js           # SHARED agen — OnlineSim AU number + SMS poll
 adapters/bandai.js       # matches p-bandai.com
   warm()                 # GET /au/ → SESSION + TS* + CSRF
   login()                # POST /login grantType=password|sns
-                         #   memberId=email, password, saveLoginId=false, autoLogin=false
-  createAccount()        # agen: email→SMS→registerVerification→login→shipping
+  createAccount()        # agen: IMAP email OTP → OnlineSim SMS → register → shipping
   getProduct(code)
   addToCart([{areaItemNo, qty}])
   checkout(cartSn, merchantCartToken, shippingAreaCode, items:[{cartItemSn}])
@@ -646,10 +719,10 @@ adapters/bandai.js       # matches p-bandai.com
   # pay via GE — phase 4
 ```
 
-Desktop task types: `bandai` (checkout/Chance), **`bandai-agen`** (account gen), alongside `kmart`.  
-Proxy sticky AU; shared account vault (ready / needs_sms / banned).
+Desktop Settings (planned): `onlinesimApiKey`, `imapHost`, `imapPort`, `imapUser`, `imapAppPassword` — shared by all future `*-agen` tasks.  
+Task types: `bandai`, **`bandai-agen`**, alongside `kmart`. Proxy sticky AU; shared account vault.
 
-Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.global-e.com`.
+Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.global-e.com`, `onlinesim.io`.
 
 ---
 
@@ -669,8 +742,9 @@ Hyper allowlist (if any later): `p-bandai.com`, `account.bandainamcoid.com`, `*.
 
 ### Still need HAR / live account
 - [ ] Full signup HAR (email + SMS + `registerVerification` response)
-- [ ] Whether catch-all / +tag emails work vs dedicated mailboxes
-- [ ] SMS provider reliability vs Bandai rate limits
+- [ ] IMAP: which From/Subject patterns Bandai uses; +tag / catch-all acceptance
+- [ ] OnlineSim: rent vs named slug for Bandai SMS; whether AU virtual numbers are accepted
+- [ ] OnlineSim stock / price for country `61` under a live key
 - [ ] Does guest ATC ever work, or is login mandatory? (DC says login/edge)
 - [ ] Full `addToCart` response JSON
 - [ ] How / when `globaleMerchantCartTokenSuffix` is minted into PRELOAD
