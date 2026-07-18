@@ -141,23 +141,27 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - `GET /api/brand/{urlKeyword}` · `/api/series/list` · `/api/shop/{urlKeyword}`
 - Sitemap: `https://p-bandai.com/au/sitemap-product_1.xml` (~486 items)
 
+**Auth (JS-confirmed)**
+- `POST /login` form: `grantType=password&memberId=<email>&password=…&saveLoginId=false&autoLogin=false`
+- BNID popup → `grantType=sns`; AU `multiAuth:true` (SMS gates common)
+- Full signup/shipping DTOs + AU address map in `BANDAI_AU_MODULE.md`
+
 **Cart** (`CartService`)
-- `POST /api/cart/addToCart` body TBD (HAR) — errors: `CouldNotAddToCartByMaxPurchaseQty`, `…OutOfStock`, `…Preallocation`, `…EndOfSale`, …
-- `GET /api/cart/detail`
-- `PUT /api/cart/modifyCartItem?cartItemSn=&qty=`
-- `DELETE /api/cart/removeCartLineItems?cartLineItemSns=`
-- `POST /api/cart/{cartSn}/checkout` body includes `merchantCartToken`, `shippingAreaCode`, `defaultAreaCode`, `items`
+- `POST /api/cart/addToCart` body **array** `[{ areaItemNo, qty, eventPickupSpecifiedPickupSn? }]` — guest DC → 501; login HAR still required
+- Errors: `CouldNotAddToCartByMaxPurchaseQty`, `…OutOfStock`, `…Preallocation`, `…EndOfSale`, …
+- `GET /api/cart/detail` · `PUT …/modifyCartItem` · `DELETE …/removeCartLineItems`
+- `POST /api/cart/{cartSn}/checkout` `{ merchantCartToken, shippingAreaCode, defaultAreaCode, items:[{ cartItemSn }] }`
+- Token formula: `` `${cartId}_Checkout_${globaleMerchantCartTokenSuffix}` ``
 
 **Chance to Buy / campaigns**
-- `GET /api/campaign/list` · `/api/campaign/past` · `/api/campaign/detail/{id}` · `…/items`
-- `POST /api/my/campaign/apply/{campaignSn}/apply{Type}` body `{ applyGroupNo }` — Type e.g. `Draw`
-- `GET /api/my/campaign/applied/products`
-- `PUT /api/my/campaign/apply/{sn}/applyDraw/cancel`
+- `GET /api/campaign/list` · `/past` · `/detail/{url}` · `…/items`
+- `POST /api/my/campaign/apply/{sn}/apply{campaignType}` body `{ applyGroupNo }` — Chance → **`applyDraw`**
+- `GET /api/my/campaign/applied/products` · cancel `PUT …/applyDraw/cancel`
 - Requires login; trading‑halt members redirected
 
 **Checkout → Global‑e**
-- `POST /api/checkout/{checkoutSn}/preComplete` then redirect into Global‑e with `merchantCartToken`
-- Global‑e JS references `webservices.global-e.com` + reCAPTCHA strings; Forter often rides with Global‑e (confirm in browser HAR)
+- After GE confirmation: `POST /api/checkout/{checkoutSn}/preComplete` with `{ globaleOrder }`
+- Client dig: cart-token **captcha** (`IsCaptcha` + `.h-captcha`/grecaptcha) + **FingerprintJS** (`fpId`); **no Forter string** in gem/clientsdk (still confirm live HAR)
 
 ### Protections nuance
 - Homepage HTML **200** without challenge.
@@ -263,7 +267,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 ## Open questions (for local HAR day)
 1. AusPost: exact SecurePay / card fields + whether DD tags.js runs on every page after first clear.
 2. AusPost: guest vs forced login timing (terms say MyPost to place order — is ATC allowed logged‑out?).
-3. Bandai: exact `addToCart` JSON schema; when HTML bot script triggers vs API‑only success.
-4. Bandai: Global‑e Forter/reCAPTCHA enforcement on AU mid 1925.
-5. Bandai: Chance `apply{Type}` suffix values beyond `Draw`.
+3. Bandai: logged-in ATC response + whether Volterra challenges fire on ISP POSTs (schema known from JS).
+4. Bandai: live GE captcha sitekey + whether Forter loads at payment; `globaleMerchantCartTokenSuffix` mint.
+5. Bandai: Chance `applyGroupNo` when `applyGroupUse=true`; other `campaignType` suffixes in the wild.
 6. Target: OCC vs form checkout; Paydock or other.
