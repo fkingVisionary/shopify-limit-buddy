@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, makeDispatcher, isStickyProxyUrl } from "../http.js";
+import { request, UA, makeDispatcher, isStickyProxyUrl, cookieHeaderForUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -466,7 +466,9 @@ export const kmartAdapter = {
       requestTrace.push({ kind: "event", key, ...event });
     };
     const tracedRequest = async (key, url, opts, extra = {}) => {
-      const requestCookieHeader = ctx.jar.header();
+      // Prefer the host-scoped Cookie header that `request()` actually sends
+      // (api.kmart.com.au omits www host-only `__cf_*`).
+      const requestCookieHeader = cookieHeaderForUrl(ctx.jar, url);
       const res = await request(url, opts, ctx);
       recordTrace(key, url, opts, res, { ...extra, requestCookieHeader });
       return res;
@@ -1759,7 +1761,11 @@ export const kmartAdapter = {
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
       },
+      // get-token returns a ya29 shopping-agent token unused by HAR GraphQL.
+      // Kept as a late fallback only — populated after api_get_token parses body.
+      with_bearer: null,
     };
+    let shoppingAgentToken = null;
     // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
     // keep baseline (proven mriwd1up / a1d9f9c / 7784fab order). Tip har_slim-first
     // for sticky contradicted the cart_get 403 lesson — restored.
@@ -1876,13 +1882,32 @@ export const kmartAdapter = {
           },
           { requestBody: { sessionId } },
         );
-        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
+        const bodyRaw = await res.text().catch(() => "");
+        const bodyTxt = bodyRaw.slice(0, 200);
+        try {
+          const parsed = JSON.parse(bodyRaw);
+          const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
+          if (tok) {
+            shoppingAgentToken = tok;
+            gqlProfiles.with_bearer = {
+              ...gqlProfiles.baseline,
+              authorization: `Bearer ${tok}`,
+            };
+          }
+        } catch {
+          /* body not JSON — seed cookies alone may still be enough */
+        }
         const setCookieNames = cookieNamesFromResponse(res);
+        const apiCookieNames = cookieHeaderForUrl(ctx.jar, apiOrigin)
+          .split(";")
+          .map((p) => p.trim().split("=")[0])
+          .filter(Boolean);
+        const omittedCf = Object.keys(ctx.jar.dump()).filter((n) => n.startsWith("__cf_"));
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=${apiDocReferer === homeReferer ? "home" : "pdp"} setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=${apiDocReferer === homeReferer ? "home" : "pdp"} setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} apiCookies=[${apiCookieNames.join(",")}] omitCf=[${omittedCf.join(",") || "none"}] body=${bodyTxt}`,
         };
       });
       if (!apiSeedOk) {
@@ -2021,10 +2046,15 @@ export const kmartAdapter = {
         note: JSON.stringify({
           url: gqlUrl,
           profile: activeGqlProfile,
-          headerKeys: Object.keys(gqlHeaders),
+          headerKeys: Object.keys(gqlHeaders).filter((k) => k !== "authorization"),
           referer: gqlHeaders.referer,
           visitor: gqlHeaders["x-visitor-id"] ?? null,
-          cookieNames: Object.keys(ctx.jar.dump()),
+          bearer: Boolean(gqlHeaders.authorization || shoppingAgentToken),
+          cookieNames: cookieHeaderForUrl(ctx.jar, gqlUrl)
+            .split(";")
+            .map((p) => p.trim().split("=")[0])
+            .filter(Boolean),
+          jarNames: Object.keys(ctx.jar.dump()),
           abck: marker(ctx.jar.get("_abck")),
           bmsz: marker(ctx.jar.get("bm_sz")),
         }),
@@ -2049,9 +2079,18 @@ export const kmartAdapter = {
         // missing rollback / proxy. Rotate HAR-aligned header profiles once.
         if (isAkamaiAccessDenied(res.status, txt)) {
           const tryProfile = async (name, label = name) => {
+            const profileHeaders = gqlProfiles[name];
+            if (!profileHeaders) {
+              steps.push({
+                step: `cart_get:profile_${label}`,
+                ok: false,
+                note: `skipped: profile ${name} unavailable (no shopping-agent token yet)`,
+              });
+              return null;
+            }
             await sleep(250, 550);
             activeGqlProfile = name;
-            gqlHeaders = gqlProfiles[name];
+            gqlHeaders = profileHeaders;
             const retry = await gqlPost(GET_ACTIVE_CART, `cart_get_${label}`);
             txt = await retry.text();
             cartId = null;
@@ -2079,9 +2118,10 @@ export const kmartAdapter = {
 
           // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
           // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
+          // with_bearer last: HAR GraphQL is cookie-only; ya29 is an experiment.
           const fallbackOrder = apiSoftEntry
-            ? ["har_slim", "baseline", "pdp_visitor"]
-            : ["seed_match", "har_slim", "pdp_visitor"];
+            ? ["har_slim", "baseline", "pdp_visitor", "with_bearer"]
+            : ["seed_match", "har_slim", "pdp_visitor", "with_bearer"];
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
@@ -2164,11 +2204,25 @@ export const kmartAdapter = {
                   },
                   { requestBody: { sessionId: reseedId } },
                 );
-                const bodyTxt = (await res.text().catch(() => "")).slice(0, 160);
+                const bodyRaw = await res.text().catch(() => "");
+                const bodyTxt = bodyRaw.slice(0, 160);
+                try {
+                  const parsed = JSON.parse(bodyRaw);
+                  const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
+                  if (tok) {
+                    shoppingAgentToken = tok;
+                    gqlProfiles.with_bearer = {
+                      ...gqlProfiles.baseline,
+                      authorization: `Bearer ${tok}`,
+                    };
+                  }
+                } catch {
+                  /* ignore */
+                }
                 return {
                   status: res.status,
                   ok: res.status < 400,
-                  note: `reseed setCookies=[${cookieNamesFromResponse(res).join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}`,
+                  note: `reseed setCookies=[${cookieNamesFromResponse(res).join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} body=${bodyTxt}`,
                 };
               });
               await sleep(400, 900);
@@ -2180,7 +2234,7 @@ export const kmartAdapter = {
               });
             }
             // Retry mriwd baseline first — post-sensor tip previously skipped it.
-            for (const name of ["baseline", "seed_match", "har_slim"]) {
+            for (const name of ["baseline", "seed_match", "har_slim", "with_bearer"]) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
               if (hit) return hit;
             }
