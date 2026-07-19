@@ -31,6 +31,9 @@ const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
 // Browser-friendly landing. This service is an API — visiting `/` in a browser
 // used to look "blank" (Fastify 404). Keep /health as the probe endpoint.
+const GIT_SHA = String(process.env.EXECUTOR_GIT_SHA || process.env.GIT_SHA || "unknown").slice(0, 40);
+const MONITOR_ENABLE = /^(1|true|yes)$/i.test(String(process.env.MONITOR_ENABLE || ""));
+
 app.get("/", async () => ({
   ok: true,
   service: "j1ms-bot-executor",
@@ -41,6 +44,8 @@ app.get("/", async () => ({
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  gitSha: GIT_SHA,
+  monitorEnabled: MONITOR_ENABLE,
   ts: Date.now(),
 }));
 
@@ -53,6 +58,8 @@ app.get("/health", async () => ({
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  gitSha: GIT_SHA,
+  monitorEnabled: MONITOR_ENABLE,
 }));
 
 // Authenticated deep health: TLS fingerprint + proxy CONNECT + direct target.

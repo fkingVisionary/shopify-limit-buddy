@@ -234,11 +234,27 @@ export function makeDispatcher(rawProxy, opts = {}) {
   return dispatcher;
 }
 
+function abckMarkerIndex(value) {
+  const m = String(value ?? "").match(/~(-?\d+)~/);
+  return m ? Number(m[1]) : null;
+}
+
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
 // www.kmart.com.au → api.kmart.com.au _abck handoff in kmart.js still works
 // the way it did under undici.
 export function createJar() {
   const store = new Map(); // name -> value
+  // SoftBlock Access Denied pages Set-Cookie a fresh `_abck` with ind=-1.
+  // Because the jar is name-keyed (no Domain), that clobber wipes a Hyper-
+  // solved ~0~ cookie and every later WWW/API call looks unsolved. Refuse
+  // demotions once we hold a solved cookie (explicit set/load still wins).
+  // Lesson from 203950c / PR #36 — keep this even when rolling tip to a1d9.
+  const shouldKeepExistingAbck = (incoming) => {
+    const prev = store.get("_abck");
+    const prevIdx = abckMarkerIndex(prev);
+    const nextIdx = abckMarkerIndex(incoming);
+    return prevIdx === 0 && nextIdx !== 0;
+  };
   const ingestSetCookie = (arr) => {
     if (!arr) return;
     const list = Array.isArray(arr) ? arr : [arr];
@@ -249,6 +265,7 @@ export function createJar() {
       if (eq > 0) {
         const name = pair.slice(0, eq).trim();
         const value = pair.slice(eq + 1).trim();
+        if (name === "_abck" && shouldKeepExistingAbck(value)) continue;
         store.set(name, value);
       }
     }

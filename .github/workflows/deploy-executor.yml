@@ -95,13 +95,16 @@ jobs:
           set +e
           deploy_region() {
             local region="$1"
-            echo "::group::flyctl deploy --primary-region $region"
+            local sha
+            sha=$(git -C .. rev-parse HEAD)
+            echo "::group::flyctl deploy --primary-region $region sha=$sha"
             flyctl deploy \
               --remote-only \
               --ha=false \
               --app "$APP" \
               --config fly.toml \
               --dockerfile Dockerfile \
+              --build-arg "GIT_SHA=$sha" \
               --primary-region "$region" \
               2>&1 | tee /tmp/deploy.log
             local rc=${PIPESTATUS[0]}
