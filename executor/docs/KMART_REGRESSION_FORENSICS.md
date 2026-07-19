@@ -76,8 +76,25 @@ Supabase `run-checkout` edge is the **older Browserless/Shopify** job worker
 If diagnose fails CONNECT / `proxy_egress same=true` → fix proxy, not adapter.
 If Fly `gitSha` still missing or `monitorEnabled:true` → deploy did not land.
 
-## What this PR changes (minimal)
+## What PR #40 changed (minimal)
 
 1. **Jar SoftBlock protect** in `executor/http.js` — refuse `_abck` demotion after `~0~`.
 2. **Fly stay warm, monitor off** in `executor/fly.toml` — phone web path without ISP burn.
 3. **`gitSha` on `/health`** — bake `GIT_SHA` at deploy so drift is obvious next time.
+
+## Git-cross-reference restores (HTTP sticky, no Playwright)
+
+Cross-reference **all** proven Kmart HTTP lessons — not only proxy wiring:
+
+| Proven source | Restore |
+|---|---|
+| `7784fab` / `0186ac8` / mriwd1up | GraphQL **baseline-first** (PDP referer + visitor/apollo) when WWW clear — never har_slim-first |
+| `a1d9f9c` | Sticky **`api_tunnel_refresh` default ON** before get-token; opt-out `apiTunnelRefresh:false` |
+| `a1d9f9c` | get-token referer = **`apiDocReferer`** (not forced homepage) |
+| `203950c` | **`pdpHtmlAlreadyOk`** + `pdp_get#2:keep_prior` / `sbsd_pdp:skipped` |
+| `aa6352c` | SoftBlock `_abck` jar refuse-demotion (keep) |
+| `f3218ef` / `6d0d21a` / `9eadb32` | undici default, XHR Client Hints, ATC homepage-referer retry (keep) |
+| `ef84707` | List proxies: `executor/resi.proxies` + `PROXY_RESI_LIST` + `/run` `proxies[]` — not sole `PROXY_URL_RESI` |
+| tip `9f9a4da` experiments | **Removed** CORS OPTIONS preflight + sticky home `tokenReferer` + har_slim-first |
+
+Paste Noontide sticky lines into `executor/resi.proxies` (keep issued `session-…-sessTime-…`), redeploy, then `/run` with `useProxy:true`.

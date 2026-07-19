@@ -65,10 +65,11 @@ jobs:
           EXECUTOR_TOKEN: ${{ secrets.EXECUTOR_TOKEN }}
           HYPER_API_KEY: ${{ secrets.HYPER_API_KEY }}
           PROXY_URL_RESI: ${{ secrets.PROXY_URL_RESI }}
+          PROXY_RESI_LIST: ${{ secrets.PROXY_RESI_LIST }}
           EXECUTOR_HTTP_TRANSPORT: ${{ secrets.EXECUTOR_HTTP_TRANSPORT }}
         run: |
           missing=0
-          for var in EXECUTOR_TOKEN HYPER_API_KEY PROXY_URL_RESI; do
+          for var in EXECUTOR_TOKEN HYPER_API_KEY; do
             if [ -z "${!var}" ]; then
               echo "::error::Repo secret $var is not set."
               missing=1
@@ -76,16 +77,28 @@ jobs:
           done
           if [ "$missing" = "1" ]; then exit 1; fi
 
-          transport_args=()
+          # Proxies: prefer baked executor/resi.proxies or PROXY_RESI_LIST.
+          # PROXY_URL_RESI is optional legacy single-URL fallback (not required).
+          if [ -z "$PROXY_URL_RESI" ] && [ -z "$PROXY_RESI_LIST" ]; then
+            echo "::notice::No PROXY_URL_RESI / PROXY_RESI_LIST — using executor/resi.proxies if present, or body.proxies on /run."
+          fi
+
+          secret_args=(
+            "EXECUTOR_TOKEN=$EXECUTOR_TOKEN"
+            "HYPER_API_KEY=$HYPER_API_KEY"
+          )
+          if [ -n "$PROXY_URL_RESI" ]; then
+            secret_args+=("PROXY_URL_RESI=$PROXY_URL_RESI")
+          fi
+          if [ -n "$PROXY_RESI_LIST" ]; then
+            secret_args+=("PROXY_RESI_LIST=$PROXY_RESI_LIST")
+          fi
           if [ -n "$EXECUTOR_HTTP_TRANSPORT" ]; then
-            transport_args=("EXECUTOR_HTTP_TRANSPORT=$EXECUTOR_HTTP_TRANSPORT")
+            secret_args+=("EXECUTOR_HTTP_TRANSPORT=$EXECUTOR_HTTP_TRANSPORT")
           fi
 
           flyctl secrets set \
-            EXECUTOR_TOKEN="$EXECUTOR_TOKEN" \
-            HYPER_API_KEY="$HYPER_API_KEY" \
-            PROXY_URL_RESI="$PROXY_URL_RESI" \
-            "${transport_args[@]}" \
+            "${secret_args[@]}" \
             --app "$APP" --stage
 
 

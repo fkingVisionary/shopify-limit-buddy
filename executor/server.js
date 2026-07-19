@@ -12,6 +12,7 @@ import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -43,7 +44,8 @@ app.get("/", async () => ({
   progress: "GET /progress/:taskId (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
+  proxyPoolSize: resiPoolSize(),
   gitSha: GIT_SHA,
   monitorEnabled: MONITOR_ENABLE,
   ts: Date.now(),
@@ -57,7 +59,8 @@ app.get("/health", async () => ({
   transport: HTTP_TRANSPORT,
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
+  proxyPoolSize: resiPoolSize(),
   gitSha: GIT_SHA,
   monitorEnabled: MONITOR_ENABLE,
 }));
@@ -91,7 +94,12 @@ app.post("/transport/diagnose", async (req, reply) => {
     return { ok: false, error: "url must be http(s)" };
   }
 
-  const resolvedProxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const resolvedProxy = resolveRunProxy({
+    proxy: body.proxy,
+    proxies: body.proxies,
+    proxyEntries: body.proxyEntries,
+    useProxy: body.useProxy,
+  }).proxy;
   const requestedTransport = typeof body.transport === "string" ? body.transport.toLowerCase() : null;
   const dispatcher = makeDispatcher(resolvedProxy, {
     forceTls: body.forceTls === true || requestedTransport === "tls",
@@ -210,11 +218,22 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
-  // Match diagnose/recon: explicit proxy wins; else useProxy → PROXY_URL_RESI.
-  // Desktop/Lovable usually pass proxy strings; phone curls often only set useProxy.
-  const resolvedProxy =
-    (typeof task.proxy === "string" && task.proxy.trim() ? task.proxy.trim() : null) ??
-    (task.useProxy === true ? process.env.PROXY_URL_RESI ?? null : null);
+  // Proxy resolution (ef84707 list shape + desktop proxyEntries):
+  //   body.proxy → body.proxies[]/proxyEntries[] → resi.proxies / PROXY_RESI_LIST
+  //   → PROXY_URL_RESI (legacy single secret). useProxy:false forces direct.
+  const proxyPick = resolveRunProxy({
+    proxy: task.proxy,
+    proxies: task.proxies,
+    proxyEntries: task.proxyEntries,
+    useProxy: task.useProxy,
+  });
+  const resolvedProxy = proxyPick.proxy;
+  if (resolvedProxy) {
+    req.log.info(
+      { proxySource: proxyPick.source, proxyIndex: proxyPick.index, proxyPoolSize: proxyPick.poolSize },
+      "proxy resolved",
+    );
+  }
   // Optional Fly/GitHub secrets for card when body omits it (phone dry-runs).
   if (!card) {
     const number = process.env.KMART_CARD_NUMBER;
@@ -311,7 +330,7 @@ app.post("/recon", async (req, reply) => {
   }
   const jar = createJar();
   // Default to direct (Fly egress). Only use residential when explicitly opted in.
-  const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const resolvedProxy = resolveRunProxy({ proxy, proxies: req.body?.proxies, proxyEntries: req.body?.proxyEntries, useProxy }).proxy;
   const dispatcher = makeDispatcher(resolvedProxy);
   const ctx = { dispatcher, jar };
   const t0 = Date.now();
@@ -373,7 +392,12 @@ app.post("/recon", async (req, reply) => {
 app.post("/jbhifi/recon", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const body = req.body ?? {};
-  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const proxy = resolveRunProxy({
+    proxy: body.proxy,
+    proxies: body.proxies,
+    proxyEntries: body.proxyEntries,
+    useProxy: body.useProxy,
+  }).proxy;
   try {
     const result = await runJbhifiRecon({
       query: body.query ?? null,
@@ -397,7 +421,12 @@ app.post("/jbhifi/recon", async (req, reply) => {
 app.post("/jbhifi/probe", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const body = req.body ?? {};
-  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
+  const proxy = resolveRunProxy({
+    proxy: body.proxy,
+    proxies: body.proxies,
+    proxyEntries: body.proxyEntries,
+    useProxy: body.useProxy,
+  }).proxy;
   try {
     const result = await runJbhifiProbe({
       skus: Array.isArray(body.skus) ? body.skus : [],
@@ -427,7 +456,8 @@ app
     console.log(
       JSON.stringify({
         hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-        proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+        proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
+        proxyPoolSize: resiPoolSize(),
         transport: HTTP_TRANSPORT,
       }),
     );

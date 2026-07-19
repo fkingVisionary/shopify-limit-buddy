@@ -1454,22 +1454,46 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    if (parseSbsd(pdpHtml)) {
+    //
+    // If first PDP already returned real product HTML, skip SBSD re-GET.
+    // SoftBlock on pdp_get#2 has been wiping good 200 HTML (and cart/sku).
+    // Restored from 203950c / PR #36.
+    const pdpHtmlAlreadyOk =
+      pdpStatus >= 200 &&
+      pdpStatus < 300 &&
+      pdpHtml.length > 50_000 &&
+      !/Access Denied|AkamaiGHost/i.test(pdpHtml);
+    if (parseSbsd(pdpHtml) && !pdpHtmlAlreadyOk) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+      const htmlBefore = pdpHtml;
+      const statusBefore = pdpStatus;
       await tStep("pdp_get#2", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-        pdpStatus = res.status;
-        pdpHtml = await res.text();
+        const body = await res.text();
+        const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(body);
+        if (res.status >= 200 && res.status < 300 && !denied && body.length > 50_000) {
+          pdpStatus = res.status;
+          pdpHtml = body;
+        } else if (statusBefore >= 200 && statusBefore < 300 && htmlBefore.length > 50_000) {
+          steps.push({
+            step: "pdp_get#2:keep_prior",
+            ok: true,
+            note: `re-GET status=${res.status} denied=${denied} — kept prior ${statusBefore} HTML (${htmlBefore.length}b) abck=${marker(ctx.jar.get("_abck"))}`,
+          });
+        } else {
+          pdpStatus = res.status;
+          pdpHtml = body;
+        }
         const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
         const respHeaders = {
           server: res.headers.get("server"),
           "akamai-grn": res.headers.get("akamai-grn"),
           "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
         };
-        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+        return { status: pdpStatus, ok: pdpStatus >= 200 && pdpStatus < 300, note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} | ${snippet}` };
       });
       // Residential often needs an extra dwell after bm_sv mints before WWW
       // HTML unlocks. ISP usually clears on #2 — this is a no-op then.
@@ -1551,6 +1575,12 @@ export const kmartAdapter = {
           };
         });
       }
+    } else if (parseSbsd(pdpHtml) && pdpHtmlAlreadyOk) {
+      steps.push({
+        step: "sbsd_pdp:skipped",
+        ok: true,
+        note: `PDP HTML already clear (${pdpHtml.length}b status=${pdpStatus}) — skip SBSD re-GET`,
+      });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
@@ -1729,50 +1759,11 @@ export const kmartAdapter = {
         "x-country-code": "AU",
       },
     };
-    // Soft API: seed_match first. Sticky resi with clear WWW: start har_slim
-    // (homepage referer, no apollo) — matches slim HAR getMyActiveCart, not PDP
-    // baseline. ISP / direct keep mriwd1up baseline.
-    let activeGqlProfile = apiSoftEntry
-      ? "seed_match"
-      : stickyProxy && wwwHtmlOk
-        ? "har_slim"
-        : "baseline";
+    // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
+    // keep baseline (proven mriwd1up / a1d9f9c / 7784fab order). Tip har_slim-first
+    // for sticky contradicted the cart_get 403 lesson — restored.
+    let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
-
-    // Browser CORS preflight before api.* POSTs (HAR always OPTIONS first).
-    // Sticky residential GraphQL is pickier than get-token; omit on ISP/direct.
-    const corsPreflight = async (url, requestHeaders, traceKey) => {
-      if (!stickyProxy) return;
-      const acrh = Object.keys(requestHeaders)
-        .filter((k) => !/^(cookie|user-agent|accept|accept-language|accept-encoding|content-length|host|connection)$/i.test(k))
-        .join(",");
-      await tStep(traceKey, async () => {
-        const res = await request(
-          url,
-          {
-            method: "OPTIONS",
-            headers: {
-              "user-agent": UA,
-              accept: "*/*",
-              "accept-language": ACCEPT_LANG,
-              origin,
-              referer: requestHeaders.referer || homeReferer,
-              "access-control-request-method": "POST",
-              ...(acrh ? { "access-control-request-headers": acrh.toLowerCase() } : {}),
-              "sec-fetch-site": "same-site",
-              "sec-fetch-mode": "cors",
-              "sec-fetch-dest": "empty",
-            },
-          },
-          ctx,
-        );
-        return {
-          status: res.status,
-          ok: res.status > 0 && res.status < 500,
-          note: `preflight status=${res.status}`,
-        };
-      });
-    };
 
     const gqlPost = async (body, traceKey = body?.operationName ?? "graphql", headerOverrides = null) =>
       tracedRequest(
@@ -1837,10 +1828,11 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Optional tunnel refresh (task.apiTunnelRefresh=true). Default OFF —
-      // keeping the warm sticky ProxyAgent helps Hyper-solved WWW _abck carry
-      // into api.* on Noontide; forced reset correlated with GraphQL denials.
-      if (stickyProxy && task.apiTunnelRefresh === true) {
+      // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
+      // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
+      // ISP keeps the warm agent (proven path). Restored from a1d9f9c default ON.
+      // Opt out with task.apiTunnelRefresh === false.
+      if (stickyProxy && task.apiTunnelRefresh !== false) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
@@ -1849,19 +1841,16 @@ export const kmartAdapter = {
         steps.push({
           step: "api_tunnel_refresh",
           ok: true,
-          note: "sticky ProxyAgent reset before get-token (explicit apiTunnelRefresh)",
+          note: "sticky ProxyAgent reset before get-token (session exit unchanged)",
         });
       }
       let apiSeedOk = false;
-      // Slim HAR: get-token referer is homepage, not PDP.
-      const tokenReferer = stickyProxy ? homeReferer : apiDocReferer;
-      const getTokenHeaders = {
-        ...apiXhrBase(tokenReferer),
-        "x-visitor-id": apiVisitorId,
-        ...nrHeaders("1834777981"),
-      };
-      await corsPreflight(apiOrigin + "/shopping-agent/v1/get-token", getTokenHeaders, "api_get_token:preflight");
       await tStep("api_get_token", async () => {
+        const getTokenHeaders = {
+          ...apiXhrBase(apiDocReferer),
+          "x-visitor-id": apiVisitorId,
+          ...nrHeaders("1834777981"),
+        };
         const res = await tracedRequest(
           "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -2030,7 +2019,6 @@ export const kmartAdapter = {
         query:
           "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
       };
-      await corsPreflight(gqlUrl, { ...gqlHeaders, ...nrHeaders() }, "cart_get:preflight");
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
         let txt = await res.text();
@@ -2073,13 +2061,11 @@ export const kmartAdapter = {
               : null;
           };
 
-          // Soft-entry / sticky started on har_slim or seed_match — try remaining.
-          // ISP (baseline first): keep proven seed_match → har_slim → pdp_visitor.
+          // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
+          // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
           const fallbackOrder = apiSoftEntry
             ? ["har_slim", "baseline", "pdp_visitor"]
-            : stickyProxy && wwwHtmlOk
-              ? ["seed_match", "baseline", "pdp_visitor"]
-              : ["seed_match", "har_slim", "pdp_visitor"];
+            : ["seed_match", "har_slim", "pdp_visitor"];
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);

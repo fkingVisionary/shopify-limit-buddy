@@ -1,0 +1,14 @@
+# Residential sticky sessions for Kmart checkout (Noontide / similar).
+# One entry per line. Same format as historical executor/isp.proxies (ef84707):
+#   host:port:user:pass
+# Password may contain ':' (remainder after user is the password).
+# Also accepts http://user:pass@host:port
+#
+# Deploy path: edit this file → commit → redeploy (no PROXY_URL_RESI secret churn).
+# Runtime overrides (higher priority):
+#   - POST /run body.proxy (single)
+#   - POST /run body.proxies[] or body.proxyEntries[]
+#   - env PROXY_RESI_LIST (newline/comma separated)
+#   - env PROXY_URL_RESI (single URL, last-resort fallback)
+#
+# Paste sticky lines below (keep issued session-…-sessTime-… tokens intact):
