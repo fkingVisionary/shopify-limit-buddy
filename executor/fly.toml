@@ -6,13 +6,18 @@ primary_region = "syd"
 
 [env]
   PORT = "8080"
+  # Phone / Lovable web testing needs a warm machine. Do NOT enable the
+  # co-located global monitor here — MONITOR_ENABLE was the Jul 17 Fly drift
+  # (ef84707) that burned ISP exits every ~4s while checkout was being debugged.
+  MONITOR_ENABLE = "0"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = "stop"
+  # Stay warm for dashboard→Fly dry-runs from mobile (cold start looks like hang).
+  auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
 
 [[vm]]
   size = "shared-cpu-2x"

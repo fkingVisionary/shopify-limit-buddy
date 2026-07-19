@@ -23,6 +23,10 @@ COPY package.json ./
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm install --omit=dev
 COPY . .
+# Bake git tip into /health so Lovable/desktop can detect Fly↔git deploy drift
+# (Jul 17: Fly stayed on ef84707+monitor after main hard-reset to a1d9f9c).
+ARG GIT_SHA=unknown
+ENV EXECUTOR_GIT_SHA=$GIT_SHA
 # Do not prewarm node-tls-client during image builds. Its native asset endpoint
 # can return 403 and fail the whole deploy; the default runtime transport is
 # undici, and TLS is opt-in via EXECUTOR_HTTP_TRANSPORT=tls.
