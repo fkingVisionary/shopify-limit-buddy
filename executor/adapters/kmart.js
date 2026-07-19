@@ -1717,8 +1717,9 @@ export const kmartAdapter = {
       };
     };
 
-    // Shared CORS base for api.kmart.com.au XHRs. No cache-control/pragma
-    // (those are hard-reload only) and low-entropy Client Hints only.
+    // Shared CORS base for api.kmart.com.au XHRs (get-token + GraphQL).
+    // Low-entropy Client Hints only. Do NOT put cache-control/pragma here —
+    // slim HAR get-token omits them; GraphQL always includes them (see below).
     const apiXhrBase = (referer) => ({
       "user-agent": UA,
       accept: "*/*",
@@ -1733,31 +1734,43 @@ export const kmartAdapter = {
       "sec-fetch-dest": "empty",
       priority: "u=1, i",
     });
+    // Path-specific: every slim-HAR /gateway/graphql POST sends these; get-token
+    // does not. mriwd1up / 7784fab / 0186ac8 GraphQL also had them. 6d0d21a
+    // removed them from api XHRs as "hard-reload only" — wrong for GraphQL and
+    // left get-token-200 / GraphQL-403 with an inverted browser header delta.
+    const gqlCacheHeaders = {
+      "cache-control": "no-cache",
+      pragma: "no-cache",
+    };
 
     // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
-    // on the same jar/IP — so request shape matters more than proxy vs direct.
+    // on the same jar/IP — request shape on /gateway/graphql is the lever.
     // ISP: baseline (PDP) first. Sticky soft-entry: seed_match / home referer.
     const gqlProfiles = {
-      // mriwd1up: PDP referer + visitor + apollo + country (no hard-reload cache headers)
+      // mriwd1up proven cart_get: PDP + visitor + apollo + country + cache headers
       baseline: {
         ...apiXhrBase(apiDocReferer),
+        ...gqlCacheHeaders,
         "x-country-code": "AU",
         "x-visitor-id": apiVisitorId,
         "apollographql-client-name": "kmart-web",
         "apollographql-client-version": "nx14-10200",
       },
-      // Match get-token stamps (visitor, no apollo/country) — same host just cleared BM seed.
+      // Match get-token stamps (visitor, no apollo/country) + GraphQL cache headers.
       seed_match: {
         ...apiXhrBase(apiDocReferer),
+        ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
       },
-      // Slim HAR getMyActiveCart: homepage referer, no visitor/apollo/country.
+      // Slim HAR getMyActiveCart: homepage referer, cache headers, no visitor/apollo.
       har_slim: {
         ...apiXhrBase(homeReferer),
+        ...gqlCacheHeaders,
       },
       // PDP/home + visitor without apollo client stamps.
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
+        ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
       },
@@ -1887,10 +1900,11 @@ export const kmartAdapter = {
         try {
           const parsed = JSON.parse(bodyRaw);
           const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
-          if (tok) {
+            if (tok) {
             shoppingAgentToken = tok;
             gqlProfiles.with_bearer = {
               ...gqlProfiles.baseline,
+              ...gqlCacheHeaders,
               authorization: `Bearer ${tok}`,
             };
           }
@@ -2118,10 +2132,12 @@ export const kmartAdapter = {
 
           // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
           // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
-          // with_bearer last: HAR GraphQL is cookie-only; ya29 is an experiment.
+          // with_bearer only when task.gqlBearer===true — slim HAR never sends
+          // Authorization, and Fly tip #47 proved ya29 does not clear AkamaiGHost.
           const fallbackOrder = apiSoftEntry
-            ? ["har_slim", "baseline", "pdp_visitor", "with_bearer"]
-            : ["seed_match", "har_slim", "pdp_visitor", "with_bearer"];
+            ? ["har_slim", "baseline", "pdp_visitor"]
+            : ["seed_match", "har_slim", "pdp_visitor"];
+          if (task.gqlBearer === true) fallbackOrder.push("with_bearer");
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
@@ -2209,10 +2225,11 @@ export const kmartAdapter = {
                 try {
                   const parsed = JSON.parse(bodyRaw);
                   const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
-                  if (tok) {
+                    if (tok) {
                     shoppingAgentToken = tok;
                     gqlProfiles.with_bearer = {
                       ...gqlProfiles.baseline,
+                      ...gqlCacheHeaders,
                       authorization: `Bearer ${tok}`,
                     };
                   }
@@ -2234,7 +2251,9 @@ export const kmartAdapter = {
               });
             }
             // Retry mriwd baseline first — post-sensor tip previously skipped it.
-            for (const name of ["baseline", "seed_match", "har_slim", "with_bearer"]) {
+            const postSensorOrder = ["baseline", "seed_match", "har_slim"];
+            if (task.gqlBearer === true) postSensorOrder.push("with_bearer");
+            for (const name of postSensorOrder) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
               if (hit) return hit;
             }
@@ -2246,12 +2265,19 @@ export const kmartAdapter = {
           } catch {
             denyIp = null;
           }
+          const sameExit = Boolean(denyIp && egressIp && denyIp === egressIp);
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: `get-token ok but every GraphQL header profile got Akamai Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${Boolean(denyIp && egressIp && denyIp === egressIp)} (if same=true this is exit reputation / api-host trust, not mid-run rotate)`,
+            note: `get-token 200 but every GraphQL header profile Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${sameExit}. Same-jar get-token vs GraphQL ⇒ /gateway/graphql request shape (not mid-run IP rotate). Profiles tried include mriwd cache-control/pragma.`,
           });
           gqlCartBlocked = true;
+          // Stash for early return after cart_get — do not burn cart_create/ATC.
+          ctx.__kmart_gql_deny = {
+            sameExit,
+            egressIp: egressIp ?? null,
+            denyIp,
+          };
           return {
             status: res.status,
             ok: false,
@@ -2282,11 +2308,29 @@ export const kmartAdapter = {
         country: "AU",
       });
       if (!cartId && gqlCartBlocked) {
+        const deny = ctx.__kmart_gql_deny ?? {};
         steps.push({
           step: "cart_create",
           ok: false,
           note: "skipped: GraphQL Access Denied on all header profiles (same session as successful get-token)",
         });
+        steps.push({
+          step: "cart_atc",
+          ok: false,
+          note: `skipped: cartId=null sku=${sku ?? "(none)"}`,
+        });
+        return {
+          ok: false,
+          steps,
+          failedStep: "gql_deny",
+          error:
+            "api.kmart.com.au/gateway/graphql Access Denied after green get-token on the same jar — GraphQL request shape still wrong (get-token is a softer path). Check cart_get profile notes; do not treat as proxy reputation.",
+          checkoutStage: "pre_cart",
+          finalUrl: pdpUrl,
+          cookies: ctx.jar.dump(),
+          trace: traceEnabled ? requestTrace : undefined,
+          dryRun: task.placeOrder !== true,
+        };
       } else if (!cartId) {
         await tStep("cart_create", async () => {
           const res = await gqlPost({
