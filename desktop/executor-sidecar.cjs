@@ -211,7 +211,7 @@ function status() {
 }
 
 function requestJson(method, urlPath, body, timeoutMs = 250_000) {
-  if (!port || !token) return Promise.reject(new Error("executor sidecar not running — click Start engine"));
+  if (!port || !token) return Promise.reject(new Error("executor sidecar not running"));
   const payload = body == null ? null : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -265,10 +265,28 @@ async function progress(taskId) {
   return json;
 }
 
+/** Lightweight proxy CONNECT + store GET (no fingerprint / direct probe). */
+async function diagnoseProxy({ proxy, targetUrl }) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/health/diagnose",
+    {
+      proxy: proxy || null,
+      targetUrl: targetUrl || "https://www.kmart.com.au/",
+      fingerprint: false,
+      proxyProbe: true,
+      directProbe: false,
+    },
+    60_000,
+  );
+  return { httpStatus, result: json };
+}
+
 module.exports = {
   startSidecar,
   stopSidecar,
   status,
   runTask,
   progress,
+  diagnoseProxy,
 };

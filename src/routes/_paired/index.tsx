@@ -29,11 +29,23 @@ import { runCheckout } from "@/lib/checkout.functions";
 import { enqueueCheckout, getCheckoutJob } from "@/lib/checkout-jobs.functions";
 import { pingBrowserless } from "@/lib/browserless-ping.functions";
 import { createRunnerPairingCode, getRunnerStatus, dispatchRunnerJob, pollRunnerJobResult, listRunnerRecentJobs, disconnectRunner, dispatchRunnerTestJob } from "@/lib/runner-dispatch.functions";
-import { checkProxyExit } from "@/lib/proxy-health.functions";
 import { shopifyFetchViaProxy } from "@/lib/shopify-fetch.functions";
 import { runCheckoutCompatTest, type CompatReport } from "@/lib/checkout-selftest.functions";
 
 import { classifyProxy } from "@/lib/proxy-format";
+import { probeProxyAgainstStore } from "@/lib/proxy-probe.functions";
+import { checkProxyExit } from "@/lib/proxy-health.functions";
+import {
+  DEFAULT_PROXY_PROBE_STORE_ID,
+  PROXY_PROBE_STORES,
+  getProxyProbeStore,
+} from "@/lib/proxy-probe-stores";
+import {
+  classifyBrowserlessHealth,
+  proxyProbeStatusLabel,
+  type ProxyProbeResult,
+  type ProxyProbeStatus,
+} from "@/lib/proxy-probe";
 import { TaskPoolCard } from "@/components/TaskPoolCard";
 import { KmartTaskPoolCard } from "@/components/KmartTaskPoolCard";
 import { pollExecutorProgress, runOnExecutor } from "@/lib/executor.functions";
@@ -3401,7 +3413,13 @@ function ProxiesView({
   );
 }
 
-type ProxyTestResult = { ok: boolean; ms: number; status?: number; err?: string; exitIp?: string | null; targetStatus?: number | null };
+function proxyProbeDotClass(status: ProxyProbeStatus | undefined, ok: boolean | undefined): string {
+  if (!status) return "bg-muted-foreground/40";
+  if (ok) return "bg-primary";
+  if (status === "timeout") return "bg-amber-500";
+  if (status === "auth" || status === "connect") return "bg-orange-500";
+  return "bg-destructive";
+}
 
 function ProxyGroupCard({
   group, onUpdate, onDelete,
@@ -3413,11 +3431,14 @@ function ProxyGroupCard({
   const text = group.proxies.join("\n");
   const [testing, setTesting] = useState(false);
   const [progress, setProgress] = useState<{ i: number; n: number } | null>(null);
-  const [results, setResults] = useState<Record<number, ProxyTestResult>>({});
-  const [targetUrl, setTargetUrl] = useState("");
+  const [results, setResults] = useState<Record<number, ProxyProbeResult>>({});
+  const [storeId, setStoreId] = useState(DEFAULT_PROXY_PROBE_STORE_ID);
+  const [customUrl, setCustomUrl] = useState("");
+  const [executorHint, setExecutorHint] = useState<string | null>(null);
+  const probeFn = useServerFn(probeProxyAgainstStore);
   const checkExit = useServerFn(checkProxyExit);
 
-
+  const probeStore = getProxyProbeStore(storeId);
   const classifications = group.proxies.map((p) => classifyProxy(p));
   const validCount = classifications.filter((c) => c.kind !== "invalid").length;
   const invalidCount = classifications.length - validCount;
@@ -3430,31 +3451,85 @@ function ProxyGroupCard({
   const testGroup = async () => {
     setTesting(true);
     setResults({});
+    setExecutorHint(null);
     const n = group.proxies.length;
-    for (let i = 0; i < n; i += 1) {
-      setProgress({ i: i + 1, n });
+    const concurrency = probeStore.mode === "browserless" ? 1 : 2;
+    const gapMs = probeStore.mode === "browserless" ? 1500 : 200;
+    let next = 0;
+    let done = 0;
+
+    const runOne = async (i: number) => {
       const entry = group.proxies[i];
       const c = classifications[i];
       if (c.kind === "invalid") {
-        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: c.reason ?? "invalid format" } }));
-        continue;
+        setResults((s) => ({
+          ...s,
+          [i]: {
+            ok: false,
+            status: "invalid",
+            latencyMs: 0,
+            exitIp: null,
+            targetStatus: null,
+            error: c.reason ?? "invalid format",
+            label: "INVALID",
+          },
+        }));
+        return;
       }
       try {
-        const normalizedTarget = targetUrl.trim() ? (normalizeStoreUrl(targetUrl) ?? undefined) : undefined;
-        const r = await checkExit({ data: { proxyUrl: entry, targetUrl: normalizedTarget } });
-        setResults((s) => ({ ...s, [i]: { ok: r.ok, ms: r.latencyMs, err: r.error ?? undefined, exitIp: r.exitIp, targetStatus: r.targetStatus ?? null } }));
-      } catch (e: any) {
-        setResults((s) => ({ ...s, [i]: { ok: false, ms: 0, err: e?.message ?? "server error" } }));
+        let r: ProxyProbeResult;
+        if (probeStore.mode === "browserless") {
+          const health = await checkExit({ data: { proxyUrl: entry } });
+          r = classifyBrowserlessHealth(health);
+        } else {
+          r = await probeFn({
+            data: {
+              proxyUrl: entry,
+              storeId,
+              customUrl: customUrl.trim() || null,
+            },
+          });
+        }
+        setResults((s) => ({ ...s, [i]: r }));
+        if (
+          r.status === "error" &&
+          r.error &&
+          /EXECUTOR_URL|EXECUTOR_TOKEN|not configured/i.test(r.error)
+        ) {
+          setExecutorHint(r.error);
+        }
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : "server error";
+        setResults((s) => ({
+          ...s,
+          [i]: {
+            ok: false,
+            status: "error",
+            latencyMs: 0,
+            exitIp: null,
+            targetStatus: null,
+            error: msg,
+            label: "ERROR",
+          },
+        }));
       }
-      // Serialise hard: Browserless free/low tiers cap concurrency at 1 and
-      // return 429 if the next /function call starts before the previous one
-      // finishes spinning down. 1500ms gap keeps us comfortably under.
-      if (i < n - 1) await sleep(1500);
-    }
+    };
+
+    const workers = Array.from({ length: Math.min(concurrency, n) }, async () => {
+      while (next < n) {
+        const i = next;
+        next += 1;
+        setProgress({ i: Math.min(done + 1, n), n });
+        await runOne(i);
+        done += 1;
+        setProgress({ i: done, n });
+        if (next < n && gapMs > 0) await sleep(gapMs);
+      }
+    });
+    await Promise.all(workers);
     setProgress(null);
     setTesting(false);
   };
-
 
   return (
     <Card className="p-3">
@@ -3479,28 +3554,52 @@ function ProxyGroupCard({
         placeholder={"One proxy per line. Any of these formats works:\nhost:port:user:pass\nuser:pass:host:port\nhost:port\nhttp://user:pass@host:port\nhttps://gateway.example.com/fetch?url={url}"}
         autoCapitalize="none" autoCorrect="off" spellCheck={false}
       />
-      <div className="mt-2">
-        <Label className="text-[10px] text-muted-foreground">Test against store (optional)</Label>
-        <Input
-          value={targetUrl}
-          onChange={(e) => setTargetUrl(e.target.value)}
-          className="mt-1 h-8 font-mono text-[11px]"
-          placeholder="https://culturekings.com.au"
-          autoCapitalize="none" autoCorrect="off" spellCheck={false}
-        />
+      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+        <div>
+          <Label className="text-[10px] text-muted-foreground">Test against store</Label>
+          <Select value={storeId} onValueChange={(v) => { setStoreId(v); setResults({}); setExecutorHint(null); }}>
+            <SelectTrigger className="mt-1 h-8 text-[11px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PROXY_PROBE_STORES.map((s) => (
+                <SelectItem key={s.id} value={s.id} className="text-[11px]">
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-[10px] text-muted-foreground">Custom probe URL (optional)</Label>
+          <Input
+            value={customUrl}
+            onChange={(e) => setCustomUrl(e.target.value)}
+            className="mt-1 h-8 font-mono text-[11px]"
+            placeholder={probeStore.probeUrl || "https://…"}
+            disabled={probeStore.mode === "browserless"}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false}
+          />
+        </div>
       </div>
+      {probeStore.notes && (
+        <p className="mt-1.5 text-[10px] text-muted-foreground">{probeStore.notes}</p>
+      )}
+      {executorHint && (
+        <p className="mt-1.5 text-[10px] text-destructive">{executorHint}</p>
+      )}
       <div className="mt-2 flex items-center justify-between gap-2">
         <p className="text-[10px] text-muted-foreground">
           {validCount} valid{invalidCount > 0 ? `, ${invalidCount} invalid` : ""}
+          {probeStore.mode === "executor" ? " · executor CONNECT" : " · Browserless egress"}
         </p>
         <Button size="sm" variant="secondary" className="h-8" disabled={group.proxies.length === 0 || testing} onClick={testGroup}>
           {testing ? (
             <><Loader2 className="h-3 w-3 animate-spin" /> {progress ? `Testing ${progress.i}/${progress.n}` : "Testing"}</>
           ) : (
-            <><Globe className="h-3 w-3" /> {targetUrl.trim() ? "Test on store" : "Test proxies"}</>
+            <><Globe className="h-3 w-3" /> Test proxies</>
           )}
         </Button>
-
       </div>
 
       {(invalidCount > 0 || Object.keys(results).length > 0) && (
@@ -3509,16 +3608,17 @@ function ProxyGroupCard({
             const r = results[i];
             const c = classifications[i];
             const invalid = c.kind === "invalid";
-            const dotColor = invalid
-              ? "bg-destructive"
-              : !r ? "bg-muted-foreground/40"
-              : r.ok ? "bg-primary" : "bg-destructive";
             return (
               <li key={i} className="flex items-center gap-2">
-                <span className={`h-2 w-2 rounded-full ${dotColor}`} />
-                <span className="flex-1 truncate font-mono text-muted-foreground">{p}</span>
-                {!invalid && (
-                  <Badge variant="outline" className="px-1 py-0 text-[9px] uppercase">{c.kind}</Badge>
+                <span className={`h-2 w-2 shrink-0 rounded-full ${proxyProbeDotClass(r?.status, r?.ok)}`} />
+                <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{p}</span>
+                {r && (
+                  <Badge
+                    variant="outline"
+                    className={`px-1 py-0 text-[9px] uppercase ${r.ok ? "border-primary/40 text-primary" : "border-destructive/40 text-destructive"}`}
+                  >
+                    {proxyProbeStatusLabel(r.status)}
+                  </Badge>
                 )}
                 {r?.exitIp && (
                   <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
@@ -3527,11 +3627,15 @@ function ProxyGroupCard({
                 )}
                 {typeof r?.targetStatus === "number" && r.targetStatus > 0 && (
                   <span className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${r.targetStatus < 400 ? "bg-primary/15 text-primary" : "bg-destructive/15 text-destructive"}`}>
-                    store {r.targetStatus}
+                    HTTP {r.targetStatus}
                   </span>
                 )}
-                <span className={invalid || (r && !r.ok) ? "text-destructive" : "text-primary"}>
-                  {invalid ? (c.reason ?? "invalid") : r ? (r.ok ? `${r.ms}ms` : (r.err ?? `HTTP ${r.status ?? "?"}`)) : "…"}
+                <span className={`shrink-0 ${invalid || (r && !r.ok) ? "text-destructive" : "text-primary"}`}>
+                  {invalid
+                    ? (c.reason ?? "invalid")
+                    : r
+                      ? (r.ok ? `${r.latencyMs}ms` : (r.error ?? r.label))
+                      : "…"}
                 </span>
               </li>
             );

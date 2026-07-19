@@ -129,6 +129,17 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         orderId: out.orderId ?? null,
         paymentStatus: out.paymentStatus ?? null,
+        error: out.error ?? null,
+        // Stock-probe early return (task.probeOnly) — never cart/checkout.
+        probeOnly: out.probeOnly === true,
+        inStock: out.inStock ?? null,
+        sku: out.sku ?? null,
+        title: out.title ?? null,
+        url: out.url ?? null,
+        price: out.price ?? null,
+        imageUrl: out.imageUrl ?? null,
+        blocked: out.blocked === true,
+        pdpStatus: out.pdpStatus ?? null,
       };
     } catch (e) {
       markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });

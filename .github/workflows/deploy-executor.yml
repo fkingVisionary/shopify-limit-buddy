@@ -80,6 +80,7 @@ jobs:
           if [ -n "$EXECUTOR_HTTP_TRANSPORT" ]; then
             transport_args=("EXECUTOR_HTTP_TRANSPORT=$EXECUTOR_HTTP_TRANSPORT")
           fi
+          # ISP fleet ships in executor/isp.proxies (image) — no Fly secret.
 
           flyctl secrets set \
             EXECUTOR_TOKEN="$EXECUTOR_TOKEN" \

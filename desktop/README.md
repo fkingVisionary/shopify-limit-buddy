@@ -1,6 +1,6 @@
-# J1m's Bot — Desktop (v1)
+# Vanta — Desktop (v1)
 
-Cyber-style local app: **must stay open** to run checkouts. Kmart full flow
+Local Electron app: **must stay open** to run checkouts. Kmart full flow
 (Akamai → cart → Paydock → 3DS → place order) runs on **this machine** via the
 existing `executor/` engine as a local sidecar — same checkout code as Fly.
 
@@ -27,15 +27,29 @@ npm start
 ┌─────────────────────────┐     localhost HTTP      ┌──────────────────────┐
 │  Electron UI            │ ─────────────────────▶  │  executor/ (sidecar) │
 │  profiles / proxies /    │     POST /run           │  kmart adapter       │
-│  tasks / job queue      │ ◀──── progress ──────── │  Hyper + Playwright  │
-└──────────┬──────────────┘                         └──────────────────────┘
-           │ optional
+│  private monitor /      │ ◀──── progress ──────── │  Hyper + Playwright  │
+│  global feed matcher    │                         └──────────────────────┘
+└──────────┬──────────────┘
+           │ optional SSE
            ▼
-┌─────────────────────────┐
-│  Control plane          │  validate-key (Whop-ready)
-│  (Railway dashboard)    │  hyper-provision (opt-in)
+┌─────────────────────────┐     optional
+│  executor /feed (Fly)   │ ◀── same j1ms-bot-executor app
+│  operator watchlist     │
+│  ISP poll → SSE         │
 └─────────────────────────┘
 ```
+
+### Monitor input (Cyber-style)
+
+Task creator accepts **keywords**, **PDP URL**, or **SKU**, plus source:
+
+- **Private** — poll Kmart on your proxies; auto-checkout when in stock
+- **Global** — match the in-house operator SSE feed (baked into the app; ISP fleet). Proxies are checkout egress only.
+- **Private** — poll Kmart on your proxies; auto-checkout when in stock
+
+Keyword syntax: `pokemon,etb,-plush` (AND / negatives), `a/b` for OR within a slot.
+
+Global feed is baked to `https://j1ms-bot-executor.fly.dev/feed` (monitor co-located on the executor). Local ops can override with `MONITOR_FEED_URL`. See [`../monitor/HOW-TO-RUN.md`](../monitor/HOW-TO-RUN.md).
 
 ## API key / Whop (not gated yet)
 

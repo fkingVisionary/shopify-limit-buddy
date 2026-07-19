@@ -6,9 +6,9 @@
 This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is the
 primary product: a TanStack Start + Vite + React 19 web app (the "control plane").
 Subdirectories `executor/` (Node/Fastify checkout engine), `runner/` (legacy
-Electron Shopify agent), and `desktop/` (Cyber-style local Kmart app) are
-**optional** auxiliary services. `supabase/` holds hosted DB
-migrations + one Deno edge function.
+Electron Shopify agent), `desktop/` (Cyber-style local Kmart app), and
+`monitor/` (operator Kmart stock feed) are **optional** auxiliary services.
+`supabase/` holds hosted DB migrations + one Deno edge function.
 
 ### Root web app (primary service)
 - Package manager is **Bun** (`bun.lock`, `bunfig.toml`); do not use npm/pnpm here.
@@ -31,16 +31,29 @@ migrations + one Deno edge function.
     These are pre-existing repo state, not a setup problem; `bun run format` would
     rewrite files, so don't run it unless intentionally reformatting.
 
-### Optional services (not required to run/test the web app)
+### Optional services
 - `executor/`: Node ≥20 Fastify service. Uses **npm** (`cd executor && npm install`,
   then `npm run dev`, listens on `PORT` 8080). Real Kmart checkouts require external
   secrets (`EXECUTOR_TOKEN`, `HYPER_API_KEY`, residential `PROXY_URL_RESI`); see
   `SETUP.md`. Not needed to boot the UI (server fns return a "not configured" message).
-- `runner/`: Electron **desktop GUI** app (`cd runner && npm install && npm run
-  install-browsers && npm start`). Requires a display; not practical to run headless.
-- `desktop/`: **J1m's Bot desktop v1** — local Kmart checkout with profiles/proxies/tasks
-  on disk, API-key license (Whop-ready, not gated), localhost proxies. Spawns
-  `executor/` as a sidecar so the Kmart flow stays identical to Fly.
-  (`cd desktop && npm run setup && npm start`). See `desktop/README.md`.
+  Desktop spawns it as a local sidecar automatically.
+- `desktop/` (**primary Electron app**, "Vanta"): local Kmart checkout UI. See
+  `desktop/README.md`.
+  - Install: `cd desktop && npm run setup` (Electron + `executor/` deps + Playwright Chromium).
+  - **Launch in Cloud Agent VMs** (sandbox must be off):
+    ```bash
+    cd desktop
+    DISPLAY=:1 ELECTRON_DISABLE_SANDBOX=1 ./node_modules/.bin/electron . --no-sandbox
+    ```
+    Plain `npm start` without `--no-sandbox` fails here. D-Bus/GPU log noise is expected
+    and harmless. Engine auto-start is deferred until an API key is saved in Settings
+    (`DESKTOP_AUTH_MODE=open` — any non-empty key works locally). Hyper key is BYO for
+    real checkouts.
+- `runner/` (legacy Electron Shopify agent): `cd runner && npm install && npm run
+  install-browsers`, then launch with the same `--no-sandbox` flags as desktop.
+  Pairing flow is in `runner/README.md`.
+- `monitor/`: **Operator Kmart monitor** — ISP poll + SSE `/feed` (detect only, never
+  checkout). Deploy on Fly `syd`. (`cd monitor && npm install && npm start`).
+  See `monitor/README.md`.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.
