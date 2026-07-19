@@ -203,7 +203,13 @@ Defaults in adapter (QLD postcode, store ids `1124` / `1241`, fixture identity).
 }
 ```
 
-Env on Fly: `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `PROXY_URL_RESI` (optional default), `KMART_CARD_*` (optional), `EXECUTOR_HTTP_TRANSPORT` (`undici` default; `tls` for experiments).
+Env on Fly: `EXECUTOR_TOKEN`, `HYPER_API_KEY`, `KMART_CARD_*` (optional), `EXECUTOR_HTTP_TRANSPORT` (`undici` default; `tls` for experiments).
+
+Proxies (prefer list over single secret — same shape as `ef84707` `isp.proxies`):
+- `executor/resi.proxies` (one `host:port:user:pass` per line; edit → redeploy)
+- or `PROXY_RESI_LIST` (multiline secret)
+- or `/run` body `proxy` / `proxies[]` / `proxyEntries[]`
+- `PROXY_URL_RESI` remains a legacy single-URL fallback only
 
 Lovable secrets: `EXECUTOR_URL`, `EXECUTOR_TOKEN`.
 

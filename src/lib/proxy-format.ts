@@ -47,13 +47,16 @@ function safeDecode(value: string): string {
  *  - `socks5://user:pass@host:port`
  */
 /**
- * Mint a fresh sticky-session token (Noontide `session-TOKEN`). ISP / static
- * proxies have no session- marker and are returned unchanged.
+ * Mint a fresh sticky-session token (Noontide `session-TOKEN`, IP Fist `-sid-`).
+ * Bare-IP ISP / static proxies are returned unchanged.
  */
 export function rotateStickyProxySession(proxyUrl: string | null | undefined): string | null {
   if (!proxyUrl) return proxyUrl ?? null;
-  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  if (/-sid-[A-Za-z0-9]+/i.test(proxyUrl)) {
+    return proxyUrl.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
+  }
+  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
   return proxyUrl.replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
 }
 

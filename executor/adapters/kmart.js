@@ -499,6 +499,16 @@ export const kmartAdapter = {
           ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy ?? "").length}`
           : "direct (no proxy on task — same as kmart-mriwd1up / 5:25 run)",
     });
+    const pin = task.proxyStickyPin;
+    if (pin && task.proxy) {
+      steps.push({
+        step: "proxy_sticky_pin",
+        ok: true,
+        note: pin.pinned
+          ? `pinned=1 reason=${pin.reason} sid=${pin.sessionId ?? "?"} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`
+          : `pinned=0 reason=${pin.reason} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`,
+      });
+    }
     if (proxyParseFailed) {
       return {
         ok: false,
@@ -1444,22 +1454,46 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    if (parseSbsd(pdpHtml)) {
+    //
+    // If first PDP already returned real product HTML, skip SBSD re-GET.
+    // SoftBlock on pdp_get#2 has been wiping good 200 HTML (and cart/sku).
+    // Restored from 203950c / PR #36.
+    const pdpHtmlAlreadyOk =
+      pdpStatus >= 200 &&
+      pdpStatus < 300 &&
+      pdpHtml.length > 50_000 &&
+      !/Access Denied|AkamaiGHost/i.test(pdpHtml);
+    if (parseSbsd(pdpHtml) && !pdpHtmlAlreadyOk) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
+      const htmlBefore = pdpHtml;
+      const statusBefore = pdpStatus;
       await tStep("pdp_get#2", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-        pdpStatus = res.status;
-        pdpHtml = await res.text();
+        const body = await res.text();
+        const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(body);
+        if (res.status >= 200 && res.status < 300 && !denied && body.length > 50_000) {
+          pdpStatus = res.status;
+          pdpHtml = body;
+        } else if (statusBefore >= 200 && statusBefore < 300 && htmlBefore.length > 50_000) {
+          steps.push({
+            step: "pdp_get#2:keep_prior",
+            ok: true,
+            note: `re-GET status=${res.status} denied=${denied} — kept prior ${statusBefore} HTML (${htmlBefore.length}b) abck=${marker(ctx.jar.get("_abck"))}`,
+          });
+        } else {
+          pdpStatus = res.status;
+          pdpHtml = body;
+        }
         const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
         const respHeaders = {
           server: res.headers.get("server"),
           "akamai-grn": res.headers.get("akamai-grn"),
           "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
         };
-        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
+        return { status: pdpStatus, ok: pdpStatus >= 200 && pdpStatus < 300, note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} | ${snippet}` };
       });
       // Residential often needs an extra dwell after bm_sv mints before WWW
       // HTML unlocks. ISP usually clears on #2 — this is a no-op then.
@@ -1541,6 +1575,12 @@ export const kmartAdapter = {
           };
         });
       }
+    } else if (parseSbsd(pdpHtml) && pdpHtmlAlreadyOk) {
+      steps.push({
+        step: "sbsd_pdp:skipped",
+        ok: true,
+        note: `PDP HTML already clear (${pdpHtml.length}b status=${pdpStatus}) — skip SBSD re-GET`,
+      });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
@@ -1720,7 +1760,8 @@ export const kmartAdapter = {
       },
     };
     // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
-    // keep baseline (proven mriwd1up order).
+    // keep baseline (proven mriwd1up / a1d9f9c / 7784fab order). Tip har_slim-first
+    // for sticky contradicted the cart_get 403 lesson — restored.
     let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
 
@@ -1741,6 +1782,31 @@ export const kmartAdapter = {
 
     if (wwwHtmlOk || apiSoftEntry) {
       {
+      // Hold check: rotating resi that drops the sticky pin mid-run will
+      // 403 every GraphQL profile after a green WWW solve. Fail loudly.
+      if (task.proxy && egressIp) {
+        let holdAbort = false;
+        await tStep("proxy_ip_hold", async () => {
+          const ipNow = await resolveEgressIp(ctx, { force: true });
+          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
+          holdAbort = Boolean(ipNow && !same);
+          return {
+            ok: !holdAbort,
+            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort ? " — proxy rotated mid-run; sticky pin failed or provider ignored session" : ""}`,
+          };
+        });
+        if (holdAbort) {
+          return {
+            ok: false,
+            steps,
+            failedStep: "proxy_ip_hold",
+            error: "proxy exit IP changed mid-checkout — use sticky session (-sid- / session-) residential",
+            checkoutStage: "pre_cart",
+            finalUrl: pdpUrl,
+            cookies: ctx.jar.dump(),
+          };
+        }
+      }
       // 7a. API-host bot-manager seed. Kmart's api.kmart.com.au does NOT
       //     run the full Akamai JS sensor; instead the browser hits
       //     POST /shopping-agent/v1/get-token which seeds `ak_bmsc` +
@@ -1764,8 +1830,9 @@ export const kmartAdapter = {
       })();
       // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
       // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path).
-      if (stickyProxy) {
+      // ISP keeps the warm agent (proven path). Restored from a1d9f9c default ON.
+      // Opt out with task.apiTunnelRefresh === false.
+      if (stickyProxy && task.apiTunnelRefresh !== false) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
@@ -1893,6 +1960,33 @@ export const kmartAdapter = {
         });
       }
 
+      // Second hold check AFTER get-token. Without a sticky session id, rotating
+      // gateways can hand a new exit on the next CONNECT even when two earlier
+      // ipify calls matched — verify_ip same=true is not enough for GraphQL.
+      if (task.proxy && egressIp) {
+        let holdAbort2 = false;
+        await tStep("proxy_ip_hold:pre_gql", async () => {
+          const ipNow = await resolveEgressIp(ctx, { force: true });
+          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
+          holdAbort2 = Boolean(ipNow && !same);
+          return {
+            ok: !holdAbort2,
+            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort2 ? " — exit changed after get-token (rotating CONNECT)" : ""}`,
+          };
+        });
+        if (holdAbort2) {
+          return {
+            ok: false,
+            steps,
+            failedStep: "proxy_ip_hold:pre_gql",
+            error: "proxy exit IP changed after get-token — sticky session required for GraphQL",
+            checkoutStage: "pre_cart",
+            finalUrl: pdpUrl,
+            cookies: ctx.jar.dump(),
+          };
+        }
+      }
+
 
 
 
@@ -1967,12 +2061,13 @@ export const kmartAdapter = {
               : null;
           };
 
-          // Soft-entry already started on seed_match — try home/HAR shapes next.
-          // ISP (baseline first): keep proven seed_match → har_slim → pdp_visitor.
+          // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
+          // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
           const fallbackOrder = apiSoftEntry
             ? ["har_slim", "baseline", "pdp_visitor"]
             : ["seed_match", "har_slim", "pdp_visitor"];
           for (const name of fallbackOrder) {
+            if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
             if (hit) return hit;
           }
@@ -2033,10 +2128,16 @@ export const kmartAdapter = {
             }
           }
 
+          let denyIp = null;
+          try {
+            denyIp = await resolveEgressIp(ctx, { force: true });
+          } catch {
+            denyIp = null;
+          }
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — check proxy egress / AU residential exit",
+            note: `get-token ok but every GraphQL header profile got Akamai Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${Boolean(denyIp && egressIp && denyIp === egressIp)} (if same=true this is exit reputation / api-host trust, not mid-run rotate)`,
           });
           gqlCartBlocked = true;
           return {

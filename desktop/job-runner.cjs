@@ -51,22 +51,31 @@ function normalizeProxy(raw) {
   return r.ok ? r.proxy : null;
 }
 
-/** Sticky residential session marker (Noontide / similar). ISP has none. */
+/** Sticky markers — keep in sync with executor/http.js isStickyProxyUrl. */
 function isStickyProxy(proxyUrl) {
-  return /session-[A-Za-z0-9]+|sessid=/i.test(String(proxyUrl || ""));
+  const s = String(proxyUrl || "");
+  if (/session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(s)) return true;
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`);
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname) && u.username) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 /**
- * Mint a fresh sticky-session token. ISP URLs are unchanged (no session-).
- * Burned Noontide exits keep the old token forever — each job needs a new one.
+ * Mint a fresh sticky-session token (Noontide session- / IP Fist -sid-).
+ * Bare-IP ISP URLs are unchanged.
  */
 function rotateStickyProxySession(proxyUrl, { force = false } = {}) {
   if (!proxyUrl) return proxyUrl;
   if (!force && process.env.DESKTOP_ROTATE_PROXY_SESSION !== "1") return proxyUrl;
-  // Noontide-style: ...-session-TOKEN-sessTime-N — only replace TOKEN.
-  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  return String(proxyUrl).replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+  const s = String(proxyUrl);
+  if (/-sid-[A-Za-z0-9]+/i.test(s)) return s.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
+  if (/session-[A-Za-z0-9]+/i.test(s)) return s.replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+  return proxyUrl;
 }
 
 function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession }) {

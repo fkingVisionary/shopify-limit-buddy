@@ -352,11 +352,13 @@ async function run(task, ctx) {
       );
     }
 
-    // Mint a fresh sticky session at the start of the Playwright lane so we
-    // don't reuse an exit IP burned by earlier undici/TLS attempts.
-    const baseProxy = rotateProxySession(proxy, 2, { rotate: Boolean(proxy?.username) });
-    if (baseProxy?.username && baseProxy.username !== proxy?.username) {
-      push("proxy_session_fresh", true, maskProxy(baseProxy, rawLen));
+    // Keep the caller's sticky session. Noontide (session-…-sessTime-N) rejects
+    // randomly minted session ids (CONNECT/SSL fail); only rotate on later
+    // edge-deny retries, and never invent a sid for sessTime- providers.
+    const baseProxy = proxy;
+    const sessTimePinned = /sessTime-\d+/i.test(String(proxy?.username || ""));
+    if (sessTimePinned) {
+      push("proxy_session_keep", true, `sessTime pin — ${maskProxy(baseProxy, rawLen)}`);
     }
 
     const browserVersion = browser.version();
@@ -378,10 +380,14 @@ async function run(task, ctx) {
     // (sensor_unsolved) — that IP already cleared the edge.
     for (let attempt = 1; attempt <= maxEdgeRetries; attempt++) {
       const attemptTag = `pw_attempt#${attempt}`;
-      const doRotate = attempt > 1 && lastFailureKind !== "sensor_unsolved";
+      // sessTime- providers: keep the same session across retries (sid invent fails).
+      const doRotate =
+        attempt > 1 && lastFailureKind !== "sensor_unsolved" && !sessTimePinned;
       const attemptProxy = rotateProxySession(baseProxy, attempt, { rotate: doRotate });
       if (doRotate && attemptProxy?.username && attemptProxy.username !== baseProxy?.username) {
         push(`${attemptTag}:proxy_rotate`, true, `reason=${lastFailureKind} ${maskProxy(attemptProxy, rawLen)}`);
+      } else if (attempt > 1 && sessTimePinned) {
+        push(`${attemptTag}:proxy_keep`, true, `reason=${lastFailureKind} sessTime pin — same session`);
       }
       s0 = now();
       const context = await browser.newContext({

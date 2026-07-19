@@ -145,9 +145,87 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
+/**
+ * Sticky residential markers in the proxy URL/username.
+ * - Noontide / many AU resi: `session-TOKEN`
+ * - IP Fist premium: `-sid-TOKEN` (+ optional `-f-country-xx` / `-l-MINS`)
+ * - Generic: `sessid=` / `sessionid=`
+ * - Dedicated ISP: hostname is a bare IPv4 (exit is the host itself)
+ */
 function isStickyProxyUrl(proxyUrl) {
-  return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
+  const s = String(proxyUrl || "");
+  if (/session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(s)) return true;
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`);
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname) && u.username) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+function newStickySessionId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Pin a rotating gateway residential proxy to one exit for the whole checkout.
+ * Without this, providers like IP Fist rotate mid-run → `_abck` invalid →
+ * api.kmart.com.au GraphQL Access Denied after a green WWW solve.
+ *
+ * - Already-sticky URLs unchanged.
+ * - Bare-IP ISP hosts unchanged (credentials must not be mutated).
+ * - IP Fist → append `-f-country-au-sid-{id}-l-30` (or refresh existing `-sid-`).
+ * - Other gateways → append `-session-{id}` to the username.
+ *
+ * @returns {{ proxy: string|null, pinned: boolean, reason: string, sessionId: string|null }}
+ */
+export function ensureStickyProxySession(rawProxy) {
+  if (rawProxy == null || String(rawProxy).trim() === "") {
+    return { proxy: null, pinned: false, reason: "none", sessionId: null };
+  }
+  const parsed = parseProxy(rawProxy);
+  if (!parsed) {
+    return { proxy: String(rawProxy), pinned: false, reason: "unparsed", sessionId: null };
+  }
+  let u;
+  try {
+    u = new URL(parsed);
+  } catch {
+    return { proxy: parsed, pinned: false, reason: "bad_url", sessionId: null };
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname)) {
+    return { proxy: parsed, pinned: false, reason: "static_ip_host", sessionId: null };
+  }
+  if (!u.username) {
+    return { proxy: parsed, pinned: false, reason: "no_user", sessionId: null };
+  }
+
+  let user = decodeURIComponent(u.username);
+  const host = u.hostname.toLowerCase();
+  const stamp = newStickySessionId();
+  const isIpfist = /ipfist|premium-proxy/i.test(host);
+
+  if (isIpfist) {
+    if (/-sid-[A-Za-z0-9]+/i.test(user)) {
+      user = user.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
+    } else {
+      if (!/-f-country-/i.test(user)) user = `${user}-f-country-au`;
+      user = `${user}-sid-${stamp}`;
+      if (!/-l-\d+/i.test(user)) user = `${user}-l-30`;
+    }
+  } else if (/session-[A-Za-z0-9]+/i.test(user) || /session-[A-Za-z0-9]+/i.test(parsed)) {
+    // Already sticky (password/query) — leave alone.
+    return { proxy: parsed, pinned: false, reason: "already_sticky", sessionId: null };
+  } else if (/-sid-[A-Za-z0-9]+/i.test(user)) {
+    user = user.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
+  } else {
+    user = `${user}-session-${stamp}`;
+  }
+
+  // URL.username setter handles encoding.
+  u.username = user;
+  return { proxy: u.toString(), pinned: true, reason: isIpfist ? "ipfist_sid" : "session_pin", sessionId: stamp };
 }
 
 class Dispatcher {
