@@ -112,26 +112,22 @@ Bare-IP ISP list (ef84707 shape) must **not** be classified sticky:
 
 Live on `45.42.47.161` before fix: PDP 200 + get-token 200 + IP hold same=true → all GraphQL profiles Access Denied after `api_tunnel_refresh`.
 
-## GraphQL wall on static ISP (19 Jul tip `#47` / `38a0794`)
+## GraphQL deny after green get-token (request shape, not proxy blame)
 
-After sticky classification fix (#43), sensor refresh (#46), and api cookie scope + Bearer (#47):
+get-token 200 + `/gateway/graphql` AkamaiGHost 403 on the **same jar/IP** means
+Akamai scores the GraphQL request differently — not “bad exit.” Tip `#47`
+confirmed `__cf_bm` omit + ya29 Bearer do not clear GraphQL; both paths already
+shared the soft shopping-agent seed.
 
-| Check | Result |
-|---|---|
-| Fly tip | `38a0794`, `proxyPoolSize:19` |
-| WWW PDP + `_abck~0~` via ISP | ✅ |
-| `api_get_token` 200 + `bm_sv` | ✅ |
-| `omitCf=[__cf_bm]` on api Cookie | ✅ (live note) |
-| GraphQL profiles (baseline / seed_match / har_slim / pdp_visitor / with_bearer) | ❌ AkamaiGHost 403 |
-| Post-sensor reseed + retry | ❌ still 403 |
-| IP hold `same=` | **true** on 5/5 ISP exits swept |
-| Slim HAR Authorization / ya29 | **never sent** on GraphQL |
-| Historical cart_get 200 artifact | **direct** undici (`explicitProxy=false`), not ISP |
+### Bug: `6d0d21a` stripped GraphQL cache headers
 
-**Verdict:** HTTP request-shape and www→api `__cf_bm` overshare are exhausted. Remaining wall is **api-host trust / exit reputation on `/gateway/graphql`** for these static ISP exits (get-token policy is softer than GraphQL). Do **not** invent more header profiles that contradict mriwd / `6d0d21a`.
+| Source | `/shopping-agent/v1/get-token` | `/gateway/graphql` |
+|---|---|---|
+| slim HAR | no `cache-control` / `pragma` | **`cache-control: no-cache` + `pragma: no-cache`** |
+| mriwd1up / `7784fab` / `0186ac8` | n/a | **same cache headers** + PDP + visitor + apollo |
+| tip after `6d0d21a` | correctly omits | **incorrectly omits** (comment called them hard-reload-only) |
 
-**Remaining unlock paths (not more undici header churn):**
-
-1. Sticky AU residential with provider session pin (Noontide-style) that historically cleared GraphQL.
-2. Opt-in Playwright → HTTP handoff (`kmartMode: "playwright"`) — research only; never auto-escalate.
-3. Fresh exits / provider reputation — not adapter code.
+Browser delta after seed: drop `x-visitor-id`, **add** cache headers on GraphQL.
+Post-`6d0d21a` tip did the inverse on GraphQL (kept/added visitor+apollo, never
+added cache headers). Restore cache headers on **GraphQL profiles only**; keep
+get-token without them.
