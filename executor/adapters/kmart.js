@@ -1829,11 +1829,13 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
-      // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path). Restored from a1d9f9c default ON.
-      // Opt out with task.apiTunnelRefresh === false.
-      if (stickyProxy && task.apiTunnelRefresh !== false) {
+      // Sticky resi only: drop mid-run CONNECT/TCP state before api.* so GraphQL
+      // does not reuse a WWW tunnel Akamai already scored (a1d9f9c). Static ISP
+      // (bare IPv4) must KEEP the warm ProxyAgent — live Fly: ISP clear WWW +
+      // get-token then GraphQL Access Denied after a mistaken tunnel refresh.
+      // Opt out sticky refresh with task.apiTunnelRefresh === false.
+      const staticIsp = task.proxyStickyPin?.reason === "static_ip_host";
+      if (stickyProxy && !staticIsp && task.apiTunnelRefresh !== false) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
