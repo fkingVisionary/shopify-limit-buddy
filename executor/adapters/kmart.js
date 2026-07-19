@@ -1928,6 +1928,33 @@ export const kmartAdapter = {
         });
       }
 
+      // Second hold check AFTER get-token. Without a sticky session id, rotating
+      // gateways can hand a new exit on the next CONNECT even when two earlier
+      // ipify calls matched — verify_ip same=true is not enough for GraphQL.
+      if (task.proxy && egressIp) {
+        let holdAbort2 = false;
+        await tStep("proxy_ip_hold:pre_gql", async () => {
+          const ipNow = await resolveEgressIp(ctx, { force: true });
+          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
+          holdAbort2 = Boolean(ipNow && !same);
+          return {
+            ok: !holdAbort2,
+            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort2 ? " — exit changed after get-token (rotating CONNECT)" : ""}`,
+          };
+        });
+        if (holdAbort2) {
+          return {
+            ok: false,
+            steps,
+            failedStep: "proxy_ip_hold:pre_gql",
+            error: "proxy exit IP changed after get-token — sticky session required for GraphQL",
+            checkoutStage: "pre_cart",
+            finalUrl: pdpUrl,
+            cookies: ctx.jar.dump(),
+          };
+        }
+      }
+
 
 
 
@@ -2068,10 +2095,16 @@ export const kmartAdapter = {
             }
           }
 
+          let denyIp = null;
+          try {
+            denyIp = await resolveEgressIp(ctx, { force: true });
+          } catch {
+            denyIp = null;
+          }
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — check proxy egress / AU residential exit",
+            note: `get-token ok but every GraphQL header profile got Akamai Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${Boolean(denyIp && egressIp && denyIp === egressIp)} (if same=true this is exit reputation / api-host trust, not mid-run rotate)`,
           });
           gqlCartBlocked = true;
           return {
