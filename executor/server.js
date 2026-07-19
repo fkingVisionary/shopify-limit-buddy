@@ -210,6 +210,31 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
+  // Match diagnose/recon: explicit proxy wins; else useProxy → PROXY_URL_RESI.
+  // Desktop/Lovable usually pass proxy strings; phone curls often only set useProxy.
+  const resolvedProxy =
+    (typeof task.proxy === "string" && task.proxy.trim() ? task.proxy.trim() : null) ??
+    (task.useProxy === true ? process.env.PROXY_URL_RESI ?? null : null);
+  // Optional Fly/GitHub secrets for card when body omits it (phone dry-runs).
+  if (!card) {
+    const number = process.env.KMART_CARD_NUMBER;
+    const cvv = process.env.KMART_CARD_CVV;
+    const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
+    const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
+    const holder = process.env.KMART_CARD_HOLDER;
+    if (number && cvv && expMonth && expYear) {
+      const num = String(number).replace(/\s+/g, "");
+      if (num.length >= 12 && num.length <= 19 && /^\d+$/.test(num)) {
+        card = {
+          number: num,
+          cvv: String(cvv),
+          expMonth: String(expMonth).padStart(2, "0").slice(-2),
+          expYear: String(expYear).slice(-2),
+          holder: typeof holder === "string" ? holder.slice(0, 100) : "",
+        };
+      }
+    }
+  }
   inflight++;
   try {
     const result = await runCheckout({
@@ -219,7 +244,7 @@ app.post("/run", async (req, reply) => {
       qty: Number(task.qty ?? 1),
       profile: task.profile ?? null,
       card,
-      proxy: task.proxy ?? null,
+      proxy: resolvedProxy,
       dryRun: task.dryRun !== false,
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
