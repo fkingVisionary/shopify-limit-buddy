@@ -5,7 +5,7 @@
 // to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
 // checkout page) so existing Shopify recon flows keep working.
 
-import { makeDispatcher, createJar, request } from "./http.js";
+import { makeDispatcher, createJar, request, ensureStickyProxySession } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
@@ -67,8 +67,14 @@ export async function runCheckout(task) {
   // (node-tls-client native crash) whenever the UI sent transport=tls with a
   // proxy. Undici is what cleared WWW Akamai through cart_create on recent runs.
   const forceTls = task.forceTls === true || requestedTransport === "tls";
-  const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
+  // Rotating gateway resi (e.g. IP Fist without -sid-) must be pinned per task
+  // or the exit IP changes after WWW solve and api GraphQL 403s.
+  const stickyPin = ensureStickyProxySession(task.proxy);
+  const proxyForTask = stickyPin.proxy;
+  const dispatcher = makeDispatcher(proxyForTask, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
+  // Adapter logs + sticky detection see the pinned URL.
+  task = { ...task, proxy: proxyForTask, proxyStickyPin: stickyPin };
 
   if (dispatcher.proxyParseFailed) {
     markTaskDone(task.taskId, { ok: false, detail: "proxy_parse" });

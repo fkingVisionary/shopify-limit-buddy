@@ -499,6 +499,16 @@ export const kmartAdapter = {
           ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy ?? "").length}`
           : "direct (no proxy on task — same as kmart-mriwd1up / 5:25 run)",
     });
+    const pin = task.proxyStickyPin;
+    if (pin && task.proxy) {
+      steps.push({
+        step: "proxy_sticky_pin",
+        ok: true,
+        note: pin.pinned
+          ? `pinned=1 reason=${pin.reason} sid=${pin.sessionId ?? "?"} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`
+          : `pinned=0 reason=${pin.reason} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`,
+      });
+    }
     if (proxyParseFailed) {
       return {
         ok: false,
@@ -1741,6 +1751,31 @@ export const kmartAdapter = {
 
     if (wwwHtmlOk || apiSoftEntry) {
       {
+      // Hold check: rotating resi that drops the sticky pin mid-run will
+      // 403 every GraphQL profile after a green WWW solve. Fail loudly.
+      if (task.proxy && egressIp) {
+        let holdAbort = false;
+        await tStep("proxy_ip_hold", async () => {
+          const ipNow = await resolveEgressIp(ctx, { force: true });
+          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
+          holdAbort = Boolean(ipNow && !same);
+          return {
+            ok: !holdAbort,
+            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort ? " — proxy rotated mid-run; sticky pin failed or provider ignored session" : ""}`,
+          };
+        });
+        if (holdAbort) {
+          return {
+            ok: false,
+            steps,
+            failedStep: "proxy_ip_hold",
+            error: "proxy exit IP changed mid-checkout — use sticky session (-sid- / session-) residential",
+            checkoutStage: "pre_cart",
+            finalUrl: pdpUrl,
+            cookies: ctx.jar.dump(),
+          };
+        }
+      }
       // 7a. API-host bot-manager seed. Kmart's api.kmart.com.au does NOT
       //     run the full Akamai JS sensor; instead the browser hits
       //     POST /shopping-agent/v1/get-token which seeds `ak_bmsc` +
