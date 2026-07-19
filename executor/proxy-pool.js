@@ -41,17 +41,13 @@ function readProxyFile(filePath) {
 
 /**
  * Load baked / env residential entries (not per-request body).
- * Order: PROXY_RESI_LIST → PROXY_URL_RESI (single) → resi.proxies file candidates.
+ * Order: PROXY_RESI_LIST → resi.proxies file → PROXY_URL_RESI (legacy single).
+ * File must win over a lone PROXY_URL_RESI secret — Fly still had that secret
+ * after PR #42/#43, so proxyPoolSize stayed 1 and never loaded the 19 ISP lines.
  */
 export function loadResiEntries() {
   const fromListEnv = parseProxyList(process.env.PROXY_RESI_LIST || "");
   if (fromListEnv.length) return fromListEnv;
-
-  const single = String(process.env.PROXY_URL_RESI || "").trim();
-  if (single) {
-    const one = parseProxyList(single);
-    if (one.length) return one;
-  }
 
   const candidates = [
     process.env.PROXY_RESI_FILE,
@@ -62,6 +58,12 @@ export function loadResiEntries() {
   for (const file of candidates) {
     const list = readProxyFile(file);
     if (list.length) return list;
+  }
+
+  const single = String(process.env.PROXY_URL_RESI || "").trim();
+  if (single) {
+    const one = parseProxyList(single);
+    if (one.length) return one;
   }
   return [];
 }
@@ -101,11 +103,13 @@ export function pickResiProxy(overrideEntries = null) {
   }
   const index = rrIndex % cachedEntries.length;
   rrIndex += 1;
-  const source = process.env.PROXY_RESI_LIST
-    ? "env:PROXY_RESI_LIST"
-    : process.env.PROXY_URL_RESI
-      ? "env:PROXY_URL_RESI"
-      : "file:resi.proxies";
+  let source = "file:resi.proxies";
+  if (process.env.PROXY_RESI_LIST) source = "env:PROXY_RESI_LIST";
+  else if (cachedEntries.length === 1 && process.env.PROXY_URL_RESI && !readProxyFile(path.join(__dirname, "resi.proxies")).length) {
+    source = "env:PROXY_URL_RESI";
+  } else if (cachedEntries.length > 1) {
+    source = "file:resi.proxies";
+  }
   return { proxy: cachedEntries[index], source, index, poolSize: cachedEntries.length };
 }
 
