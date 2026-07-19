@@ -2088,13 +2088,15 @@ export const kmartAdapter = {
             if (hit) return hit;
           }
 
-          // Sticky only: refresh WWW sensor (same as cart_atc recovery) then
-          // retry the lightest GraphQL shapes once. ISP never enters this.
-          if (stickyProxy && scriptPath && scriptBody) {
+          // ATC-era recovery (9eadb32 / PR #16): on Access Denied, refresh WWW
+          // sensor then retry GraphQL. Was sticky-only — static ISP never entered
+          // and stopped at all_profiles_denied after green get-token. Apply to
+          // any proxied run with a sensor script (ISP + sticky resi).
+          if (task.proxy && scriptPath && scriptBody) {
             steps.push({
-              step: "cart_get:sticky_sensor_refresh",
+              step: "cart_get:sensor_refresh",
               ok: true,
-              note: "all GraphQL profiles denied — refreshing WWW _abck then retrying seed_match/har_slim",
+              note: `all GraphQL profiles denied — refreshing WWW _abck then retrying baseline/seed_match/har_slim${stickyProxy ? " sticky=1" : " isp=1"}`,
             });
             const wwwScriptUrl = origin + scriptPath;
             let sensorCtx = prevContext;
@@ -2137,8 +2139,48 @@ export const kmartAdapter = {
                 break;
               }
             }
+            // Human pause (same class as cart_atc:denied dwell).
             await sleep(700, 1600);
-            for (const name of ["seed_match", "har_slim"]) {
+            // Re-seed api.* Bot Manager after WWW sensor — get-token ran before
+            // the refresh; browser would hit shopping-agent again on the warm jar.
+            try {
+              const reseedId = (() => {
+                const bytes = new Uint8Array(32);
+                globalThis.crypto.getRandomValues(bytes);
+                return Buffer.from(bytes).toString("base64url");
+              })();
+              await tStep("api_get_token:post_sensor", async () => {
+                const res = await tracedRequest(
+                  "seed_post_sensor",
+                  apiOrigin + "/shopping-agent/v1/get-token",
+                  {
+                    method: "POST",
+                    headers: {
+                      ...apiXhrBase(apiDocReferer),
+                      "x-visitor-id": apiVisitorId,
+                      ...nrHeaders("1834777981"),
+                    },
+                    body: JSON.stringify({ sessionId: reseedId }),
+                  },
+                  { requestBody: { sessionId: reseedId } },
+                );
+                const bodyTxt = (await res.text().catch(() => "")).slice(0, 160);
+                return {
+                  status: res.status,
+                  ok: res.status < 400,
+                  note: `reseed setCookies=[${cookieNamesFromResponse(res).join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} body=${bodyTxt}`,
+                };
+              });
+              await sleep(400, 900);
+            } catch (e) {
+              steps.push({
+                step: "api_get_token:post_sensor:error",
+                ok: false,
+                note: e?.message ?? String(e),
+              });
+            }
+            // Retry mriwd baseline first — post-sensor tip previously skipped it.
+            for (const name of ["baseline", "seed_match", "har_slim"]) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
               if (hit) return hit;
             }
