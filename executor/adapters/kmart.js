@@ -83,11 +83,9 @@ const CHROME_CH = {
   "sec-ch-ua-platform": '"macOS"',
   "sec-ch-ua-platform-version": '"14.6.1"',
 };
-// CORS XHRs to api.kmart.com.au (get-token / GraphQL) only emit the low-entropy
-// Client Hints trio in real Chrome (slim HAR). High-entropy hints are for
-// document navigations after Accept-CH — stuffing them onto every GraphQL call
-// is a bot tell and correlates with api GraphQL Access Denied while get-token
-// (same host, lighter BM) still returns 200.
+// get-token (shopping-agent) matches slim HAR with the low-entropy Client Hints
+// trio. GraphQL cart success on undici was mriwd1up / 7784fab with FULL
+// CHROME_CH — do not force CHROME_CH_XHR onto GraphQL (6d0d21a over-corrected).
 const CHROME_CH_XHR = {
   "sec-ch-ua": CHROME_CH["sec-ch-ua"],
   "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
@@ -1746,10 +1744,17 @@ export const kmartAdapter = {
     // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
     // on the same jar/IP — request shape on /gateway/graphql is the lever.
     // ISP: baseline (PDP) first. Sticky soft-entry: seed_match / home referer.
+    //
+    // mriwd1up / 7784fab cleared cart_get with FULL CHROME_CH (high-entropy) on
+    // GraphQL — not the low-entropy XHR trio. 6d0d21a swapped api XHRs to
+    // CHROME_CH_XHR citing slim HAR; that matches real Chrome TLS, but undici
+    // cart success was the high-entropy mriwd shape. Keep get-token on
+    // CHROME_CH_XHR (already 200); restore CHROME_CH on GraphQL only.
     const gqlProfiles = {
-      // mriwd1up proven cart_get: PDP + visitor + apollo + country + cache headers
+      // mriwd1up proven cart_get: full CH + PDP + visitor + apollo + country + cache
       baseline: {
         ...apiXhrBase(apiDocReferer),
+        ...CHROME_CH,
         ...gqlCacheHeaders,
         "x-country-code": "AU",
         "x-visitor-id": apiVisitorId,
@@ -1762,14 +1767,15 @@ export const kmartAdapter = {
         ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
       },
-      // Slim HAR getMyActiveCart: homepage referer, cache headers, no visitor/apollo.
+      // Slim HAR getMyActiveCart: homepage referer, cache headers, low-entropy CH.
       har_slim: {
         ...apiXhrBase(homeReferer),
         ...gqlCacheHeaders,
       },
-      // PDP/home + visitor without apollo client stamps.
+      // mriwd CH + PDP visitor without apollo (between baseline and seed_match).
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
+        ...CHROME_CH,
         ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
@@ -2063,6 +2069,8 @@ export const kmartAdapter = {
           headerKeys: Object.keys(gqlHeaders).filter((k) => k !== "authorization"),
           referer: gqlHeaders.referer,
           visitor: gqlHeaders["x-visitor-id"] ?? null,
+          fullCh: Boolean(gqlHeaders["sec-ch-ua-full-version"]),
+          cacheControl: gqlHeaders["cache-control"] ?? null,
           bearer: Boolean(gqlHeaders.authorization || shoppingAgentToken),
           cookieNames: cookieHeaderForUrl(ctx.jar, gqlUrl)
             .split(";")
@@ -2073,12 +2081,149 @@ export const kmartAdapter = {
           bmsz: marker(ctx.jar.get("bm_sz")),
         }),
       });
+      // Slim HAR getMyActiveCart body (fragments included). Tip used a ~220b
+      // stub; browser posts ~2.4kb with PostcodeSelectorBagFields. Keep the
+      // stub available via task.gqlCartQuery="minimal" if the rich query 400s.
+      const GET_ACTIVE_CART_MINIMAL =
+        "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }";
+      const GET_ACTIVE_CART_HAR = `query getMyActiveCart {
+  me {
+    activeCart {
+      ...PostcodeSelectorBagFields
+      totalPrice {
+        centAmount
+        __typename
+      }
+      shippingInfo {
+        shippingRate {
+          price {
+            centAmount
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      shippingDiscount {
+        AmountSavedInCents
+        SavingApplied
+        FreeShippingThreshold
+        DeliveryRegion
+        ExpressDeliveryCost
+        StandardDeliveryCost
+        ZoneConfigRegion
+        __typename
+      }
+      lineItems {
+        id
+        name(locale: "en")
+        quantity
+        totalPrice {
+          centAmount
+          __typename
+        }
+        custom {
+          fields {
+            availability
+            fulfillmentPlatform
+            lineFulfilmentMethod
+            lineShippingPriceCents
+            offerId
+            onePassEligible
+            sellerId
+            sellerName
+            tempLogisticOrderId
+            __typename
+          }
+          __typename
+        }
+        variant {
+          sku
+          imageKey
+          bynderImageKey
+          attributes {
+            name
+            value
+            __typename
+          }
+          __typename
+        }
+        __typename
+      }
+      customLineItems {
+        custom {
+          fields {
+            lineFulfilmentMethod
+            sellerId
+            sellerName
+            tempLogisticOrderId
+            earliestDeliveryDate
+            latestDeliveryDate
+            __typename
+          }
+          __typename
+        }
+        id
+        name {
+          en
+          __typename
+        }
+        slug
+        totalPrice {
+          centAmount
+          __typename
+        }
+        __typename
+      }
+      lastModifiedAt
+      __typename
+    }
+    __typename
+  }
+}
+
+fragment PostcodeSelectorBagFields on Cart {
+  id
+  version
+  customerId
+  fulfillmentMethod
+  postcodeSelector {
+    postalCode
+    state
+    city
+    country
+    __typename
+  }
+  shippingAddress {
+    firstName
+    lastName
+    email
+    phone
+    streetName
+    city
+    state
+    country
+    postalCode
+    company
+    deliveryInstructions
+    isAuthorisedToLeave
+    additionalAddressInfo
+    region
+    __typename
+  }
+  __typename
+}
+`;
       const GET_ACTIVE_CART = {
         operationName: "getMyActiveCart",
         variables: {},
-        query:
-          "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
+        query: task.gqlCartQuery === "minimal" ? GET_ACTIVE_CART_MINIMAL : GET_ACTIVE_CART_HAR,
       };
+      steps.push({
+        step: "cart_get:query",
+        ok: true,
+        note: `bytes=${GET_ACTIVE_CART.query.length} shape=${task.gqlCartQuery === "minimal" ? "minimal" : "har_fragments"}`,
+      });
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
         let txt = await res.text();
