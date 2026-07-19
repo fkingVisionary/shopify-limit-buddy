@@ -1729,10 +1729,50 @@ export const kmartAdapter = {
         "x-country-code": "AU",
       },
     };
-    // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
-    // keep baseline (proven mriwd1up order).
-    let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
+    // Soft API: seed_match first. Sticky resi with clear WWW: start har_slim
+    // (homepage referer, no apollo) — matches slim HAR getMyActiveCart, not PDP
+    // baseline. ISP / direct keep mriwd1up baseline.
+    let activeGqlProfile = apiSoftEntry
+      ? "seed_match"
+      : stickyProxy && wwwHtmlOk
+        ? "har_slim"
+        : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
+
+    // Browser CORS preflight before api.* POSTs (HAR always OPTIONS first).
+    // Sticky residential GraphQL is pickier than get-token; omit on ISP/direct.
+    const corsPreflight = async (url, requestHeaders, traceKey) => {
+      if (!stickyProxy) return;
+      const acrh = Object.keys(requestHeaders)
+        .filter((k) => !/^(cookie|user-agent|accept|accept-language|accept-encoding|content-length|host|connection)$/i.test(k))
+        .join(",");
+      await tStep(traceKey, async () => {
+        const res = await request(
+          url,
+          {
+            method: "OPTIONS",
+            headers: {
+              "user-agent": UA,
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              origin,
+              referer: requestHeaders.referer || homeReferer,
+              "access-control-request-method": "POST",
+              ...(acrh ? { "access-control-request-headers": acrh.toLowerCase() } : {}),
+              "sec-fetch-site": "same-site",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-dest": "empty",
+            },
+          },
+          ctx,
+        );
+        return {
+          status: res.status,
+          ok: res.status > 0 && res.status < 500,
+          note: `preflight status=${res.status}`,
+        };
+      });
+    };
 
     const gqlPost = async (body, traceKey = body?.operationName ?? "graphql", headerOverrides = null) =>
       tracedRequest(
@@ -1797,10 +1837,10 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
-      // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path).
-      if (stickyProxy) {
+      // Optional tunnel refresh (task.apiTunnelRefresh=true). Default OFF —
+      // keeping the warm sticky ProxyAgent helps Hyper-solved WWW _abck carry
+      // into api.* on Noontide; forced reset correlated with GraphQL denials.
+      if (stickyProxy && task.apiTunnelRefresh === true) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
@@ -1809,16 +1849,19 @@ export const kmartAdapter = {
         steps.push({
           step: "api_tunnel_refresh",
           ok: true,
-          note: "sticky ProxyAgent reset before get-token (session exit unchanged)",
+          note: "sticky ProxyAgent reset before get-token (explicit apiTunnelRefresh)",
         });
       }
       let apiSeedOk = false;
+      // Slim HAR: get-token referer is homepage, not PDP.
+      const tokenReferer = stickyProxy ? homeReferer : apiDocReferer;
+      const getTokenHeaders = {
+        ...apiXhrBase(tokenReferer),
+        "x-visitor-id": apiVisitorId,
+        ...nrHeaders("1834777981"),
+      };
+      await corsPreflight(apiOrigin + "/shopping-agent/v1/get-token", getTokenHeaders, "api_get_token:preflight");
       await tStep("api_get_token", async () => {
-        const getTokenHeaders = {
-          ...apiXhrBase(apiDocReferer),
-          "x-visitor-id": apiVisitorId,
-          ...nrHeaders("1834777981"),
-        };
         const res = await tracedRequest(
           "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -1987,6 +2030,7 @@ export const kmartAdapter = {
         query:
           "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
       };
+      await corsPreflight(gqlUrl, { ...gqlHeaders, ...nrHeaders() }, "cart_get:preflight");
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
         let txt = await res.text();
@@ -2029,12 +2073,15 @@ export const kmartAdapter = {
               : null;
           };
 
-          // Soft-entry already started on seed_match — try home/HAR shapes next.
+          // Soft-entry / sticky started on har_slim or seed_match — try remaining.
           // ISP (baseline first): keep proven seed_match → har_slim → pdp_visitor.
           const fallbackOrder = apiSoftEntry
             ? ["har_slim", "baseline", "pdp_visitor"]
-            : ["seed_match", "har_slim", "pdp_visitor"];
+            : stickyProxy && wwwHtmlOk
+              ? ["seed_match", "baseline", "pdp_visitor"]
+              : ["seed_match", "har_slim", "pdp_visitor"];
           for (const name of fallbackOrder) {
+            if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
             if (hit) return hit;
           }
