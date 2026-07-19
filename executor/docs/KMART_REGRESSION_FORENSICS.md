@@ -111,3 +111,27 @@ Bare-IP ISP list (ef84707 shape) must **not** be classified sticky:
 | Soft-API if PDP 403 | gated on sticky only | **d60eeee**: any proxy with abck+bm_sv+sku |
 
 Live on `45.42.47.161` before fix: PDP 200 + get-token 200 + IP hold same=true → all GraphQL profiles Access Denied after `api_tunnel_refresh`.
+
+## GraphQL wall on static ISP (19 Jul tip `#47` / `38a0794`)
+
+After sticky classification fix (#43), sensor refresh (#46), and api cookie scope + Bearer (#47):
+
+| Check | Result |
+|---|---|
+| Fly tip | `38a0794`, `proxyPoolSize:19` |
+| WWW PDP + `_abck~0~` via ISP | ✅ |
+| `api_get_token` 200 + `bm_sv` | ✅ |
+| `omitCf=[__cf_bm]` on api Cookie | ✅ (live note) |
+| GraphQL profiles (baseline / seed_match / har_slim / pdp_visitor / with_bearer) | ❌ AkamaiGHost 403 |
+| Post-sensor reseed + retry | ❌ still 403 |
+| IP hold `same=` | **true** on 5/5 ISP exits swept |
+| Slim HAR Authorization / ya29 | **never sent** on GraphQL |
+| Historical cart_get 200 artifact | **direct** undici (`explicitProxy=false`), not ISP |
+
+**Verdict:** HTTP request-shape and www→api `__cf_bm` overshare are exhausted. Remaining wall is **api-host trust / exit reputation on `/gateway/graphql`** for these static ISP exits (get-token policy is softer than GraphQL). Do **not** invent more header profiles that contradict mriwd / `6d0d21a`.
+
+**Remaining unlock paths (not more undici header churn):**
+
+1. Sticky AU residential with provider session pin (Noontide-style) that historically cleared GraphQL.
+2. Opt-in Playwright → HTTP handoff (`kmartMode: "playwright"`) — research only; never auto-escalate.
+3. Fresh exits / provider reputation — not adapter code.

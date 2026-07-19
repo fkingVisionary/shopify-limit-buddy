@@ -28,6 +28,10 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxyGroupId?: string;
           proxyGroupName?: string;
           dryRun?: boolean;
+          /** Opt-in executor experiments (forwarded to Fly /run). */
+          transport?: string;
+          kmartMode?: string;
+          gqlBearer?: boolean;
         };
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else proxies[]/proxyEntries[];
@@ -139,6 +143,9 @@ export const Route = createFileRoute("/api/public/exec-test")({
             proxies: proxyList ?? undefined,
             useProxy: forwardUseProxy || undefined,
             card,
+            ...(typeof body.transport === "string" ? { transport: body.transport } : {}),
+            ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
+            ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
           };
           const res = await fetch(`${origin}/run`, {
             method: "POST",

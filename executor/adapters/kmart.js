@@ -2118,10 +2118,12 @@ export const kmartAdapter = {
 
           // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
           // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
-          // with_bearer last: HAR GraphQL is cookie-only; ya29 is an experiment.
+          // with_bearer only when task.gqlBearer===true — slim HAR never sends
+          // Authorization, and Fly tip #47 proved ya29 does not clear AkamaiGHost.
           const fallbackOrder = apiSoftEntry
-            ? ["har_slim", "baseline", "pdp_visitor", "with_bearer"]
-            : ["seed_match", "har_slim", "pdp_visitor", "with_bearer"];
+            ? ["har_slim", "baseline", "pdp_visitor"]
+            : ["seed_match", "har_slim", "pdp_visitor"];
+          if (task.gqlBearer === true) fallbackOrder.push("with_bearer");
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
@@ -2234,7 +2236,9 @@ export const kmartAdapter = {
               });
             }
             // Retry mriwd baseline first — post-sensor tip previously skipped it.
-            for (const name of ["baseline", "seed_match", "har_slim", "with_bearer"]) {
+            const postSensorOrder = ["baseline", "seed_match", "har_slim"];
+            if (task.gqlBearer === true) postSensorOrder.push("with_bearer");
+            for (const name of postSensorOrder) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
               if (hit) return hit;
             }
@@ -2246,12 +2250,19 @@ export const kmartAdapter = {
           } catch {
             denyIp = null;
           }
+          const sameExit = Boolean(denyIp && egressIp && denyIp === egressIp);
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: `get-token ok but every GraphQL header profile got Akamai Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${Boolean(denyIp && egressIp && denyIp === egressIp)} (if same=true this is exit reputation / api-host trust, not mid-run rotate)`,
+            note: `get-token ok but every GraphQL header profile got Akamai Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${sameExit} (if same=true this is exit reputation / api-host trust, not mid-run rotate)`,
           });
           gqlCartBlocked = true;
+          // Stash for early return after cart_get — do not burn cart_create/ATC.
+          ctx.__kmart_gql_deny = {
+            sameExit,
+            egressIp: egressIp ?? null,
+            denyIp,
+          };
           return {
             status: res.status,
             ok: false,
@@ -2282,11 +2293,30 @@ export const kmartAdapter = {
         country: "AU",
       });
       if (!cartId && gqlCartBlocked) {
+        const deny = ctx.__kmart_gql_deny ?? {};
         steps.push({
           step: "cart_create",
           ok: false,
           note: "skipped: GraphQL Access Denied on all header profiles (same session as successful get-token)",
         });
+        steps.push({
+          step: "cart_atc",
+          ok: false,
+          note: `skipped: cartId=null sku=${sku ?? "(none)"}`,
+        });
+        return {
+          ok: false,
+          steps,
+          failedStep: deny.sameExit !== false ? "gql_deny_api_trust" : "gql_deny",
+          error: deny.sameExit !== false
+            ? "api.kmart.com.au GraphQL Access Denied on stable exit after green get-token — api-host trust / exit reputation (not mid-run rotate or missing __cf_bm). Sticky residential with browser-grade TLS, or opt-in kmartMode=playwright research handoff, required — stop inventing HTTP header profiles."
+            : "api.kmart.com.au GraphQL Access Denied (exit IP changed during cart_get)",
+          checkoutStage: "pre_cart",
+          finalUrl: pdpUrl,
+          cookies: ctx.jar.dump(),
+          trace: traceEnabled ? requestTrace : undefined,
+          dryRun: task.placeOrder !== true,
+        };
       } else if (!cartId) {
         await tStep("cart_create", async () => {
           const res = await gqlPost({
