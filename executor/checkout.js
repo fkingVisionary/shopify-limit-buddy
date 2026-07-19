@@ -5,10 +5,21 @@
 // to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
 // checkout page) so existing Shopify recon flows keep working.
 
-import { makeDispatcher, createJar, request, ensureStickyProxySession } from "./http.js";
+import { makeDispatcher, createJar, request, ensureStickyProxySession, isStickyProxyUrl } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
+
+function graphqlDeniedOnSticky(out, task) {
+  if (!task?.proxy || !isStickyProxyUrl(task.proxy)) return false;
+  if (out?.ok) return false;
+  const steps = out?.steps ?? [];
+  return steps.some(
+    (s) =>
+      s?.step === "cart_get:all_profiles_denied" ||
+      (s?.step === "cart_get" && s?.ok === false && /all_denied|Access Denied/i.test(String(s?.note ?? ""))),
+  );
+}
 
 const now = () => Date.now();
 
@@ -108,7 +119,48 @@ export async function runCheckout(task) {
     ctx.steps = [];
     wireProgress(ctx, task.taskId);
     try {
-      const out = await adapter.run(task, ctx);
+      let out = await adapter.run(task, ctx);
+      let usedAdapter = adapter.id;
+      let steps = out.steps ?? ctx.steps ?? [];
+
+      // Sticky residential (Noontide etc.): pure HTTP often clears WWW + get-token
+      // then 403s every GraphQL profile. Browser-seeded cookies → HTTP handoff
+      // clears cart (proven on Noontide). One automatic Playwright handoff retry.
+      const allowPwFallback =
+        !wantPlaywright &&
+        task.kmartMode !== "playwright" &&
+        task.playwrightFallback !== false &&
+        graphqlDeniedOnSticky(out, task) &&
+        kmartPlaywrightAdapter.matches(new URL(store).hostname.toLowerCase());
+
+      if (allowPwFallback) {
+        steps = [
+          ...steps,
+          {
+            step: "sticky_pw_fallback",
+            ok: true,
+            note: "HTTP GraphQL Access Denied on sticky resi — retrying Playwright seed → HTTP handoff",
+          },
+        ];
+        try {
+          await ctx.dispatcher?.close?.();
+        } catch {
+          /* ignore */
+        }
+        ctx.jar = createJar();
+        ctx.dispatcher = makeDispatcher(proxyForTask, { forceTls, forceUndici });
+        ctx.steps = [];
+        const pwTask = {
+          ...task,
+          kmartMode: "playwright",
+          httpHandoff: true,
+          skipAtc: false,
+        };
+        out = await kmartPlaywrightAdapter.run(pwTask, ctx);
+        usedAdapter = `${adapter.id}+${kmartPlaywrightAdapter.id}`;
+        steps = [...steps, ...(out.steps ?? ctx.steps ?? [])];
+      }
+
       markTaskDone(task.taskId, {
         ok: Boolean(out.ok),
         orderNumber: out.orderNumber ?? null,
@@ -117,10 +169,10 @@ export async function runCheckout(task) {
       return {
         ok: out.ok,
         taskId: task.taskId,
-        adapter: adapter.id,
+        adapter: usedAdapter,
         elapsedMs: now() - t0,
-        transport: dispatcher.transport,
-        steps: out.steps ?? ctx.steps,
+        transport: ctx.dispatcher?.transport ?? dispatcher.transport,
+        steps,
         trace: out.trace,
         finalUrl: out.finalUrl,
         cookies: out.cookies,
