@@ -98,3 +98,16 @@ Cross-reference **all** proven Kmart HTTP lessons — not only proxy wiring:
 | tip `9f9a4da` experiments | **Removed** CORS OPTIONS preflight + sticky home `tokenReferer` + har_slim-first |
 
 Paste Noontide sticky lines into `executor/resi.proxies` (keep issued `session-…-sessTime-…`), redeploy, then `/run` with `useProxy:true`.
+
+## Static ISP handling (19 Jul live)
+
+Bare-IP ISP list (ef84707 shape) must **not** be classified sticky:
+
+| Signal | Bad tip (`stickyUrl=1` on bare IP) | Expected (a1d9) |
+|---|---|---|
+| Sensors | `rounds=5 sticky=1` → sometimes `akamai_unsolved` | `rounds=3 sticky=0` |
+| Before get-token | `api_tunnel_refresh` fires | **no** refresh (warm agent) |
+| After GraphQL deny | `cart_get:sticky_sensor_refresh` | skip |
+| Soft-API if PDP 403 | gated on sticky only | **d60eeee**: any proxy with abck+bm_sv+sku |
+
+Live on `45.42.47.161` before fix: PDP 200 + get-token 200 + IP hold same=true → all GraphQL profiles Access Denied after `api_tunnel_refresh`.

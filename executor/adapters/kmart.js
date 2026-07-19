@@ -1667,13 +1667,14 @@ export const kmartAdapter = {
     const apiReferer = pdpUrl || (origin + "/");
     const homeReferer = origin + "/";
 
-    // ISP clears WWW HTML (pdp 200). Sticky residential sometimes keeps HTML
-    // Access Denied even with bm_sv + solved _abck while api.kmart.com.au still
-    // accepts GraphQL — allow API cart when cookies + URL SKU are present.
+    // Prefer real PDP HTML (ISP historically clears www). When WWW HTML stays
+    // Access Denied after a solved _abck + bm_sv (seen on some ISP exits and
+    // sticky resi), api.kmart.com.au GraphQL can still accept the jar — continue
+    // via soft entry with home referer instead of stopping at sku_extract.
+    // Restored from d60eeee (no stickyProxy gate).
     const wwwHtmlOk = pdpStatus > 0 && pdpStatus < 400;
     const apiSoftEntry =
       !wwwHtmlOk &&
-      stickyProxy &&
       Boolean(sku) &&
       abckSolved(ctx.jar, 3) &&
       ctx.jar.has("bm_sv");
@@ -1681,7 +1682,7 @@ export const kmartAdapter = {
       steps.push({
         step: "pdp_soft_api",
         ok: true,
-        note: `WWW HTML blocked (pdp=${pdpStatus}) but sticky+abck+bm_sv+sku — attempting api cart with home referer`,
+        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${stickyProxy ? " sticky=1" : ""}`,
       });
     }
     // Soft entry must not advertise a 403 PDP as document referer — Akamai
@@ -1828,11 +1829,13 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
-      // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path). Restored from a1d9f9c default ON.
-      // Opt out with task.apiTunnelRefresh === false.
-      if (stickyProxy && task.apiTunnelRefresh !== false) {
+      // Sticky resi only: drop mid-run CONNECT/TCP state before api.* so GraphQL
+      // does not reuse a WWW tunnel Akamai already scored (a1d9f9c). Static ISP
+      // (bare IPv4) must KEEP the warm ProxyAgent — live Fly: ISP clear WWW +
+      // get-token then GraphQL Access Denied after a mistaken tunnel refresh.
+      // Opt out sticky refresh with task.apiTunnelRefresh === false.
+      const staticIsp = task.proxyStickyPin?.reason === "static_ip_host";
+      if (stickyProxy && !staticIsp && task.apiTunnelRefresh !== false) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {

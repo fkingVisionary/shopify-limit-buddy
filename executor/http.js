@@ -52,7 +52,10 @@ function isRetryableNetworkError(error) {
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed")
+    combined.includes("fetch failed") ||
+    // d60eeee: ISP undici tunnels often surface these mid-SBSD / mid-nav.
+    combined.includes("request was cancelled") ||
+    combined.includes("aborted")
   );
 }
 
@@ -150,18 +153,15 @@ export function parseProxy(raw) {
  * - Noontide / many AU resi: `session-TOKEN`
  * - IP Fist premium: `-sid-TOKEN` (+ optional `-f-country-xx` / `-l-MINS`)
  * - Generic: `sessid=` / `sessionid=`
- * - Dedicated ISP: hostname is a bare IPv4 (exit is the host itself)
+ *
+ * Dedicated ISP (bare IPv4 host) is NOT sticky — exit is the host itself.
+ * a1d9f9c only matched session- tokens. Treating bare-IP as sticky (82d750f)
+ * forced the residential sensor ladder (5 rounds + tunnel refresh) and broke
+ * Hyper solve on static ISP (live: stickyUrl=1 → akamai_unsolved; prior tip
+ * sticky=0 on same 45.42.47.235 → akamai_solved).
  */
 function isStickyProxyUrl(proxyUrl) {
-  const s = String(proxyUrl || "");
-  if (/session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(s)) return true;
-  try {
-    const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`);
-    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname) && u.username) return true;
-  } catch {
-    /* ignore */
-  }
-  return false;
+  return /session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(String(proxyUrl || ""));
 }
 
 function newStickySessionId() {
@@ -466,10 +466,12 @@ export async function request(url, opts, ctx) {
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
+    // Proxied residential/ISP sessions often RST mid-SBSD / mid-nav. Retry with
     // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
     // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // ISP tunnels also surface undici "Request was cancelled" — give them more
+    // attempts than direct so SBSD/script fetch can survive brief blips (d60eeee).
+    const attempts = dispatcher.proxy ? 5 : 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
