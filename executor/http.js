@@ -360,8 +360,23 @@ export function createJar() {
       const raw = headers["set-cookie"] ?? headers["Set-Cookie"];
       ingestSetCookie(raw);
     },
-    header() {
-      return [...store.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+    // opts.omitPrefixes / opts.omitNames: drop host-only cookies the browser
+    // would not send (name-keyed jar otherwise overshares www → api).
+    header(opts = null) {
+      const omitNames = opts?.omitNames instanceof Set
+        ? opts.omitNames
+        : new Set(Array.isArray(opts?.omitNames) ? opts.omitNames : []);
+      const omitPrefixes = Array.isArray(opts?.omitPrefixes) ? opts.omitPrefixes : [];
+      return [...store.entries()]
+        .filter(([k]) => {
+          if (omitNames.has(k)) return false;
+          for (const p of omitPrefixes) {
+            if (p && k.startsWith(p)) return false;
+          }
+          return true;
+        })
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
     },
     has(name) {
       return store.has(name);
@@ -388,6 +403,23 @@ export function createJar() {
       return Object.fromEntries(store);
     },
   };
+}
+
+// Cloudflare `__cf_*` cookies are host-only on www; browsers do not attach them
+// to api.kmart.com.au. Our name-keyed jar would otherwise overshare them on
+// every api.* XHR (get-token / GraphQL) — slim HAR never lists `__cf_bm` there.
+export function cookieHeaderForUrl(jar, url) {
+  if (!jar?.header) return "";
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    host = "";
+  }
+  if (host === "api.kmart.com.au") {
+    return jar.header({ omitPrefixes: ["__cf_"] });
+  }
+  return jar.header();
 }
 
 // Wraps a node-tls-client Response so callers see a fetch-Response-like API:
@@ -455,12 +487,14 @@ export async function request(url, opts, ctx) {
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
-  // headers themselves.
+  // headers themselves. Cookie header is host-scoped so www host-only
+  // Cloudflare cookies are not overshared onto api.kmart.com.au.
+  const scopedCookie = cookieHeaderForUrl(jar, url);
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
-    ...(jar.header() ? { cookie: jar.header() } : {}),
+    ...(scopedCookie ? { cookie: scopedCookie } : {}),
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
