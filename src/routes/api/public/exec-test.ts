@@ -23,20 +23,31 @@ export const Route = createFileRoute("/api/public/exec-test")({
           reconUrl?: string;
           useProxy?: boolean;
           proxyUrl?: string;
+          proxies?: string[];
+          proxyEntries?: string[];
           proxyGroupId?: string;
           proxyGroupName?: string;
           dryRun?: boolean;
         };
         const mode = body.mode ?? "run";
-        // Resolve proxy: explicit proxyUrl wins; else random from named/id'd
-        // group in `proxy_groups`; else (only when useProxy:true) fall back to
-        // Fly's PROXY_URL_RESI; else direct (null).
+        // Resolve proxy: explicit proxyUrl wins; else proxies[]/proxyEntries[];
+        // else named supabase group; else let Fly pick from resi.proxies via
+        // useProxy:true (do NOT force Lovable's PROXY_URL_RESI — that shadows
+        // the executor pool and often fails proxy_parse).
         let proxy: string | null = null;
+        let proxyList: string[] | null = null;
+        let forwardUseProxy = false;
         let proxyUsed: { source: string; host?: string; session?: string } = { source: "none" };
         if (body.proxyUrl) {
           proxy = body.proxyUrl;
           proxyUsed = { source: "explicit" };
-        } else if (body.proxyGroupId || body.proxyGroupName || body.useProxy) {
+        } else if (Array.isArray(body.proxies) && body.proxies.length) {
+          proxyList = body.proxies.map((e) => String(e || "").trim()).filter(Boolean);
+          proxyUsed = { source: `request.proxies:${proxyList.length}` };
+        } else if (Array.isArray(body.proxyEntries) && body.proxyEntries.length) {
+          proxyList = body.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean);
+          proxyUsed = { source: `request.proxyEntries:${proxyList.length}` };
+        } else if (body.proxyGroupId || body.proxyGroupName) {
           const groupName = body.proxyGroupName ?? "Test Pool";
           try {
             const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
@@ -59,16 +70,17 @@ export const Route = createFileRoute("/api/public/exec-test")({
                 proxy = raw;
                 proxyUsed = { source: `group:${group?.name}` };
               }
-            } else if (body.useProxy) {
-              proxy = process.env.PROXY_URL_RESI ?? null;
-              proxyUsed = { source: proxy ? "env:PROXY_URL_RESI" : "none" };
             }
           } catch (e) {
-            if (body.useProxy) {
-              proxy = process.env.PROXY_URL_RESI ?? null;
-              proxyUsed = { source: proxy ? "env:PROXY_URL_RESI(fallback)" : "none", host: e instanceof Error ? e.message : undefined };
-            }
+            proxyUsed = {
+              source: "group:error",
+              host: e instanceof Error ? e.message : undefined,
+            };
           }
+        } else if (body.useProxy === true) {
+          // Fly loads executor/resi.proxies (or PROXY_RESI_LIST).
+          forwardUseProxy = true;
+          proxyUsed = { source: "fly:useProxy" };
         }
         // Defensive: strip any path the user accidentally pasted (e.g. /health)
         // so EXECUTOR_URL always resolves to the origin.
@@ -97,10 +109,22 @@ export const Route = createFileRoute("/api/public/exec-test")({
             const res = await fetch(`${origin}/recon`, {
               method: "POST",
               headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-              body: JSON.stringify({ url: target, proxy }),
+              body: JSON.stringify({
+                url: target,
+                proxy,
+                proxies: proxyList ?? undefined,
+                useProxy: forwardUseProxy || undefined,
+              }),
             });
             const data = await res.json().catch(() => ({}));
-            return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, result: data, usedProxy: Boolean(proxy), proxyUsed });
+            return Response.json({
+              ok: res.ok,
+              status: res.status,
+              elapsedMs: Date.now() - t0,
+              result: data,
+              usedProxy: Boolean(proxy || proxyList || forwardUseProxy),
+              proxyUsed,
+            });
           }
           if (!body.storeUrl) {
             return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
@@ -112,6 +136,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
             qty: 1,
             dryRun: body.dryRun ?? true,
             proxy,
+            proxies: proxyList ?? undefined,
+            useProxy: forwardUseProxy || undefined,
             card,
           };
           const res = await fetch(`${origin}/run`, {

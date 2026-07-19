@@ -1766,6 +1766,42 @@ export const kmartAdapter = {
     let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
 
+    // HAR always OPTIONS before api.* POSTs. Re-enable for any proxied run
+    // (not sticky-only) — static ISP clears WWW+get-token then GraphQL 403s;
+    // browser shape includes preflight on the same tunnel.
+    const corsPreflight = async (url, requestHeaders, traceKey) => {
+      if (!task.proxy) return;
+      const acrh = Object.keys(requestHeaders)
+        .filter((k) => !/^(cookie|user-agent|accept|accept-language|accept-encoding|content-length|host|connection)$/i.test(k))
+        .join(",");
+      await tStep(traceKey, async () => {
+        const res = await request(
+          url,
+          {
+            method: "OPTIONS",
+            headers: {
+              "user-agent": UA,
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              origin,
+              referer: requestHeaders.referer || homeReferer,
+              "access-control-request-method": "POST",
+              ...(acrh ? { "access-control-request-headers": acrh.toLowerCase() } : {}),
+              "sec-fetch-site": "same-site",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-dest": "empty",
+            },
+          },
+          ctx,
+        );
+        return {
+          status: res.status,
+          ok: res.status > 0 && res.status < 500,
+          note: `preflight status=${res.status}`,
+        };
+      });
+    };
+
     const gqlPost = async (body, traceKey = body?.operationName ?? "graphql", headerOverrides = null) =>
       tracedRequest(
         traceKey,
@@ -1785,7 +1821,10 @@ export const kmartAdapter = {
       {
       // Hold check: rotating resi that drops the sticky pin mid-run will
       // 403 every GraphQL profile after a green WWW solve. Fail loudly.
-      if (task.proxy && egressIp) {
+      // Skip for static ISP (bare IPv4) — exit cannot rotate; the echo hop
+      // only adds noise between warm WWW and api.* on the same ProxyAgent.
+      const staticIspEarly = task.proxyStickyPin?.reason === "static_ip_host";
+      if (task.proxy && egressIp && !staticIspEarly) {
         let holdAbort = false;
         await tStep("proxy_ip_hold", async () => {
           const ipNow = await resolveEgressIp(ctx, { force: true });
@@ -1848,12 +1887,14 @@ export const kmartAdapter = {
         });
       }
       let apiSeedOk = false;
+      // Slim HAR: get-token referer is homepage `/`, not PDP.
+      const getTokenHeaders = {
+        ...apiXhrBase(homeReferer),
+        "x-visitor-id": apiVisitorId,
+        ...nrHeaders("1834777981"),
+      };
+      await corsPreflight(apiOrigin + "/shopping-agent/v1/get-token", getTokenHeaders, "api_get_token:preflight");
       await tStep("api_get_token", async () => {
-        const getTokenHeaders = {
-          ...apiXhrBase(apiDocReferer),
-          "x-visitor-id": apiVisitorId,
-          ...nrHeaders("1834777981"),
-        };
         const res = await tracedRequest(
           "seed",
           apiOrigin + "/shopping-agent/v1/get-token",
@@ -1870,15 +1911,17 @@ export const kmartAdapter = {
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=home setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
       if (!apiSeedOk) {
         steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
         return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
       }
-      // Sticky soft-entry: brief human gap after get-token before GraphQL.
-      if (apiSoftEntry) await sleep(800, 1500);
+      // Human gap after get-token before GraphQL (HAR has RUM/nav delay).
+      // Soft-entry had this; proxied ISP/resi need it too — live ISP: get-token
+      // 200 then immediate GraphQL Access Denied on every header profile.
+      if (apiSoftEntry || task.proxy) await sleep(800, 1500);
       }
 
       // 7a.1. API-host Akamai sensor — OPT-IN only (`task.apiSensor === true`).
@@ -1966,7 +2009,8 @@ export const kmartAdapter = {
       // Second hold check AFTER get-token. Without a sticky session id, rotating
       // gateways can hand a new exit on the next CONNECT even when two earlier
       // ipify calls matched — verify_ip same=true is not enough for GraphQL.
-      if (task.proxy && egressIp) {
+      // Static ISP: skip (same reason as proxy_ip_hold above).
+      if (task.proxy && egressIp && !staticIspEarly) {
         let holdAbort2 = false;
         await tStep("proxy_ip_hold:pre_gql", async () => {
           const ipNow = await resolveEgressIp(ctx, { force: true });
@@ -2022,6 +2066,7 @@ export const kmartAdapter = {
         query:
           "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
       };
+      await corsPreflight(gqlUrl, { ...gqlHeaders, ...nrHeaders() }, "cart_get:preflight");
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
         let txt = await res.text();
