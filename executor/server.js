@@ -271,6 +271,8 @@ app.post("/run", async (req, reply) => {
       // api.* chrome_131 via tls-worker after WWW undici. Default ON when proxy
       // is set; false disables; true forces even on direct.
       ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
+      // Hyper sensor phase chrome_131 (default ON). false keeps undici sensors.
+      ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
       ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
       resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
       seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,

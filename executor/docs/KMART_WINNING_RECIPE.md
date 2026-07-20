@@ -20,8 +20,9 @@ Ignore any stale preview host labels (`proxyUsed: Test Pool`). Trust Fly
 
 | Knob | Value |
 |------|--------|
-| Transport | **undici** default for WWW (`tls-worker` opt-in for whole session) |
-| api.* TLS | **tls-worker handoff after WWW** when proxied (`apiTls` default on with proxy; direct stays undici) |
+| Transport | **undici** for document nav (charge path) |
+| Sensor TLS | **tls-worker chrome_131 for Hyper sensor phase** (default ON — undici sensors plateau `ind=-1`) |
+| api.* TLS | **tls-worker handoff** when proxied (`apiTls` default on with proxy) |
 | Category | **skip** (home→PDP) |
 | Dead proxies | refused → ISP pool or direct |
 | Card | required for 3DS / bank proof |
