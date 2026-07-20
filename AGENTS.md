@@ -4,11 +4,17 @@
 
 ### Product overview
 This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is the
-primary product: a TanStack Start + Vite + React 19 web app (the "control plane").
-Subdirectories `executor/` (Node/Fastify checkout engine), `runner/` (legacy
-Electron Shopify agent), and `desktop/` (Cyber-style local Kmart app) are
-**optional** auxiliary services. `supabase/` holds hosted DB
-migrations + one Deno edge function.
+primary product: a TanStack Start + Vite + React 19 web app (the "control plane"),
+hosted as a **Cloudflare Worker** (Lovable / `*.lovable.app`) — not Fly.
+Subdirectories `executor/` (Node/Fastify checkout engine on **Fly.io**
+`j1ms-bot-executor`), `runner/` (legacy Electron Shopify agent), and `desktop/`
+(Cyber-style local Kmart app) are **optional** auxiliary services. `supabase/`
+holds hosted DB migrations + one Deno edge function.
+
+**Deploy split:** CF Worker = UI + `/api/public/exec-test` (forwards to Fly).
+Executor code under `executor/` needs the **Deploy executor** workflow. Merging
+web-only fixes does not update Fly `gitSha`; merging executor-only does not
+update the CF Worker.
 
 ### Root web app (primary service)
 - Package manager is **Bun** (`bun.lock`, `bunfig.toml`); do not use npm/pnpm here.
@@ -70,9 +76,10 @@ migrations + one Deno edge function.
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
   If `transport_select` shows `tls-worker init failed → undici`, check that bake.
 - **Proxies:** WealthProxies / IPFist / Lovable “Test Pool” are **dead** (subs
-  cancelled). Do not smoke or default to them. Prefer Fly `useProxy` →
-  `executor/resi.proxies` (static AU ISP) or direct. Do not gate runs on
-  sticky/drift IP checks (speed + false aborts after `akamai_solved`).
+  cancelled). Fly `/run` must refuse those hosts and fall through to
+  `executor/resi.proxies` (static AU ISP) or direct — CF Worker may still inject
+  Test Pool until the Worker is redeployed. Do not gate runs on sticky/drift
+  IP checks (speed + false aborts after `akamai_solved`).
 - **Post-TLS:** `tls-worker` can solve `_abck` on a live exit; Fly direct often
   SoftBlocks (~793b). Prefer home→PDP on proxy (skip `/category/*` hard denies).
   Score furthest stage.

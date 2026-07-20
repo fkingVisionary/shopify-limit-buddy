@@ -113,13 +113,25 @@ export function pickResiProxy(overrideEntries = null) {
   return { proxy: cachedEntries[index], source, index, poolSize: cachedEntries.length };
 }
 
+/** Cancelled provider hosts — never use even if a CF/Lovable client still sends them. */
+const DEAD_PROXY_HOST_RE = /wealthproxies\.com|ipfist\.|ipfist\.com/i;
+
+export function isDeadProxyUrl(raw) {
+  return DEAD_PROXY_HOST_RE.test(String(raw || ""));
+}
+
 /**
  * Resolve proxy for /run and diagnose helpers.
- * Precedence: explicit proxy string → proxies[]/proxyEntries[] → baked pool → null.
+ * Precedence: explicit proxy (if not dead) → proxies[]/proxyEntries[] → baked pool
+ * when useProxy:true → null (direct).
+ *
+ * Control plane is a Cloudflare Worker (Lovable); checkout engine is Fly.
+ * Older CF builds still inject Supabase "Test Pool" (WealthProxies) — refuse
+ * those here so Fly can fall through to resi.proxies / direct.
  */
 export function resolveRunProxy({ proxy, proxies, proxyEntries, useProxy } = {}) {
   const explicit = typeof proxy === "string" && proxy.trim() ? proxy.trim() : null;
-  if (explicit) {
+  if (explicit && !isDeadProxyUrl(explicit)) {
     return {
       proxy: parseProxy(explicit) || explicit,
       source: "request.proxy",
@@ -127,20 +139,33 @@ export function resolveRunProxy({ proxy, proxies, proxyEntries, useProxy } = {})
       poolSize: 1,
     };
   }
+  const refusedDead = Boolean(explicit && isDeadProxyUrl(explicit));
 
-  const list =
+  const listRaw =
     (Array.isArray(proxies) && proxies.length ? proxies : null) ||
     (Array.isArray(proxyEntries) && proxyEntries.length ? proxyEntries : null);
+  const list = listRaw ? listRaw.filter((e) => !isDeadProxyUrl(e)) : null;
 
-  if (list) {
-    return pickResiProxy(list);
+  if (list?.length) {
+    const picked = pickResiProxy(list);
+    return refusedDead ? { ...picked, source: `${picked.source}+refused_dead_explicit` } : picked;
   }
 
-  // Same gate as the old PROXY_URL_RESI path: only when useProxy:true.
-  if (useProxy === true) {
+  // useProxy OR refused dead explicit → try baked AU ISP pool.
+  if (useProxy === true || refusedDead) {
     const picked = pickResiProxy(null);
-    if (picked.proxy) return picked;
-    return { proxy: null, source: "useProxy_empty_pool", index: -1, poolSize: 0 };
+    if (picked.proxy) {
+      return {
+        ...picked,
+        source: refusedDead ? `${picked.source}+refused_dead_explicit` : picked.source,
+      };
+    }
+    return {
+      proxy: null,
+      source: refusedDead ? "refused_dead_explicit+empty_pool" : "useProxy_empty_pool",
+      index: -1,
+      poolSize: 0,
+    };
   }
 
   return { proxy: null, source: useProxy === false ? "direct" : "none", index: -1, poolSize: resiPoolSize() };
