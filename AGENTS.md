@@ -40,9 +40,10 @@ migrations + one Deno edge function.
 - **After each tip:** smoke via `POST /api/public/exec-test` (wait ≥180s; client
   timeouts often hide payment). Score the **furthest stage**, not only `failedStep`.
   Check Fly logs for `kmartMilestone` and `GET /milestones` on the executor.
-- **Card footgun:** `exec-test` must **not** auto-inject `KMART_CARD_*` on every smoke.
-  Card/3DS only when the caller opts in (`withCard` / `placeOrder`). Silent card
-  injection caused Revolut approve/reject noise while agents scored “cart dead.”
+- **Card:** `exec-test` auto-injects `KMART_CARD_*` when secrets exist (pass
+  `noCard:true` to skip). Revolut / bank pings are useful third-party proof the
+  path still reaches 3DS — prefer that over scoring only `failedStep` after a
+  client timeout. Still wait ≥180s and check `kmartMilestone` / `/milestones`.
 - **Pass signals (in order):** `cart_get` JSON 200 → ATC/checkout → tokenize → 3DS →
   `place_order` / order number. Reference morning artifact `resi-dry-1` (2026-07-19,
   direct, tip `#40` / `b3b7a81`) and bank-confirmed charge (~14 Jul).

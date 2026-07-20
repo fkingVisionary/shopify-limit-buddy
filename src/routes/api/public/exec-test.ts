@@ -24,8 +24,8 @@ type RunBody = {
   proxyGroupId?: string;
   proxyGroupName?: string;
   dryRun?: boolean;
-  /** Opt-in: inject KMART_CARD_* and allow Paydock/3DS. Default off. */
-  withCard?: boolean;
+  /** Force skip card even when KMART_CARD_* secrets exist. */
+  noCard?: boolean;
   placeOrder?: boolean;
   /** Opt-in executor experiments (forwarded to Fly /run). */
   transport?: string;
