@@ -671,11 +671,33 @@ export const kmartAdapter = {
         }
       });
     }
-    const restoreNavTransport = async (reason) => {
+    // After sensors: always put document nav back on undici (PDP#2 HTML is
+    // proven there; tip 5dc0cee keep-on-tls Ghost-denied every PDP).
+    // When proxied chrome_131 solved _abck, PARK that tls-worker for api.*
+    // reuse — closing it and spawning a fresh worker (#74/#75) was a new
+    // TCP/JA3 session that got get-token but Ghost-denied GraphQL.
+    const restoreNavTransport = async (reason, { parkForApi = false } = {}) => {
       if (!ctx._navDispatcher || ctx.dispatcher === ctx._navDispatcher) return;
       const sensorD = ctx.dispatcher;
       ctx.dispatcher = ctx._navDispatcher;
       ctx._navDispatcher = null;
+      const isTls =
+        Boolean(sensorD?.useTls) || sensorD?.transport === "tls-worker";
+      const shouldPark =
+        parkForApi &&
+        isTls &&
+        Boolean(task.proxy) &&
+        task.sensorTlsPark !== false &&
+        process.env.KMART_SENSOR_TLS_PARK !== "0";
+      if (shouldPark) {
+        ctx._sensorTlsDispatcher = sensorD;
+        steps.push({
+          step: "sensor_tls_park",
+          ok: true,
+          note: `undici for PDP (${reason}); parked tls-worker for api.* (same chrome session as _abck solve)`,
+        });
+        return;
+      }
       steps.push({
         step: "sensor_tls_restore",
         ok: true,
@@ -1300,34 +1322,9 @@ export const kmartAdapter = {
       }
     }
 
-    // After a proxied chrome_131 solve, KEEP tls-worker for PDP + api.*.
-    // Live tip d167b78: restore→undici got PDP#2 HTML + get-token 200 but
-    // every GraphQL profile AkamaiGHost (same jar/IP). Same JA3 as the
-    // _abck solve is the remaining lever. Opt out: sensorTlsKeep:false.
-    const onSensorTls =
-      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
-    const keepSensorTls =
-      onSensorTls &&
-      Boolean(task.proxy) &&
-      task.sensorTlsKeep !== false &&
-      process.env.KMART_SENSOR_TLS_KEEP !== "0";
-    if (keepSensorTls) {
-      const unusedNav = ctx._navDispatcher;
-      ctx._navDispatcher = null;
-      steps.push({
-        step: "sensor_tls_keep",
-        ok: true,
-        note: "proxied: keep tls-worker chrome_131 for PDP+api (same JA3 as _abck solve)",
-      });
-      try {
-        await unusedNav?.close?.();
-      } catch {
-        /* ignore */
-      }
-    } else {
-      // Direct / opt-out: document nav on undici (historical charge path).
-      await restoreNavTransport("post_sensor_sbsd");
-    }
+    // undici PDP (proven) + park sensor tls for api reuse (see restoreNavTransport).
+    // tip 5dc0cee sensor_tls_keep Ghost-denied PDP#1–#3 — do not keep tls for WWW.
+    await restoreNavTransport("post_sensor_sbsd", { parkForApi: true });
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
@@ -1916,10 +1913,9 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Tip #54/#55: after WWW undici warm, hand off api.* to crash-isolated
-      // chrome_131 (tls-worker). Header/cookie parity vs cart_get-200 artifacts
-      // still GraphQL-denies on proxied exits — JA3 on api.* is the remaining
-      // lever. Default ON when a proxy is set; direct stays undici (charge path).
+      // Prefer the PARKED sensor tls-worker (same chrome session that minted
+      // _abck). Fresh makeRemoteTlsDispatcher after undici PDP got get-token
+      // but Ghost-denied every GraphQL profile (tips d167b78 / 5dc0cee).
       // Force: apiTls:true | opt out: apiTls:false.
       const alreadyTls =
         Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
@@ -1928,13 +1924,26 @@ export const kmartAdapter = {
       if (wantApiTls && !alreadyTls) {
         await tStep("api_tls_handoff", async () => {
           const prev = ctx.dispatcher;
+          const parked = ctx._sensorTlsDispatcher;
+          if (
+            parked &&
+            (Boolean(parked.useTls) || parked.transport === "tls-worker")
+          ) {
+            ctx._wwwDispatcher = prev;
+            ctx.dispatcher = parked;
+            ctx._sensorTlsDispatcher = null;
+            return {
+              ok: true,
+              note: `reuse parked sensor tls-worker for api.* (same chrome session as _abck) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+            };
+          }
           try {
             const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
             ctx._wwwDispatcher = prev;
             ctx.dispatcher = tlsD;
             return {
               ok: true,
-              note: `tls-worker chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+              note: `fresh tls-worker chrome_131 for api.* (no park) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
             };
           } catch (e) {
             return {

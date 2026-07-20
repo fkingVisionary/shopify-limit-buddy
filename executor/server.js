@@ -273,9 +273,9 @@ app.post("/run", async (req, reply) => {
       ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
       // Hyper sensor chrome_131: default ON when proxy; false keeps undici sensors.
       ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
-      // After proxied solve, keep tls-worker for PDP+api (default ON). false restores undici.
-      ...(task.sensorTlsKeep === true || task.sensorTlsKeep === false
-        ? { sensorTlsKeep: task.sensorTlsKeep }
+      // Park sensor tls for api reuse after undici PDP (default ON when parked).
+      ...(task.sensorTlsPark === true || task.sensorTlsPark === false
+        ? { sensorTlsPark: task.sensorTlsPark }
         : {}),
       ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
       resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
