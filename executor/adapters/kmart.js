@@ -639,14 +639,15 @@ export const kmartAdapter = {
       });
     } else {
 
-    // Hyper: warm + script + sensors must share one TLS fingerprint. #75 handed
-    // off AFTER undici warm_home → cookies minted on Node JA3, sensors posted
-    // on chrome_131 → bodySuccess=true + plateau ind=-1 (same as undici-only
-    // smash). Other Hyper bots keep one client for the whole BM phase.
+    // Hyper: warm + script + sensors must share one TLS fingerprint.
+    // Default ON only when proxied — live Fly direct egress (89.187.186.9)
+    // SoftBlocks undici AND tls-worker BM equally; ISP + chrome_131 solves
+    // in 3 rounds (smoke tip d167b78). Opt in on direct: sensorTls:true.
     // Opt out: sensorTls:false or KMART_SENSOR_TLS=0.
     const wantSensorTls =
       task.sensorTls === true ||
       (task.sensorTls !== false &&
+        Boolean(task.proxy) &&
         task.forceUndici !== true &&
         process.env.KMART_SENSOR_TLS !== "0");
     const sensorAlreadyTls =
@@ -1299,8 +1300,34 @@ export const kmartAdapter = {
       }
     }
 
-    // Document nav (category/PDP) stays on undici — charge-path proven there.
-    await restoreNavTransport("post_sensor_sbsd");
+    // After a proxied chrome_131 solve, KEEP tls-worker for PDP + api.*.
+    // Live tip d167b78: restore→undici got PDP#2 HTML + get-token 200 but
+    // every GraphQL profile AkamaiGHost (same jar/IP). Same JA3 as the
+    // _abck solve is the remaining lever. Opt out: sensorTlsKeep:false.
+    const onSensorTls =
+      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+    const keepSensorTls =
+      onSensorTls &&
+      Boolean(task.proxy) &&
+      task.sensorTlsKeep !== false &&
+      process.env.KMART_SENSOR_TLS_KEEP !== "0";
+    if (keepSensorTls) {
+      const unusedNav = ctx._navDispatcher;
+      ctx._navDispatcher = null;
+      steps.push({
+        step: "sensor_tls_keep",
+        ok: true,
+        note: "proxied: keep tls-worker chrome_131 for PDP+api (same JA3 as _abck solve)",
+      });
+      try {
+        await unusedNav?.close?.();
+      } catch {
+        /* ignore */
+      }
+    } else {
+      // Direct / opt-out: document nav on undici (historical charge path).
+      await restoreNavTransport("post_sensor_sbsd");
+    }
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when

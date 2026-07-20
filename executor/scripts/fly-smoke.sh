@@ -144,9 +144,30 @@ def step_ok(name):
         return False
     return True
 
+def pdp_ok():
+    # First pdp_get often Ghost-denies on ISP; pdp_get#2 after SBSD is the real pass.
+    import re
+    for s in steps:
+        if not isinstance(s, dict):
+            continue
+        st = str(s.get("step") or "")
+        if not (st == "pdp_get" or st.startswith("pdp_get#")):
+            continue
+        if s.get("ok") is False:
+            continue
+        note = str(s.get("note") or "")
+        if "Access Denied" in note or "AkamaiGHost" in note:
+            continue
+        if "| ok " in note or "DOCTYPE" in note or "text/html; charset" in note:
+            return True
+        m = re.search(r"\b(\d+)b\b", note)
+        if m and int(m.group(1)) > 50_000:
+            return True
+    return False
+
 ladder = [
     ("akamai_solved", step_ok("akamai_solved")),
-    ("pdp_get", step_ok("pdp_get")),
+    ("pdp_get", pdp_ok()),
     ("api_get_token", step_ok("api_get_token")),
     ("cart_get", step_ok("cart_get")),
     ("cart_atc", step_ok("cart_atc")),
