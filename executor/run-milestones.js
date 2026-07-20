@@ -88,18 +88,7 @@ export function milestoneFromResult(out = {}) {
   };
 }
 
-export function recordRunMilestone(taskId, out, meta = {}) {
-  const milestone = milestoneFromResult(out);
-  if (!milestone) return null;
-
-  const row = {
-    taskId: taskId || null,
-    ...milestone,
-    proxy: meta.proxy ? true : false,
-    transport: meta.transport ?? null,
-    gitSha: process.env.EXECUTOR_GIT_SHA || null,
-  };
-
+function appendMilestoneRow(row) {
   try {
     fs.mkdirSync(path.dirname(FILE), { recursive: true });
     fs.appendFileSync(FILE, `${JSON.stringify(row)}\n`, "utf8");
@@ -107,10 +96,64 @@ export function recordRunMilestone(taskId, out, meta = {}) {
   } catch (e) {
     console.warn(JSON.stringify({ milestoneLogError: e?.message ?? String(e) }));
   }
-
   // Always log a single structured line for Fly log drains / `fly logs`.
   console.log(JSON.stringify({ kmartMilestone: row }));
   return row;
+}
+
+export function recordRunMilestone(taskId, out, meta = {}) {
+  const milestone = milestoneFromResult(out);
+  if (!milestone) return null;
+
+  return appendMilestoneRow({
+    taskId: taskId || null,
+    ...milestone,
+    proxy: meta.proxy ? true : false,
+    transport: meta.transport ?? null,
+    gitSha: process.env.EXECUTOR_GIT_SHA || null,
+  });
+}
+
+/**
+ * Flush a milestone mid-run (before /run returns). Critical when the HTTP
+ * client times out around 3DS — Fly keeps going and Revolut pings, but the
+ * agent used to see an empty body and score "cart dead."
+ *
+ * Workflow stage ids (cart/tokenize/threeds/order) map to milestone labels.
+ */
+export function noteLiveMilestone(taskId, workflowStage, meta = {}) {
+  const map = {
+    cart: "cart_get",
+    details: "address",
+    tokenize: "tokenize",
+    threeds: "3ds",
+    order: "place_order",
+    done: meta.orderNumber ? "ordered" : null,
+  };
+  const stage = map[workflowStage] || null;
+  if (!stage || rankOf(stage) < rankOf("cart_get")) return null;
+
+  return appendMilestoneRow({
+    taskId: taskId || null,
+    at: new Date().toISOString(),
+    ts: Date.now(),
+    stage,
+    ok: Boolean(meta.ok),
+    orderNumber: meta.orderNumber ?? null,
+    paymentStatus: meta.paymentStatus ?? null,
+    dryRun: meta.dryRun !== false,
+    cartGet: rankOf(stage) >= rankOf("cart_get"),
+    reached3ds: rankOf(stage) >= rankOf("3ds"),
+    frictionless: null,
+    processStatus: null,
+    widgetNote: null,
+    failedStep: null,
+    live: true,
+    proxy: meta.proxy ? true : false,
+    transport: meta.transport ?? null,
+    gitSha: process.env.EXECUTOR_GIT_SHA || null,
+    step: meta.step ?? null,
+  });
 }
 
 function trimFile() {
