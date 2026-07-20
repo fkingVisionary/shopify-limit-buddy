@@ -13,6 +13,7 @@ import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
 import { listRunMilestones } from "./run-milestones.js";
+import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -59,7 +60,8 @@ app.get("/health", async () => ({
   transport: HTTP_TRANSPORT,
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI) || resiPoolSize() > 0,
+  proxyPoolSize: resiPoolSize(),
   gitSha: GIT_SHA,
   monitorEnabled: MONITOR_ENABLE,
 }));
@@ -227,6 +229,24 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
+  // Resolve proxy on Fly: honor useProxy → resi.proxies; refuse dead
+  // WealthProxies/IPFist even if the Cloudflare Worker still sends Test Pool.
+  const resolved = resolveRunProxy({
+    proxy: task.proxy,
+    proxies: task.proxies,
+    proxyEntries: task.proxyEntries,
+    useProxy: task.useProxy === true,
+  });
+  req.log.info(
+    {
+      proxySource: resolved.source,
+      proxyPoolSize: resolved.poolSize,
+      proxyIndex: resolved.index,
+      hasProxy: Boolean(resolved.proxy),
+    },
+    "run proxy resolved",
+  );
+
   inflight++;
   try {
     const result = await runCheckout({
@@ -236,7 +256,7 @@ app.post("/run", async (req, reply) => {
       qty: Number(task.qty ?? 1),
       profile: task.profile ?? null,
       card,
-      proxy: task.proxy ?? null,
+      proxy: resolved.proxy,
       dryRun: task.dryRun !== false,
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
@@ -250,8 +270,14 @@ app.post("/run", async (req, reply) => {
       httpHandoff: task.httpHandoff !== false,
       skipAtc: task.skipAtc === true,
       apiSensor: task.apiSensor === true,
-      skipCategory: task.skipCategory === true,
+      // undefined = let adapter default (skip category when proxied)
+      skipCategory:
+        task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
     });
+    if (result && typeof result === "object") {
+      result.proxySource = resolved.source;
+      result.proxyPoolSize = resolved.poolSize;
+    }
     return result;
   } catch (e) {
     reply.code(500);
