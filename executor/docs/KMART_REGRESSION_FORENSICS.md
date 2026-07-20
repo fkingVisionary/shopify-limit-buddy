@@ -131,3 +131,15 @@ Browser delta after seed: drop `x-visitor-id`, **add** cache headers on GraphQL.
 Post-`6d0d21a` tip did the inverse on GraphQL (kept/added visitor+apollo, never
 added cache headers). Restore cache headers on **GraphQL profiles only**; keep
 get-token without them.
+
+### Also over-corrected by `6d0d21a`: Client Hints on GraphQL
+
+| Source | GraphQL Client Hints |
+|---|---|
+| slim HAR (real Chrome) | low-entropy trio only |
+| mriwd1up / `7784fab` (undici cart_get 200) | **full `CHROME_CH` (high-entropy)** |
+| tip after `6d0d21a` | forced `CHROME_CH_XHR` on all api XHRs |
+
+Tip `#48` restored cache headers; GraphQL still denied. Next: restore **full
+`CHROME_CH` on GraphQL only** (get-token stays XHR trio — already 200) and use
+the slim-HAR `getMyActiveCart` fragment body (~2.4kb) instead of the ~220b stub.
