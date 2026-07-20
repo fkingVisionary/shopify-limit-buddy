@@ -21,7 +21,7 @@ Ignore any stale preview host labels (`proxyUsed: Test Pool`). Trust Fly
 | Knob | Value |
 |------|--------|
 | Transport | **undici** for document nav (charge path) |
-| Sensor TLS | **tls-worker chrome_131 for Hyper sensor phase** (default ON — undici sensors plateau `ind=-1`) |
+| Sensor TLS | **tls-worker BEFORE warm_home** through sensors/SBSD (same JA3 for cookie seed + posts); restore undici for PDP |
 | api.* TLS | **tls-worker handoff** when proxied (`apiTls` default on with proxy) |
 | Category | **skip** (home→PDP) |
 | Dead proxies | refused → ISP pool or direct |
