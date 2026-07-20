@@ -150,3 +150,22 @@ still GraphQL 403 after green get-token. Remaining mriwd delta vs tip:
 
 Restore exact mriwd api header construction (no accept-encoding; full CH on
 get-token + GraphQL). Do not treat same-jar get-token/GraphQL split as proxy blame.
+
+### Tip `#50`: undici still injects Accept-Encoding; real delta was SBSD skip
+
+Omitting `accept-encoding` from our header object is a no-op — undici `fetch`
+always sends `gzip, deflate, br, zstd` unless overridden. Header churn was not
+the remaining lever.
+
+Diff vs last `cart_get` 200 artifact (`kmart-resi-run.json`):
+
+| Step | cart_get 200 | tip `#50` ISP fail |
+|---|---|---|
+| `sbsd_home` | ran | ran |
+| `sbsd_pdp` | **ran** (bm_* mint + `pdp_get#2`) | **`sbsd_pdp:skipped`** (`pdpHtmlAlreadyOk`) |
+| `api_get_token` | 200 | 200 |
+| `cart_get` | JSON 200 | AkamaiGHost 403 |
+
+`203950c` skipped SBSD when PDP HTML was already clear to protect SoftBlock
+wipes — but that also skipped PDP SBSD cookie minting. Fix: always `runSbsd`
+when the tag is present; keep clear HTML via existing `pdp_get#2:keep_prior`.

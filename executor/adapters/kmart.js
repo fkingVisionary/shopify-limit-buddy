@@ -1455,15 +1455,17 @@ export const kmartAdapter = {
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
     //
-    // If first PDP already returned real product HTML, skip SBSD re-GET.
-    // SoftBlock on pdp_get#2 has been wiping good 200 HTML (and cart/sku).
-    // Restored from 203950c / PR #36.
+    // 203950c skipped SBSD entirely when PDP HTML was already clear, to avoid
+    // SoftBlock wiping good HTML on pdp_get#2. Live tip #50: that skip left
+    // get-token 200 / GraphQL 403, while the last cart_get 200 artifact still
+    // ran sbsd_pdp rounds (bm_* mint) before api.*. Always run SBSD when the
+    // tag is present; keep_prior on pdp_get#2 preserves clear HTML.
     const pdpHtmlAlreadyOk =
       pdpStatus >= 200 &&
       pdpStatus < 300 &&
       pdpHtml.length > 50_000 &&
       !/Access Denied|AkamaiGHost/i.test(pdpHtml);
-    if (parseSbsd(pdpHtml) && !pdpHtmlAlreadyOk) {
+    if (parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
@@ -1493,7 +1495,11 @@ export const kmartAdapter = {
           "akamai-grn": res.headers.get("akamai-grn"),
           "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
         };
-        return { status: pdpStatus, ok: pdpStatus >= 200 && pdpStatus < 300, note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} | ${snippet}` };
+        return {
+          status: pdpStatus,
+          ok: pdpStatus >= 200 && pdpStatus < 300,
+          note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} priorOk=${pdpHtmlAlreadyOk ? 1 : 0} | ${snippet}`,
+        };
       });
       // Residential often needs an extra dwell after bm_sv mints before WWW
       // HTML unlocks. ISP usually clears on #2 — this is a no-op then.
@@ -1575,12 +1581,6 @@ export const kmartAdapter = {
           };
         });
       }
-    } else if (parseSbsd(pdpHtml) && pdpHtmlAlreadyOk) {
-      steps.push({
-        step: "sbsd_pdp:skipped",
-        ok: true,
-        note: `PDP HTML already clear (${pdpHtml.length}b status=${pdpStatus}) — skip SBSD re-GET`,
-      });
     } else if (pdpStatus >= 400) {
       steps.push({ step: "sbsd_missing", ok: false, note: `pdp ${pdpStatus} body had no SBSD script tag` });
     }
