@@ -82,6 +82,18 @@ Fly already ships Playwright+Chrome in the executor image; phone smoke can pass
 3. Upgrade tls-client when **Chrome133+** identifiers ship; try `chrome_116_PSK_PQ` only behind a knob (home OK, bare PDP still Ghost without sensors).
 4. Score bank / milestones / `cart_get` JSON — not smoke `fail_N` alone.
 
+## Pool-wide GraphQL deny (2026-07-20 ~23:41Z tip `3da81cb`)
+
+Explicit `/run` with `proxy=` across diverse `resi.proxies` exits
+(`45.42.47.{161,34}`, `178.210.242.133`, `175.29.0.42`, `193.30.101.82`):
+each got `akamai_solved` → PDP HTML → get-token → **`cart_get` all_denied**.
+One exit SoftBlocked BM (`216.185.44.255`). Rotating the static ISP list will
+not clear GraphQL.
+
+Smoke run `29787884538` ISP ladder (do not read as zero progress):
+
+`akamai_solved` → `pdp_get` → `api_get_token` → **wall=`cart_get`**
+
 ## Bottom line
 
 Previous clears were **one client + trusted egress**. Hyper agrees. Tonight ISP + Hyper sensors still mint `_abck`, undici still fetches PDP HTML, and GraphQL still Ghost-denies on the same jar — that is past header-profile exhaustion (see `KMART_REGRESSION_FORENSICS.md` §GraphQL). Park reuse was the correct next step vs fresh worker; it did not clear GraphQL. Next wins are egress class (sticky resi/mobile) or a true single-TLS browser lane that can open PDP, not more SoftBlock polling on Fly direct.
