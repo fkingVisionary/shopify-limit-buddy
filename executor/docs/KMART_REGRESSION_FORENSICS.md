@@ -140,6 +140,13 @@ get-token without them.
 | mriwd1up / `7784fab` (undici cart_get 200) | **full `CHROME_CH` (high-entropy)** |
 | tip after `6d0d21a` | forced `CHROME_CH_XHR` on all api XHRs |
 
-Tip `#48` restored cache headers; GraphQL still denied. Next: restore **full
-`CHROME_CH` on GraphQL only** (get-token stays XHR trio — already 200) and use
-the slim-HAR `getMyActiveCart` fragment body (~2.4kb) instead of the ~220b stub.
+Tip `#48` restored cache headers; `#49` restored full CH on GraphQL + HAR body —
+still GraphQL 403 after green get-token. Remaining mriwd delta vs tip:
+
+| Field | mriwd1up / `7784fab` | tip `#49` |
+|---|---|---|
+| `accept-encoding` on api XHRs | **omitted** | `gzip, deflate, br, zstd` (from `6d0d21a` HAR) |
+| get-token Client Hints | **full `CHROME_CH`** | `CHROME_CH_XHR` |
+
+Restore exact mriwd api header construction (no accept-encoding; full CH on
+get-token + GraphQL). Do not treat same-jar get-token/GraphQL split as proxy blame.
