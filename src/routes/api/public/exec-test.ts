@@ -102,15 +102,18 @@ export const Route = createFileRoute("/api/public/exec-test")({
         } catch {
           origin = origin.replace(/\/+$/, "");
         }
-        // Card injected from Lovable Cloud secrets so executor can tokenize.
-        // null if any field missing — adapter then skips paydock_tokenize.
+        // Card ONLY when explicitly requested. Default cart smokes must not
+        // attach KMART_CARD_* — adapter still runs Paydock/3DS whenever a card
+        // is present (even dryRun), which hits Revolut approve/reject. Agents
+        // timed out at 120s and missed those timelines (pulse-d / Jul 20).
         const number = process.env.KMART_CARD_NUMBER;
         const cvv = process.env.KMART_CARD_CVV;
         const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
         const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
         const holder = process.env.KMART_CARD_HOLDER;
+        const wantCard = body.placeOrder === true || body.withCard === true;
         const card =
-          number && cvv && expMonth && expYear && holder
+          wantCard && number && cvv && expMonth && expYear && holder
             ? { number, cvv, expMonth, expYear, holder }
             : null;
         const t0 = Date.now();
@@ -141,16 +144,18 @@ export const Route = createFileRoute("/api/public/exec-test")({
           if (!body.storeUrl) {
             return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
           }
+          const placeOrder = body.placeOrder === true;
           const payload = {
             taskId: body.taskId ?? `smoke-${Date.now()}`,
             storeUrl: body.storeUrl,
             variantId: body.variantId ?? 1,
             qty: 1,
-            dryRun: body.dryRun ?? true,
+            dryRun: placeOrder ? false : (body.dryRun ?? true),
+            placeOrder,
             proxy,
             proxies: proxyList ?? undefined,
             useProxy: forwardUseProxy || undefined,
-            card,
+            ...(card ? { card } : {}),
             ...(typeof body.transport === "string" ? { transport: body.transport } : {}),
             ...(body.forceTls === true ? { forceTls: true } : {}),
             ...(body.forceUndici === true ? { forceUndici: true } : {}),
@@ -163,12 +168,44 @@ export const Route = createFileRoute("/api/public/exec-test")({
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean };
+          const data = (await res.json().catch(() => ({}))) as {
+            steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>;
+            error?: string;
+            failedStep?: string;
+            ok?: boolean;
+            checkoutStage?: string;
+            orderNumber?: string | null;
+            paymentStatus?: string | null;
+            paymentSummary?: unknown;
+            dryRun?: boolean;
+          };
           // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
           const compactSteps = Array.isArray(data?.steps)
             ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 5000 ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})` : s.note) : undefined }))
             : [];
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed });
+          const stepNames = compactSteps.map((s) => s.s).filter(Boolean) as string[];
+          const reached3ds = stepNames.some((n) => /create_3ds|paydock_3ds|chargeAuth/i.test(n));
+          const cartGet = compactSteps.find((s) => s.s === "cart_get");
+          return Response.json({
+            ok: res.ok,
+            status: res.status,
+            elapsedMs: Date.now() - t0,
+            run: {
+              ok: data.ok,
+              err: data.error,
+              fs: data.failedStep,
+              stage: data.checkoutStage ?? null,
+              order: data.orderNumber ?? null,
+              payment: data.paymentStatus ?? null,
+              pay: data.paymentSummary ?? null,
+              dryRun: data.dryRun ?? !placeOrder,
+              cartGet: cartGet ? { ok: cartGet.o, status: cartGet.c, n: cartGet.n } : null,
+              reached3ds,
+              steps: compactSteps,
+            },
+            cardSent: Boolean(card),
+            proxyUsed,
+          });
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
