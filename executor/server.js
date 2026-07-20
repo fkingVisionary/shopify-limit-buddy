@@ -178,11 +178,14 @@ app.get("/milestones", async (req, reply) => {
   const q = req.query ?? {};
   const limit = Math.min(80, Math.max(1, Number(q.limit ?? 40) || 40));
   const minStage = typeof q.minStage === "string" && q.minStage ? q.minStage : "cart_get";
-  const rows = listRunMilestones({ limit, minStage });
+  const taskId = typeof q.taskId === "string" && q.taskId ? q.taskId : null;
+  const rows = listRunMilestones({ limit, minStage, taskId });
   return {
     ok: true,
     count: rows.length,
     minStage,
+    taskId,
+    gitSha: GIT_SHA,
     milestones: rows,
   };
 });
@@ -277,6 +280,7 @@ app.post("/run", async (req, reply) => {
     if (result && typeof result === "object") {
       result.proxySource = resolved.source;
       result.proxyPoolSize = resolved.poolSize;
+      result.gitSha = GIT_SHA;
     }
     return result;
   } catch (e) {

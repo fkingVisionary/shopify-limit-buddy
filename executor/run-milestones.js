@@ -44,7 +44,17 @@ export function milestoneFromResult(out = {}) {
     (cartGet.status == null || cartGet.status === 200) &&
     !/all_denied|Access Denied|AkamaiGHost/i.test(String(cartGet?.note || ""));
 
-  if (!cartGetOk && !out.orderNumber && rankOf(out.checkoutStage) < rankOf("tokenize")) {
+  const has3dsSteps = (steps || []).some((s) =>
+    /^paydock_3ds|create_3ds/i.test(String(s?.step || "")),
+  );
+  // Never drop a 3DS/order trail just because cart_get was scored poorly —
+  // client timeouts + Access Denied notes used to erase Revolut-proven wins.
+  if (
+    !cartGetOk &&
+    !out.orderNumber &&
+    !has3dsSteps &&
+    rankOf(out.checkoutStage) < rankOf("tokenize")
+  ) {
     return null;
   }
 
@@ -167,8 +177,9 @@ function trimFile() {
   }
 }
 
-export function listRunMilestones({ limit = 40, minStage = "cart_get" } = {}) {
+export function listRunMilestones({ limit = 40, minStage = "cart_get", taskId = null } = {}) {
   const minRank = rankOf(minStage);
+  const wantTask = taskId != null && String(taskId).length ? String(taskId) : null;
   let lines = [];
   try {
     lines = fs.readFileSync(FILE, "utf8").split("\n").filter(Boolean);
@@ -179,6 +190,7 @@ export function listRunMilestones({ limit = 40, minStage = "cart_get" } = {}) {
   for (let i = lines.length - 1; i >= 0 && rows.length < limit; i--) {
     try {
       const row = JSON.parse(lines[i]);
+      if (wantTask && String(row.taskId || "") !== wantTask) continue;
       if (rankOf(row.stage) >= minRank) rows.push(row);
     } catch {
       /* skip bad line */
