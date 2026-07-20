@@ -1715,18 +1715,19 @@ export const kmartAdapter = {
       };
     };
 
-    // Exact mriwd1up / 7784fab api XHR shape (undici cart_get 200). Notably:
-    // - FULL CHROME_CH (not CHROME_CH_XHR)
-    // - NO accept-encoding (6d0d21a added br/zstd from slim HAR; mriwd omitted)
-    // - cache-control/pragma on GraphQL only (get-token omits them)
+    // Align to last undici cart_get 200 artifact (kmart-resi-run / resi-dry-1):
+    // low-entropy CHROME_CH_XHR + accept-encoding + visitor/apollo, NO
+    // cache-control/pragma, NO high-entropy CH. Tips #48–#50 diverged from that
+    // working shape; undici also always injects AE even when omitted.
     const apiXhrBase = (referer) => ({
       "user-agent": UA,
-      "content-type": "application/json",
       accept: "*/*",
       "accept-language": ACCEPT_LANG,
+      "accept-encoding": "gzip, deflate, br, zstd",
+      "content-type": "application/json",
       origin,
       referer,
-      ...CHROME_CH,
+      ...CHROME_CH_XHR,
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
@@ -1740,36 +1741,40 @@ export const kmartAdapter = {
     // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
     // on the same jar/IP — request shape on /gateway/graphql is the lever.
     const gqlProfiles = {
-      // Byte-for-byte mriwd1up gqlHeaders (+ NR added in gqlPost).
+      // Proven undici cart_get 200 header keys (resi-dry-1).
       baseline: {
         ...apiXhrBase(apiDocReferer),
+        "x-country-code": "AU",
+        "x-visitor-id": apiVisitorId,
+        "apollographql-client-name": "kmart-web",
+        "apollographql-client-version": "nx14-10200",
+      },
+      seed_match: {
+        ...apiXhrBase(apiDocReferer),
+        "x-visitor-id": apiVisitorId,
+      },
+      har_slim: {
+        ...apiXhrBase(homeReferer),
+        ...gqlCacheHeaders,
+      },
+      // Older mriwd1up shape as fallback (full CH + cache).
+      mriwd_full: {
+        ...apiXhrBase(apiDocReferer),
+        ...CHROME_CH,
         ...gqlCacheHeaders,
         "x-country-code": "AU",
         "x-visitor-id": apiVisitorId,
         "apollographql-client-name": "kmart-web",
         "apollographql-client-version": "nx14-10200",
       },
-      // get-token stamps + GraphQL cache headers (no apollo/country).
-      seed_match: {
-        ...apiXhrBase(apiDocReferer),
-        ...gqlCacheHeaders,
-        "x-visitor-id": apiVisitorId,
-      },
-      // Homepage referer variant (still mriwd CH / no accept-encoding).
-      har_slim: {
-        ...apiXhrBase(homeReferer),
-        ...gqlCacheHeaders,
-      },
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
-        ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
       },
       with_bearer: null,
     };
     let shoppingAgentToken = null;
-    // Soft API only: start with get-token-shaped profile. Else mriwd baseline.
     let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
 
@@ -1900,17 +1905,37 @@ export const kmartAdapter = {
           .split(";")
           .map((p) => p.trim().split("=")[0])
           .filter(Boolean);
-        const omittedCf = Object.keys(ctx.jar.dump()).filter((n) => n.startsWith("__cf_"));
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=${apiDocReferer === homeReferer ? "home" : "pdp"} setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} apiCookies=[${apiCookieNames.join(",")}] omitCf=[${omittedCf.join(",") || "none"}] body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=${apiDocReferer === homeReferer ? "home" : "pdp"} setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} apiCookies=[${apiCookieNames.join(",")}] body=${bodyTxt}`,
         };
       });
       if (!apiSeedOk) {
         steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
         return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
+      }
+      // After shopping-agent seed, open a fresh CONNECT/TLS to api.* before
+      // GraphQL (same jar/exit). Browser typically does not reuse the seed
+      // socket for /gateway/graphql the way a keep-alive ProxyAgent pool does.
+      // Skip when task.apiTunnelRefresh === false. Not a sticky-only refresh —
+      // that one runs *before* get-token and is ISP-skipped on purpose.
+      if (task.proxy && task.apiConnRefresh !== false) {
+        try {
+          await ctx.dispatcher?.resetUndici?.();
+          steps.push({
+            step: "api_conn_refresh",
+            ok: true,
+            note: "ProxyAgent reset after get-token before GraphQL (jar unchanged)",
+          });
+        } catch (e) {
+          steps.push({
+            step: "api_conn_refresh",
+            ok: false,
+            note: e?.message ?? String(e),
+          });
+        }
       }
       // Brief gap after get-token before GraphQL (soft-entry + any proxied run).
       if (apiSoftEntry || task.proxy) await sleep(800, 1500);
@@ -2060,9 +2085,8 @@ export const kmartAdapter = {
           bmsz: marker(ctx.jar.get("bm_sz")),
         }),
       });
-      // Slim HAR getMyActiveCart body (fragments included). Tip used a ~220b
-      // stub; browser posts ~2.4kb with PostcodeSelectorBagFields. Keep the
-      // stub available via task.gqlCartQuery="minimal" if the rich query 400s.
+      // Default = minimal stub (resi-dry-1 cart_get 200). Opt into slim-HAR
+      // fragments with task.gqlCartQuery="har".
       const GET_ACTIVE_CART_MINIMAL =
         "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }";
       const GET_ACTIVE_CART_HAR = `query getMyActiveCart {
@@ -2196,12 +2220,12 @@ fragment PostcodeSelectorBagFields on Cart {
       const GET_ACTIVE_CART = {
         operationName: "getMyActiveCart",
         variables: {},
-        query: task.gqlCartQuery === "minimal" ? GET_ACTIVE_CART_MINIMAL : GET_ACTIVE_CART_HAR,
+        query: task.gqlCartQuery === "har" ? GET_ACTIVE_CART_HAR : GET_ACTIVE_CART_MINIMAL,
       };
       steps.push({
         step: "cart_get:query",
         ok: true,
-        note: `bytes=${GET_ACTIVE_CART.query.length} shape=${task.gqlCartQuery === "minimal" ? "minimal" : "har_fragments"}`,
+        note: `bytes=${GET_ACTIVE_CART.query.length} shape=${task.gqlCartQuery === "har" ? "har_fragments" : "minimal"}`,
       });
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
@@ -2259,8 +2283,8 @@ fragment PostcodeSelectorBagFields on Cart {
           // with_bearer only when task.gqlBearer===true — slim HAR never sends
           // Authorization, and Fly tip #47 proved ya29 does not clear AkamaiGHost.
           const fallbackOrder = apiSoftEntry
-            ? ["har_slim", "baseline", "pdp_visitor"]
-            : ["seed_match", "har_slim", "pdp_visitor"];
+            ? ["har_slim", "baseline", "pdp_visitor", "mriwd_full"]
+            : ["seed_match", "har_slim", "pdp_visitor", "mriwd_full"];
           if (task.gqlBearer === true) fallbackOrder.push("with_bearer");
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
@@ -2375,7 +2399,7 @@ fragment PostcodeSelectorBagFields on Cart {
               });
             }
             // Retry mriwd baseline first — post-sensor tip previously skipped it.
-            const postSensorOrder = ["baseline", "seed_match", "har_slim"];
+            const postSensorOrder = ["baseline", "seed_match", "har_slim", "mriwd_full"];
             if (task.gqlBearer === true) postSensorOrder.push("with_bearer");
             for (const name of postSensorOrder) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
