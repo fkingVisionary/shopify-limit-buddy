@@ -5,6 +5,11 @@
 ```bash
 EXECUTOR_TOKEN=... ./executor/scripts/fly-probe-once.sh
 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh   # ISP + apiTls handoff
+
+# Capture a real Chromium HAR via ISP (no Hyper) for diffs vs public/kmart-slim.har
+npx playwright install chromium   # once
+OUT=/tmp/kmart-browser.har node executor/scripts/capture-kmart-har.mjs
+# See executor/docs/HYPER_HAR_ALIGNMENT.md
 API_TLS=0 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh  # undici api.*
 ```
 

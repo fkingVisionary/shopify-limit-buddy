@@ -1218,7 +1218,9 @@ export const kmartAdapter = {
       return abckSolved(ctx.jar, roundHint);
     };
 
-    const sensorRounds = 5;
+    // Hyper: max 3 sensor posts; more rounds without TLS/IP fix only burn quota.
+    // Plateau break still fires early if _abck length stalls before round 3.
+    const sensorRounds = 3;
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
