@@ -69,10 +69,13 @@ migrations + one Deno edge function.
   download fails (common on Fly via api.github.com 403). Dockerfile must curl the
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
   If `transport_select` shows `tls-worker init failed → undici`, check that bake.
-- **Post-TLS smoke notes (tip 792adb6):** `tls-worker` + sticky AU resi solves
-  `_abck` in ~3 rounds. Fly direct IP SoftBlocks sensors (~793b). WealthProxies
-  `-S` must count as sticky or `verify_ip` aborts on drift after solve. Prefer
-  home→PDP on proxy (skip `/category/*` hard denies). Score furthest stage.
+- **Proxies:** WealthProxies / IPFist / Lovable “Test Pool” are **dead** (subs
+  cancelled). Do not smoke or default to them. Prefer Fly `useProxy` →
+  `executor/resi.proxies` (static AU ISP) or direct. Do not gate runs on
+  sticky/drift IP checks (speed + false aborts after `akamai_solved`).
+- **Post-TLS:** `tls-worker` can solve `_abck` on a live exit; Fly direct often
+  SoftBlocks (~793b). Prefer home→PDP on proxy (skip `/category/*` hard denies).
+  Score furthest stage.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
   do not re-harden it into a fail-closed merge blocker without an explicit ask.
 

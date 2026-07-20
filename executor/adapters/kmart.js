@@ -557,26 +557,20 @@ export const kmartAdapter = {
     // 1. Resolve egress IP for Hyper fingerprinting. Proxy comes from the
     //    task payload only — never a hard-coded / env default in this adapter.
     //    Some residential pools block ipify; resolveEgressIp tries several hosts.
+    // stickyProxy is only a light undici reuse hint — never gate the run on it
+    // (WealthProxies/IPFist are dead; do not spend time classifying stickiness).
     const stickyProxy = isStickyProxyUrl(task.proxy);
     let egressIp = null;
-    // Parallel IP race (ip-resolve.js) — one pass is enough for sticky; ISP
-    // gets a second pass with agent reset if the first echo host flaked.
-    const ipAttempts = stickyProxy ? 1 : 2;
-    for (let attempt = 0; attempt < ipAttempts && !egressIp; attempt++) {
-      if (attempt > 0) {
-        try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(400, 900);
-      }
-      await tStep(attempt === 0 ? "resolve_ip" : `resolve_ip#${attempt + 1}`, async () => {
-        const v = await resolveEgressIp(ctx, { force: true });
-        egressIp = v;
-        const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
-        return {
-          note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}${stickyProxy ? " sticky=1" : ""}`,
-          ok: Boolean(v),
-        };
-      });
-    }
+    // One IP echo pass for speed. Missing IP is soft (Hyper quality hit only).
+    await tStep("resolve_ip", async () => {
+      const v = await resolveEgressIp(ctx, { force: true });
+      egressIp = v;
+      const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
+      return {
+        note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}`,
+        ok: Boolean(v),
+      };
+    });
     // Soft: missing IP is a Hyper quality hit, not a hard stop. Residential
     // tunnels often block IP-echo hosts while Kmart still works (ISP proved
     // the rest of the path). Abort only when proxied IP equals direct IP.
@@ -1287,32 +1281,9 @@ export const kmartAdapter = {
     // (step 6 below) still runs when the PDP actually embeds a pixel.
 
 
-    // Verify egress IP held. Soft-warn on sticky resi (echo hosts flake /
-    // brief drift). Hard-fail only for non-sticky (ISP) when IP clearly changed.
-    let verifyIpAbort = false;
-    await tStep("verify_ip", async () => {
-      if (!egressIp) {
-        return { ok: true, note: "start=? skipped (no initial ip)" };
-      }
-      const ipNow = await resolveEgressIp(ctx, { force: true });
-      const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-      const hardDrift = Boolean(task.proxy && !same && !stickyProxy && ipNow);
-      if (hardDrift) verifyIpAbort = true;
-      return {
-        ok: !hardDrift,
-        note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${same}${stickyProxy ? " sticky=1" : ""}${hardDrift ? " abort=1" : ""}`,
-      };
-    });
-    if (verifyIpAbort) {
-      return {
-        ok: false,
-        steps,
-        failedStep: "verify_ip",
-        checkoutStage: "pre_cart",
-        finalUrl: origin,
-        cookies: ctx.jar.dump(),
-      };
-    }
+    // No mid-run IP re-check / sticky drift gate — costs a round-trip and aborts
+    // good sensor solves. Egress is whatever resolve_ip got (or empty).
+    steps.push({ step: "verify_ip", ok: true, note: "skipped (no sticky/drift gate)" });
 
     // 4c. Intermediate category browse is OPTIONAL. On some residential exits
     //     /category/* is hard-blocked even with bm_sv, while PDP with a home
@@ -1323,9 +1294,9 @@ export const kmartAdapter = {
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    // Default skip on proxied runs: /category/* often hard-denies on resi exits
+    // Default skip on proxied runs: /category/* often hard-denies on some exits
     // even after bm_sv, and the SBSD retry loop can poison the session before PDP.
-    // Green direct runs historically survived category 301; resi wants home→PDP.
+    // Green direct runs historically survived category 301; proxied → home→PDP.
     const skipCategory =
       task.skipCategory === true ||
       process.env.KMART_SKIP_CATEGORY === "1" ||

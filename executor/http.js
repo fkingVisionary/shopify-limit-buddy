@@ -183,12 +183,9 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/** Sticky residential usernames (session-… / sessid=… / WealthProxies -S…) — keep one ProxyAgent. */
+/** Optional hint for undici ProxyAgent reuse only — never a run gate. */
 function isStickyProxyUrl(proxyUrl) {
-  // WealthProxies embeds sticky id as -S<hex> in the password; Oxylabs/etc use session-.
-  return /session-[A-Za-z0-9]+|sessid=|sessionid=|-S[a-f0-9]{6,}|(?:^|[_\-.])sess(?:ion)?[_\-=]/i.test(
-    String(proxyUrl || ""),
-  );
+  return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
 }
 
 class Dispatcher {
