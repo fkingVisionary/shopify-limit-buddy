@@ -28,6 +28,10 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxyGroupId?: string;
           proxyGroupName?: string;
           dryRun?: boolean;
+          /** Real place-order + 3DS. Implies card injection from Lovable secrets. */
+          placeOrder?: boolean;
+          /** Inject KMART_CARD_* without placeOrder (still runs Paydock/3DS — Revolut will ping). */
+          withCard?: boolean;
           /** Opt-in executor experiments (forwarded to Fly /run). */
           transport?: string;
           forceTls?: boolean;

@@ -36,8 +36,13 @@ migrations + one Deno edge function.
   ISP/proxy work is secondary. If direct regresses, **stop immediately**, tell the user,
   and restore — do not open more GraphQL/header/TLS/proxy PRs.
 - **Agent duty every tip:** After deploy, smoke direct via Lovable
-  `POST /api/public/exec-test` (no `proxyUrl`). Report `cart_get` status in the summary.
-  If it is not JSON 200, that tip failed — even if ISP “looks better.”
+  `POST /api/public/exec-test` (no `proxyUrl`). Report `cart_get` **and** any
+  `create_3ds` / `paydock_3ds_*` / `reached3ds` / `payment` fields. Wait **≥180s**
+  (3DS/Revolut can outlive a 120s curl). If `cart_get` is not JSON 200, say so —
+  but do not claim “nothing works” if a run reached 3DS/payment.
+- **Do not attach a card on cart smokes.** `exec-test` only injects `KMART_CARD_*`
+  when `placeOrder:true` or `withCard:true`. A card on the task still runs Paydock
+  3DS (Revolut approve/reject) even when `dryRun` is true.
 - **CI gate:** `Deploy executor` runs `executor/scripts/direct-cart-gate.sh` after Fly
   deploy and **fails the workflow** on GraphQL Access Denied, empty 502, or inability
   to verify (sensor unsolved after retries). Do not weaken this gate.
