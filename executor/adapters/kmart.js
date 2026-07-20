@@ -639,6 +639,54 @@ export const kmartAdapter = {
       });
     } else {
 
+    // Hyper: warm + script + sensors must share one TLS fingerprint. #75 handed
+    // off AFTER undici warm_home → cookies minted on Node JA3, sensors posted
+    // on chrome_131 → bodySuccess=true + plateau ind=-1 (same as undici-only
+    // smash). Other Hyper bots keep one client for the whole BM phase.
+    // Opt out: sensorTls:false or KMART_SENSOR_TLS=0.
+    const wantSensorTls =
+      task.sensorTls === true ||
+      (task.sensorTls !== false &&
+        task.forceUndici !== true &&
+        process.env.KMART_SENSOR_TLS !== "0");
+    const sensorAlreadyTls =
+      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+    if (wantSensorTls && !sensorAlreadyTls) {
+      await tStep("sensor_tls_handoff", async () => {
+        const prev = ctx.dispatcher;
+        try {
+          const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
+          ctx._navDispatcher = prev;
+          ctx.dispatcher = tlsD;
+          return {
+            ok: true,
+            note: `tls-worker chrome_131 BEFORE warm_home (same JA3 for seed+sensors) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            note: `sensor tls-worker failed — warm/sensors stay on ${prev?.transport ?? "undici"}: ${e?.message ?? String(e)}`.slice(0, 400),
+          };
+        }
+      });
+    }
+    const restoreNavTransport = async (reason) => {
+      if (!ctx._navDispatcher || ctx.dispatcher === ctx._navDispatcher) return;
+      const sensorD = ctx.dispatcher;
+      ctx.dispatcher = ctx._navDispatcher;
+      ctx._navDispatcher = null;
+      steps.push({
+        step: "sensor_tls_restore",
+        ok: true,
+        note: `back to ${ctx.dispatcher?.transport ?? "undici"} for document nav (${reason}); closed sensor ${sensorD?.transport ?? "?"}`,
+      });
+      try {
+        await sensorD?.close?.();
+      } catch {
+        /* ignore */
+      }
+    };
+
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
     try {
@@ -970,55 +1018,6 @@ export const kmartAdapter = {
     // NOTE: SBSD runs AFTER sensors below (Kmart needs a solved _abck before
     // passive SBSD reliably mints bm_sv on this edge). Hyper §3.5 suggests
     // SBSD-first for some sites; empirically sensors-then-SBSD is required here.
-
-    // Hyper: Akamai scores JA3/JA4 before sensor content. Sensors on undici
-    // often return bodySuccess=true while _abck plateaus ~791b ind=-1 — that is
-    // OUR TLS handling, not "wait out SoftBlock". Hand off chrome_131 for
-    // script GET + sensor POSTs + home SBSD, then restore undici for document
-    // nav (whole-session tls-worker previously 403'd category/PDP).
-    // Opt out: sensorTls:false or KMART_SENSOR_TLS=0.
-    const wantSensorTls =
-      task.sensorTls === true ||
-      (task.sensorTls !== false &&
-        task.forceUndici !== true &&
-        process.env.KMART_SENSOR_TLS !== "0");
-    const sensorAlreadyTls =
-      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
-    if (wantSensorTls && !sensorAlreadyTls) {
-      await tStep("sensor_tls_handoff", async () => {
-        const prev = ctx.dispatcher;
-        try {
-          const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
-          ctx._navDispatcher = prev;
-          ctx.dispatcher = tlsD;
-          return {
-            ok: true,
-            note: `tls-worker chrome_131 for Hyper sensor phase proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
-          };
-        } catch (e) {
-          return {
-            ok: false,
-            note: `sensor tls-worker failed — sensors stay on ${prev?.transport ?? "undici"}: ${e?.message ?? String(e)}`.slice(0, 400),
-          };
-        }
-      });
-    }
-    const restoreNavTransport = async (reason) => {
-      if (!ctx._navDispatcher || ctx.dispatcher === ctx._navDispatcher) return;
-      const sensorD = ctx.dispatcher;
-      ctx.dispatcher = ctx._navDispatcher;
-      ctx._navDispatcher = null;
-      steps.push({
-        step: "sensor_tls_restore",
-        ok: true,
-        note: `back to ${ctx.dispatcher?.transport ?? "undici"} for document nav (${reason}); closed sensor ${sensorD?.transport ?? "?"}`,
-      });
-      try {
-        await sensorD?.close?.();
-      } catch {
-        /* ignore */
-      }
-    };
 
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
