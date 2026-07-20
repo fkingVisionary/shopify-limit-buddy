@@ -52,10 +52,7 @@ function isRetryableNetworkError(error) {
     combined.includes("client network socket disconnected") ||
     combined.includes("other side closed") ||
     combined.includes("socket hang up") ||
-    combined.includes("fetch failed") ||
-    // d60eeee: ISP undici tunnels often surface these mid-SBSD / mid-nav.
-    combined.includes("request was cancelled") ||
-    combined.includes("aborted")
+    combined.includes("fetch failed")
   );
 }
 
@@ -148,84 +145,9 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/**
- * Sticky residential markers in the proxy URL/username.
- * - Noontide / many AU resi: `session-TOKEN`
- * - IP Fist premium: `-sid-TOKEN` (+ optional `-f-country-xx` / `-l-MINS`)
- * - Generic: `sessid=` / `sessionid=`
- *
- * Dedicated ISP (bare IPv4 host) is NOT sticky — exit is the host itself.
- * a1d9f9c only matched session- tokens. Treating bare-IP as sticky (82d750f)
- * forced the residential sensor ladder (5 rounds + tunnel refresh) and broke
- * Hyper solve on static ISP (live: stickyUrl=1 → akamai_unsolved; prior tip
- * sticky=0 on same 45.42.47.235 → akamai_solved).
- */
+/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
 function isStickyProxyUrl(proxyUrl) {
-  return /session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(String(proxyUrl || ""));
-}
-
-function newStickySessionId() {
-  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-}
-
-/**
- * Pin a rotating gateway residential proxy to one exit for the whole checkout.
- * Without this, providers like IP Fist rotate mid-run → `_abck` invalid →
- * api.kmart.com.au GraphQL Access Denied after a green WWW solve.
- *
- * - Already-sticky URLs unchanged.
- * - Bare-IP ISP hosts unchanged (credentials must not be mutated).
- * - IP Fist → append `-f-country-au-sid-{id}-l-30` (or refresh existing `-sid-`).
- * - Other gateways → append `-session-{id}` to the username.
- *
- * @returns {{ proxy: string|null, pinned: boolean, reason: string, sessionId: string|null }}
- */
-export function ensureStickyProxySession(rawProxy) {
-  if (rawProxy == null || String(rawProxy).trim() === "") {
-    return { proxy: null, pinned: false, reason: "none", sessionId: null };
-  }
-  const parsed = parseProxy(rawProxy);
-  if (!parsed) {
-    return { proxy: String(rawProxy), pinned: false, reason: "unparsed", sessionId: null };
-  }
-  let u;
-  try {
-    u = new URL(parsed);
-  } catch {
-    return { proxy: parsed, pinned: false, reason: "bad_url", sessionId: null };
-  }
-  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname)) {
-    return { proxy: parsed, pinned: false, reason: "static_ip_host", sessionId: null };
-  }
-  if (!u.username) {
-    return { proxy: parsed, pinned: false, reason: "no_user", sessionId: null };
-  }
-
-  let user = decodeURIComponent(u.username);
-  const host = u.hostname.toLowerCase();
-  const stamp = newStickySessionId();
-  const isIpfist = /ipfist|premium-proxy/i.test(host);
-
-  if (isIpfist) {
-    if (/-sid-[A-Za-z0-9]+/i.test(user)) {
-      user = user.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
-    } else {
-      if (!/-f-country-/i.test(user)) user = `${user}-f-country-au`;
-      user = `${user}-sid-${stamp}`;
-      if (!/-l-\d+/i.test(user)) user = `${user}-l-30`;
-    }
-  } else if (/session-[A-Za-z0-9]+/i.test(user) || /session-[A-Za-z0-9]+/i.test(parsed)) {
-    // Already sticky (password/query) — leave alone.
-    return { proxy: parsed, pinned: false, reason: "already_sticky", sessionId: null };
-  } else if (/-sid-[A-Za-z0-9]+/i.test(user)) {
-    user = user.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
-  } else {
-    user = `${user}-session-${stamp}`;
-  }
-
-  // URL.username setter handles encoding.
-  u.username = user;
-  return { proxy: u.toString(), pinned: true, reason: isIpfist ? "ipfist_sid" : "session_pin", sessionId: stamp };
+  return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
 }
 
 class Dispatcher {
@@ -360,23 +282,8 @@ export function createJar() {
       const raw = headers["set-cookie"] ?? headers["Set-Cookie"];
       ingestSetCookie(raw);
     },
-    // opts.omitPrefixes / opts.omitNames: drop host-only cookies the browser
-    // would not send (name-keyed jar otherwise overshares www → api).
-    header(opts = null) {
-      const omitNames = opts?.omitNames instanceof Set
-        ? opts.omitNames
-        : new Set(Array.isArray(opts?.omitNames) ? opts.omitNames : []);
-      const omitPrefixes = Array.isArray(opts?.omitPrefixes) ? opts.omitPrefixes : [];
-      return [...store.entries()]
-        .filter(([k]) => {
-          if (omitNames.has(k)) return false;
-          for (const p of omitPrefixes) {
-            if (p && k.startsWith(p)) return false;
-          }
-          return true;
-        })
-        .map(([k, v]) => `${k}=${v}`)
-        .join("; ");
+    header() {
+      return [...store.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
     },
     has(name) {
       return store.has(name);
@@ -403,14 +310,6 @@ export function createJar() {
       return Object.fromEntries(store);
     },
   };
-}
-
-// Name-keyed jar helper. Tip #47 omitted `__cf_*` on api.* (HAR has none), but
-// the last undici cart_get 200 artifact still sent `__cf_bm` on GraphQL and
-// clearing it did not unlock deny — keep jar parity with that success path.
-export function cookieHeaderForUrl(jar, url) {
-  if (!jar?.header) return "";
-  return jar.header();
 }
 
 // Wraps a node-tls-client Response so callers see a fetch-Response-like API:
@@ -478,25 +377,21 @@ export async function request(url, opts, ctx) {
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
-  // headers themselves. Cookie header is host-scoped so www host-only
-  // Cloudflare cookies are not overshared onto api.kmart.com.au.
-  const scopedCookie = cookieHeaderForUrl(jar, url);
+  // headers themselves.
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
-    ...(scopedCookie ? { cookie: scopedCookie } : {}),
+    ...(jar.header() ? { cookie: jar.header() } : {}),
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
 
   if (!dispatcher.useTls) {
-    // Proxied residential/ISP sessions often RST mid-SBSD / mid-nav. Retry with
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
     // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
     // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    // ISP tunnels also surface undici "Request was cancelled" — give them more
-    // attempts than direct so SBSD/script fetch can survive brief blips (d60eeee).
-    const attempts = dispatcher.proxy ? 5 : 3;
+    const attempts = 3;
     let lastError;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {

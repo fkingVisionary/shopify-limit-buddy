@@ -43,6 +43,11 @@ migrations + one Deno edge function.
   to verify (sensor unsolved after retries). Do not weaken this gate.
 - **Pass:** `cart_get` JSON 200 (not AkamaiGHost). Prefer `checkout_*` / `place_order`
   dry-run like artifact `resi-dry-1` (2026-07-19, direct, tip `#40` / `b3b7a81`).
+- **Full restore means the whole runtime:** `#57` only reset `kmart.js` and left tip-spiral
+  `http.js` / `checkout.js` / `server.js` in place — that was incomplete. Recovering a
+  green tip means those files too (byte-match `b3b7a81`), not adapter-only.
+- **Do not blame Akamai / proxies / “edge drift” as the default.** If direct was green on
+  our tip hours earlier, assume **our commits** broke it until proven otherwise.
 
 ### Optional services (not required to run/test the web app)
 - `executor/`: Node ≥20 Fastify service. Uses **npm** (`cd executor && npm install`,

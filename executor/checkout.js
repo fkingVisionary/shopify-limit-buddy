@@ -4,11 +4,8 @@
 // Hyper-backed Akamai chain. Anything without a dedicated adapter falls back
 // to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
 // checkout page) so existing Shopify recon flows keep working.
-//
-// Playwright (`kmartMode: "playwright"`) is research/testing only — never wire
-// it as an automatic production fallback. The bot utility path is HTTP/undici.
 
-import { makeDispatcher, createJar, request, ensureStickyProxySession } from "./http.js";
+import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
@@ -70,14 +67,8 @@ export async function runCheckout(task) {
   // (node-tls-client native crash) whenever the UI sent transport=tls with a
   // proxy. Undici is what cleared WWW Akamai through cart_create on recent runs.
   const forceTls = task.forceTls === true || requestedTransport === "tls";
-  // Rotating gateway resi (e.g. IP Fist without -sid-) must be pinned per task
-  // or the exit IP changes after WWW solve and api GraphQL 403s.
-  const stickyPin = ensureStickyProxySession(task.proxy);
-  const proxyForTask = stickyPin.proxy;
-  const dispatcher = makeDispatcher(proxyForTask, { forceTls, forceUndici });
+  const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
   const ctx = { dispatcher, jar };
-  // Adapter logs + sticky detection see the pinned URL.
-  task = { ...task, proxy: proxyForTask, proxyStickyPin: stickyPin };
 
   if (dispatcher.proxyParseFailed) {
     markTaskDone(task.taskId, { ok: false, detail: "proxy_parse" });
@@ -95,13 +86,13 @@ export async function runCheckout(task) {
   }
 
   const closeDispatcher = async () => {
-    // Adapter may swap ctx.dispatcher (WWW undici → api chrome_131 handoff).
+    // Adapter may swap ctx.dispatcher (tls→undici fallback); close the active one.
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
-    try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
-  // Playwright is opt-in research only (`kmartMode: "playwright"`). Never auto-
-  // escalate production HTTP failures into Chromium — not viable at scale.
+  // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
+  // Overrides hostname-based adapter picking. Runs real Chromium + Hyper's
+  // Playwright handlers instead of the raw-HTTP kmart adapter.
   const wantPlaywright =
     task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(new URL(store).hostname.toLowerCase());
   const adapter = wantPlaywright ? kmartPlaywrightAdapter : pickAdapter(store);
@@ -182,59 +173,82 @@ export async function runCheckout(task) {
     });
 
     await tryStep("cart_add", async () => {
-      const addUrl = `${store}/cart/add.js`;
       const res = await request(
-        addUrl,
+        store + "/cart/add.js",
         {
           method: "POST",
-          headers: { "content-type": "application/json", accept: "application/json" },
-          body: JSON.stringify({ items: [{ id: Number(task.variantId), quantity: task.qty || 1 }] }),
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            referer: store + "/",
+            origin: store,
+          },
+          body: new URLSearchParams({ id: String(task.variantId), quantity: String(task.qty) }).toString(),
         },
         ctx,
       );
-      const text = await res.text();
-      lastUrl = addUrl;
-      return { status: res.status, note: text.slice(0, 200), ok: res.status < 400 };
-    });
-
-    await tryStep("cart_get", async () => {
-      const res = await request(`${store}/cart.js`, { method: "GET", headers: { accept: "application/json" } }, ctx);
-      const text = await res.text();
-      lastUrl = `${store}/cart.js`;
-      return { status: res.status, note: text.slice(0, 200) };
-    });
-
-    await tryStep("checkout_page", async () => {
-      const res = await request(`${store}/checkout`, { method: "GET" }, ctx);
       const body = await res.text();
-      lastUrl = res.url || `${store}/checkout`;
-      return { status: res.status, note: `${body.length}b, final=${lastUrl}` };
+      if (res.status >= 400) return { ok: false, status: res.status, note: body.slice(0, 200) };
+      return { status: res.status };
     });
 
-    markTaskDone(task.taskId, { ok: true });
+    let checkoutUrl = null;
+    await tryStep("cart_redirect", async () => {
+      const res = await request(
+        store + "/cart",
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/x-www-form-urlencoded",
+            referer: store + "/cart",
+            origin: store,
+          },
+          body: new URLSearchParams({ checkout: "" }).toString(),
+        },
+        ctx,
+      );
+      const loc = res.headers.get("location");
+      if (loc) {
+        checkoutUrl = loc.startsWith("http") ? loc : store + loc;
+        lastUrl = checkoutUrl;
+      }
+      return { status: res.status, note: checkoutUrl ?? "(no Location header)" };
+    });
+
+    if (checkoutUrl) {
+      await tryStep("checkout_page", async () => {
+        const res = await request(checkoutUrl, { method: "GET", headers: { referer: store + "/cart" } }, ctx);
+        const body = await res.text();
+        const isCf = /cloudflare|cf-ray|__cf_chl_/i.test(body);
+        const isAk = /_abck|bm_sz|akam/i.test(body);
+        return {
+          ok: res.status < 400,
+          status: res.status,
+          note: `${body.length}b${isCf ? " cloudflare" : ""}${isAk ? " akamai" : ""}`,
+        };
+      });
+    }
+
     return {
       ok: true,
       taskId: task.taskId,
-      adapter: "generic-shopify",
+      adapter: "shopify-generic-fallback",
       elapsedMs: now() - t0,
       transport: dispatcher.transport,
       steps,
       finalUrl: lastUrl,
-      cookies: jar.dump(),
       dryRun: true,
+      cookies: jar.dump(),
     };
   } catch (e) {
-    markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
     return {
       ok: false,
       taskId: task.taskId,
-      adapter: "generic-shopify",
+      adapter: "shopify-generic-fallback",
       error: e?.message ?? String(e),
+      failedStep: steps[steps.length - 1]?.step ?? "unknown",
       elapsedMs: now() - t0,
       transport: dispatcher.transport,
       steps,
-      finalUrl: lastUrl,
-      cookies: jar.dump(),
     };
   } finally {
     await closeDispatcher();
