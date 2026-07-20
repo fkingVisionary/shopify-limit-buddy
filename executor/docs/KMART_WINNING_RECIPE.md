@@ -20,7 +20,8 @@ Ignore any stale preview host labels (`proxyUsed: Test Pool`). Trust Fly
 
 | Knob | Value |
 |------|--------|
-| Transport | **undici** default (`tls-worker` opt-in only) |
+| Transport | **undici** default for WWW (`tls-worker` opt-in for whole session) |
+| api.* TLS | **tls-worker handoff after WWW** when proxied (`apiTls` default on with proxy; direct stays undici) |
 | Category | **skip** (home→PDP) |
 | Dead proxies | refused → ISP pool or direct |
 | Card | required for 3DS / bank proof |
@@ -29,6 +30,16 @@ Ignore any stale preview host labels (`proxyUsed: Test Pool`). Trust Fly
 ## Smoke Fly directly (preferred)
 
 Needs `EXECUTOR_TOKEN` (Fly secret / local `.env` — not a public Lovable deploy).
+
+**One shot only — do not poll/loop SoftBlocked hours:**
+
+```bash
+EXECUTOR_TOKEN=... ./executor/scripts/fly-probe-once.sh
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh          # ISP + default apiTls handoff
+API_TLS=1 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh # force handoff
+```
+
+Or raw curl:
 
 ```bash
 TASK="juicy-$(date -u +%Y%m%d-%H%M%S)"
@@ -43,7 +54,8 @@ curl -sS "https://j1ms-bot-executor.fly.dev/milestones?taskId=$TASK&minStage=tok
   -H "authorization: Bearer $EXECUTOR_TOKEN"
 ```
 
-ISP pool: `"useProxy": true` (no WealthProxies string). Fly picks `resi.proxies`.
+ISP pool: `"useProxy": true` (no WealthProxies string). Fly picks `resi.proxies` and
+hands off `api.*` to tls-worker chrome_131 after WWW undici warm.
 
 ## How to score a run (order of truth)
 
