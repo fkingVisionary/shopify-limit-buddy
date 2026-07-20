@@ -94,9 +94,11 @@ function isRetryableNetworkError(error) {
 // Chrome 124 request header order. The exact ordering matters — Akamai
 // inspects it as part of the bot score. This matches a real Chrome 124
 // navigation/CORS request (cookie always last).
+// Chrome-ish CORS/navigation order for node-tls-client. Omit `connection`
+// (HTTP/1.1 tell; Chrome H2 does not send it). Include `content-type` so
+// sensor POSTs are not appended after cookie.
 const CHROME_HEADER_ORDER = [
   "host",
-  "connection",
   "cache-control",
   "sec-ch-ua",
   "sec-ch-ua-arch",
@@ -110,6 +112,7 @@ const CHROME_HEADER_ORDER = [
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
+  "content-type",
   "origin",
   "sec-fetch-site",
   "sec-fetch-mode",
@@ -180,7 +183,7 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
+/** Optional hint for undici ProxyAgent reuse only — never a run gate. */
 function isStickyProxyUrl(proxyUrl) {
   return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
 }

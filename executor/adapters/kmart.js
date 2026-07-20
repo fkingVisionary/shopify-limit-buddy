@@ -156,17 +156,21 @@ function navHeaders({ referer, site }) {
 }
 
 function akamaiSensorHeaders({ requestOrigin, referer }) {
+  // Align with real Chrome Akamai sensor POSTs (text/plain + low-entropy CH + AE).
+  // Full CHROME_CH + application/json is a latent mismatch; worse under SoftBlock.
   return {
     "user-agent": UA,
-    "content-type": "application/json",
+    "content-type": "text/plain;charset=UTF-8",
     accept: "*/*",
     "accept-language": ACCEPT_LANG,
+    "accept-encoding": "gzip, deflate, br, zstd",
     origin: requestOrigin,
     referer,
-    ...CHROME_CH,
+    ...CHROME_CH_XHR,
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
+    priority: "u=1, i",
   };
 }
 
@@ -553,26 +557,20 @@ export const kmartAdapter = {
     // 1. Resolve egress IP for Hyper fingerprinting. Proxy comes from the
     //    task payload only — never a hard-coded / env default in this adapter.
     //    Some residential pools block ipify; resolveEgressIp tries several hosts.
+    // stickyProxy is only a light undici reuse hint — never gate the run on it
+    // (WealthProxies/IPFist are dead; do not spend time classifying stickiness).
     const stickyProxy = isStickyProxyUrl(task.proxy);
     let egressIp = null;
-    // Parallel IP race (ip-resolve.js) — one pass is enough for sticky; ISP
-    // gets a second pass with agent reset if the first echo host flaked.
-    const ipAttempts = stickyProxy ? 1 : 2;
-    for (let attempt = 0; attempt < ipAttempts && !egressIp; attempt++) {
-      if (attempt > 0) {
-        try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(400, 900);
-      }
-      await tStep(attempt === 0 ? "resolve_ip" : `resolve_ip#${attempt + 1}`, async () => {
-        const v = await resolveEgressIp(ctx, { force: true });
-        egressIp = v;
-        const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
-        return {
-          note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}${stickyProxy ? " sticky=1" : ""}`,
-          ok: Boolean(v),
-        };
-      });
-    }
+    // One IP echo pass for speed. Missing IP is soft (Hyper quality hit only).
+    await tStep("resolve_ip", async () => {
+      const v = await resolveEgressIp(ctx, { force: true });
+      egressIp = v;
+      const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
+      return {
+        note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}`,
+        ok: Boolean(v),
+      };
+    });
     // Soft: missing IP is a Hyper quality hit, not a hard stop. Residential
     // tunnels often block IP-echo hosts while Kmart still works (ISP proved
     // the rest of the path). Abort only when proxied IP equals direct IP.
@@ -1283,32 +1281,9 @@ export const kmartAdapter = {
     // (step 6 below) still runs when the PDP actually embeds a pixel.
 
 
-    // Verify egress IP held. Soft-warn on sticky resi (echo hosts flake /
-    // brief drift). Hard-fail only for non-sticky (ISP) when IP clearly changed.
-    let verifyIpAbort = false;
-    await tStep("verify_ip", async () => {
-      if (!egressIp) {
-        return { ok: true, note: "start=? skipped (no initial ip)" };
-      }
-      const ipNow = await resolveEgressIp(ctx, { force: true });
-      const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-      const hardDrift = Boolean(task.proxy && !same && !stickyProxy && ipNow);
-      if (hardDrift) verifyIpAbort = true;
-      return {
-        ok: !hardDrift,
-        note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${same}${stickyProxy ? " sticky=1" : ""}${hardDrift ? " abort=1" : ""}`,
-      };
-    });
-    if (verifyIpAbort) {
-      return {
-        ok: false,
-        steps,
-        failedStep: "verify_ip",
-        checkoutStage: "pre_cart",
-        finalUrl: origin,
-        cookies: ctx.jar.dump(),
-      };
-    }
+    // No mid-run IP re-check / sticky drift gate — costs a round-trip and aborts
+    // good sensor solves. Egress is whatever resolve_ip got (or empty).
+    steps.push({ step: "verify_ip", ok: true, note: "skipped (no sticky/drift gate)" });
 
     // 4c. Intermediate category browse is OPTIONAL. On some residential exits
     //     /category/* is hard-blocked even with bm_sv, while PDP with a home
@@ -1319,9 +1294,21 @@ export const kmartAdapter = {
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    const skipCategory = task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1";
+    // Default skip on proxied runs: /category/* often hard-denies on some exits
+    // even after bm_sv, and the SBSD retry loop can poison the session before PDP.
+    // Green direct runs historically survived category 301; proxied → home→PDP.
+    const skipCategory =
+      task.skipCategory === true ||
+      process.env.KMART_SKIP_CATEGORY === "1" ||
+      (Boolean(task.proxy) && task.skipCategory !== false && process.env.KMART_SKIP_CATEGORY !== "0");
     if (skipCategory) {
-      steps.push({ step: "category_browse", ok: true, note: "skipped (home→PDP)" });
+      steps.push({
+        step: "category_browse",
+        ok: true,
+        note: task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1"
+          ? "skipped (home→PDP)"
+          : "skipped (home→PDP; default on proxy)",
+      });
     } else {
     await sleep(700, 1400); // brief glance at homepage before the click
     try {
@@ -1369,7 +1356,15 @@ export const kmartAdapter = {
     // there and retry the category before moving on. A real browser cannot click
     // from a 403 category page into the PDP, so keeping that failed hop in the
     // journey makes the next request look impossible.
-    if (!categoryOk && categoryHtml) {
+    // Hard AkamaiGHost Access Denied pages are not SBSD challenges — retrying
+    // them burns the sticky exit before PDP.
+    if (!categoryOk && categoryHtml && /Access Denied|AkamaiGHost/i.test(categoryHtml)) {
+      steps.push({
+        step: "category_browse:hard_deny_skip_sbsd",
+        ok: true,
+        note: "Access Denied on category — skip SBSD retry; continue home→PDP",
+      });
+    } else if (!categoryOk && categoryHtml) {
       try {
         const solvedCategorySbsd = await runSbsd(categoryHtml, catUrl, "sbsd_category");
         if (solvedCategorySbsd) {

@@ -35,6 +35,8 @@ type RunBody = {
   apiTls?: boolean;
   kmartMode?: string;
   gqlBearer?: boolean;
+  /** Skip /category hop (home→PDP). Default on proxy in executor; force here. */
+  skipCategory?: boolean;
 };
 
 function cartGetOk(steps: Step[] | undefined): boolean {
@@ -76,9 +78,11 @@ export const Route = createFileRoute("/api/public/exec-test")({
         const body = (await request.json().catch(() => ({}))) as RunBody;
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else proxies[]/proxyEntries[];
-        // else named supabase group; else let Fly pick from resi.proxies via
-        // useProxy:true (do NOT force Lovable's PROXY_URL_RESI — that shadows
-        // the executor pool and often fails proxy_parse).
+        // else an *explicit* supabase group id/name; else Fly resi.proxies via
+        // useProxy:true.
+        //
+        // Do NOT default to "Test Pool" — WealthProxies / IPFist subs are dead.
+        // Do NOT force Lovable's PROXY_URL_RESI (shadows the executor pool).
         let proxy: string | null = null;
         let proxyList: string[] | null = null;
         let forwardUseProxy = false;
@@ -93,13 +97,13 @@ export const Route = createFileRoute("/api/public/exec-test")({
           proxyList = body.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean);
           proxyUsed = { source: `request.proxyEntries:${proxyList.length}` };
         } else if (body.proxyGroupId || body.proxyGroupName) {
-          const groupName = body.proxyGroupName ?? "Test Pool";
+          const groupName = body.proxyGroupName;
           try {
             const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
             const q = supabaseAdmin.from("proxy_groups").select("id,name,proxies").limit(1);
             const { data: groups } = body.proxyGroupId
               ? await q.eq("id", body.proxyGroupId)
-              : await q.eq("name", groupName);
+              : await q.eq("name", String(groupName));
             const group = groups?.[0];
             const list = (group?.proxies ?? []) as string[];
             if (list.length > 0) {
@@ -109,12 +113,13 @@ export const Route = createFileRoute("/api/public/exec-test")({
                 const [host, port, user, ...passParts] = parts;
                 const pass = passParts.join(":");
                 proxy = `http://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${host}:${port}`;
-                const sessionMatch = pass.match(/-S([a-f0-9]+)/i);
-                proxyUsed = { source: `group:${group?.name}`, host, session: sessionMatch?.[1] };
+                proxyUsed = { source: `group:${group?.name}`, host };
               } else {
                 proxy = raw;
                 proxyUsed = { source: `group:${group?.name}` };
               }
+            } else {
+              proxyUsed = { source: `group:${groupName || body.proxyGroupId}:empty` };
             }
           } catch (e) {
             proxyUsed = {
@@ -123,7 +128,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             };
           }
         } else if (body.useProxy === true) {
-          // Fly loads executor/resi.proxies (or PROXY_RESI_LIST).
+          // Fly loads executor/resi.proxies (static AU ISP pool) or PROXY_RESI_LIST.
           forwardUseProxy = true;
           proxyUsed = { source: "fly:useProxy" };
         }
@@ -200,6 +205,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
             ...(body.apiTls === true ? { apiTls: true } : {}),
             ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
             ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
+            ...(body.skipCategory === true ? { skipCategory: true } : {}),
+            ...(body.skipCategory === false ? { skipCategory: false } : {}),
           };
           const res = await fetch(`${origin}/run`, {
             method: "POST",
