@@ -38,8 +38,10 @@ migrations + one Deno edge function.
 - **Do not add gates on a path that is already placing orders / reaching 3DS.** A gate
   that only fails closed cannot invent wins; it can only take deploys away.
 - **Do not brute-force proxy lists** as the product strategy. When Revolut / bank
-  confirms a hit (e.g. 13:11 AEST 2026-07-20 on Juicy pens), harden that route
-  (sensor recovery on direct, mid-run milestones). Proxy swaps are secondary.
+  confirms a hit (e.g. 13:11 AEST 2026-07-20 on Juicy pens), harden that route.
+  Reliability bottleneck is Hyper `_abck` (success grows to `ind=0`; failure
+  plateaus ~795b). Fix = script rebind + Hyper context reset on plateau — not
+  more blind sensor rounds or proxy spray. Cart→3DS is already proven once solved.
 - **Deploy note:** `#62` (milestones) is already on Fly tip `b10bf27`. Merging alone
   does not solidify checkout — ship sensor/milestone harden PRs and wait for the
   Deploy executor workflow (or re-run it) so `gitSha` moves.
