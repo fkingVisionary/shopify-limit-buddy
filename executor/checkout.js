@@ -95,8 +95,9 @@ export async function runCheckout(task) {
   }
 
   const closeDispatcher = async () => {
-    // Adapter may swap ctx.dispatcher (tls→undici fallback); close the active one.
+    // Adapter may swap ctx.dispatcher (WWW undici → api chrome_131 handoff).
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright is opt-in research only (`kmartMode: "playwright"`). Never auto-
