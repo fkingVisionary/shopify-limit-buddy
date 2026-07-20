@@ -217,6 +217,7 @@ without Playwright: keep WWW+Hyper on undici, hand off to `node-tls-client`
 `chrome_131` **before get-token** so api BM seed + GraphQL share Chrome JA3.
 Step: `api_tls_handoff`. **Live Fly after merge (`fc99eb4`): empty HTTP 502** on
 direct and ISP (~20–45s, `nsteps=0`) — native `node-tls-client` crash kills the
-process; try/catch cannot recover. Tip `#55`: handoff is **opt-in only**
-(`apiTls: true`); default remains undici so checkout timelines return again.
-Next TLS attempt needs process isolation (child worker), not in-process Session.
+process; try/catch cannot recover. Tip `#55`: in-process handoff **opt-in only**.
+Tip `#56`: default-on again via **`child_process.fork` tls-worker** — native
+faults kill the worker only; parent logs `api_tls_handoff` ok/fail and stays on
+undici if init fails. Opt out: `apiTls: false`.

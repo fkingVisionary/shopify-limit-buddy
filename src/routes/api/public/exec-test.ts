@@ -32,7 +32,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
           transport?: string;
           forceTls?: boolean;
           forceUndici?: boolean;
-          /** Opt-in chrome_131 handoff for api.* (default off — native TLS 502s on Fly). */
+          /** Opt out of child-process chrome_131 api.* handoff (default on). */
           apiTls?: boolean;
           kmartMode?: string;
           gqlBearer?: boolean;
@@ -150,7 +150,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             ...(typeof body.transport === "string" ? { transport: body.transport } : {}),
             ...(body.forceTls === true ? { forceTls: true } : {}),
             ...(body.forceUndici === true ? { forceUndici: true } : {}),
-            ...(body.apiTls === true ? { apiTls: true } : {}),
+            ...(body.apiTls === false ? { apiTls: false } : {}),
             ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
             ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
           };

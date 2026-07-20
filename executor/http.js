@@ -11,6 +11,15 @@
 //   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner, createTlsBridge } from "./tls-bridge.js";
+
+export { createTlsBridge };
+
+/** Child-process chrome_131 dispatcher. Accepts raw proxy strings (parsed here). */
+export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
+  const proxyUrl = rawProxy ? parseProxy(rawProxy) || String(rawProxy) : null;
+  return makeRemoteTlsDispatcherInner(proxyUrl, opts);
+}
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -489,6 +498,18 @@ export async function request(url, opts, ctx) {
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
+
+  // Tip #56: child-process chrome_131 (crash-isolated). Prefer this over
+  // in-process useTls — native faults stay in the worker.
+  if (dispatcher?.remoteTls) {
+    const res = await dispatcher.remoteTls.request(url, {
+      method,
+      headers,
+      body: opts?.body,
+    });
+    jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
+    return res;
+  }
 
   if (!dispatcher.useTls) {
     // Proxied residential/ISP sessions often RST mid-SBSD / mid-nav. Retry with

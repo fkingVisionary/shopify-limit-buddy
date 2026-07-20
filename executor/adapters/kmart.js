@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, makeDispatcher, isStickyProxyUrl, cookieHeaderForUrl } from "../http.js";
+import { request, UA, makeDispatcher, makeRemoteTlsDispatcher, isStickyProxyUrl, cookieHeaderForUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -1836,29 +1836,25 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Tip #54 tried default chrome_131 handoff for api.* after WWW undici.
-      // Live Fly (fc99eb4): every dry-run returned empty HTTP 502 after ~20–45s
-      // — native node-tls-client crash kills the process before Fastify can
-      // serialize steps (try/catch cannot catch that). Tip #55: OPT-IN only
-      // (`task.apiTls === true`). Default stays undici so phone/ISP smokes work.
-      if (task.apiTls === true && !ctx.dispatcher?.useTls) {
+      // Tip #56: hand off api.* to chrome_131 in a **child process** (default on).
+      // Tip #54 in-process Session empty-502'd Fly; #55 made that opt-in. Worker
+      // isolation keeps Fastify alive if the native lib dies — parent falls back
+      // to undici. Opt out: task.apiTls === false.
+      if (task.apiTls !== false && !ctx.dispatcher?.remoteTls && !ctx.dispatcher?.useTls) {
         await tStep("api_tls_handoff", async () => {
           const prev = ctx.dispatcher;
           try {
-            const tlsD = makeDispatcher(task.proxy ?? null, { forceTls: true });
-            // Eager Session so JS-level init failures surface here (not mid-GraphQL).
-            // Native SIGSEGV/abort still empty-502s the whole machine — keep opt-in.
-            await tlsD.tlsSession();
+            const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
             ctx._wwwDispatcher = prev;
             ctx.dispatcher = tlsD;
             return {
               ok: true,
-              note: `chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+              note: `tls-worker chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
             };
           } catch (e) {
             return {
               ok: false,
-              note: `tls handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`,
+              note: `tls-worker handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`,
             };
           }
         });
@@ -1869,7 +1865,13 @@ export const kmartAdapter = {
       // get-token then GraphQL Access Denied after a mistaken tunnel refresh.
       // Skip when api_tls_handoff already replaced the undici agent.
       // Opt out sticky refresh with task.apiTunnelRefresh === false.
-      if (stickyProxy && !staticIsp && !ctx.dispatcher?.useTls && task.apiTunnelRefresh !== false) {
+      if (
+        stickyProxy &&
+        !staticIsp &&
+        !ctx.dispatcher?.useTls &&
+        !ctx.dispatcher?.remoteTls &&
+        task.apiTunnelRefresh !== false
+      ) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
