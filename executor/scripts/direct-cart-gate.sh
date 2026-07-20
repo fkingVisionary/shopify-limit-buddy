@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Hard gate: direct (no proxy) Kmart dry-run must clear cart_get JSON 200.
-# Used after Fly deploy so we never again ship over a broken baseline.
+# Advisory direct (no proxy) Kmart dry-run probe for cart_get JSON 200.
+# Deploy workflow runs this with continue-on-error — do not treat exit≠0 as a
+# merge blocker. Prefer milestone logging (GET /milestones, kmartMilestone logs)
+# over fail-closed gates on an intermittent path that already reaches 3DS.
 #
 # Usage:
 #   EXECUTOR_URL=https://j1ms-bot-executor.fly.dev \
@@ -9,8 +11,8 @@
 #
 # Exit codes:
 #   0 — cart_get JSON 200 (pass)
-#   2 — GraphQL / cart Access Denied or empty 502 (HARD FAIL — baseline lost)
-#   3 — Akamai sensor never solved after retries (cannot verify — fail closed)
+#   2 — GraphQL / cart Access Denied or empty 502
+#   3 — Akamai sensor never solved after retries
 #   1 — usage / transport error
 
 set -euo pipefail

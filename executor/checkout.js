@@ -9,6 +9,7 @@ import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
+import { recordRunMilestone } from "./run-milestones.js";
 
 const now = () => Date.now();
 
@@ -108,7 +109,7 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         detail: out.checkoutStage ?? null,
       });
-      return {
+      const result = {
         ok: out.ok,
         taskId: task.taskId,
         adapter: adapter.id,
@@ -130,9 +131,16 @@ export async function runCheckout(task) {
         orderId: out.orderId ?? null,
         paymentStatus: out.paymentStatus ?? null,
       };
+      // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
+      // leave a trail on the machine + in Fly logs.
+      result.milestone = recordRunMilestone(task.taskId, result, {
+        proxy: Boolean(dispatcher.proxy),
+        transport: dispatcher.transport,
+      });
+      return result;
     } catch (e) {
       markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
-      return {
+      const partial = {
         ok: false,
         taskId: task.taskId,
         adapter: adapter.id,
@@ -143,7 +151,17 @@ export async function runCheckout(task) {
         steps: ctx.steps,
         trace: ctx.requestTrace,
         cookies: ctx.jar?.dump?.() ?? {},
+        checkoutStage: e?.checkoutStage ?? null,
+        paymentSummary: e?.paymentSummary ?? null,
+        paymentStatus: e?.paymentStatus ?? null,
+        orderNumber: e?.orderNumber ?? null,
       };
+      // Still record if we cleared cart_get / 3DS before the throw.
+      partial.milestone = recordRunMilestone(task.taskId, partial, {
+        proxy: Boolean(dispatcher.proxy),
+        transport: dispatcher.transport,
+      });
+      return partial;
     } finally {
       await closeDispatcher();
     }
