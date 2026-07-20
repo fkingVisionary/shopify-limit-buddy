@@ -193,6 +193,7 @@ export async function runCheckout(task) {
         adapter: adapter.id,
         elapsedMs: now() - t0,
         transport: activeTransport,
+        gitSha: process.env.EXECUTOR_GIT_SHA || null,
         steps: out.steps ?? ctx.steps,
         trace: out.trace,
         finalUrl: out.finalUrl,

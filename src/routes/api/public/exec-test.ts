@@ -26,6 +26,8 @@ type RunBody = {
   dryRun?: boolean;
   /** Force skip card even when KMART_CARD_* secrets exist. */
   noCard?: boolean;
+  /** Inject KMART_CARD_* when present (also implied by placeOrder). */
+  withCard?: boolean;
   placeOrder?: boolean;
   /** Opt-in executor experiments (forwarded to Fly /run). */
   transport?: string;
@@ -188,8 +190,16 @@ export const Route = createFileRoute("/api/public/exec-test")({
           if (!body.storeUrl) {
             return Response.json({ ok: false, error: "storeUrl required" }, { status: 400 });
           }
+          // Stable id BEFORE fetch — required to recover after CF 524 / abort.
+          const taskId = body.taskId ?? `smoke-${Date.now()}`;
+          // Stay under Cloudflare's ~100s Worker budget so WE can poll milestones
+          // instead of the edge returning an empty 524 while Fly continues to 3DS.
+          const RUN_BUDGET_MS = Math.min(
+            90_000,
+            Math.max(30_000, Number(process.env.EXEC_TEST_RUN_BUDGET_MS || 90_000) || 90_000),
+          );
           const payload = {
-            taskId: body.taskId ?? `smoke-${Date.now()}`,
+            taskId,
             storeUrl: body.storeUrl,
             variantId: body.variantId ?? 1,
             qty: 1,
@@ -208,16 +218,16 @@ export const Route = createFileRoute("/api/public/exec-test")({
             ...(body.skipCategory === true ? { skipCategory: true } : {}),
             ...(body.skipCategory === false ? { skipCategory: false } : {}),
           };
-          const res = await fetch(`${origin}/run`, {
-            method: "POST",
-            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-            body: JSON.stringify(payload),
-          });
-          const data = (await res.json().catch(() => ({}))) as {
+
+          type RunData = {
             steps?: Step[];
             error?: string;
             failedStep?: string;
             ok?: boolean;
+            transport?: string | null;
+            proxySource?: string | null;
+            gitSha?: string | null;
+            taskId?: string;
             milestone?: {
               stage?: string;
               reached3ds?: boolean;
@@ -231,50 +241,164 @@ export const Route = createFileRoute("/api/public/exec-test")({
             orderNumber?: string | null;
             orderId?: string | null;
           };
-          // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
-          const compactSteps = Array.isArray(data?.steps)
-            ? data.steps.map((s) => ({
-                s: s.step,
-                o: s.ok,
-                c: s.status ?? null,
-                m: s.ms,
-                n:
-                  typeof s.note === "string"
-                    ? s.note.length > 5000
-                      ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})`
-                      : s.note
-                    : undefined,
-              }))
-            : [];
-          const stage = furthestStage(data);
-          const cartGet = cartGetOk(data.steps);
-          const reached3ds = Boolean(
-            data.milestone?.reached3ds ||
-              stage === "3ds" ||
-              stage === "place_order" ||
-              stage === "ordered" ||
-              (data.steps || []).some((s) => /^paydock_3ds|create_3ds/i.test(String(s?.step || ""))),
-          );
-          return Response.json({
-            ok: res.ok,
-            status: res.status,
-            elapsedMs: Date.now() - t0,
-            run: {
-              ok: data.ok,
-              err: data.error,
-              fs: data.failedStep,
-              stage,
-              cartGet,
-              reached3ds,
-              checkoutStage: data.checkoutStage ?? null,
-              paymentStatus: data.paymentStatus ?? data.milestone?.paymentStatus ?? null,
-              orderNumber: data.orderNumber ?? data.milestone?.orderNumber ?? null,
-              milestone: data.milestone ?? null,
-              steps: compactSteps,
-            },
-            cardSent: Boolean(card),
-            proxyUsed,
-          });
+
+          const pollMilestones = async () => {
+            try {
+              const qs = new URLSearchParams({
+                limit: "20",
+                minStage: "tokenize",
+                taskId,
+              });
+              const mRes = await fetch(`${origin}/milestones?${qs}`, {
+                headers: { authorization: `Bearer ${token}` },
+              });
+              const mData = (await mRes.json().catch(() => ({}))) as {
+                milestones?: Array<{
+                  stage?: string;
+                  reached3ds?: boolean;
+                  paymentStatus?: string | null;
+                  orderNumber?: string | null;
+                  transport?: string | null;
+                  gitSha?: string | null;
+                  live?: boolean;
+                }>;
+                gitSha?: string | null;
+              };
+              const rows = Array.isArray(mData.milestones) ? mData.milestones : [];
+              // Prefer furthest stage for this taskId.
+              const rank: Record<string, number> = {
+                cart_get: 10,
+                cart_atc: 20,
+                tokenize: 40,
+                "3ds": 50,
+                place_order: 60,
+                ordered: 70,
+              };
+              let best = rows[0] || null;
+              for (const r of rows) {
+                if ((rank[String(r?.stage)] || 0) > (rank[String(best?.stage)] || 0)) best = r;
+              }
+              return { best, gitSha: mData.gitSha ?? best?.gitSha ?? null, rows };
+            } catch {
+              return { best: null, gitSha: null, rows: [] as unknown[] };
+            }
+          };
+
+          const pack = (opts: {
+            resOk: boolean;
+            status: number;
+            data: RunData;
+            timedOut?: boolean;
+            recoveredFromMilestones?: boolean;
+          }) => {
+            const data = opts.data;
+            const compactSteps = Array.isArray(data?.steps)
+              ? data.steps.map((s) => ({
+                  s: s.step,
+                  o: s.ok,
+                  c: s.status ?? null,
+                  m: s.ms,
+                  n:
+                    typeof s.note === "string"
+                      ? s.note.length > 5000
+                        ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})`
+                        : s.note
+                      : undefined,
+                }))
+              : [];
+            const stage = furthestStage(data);
+            const cartGet = cartGetOk(data.steps);
+            const reached3ds = Boolean(
+              data.milestone?.reached3ds ||
+                stage === "3ds" ||
+                stage === "place_order" ||
+                stage === "ordered" ||
+                (data.steps || []).some((s) => /^paydock_3ds|create_3ds/i.test(String(s?.step || ""))),
+            );
+            return Response.json({
+              ok: opts.resOk,
+              status: opts.status,
+              elapsedMs: Date.now() - t0,
+              timedOut: Boolean(opts.timedOut),
+              recoveredFromMilestones: Boolean(opts.recoveredFromMilestones),
+              taskId,
+              tip: opts.timedOut
+                ? "Fly may still be running — poll /api/public/exec-milestones?taskId=… (bank ping > failedStep)"
+                : undefined,
+              run: {
+                ok: data.ok,
+                err: data.error,
+                fs: data.failedStep,
+                stage,
+                cartGet,
+                reached3ds,
+                checkoutStage: data.checkoutStage ?? null,
+                paymentStatus: data.paymentStatus ?? data.milestone?.paymentStatus ?? null,
+                orderNumber: data.orderNumber ?? data.milestone?.orderNumber ?? null,
+                orderId: data.orderId ?? null,
+                transport: data.transport ?? null,
+                proxySource: data.proxySource ?? null,
+                gitSha: data.gitSha ?? null,
+                milestone: data.milestone ?? null,
+                steps: compactSteps,
+              },
+              cardSent: Boolean(card),
+              proxyUsed,
+            });
+          };
+
+          try {
+            const res = await fetch(`${origin}/run`, {
+              method: "POST",
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body: JSON.stringify(payload),
+              signal: AbortSignal.timeout(RUN_BUDGET_MS),
+            });
+            const data = (await res.json().catch(() => ({}))) as RunData;
+            return pack({ resOk: res.ok, status: res.status, data });
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            const timedOut = /TimeoutError|aborted|The operation was aborted/i.test(msg);
+            if (!timedOut) {
+              return Response.json(
+                { ok: false, error: msg, elapsedMs: Date.now() - t0, taskId, cardSent: Boolean(card), proxyUsed },
+                { status: 502 },
+              );
+            }
+            // Give Fly a moment to flush live 3DS milestone, then recover.
+            await new Promise((r) => setTimeout(r, 2500));
+            let polled = await pollMilestones();
+            if (!polled.best?.reached3ds && !polled.best?.orderNumber) {
+              await new Promise((r) => setTimeout(r, 5000));
+              polled = await pollMilestones();
+            }
+            const best = polled.best;
+            return pack({
+              resOk: false,
+              status: 504,
+              timedOut: true,
+              recoveredFromMilestones: Boolean(best),
+              data: {
+                ok: false,
+                error: `run budget ${RUN_BUDGET_MS}ms exceeded (Fly may still be in 3DS)`,
+                failedStep: "client_timeout",
+                transport: best?.transport ?? null,
+                gitSha: polled.gitSha,
+                milestone: best
+                  ? {
+                      stage: best.stage,
+                      reached3ds: best.reached3ds,
+                      paymentStatus: best.paymentStatus ?? null,
+                      orderNumber: best.orderNumber ?? null,
+                    }
+                  : null,
+                checkoutStage: best?.stage ?? null,
+                paymentStatus: best?.paymentStatus ?? null,
+                orderNumber: best?.orderNumber ?? null,
+                steps: [],
+              },
+            });
+          }
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
