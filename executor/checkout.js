@@ -9,7 +9,7 @@ import { makeDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
-import { recordRunMilestone } from "./run-milestones.js";
+import { noteLiveMilestone, recordRunMilestone } from "./run-milestones.js";
 
 const now = () => Date.now();
 
@@ -17,24 +17,49 @@ function step(steps, name, ok, status, ms, note) {
   steps.push({ step: name, ok, status, ms, note });
 }
 
-function wireProgress(ctx, taskId) {
+function wireProgress(ctx, taskId, meta = {}) {
   let lastRank = -1;
+  let lastMilestoneRank = -1;
   ctx.onProgress = (stageOrStep, detail = null) => {
     const known = WORKFLOW_STAGE_IDS.has(stageOrStep) ? stageOrStep : stageForStep(stageOrStep);
     if (!known) return;
     const rank = stageRank(known);
     if (rank < lastRank) return;
     lastRank = rank;
-    const meta = stageMeta(known);
+    const stageInfo = stageMeta(known);
+    const stepName = typeof stageOrStep === "string" && stageOrStep !== known ? stageOrStep : null;
     setTaskProgress(taskId, {
       stage: known,
-      label: meta.label,
-      hint: meta.hint,
+      label: stageInfo.label,
+      hint: stageInfo.hint,
       detail: detail || null,
-      step: typeof stageOrStep === "string" && stageOrStep !== known ? stageOrStep : null,
+      step: stepName,
       running: true,
       done: false,
     });
+    // Persist cart+ / 3DS as soon as we hit them — not only when /run returns.
+    // Skip cart until a cart_* step actually succeeded (avoid logging GraphQL 403 as a win).
+    if (rank >= stageRank("cart") && rank > lastMilestoneRank) {
+      if (known === "cart") {
+        const lastCart = [...(ctx.steps || [])]
+          .reverse()
+          .find((s) => /^cart_/.test(String(s?.step || "")));
+        if (!lastCart?.ok || (lastCart.status != null && lastCart.status >= 400)) {
+          return;
+        }
+      }
+      lastMilestoneRank = rank;
+      try {
+        noteLiveMilestone(taskId, known, {
+          proxy: meta.proxy,
+          transport: meta.transport,
+          dryRun: meta.dryRun,
+          step: stepName,
+        });
+      } catch {
+        /* never break checkout for logging */
+      }
+    }
   };
   setTaskProgress(taskId, {
     stage: "warm",
@@ -101,7 +126,11 @@ export async function runCheckout(task) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.
     ctx.steps = [];
-    wireProgress(ctx, task.taskId);
+    wireProgress(ctx, task.taskId, {
+      proxy: Boolean(dispatcher.proxy),
+      transport: dispatcher.transport,
+      dryRun: task.placeOrder !== true,
+    });
     try {
       const out = await adapter.run(task, ctx);
       markTaskDone(task.taskId, {

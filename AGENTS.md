@@ -37,9 +37,16 @@ migrations + one Deno edge function.
   that turn sensor flake into a red CI and block ships of code that already works.
 - **Do not add gates on a path that is already placing orders / reaching 3DS.** A gate
   that only fails closed cannot invent wins; it can only take deploys away.
+- **Do not brute-force proxy lists** as the product strategy. When Revolut / bank
+  confirms a hit (e.g. 13:11 AEST 2026-07-20 on Juicy pens), harden that route
+  (sensor recovery on direct, mid-run milestones). Proxy swaps are secondary.
+- **Deploy note:** `#62` (milestones) is already on Fly tip `b10bf27`. Merging alone
+  does not solidify checkout — ship sensor/milestone harden PRs and wait for the
+  Deploy executor workflow (or re-run it) so `gitSha` moves.
 - **After each tip:** smoke via `POST /api/public/exec-test` (wait ≥180s; client
   timeouts often hide payment). Score the **furthest stage**, not only `failedStep`.
-  Check Fly logs for `kmartMilestone` and `GET /milestones` on the executor.
+  Check Fly logs for `kmartMilestone` (including `live:true` mid-run) and
+  `GET /milestones` on the executor.
 - **Card:** `exec-test` auto-injects `KMART_CARD_*` when secrets exist (pass
   `noCard:true` to skip). Revolut / bank pings are useful third-party proof the
   path still reaches 3DS — prefer that over scoring only `failedStep` after a

@@ -1010,8 +1010,10 @@ export const kmartAdapter = {
 
 
     // 4. Sensor loop. Akamai rotates `_abck` on response; we need a Hyper-
-    //    valid cookie before the bot wall. ISP usually clears in ≤3 rounds;
-    //    sticky residential often needs a couple more on quieter exits.
+    //    valid cookie before the bot wall. Direct (morning green) often clears
+    //    in ≤3 rounds, but Hyper can return bodySuccess=true while ind stays
+    //    -1 — same recovery ladder for every exit (more rounds + SBSD retry),
+    //    not only sticky resi. Brute-forcing new proxies is not the product path.
     //
     // Seed a sentinel `_abck` if the jar is missing one. Hyper's /v2/sensor
     // endpoint rejects empty abck with `{"error":"missing abck"}`. The
@@ -1025,11 +1027,11 @@ export const kmartAdapter = {
         note: "jar had no _abck after warm_home; seeded sentinel for first sensor",
       });
     }
-    const sensorRounds = stickyProxy ? 5 : 3;
+    const sensorRounds = 5;
     steps.push({
       step: "akamai_sensor:pre",
       ok: ctx.jar.has("_abck"),
-      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : ""}`,
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : " direct=1"}`,
     });
     for (let i = 0; i < sensorRounds; i++) {
       const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
@@ -1097,58 +1099,57 @@ export const kmartAdapter = {
     }
 
     if (!abckSolved(ctx.jar, sensorRounds)) {
-      // Sticky: try homepage SBSD then 2 more sensor rounds before giving up.
-      // ISP keeps the hard fail — it clears in ≤3 on a healthy exit.
-      if (stickyProxy) {
-        steps.push({
-          step: "akamai_unsolved:retry_sbsd",
-          ok: true,
-          note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors`,
-        });
-        await runSbsd(html, origin + "/", "sbsd_home_presolve");
-        for (let i = 0; i < 2; i++) {
-          await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
-            const beforeAbck = marker(ctx.jar.get("_abck"));
-            const r = await solveAkamaiSensor({
-              jar: ctx.jar,
-              pageUrl: origin + "/",
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-              scriptUrl,
-              scriptBody,
-              prevContext,
-              version: "3",
-            });
-            prevContext = r.context;
-            const res = await request(
-              r.postUrl,
-              {
-                method: "POST",
-                headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
-                body: akamaiSensorBody(r.payload),
-              },
-              ctx,
-            );
-            const body = await res.text().catch(() => "");
-            return {
-              status: res.status,
-              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-              note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
-            };
+      // All exits: homepage SBSD then 2 more sensor rounds before giving up.
+      // Direct wins (Revolut / cart_get) already prove the path; early abort on
+      // round-3 ind=-1 was discarding recoverable sessions.
+      steps.push({
+        step: "akamai_unsolved:retry_sbsd",
+        ok: true,
+        note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors${stickyProxy ? " sticky=1" : " direct=1"}`,
+      });
+      await runSbsd(html, origin + "/", "sbsd_home_presolve");
+      for (let i = 0; i < 2; i++) {
+        await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
+          const beforeAbck = marker(ctx.jar.get("_abck"));
+          const r = await solveAkamaiSensor({
+            jar: ctx.jar,
+            pageUrl: origin + "/",
+            userAgent: UA,
+            ip: egressIp,
+            acceptLanguage: ACCEPT_LANG,
+            scriptUrl,
+            scriptBody,
+            prevContext,
+            version: "3",
           });
-          if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
-            steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
-            break;
-          }
-          await sleep(250, 500);
+          prevContext = r.context;
+          const res = await request(
+            r.postUrl,
+            {
+              method: "POST",
+              headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+              body: akamaiSensorBody(r.payload),
+            },
+            ctx,
+          );
+          const body = await res.text().catch(() => "");
+          return {
+            status: res.status,
+            ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+            note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
+          };
+        });
+        if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
+          steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
+          break;
         }
+        await sleep(250, 500);
       }
       if (!abckSolved(ctx.jar, sensorRounds + 2)) {
         steps.push({
           step: "akamai_unsolved",
           ok: false,
-          note: `_abck never solved after ${stickyProxy ? sensorRounds + 2 : sensorRounds} rounds (${marker(ctx.jar.get("_abck"))})${stickyProxy ? " sticky=1" : ""}`,
+          note: `_abck never solved after ${sensorRounds + 2} rounds (${marker(ctx.jar.get("_abck"))})${stickyProxy ? " sticky=1" : " direct=1"}`,
         });
         return { ok: false, steps, failedStep: "akamai_unsolved", checkoutStage: "pre_cart", finalUrl: origin, cookies: ctx.jar.dump() };
       }
