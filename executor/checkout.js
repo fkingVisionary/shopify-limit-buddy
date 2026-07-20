@@ -94,41 +94,45 @@ export async function runCheckout(task) {
   })();
   const isKmart = host === "kmart.com.au" || host.endsWith(".kmart.com.au");
 
-  // Transport selection (Hyper docs: browser TLS required for reliable _abck).
-  // - forceUndici / transport=undici → undici only (known-good escape hatch)
-  // - forceTls / transport=tls → in-process chrome_131 (opt-in experiment; can 502)
-  // - Kmart default → child-process chrome_131 (crash-isolated); undici if init fails
+  // Transport selection.
+  // Empirical green (place_order / 3DS on Fly direct 89.187.186.9) used undici.
+  // Defaulting Kmart to tls-worker solved _abck but 403'd category/PDP on the
+  // same IP — looks like nav/session handling, not SoftBlock. Keep tls-worker
+  // opt-in until document GETs match the undici-green path.
+  // - default / forceUndici / transport=undici → undici
+  // - transport=tls-worker | tlsWorker:true | KMART_TLS_WORKER=1 → child chrome_131
+  // - forceTls / transport=tls → in-process chrome_131 (can empty-502)
   // - Playwright stays opt-in only (kmartMode=playwright)
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
   const forceTls = task.forceTls === true || requestedTransport === "tls";
-  const tlsWorkerOff =
-    task.tlsWorker === false ||
-    process.env.KMART_TLS_WORKER === "0" ||
-    process.env.KMART_TLS_WORKER === "false";
+  const wantTlsWorker =
+    !forceUndici &&
+    !forceTls &&
+    (task.tlsWorker === true ||
+      requestedTransport === "tls-worker" ||
+      process.env.KMART_TLS_WORKER === "1" ||
+      process.env.KMART_TLS_WORKER === "true");
 
   let dispatcher = null;
   let transportSelectNote = null;
 
-  if (forceUndici) {
-    dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
-    transportSelectNote = "undici (forced)";
-  } else if (forceTls) {
+  if (forceTls) {
     dispatcher = makeDispatcher(task.proxy, { forceTls: true });
     transportSelectNote = "tls in-process chrome_131 (forced — not crash-isolated)";
-  } else if (isKmart && !tlsWorkerOff) {
+  } else if (wantTlsWorker) {
     try {
       dispatcher = await makeRemoteTlsDispatcher(task.proxy);
-      transportSelectNote = "tls-worker chrome_131 (Hyper TLS-first; crash-isolated)";
+      transportSelectNote = "tls-worker chrome_131 (opt-in)";
     } catch (e) {
       dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
-      // Include stdout/stderr tail from bridge — native .so download failures
-      // previously looked like a silent "exited code=1".
       transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 400);
     }
   } else {
-    dispatcher = makeDispatcher(task.proxy, { forceTls: false, forceUndici: false });
-    transportSelectNote = `undici (default non-kmart or KMART_TLS_WORKER=0)`;
+    dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
+    transportSelectNote = forceUndici
+      ? "undici (forced)"
+      : "undici (default — matches direct-green place_order path)";
   }
 
   const ctx = { dispatcher, jar };
