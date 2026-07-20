@@ -1,3 +1,23 @@
+# Fly ladder smoke
+
+One-tap from GitHub: **Actions → Smoke executor → Run workflow**.
+
+Or locally (needs `EXECUTOR_TOKEN`):
+
+```bash
+EXECUTOR_URL=https://j1ms-bot-executor.fly.dev \
+EXECUTOR_TOKEN=... \
+./executor/scripts/fly-smoke.sh
+
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-smoke.sh   # ISP pool
+```
+
+Writes `*.json` + `*.summary.json` + `*.milestones.json` under `SMOKE_OUT_DIR`
+(default `/tmp/fly-smoke`). Scores furthest stage / milestones — not only
+`failedStep` after a client timeout.
+
+---
+
 # HAR diff machine
 
 Compare a real browser HAR against the executor's current implementation to

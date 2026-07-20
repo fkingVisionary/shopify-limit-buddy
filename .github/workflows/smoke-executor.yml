@@ -1,0 +1,124 @@
+name: Smoke executor
+
+# One-tap Fly ladder smoke (direct + ISP). Does not redeploy.
+# Actions → "Smoke executor" → Run workflow.
+# Uses the same EXECUTOR_TOKEN as Deploy executor.
+
+on:
+  workflow_dispatch:
+    inputs:
+      with_card:
+        description: "Inject KMART_CARD_* secrets (may hit 3DS / bank)"
+        type: boolean
+        default: false
+      place_order:
+        description: "Real placeOrder (requires card secrets)"
+        type: boolean
+        default: false
+      skip_isp:
+        description: "Skip ISP pool smoke (direct only)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: smoke-executor
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Fly ladder smoke
+    runs-on: ubuntu-latest
+    env:
+      EXECUTOR_URL: https://j1ms-bot-executor.fly.dev
+      EXECUTOR_TOKEN: ${{ secrets.EXECUTOR_TOKEN }}
+      KMART_CARD_NUMBER: ${{ secrets.KMART_CARD_NUMBER }}
+      KMART_CARD_CVV: ${{ secrets.KMART_CARD_CVV }}
+      KMART_CARD_EXPIRY_MONTH: ${{ secrets.KMART_CARD_EXPIRY_MONTH }}
+      KMART_CARD_EXPIRY_YEAR: ${{ secrets.KMART_CARD_EXPIRY_YEAR }}
+      KMART_CARD_HOLDER: ${{ secrets.KMART_CARD_HOLDER }}
+      SMOKE_OUT_DIR: ${{ github.workspace }}/smoke-out
+      SMOKE_TIMEOUT: "240"
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Verify EXECUTOR_TOKEN
+        run: |
+          if [ -z "$EXECUTOR_TOKEN" ]; then
+            echo "::error::EXECUTOR_TOKEN secret missing"
+            exit 1
+          fi
+          echo "tip health:"
+          curl -sS --max-time 15 "$EXECUTOR_URL/health" || true
+          echo
+
+      - name: Direct dry-run (charge-path class)
+        env:
+          SMOKE_USE_PROXY: "0"
+          SMOKE_WITH_CARD: ${{ inputs.with_card && '1' || '0' }}
+          SMOKE_PLACE_ORDER: ${{ inputs.place_order && '1' || '0' }}
+        run: |
+          chmod +x executor/scripts/fly-smoke.sh
+          set +e
+          bash executor/scripts/fly-smoke.sh
+          rc=$?
+          set -e
+          echo "direct_rc=$rc" >> "$GITHUB_ENV"
+          # Advisory — do not fail the job on sensor flake alone.
+          if [ "$rc" = "0" ]; then
+            echo "direct=pass" >> "$GITHUB_ENV"
+          else
+            echo "direct=fail_$rc" >> "$GITHUB_ENV"
+          fi
+
+      - name: ISP pool dry-run
+        if: ${{ !inputs.skip_isp }}
+        env:
+          SMOKE_USE_PROXY: "1"
+          SMOKE_WITH_CARD: "0"
+          SMOKE_PLACE_ORDER: "0"
+        run: |
+          set +e
+          bash executor/scripts/fly-smoke.sh
+          rc=$?
+          set -e
+          echo "isp_rc=$rc" >> "$GITHUB_ENV"
+          if [ "$rc" = "0" ]; then
+            echo "isp=pass" >> "$GITHUB_ENV"
+          else
+            echo "isp=fail_$rc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fly-smoke-${{ github.run_id }}
+          path: smoke-out/
+          if-no-files-found: warn
+
+      - name: Summarize
+        if: always()
+        run: |
+          echo "## Fly smoke summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- health tip: see log above" >> "$GITHUB_STEP_SUMMARY"
+          echo "- direct: \`${direct:-n/a}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- isp: \`${isp:-n/a}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Summaries" >> "$GITHUB_STEP_SUMMARY"
+          for f in smoke-out/*.summary.json; do
+            [ -f "$f" ] || continue
+            echo "#### \`$(basename "$f")\`" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])), indent=2)[:4000])" "$f" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done
+          # Soft fail only if direct cart_get failed hard (not sensor flake).
+          if [ "${direct_rc:-1}" = "2" ]; then
+            echo "::error::Direct smoke hard-failed (cart/gql). Check artifacts."
+            exit 1
+          fi
+          if [ "${direct_rc:-1}" = "3" ]; then
+            echo "::warning::Direct smoke sensor flake — retry workflow"
+          fi
+          echo "Done."
