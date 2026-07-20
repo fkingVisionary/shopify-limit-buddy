@@ -174,6 +174,12 @@ function akamaiSensorBody(payload) {
   return JSON.stringify({ sensor_data: payload });
 }
 
+/** Byte length from marker() output like `795b ind=-1`. */
+function abckLenFromMarker(m) {
+  const match = /^(\d+)b\b/.exec(String(m || ""));
+  return match ? Number(match[1]) : -1;
+}
+
 function marker(value) {
   const v = String(value ?? "");
   if (!v) return "(none)";
@@ -765,7 +771,7 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-    const scriptUrl = scriptPath ? origin + scriptPath : null;
+    let scriptUrl = scriptPath ? origin + scriptPath : null;
 
     // 2b. PROACTIVE SBSD SOLVE. Kmart runs passive SBSD on the whole site.
     //     Real Chrome fetches + solves the SBSD script on the homepage
@@ -1009,11 +1015,11 @@ export const kmartAdapter = {
     });
 
 
-    // 4. Sensor loop. Akamai rotates `_abck` on response; we need a Hyper-
-    //    valid cookie before the bot wall. Direct (morning green) often clears
-    //    in ≤3 rounds, but Hyper can return bodySuccess=true while ind stays
-    //    -1 — same recovery ladder for every exit (more rounds + SBSD retry),
-    //    not only sticky resi. Brute-forcing new proxies is not the product path.
+    // 4. Sensor loop. Success path (Revolut / cart_get) grows `_abck`
+    //    735→811→819→838 then ind=0. Failure plateaus ~795b with
+    //    bodySuccess=true — more rounds on the same Hyper context + script
+    //    never recover. Harden = detect plateau → re-fetch script → clear
+    //    context (so Hyper gets script again) → continue. Not proxy spray.
     //
     // Seed a sentinel `_abck` if the jar is missing one. Hyper's /v2/sensor
     // endpoint rejects empty abck with `{"error":"missing abck"}`. The
@@ -1027,21 +1033,75 @@ export const kmartAdapter = {
         note: "jar had no _abck after warm_home; seeded sentinel for first sensor",
       });
     }
-    const sensorRounds = 5;
-    steps.push({
-      step: "akamai_sensor:pre",
-      ok: ctx.jar.has("_abck"),
-      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : " direct=1"}`,
-    });
-    for (let i = 0; i < sensorRounds; i++) {
-      const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
+
+    // Re-GET homepage, parse fresh Akamai script path, fetch script body,
+    // clear Hyper context so the next sensor round includes `script` again.
+    const rebindWwwSensorScript = async (label) => {
+      const beforePath = scriptPath;
+      await tStep(`${label}:home`, async () => {
+        const res = await request(
+          origin + "/",
+          { method: "GET", headers: navHeaders({ referer: undefined, site: "none" }) },
+          ctx,
+        );
+        html = await res.text();
+        const nextPath = findAkamaiScriptPath(html);
+        return {
+          status: res.status,
+          ok: res.status < 400 && Boolean(nextPath),
+          note: `path=${nextPath || "(none)"} prev=${beforePath || "(none)"} html=${html.length}b`,
+        };
+      });
+      const nextPath = findAkamaiScriptPath(html);
+      if (!nextPath) {
+        steps.push({ step: `${label}:no_script`, ok: false, note: "homepage HTML had no Akamai sensor path after rebind" });
+        return false;
+      }
+      scriptPath = nextPath;
+      scriptUrl = origin + scriptPath;
+      await tStep(`${label}:script_fetch`, async () => {
+        const res = await request(
+          scriptUrl,
+          {
+            method: "GET",
+            headers: {
+              "user-agent": UA,
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              "accept-encoding": "gzip, deflate, br, zstd",
+              referer: origin + "/",
+              ...CHROME_CH,
+              "sec-fetch-dest": "script",
+              "sec-fetch-mode": "no-cors",
+              "sec-fetch-site": "same-origin",
+            },
+          },
+          ctx,
+        );
+        scriptBody = await res.text();
+        return {
+          status: res.status,
+          ok: res.status < 400 && scriptBody.length > 1000,
+          note: `${scriptBody.length}b path=${scriptPath} changed=${beforePath !== scriptPath}`,
+        };
+      });
+      prevContext = null;
+      steps.push({
+        step: `${label}:context_reset`,
+        ok: true,
+        note: `prevContext cleared; next sensor includes script body path=${scriptPath}`,
+      });
+      return Boolean(scriptBody && scriptBody.length > 1000);
+    };
+
+    const runSensorRound = async (stepName, roundHint) => {
+      const { context } = await tStep(stepName, async () => {
         const beforeAbck = marker(ctx.jar.get("_abck"));
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: origin + "/",
-
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
@@ -1050,8 +1110,6 @@ export const kmartAdapter = {
           prevContext,
           version: "3",
         });
-        // Post the sensor payload back to the script URL — Akamai answers
-        // with refreshed `_abck`/`bm_sz` cookies via Set-Cookie.
         const res = await request(
           r.postUrl,
           {
@@ -1063,9 +1121,9 @@ export const kmartAdapter = {
         );
         const body = await res.text().catch(() => "");
         const setCookieNames = cookieNamesFromResponse(res);
-        recordTraceEvent(`akamai_sensor#${i + 1}`, {
+        recordTraceEvent(stepName, {
           type: "akamai_sensor_round",
-          round: i + 1,
+          round: roundHint,
           pageUrl: origin + "/",
           scriptUrl,
           input: {
@@ -1083,73 +1141,96 @@ export const kmartAdapter = {
         return {
           status: res.status,
           ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} path=${scriptPath} body=${body.replace(/\s+/g, " ").slice(0, 120)}`,
           _ctx: r.context,
         };
-      }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
+      }).then((s) => ({ context: s._ctx }));
       prevContext = context;
-      if (abckSolved(ctx.jar, i + 1)) {
+      return abckSolved(ctx.jar, roundHint);
+    };
+
+    const sensorRounds = 5;
+    steps.push({
+      step: "akamai_sensor:pre",
+      ok: ctx.jar.has("_abck"),
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : " direct=1"}`,
+    });
+    let plateauStreak = 0;
+    let lastAbckLen = abckLenFromMarker(marker(ctx.jar.get("_abck")));
+    let hitPlateau = false;
+    for (let i = 0; i < sensorRounds; i++) {
+      const solved = await runSensorRound(`akamai_sensor#${i + 1}`, i + 1);
+      if (solved) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
         steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
         steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
-      // Sensors are JS-scheduled; back-to-back posts with zero gap are a tell.
+      const afterLen = abckLenFromMarker(marker(ctx.jar.get("_abck")));
+      if (i >= 1 && afterLen > 0 && afterLen === lastAbckLen) plateauStreak += 1;
+      else plateauStreak = 0;
+      lastAbckLen = afterLen;
+      // Two flat rounds (e.g. 795→795) = stuck; more posts without rebind are waste.
+      if (plateauStreak >= 2) {
+        hitPlateau = true;
+        steps.push({
+          step: "akamai_sensor:plateau",
+          ok: true,
+          note: `_abck stuck at ${afterLen}b ind=-1 after round ${i + 1} — rebind script + clear Hyper context`,
+        });
+        break;
+      }
       await sleep(200, 400);
     }
 
     if (!abckSolved(ctx.jar, sensorRounds)) {
-      // All exits: homepage SBSD then 2 more sensor rounds before giving up.
-      // Direct wins (Revolut / cart_get) already prove the path; early abort on
-      // round-3 ind=-1 was discarding recoverable sessions.
+      // Recovery A: re-fetch script + clear context (fixes post-SBSD bug where
+      // we kept posting with prevContext and no script after BM state changed).
       steps.push({
-        step: "akamai_unsolved:retry_sbsd",
+        step: "akamai_unsolved:rebind",
         ok: true,
-        note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors${stickyProxy ? " sticky=1" : " direct=1"}`,
+        note: `${hitPlateau ? "plateau" : "unsolved"} after initial rounds (${marker(ctx.jar.get("_abck"))}) — rebind WWW script${stickyProxy ? " sticky=1" : " direct=1"}`,
       });
-      await runSbsd(html, origin + "/", "sbsd_home_presolve");
-      for (let i = 0; i < 2; i++) {
-        await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
-          const beforeAbck = marker(ctx.jar.get("_abck"));
-          const r = await solveAkamaiSensor({
-            jar: ctx.jar,
-            pageUrl: origin + "/",
-            userAgent: UA,
-            ip: egressIp,
-            acceptLanguage: ACCEPT_LANG,
-            scriptUrl,
-            scriptBody,
-            prevContext,
-            version: "3",
-          });
-          prevContext = r.context;
-          const res = await request(
-            r.postUrl,
-            {
-              method: "POST",
-              headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
-              body: akamaiSensorBody(r.payload),
-            },
-            ctx,
-          );
-          const body = await res.text().catch(() => "");
-          return {
-            status: res.status,
-            ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-            note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
-          };
-        });
-        if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
-          steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
-          break;
+      const rebound = await rebindWwwSensorScript("akamai_rebind");
+      if (rebound) {
+        for (let i = 0; i < 3; i++) {
+          const solved = await runSensorRound(`akamai_sensor:rebind#${i + 1}`, sensorRounds + i + 1);
+          if (solved) {
+            steps.push({ step: "akamai_solved", ok: true, note: `rounds=rebind#${i + 1}` });
+            steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+            steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
+            break;
+          }
+          await sleep(250, 450);
         }
-        await sleep(250, 500);
       }
-      if (!abckSolved(ctx.jar, sensorRounds + 2)) {
+
+      // Recovery B: SBSD then rebind again (bm_sv mint must not reuse dead context).
+      if (!abckSolved(ctx.jar, sensorRounds + 3)) {
+        steps.push({
+          step: "akamai_unsolved:retry_sbsd",
+          ok: true,
+          note: `_abck still unsolved (${marker(ctx.jar.get("_abck"))}) — SBSD then rebind + 2 sensors${stickyProxy ? " sticky=1" : " direct=1"}`,
+        });
+        await runSbsd(html, origin + "/", "sbsd_home_presolve");
+        await rebindWwwSensorScript("akamai_rebind_post_sbsd");
+        for (let i = 0; i < 2; i++) {
+          const solved = await runSensorRound(`akamai_sensor:post_sbsd#${i + 1}`, sensorRounds + 3 + i + 1);
+          if (solved) {
+            steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
+            steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+            steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
+            break;
+          }
+          await sleep(250, 500);
+        }
+      }
+
+      if (!abckSolved(ctx.jar, sensorRounds + 5)) {
         steps.push({
           step: "akamai_unsolved",
           ok: false,
-          note: `_abck never solved after ${sensorRounds + 2} rounds (${marker(ctx.jar.get("_abck"))})${stickyProxy ? " sticky=1" : " direct=1"}`,
+          note: `_abck never solved after rebind+SBSD ladder (${marker(ctx.jar.get("_abck"))}) path=${scriptPath}${stickyProxy ? " sticky=1" : " direct=1"}`,
         });
         return { ok: false, steps, failedStep: "akamai_unsolved", checkoutStage: "pre_cart", finalUrl: origin, cookies: ctx.jar.dump() };
       }
