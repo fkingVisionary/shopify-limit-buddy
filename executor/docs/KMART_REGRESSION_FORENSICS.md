@@ -215,6 +215,8 @@ Header/SBSD/conn experiments are exhausted against that artifact. Next lever is
 TLS fingerprint on `api.*` (Hyper docs: JA3/JA4 scored before sensor content),
 without Playwright: keep WWW+Hyper on undici, hand off to `node-tls-client`
 `chrome_131` **before get-token** so api BM seed + GraphQL share Chrome JA3.
-Step: `api_tls_handoff`. Opt out: `apiTls: false`. Proxy+TLS can still empty-502
-on native crash — handoff eagerly opens the Session and reverts to undici on
-thrown errors.
+Step: `api_tls_handoff`. **Live Fly after merge (`fc99eb4`): empty HTTP 502** on
+direct and ISP (~20–45s, `nsteps=0`) — native `node-tls-client` crash kills the
+process; try/catch cannot recover. Tip `#55`: handoff is **opt-in only**
+(`apiTls: true`); default remains undici so checkout timelines return again.
+Next TLS attempt needs process isolation (child worker), not in-process Session.

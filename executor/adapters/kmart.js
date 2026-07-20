@@ -1836,19 +1836,18 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Tip #54: WWW + Hyper sensor stay on undici (resi-dry-1 path). After
-      // Akamai rolled a larger BM script (531k→557k), the same undici jar +
-      // identical GraphQL header keys that previously cart_get 200 now get
-      // AkamaiGHost 403 on /gateway/graphql while get-token still 200s —
-      // including on Fly direct. Handoff api.* to chrome_131 TLS before
-      // get-token so BM seed cookies + GraphQL share Chrome JA3 (HTTP-only;
-      // not Playwright). Opt out with task.apiTls === false.
-      if (task.apiTls !== false && !ctx.dispatcher?.useTls) {
+      // Tip #54 tried default chrome_131 handoff for api.* after WWW undici.
+      // Live Fly (fc99eb4): every dry-run returned empty HTTP 502 after ~20–45s
+      // — native node-tls-client crash kills the process before Fastify can
+      // serialize steps (try/catch cannot catch that). Tip #55: OPT-IN only
+      // (`task.apiTls === true`). Default stays undici so phone/ISP smokes work.
+      if (task.apiTls === true && !ctx.dispatcher?.useTls) {
         await tStep("api_tls_handoff", async () => {
           const prev = ctx.dispatcher;
           try {
             const tlsD = makeDispatcher(task.proxy ?? null, { forceTls: true });
-            // Eager Session so native/init failures surface here (not mid-GraphQL).
+            // Eager Session so JS-level init failures surface here (not mid-GraphQL).
+            // Native SIGSEGV/abort still empty-502s the whole machine — keep opt-in.
             await tlsD.tlsSession();
             ctx._wwwDispatcher = prev;
             ctx.dispatcher = tlsD;

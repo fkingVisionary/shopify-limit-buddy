@@ -272,8 +272,8 @@ app.post("/run", async (req, reply) => {
       transport: typeof task.transport === "string" ? task.transport : undefined,
       forceTls: task.forceTls === true,
       forceUndici: task.forceUndici === true,
-      // Tip #54: false disables post-WWW chrome_131 handoff for api.* (default on).
-      ...(task.apiTls === false ? { apiTls: false } : {}),
+      // Tip #55: api TLS handoff is opt-in only (default undici — avoids empty 502).
+      ...(task.apiTls === true ? { apiTls: true } : {}),
       resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
       seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
       httpHandoff: task.httpHandoff !== false,
