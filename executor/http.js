@@ -1,19 +1,52 @@
-// Proxy-aware HTTP client. Default transport is undici because it is stable and
-// returns adapter timelines instead of crashing the executor. The native
-// node-tls-client path is still available behind EXECUTOR_HTTP_TRANSPORT=tls or
-// per-task transport=tls for controlled TLS experiments, but it is not the
-// default after repeated empty 502s from native crashes.
+// Proxy-aware HTTP client.
+//
+// Transports:
+//   undici        — Node TLS; stable, but Hyper docs flag it as detectable for Akamai
+//   tls           — in-process node-tls-client chrome_131 (opt-in; can empty-502 Fastify)
+//   tls-worker    — same chrome_131 in a child process (crash-isolated; Kmart default via checkout.js)
 //
 // Module surface:
-//   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
+//   makeDispatcher(proxyUrl) → opaque per-task dispatcher (undici or in-process tls)
+//   makeRemoteTlsDispatcher  → child-process chrome_131 dispatcher
 //   createJar()              → name-keyed cookie jar (same shape as before)
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
 //   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/** Child-process chrome_131 dispatcher (crash-isolated). Accepts raw proxy strings. */
+export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
+  const url = rawProxy ? parseProxy(rawProxy) : null;
+  const rawProxyLen = rawProxy ? String(rawProxy).length : 0;
+  if (rawProxy && !url) {
+    return {
+      proxy: null,
+      useTls: false,
+      remoteTls: null,
+      transport: "tls-worker",
+      sticky: false,
+      rawProxyLen,
+      proxyParseFailed: true,
+      undiciDispatcher() {
+        return undefined;
+      },
+      async tlsSession() {
+        throw new Error("remote tls-worker dispatcher has no in-process Session");
+      },
+      async resetUndici() {},
+      async close() {},
+    };
+  }
+  const dispatcher = await makeRemoteTlsDispatcherInner(url, opts);
+  dispatcher.rawProxyLen = rawProxyLen;
+  dispatcher.proxyParseFailed = false;
+  dispatcher.sticky = isStickyProxyUrl(url);
+  return dispatcher;
+}
 
 // Lazy global TLS init. node-tls-client spawns a piscina worker pool that
 // hosts the Go shared library; initTLS must be awaited once before the first
@@ -386,6 +419,18 @@ export async function request(url, opts, ctx) {
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
+
+  // Crash-isolated chrome_131 (Hyper TLS-first). Prefer over in-process useTls
+  // — native faults stay in the worker and cannot empty-502 Fastify.
+  if (dispatcher?.remoteTls) {
+    const res = await dispatcher.remoteTls.request(url, {
+      method,
+      headers,
+      body: opts?.body,
+    });
+    jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
+    return res;
+  }
 
   if (!dispatcher.useTls) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with

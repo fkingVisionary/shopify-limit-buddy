@@ -125,13 +125,13 @@ In Lovable chat:
 
 > "Dry-run a Kmart product URL through the executor"
 
-Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. The timeline must show `transport mode=tls` for sticky residential proxy runs; a residential IP alone is not enough if the HTTP client fingerprint is non-browser.
+Success looks like a step chain ending with `akamai_solved` and a `pdp_get` returning **200**. Kmart defaults to crash-isolated Chrome TLS (`transport: "tls-worker"` / `transport_select` step). A residential IP alone is not enough if the HTTP client fingerprint is non-browser — escape hatch `transport=undici` / `KMART_TLS_WORKER=0`.
 
 ---
 
 ## Optional: Enable Oxylabs Web Unblocker
 
-The current Kmart route is sticky residential proxy + Chrome TLS transport + Hyper. Oxylabs Web Unblocker is optional and should not be mixed into normal Hyper debugging unless you are deliberately testing that transport.
+The current Kmart route is sticky residential proxy + crash-isolated Chrome TLS (`tls-worker`) + Hyper. Oxylabs Web Unblocker is optional and should not be mixed into normal Hyper debugging unless you are deliberately testing that transport.
 
 1. Create a Web Unblocker sub-user at <https://dashboard.oxylabs.io> → **Web Unblocker**. Copy the username and password.
 2. On the github.com mobile site, add three more repo secrets in **Settings → Secrets and variables → Actions**:
@@ -145,7 +145,7 @@ The current Kmart route is sticky residential proxy + Chrome TLS transport + Hyp
 3. GitHub app → **Actions → Deploy executor → Run workflow** (leave `create_app` OFF).
 4. When the job finishes, the last log line says `Oxylabs Web Unblocker: ACTIVE`. You can also visit `https://<your-app>.fly.dev/health` — it should return `"transport":"oxylabs"`.
 
-To disable Oxylabs, delete any one of those three repo secrets and re-run the workflow. The executor falls back to the default undici transport.
+To disable Oxylabs, delete any one of those three repo secrets and re-run the workflow. The executor falls back to the Kmart `tls-worker` default (or undici if TLS worker init fails / is disabled).
 
 ---
 

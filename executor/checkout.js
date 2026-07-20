@@ -5,7 +5,7 @@
 // to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
 // checkout page) so existing Shopify recon flows keep working.
 
-import { makeDispatcher, createJar, request } from "./http.js";
+import { makeDispatcher, makeRemoteTlsDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
@@ -85,15 +85,50 @@ export async function runCheckout(task) {
   const t0 = now();
   const jar = createJar();
   const store = task.storeUrl.replace(/\/$/, "");
-  // Keep the native TLS client opt-in. It is useful for Akamai experiments, but
-  // a native failure can terminate the process and surface as an empty 502.
+  const host = (() => {
+    try {
+      return new URL(store).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  const isKmart = host === "kmart.com.au" || host.endsWith(".kmart.com.au");
+
+  // Transport selection (Hyper docs: browser TLS required for reliable _abck).
+  // - forceUndici / transport=undici → undici only (known-good escape hatch)
+  // - forceTls / transport=tls → in-process chrome_131 (opt-in experiment; can 502)
+  // - Kmart default → child-process chrome_131 (crash-isolated); undici if init fails
+  // - Playwright stays opt-in only (kmartMode=playwright)
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  // TLS is opt-in only. Auto-forcing TLS for Kmart+proxy caused empty HTTP 502s
-  // (node-tls-client native crash) whenever the UI sent transport=tls with a
-  // proxy. Undici is what cleared WWW Akamai through cart_create on recent runs.
   const forceTls = task.forceTls === true || requestedTransport === "tls";
-  const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
+  const tlsWorkerOff =
+    task.tlsWorker === false ||
+    process.env.KMART_TLS_WORKER === "0" ||
+    process.env.KMART_TLS_WORKER === "false";
+
+  let dispatcher = null;
+  let transportSelectNote = null;
+
+  if (forceUndici) {
+    dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
+    transportSelectNote = "undici (forced)";
+  } else if (forceTls) {
+    dispatcher = makeDispatcher(task.proxy, { forceTls: true });
+    transportSelectNote = "tls in-process chrome_131 (forced — not crash-isolated)";
+  } else if (isKmart && !tlsWorkerOff) {
+    try {
+      dispatcher = await makeRemoteTlsDispatcher(task.proxy);
+      transportSelectNote = "tls-worker chrome_131 (Hyper TLS-first; crash-isolated)";
+    } catch (e) {
+      dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
+      transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 240);
+    }
+  } else {
+    dispatcher = makeDispatcher(task.proxy, { forceTls: false, forceUndici: false });
+    transportSelectNote = `undici (default non-kmart or KMART_TLS_WORKER=0)`;
+  }
+
   const ctx = { dispatcher, jar };
 
   if (dispatcher.proxyParseFailed) {
@@ -120,12 +155,19 @@ export async function runCheckout(task) {
   // Overrides hostname-based adapter picking. Runs real Chromium + Hyper's
   // Playwright handlers instead of the raw-HTTP kmart adapter.
   const wantPlaywright =
-    task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(new URL(store).hostname.toLowerCase());
+    task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(host);
   const adapter = wantPlaywright ? kmartPlaywrightAdapter : pickAdapter(store);
   if (adapter) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.
     ctx.steps = [];
+    if (transportSelectNote) {
+      ctx.steps.push({
+        step: "transport_select",
+        ok: !/failed → undici/i.test(transportSelectNote),
+        note: transportSelectNote,
+      });
+    }
     wireProgress(ctx, task.taskId, {
       proxy: Boolean(dispatcher.proxy),
       transport: dispatcher.transport,
@@ -138,12 +180,13 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         detail: out.checkoutStage ?? null,
       });
+      const activeTransport = ctx.dispatcher?.transport ?? dispatcher.transport;
       const result = {
         ok: out.ok,
         taskId: task.taskId,
         adapter: adapter.id,
         elapsedMs: now() - t0,
-        transport: dispatcher.transport,
+        transport: activeTransport,
         steps: out.steps ?? ctx.steps,
         trace: out.trace,
         finalUrl: out.finalUrl,
@@ -163,12 +206,13 @@ export async function runCheckout(task) {
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.
       result.milestone = recordRunMilestone(task.taskId, result, {
-        proxy: Boolean(dispatcher.proxy),
-        transport: dispatcher.transport,
+        proxy: Boolean(ctx.dispatcher?.proxy ?? dispatcher.proxy),
+        transport: activeTransport,
       });
       return result;
     } catch (e) {
       markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
+      const activeTransport = ctx.dispatcher?.transport ?? dispatcher.transport;
       const partial = {
         ok: false,
         taskId: task.taskId,
@@ -176,7 +220,7 @@ export async function runCheckout(task) {
         error: e?.message ?? String(e),
         failedStep: e?.code ?? "adapter_error",
         elapsedMs: now() - t0,
-        transport: dispatcher.transport,
+        transport: activeTransport,
         steps: ctx.steps,
         trace: ctx.requestTrace,
         cookies: ctx.jar?.dump?.() ?? {},
@@ -187,8 +231,8 @@ export async function runCheckout(task) {
       };
       // Still record if we cleared cart_get / 3DS before the throw.
       partial.milestone = recordRunMilestone(task.taskId, partial, {
-        proxy: Boolean(dispatcher.proxy),
-        transport: dispatcher.transport,
+        proxy: Boolean(ctx.dispatcher?.proxy ?? dispatcher.proxy),
+        transport: activeTransport,
       });
       return partial;
     } finally {
