@@ -12,7 +12,6 @@ import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
-import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -44,8 +43,7 @@ app.get("/", async () => ({
   progress: "GET /progress/:taskId (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
-  proxyPoolSize: resiPoolSize(),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
   gitSha: GIT_SHA,
   monitorEnabled: MONITOR_ENABLE,
   ts: Date.now(),
@@ -59,8 +57,7 @@ app.get("/health", async () => ({
   transport: HTTP_TRANSPORT,
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
-  proxyPoolSize: resiPoolSize(),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
   gitSha: GIT_SHA,
   monitorEnabled: MONITOR_ENABLE,
 }));
@@ -94,12 +91,7 @@ app.post("/transport/diagnose", async (req, reply) => {
     return { ok: false, error: "url must be http(s)" };
   }
 
-  const resolvedProxy = resolveRunProxy({
-    proxy: body.proxy,
-    proxies: body.proxies,
-    proxyEntries: body.proxyEntries,
-    useProxy: body.useProxy,
-  }).proxy;
+  const resolvedProxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const requestedTransport = typeof body.transport === "string" ? body.transport.toLowerCase() : null;
   const dispatcher = makeDispatcher(resolvedProxy, {
     forceTls: body.forceTls === true || requestedTransport === "tls",
@@ -218,42 +210,6 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
-  // Proxy resolution (ef84707 list shape + desktop proxyEntries):
-  //   body.proxy → body.proxies[]/proxyEntries[] → resi.proxies / PROXY_RESI_LIST
-  //   → PROXY_URL_RESI (legacy single secret). useProxy:false forces direct.
-  const proxyPick = resolveRunProxy({
-    proxy: task.proxy,
-    proxies: task.proxies,
-    proxyEntries: task.proxyEntries,
-    useProxy: task.useProxy,
-  });
-  const resolvedProxy = proxyPick.proxy;
-  if (resolvedProxy) {
-    req.log.info(
-      { proxySource: proxyPick.source, proxyIndex: proxyPick.index, proxyPoolSize: proxyPick.poolSize },
-      "proxy resolved",
-    );
-  }
-  // Optional Fly/GitHub secrets for card when body omits it (phone dry-runs).
-  if (!card) {
-    const number = process.env.KMART_CARD_NUMBER;
-    const cvv = process.env.KMART_CARD_CVV;
-    const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
-    const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
-    const holder = process.env.KMART_CARD_HOLDER;
-    if (number && cvv && expMonth && expYear) {
-      const num = String(number).replace(/\s+/g, "");
-      if (num.length >= 12 && num.length <= 19 && /^\d+$/.test(num)) {
-        card = {
-          number: num,
-          cvv: String(cvv),
-          expMonth: String(expMonth).padStart(2, "0").slice(-2),
-          expYear: String(expYear).slice(-2),
-          holder: typeof holder === "string" ? holder.slice(0, 100) : "",
-        };
-      }
-    }
-  }
   inflight++;
   try {
     const result = await runCheckout({
@@ -263,7 +219,7 @@ app.post("/run", async (req, reply) => {
       qty: Number(task.qty ?? 1),
       profile: task.profile ?? null,
       card,
-      proxy: resolvedProxy,
+      proxy: task.proxy ?? null,
       dryRun: task.dryRun !== false,
       placeOrder: task.placeOrder === true,
       placeOrderMutation,
@@ -272,8 +228,6 @@ app.post("/run", async (req, reply) => {
       transport: typeof task.transport === "string" ? task.transport : undefined,
       forceTls: task.forceTls === true,
       forceUndici: task.forceUndici === true,
-      // Tip #55: api TLS handoff is opt-in only (default undici — avoids empty 502).
-      ...(task.apiTls === true ? { apiTls: true } : {}),
       resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
       seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
       httpHandoff: task.httpHandoff !== false,
@@ -332,7 +286,7 @@ app.post("/recon", async (req, reply) => {
   }
   const jar = createJar();
   // Default to direct (Fly egress). Only use residential when explicitly opted in.
-  const resolvedProxy = resolveRunProxy({ proxy, proxies: req.body?.proxies, proxyEntries: req.body?.proxyEntries, useProxy }).proxy;
+  const resolvedProxy = proxy ?? (useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   const dispatcher = makeDispatcher(resolvedProxy);
   const ctx = { dispatcher, jar };
   const t0 = Date.now();
@@ -394,12 +348,7 @@ app.post("/recon", async (req, reply) => {
 app.post("/jbhifi/recon", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const body = req.body ?? {};
-  const proxy = resolveRunProxy({
-    proxy: body.proxy,
-    proxies: body.proxies,
-    proxyEntries: body.proxyEntries,
-    useProxy: body.useProxy,
-  }).proxy;
+  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   try {
     const result = await runJbhifiRecon({
       query: body.query ?? null,
@@ -423,12 +372,7 @@ app.post("/jbhifi/recon", async (req, reply) => {
 app.post("/jbhifi/probe", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const body = req.body ?? {};
-  const proxy = resolveRunProxy({
-    proxy: body.proxy,
-    proxies: body.proxies,
-    proxyEntries: body.proxyEntries,
-    useProxy: body.useProxy,
-  }).proxy;
+  const proxy = body.proxy ?? (body.useProxy ? process.env.PROXY_URL_RESI ?? null : null);
   try {
     const result = await runJbhifiProbe({
       skus: Array.isArray(body.skus) ? body.skus : [],
@@ -458,8 +402,7 @@ app
     console.log(
       JSON.stringify({
         hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-        proxyConfigured: resiPoolSize() > 0 || Boolean(process.env.PROXY_URL_RESI),
-        proxyPoolSize: resiPoolSize(),
+        proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
         transport: HTTP_TRANSPORT,
       }),
     );

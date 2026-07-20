@@ -10,11 +10,11 @@
 ## Process failure (2026-07-19 evening): lost green direct
 
 `resi-dry-1` (direct, no proxy) reached `place_order` dry-run on Fly tip `#40`
-(`b3b7a81`, ~20:10Z). Tip spiral `#42`–`#55` chased ISP/GraphQL without treating
-**direct cart_get 200** as a merge gate — direct then also denied. That must not
-repeat: see `AGENTS.md` “do not lose a working direct path.” Restore PR resets
-`executor/adapters/kmart.js` to `#40` while keeping tip ISP pool / bare-IP sticky
-fixes in `http.js` / `proxy-pool.js`.
+(`b3b7a81`, ~20:10Z). Tip spiral `#42`–`#55` chased ISP/GraphQL without a direct
+gate — then `#57` only restored `kmart.js` (byte-match `#40`) while **leaving**
+tip-spiral `http.js` / `checkout.js` / `server.js`. That was not a real restore.
+Follow-up: hard-reset those runtime files to `b3b7a81` as well. Do not default to
+“Akamai moved” when our tip was green the same morning.
 
 ## The large tip: `a1d9f9c` (“Electron Update”, 15 Jul 18:52 AEST)
 

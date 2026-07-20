@@ -6,7 +6,6 @@
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT } from "./http.js";
-import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
 
 const CHROME_133_REF = {
   ja3_hash: "773906b0efdefa24a7f2b8eb6985bf37",
@@ -295,17 +294,11 @@ export async function runDeepHealth({
   directProbe = true,
 } = {}) {
   const t0 = Date.now();
-  // Prefer explicit diagnose proxy; else round-robin from resi pool / legacy secret.
-  let resolvedProxy = null;
-  let proxySource = "none";
-  if (proxy?.trim?.()) {
-    resolvedProxy = proxy.trim();
-    proxySource = "request.proxy";
-  } else if (proxy === undefined || proxy === null || proxy === "") {
-    const picked = resolveRunProxy({ useProxy: true });
-    resolvedProxy = picked.proxy;
-    proxySource = picked.source;
-  }
+  const resolvedProxy = proxy?.trim?.()
+    ? proxy.trim()
+    : (proxy === undefined || proxy === null || proxy === ""
+      ? (process.env.PROXY_URL_RESI ?? null)
+      : null);
 
   const checks = {};
 
@@ -314,8 +307,6 @@ export async function runDeepHealth({
     hyperApiKey: Boolean(process.env.HYPER_API_KEY),
     executorToken: Boolean(process.env.EXECUTOR_TOKEN),
     proxyUrlResiConfigured: Boolean(process.env.PROXY_URL_RESI),
-    proxyPoolSize: resiPoolSize(),
-    proxySource,
     httpTransport: HTTP_TRANSPORT,
     node: process.version,
   };
@@ -332,7 +323,7 @@ export async function runDeepHealth({
       checks.proxy = {
         ok: false,
         skipped: true,
-        error: "no proxy supplied and resi pool empty (resi.proxies / PROXY_RESI_LIST / PROXY_URL_RESI)",
+        error: "no proxy supplied and PROXY_URL_RESI unset",
       };
     }
   }
