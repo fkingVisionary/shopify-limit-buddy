@@ -971,6 +971,55 @@ export const kmartAdapter = {
     // passive SBSD reliably mints bm_sv on this edge). Hyper §3.5 suggests
     // SBSD-first for some sites; empirically sensors-then-SBSD is required here.
 
+    // Hyper: Akamai scores JA3/JA4 before sensor content. Sensors on undici
+    // often return bodySuccess=true while _abck plateaus ~791b ind=-1 — that is
+    // OUR TLS handling, not "wait out SoftBlock". Hand off chrome_131 for
+    // script GET + sensor POSTs + home SBSD, then restore undici for document
+    // nav (whole-session tls-worker previously 403'd category/PDP).
+    // Opt out: sensorTls:false or KMART_SENSOR_TLS=0.
+    const wantSensorTls =
+      task.sensorTls === true ||
+      (task.sensorTls !== false &&
+        task.forceUndici !== true &&
+        process.env.KMART_SENSOR_TLS !== "0");
+    const sensorAlreadyTls =
+      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+    if (wantSensorTls && !sensorAlreadyTls) {
+      await tStep("sensor_tls_handoff", async () => {
+        const prev = ctx.dispatcher;
+        try {
+          const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
+          ctx._navDispatcher = prev;
+          ctx.dispatcher = tlsD;
+          return {
+            ok: true,
+            note: `tls-worker chrome_131 for Hyper sensor phase proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            note: `sensor tls-worker failed — sensors stay on ${prev?.transport ?? "undici"}: ${e?.message ?? String(e)}`.slice(0, 400),
+          };
+        }
+      });
+    }
+    const restoreNavTransport = async (reason) => {
+      if (!ctx._navDispatcher || ctx.dispatcher === ctx._navDispatcher) return;
+      const sensorD = ctx.dispatcher;
+      ctx.dispatcher = ctx._navDispatcher;
+      ctx._navDispatcher = null;
+      steps.push({
+        step: "sensor_tls_restore",
+        ok: true,
+        note: `back to ${ctx.dispatcher?.transport ?? "undici"} for document nav (${reason}); closed sensor ${sensorD?.transport ?? "?"}`,
+      });
+      try {
+        await sensorD?.close?.();
+      } catch {
+        /* ignore */
+      }
+    };
+
     // Human pause: glance at homepage before the browser pulls the sensor script.
     await sleep(800, 1500);
 
@@ -1228,8 +1277,9 @@ export const kmartAdapter = {
         steps.push({
           step: "akamai_unsolved",
           ok: false,
-          note: `_abck never solved after rebind+SBSD ladder (${marker(ctx.jar.get("_abck"))}) path=${scriptPath}${stickyProxy ? " sticky=1" : " direct=1"}`,
+          note: `_abck never solved after rebind+SBSD ladder (${marker(ctx.jar.get("_abck"))}) path=${scriptPath} transport=${ctx.dispatcher?.transport ?? "?"}${stickyProxy ? " sticky=1" : " direct=1"}`,
         });
+        await restoreNavTransport("akamai_unsolved");
         return { ok: false, steps, failedStep: "akamai_unsolved", checkoutStage: "pre_cart", finalUrl: origin, cookies: ctx.jar.dump() };
       }
     }
@@ -1249,6 +1299,9 @@ export const kmartAdapter = {
         });
       }
     }
+
+    // Document nav (category/PDP) stays on undici — charge-path proven there.
+    await restoreNavTransport("post_sensor_sbsd");
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when

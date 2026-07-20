@@ -153,9 +153,10 @@ export async function runCheckout(task) {
   }
 
   const closeDispatcher = async () => {
-    // Adapter may swap ctx.dispatcher (WWW undici → api tls-worker handoff).
+    // Adapter may swap dispatchers: sensor tls-worker ↔ nav undici ↔ api tls-worker.
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
     try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._navDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".

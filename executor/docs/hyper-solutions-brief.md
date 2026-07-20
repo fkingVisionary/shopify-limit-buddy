@@ -13,7 +13,7 @@
 
 3. **Re-parse the script path from every page response, never hardcode it.** Akamai rotates the script path per page load. If you are caching the path across sessions or page loads you will eventually POST sensor data to a stale endpoint and receive a permanent `~-1~` cookie.
 
-4. **Verify your TLS fingerprint before blaming sensor payloads.** Akamai flags mismatched JA3/JA4 at the edge before it ever evaluates sensor content. Use `tls-client` or `azuretls-client`; do not use native `axios`, `node-fetch`, or the built-in `https` module.
+4. **Verify your TLS fingerprint before blaming sensor payloads.** Akamai flags mismatched JA3/JA4 at the edge before it ever evaluates sensor content. Use `tls-client` or `azuretls-client`; do not use native `axios`, `node-fetch`, or the built-in `https` module. **J1m’s Bot:** `sensor_tls_handoff` runs script GET + sensor POSTs on crash-isolated `tls-worker` chrome_131, then restores undici for PDP nav. Do not treat `bodySuccess=true` + plateau `ind=-1` as SoftBlock — that pattern is undici JA3.
 
 5. **Add SBSD detection to your Kmart flow.** Kmart AU runs Akamai Bot Manager v3; if the page response HTML contains a `<script src="...?v=<uuid>">` tag (with no `t=` parameter), you are seeing passive SBSD. You must POST two SBSD sensors (index 0, then index 1) before your protected API calls or face 429s with JSON `{"t":"<token>"}` challenge bodies.
 
