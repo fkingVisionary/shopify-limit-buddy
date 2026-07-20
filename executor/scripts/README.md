@@ -1,4 +1,14 @@
-# Fly ladder smoke
+# Fly one-shot probe
+
+**Do not loop SoftBlocked hours.** One intentional `/run`:
+
+```bash
+EXECUTOR_TOKEN=... ./executor/scripts/fly-probe-once.sh
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh   # ISP + apiTls handoff
+API_TLS=0 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh  # undici api.*
+```
+
+# Fly ladder smoke (optional Actions helper)
 
 One-tap from GitHub: **Actions → Smoke executor → Run workflow**.
 
@@ -54,7 +64,7 @@ Golden checklist (from `www.kmart.com.au.har_1.json`, 971 entries):
 | seed                  | #25       | POST /shopping-agent/v1/get-token — API-host BM seed   |
 | cart_get              | #114      | getMyActiveCart guest probe                            |
 | cart_create           | #343      | createMyBag with postcodeSelector JSON                 |
-| cart_atc              | #368      | updateMyBag addLineItem sku                            |
+| cart_atc              | #368      | updateMyCart addLineItem sku                            |
 | addr_shipping         | #599/677  | setShippingAddress (streetName full "<num> <street>")  |
 | addr_billing          | #690      | setShippingAddress + setBillingAddress                 |
 | paydock_tokenize      | #764      | PAN → oneTimeToken (origin=widget.paydock.com!)        |

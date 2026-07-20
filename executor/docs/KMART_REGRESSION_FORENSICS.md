@@ -229,3 +229,16 @@ direct and ISP (~20–45s, `nsteps=0`) — native `node-tls-client` crash kills 
 process; try/catch cannot recover. Tip `#55`: handoff is **opt-in only**
 (`apiTls: true`); default remains undici so checkout timelines return again.
 Next TLS attempt needs process isolation (child worker), not in-process Session.
+
+### Tip `#73+`: api.* handoff via crash-isolated `tls-worker`
+
+In-process `forceTls` empty-502'd Fly (#54→#55). With `tls-bridge` / baked `.so`:
+
+- WWW + Hyper stay on **undici**
+- Before get-token, when `task.proxy` is set (or `apiTls:true`), swap
+  `ctx.dispatcher` → `makeRemoteTlsDispatcher` (step `api_tls_handoff`)
+- Direct charge path stays undici unless `apiTls:true`
+- Opt out: `apiTls:false`
+- Do **not** poll SoftBlocked direct hours — one intentional probe only
+
+Still score furthest stage / milestones, not only `failedStep`.

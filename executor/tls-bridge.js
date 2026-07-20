@@ -180,7 +180,9 @@ export async function makeRemoteTlsDispatcher(proxyUrl = null, opts = {}) {
   await bridge.init();
   return {
     proxy: proxyUrl || null,
-    useTls: false,
+    // chrome_131 TLS (crash-isolated). useTls=true so api_tls_handoff
+    // knows we already left undici.
+    useTls: true,
     remoteTls: bridge,
     transport: "tls-worker",
     sticky: false,
@@ -188,10 +190,11 @@ export async function makeRemoteTlsDispatcher(proxyUrl = null, opts = {}) {
       return undefined;
     },
     async tlsSession() {
-      throw new Error("remote tls-worker dispatcher has no in-process Session");
+      // Eager "warm" no-op — init() already ran. Kept for tip #54 callers.
+      return null;
     },
     async resetUndici() {
-      /* no-op */
+      /* no-op — not an undici agent */
     },
     async close() {
       await bridge.close();

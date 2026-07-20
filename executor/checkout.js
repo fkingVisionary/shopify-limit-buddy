@@ -153,8 +153,9 @@ export async function runCheckout(task) {
   }
 
   const closeDispatcher = async () => {
-    // Adapter may swap ctx.dispatcher (tls→undici fallback); close the active one.
+    // Adapter may swap ctx.dispatcher (WWW undici → api tls-worker handoff).
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".

@@ -268,6 +268,10 @@ app.post("/run", async (req, reply) => {
       transport: typeof task.transport === "string" ? task.transport : undefined,
       forceTls: task.forceTls === true,
       forceUndici: task.forceUndici === true,
+      // api.* chrome_131 via tls-worker after WWW undici. Default ON when proxy
+      // is set; false disables; true forces even on direct.
+      ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
+      ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
       resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
       seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
       httpHandoff: task.httpHandoff !== false,

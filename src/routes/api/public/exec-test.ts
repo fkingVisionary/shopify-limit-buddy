@@ -212,7 +212,9 @@ export const Route = createFileRoute("/api/public/exec-test")({
             ...(typeof body.transport === "string" ? { transport: body.transport } : {}),
             ...(body.forceTls === true ? { forceTls: true } : {}),
             ...(body.forceUndici === true ? { forceUndici: true } : {}),
-            ...(body.apiTls === true ? { apiTls: true } : {}),
+            ...(body.apiTls === true || body.apiTls === false
+              ? { apiTls: body.apiTls }
+              : {}),
             ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
             ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
             ...(body.skipCategory === true ? { skipCategory: true } : {}),
