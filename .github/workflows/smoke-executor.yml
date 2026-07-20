@@ -19,6 +19,10 @@ on:
         description: "Skip ISP pool smoke (direct only)"
         type: boolean
         default: false
+      skip_direct:
+        description: "Skip direct smoke (ISP is the live charge-path class)"
+        type: boolean
+        default: false
 
 concurrency:
   group: smoke-executor
@@ -52,7 +56,8 @@ jobs:
           curl -sS --max-time 15 "$EXECUTOR_URL/health" || true
           echo
 
-      - name: Direct dry-run (charge-path class)
+      - name: Direct dry-run (often SoftBlocked on Fly egress)
+        if: ${{ !inputs.skip_direct }}
         env:
           SMOKE_USE_PROXY: "0"
           SMOKE_WITH_CARD: ${{ inputs.with_card && '1' || '0' }}
@@ -102,23 +107,36 @@ jobs:
         run: |
           echo "## Fly smoke summary" >> "$GITHUB_STEP_SUMMARY"
           echo "- health tip: see log above" >> "$GITHUB_STEP_SUMMARY"
-          echo "- direct: \`${direct:-n/a}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- direct: \`${direct:-skipped}\` (Fly egress SoftBlock is common — score **ISP**)" >> "$GITHUB_STEP_SUMMARY"
           echo "- isp: \`${isp:-n/a}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "### Summaries" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Score these fields (not CI green/red)" >> "$GITHUB_STEP_SUMMARY"
           for f in smoke-out/*.summary.json; do
             [ -f "$f" ] || continue
-            echo "#### \`$(basename "$f")\`" >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            python3 -c "import json,sys; print(json.dumps(json.load(open(sys.argv[1])), indent=2)[:4000])" "$f" >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("#### `%s` — **%s**" % (d.get("mode"), d.get("verdict") or "n/a"))
+print("- wall: `%s`" % d.get("wall"))
+print("- cleared: `%s`" % (" → ".join(d.get("ladderCleared") or []) or "(none)"))
+print("- ip / transport: `%s` / `%s`" % (d.get("resolveIp"), d.get("transport")))
+print("- apiTls: `%s`" % d.get("apiTlsNote"))
+print("")
+print("```json")
+print(json.dumps(d, indent=2)[:4500])
+print("```")
+' "$f" >> "$GITHUB_STEP_SUMMARY"
           done
-          # Soft fail only if direct cart_get failed hard (not sensor flake).
-          if [ "${direct_rc:-1}" = "2" ]; then
-            echo "::error::Direct smoke hard-failed (cart/gql). Check artifacts."
+          # Hard-fail the job only when ISP cleared sensors/PDP/token but cart still denied
+          # OR when ISP never started. Direct SoftBlock alone is not a regression.
+          if [ "${isp_rc:-}" = "2" ]; then
+            echo "::error::ISP wall is cart_get/GraphQL (or earlier hard fail). Check verdict in artifacts."
             exit 1
           fi
-          if [ "${direct_rc:-1}" = "3" ]; then
-            echo "::warning::Direct smoke sensor flake — retry workflow"
+          if [ "${isp_rc:-}" = "3" ]; then
+            echo "::warning::ISP sensor flake — retry once, do not SoftBlock-poll"
+          fi
+          if [ "${direct_rc:-}" = "3" ]; then
+            echo "::warning::Direct SoftBlock on Fly egress — expected; score ISP ladder"
           fi
           echo "Done."

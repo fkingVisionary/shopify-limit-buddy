@@ -218,6 +218,21 @@ reached3ds = bool(
 )
 
 ip = (by.get("resolve_ip") or {}).get("note")
+ladder_list = [(k, v) for k, v in ladder]
+cleared = [k for k, v in ladder_list if v]
+wall = next((k for k, v in ladder_list if not v), None)
+park = by.get("sensor_tls_park") or by.get("sensor_tls_keep") or by.get("sensor_tls_restore")
+api_handoff = by.get("api_tls_handoff")
+verdict = (
+    "CHARGE_PATH_OPEN"
+    if step_ok("cart_get")
+    else (
+        f"WALL={wall} after {len(cleared)}/{len(ladder_list)} ladder steps"
+        if wall
+        else "UNKNOWN"
+    )
+)
+
 summary = {
     "taskId": task,
     "mode": mode,
@@ -238,6 +253,11 @@ summary = {
     "elapsedMs": data.get("elapsedMs"),
     "nsteps": len(steps),
     "ladder": {k: v for k, v in ladder},
+    "ladderCleared": cleared,
+    "wall": wall,
+    "verdict": verdict,
+    "sensorTlsStep": (park or {}).get("step"),
+    "apiTlsNote": str((api_handoff or {}).get("note") or "")[:160] or None,
     "milestoneBest": best_mile,
     "paymentSummary": data.get("paymentSummary"),
     "timedOut": curl_rc != 0 or http in (0, 524),
@@ -245,9 +265,11 @@ summary = {
 
 Path(summary_path).write_text(json.dumps(summary, indent=2) + "\n")
 
+print(f"VERDICT {verdict}")
 print(f"http={http} curl={curl_rc} ok={summary['ok']} failedStep={summary['failedStep']}")
 print(f"furthest={stage} reached3ds={reached3ds} ip={ip} transport={summary['transport']} gitSha={str(summary.get('gitSha') or '')[:12]}")
 print("ladder " + " ".join(f"{k}={'OK' if v else 'NO'}" for k, v in ladder))
+print(f"cleared={' → '.join(cleared) if cleared else '(none)'} | wall={wall}")
 if best_mile:
     print(f"milestone stage={best_mile.get('stage')} reached3ds={best_mile.get('reached3ds')} live={best_mile.get('live')}")
 if summary.get("paymentSummary"):
