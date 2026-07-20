@@ -7,6 +7,15 @@
   (Paydock Canvas3ds / PR #26–#27 era). Desktop app landed later the same afternoon
   (PR #31 ~15:17 AEST).
 
+## Process failure (2026-07-19 evening): lost green direct
+
+`resi-dry-1` (direct, no proxy) reached `place_order` dry-run on Fly tip `#40`
+(`b3b7a81`, ~20:10Z). Tip spiral `#42`–`#55` chased ISP/GraphQL without treating
+**direct cart_get 200** as a merge gate — direct then also denied. That must not
+repeat: see `AGENTS.md` “do not lose a working direct path.” Restore PR resets
+`executor/adapters/kmart.js` to `#40` while keeping tip ISP pool / bare-IP sticky
+fixes in `http.js` / `proxy-pool.js`.
+
 ## The large tip: `a1d9f9c` (“Electron Update”, 15 Jul 18:52 AEST)
 
 | | |

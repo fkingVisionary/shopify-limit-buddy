@@ -31,6 +31,17 @@ migrations + one Deno edge function.
     These are pre-existing repo state, not a setup problem; `bun run format` would
     rewrite files, so don't run it unless intentionally reformatting.
 
+### Kmart executor — do not lose a working direct path
+- **Hard gate:** After any `executor/` change that touches Kmart checkout (`adapters/kmart.js`,
+  `http.js`, sensor/SBSD/GraphQL), smoke **direct** (no `proxyUrl`) via Lovable
+  `POST /api/public/exec-test` before merging or continuing ISP/proxy tips.
+- **Pass:** `cart_get` JSON 200 (not AkamaiGHost). Prefer reaching `checkout_*` /
+  `place_order` dry-run like artifact `resi-dry-1` (2026-07-19, direct).
+- **Fail:** If direct regresses while you are “fixing proxies,” **stop**. Restore the
+  last green direct tip first. Never stack GraphQL/header/TLS PRs on a broken baseline.
+- Known green morning tip for that artifact: merge `#40` / `b3b7a81` (Fly deploy
+  2026-07-19 ~19:51Z). Later tip spiral (#42–#55) kept ISP wiring but lost direct GraphQL.
+
 ### Optional services (not required to run/test the web app)
 - `executor/`: Node ≥20 Fastify service. Uses **npm** (`cd executor && npm install`,
   then `npm run dev`, listens on `PORT` 8080). Real Kmart checkouts require external

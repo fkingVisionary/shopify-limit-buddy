@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, makeDispatcher, isStickyProxyUrl, cookieHeaderForUrl } from "../http.js";
+import { request, UA, makeDispatcher, isStickyProxyUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -83,8 +83,11 @@ const CHROME_CH = {
   "sec-ch-ua-platform": '"macOS"',
   "sec-ch-ua-platform-version": '"14.6.1"',
 };
-// api.* XHRs (get-token + GraphQL): low-entropy Client Hints — a1d9f9c /
-// 6d0d21a / resi-dry-1 cart_get 200. Do not put full CHROME_CH on GraphQL.
+// CORS XHRs to api.kmart.com.au (get-token / GraphQL) only emit the low-entropy
+// Client Hints trio in real Chrome (slim HAR). High-entropy hints are for
+// document navigations after Accept-CH — stuffing them onto every GraphQL call
+// is a bot tell and correlates with api GraphQL Access Denied while get-token
+// (same host, lighter BM) still returns 200.
 const CHROME_CH_XHR = {
   "sec-ch-ua": CHROME_CH["sec-ch-ua"],
   "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
@@ -463,9 +466,7 @@ export const kmartAdapter = {
       requestTrace.push({ kind: "event", key, ...event });
     };
     const tracedRequest = async (key, url, opts, extra = {}) => {
-      // Prefer the host-scoped Cookie header that `request()` actually sends
-      // (api.kmart.com.au omits www host-only `__cf_*`).
-      const requestCookieHeader = cookieHeaderForUrl(ctx.jar, url);
+      const requestCookieHeader = ctx.jar.header();
       const res = await request(url, opts, ctx);
       recordTrace(key, url, opts, res, { ...extra, requestCookieHeader });
       return res;
@@ -498,16 +499,6 @@ export const kmartAdapter = {
           ? `active=true transport=${ctx.dispatcher.transport} rawLen=${ctx.dispatcher.rawProxyLen ?? String(task.proxy ?? "").length}`
           : "direct (no proxy on task — same as kmart-mriwd1up / 5:25 run)",
     });
-    const pin = task.proxyStickyPin;
-    if (pin && task.proxy) {
-      steps.push({
-        step: "proxy_sticky_pin",
-        ok: true,
-        note: pin.pinned
-          ? `pinned=1 reason=${pin.reason} sid=${pin.sessionId ?? "?"} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`
-          : `pinned=0 reason=${pin.reason} stickyUrl=${isStickyProxyUrl(task.proxy) ? 1 : 0}`,
-      });
-    }
     if (proxyParseFailed) {
       return {
         ok: false,
@@ -1453,52 +1444,22 @@ export const kmartAdapter = {
     //     `<script src="/path?v=<token>[&t=<token>]">` tag. Hyper docs §3.4:
     //     fetch the script, POST to /sbsd, then POST the payload to
     //     `/path?t=<t>`. Hard challenge (t present) = 1 round; passive = 2.
-    //
-    // 203950c skipped SBSD entirely when PDP HTML was already clear, to avoid
-    // SoftBlock wiping good HTML on pdp_get#2. Live tip #50: that skip left
-    // get-token 200 / GraphQL 403, while the last cart_get 200 artifact still
-    // ran sbsd_pdp rounds (bm_* mint) before api.*. Always run SBSD when the
-    // tag is present; keep_prior on pdp_get#2 preserves clear HTML.
-    const pdpHtmlAlreadyOk =
-      pdpStatus >= 200 &&
-      pdpStatus < 300 &&
-      pdpHtml.length > 50_000 &&
-      !/Access Denied|AkamaiGHost/i.test(pdpHtml);
     if (parseSbsd(pdpHtml)) {
       await runSbsd(pdpHtml, pdpUrl, "sbsd_pdp");
       await sleep(450, 950);
       const pdp2Headers = navHeaders({ referer: categoryOk ? catUrl : origin + "/", site: "same-origin" });
       dumpRequestState("pdp_get#2:recon", pdpUrl, pdp2Headers);
-      const htmlBefore = pdpHtml;
-      const statusBefore = pdpStatus;
       await tStep("pdp_get#2", async () => {
         const res = await request(pdpUrl, { method: "GET", headers: pdp2Headers }, ctx);
-        const body = await res.text();
-        const denied = /Access Denied|AkamaiGHost|Reference\s*#/i.test(body);
-        if (res.status >= 200 && res.status < 300 && !denied && body.length > 50_000) {
-          pdpStatus = res.status;
-          pdpHtml = body;
-        } else if (statusBefore >= 200 && statusBefore < 300 && htmlBefore.length > 50_000) {
-          steps.push({
-            step: "pdp_get#2:keep_prior",
-            ok: true,
-            note: `re-GET status=${res.status} denied=${denied} — kept prior ${statusBefore} HTML (${htmlBefore.length}b) abck=${marker(ctx.jar.get("_abck"))}`,
-          });
-        } else {
-          pdpStatus = res.status;
-          pdpHtml = body;
-        }
+        pdpStatus = res.status;
+        pdpHtml = await res.text();
         const snippet = pdpHtml.length < 1500 ? pdpHtml.replace(/\s+/g, " ").trim().slice(0, 1200) : `ok ${pdpHtml.length}b`;
         const respHeaders = {
           server: res.headers.get("server"),
           "akamai-grn": res.headers.get("akamai-grn"),
           "set-cookie-count": (typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : []).length,
         };
-        return {
-          status: pdpStatus,
-          ok: pdpStatus >= 200 && pdpStatus < 300,
-          note: `resp=${JSON.stringify(respHeaders)} abck=${marker(ctx.jar.get("_abck"))} priorOk=${pdpHtmlAlreadyOk ? 1 : 0} | ${snippet}`,
-        };
+        return { status: res.status, ok: res.status < 400, note: `resp=${JSON.stringify(respHeaders)} | ${snippet}` };
       });
       // Residential often needs an extra dwell after bm_sv mints before WWW
       // HTML unlocks. ISP usually clears on #2 — this is a no-op then.
@@ -1666,14 +1627,13 @@ export const kmartAdapter = {
     const apiReferer = pdpUrl || (origin + "/");
     const homeReferer = origin + "/";
 
-    // Prefer real PDP HTML (ISP historically clears www). When WWW HTML stays
-    // Access Denied after a solved _abck + bm_sv (seen on some ISP exits and
-    // sticky resi), api.kmart.com.au GraphQL can still accept the jar — continue
-    // via soft entry with home referer instead of stopping at sku_extract.
-    // Restored from d60eeee (no stickyProxy gate).
+    // ISP clears WWW HTML (pdp 200). Sticky residential sometimes keeps HTML
+    // Access Denied even with bm_sv + solved _abck while api.kmart.com.au still
+    // accepts GraphQL — allow API cart when cookies + URL SKU are present.
     const wwwHtmlOk = pdpStatus > 0 && pdpStatus < 400;
     const apiSoftEntry =
       !wwwHtmlOk &&
+      stickyProxy &&
       Boolean(sku) &&
       abckSolved(ctx.jar, 3) &&
       ctx.jar.has("bm_sv");
@@ -1681,7 +1641,7 @@ export const kmartAdapter = {
       steps.push({
         step: "pdp_soft_api",
         ok: true,
-        note: `WWW HTML blocked (pdp=${pdpStatus}) but abck+bm_sv+sku — attempting api cart with home referer${stickyProxy ? " sticky=1" : ""}`,
+        note: `WWW HTML blocked (pdp=${pdpStatus}) but sticky+abck+bm_sv+sku — attempting api cart with home referer`,
       });
     }
     // Soft entry must not advertise a 403 PDP as document referer — Akamai
@@ -1714,10 +1674,8 @@ export const kmartAdapter = {
       };
     };
 
-    // Align to last undici cart_get 200 artifact (kmart-resi-run / resi-dry-1):
-    // low-entropy CHROME_CH_XHR + accept-encoding + visitor/apollo, NO
-    // cache-control/pragma, NO high-entropy CH. Tips #48–#50 diverged from that
-    // working shape; undici also always injects AE even when omitted.
+    // Shared CORS base for api.kmart.com.au XHRs. No cache-control/pragma
+    // (those are hard-reload only) and low-entropy Client Hints only.
     const apiXhrBase = (referer) => ({
       "user-agent": UA,
       accept: "*/*",
@@ -1732,15 +1690,12 @@ export const kmartAdapter = {
       "sec-fetch-dest": "empty",
       priority: "u=1, i",
     });
-    const gqlCacheHeaders = {
-      "cache-control": "no-cache",
-      pragma: "no-cache",
-    };
 
     // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
-    // on the same jar/IP — request shape on /gateway/graphql is the lever.
+    // on the same jar/IP — so request shape matters more than proxy vs direct.
+    // ISP: baseline (PDP) first. Sticky soft-entry: seed_match / home referer.
     const gqlProfiles = {
-      // Proven undici cart_get 200 header keys (resi-dry-1).
+      // mriwd1up: PDP referer + visitor + apollo + country (no hard-reload cache headers)
       baseline: {
         ...apiXhrBase(apiDocReferer),
         "x-country-code": "AU",
@@ -1748,22 +1703,24 @@ export const kmartAdapter = {
         "apollographql-client-name": "kmart-web",
         "apollographql-client-version": "nx14-10200",
       },
+      // Match get-token stamps (visitor, no apollo/country) — same host just cleared BM seed.
       seed_match: {
         ...apiXhrBase(apiDocReferer),
         "x-visitor-id": apiVisitorId,
       },
+      // Slim HAR getMyActiveCart: homepage referer, no visitor/apollo/country.
       har_slim: {
         ...apiXhrBase(homeReferer),
-        ...gqlCacheHeaders,
       },
+      // PDP/home + visitor without apollo client stamps.
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
       },
-      with_bearer: null,
     };
-    let shoppingAgentToken = null;
+    // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
+    // keep baseline (proven mriwd1up order).
     let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
 
@@ -1782,39 +1739,8 @@ export const kmartAdapter = {
     const isAkamaiAccessDenied = (status, txt) =>
       status === 403 && /access denied|errors\.edgesuite\.net|AkamaiGHost/i.test(String(txt ?? ""));
 
-    // Hoisted: used across get-token + pre_gql hold (must not be block-scoped
-    // inside the seed `{ }` — PR #44 crashed with staticIspEarly is not defined).
-    const staticIsp = task.proxyStickyPin?.reason === "static_ip_host";
-
     if (wwwHtmlOk || apiSoftEntry) {
       {
-      // Hold check: rotating resi that drops the sticky pin mid-run will
-      // 403 every GraphQL profile after a green WWW solve. Fail loudly.
-      // Skip for static ISP (bare IPv4) — exit cannot rotate; the echo hop
-      // only adds noise between warm WWW and api.* on the same ProxyAgent.
-      if (task.proxy && egressIp && !staticIsp) {
-        let holdAbort = false;
-        await tStep("proxy_ip_hold", async () => {
-          const ipNow = await resolveEgressIp(ctx, { force: true });
-          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-          holdAbort = Boolean(ipNow && !same);
-          return {
-            ok: !holdAbort,
-            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort ? " — proxy rotated mid-run; sticky pin failed or provider ignored session" : ""}`,
-          };
-        });
-        if (holdAbort) {
-          return {
-            ok: false,
-            steps,
-            failedStep: "proxy_ip_hold",
-            error: "proxy exit IP changed mid-checkout — use sticky session (-sid- / session-) residential",
-            checkoutStage: "pre_cart",
-            finalUrl: pdpUrl,
-            cookies: ctx.jar.dump(),
-          };
-        }
-      }
       // 7a. API-host bot-manager seed. Kmart's api.kmart.com.au does NOT
       //     run the full Akamai JS sensor; instead the browser hits
       //     POST /shopping-agent/v1/get-token which seeds `ak_bmsc` +
@@ -1836,40 +1762,10 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Tip #54 tried default chrome_131 handoff for api.* after WWW undici.
-      // Live Fly (fc99eb4): every dry-run returned empty HTTP 502 after ~20–45s
-      // — native node-tls-client crash kills the process before Fastify can
-      // serialize steps (try/catch cannot catch that). Tip #55: OPT-IN only
-      // (`task.apiTls === true`). Default stays undici so phone/ISP smokes work.
-      if (task.apiTls === true && !ctx.dispatcher?.useTls) {
-        await tStep("api_tls_handoff", async () => {
-          const prev = ctx.dispatcher;
-          try {
-            const tlsD = makeDispatcher(task.proxy ?? null, { forceTls: true });
-            // Eager Session so JS-level init failures surface here (not mid-GraphQL).
-            // Native SIGSEGV/abort still empty-502s the whole machine — keep opt-in.
-            await tlsD.tlsSession();
-            ctx._wwwDispatcher = prev;
-            ctx.dispatcher = tlsD;
-            return {
-              ok: true,
-              note: `chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
-            };
-          } catch (e) {
-            return {
-              ok: false,
-              note: `tls handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`,
-            };
-          }
-        });
-      }
-      // Sticky resi only: drop mid-run CONNECT/TCP state before api.* so GraphQL
-      // does not reuse a WWW tunnel Akamai already scored (a1d9f9c). Static ISP
-      // (bare IPv4) must KEEP the warm ProxyAgent — live Fly: ISP clear WWW +
-      // get-token then GraphQL Access Denied after a mistaken tunnel refresh.
-      // Skip when api_tls_handoff already replaced the undici agent.
-      // Opt out sticky refresh with task.apiTunnelRefresh === false.
-      if (stickyProxy && !staticIsp && !ctx.dispatcher?.useTls && task.apiTunnelRefresh !== false) {
+      // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
+      // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
+      // ISP keeps the warm agent (proven path).
+      if (stickyProxy) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
@@ -1882,10 +1778,7 @@ export const kmartAdapter = {
         });
       }
       let apiSeedOk = false;
-      // 6d0d21a / a1d9: get-token uses apiDocReferer (PDP when WWW clear), same
-      // as baseline GraphQL — not homepage. Homepage-only was a tip experiment.
       await tStep("api_get_token", async () => {
-        // Exact mriwd1up get-token headers (full CHROME_CH, no accept-encoding).
         const getTokenHeaders = {
           ...apiXhrBase(apiDocReferer),
           "x-visitor-id": apiVisitorId,
@@ -1901,41 +1794,20 @@ export const kmartAdapter = {
           },
           { requestBody: { sessionId } },
         );
-        const bodyRaw = await res.text().catch(() => "");
-        const bodyTxt = bodyRaw.slice(0, 200);
-        try {
-          const parsed = JSON.parse(bodyRaw);
-          const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
-            if (tok) {
-            shoppingAgentToken = tok;
-            gqlProfiles.with_bearer = {
-              ...gqlProfiles.baseline,
-              ...gqlCacheHeaders,
-              authorization: `Bearer ${tok}`,
-            };
-          }
-        } catch {
-          /* body not JSON — seed cookies alone may still be enough */
-        }
+        const bodyTxt = (await res.text().catch(() => "")).slice(0, 200);
         const setCookieNames = cookieNamesFromResponse(res);
-        const apiCookieNames = cookieHeaderForUrl(ctx.jar, apiOrigin)
-          .split(";")
-          .map((p) => p.trim().split("=")[0])
-          .filter(Boolean);
         apiSeedOk = res.status < 400 && !/Missing required header|error/i.test(bodyTxt) && (ctx.jar.has("bm_sv") || ctx.jar.has("ak_bmsc") || setCookieNames.length > 0);
         return {
           status: res.status,
           ok: apiSeedOk,
-          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… ref=${apiDocReferer === homeReferer ? "home" : "pdp"} setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} apiCookies=[${apiCookieNames.join(",")}] body=${bodyTxt}`,
+          note: `visitor=${apiVisitorId} sessionId=${sessionId.slice(0, 10)}… setCookies=[${setCookieNames.join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} ak_bmsc=${ctx.jar.has("ak_bmsc")} body=${bodyTxt}`,
         };
       });
       if (!apiSeedOk) {
         steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
         return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
       }
-      // a1d9f9c: only soft-entry pauses here. Tip #52 added ProxyAgent reset +
-      // sleep for every proxied run after get-token — same class of mistake as
-      // api_tunnel_refresh on ISP (get-token 200 → GraphQL 403 on warm jar).
+      // Sticky soft-entry: brief human gap after get-token before GraphQL.
       if (apiSoftEntry) await sleep(800, 1500);
       }
 
@@ -2021,34 +1893,6 @@ export const kmartAdapter = {
         });
       }
 
-      // Second hold check AFTER get-token. Without a sticky session id, rotating
-      // gateways can hand a new exit on the next CONNECT even when two earlier
-      // ipify calls matched — verify_ip same=true is not enough for GraphQL.
-      // Static ISP: skip (same reason as proxy_ip_hold above).
-      if (task.proxy && egressIp && !staticIsp) {
-        let holdAbort2 = false;
-        await tStep("proxy_ip_hold:pre_gql", async () => {
-          const ipNow = await resolveEgressIp(ctx, { force: true });
-          const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-          holdAbort2 = Boolean(ipNow && !same);
-          return {
-            ok: !holdAbort2,
-            note: `start=${egressIp} now=${ipNow ?? "?"} same=${same}${holdAbort2 ? " — exit changed after get-token (rotating CONNECT)" : ""}`,
-          };
-        });
-        if (holdAbort2) {
-          return {
-            ok: false,
-            steps,
-            failedStep: "proxy_ip_hold:pre_gql",
-            error: "proxy exit IP changed after get-token — sticky session required for GraphQL",
-            checkoutStage: "pre_cart",
-            finalUrl: pdpUrl,
-            cookies: ctx.jar.dump(),
-          };
-        }
-      }
-
 
 
 
@@ -2067,164 +1911,20 @@ export const kmartAdapter = {
         note: JSON.stringify({
           url: gqlUrl,
           profile: activeGqlProfile,
-          headerKeys: Object.keys(gqlHeaders).filter((k) => k !== "authorization"),
+          headerKeys: Object.keys(gqlHeaders),
           referer: gqlHeaders.referer,
           visitor: gqlHeaders["x-visitor-id"] ?? null,
-          fullCh: Boolean(gqlHeaders["sec-ch-ua-full-version"]),
-          cacheControl: gqlHeaders["cache-control"] ?? null,
-          acceptEncoding: gqlHeaders["accept-encoding"] ?? null,
-          bearer: Boolean(gqlHeaders.authorization || shoppingAgentToken),
-          cookieNames: cookieHeaderForUrl(ctx.jar, gqlUrl)
-            .split(";")
-            .map((p) => p.trim().split("=")[0])
-            .filter(Boolean),
-          jarNames: Object.keys(ctx.jar.dump()),
+          cookieNames: Object.keys(ctx.jar.dump()),
           abck: marker(ctx.jar.get("_abck")),
           bmsz: marker(ctx.jar.get("bm_sz")),
         }),
       });
-      // Default = minimal stub (resi-dry-1 cart_get 200). Opt into slim-HAR
-      // fragments with task.gqlCartQuery="har".
-      const GET_ACTIVE_CART_MINIMAL =
-        "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }";
-      const GET_ACTIVE_CART_HAR = `query getMyActiveCart {
-  me {
-    activeCart {
-      ...PostcodeSelectorBagFields
-      totalPrice {
-        centAmount
-        __typename
-      }
-      shippingInfo {
-        shippingRate {
-          price {
-            centAmount
-            __typename
-          }
-          __typename
-        }
-        __typename
-      }
-      shippingDiscount {
-        AmountSavedInCents
-        SavingApplied
-        FreeShippingThreshold
-        DeliveryRegion
-        ExpressDeliveryCost
-        StandardDeliveryCost
-        ZoneConfigRegion
-        __typename
-      }
-      lineItems {
-        id
-        name(locale: "en")
-        quantity
-        totalPrice {
-          centAmount
-          __typename
-        }
-        custom {
-          fields {
-            availability
-            fulfillmentPlatform
-            lineFulfilmentMethod
-            lineShippingPriceCents
-            offerId
-            onePassEligible
-            sellerId
-            sellerName
-            tempLogisticOrderId
-            __typename
-          }
-          __typename
-        }
-        variant {
-          sku
-          imageKey
-          bynderImageKey
-          attributes {
-            name
-            value
-            __typename
-          }
-          __typename
-        }
-        __typename
-      }
-      customLineItems {
-        custom {
-          fields {
-            lineFulfilmentMethod
-            sellerId
-            sellerName
-            tempLogisticOrderId
-            earliestDeliveryDate
-            latestDeliveryDate
-            __typename
-          }
-          __typename
-        }
-        id
-        name {
-          en
-          __typename
-        }
-        slug
-        totalPrice {
-          centAmount
-          __typename
-        }
-        __typename
-      }
-      lastModifiedAt
-      __typename
-    }
-    __typename
-  }
-}
-
-fragment PostcodeSelectorBagFields on Cart {
-  id
-  version
-  customerId
-  fulfillmentMethod
-  postcodeSelector {
-    postalCode
-    state
-    city
-    country
-    __typename
-  }
-  shippingAddress {
-    firstName
-    lastName
-    email
-    phone
-    streetName
-    city
-    state
-    country
-    postalCode
-    company
-    deliveryInstructions
-    isAuthorisedToLeave
-    additionalAddressInfo
-    region
-    __typename
-  }
-  __typename
-}
-`;
       const GET_ACTIVE_CART = {
         operationName: "getMyActiveCart",
         variables: {},
-        query: task.gqlCartQuery === "har" ? GET_ACTIVE_CART_HAR : GET_ACTIVE_CART_MINIMAL,
+        query:
+          "query getMyActiveCart { me { activeCart { id version totalPrice { centAmount __typename } lineItems { id quantity __typename } __typename } __typename } }",
       };
-      steps.push({
-        step: "cart_get:query",
-        ok: true,
-        note: `bytes=${GET_ACTIVE_CART.query.length} shape=${task.gqlCartQuery === "har" ? "har_fragments" : "minimal"}`,
-      });
       await tStep("cart_get", async () => {
         const res = await gqlPost(GET_ACTIVE_CART, "cart_get_initial");
         let txt = await res.text();
@@ -2239,18 +1939,9 @@ fragment PostcodeSelectorBagFields on Cart {
         // missing rollback / proxy. Rotate HAR-aligned header profiles once.
         if (isAkamaiAccessDenied(res.status, txt)) {
           const tryProfile = async (name, label = name) => {
-            const profileHeaders = gqlProfiles[name];
-            if (!profileHeaders) {
-              steps.push({
-                step: `cart_get:profile_${label}`,
-                ok: false,
-                note: `skipped: profile ${name} unavailable (no shopping-agent token yet)`,
-              });
-              return null;
-            }
             await sleep(250, 550);
             activeGqlProfile = name;
-            gqlHeaders = profileHeaders;
+            gqlHeaders = gqlProfiles[name];
             const retry = await gqlPost(GET_ACTIVE_CART, `cart_get_${label}`);
             txt = await retry.text();
             cartId = null;
@@ -2276,18 +1967,18 @@ fragment PostcodeSelectorBagFields on Cart {
               : null;
           };
 
-          // a1d9f9c fallback order — no tip-era mriwd_full / bearer roulette.
+          // Soft-entry already started on seed_match — try home/HAR shapes next.
+          // ISP (baseline first): keep proven seed_match → har_slim → pdp_visitor.
           const fallbackOrder = apiSoftEntry
             ? ["har_slim", "baseline", "pdp_visitor"]
             : ["seed_match", "har_slim", "pdp_visitor"];
           for (const name of fallbackOrder) {
-            if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
             if (hit) return hit;
           }
 
-          // a1d9f9c: sticky only. Tip #46 extended this to all proxies; that
-          // never cleared ISP GraphQL and only burned more Hyper/sensor calls.
+          // Sticky only: refresh WWW sensor (same as cart_atc recovery) then
+          // retry the lightest GraphQL shapes once. ISP never enters this.
           if (stickyProxy && scriptPath && scriptBody) {
             steps.push({
               step: "cart_get:sticky_sensor_refresh",
@@ -2345,10 +2036,9 @@ fragment PostcodeSelectorBagFields on Cart {
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — a1d9 path (no post-seed ProxyAgent reset, sticky-only sensor refresh)",
+            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — check proxy egress / AU residential exit",
           });
           gqlCartBlocked = true;
-          ctx.__kmart_gql_deny = { sameExit: true, egressIp: egressIp ?? null, denyIp: null };
           return {
             status: res.status,
             ok: false,
@@ -2379,29 +2069,11 @@ fragment PostcodeSelectorBagFields on Cart {
         country: "AU",
       });
       if (!cartId && gqlCartBlocked) {
-        const deny = ctx.__kmart_gql_deny ?? {};
         steps.push({
           step: "cart_create",
           ok: false,
           note: "skipped: GraphQL Access Denied on all header profiles (same session as successful get-token)",
         });
-        steps.push({
-          step: "cart_atc",
-          ok: false,
-          note: `skipped: cartId=null sku=${sku ?? "(none)"}`,
-        });
-        return {
-          ok: false,
-          steps,
-          failedStep: "gql_deny",
-          error:
-            "api.kmart.com.au/gateway/graphql Access Denied after green get-token on the same jar — GraphQL request shape still wrong (get-token is a softer path). Check cart_get profile notes; do not treat as proxy reputation.",
-          checkoutStage: "pre_cart",
-          finalUrl: pdpUrl,
-          cookies: ctx.jar.dump(),
-          trace: traceEnabled ? requestTrace : undefined,
-          dryRun: task.placeOrder !== true,
-        };
       } else if (!cartId) {
         await tStep("cart_create", async () => {
           const res = await gqlPost({
