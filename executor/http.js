@@ -26,7 +26,7 @@ export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
   if (rawProxy && !url) {
     return {
       proxy: null,
-      useTls: false,
+      useTls: true,
       remoteTls: null,
       transport: "tls-worker",
       sticky: false,
@@ -36,7 +36,7 @@ export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
         return undefined;
       },
       async tlsSession() {
-        throw new Error("remote tls-worker dispatcher has no in-process Session");
+        return null;
       },
       async resetUndici() {},
       async close() {},

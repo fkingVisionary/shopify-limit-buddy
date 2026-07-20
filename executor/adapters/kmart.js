@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, makeDispatcher, isStickyProxyUrl } from "../http.js";
+import { request, UA, makeDispatcher, makeRemoteTlsDispatcher, isStickyProxyUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -1837,10 +1837,45 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      // Tip #54/#55: after WWW undici warm, hand off api.* to crash-isolated
+      // chrome_131 (tls-worker). Header/cookie parity vs cart_get-200 artifacts
+      // still GraphQL-denies on proxied exits — JA3 on api.* is the remaining
+      // lever. Default ON when a proxy is set; direct stays undici (charge path).
+      // Force: apiTls:true | opt out: apiTls:false.
+      const alreadyTls =
+        Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+      const wantApiTls =
+        task.apiTls === true || (task.apiTls !== false && Boolean(task.proxy));
+      if (wantApiTls && !alreadyTls) {
+        await tStep("api_tls_handoff", async () => {
+          const prev = ctx.dispatcher;
+          try {
+            const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
+            ctx._wwwDispatcher = prev;
+            ctx.dispatcher = tlsD;
+            return {
+              ok: true,
+              note: `tls-worker chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+            };
+          } catch (e) {
+            return {
+              ok: false,
+              note: `tls-worker handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`.slice(0, 400),
+            };
+          }
+        });
+      }
+
       // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
       // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path).
-      if (stickyProxy) {
+      // ISP keeps the warm agent (proven path). Skip once api_tls_handoff left undici.
+      // Opt out: apiTunnelRefresh:false.
+      if (
+        stickyProxy &&
+        !ctx.dispatcher?.useTls &&
+        ctx.dispatcher?.transport !== "tls-worker" &&
+        task.apiTunnelRefresh !== false
+      ) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {

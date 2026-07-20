@@ -1,3 +1,15 @@
+# Fly one-shot probe
+
+**Do not loop SoftBlocked hours.** One intentional `/run`:
+
+```bash
+EXECUTOR_TOKEN=... ./executor/scripts/fly-probe-once.sh
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh   # ISP + apiTls handoff
+API_TLS=0 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh  # undici api.*
+```
+
+---
+
 # HAR diff machine
 
 Compare a real browser HAR against the executor's current implementation to
