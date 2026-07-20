@@ -268,10 +268,9 @@ app.post("/run", async (req, reply) => {
       transport: typeof task.transport === "string" ? task.transport : undefined,
       forceTls: task.forceTls === true,
       forceUndici: task.forceUndici === true,
-      // api.* chrome_131 via tls-worker after WWW undici. Default ON when proxy
-      // is set; false disables; true forces even on direct.
+      // api.* tls-worker — opt-in only (default undici with WWW). true forces.
       ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
-      // Hyper sensor chrome_131: default ON when proxy; false keeps undici sensors.
+      // Hyper sensor tls-worker — opt-in only (default undici one-client path).
       ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
       // Park sensor tls for api reuse after undici PDP (default ON when parked).
       ...(task.sensorTlsPark === true || task.sensorTlsPark === false

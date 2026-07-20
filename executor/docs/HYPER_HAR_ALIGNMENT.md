@@ -94,6 +94,17 @@ Smoke run `29787884538` ISP ladder (do not read as zero progress):
 
 `akamai_solved` → `pdp_get` → `api_get_token` → **wall=`cart_get`**
 
+## Correction (same night): undici one-client clears GraphQL
+
+On tip `3da81cb` with **`sensorTls:false` + `apiTls:false`** (no handoff), ISP
+`useProxy:true` cleared **`cart_get` JSON 200** four times in a row across
+exits (`216.185.44.50`, `178.210.242.*`, `178.210.241.115`). Same pool that
+Ghost-denied under tls park.
+
+Lovable did not host a separate executor — it called Fly. The green handling
+was **one undici client**, not a different egress class.
+
 ## Bottom line
 
-Previous clears were **one client + trusted egress**. Hyper agrees. Tonight ISP + Hyper sensors still mint `_abck`, undici still fetches PDP HTML, and GraphQL still Ghost-denies on the same jar — that is past header-profile exhaustion (see `KMART_REGRESSION_FORENSICS.md` §GraphQL). Park reuse was the correct next step vs fresh worker; it did not clear GraphQL. Next wins are egress class (sticky resi/mobile) or a true single-TLS browser lane that can open PDP, not more SoftBlock polling on Fly direct.
+Trust = **one client for warmed cookies + GraphQL**. Default `sensorTls` /
+`apiTls` **off**. TLS park/handoff remains opt-in diagnostics only.
