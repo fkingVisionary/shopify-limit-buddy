@@ -169,3 +169,21 @@ Diff vs last `cart_get` 200 artifact (`kmart-resi-run.json`):
 `203950c` skipped SBSD when PDP HTML was already clear to protect SoftBlock
 wipes — but that also skipped PDP SBSD cookie minting. Fix: always `runSbsd`
 when the tag is present; keep clear HTML via existing `pdp_get#2:keep_prior`.
+
+### Tip `#51`: SBSD runs again; GraphQL still 403 — header drift vs success artifact
+
+With `sbsd_pdp` restored, tip still denies GraphQL. Diff vs `resi-dry-1`
+(`cart_get` JSON 200):
+
+| Field | Success artifact | Tip `#51` |
+|---|---|---|
+| Client Hints | **low-entropy trio only** | full `CHROME_CH` |
+| `accept-encoding` in adapter | present | omitted (undici still injects) |
+| `cache-control` / `pragma` | **absent** | present |
+| `__cf_bm` on GraphQL Cookie | **present** | omitted (#47) |
+| query | minimal ~220b | HAR fragments ~2.4kb |
+| `explicitProxy` | false | true |
+
+Realign baseline to the success artifact; keep mriwd_full as fallback; refresh
+ProxyAgent after get-token before GraphQL (`api_conn_refresh`) so gateway does
+not reuse the shopping-agent keep-alive socket.

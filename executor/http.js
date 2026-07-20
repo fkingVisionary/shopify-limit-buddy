@@ -405,20 +405,11 @@ export function createJar() {
   };
 }
 
-// Cloudflare `__cf_*` cookies are host-only on www; browsers do not attach them
-// to api.kmart.com.au. Our name-keyed jar would otherwise overshare them on
-// every api.* XHR (get-token / GraphQL) — slim HAR never lists `__cf_bm` there.
+// Name-keyed jar helper. Tip #47 omitted `__cf_*` on api.* (HAR has none), but
+// the last undici cart_get 200 artifact still sent `__cf_bm` on GraphQL and
+// clearing it did not unlock deny — keep jar parity with that success path.
 export function cookieHeaderForUrl(jar, url) {
   if (!jar?.header) return "";
-  let host = "";
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    host = "";
-  }
-  if (host === "api.kmart.com.au") {
-    return jar.header({ omitPrefixes: ["__cf_"] });
-  }
   return jar.header();
 }
 
