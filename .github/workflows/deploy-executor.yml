@@ -152,6 +152,7 @@ jobs:
           HOST=$(flyctl status --app "$APP" --json | jq -r '.Hostname')
           ACTUAL_REGION=$(flyctl status --app "$APP" --json | jq -r '.Machines[0].region // "unknown"')
           echo "$HOST  region=$ACTUAL_REGION  (requested=$REGION, fallback=$FALLBACK_REGION)"
+          echo "HOST=$HOST" >> "$GITHUB_ENV"
           echo ""
           echo "Health check:"
           HEALTH=$(curl -sSf "https://$HOST/health" || echo "")
@@ -161,5 +162,15 @@ jobs:
           else
             echo "Region: $ACTUAL_REGION — Sydney was unavailable; re-run the workflow later to try syd again"
           fi
+
+      # Hard gate: never mark a deploy successful if direct (no proxy) lost
+      # cart_get JSON 200. Prevents the #42–#55 tip spiral from shipping over a
+      # green morning baseline again. See AGENTS.md.
+      - name: Direct cart_get gate (fail closed)
+        env:
+          EXECUTOR_TOKEN: ${{ secrets.EXECUTOR_TOKEN }}
+          EXECUTOR_URL: https://${{ env.HOST }}
+          GATE_ATTEMPTS: "3"
+        run: bash executor/scripts/direct-cart-gate.sh
 
 

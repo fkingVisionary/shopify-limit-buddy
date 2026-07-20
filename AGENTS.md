@@ -32,15 +32,17 @@ migrations + one Deno edge function.
     rewrite files, so don't run it unless intentionally reformatting.
 
 ### Kmart executor — do not lose a working direct path
-- **Hard gate:** After any `executor/` change that touches Kmart checkout (`adapters/kmart.js`,
-  `http.js`, sensor/SBSD/GraphQL), smoke **direct** (no `proxyUrl`) via Lovable
-  `POST /api/public/exec-test` before merging or continuing ISP/proxy tips.
-- **Pass:** `cart_get` JSON 200 (not AkamaiGHost). Prefer reaching `checkout_*` /
-  `place_order` dry-run like artifact `resi-dry-1` (2026-07-19, direct).
-- **Fail:** If direct regresses while you are “fixing proxies,” **stop**. Restore the
-  last green direct tip first. Never stack GraphQL/header/TLS PRs on a broken baseline.
-- Known green morning tip for that artifact: merge `#40` / `b3b7a81` (Fly deploy
-  2026-07-19 ~19:51Z). Later tip spiral (#42–#55) kept ISP wiring but lost direct GraphQL.
+- **Non-negotiable:** A green **direct** (no proxy) `cart_get` JSON 200 is the baseline.
+  ISP/proxy work is secondary. If direct regresses, **stop immediately**, tell the user,
+  and restore — do not open more GraphQL/header/TLS/proxy PRs.
+- **Agent duty every tip:** After deploy, smoke direct via Lovable
+  `POST /api/public/exec-test` (no `proxyUrl`). Report `cart_get` status in the summary.
+  If it is not JSON 200, that tip failed — even if ISP “looks better.”
+- **CI gate:** `Deploy executor` runs `executor/scripts/direct-cart-gate.sh` after Fly
+  deploy and **fails the workflow** on GraphQL Access Denied, empty 502, or inability
+  to verify (sensor unsolved after retries). Do not weaken this gate.
+- **Pass:** `cart_get` JSON 200 (not AkamaiGHost). Prefer `checkout_*` / `place_order`
+  dry-run like artifact `resi-dry-1` (2026-07-19, direct, tip `#40` / `b3b7a81`).
 
 ### Optional services (not required to run/test the web app)
 - `executor/`: Node ≥20 Fastify service. Uses **npm** (`cd executor && npm install`,
