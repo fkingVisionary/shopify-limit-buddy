@@ -196,3 +196,25 @@ get-token for **soft-entry**, and only sensor-refreshed on **sticky** deny.
 Restore a1d9 get-token→GraphQL gap: no post-seed `resetUndici`, soft-entry sleep
 only, sticky-only `cart_get:sticky_sensor_refresh`. Keep SoftBlock jar protect +
 always-run `sbsd_pdp` + bare-IP not sticky.
+
+### Tip `#54`: api.* chrome_131 TLS handoff (HTTP-only)
+
+Post-`#53` redeploy (gitSha `5e137f1`): direct + ISP still get-token 200 → every
+GraphQL profile AkamaiGHost. Diff vs `resi-dry-1` (`cart_get` JSON 200 ~5h earlier
+on the same Fly egress `89.187.186.9`):
+
+| Field | Success artifact | Tip `#53` fail |
+|---|---|---|
+| GraphQL headerKeys | low-entropy CH + visitor/apollo | **identical** |
+| Cookie names on GraphQL | `__cf_bm` + bm_* + visitors | **identical** |
+| Path | sbsd_home → sbsd_pdp → get-token → cart_get | **identical** |
+| Akamai sensor script | **531365b** | **557069b** |
+| SBSD script | **465299b** | **424780b** |
+
+Header/SBSD/conn experiments are exhausted against that artifact. Next lever is
+TLS fingerprint on `api.*` (Hyper docs: JA3/JA4 scored before sensor content),
+without Playwright: keep WWW+Hyper on undici, hand off to `node-tls-client`
+`chrome_131` **before get-token** so api BM seed + GraphQL share Chrome JA3.
+Step: `api_tls_handoff`. Opt out: `apiTls: false`. Proxy+TLS can still empty-502
+on native crash — handoff eagerly opens the Session and reverts to undici on
+thrown errors.

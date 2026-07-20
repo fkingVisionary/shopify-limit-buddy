@@ -30,6 +30,10 @@ export const Route = createFileRoute("/api/public/exec-test")({
           dryRun?: boolean;
           /** Opt-in executor experiments (forwarded to Fly /run). */
           transport?: string;
+          forceTls?: boolean;
+          forceUndici?: boolean;
+          /** Default on in executor: chrome_131 handoff for api.* after WWW undici. */
+          apiTls?: boolean;
           kmartMode?: string;
           gqlBearer?: boolean;
         };
@@ -144,6 +148,9 @@ export const Route = createFileRoute("/api/public/exec-test")({
             useProxy: forwardUseProxy || undefined,
             card,
             ...(typeof body.transport === "string" ? { transport: body.transport } : {}),
+            ...(body.forceTls === true ? { forceTls: true } : {}),
+            ...(body.forceUndici === true ? { forceUndici: true } : {}),
+            ...(body.apiTls === false ? { apiTls: false } : {}),
             ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
             ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
           };

@@ -1836,12 +1836,41 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      // Tip #54: WWW + Hyper sensor stay on undici (resi-dry-1 path). After
+      // Akamai rolled a larger BM script (531k→557k), the same undici jar +
+      // identical GraphQL header keys that previously cart_get 200 now get
+      // AkamaiGHost 403 on /gateway/graphql while get-token still 200s —
+      // including on Fly direct. Handoff api.* to chrome_131 TLS before
+      // get-token so BM seed cookies + GraphQL share Chrome JA3 (HTTP-only;
+      // not Playwright). Opt out with task.apiTls === false.
+      if (task.apiTls !== false && !ctx.dispatcher?.useTls) {
+        await tStep("api_tls_handoff", async () => {
+          const prev = ctx.dispatcher;
+          try {
+            const tlsD = makeDispatcher(task.proxy ?? null, { forceTls: true });
+            // Eager Session so native/init failures surface here (not mid-GraphQL).
+            await tlsD.tlsSession();
+            ctx._wwwDispatcher = prev;
+            ctx.dispatcher = tlsD;
+            return {
+              ok: true,
+              note: `chrome_131 for api.* after WWW undici warm proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+            };
+          } catch (e) {
+            return {
+              ok: false,
+              note: `tls handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`,
+            };
+          }
+        });
+      }
       // Sticky resi only: drop mid-run CONNECT/TCP state before api.* so GraphQL
       // does not reuse a WWW tunnel Akamai already scored (a1d9f9c). Static ISP
       // (bare IPv4) must KEEP the warm ProxyAgent — live Fly: ISP clear WWW +
       // get-token then GraphQL Access Denied after a mistaken tunnel refresh.
+      // Skip when api_tls_handoff already replaced the undici agent.
       // Opt out sticky refresh with task.apiTunnelRefresh === false.
-      if (stickyProxy && !staticIsp && task.apiTunnelRefresh !== false) {
+      if (stickyProxy && !staticIsp && !ctx.dispatcher?.useTls && task.apiTunnelRefresh !== false) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {
