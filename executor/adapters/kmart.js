@@ -1715,27 +1715,23 @@ export const kmartAdapter = {
       };
     };
 
-    // Shared CORS base for api.kmart.com.au XHRs (get-token + GraphQL).
-    // Low-entropy Client Hints only. Do NOT put cache-control/pragma here —
-    // slim HAR get-token omits them; GraphQL always includes them (see below).
+    // Exact mriwd1up / 7784fab api XHR shape (undici cart_get 200). Notably:
+    // - FULL CHROME_CH (not CHROME_CH_XHR)
+    // - NO accept-encoding (6d0d21a added br/zstd from slim HAR; mriwd omitted)
+    // - cache-control/pragma on GraphQL only (get-token omits them)
     const apiXhrBase = (referer) => ({
       "user-agent": UA,
+      "content-type": "application/json",
       accept: "*/*",
       "accept-language": ACCEPT_LANG,
-      "accept-encoding": "gzip, deflate, br, zstd",
-      "content-type": "application/json",
       origin,
       referer,
-      ...CHROME_CH_XHR,
+      ...CHROME_CH,
       "sec-fetch-site": "same-site",
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
       priority: "u=1, i",
     });
-    // Path-specific: every slim-HAR /gateway/graphql POST sends these; get-token
-    // does not. mriwd1up / 7784fab / 0186ac8 GraphQL also had them. 6d0d21a
-    // removed them from api XHRs as "hard-reload only" — wrong for GraphQL and
-    // left get-token-200 / GraphQL-403 with an inverted browser header delta.
     const gqlCacheHeaders = {
       "cache-control": "no-cache",
       pragma: "no-cache",
@@ -1743,58 +1739,39 @@ export const kmartAdapter = {
 
     // GraphQL header profiles. get-token can 200 while /gateway/graphql 403s
     // on the same jar/IP — request shape on /gateway/graphql is the lever.
-    // ISP: baseline (PDP) first. Sticky soft-entry: seed_match / home referer.
-    //
-    // mriwd1up / 7784fab cleared cart_get with FULL CHROME_CH (high-entropy) on
-    // GraphQL — not the low-entropy XHR trio. 6d0d21a swapped api XHRs to
-    // CHROME_CH_XHR citing slim HAR; that matches real Chrome TLS, but undici
-    // cart success was the high-entropy mriwd shape. Keep get-token on
-    // CHROME_CH_XHR (already 200); restore CHROME_CH on GraphQL only.
     const gqlProfiles = {
-      // mriwd1up proven cart_get: full CH + PDP + visitor + apollo + country + cache
+      // Byte-for-byte mriwd1up gqlHeaders (+ NR added in gqlPost).
       baseline: {
         ...apiXhrBase(apiDocReferer),
-        ...CHROME_CH,
         ...gqlCacheHeaders,
         "x-country-code": "AU",
         "x-visitor-id": apiVisitorId,
         "apollographql-client-name": "kmart-web",
         "apollographql-client-version": "nx14-10200",
       },
-      // Match get-token stamps (visitor, no apollo/country) + GraphQL cache headers.
+      // get-token stamps + GraphQL cache headers (no apollo/country).
       seed_match: {
         ...apiXhrBase(apiDocReferer),
         ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
       },
-      // Slim HAR getMyActiveCart: homepage referer, cache headers, low-entropy CH.
+      // Homepage referer variant (still mriwd CH / no accept-encoding).
       har_slim: {
         ...apiXhrBase(homeReferer),
         ...gqlCacheHeaders,
       },
-      // mriwd CH + PDP visitor without apollo (between baseline and seed_match).
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
-        ...CHROME_CH,
         ...gqlCacheHeaders,
         "x-visitor-id": apiVisitorId,
         "x-country-code": "AU",
       },
-      // get-token returns a ya29 shopping-agent token unused by HAR GraphQL.
-      // Kept as a late fallback only — populated after api_get_token parses body.
       with_bearer: null,
     };
     let shoppingAgentToken = null;
-    // Soft API only: start with get-token-shaped profile. ISP / sticky+PDP200
-    // keep baseline (proven mriwd1up / a1d9f9c / 7784fab order). Tip har_slim-first
-    // for sticky contradicted the cart_get 403 lesson — restored.
+    // Soft API only: start with get-token-shaped profile. Else mriwd baseline.
     let activeGqlProfile = apiSoftEntry ? "seed_match" : "baseline";
     let gqlHeaders = gqlProfiles[activeGqlProfile];
-
-    // Proven GraphQL path (PR #14 / 6d0d21a, mriwd1up / 7784fab, a1d9):
-    // CHROME_CH_XHR + no cache-control/pragma + baseline PDP referer/visitor/apollo
-    // + profile fallbacks. No CORS OPTIONS — that was not part of the fix that
-    // cleared get-token-200 / GraphQL-403 on the same jar.
 
     const gqlPost = async (body, traceKey = body?.operationName ?? "graphql", headerOverrides = null) =>
       tracedRequest(
@@ -1886,6 +1863,7 @@ export const kmartAdapter = {
       // 6d0d21a / a1d9: get-token uses apiDocReferer (PDP when WWW clear), same
       // as baseline GraphQL — not homepage. Homepage-only was a tip experiment.
       await tStep("api_get_token", async () => {
+        // Exact mriwd1up get-token headers (full CHROME_CH, no accept-encoding).
         const getTokenHeaders = {
           ...apiXhrBase(apiDocReferer),
           "x-visitor-id": apiVisitorId,
@@ -2071,6 +2049,7 @@ export const kmartAdapter = {
           visitor: gqlHeaders["x-visitor-id"] ?? null,
           fullCh: Boolean(gqlHeaders["sec-ch-ua-full-version"]),
           cacheControl: gqlHeaders["cache-control"] ?? null,
+          acceptEncoding: gqlHeaders["accept-encoding"] ?? null,
           bearer: Boolean(gqlHeaders.authorization || shoppingAgentToken),
           cookieNames: cookieHeaderForUrl(ctx.jar, gqlUrl)
             .split(";")
