@@ -1097,58 +1097,57 @@ export const kmartAdapter = {
     }
 
     if (!abckSolved(ctx.jar, sensorRounds)) {
-      // Sticky: try homepage SBSD then 2 more sensor rounds before giving up.
-      // ISP keeps the hard fail — it clears in ≤3 on a healthy exit.
-      if (stickyProxy) {
-        steps.push({
-          step: "akamai_unsolved:retry_sbsd",
-          ok: true,
-          note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors`,
-        });
-        await runSbsd(html, origin + "/", "sbsd_home_presolve");
-        for (let i = 0; i < 2; i++) {
-          await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
-            const beforeAbck = marker(ctx.jar.get("_abck"));
-            const r = await solveAkamaiSensor({
-              jar: ctx.jar,
-              pageUrl: origin + "/",
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-              scriptUrl,
-              scriptBody,
-              prevContext,
-              version: "3",
-            });
-            prevContext = r.context;
-            const res = await request(
-              r.postUrl,
-              {
-                method: "POST",
-                headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
-                body: akamaiSensorBody(r.payload),
-              },
-              ctx,
-            );
-            const body = await res.text().catch(() => "");
-            return {
-              status: res.status,
-              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-              note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
-            };
+      // Was sticky-only. Direct on the same Fly egress as resi-dry-1 now often
+      // stalls at ind=-1 after 3 Hyper posts (bodySuccess=true) while ISP still
+      // clears — give every exit the SBSD + 2-sensor ladder already in this file.
+      steps.push({
+        step: "akamai_unsolved:retry_sbsd",
+        ok: true,
+        note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors`,
+      });
+      await runSbsd(html, origin + "/", "sbsd_home_presolve");
+      for (let i = 0; i < 2; i++) {
+        await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
+          const beforeAbck = marker(ctx.jar.get("_abck"));
+          const r = await solveAkamaiSensor({
+            jar: ctx.jar,
+            pageUrl: origin + "/",
+            userAgent: UA,
+            ip: egressIp,
+            acceptLanguage: ACCEPT_LANG,
+            scriptUrl,
+            scriptBody,
+            prevContext,
+            version: "3",
           });
-          if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
-            steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
-            break;
-          }
-          await sleep(250, 500);
+          prevContext = r.context;
+          const res = await request(
+            r.postUrl,
+            {
+              method: "POST",
+              headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
+              body: akamaiSensorBody(r.payload),
+            },
+            ctx,
+          );
+          const body = await res.text().catch(() => "");
+          return {
+            status: res.status,
+            ok: res.status < 400 && sensorBodySuccess(body) !== "false",
+            note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
+          };
+        });
+        if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
+          steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
+          break;
         }
+        await sleep(250, 500);
       }
       if (!abckSolved(ctx.jar, sensorRounds + 2)) {
         steps.push({
           step: "akamai_unsolved",
           ok: false,
-          note: `_abck never solved after ${stickyProxy ? sensorRounds + 2 : sensorRounds} rounds (${marker(ctx.jar.get("_abck"))})${stickyProxy ? " sticky=1" : ""}`,
+          note: `_abck never solved after ${sensorRounds + 2} rounds (${marker(ctx.jar.get("_abck"))})`,
         });
         return { ok: false, steps, failedStep: "akamai_unsolved", checkoutStage: "pre_cart", finalUrl: origin, cookies: ctx.jar.dump() };
       }

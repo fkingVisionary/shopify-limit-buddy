@@ -239,6 +239,33 @@ function abckMarkerIndex(value) {
   return m ? Number(m[1]) : null;
 }
 
+// Cookie header order from the last undici cart_get JSON 200 artifact
+// (resi-dry-1 / tip #40). Map insertion order drifts with Set-Cookie timing
+// (live #59 ISP deny had the same names but `_abck` after bm_sz). Stabilize.
+const KMART_COOKIE_HEADER_ORDER = [
+  "__cf_bm",
+  "__adv_opt_ko_",
+  "__country_code_",
+  "mnm_rollout",
+  "new_search_enabled",
+  "__ko_ui_qatb_visibility__",
+  "bm_ss",
+  "_abck",
+  "ak_bmsc",
+  "bm_s",
+  "bm_so",
+  "bm_sz",
+  "bm_sv",
+  "_ga",
+  "server_visitor_id",
+  "client_visitor_id",
+  "server_visitor_id_test",
+  "client_visitor_id_test",
+  "tealium_visitor_id",
+  "ko_token",
+  "ko_token_added",
+];
+
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
 // www.kmart.com.au → api.kmart.com.au _abck handoff in kmart.js still works
 // the way it did under undici.
@@ -283,7 +310,15 @@ export function createJar() {
       ingestSetCookie(raw);
     },
     header() {
-      return [...store.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+      const names = [...store.keys()];
+      const rank = new Map(KMART_COOKIE_HEADER_ORDER.map((n, i) => [n, i]));
+      names.sort((a, b) => {
+        const ra = rank.has(a) ? rank.get(a) : 1000;
+        const rb = rank.has(b) ? rank.get(b) : 1000;
+        if (ra !== rb) return ra - rb;
+        return a.localeCompare(b);
+      });
+      return names.map((k) => `${k}=${store.get(k)}`).join("; ");
     },
     has(name) {
       return store.has(name);
