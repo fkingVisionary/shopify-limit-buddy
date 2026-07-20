@@ -3,18 +3,18 @@
 ## Cursor Cloud specific instructions
 
 ### Product overview
-This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is the
-primary product: a TanStack Start + Vite + React 19 web app (the "control plane"),
-hosted as a **Cloudflare Worker** (Lovable / `*.lovable.app`) — not Fly.
-Subdirectories `executor/` (Node/Fastify checkout engine on **Fly.io**
-`j1ms-bot-executor`), `runner/` (legacy Electron Shopify agent), and `desktop/`
-(Cyber-style local Kmart app) are **optional** auxiliary services. `supabase/`
-holds hosted DB migrations + one Deno edge function.
+This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is a
+TanStack Start + Vite + React 19 UI (run **locally** with Bun — not a public
+Lovable deploy). The **real checkout engine** is `executor/` on **Fly.io**
+(`j1ms-bot-executor`). `runner/` (legacy Electron), `desktop/` (local Kmart app),
+and `supabase/` are optional auxiliaries.
 
-**Deploy split:** CF Worker = UI + `/api/public/exec-test` (forwards to Fly).
-Executor code under `executor/` needs the **Deploy executor** workflow. Merging
-web-only fixes does not update Fly `gitSha`; merging executor-only does not
-update the CF Worker.
+**What matters for Kmart:** Fly tip (`/health` → `gitSha`) via **Deploy executor**.
+Do **not** treat `*.lovable.app` as the product control plane or ask to “redeploy
+Lovable.” Cloud-agent smokes may hit a stale preview host that still has old
+`exec-test` secrets — ignore its `proxyUsed` labels; trust Fly `resolve_ip` /
+`proxySource` / milestones. Prefer Fly `/run` + `/milestones` (Bearer
+`EXECUTOR_TOKEN`) or local `bun run dev` → Fly.
 
 ### Root web app (primary service)
 - Package manager is **Bun** (`bun.lock`, `bunfig.toml`); do not use npm/pnpm here.
@@ -51,18 +51,15 @@ update the CF Worker.
 - **Deploy note:** `#62` (milestones) is already on Fly tip `b10bf27`. Merging alone
   does not solidify checkout — ship sensor/milestone harden PRs and wait for the
   Deploy executor workflow (or re-run it) so `gitSha` moves.
-- **Winning recipe:** `executor/docs/KMART_WINNING_RECIPE.md` — lock this before
-  local/desktop hardware. Payment ~07:03–07:04 UTC 2026-07-20 was a CF **524**
-  with empty steps while Fly continued; bank ping is ground truth.
-- **After each tip:** smoke via `POST /api/public/exec-test` with a stable
-  `taskId` + `withCard:true`. Cloudflare ~100s 524 hides the body — exec-test
-  budgets `/run` then polls milestones. Also:
-  `GET /api/public/exec-milestones?taskId=…&minStage=tokenize`.
-  Score bank ping → milestones → `reached3ds` / `stage`, **not** only `failedStep`.
-- **Card:** `exec-test` auto-injects `KMART_CARD_*` when secrets exist (pass
-  `noCard:true` to skip). Revolut / bank pings are useful third-party proof the
-  path still reaches 3DS — prefer that over scoring only `failedStep` after a
-  client timeout. Still wait ≥180s and check `kmartMilestone` / `/milestones`.
+- **Winning recipe:** `executor/docs/KMART_WINNING_RECIPE.md` — lock before
+  desktop/local hardware. Payment ~07:03–07:04 UTC 2026-07-20: client empty /
+  timeout while Fly continued; **bank ping is ground truth**.
+- **After each tip:** confirm Fly `gitSha` moved, then smoke **Fly**
+  `POST /run` (Bearer) with a stable `taskId` + card; poll
+  `GET /milestones?taskId=…&minStage=tokenize`. Score bank ping →
+  `kmartMilestone` / milestones → `reached3ds`, **not** only `failedStep`.
+- **Card:** pass card on `/run` (or local env `KMART_CARD_*` when using a local
+  UI proxy). Revolut / bank pings prove 3DS even when the HTTP client timed out.
 - **Pass signals (in order):** `cart_get` JSON 200 → ATC/checkout → tokenize → 3DS →
   `place_order` / order number. Reference morning artifact `resi-dry-1` (2026-07-19,
   direct, tip `#40` / `b3b7a81`) and bank-confirmed charge (~14 Jul).
@@ -80,14 +77,11 @@ update the CF Worker.
   download fails (common on Fly via api.github.com 403). Dockerfile must curl the
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
   If `transport_select` shows `tls-worker init failed → undici`, check that bake.
-- **Proxies:** WealthProxies / IPFist / Lovable “Test Pool” are **dead** (subs
-  cancelled). Fly `/run` must refuse those hosts and fall through to
-  `executor/resi.proxies` (static AU ISP) or direct — CF Worker may still inject
-  Test Pool until the Worker is redeployed. Do not gate runs on sticky/drift
-  IP checks (speed + false aborts after `akamai_solved`).
-- **Post-TLS:** `tls-worker` can solve `_abck` on a live exit; Fly direct often
-  SoftBlocks (~793b). Prefer home→PDP on proxy (skip `/category/*` hard denies).
-  Score furthest stage.
+- **Proxies:** WealthProxies / IPFist / Supabase “Test Pool” are **dead** (subs
+  cancelled). Fly `/run` refuses those hosts → `executor/resi.proxies` or direct.
+  Do not gate runs on sticky/drift IP checks.
+- **Capture:** milestones on Fly disk + `kmartMilestone` log lines survive client
+  timeouts. Always use a stable `taskId`.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
   do not re-harden it into a fail-closed merge blocker without an explicit ask.
 
