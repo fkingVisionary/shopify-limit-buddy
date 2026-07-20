@@ -10,7 +10,7 @@
 //   → { id, op: "close" }
 //   ← { id, ok: true } then process exits
 
-import { Session, ClientIdentifier, initTLS } from "node-tls-client";
+import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 
 const CHROME_HEADER_ORDER = [
   "host",
@@ -42,12 +42,27 @@ const CHROME_HEADER_ORDER = [
 
 let session = null;
 let tlsReady = null;
+let tlsMod = null;
 
 function reply(msg) {
   if (typeof process.send === "function") process.send(msg);
 }
 
+async function loadTls() {
+  if (tlsMod) return tlsMod;
+  const seed = ensureTlsNativeLib();
+  if (!seed.ok) {
+    // Still attempt import — local/dev may download successfully.
+    console.error(`[tls-worker] ${seed.note}`);
+  } else if (seed.seeded) {
+    console.error(`[tls-worker] ${seed.note}`);
+  }
+  tlsMod = await import("node-tls-client");
+  return tlsMod;
+}
+
 async function ensureSession(proxy) {
+  const { Session, ClientIdentifier, initTLS } = await loadTls();
   if (!tlsReady) tlsReady = initTLS();
   await tlsReady;
   if (session) {
@@ -159,4 +174,9 @@ process.on("message", async (msg) => {
 process.on("uncaughtException", (e) => {
   reply({ id: null, ok: false, error: `uncaught: ${e?.message ?? e}` });
   process.exit(1);
+});
+
+process.on("unhandledRejection", (e) => {
+  const msg = e instanceof Error ? e.message : String(e);
+  reply({ id: null, ok: false, error: `unhandledRejection: ${msg}` });
 });

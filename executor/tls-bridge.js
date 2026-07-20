@@ -50,6 +50,7 @@ export function createTlsBridge(proxyUrl = null, opts = {}) {
   let dead = false;
   let deadReason = "tls-worker exited";
   const stderrChunks = [];
+  const stdoutChunks = [];
 
   if (child.stderr) {
     child.stderr.on("data", (buf) => {
@@ -57,6 +58,19 @@ export function createTlsBridge(proxyUrl = null, opts = {}) {
       if (stderrChunks.length < 20) stderrChunks.push(s.slice(0, 400));
     });
   }
+  // node-tls-client logs download failures to stdout, then process.exit(1).
+  if (child.stdout) {
+    child.stdout.on("data", (buf) => {
+      const s = String(buf);
+      if (stdoutChunks.length < 20) stdoutChunks.push(s.slice(0, 400));
+    });
+  }
+
+  const ioTail = () => {
+    const err = stderrChunks.join("").replace(/\s+/g, " ").slice(-200);
+    const out = stdoutChunks.join("").replace(/\s+/g, " ").slice(-200);
+    return `${err ? ` stderr=${err}` : ""}${out ? ` stdout=${out}` : ""}`;
+  };
 
   const failAll = (reason) => {
     dead = true;
@@ -79,10 +93,16 @@ export function createTlsBridge(proxyUrl = null, opts = {}) {
   });
 
   child.on("exit", (code, signal) => {
-    const tail = stderrChunks.join("").slice(-300);
-    failAll(
-      `tls-worker exited code=${code} signal=${signal || "-"}${tail ? ` stderr=${tail.replace(/\s+/g, " ").slice(0, 200)}` : ""}`,
-    );
+    // Delay slightly so piped stdout/stderr from process.exit(1) lands first.
+    // node-tls-client calls process.exit(1) when the GitHub .so download fails.
+    setTimeout(() => {
+      failAll(
+        `tls-worker exited code=${code} signal=${signal || "-"}${ioTail()}` +
+          (code === 1
+            ? " (often missing native .so — bake vendor/tls-client-x64.so in Docker)"
+            : ""),
+      );
+    }, 50);
   });
 
   child.on("error", (err) => {

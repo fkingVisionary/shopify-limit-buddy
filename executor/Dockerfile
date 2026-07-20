@@ -27,9 +27,19 @@ COPY . .
 # (Jul 17: Fly stayed on ef84707+monitor after main hard-reset to a1d9f9c).
 ARG GIT_SHA=unknown
 ENV EXECUTOR_GIT_SHA=$GIT_SHA
-# Do not prewarm node-tls-client during image builds. Its native asset endpoint
-# can return 403 and fail the whole deploy; the default runtime transport is
-# undici, and TLS is opt-in via EXECUTOR_HTTP_TRANSPORT=tls.
+# Bake bogdanfinn tls-client linux-x64 .so into the image.
+# node-tls-client downloads via api.github.com at first initTLS(); that often
+# 403s on Fly, then the package process.exit(1)s — which killed tls-worker and
+# forced undici (Akamai _abck plateau). Direct release-asset URLs are reliable.
+# Pin version; bump when upgrading node-tls-client's expected native ABI.
+ARG TLS_CLIENT_SO_VERSION=1.15.1
+RUN mkdir -p /app/vendor /app/.tmp \
+  && curl -fsSL \
+    "https://github.com/bogdanfinn/tls-client/releases/download/v${TLS_CLIENT_SO_VERSION}/tls-client-linux-ubuntu-amd64-${TLS_CLIENT_SO_VERSION}.so" \
+    -o /app/vendor/tls-client-x64.so \
+  && cp /app/vendor/tls-client-x64.so /app/.tmp/tls-client-x64.so \
+  && chmod 755 /app/vendor/tls-client-x64.so /app/.tmp/tls-client-x64.so \
+  && test -s /app/vendor/tls-client-x64.so
 ENV PORT=8080
 EXPOSE 8080
 CMD ["node", "server.js"]

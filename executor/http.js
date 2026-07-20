@@ -13,6 +13,7 @@
 //   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
 
 const UA =
@@ -58,6 +59,7 @@ async function loadTlsClient() {
   return tlsClientModulePromise;
 }
 async function ensureTls() {
+  ensureTlsNativeLib();
   const { initTLS } = await loadTlsClient();
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
