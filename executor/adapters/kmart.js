@@ -639,17 +639,13 @@ export const kmartAdapter = {
       });
     } else {
 
-    // Hyper: warm + script + sensors must share one TLS fingerprint.
-    // Default ON only when proxied — live Fly direct egress (89.187.186.9)
-    // SoftBlocks undici AND tls-worker BM equally; ISP + chrome_131 solves
-    // in 3 rounds (smoke tip d167b78). Opt in on direct: sensorTls:true.
-    // Opt out: sensorTls:false or KMART_SENSOR_TLS=0.
+    // Lovable/Fly green path (#40 / resi-dry-1): ONE undici client for
+    // warm→sensors→PDP→get-token→GraphQL. Tip spiral #74–#78 split JA3
+    // (tls BM → undici PDP → parked tls api) and Ghost-denied every cart_get
+    // while get-token still 200. Live 2026-07-20: sensorTls:false + apiTls:false
+    // on ISP → cart_get JSON 200 ×4. Opt in only: sensorTls:true / KMART_SENSOR_TLS=1.
     const wantSensorTls =
-      task.sensorTls === true ||
-      (task.sensorTls !== false &&
-        Boolean(task.proxy) &&
-        task.forceUndici !== true &&
-        process.env.KMART_SENSOR_TLS !== "0");
+      task.sensorTls === true || process.env.KMART_SENSOR_TLS === "1";
     const sensorAlreadyTls =
       Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
     if (wantSensorTls && !sensorAlreadyTls) {
@@ -1915,14 +1911,11 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
-      // Prefer the PARKED sensor tls-worker (same chrome session that minted
-      // _abck). Fresh makeRemoteTlsDispatcher after undici PDP got get-token
-      // but Ghost-denied every GraphQL profile (tips d167b78 / 5dc0cee).
-      // Force: apiTls:true | opt out: apiTls:false.
+      // Default OFF — same undici client as WWW (green #40 / Lovable→Fly).
+      // Opt in only: apiTls:true (parked sensor tls reuse when sensorTls was on).
       const alreadyTls =
         Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
-      const wantApiTls =
-        task.apiTls === true || (task.apiTls !== false && Boolean(task.proxy));
+      const wantApiTls = task.apiTls === true;
       if (wantApiTls && !alreadyTls) {
         await tStep("api_tls_handoff", async () => {
           const prev = ctx.dispatcher;
