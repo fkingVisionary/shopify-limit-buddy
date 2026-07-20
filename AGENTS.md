@@ -65,6 +65,10 @@ migrations + one Deno edge function.
   `forceUndici` / `transport=undici` / `KMART_TLS_WORKER=0`. In-process TLS remains
   opt-in (`forceTls` / `transport=tls`) and is not crash-isolated. Playwright stays
   opt-in only (`kmartMode: "playwright"`) — do not make it the default.
+- **Native `.so` bake:** `node-tls-client` `process.exit(1)`s if the GitHub native
+  download fails (common on Fly via api.github.com 403). Dockerfile must curl the
+  pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
+  If `transport_select` shows `tls-worker init failed → undici`, check that bake.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
   do not re-harden it into a fail-closed merge blocker without an explicit ask.
 

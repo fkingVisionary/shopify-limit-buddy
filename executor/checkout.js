@@ -122,7 +122,9 @@ export async function runCheckout(task) {
       transportSelectNote = "tls-worker chrome_131 (Hyper TLS-first; crash-isolated)";
     } catch (e) {
       dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
-      transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 240);
+      // Include stdout/stderr tail from bridge — native .so download failures
+      // previously looked like a silent "exited code=1".
+      transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 400);
     }
   } else {
     dispatcher = makeDispatcher(task.proxy, { forceTls: false, forceUndici: false });
