@@ -59,6 +59,12 @@ migrations + one Deno edge function.
 - **Restore over tip roulette:** If a tip regresses a known-good runtime, restore the
   whole runtime (`http.js` / `checkout.js` / `server.js` / `kmart.js`), not adapter-only
   (#57 was incomplete). Do not open GraphQL/header/TLS spirals without wire proof.
+- **TLS-first (Hyper-aligned):** Kmart defaults to crash-isolated `chrome_131`
+  via `executor/tls-worker.js` (`transport: "tls-worker"`). Hyper docs: if sensors
+  don’t validate after ~3 posts, fix TLS/headers — not more rounds. Escape hatches:
+  `forceUndici` / `transport=undici` / `KMART_TLS_WORKER=0`. In-process TLS remains
+  opt-in (`forceTls` / `transport=tls`) and is not crash-isolated. Playwright stays
+  opt-in only (`kmartMode: "playwright"`) — do not make it the default.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
   do not re-harden it into a fail-closed merge blocker without an explicit ask.
 
