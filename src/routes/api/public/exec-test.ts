@@ -35,6 +35,8 @@ type RunBody = {
   apiTls?: boolean;
   kmartMode?: string;
   gqlBearer?: boolean;
+  /** Skip /category hop (home→PDP). Default on proxy in executor; force here. */
+  skipCategory?: boolean;
 };
 
 function cartGetOk(steps: Step[] | undefined): boolean {
@@ -200,6 +202,8 @@ export const Route = createFileRoute("/api/public/exec-test")({
             ...(body.apiTls === true ? { apiTls: true } : {}),
             ...(typeof body.kmartMode === "string" ? { kmartMode: body.kmartMode } : {}),
             ...(body.gqlBearer === true ? { gqlBearer: true } : {}),
+            ...(body.skipCategory === true ? { skipCategory: true } : {}),
+            ...(body.skipCategory === false ? { skipCategory: false } : {}),
           };
           const res = await fetch(`${origin}/run`, {
             method: "POST",

@@ -12,9 +12,9 @@
 
 import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 
+// Keep in sync with executor/http.js CHROME_HEADER_ORDER.
 const CHROME_HEADER_ORDER = [
   "host",
-  "connection",
   "cache-control",
   "sec-ch-ua",
   "sec-ch-ua-arch",
@@ -28,6 +28,7 @@ const CHROME_HEADER_ORDER = [
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
+  "content-type",
   "origin",
   "sec-fetch-site",
   "sec-fetch-mode",

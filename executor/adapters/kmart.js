@@ -156,17 +156,21 @@ function navHeaders({ referer, site }) {
 }
 
 function akamaiSensorHeaders({ requestOrigin, referer }) {
+  // Align with real Chrome Akamai sensor POSTs (text/plain + low-entropy CH + AE).
+  // Full CHROME_CH + application/json is a latent mismatch; worse under SoftBlock.
   return {
     "user-agent": UA,
-    "content-type": "application/json",
+    "content-type": "text/plain;charset=UTF-8",
     accept: "*/*",
     "accept-language": ACCEPT_LANG,
+    "accept-encoding": "gzip, deflate, br, zstd",
     origin: requestOrigin,
     referer,
-    ...CHROME_CH,
+    ...CHROME_CH_XHR,
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
+    priority: "u=1, i",
   };
 }
 
@@ -1319,9 +1323,21 @@ export const kmartAdapter = {
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    const skipCategory = task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1";
+    // Default skip on proxied runs: /category/* often hard-denies on resi exits
+    // even after bm_sv, and the SBSD retry loop can poison the session before PDP.
+    // Green direct runs historically survived category 301; resi wants home→PDP.
+    const skipCategory =
+      task.skipCategory === true ||
+      process.env.KMART_SKIP_CATEGORY === "1" ||
+      (Boolean(task.proxy) && task.skipCategory !== false && process.env.KMART_SKIP_CATEGORY !== "0");
     if (skipCategory) {
-      steps.push({ step: "category_browse", ok: true, note: "skipped (home→PDP)" });
+      steps.push({
+        step: "category_browse",
+        ok: true,
+        note: task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1"
+          ? "skipped (home→PDP)"
+          : "skipped (home→PDP; default on proxy)",
+      });
     } else {
     await sleep(700, 1400); // brief glance at homepage before the click
     try {
@@ -1369,7 +1385,15 @@ export const kmartAdapter = {
     // there and retry the category before moving on. A real browser cannot click
     // from a 403 category page into the PDP, so keeping that failed hop in the
     // journey makes the next request look impossible.
-    if (!categoryOk && categoryHtml) {
+    // Hard AkamaiGHost Access Denied pages are not SBSD challenges — retrying
+    // them burns the sticky exit before PDP.
+    if (!categoryOk && categoryHtml && /Access Denied|AkamaiGHost/i.test(categoryHtml)) {
+      steps.push({
+        step: "category_browse:hard_deny_skip_sbsd",
+        ok: true,
+        note: "Access Denied on category — skip SBSD retry; continue home→PDP",
+      });
+    } else if (!categoryOk && categoryHtml) {
       try {
         const solvedCategorySbsd = await runSbsd(categoryHtml, catUrl, "sbsd_category");
         if (solvedCategorySbsd) {
