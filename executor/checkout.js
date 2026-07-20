@@ -157,6 +157,7 @@ export async function runCheckout(task) {
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
     try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
     try { await ctx._navDispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._sensorTlsDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
