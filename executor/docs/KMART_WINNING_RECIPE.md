@@ -4,6 +4,8 @@ Last bank-confirmed payment window: **~07:03–07:04 UTC, 2026-07-20** (Revolut 
 The HTTP client timed out / returned empty while **Fly kept running**.  
 **Do not score that as cart dead.**
 
+Full Hyper / HAR / green cross-check: [`HYPER_HAR_ALIGNMENT.md`](./HYPER_HAR_ALIGNMENT.md).
+
 ## Reality check (live Fly tips 2026-07-20)
 
 | Tip | Path | Result |
