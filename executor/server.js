@@ -12,6 +12,7 @@ import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
 import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { listRunMilestones } from "./run-milestones.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -41,6 +42,7 @@ app.get("/", async () => ({
   diagnose: "POST /health/diagnose (Bearer auth)",
   run: "POST /run (Bearer auth)",
   progress: "GET /progress/:taskId (Bearer auth)",
+  milestones: "GET /milestones (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
@@ -166,6 +168,21 @@ app.get("/progress/:taskId", async (req, reply) => {
     return { ok: true, found: false, taskId, progress: null, stages: WORKFLOW_STAGES };
   }
   return { ok: true, found: true, taskId, progress, stages: WORKFLOW_STAGES };
+});
+
+// Recent checkout wins (cart_get+ / 3DS / place_order). Survives client timeouts.
+app.get("/milestones", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const q = req.query ?? {};
+  const limit = Math.min(80, Math.max(1, Number(q.limit ?? 40) || 40));
+  const minStage = typeof q.minStage === "string" && q.minStage ? q.minStage : "cart_get";
+  const rows = listRunMilestones({ limit, minStage });
+  return {
+    ok: true,
+    count: rows.length,
+    minStage,
+    milestones: rows,
+  };
 });
 
 app.post("/run", async (req, reply) => {

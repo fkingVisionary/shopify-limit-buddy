@@ -3,6 +3,64 @@
 // callers must still know the storeUrl to test.
 import { createFileRoute } from "@tanstack/react-router";
 
+type Step = {
+  note?: string;
+  step?: string;
+  ok?: boolean;
+  status?: number | null;
+  ms?: number;
+};
+
+type RunBody = {
+  storeUrl?: string;
+  variantId?: number;
+  taskId?: string;
+  mode?: "run" | "recon";
+  reconUrl?: string;
+  useProxy?: boolean;
+  proxyUrl?: string;
+  proxies?: string[];
+  proxyEntries?: string[];
+  proxyGroupId?: string;
+  proxyGroupName?: string;
+  dryRun?: boolean;
+  /** Force skip card even when KMART_CARD_* secrets exist. */
+  noCard?: boolean;
+  placeOrder?: boolean;
+  /** Opt-in executor experiments (forwarded to Fly /run). */
+  transport?: string;
+  forceTls?: boolean;
+  forceUndici?: boolean;
+  /** Opt-in chrome_131 handoff for api.* (default off — native TLS 502s on Fly). */
+  apiTls?: boolean;
+  kmartMode?: string;
+  gqlBearer?: boolean;
+};
+
+function cartGetOk(steps: Step[] | undefined): boolean {
+  const s = (steps || []).find((x) => x?.step === "cart_get");
+  if (!s?.ok) return false;
+  if (s.status != null && s.status !== 200) return false;
+  return !/all_denied|Access Denied|AkamaiGHost/i.test(String(s.note || ""));
+}
+
+function furthestStage(data: {
+  milestone?: { stage?: string | null; reached3ds?: boolean } | null;
+  checkoutStage?: string | null;
+  orderNumber?: string | null;
+  steps?: Step[];
+}): string | null {
+  if (data.orderNumber) return "ordered";
+  if (data.milestone?.stage) return data.milestone.stage;
+  if (data.checkoutStage) return data.checkoutStage;
+  const steps = data.steps || [];
+  if (steps.some((s) => /^paydock_3ds|create_3ds/i.test(String(s?.step || "")))) return "3ds";
+  if (steps.some((s) => s?.step === "paydock_tokenize" && s.ok)) return "tokenize";
+  if (steps.some((s) => s?.step === "cart_atc" && s.ok)) return "cart_atc";
+  if (cartGetOk(steps)) return "cart_get";
+  return null;
+}
+
 export const Route = createFileRoute("/api/public/exec-test")({
   server: {
     handlers: {
@@ -15,28 +73,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             { status: 500 },
           );
         }
-        const body = (await request.json().catch(() => ({}))) as {
-          storeUrl?: string;
-          variantId?: number;
-          taskId?: string;
-          mode?: "run" | "recon";
-          reconUrl?: string;
-          useProxy?: boolean;
-          proxyUrl?: string;
-          proxies?: string[];
-          proxyEntries?: string[];
-          proxyGroupId?: string;
-          proxyGroupName?: string;
-          dryRun?: boolean;
-          /** Opt-in executor experiments (forwarded to Fly /run). */
-          transport?: string;
-          forceTls?: boolean;
-          forceUndici?: boolean;
-          /** Opt-in chrome_131 handoff for api.* (default off — native TLS 502s on Fly). */
-          apiTls?: boolean;
-          kmartMode?: string;
-          gqlBearer?: boolean;
-        };
+        const body = (await request.json().catch(() => ({}))) as RunBody;
         const mode = body.mode ?? "run";
         // Resolve proxy: explicit proxyUrl wins; else proxies[]/proxyEntries[];
         // else named supabase group; else let Fly pick from resi.proxies via
@@ -98,17 +135,26 @@ export const Route = createFileRoute("/api/public/exec-test")({
         } catch {
           origin = origin.replace(/\/+$/, "");
         }
-        // Card injected from Lovable Cloud secrets so executor can tokenize.
-        // null if any field missing — adapter then skips paydock_tokenize.
-        const number = process.env.KMART_CARD_NUMBER;
-        const cvv = process.env.KMART_CARD_CVV;
-        const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
-        const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
-        const holder = process.env.KMART_CARD_HOLDER;
-        const card =
-          number && cvv && expMonth && expYear && holder
-            ? { number, cvv, expMonth, expYear, holder }
-            : null;
+        // Card only when explicitly requested — auto-inject caused Revolut 3DS
+        // pings on every smoke while agents timed out and scored "cart dead."
+        const wantCard = body.withCard === true || body.placeOrder === true;
+        let card: {
+          number: string;
+          cvv: string;
+          expMonth: string;
+          expYear: string;
+          holder: string;
+        } | null = null;
+        if (wantCard) {
+          const number = process.env.KMART_CARD_NUMBER;
+          const cvv = process.env.KMART_CARD_CVV;
+          const expMonth = process.env.KMART_CARD_EXPIRY_MONTH;
+          const expYear = process.env.KMART_CARD_EXPIRY_YEAR;
+          const holder = process.env.KMART_CARD_HOLDER;
+          if (number && cvv && expMonth && expYear && holder) {
+            card = { number, cvv, expMonth, expYear, holder };
+          }
+        }
         const t0 = Date.now();
         try {
           if (mode === "recon") {
@@ -143,6 +189,7 @@ export const Route = createFileRoute("/api/public/exec-test")({
             variantId: body.variantId ?? 1,
             qty: 1,
             dryRun: body.dryRun ?? true,
+            placeOrder: body.placeOrder === true,
             proxy,
             proxies: proxyList ?? undefined,
             useProxy: forwardUseProxy || undefined,
@@ -159,12 +206,68 @@ export const Route = createFileRoute("/api/public/exec-test")({
             headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
             body: JSON.stringify(payload),
           });
-          const data = (await res.json().catch(() => ({}))) as { steps?: Array<{ note?: string; step?: string; ok?: boolean; status?: number | null; ms?: number }>; error?: string; failedStep?: string; ok?: boolean };
+          const data = (await res.json().catch(() => ({}))) as {
+            steps?: Step[];
+            error?: string;
+            failedStep?: string;
+            ok?: boolean;
+            milestone?: {
+              stage?: string;
+              reached3ds?: boolean;
+              cartGet?: boolean;
+              paymentStatus?: string | null;
+              orderNumber?: string | null;
+            } | null;
+            checkoutStage?: string | null;
+            paymentStatus?: string | null;
+            paymentSummary?: Record<string, unknown> | null;
+            orderNumber?: string | null;
+            orderId?: string | null;
+          };
           // Hard-trim step notes and only return tiny shape so steps survive tool truncation.
           const compactSteps = Array.isArray(data?.steps)
-            ? data.steps.map((s) => ({ s: s.step, o: s.ok, c: s.status ?? null, m: s.ms, n: typeof s.note === "string" ? (s.note.length > 5000 ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})` : s.note) : undefined }))
+            ? data.steps.map((s) => ({
+                s: s.step,
+                o: s.ok,
+                c: s.status ?? null,
+                m: s.ms,
+                n:
+                  typeof s.note === "string"
+                    ? s.note.length > 5000
+                      ? s.note.slice(0, 5000) + `…(+${s.note.length - 5000})`
+                      : s.note
+                    : undefined,
+              }))
             : [];
-          return Response.json({ ok: res.ok, status: res.status, elapsedMs: Date.now() - t0, run: { ok: data.ok, err: data.error, fs: data.failedStep, steps: compactSteps }, cardSent: Boolean(card), proxyUsed });
+          const stage = furthestStage(data);
+          const cartGet = cartGetOk(data.steps);
+          const reached3ds = Boolean(
+            data.milestone?.reached3ds ||
+              stage === "3ds" ||
+              stage === "place_order" ||
+              stage === "ordered" ||
+              (data.steps || []).some((s) => /^paydock_3ds|create_3ds/i.test(String(s?.step || ""))),
+          );
+          return Response.json({
+            ok: res.ok,
+            status: res.status,
+            elapsedMs: Date.now() - t0,
+            run: {
+              ok: data.ok,
+              err: data.error,
+              fs: data.failedStep,
+              stage,
+              cartGet,
+              reached3ds,
+              checkoutStage: data.checkoutStage ?? null,
+              paymentStatus: data.paymentStatus ?? data.milestone?.paymentStatus ?? null,
+              orderNumber: data.orderNumber ?? data.milestone?.orderNumber ?? null,
+              milestone: data.milestone ?? null,
+              steps: compactSteps,
+            },
+            cardSent: Boolean(card),
+            proxyUsed,
+          });
         } catch (e) {
           return Response.json(
             { ok: false, error: e instanceof Error ? e.message : String(e), elapsedMs: Date.now() - t0 },
