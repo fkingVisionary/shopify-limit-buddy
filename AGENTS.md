@@ -65,12 +65,13 @@ update the CF Worker.
 - **Restore over tip roulette:** If a tip regresses a known-good runtime, restore the
   whole runtime (`http.js` / `checkout.js` / `server.js` / `kmart.js`), not adapter-only
   (#57 was incomplete). Do not open GraphQL/header/TLS spirals without wire proof.
-- **TLS-first (Hyper-aligned):** Kmart defaults to crash-isolated `chrome_131`
-  via `executor/tls-worker.js` (`transport: "tls-worker"`). Hyper docs: if sensors
-  don’t validate after ~3 posts, fix TLS/headers — not more rounds. Escape hatches:
-  `forceUndici` / `transport=undici` / `KMART_TLS_WORKER=0`. In-process TLS remains
-  opt-in (`forceTls` / `transport=tls`) and is not crash-isolated. Playwright stays
-  opt-in only (`kmartMode: "playwright"`) — do not make it the default.
+- **Transport:** Kmart **defaults to undici** — that is the path that reached
+  `place_order` / 3DS on Fly direct (`89.187.186.9`). `tls-worker` remains opt-in
+  (`transport=tls-worker` / `tlsWorker:true` / `KMART_TLS_WORKER=1`): it can solve
+  `_abck` then 403 category/PDP on the same IP (handling bug, not SoftBlock).
+  In-process TLS (`forceTls`) and Playwright stay opt-in only.
+- **Category:** default **skip** (home→PDP). A category 403 is not proof of a
+  burnt proxy when sensors just solved on that exit.
 - **Native `.so` bake:** `node-tls-client` `process.exit(1)`s if the GitHub native
   download fails (common on Fly via api.github.com 403). Dockerfile must curl the
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.

@@ -1294,20 +1294,18 @@ export const kmartAdapter = {
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    // Default skip on proxied runs: /category/* often hard-denies on some exits
-    // even after bm_sv, and the SBSD retry loop can poison the session before PDP.
-    // Green direct runs historically survived category 301; proxied → home→PDP.
+    // Default home→PDP. Category 403 (tls-worker and some exits) is easy to
+    // misread as "burnt proxy" when the same direct IP still solves sensors.
+    // Opt back in with skipCategory:false or KMART_SKIP_CATEGORY=0.
     const skipCategory =
       task.skipCategory === true ||
       process.env.KMART_SKIP_CATEGORY === "1" ||
-      (Boolean(task.proxy) && task.skipCategory !== false && process.env.KMART_SKIP_CATEGORY !== "0");
+      (task.skipCategory !== false && process.env.KMART_SKIP_CATEGORY !== "0");
     if (skipCategory) {
       steps.push({
         step: "category_browse",
         ok: true,
-        note: task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1"
-          ? "skipped (home→PDP)"
-          : "skipped (home→PDP; default on proxy)",
+        note: "skipped (home→PDP; default)",
       });
     } else {
     await sleep(700, 1400); // brief glance at homepage before the click
