@@ -83,9 +83,8 @@ const CHROME_CH = {
   "sec-ch-ua-platform": '"macOS"',
   "sec-ch-ua-platform-version": '"14.6.1"',
 };
-// get-token (shopping-agent) matches slim HAR with the low-entropy Client Hints
-// trio. GraphQL cart success on undici was mriwd1up / 7784fab with FULL
-// CHROME_CH — do not force CHROME_CH_XHR onto GraphQL (6d0d21a over-corrected).
+// api.* XHRs (get-token + GraphQL): low-entropy Client Hints — a1d9f9c /
+// 6d0d21a / resi-dry-1 cart_get 200. Do not put full CHROME_CH on GraphQL.
 const CHROME_CH_XHR = {
   "sec-ch-ua": CHROME_CH["sec-ch-ua"],
   "sec-ch-ua-mobile": CHROME_CH["sec-ch-ua-mobile"],
@@ -1757,16 +1756,6 @@ export const kmartAdapter = {
         ...apiXhrBase(homeReferer),
         ...gqlCacheHeaders,
       },
-      // Older mriwd1up shape as fallback (full CH + cache).
-      mriwd_full: {
-        ...apiXhrBase(apiDocReferer),
-        ...CHROME_CH,
-        ...gqlCacheHeaders,
-        "x-country-code": "AU",
-        "x-visitor-id": apiVisitorId,
-        "apollographql-client-name": "kmart-web",
-        "apollographql-client-version": "nx14-10200",
-      },
       pdp_visitor: {
         ...apiXhrBase(apiDocReferer),
         "x-visitor-id": apiVisitorId,
@@ -1916,29 +1905,10 @@ export const kmartAdapter = {
         steps.push({ step: "api_get_token:gate", ok: false, note: "stopped before cart mutation because API BotManager seed failed" });
         return { ok: false, steps, finalUrl: pdpUrl, cookies: ctx.jar.dump(), trace: traceEnabled ? requestTrace : undefined };
       }
-      // After shopping-agent seed, open a fresh CONNECT/TLS to api.* before
-      // GraphQL (same jar/exit). Browser typically does not reuse the seed
-      // socket for /gateway/graphql the way a keep-alive ProxyAgent pool does.
-      // Skip when task.apiTunnelRefresh === false. Not a sticky-only refresh —
-      // that one runs *before* get-token and is ISP-skipped on purpose.
-      if (task.proxy && task.apiConnRefresh !== false) {
-        try {
-          await ctx.dispatcher?.resetUndici?.();
-          steps.push({
-            step: "api_conn_refresh",
-            ok: true,
-            note: "ProxyAgent reset after get-token before GraphQL (jar unchanged)",
-          });
-        } catch (e) {
-          steps.push({
-            step: "api_conn_refresh",
-            ok: false,
-            note: e?.message ?? String(e),
-          });
-        }
-      }
-      // Brief gap after get-token before GraphQL (soft-entry + any proxied run).
-      if (apiSoftEntry || task.proxy) await sleep(800, 1500);
+      // a1d9f9c: only soft-entry pauses here. Tip #52 added ProxyAgent reset +
+      // sleep for every proxied run after get-token — same class of mistake as
+      // api_tunnel_refresh on ISP (get-token 200 → GraphQL 403 on warm jar).
+      if (apiSoftEntry) await sleep(800, 1500);
       }
 
       // 7a.1. API-host Akamai sensor — OPT-IN only (`task.apiSensor === true`).
@@ -2278,29 +2248,23 @@ fragment PostcodeSelectorBagFields on Cart {
               : null;
           };
 
-          // Soft-entry started on seed_match — try remaining. ISP / sticky+WWW
-          // started on baseline (a1d9 / mriwd1up): seed_match → har_slim → pdp_visitor.
-          // with_bearer only when task.gqlBearer===true — slim HAR never sends
-          // Authorization, and Fly tip #47 proved ya29 does not clear AkamaiGHost.
+          // a1d9f9c fallback order — no tip-era mriwd_full / bearer roulette.
           const fallbackOrder = apiSoftEntry
-            ? ["har_slim", "baseline", "pdp_visitor", "mriwd_full"]
-            : ["seed_match", "har_slim", "pdp_visitor", "mriwd_full"];
-          if (task.gqlBearer === true) fallbackOrder.push("with_bearer");
+            ? ["har_slim", "baseline", "pdp_visitor"]
+            : ["seed_match", "har_slim", "pdp_visitor"];
           for (const name of fallbackOrder) {
             if (name === activeGqlProfile) continue;
             const hit = await tryProfile(name);
             if (hit) return hit;
           }
 
-          // ATC-era recovery (9eadb32 / PR #16): on Access Denied, refresh WWW
-          // sensor then retry GraphQL. Was sticky-only — static ISP never entered
-          // and stopped at all_profiles_denied after green get-token. Apply to
-          // any proxied run with a sensor script (ISP + sticky resi).
-          if (task.proxy && scriptPath && scriptBody) {
+          // a1d9f9c: sticky only. Tip #46 extended this to all proxies; that
+          // never cleared ISP GraphQL and only burned more Hyper/sensor calls.
+          if (stickyProxy && scriptPath && scriptBody) {
             steps.push({
-              step: "cart_get:sensor_refresh",
+              step: "cart_get:sticky_sensor_refresh",
               ok: true,
-              note: `all GraphQL profiles denied — refreshing WWW _abck then retrying baseline/seed_match/har_slim${stickyProxy ? " sticky=1" : " isp=1"}`,
+              note: "all GraphQL profiles denied — refreshing WWW _abck then retrying seed_match/har_slim",
             });
             const wwwScriptUrl = origin + scriptPath;
             let sensorCtx = prevContext;
@@ -2343,89 +2307,20 @@ fragment PostcodeSelectorBagFields on Cart {
                 break;
               }
             }
-            // Human pause (same class as cart_atc:denied dwell).
             await sleep(700, 1600);
-            // Re-seed api.* Bot Manager after WWW sensor — get-token ran before
-            // the refresh; browser would hit shopping-agent again on the warm jar.
-            try {
-              const reseedId = (() => {
-                const bytes = new Uint8Array(32);
-                globalThis.crypto.getRandomValues(bytes);
-                return Buffer.from(bytes).toString("base64url");
-              })();
-              await tStep("api_get_token:post_sensor", async () => {
-                const res = await tracedRequest(
-                  "seed_post_sensor",
-                  apiOrigin + "/shopping-agent/v1/get-token",
-                  {
-                    method: "POST",
-                    headers: {
-                      ...apiXhrBase(apiDocReferer),
-                      "x-visitor-id": apiVisitorId,
-                      ...nrHeaders("1834777981"),
-                    },
-                    body: JSON.stringify({ sessionId: reseedId }),
-                  },
-                  { requestBody: { sessionId: reseedId } },
-                );
-                const bodyRaw = await res.text().catch(() => "");
-                const bodyTxt = bodyRaw.slice(0, 160);
-                try {
-                  const parsed = JSON.parse(bodyRaw);
-                  const tok = typeof parsed?.token === "string" ? parsed.token.trim() : "";
-                    if (tok) {
-                    shoppingAgentToken = tok;
-                    gqlProfiles.with_bearer = {
-                      ...gqlProfiles.baseline,
-                      ...gqlCacheHeaders,
-                      authorization: `Bearer ${tok}`,
-                    };
-                  }
-                } catch {
-                  /* ignore */
-                }
-                return {
-                  status: res.status,
-                  ok: res.status < 400,
-                  note: `reseed setCookies=[${cookieNamesFromResponse(res).join(",") || "none"}] bm_sv=${ctx.jar.has("bm_sv")} bearer=${shoppingAgentToken ? `${shoppingAgentToken.slice(0, 12)}…` : "none"} body=${bodyTxt}`,
-                };
-              });
-              await sleep(400, 900);
-            } catch (e) {
-              steps.push({
-                step: "api_get_token:post_sensor:error",
-                ok: false,
-                note: e?.message ?? String(e),
-              });
-            }
-            // Retry mriwd baseline first — post-sensor tip previously skipped it.
-            const postSensorOrder = ["baseline", "seed_match", "har_slim", "mriwd_full"];
-            if (task.gqlBearer === true) postSensorOrder.push("with_bearer");
-            for (const name of postSensorOrder) {
+            for (const name of ["seed_match", "har_slim"]) {
               const hit = await tryProfile(name, `${name}_post_sensor`);
               if (hit) return hit;
             }
           }
 
-          let denyIp = null;
-          try {
-            denyIp = await resolveEgressIp(ctx, { force: true });
-          } catch {
-            denyIp = null;
-          }
-          const sameExit = Boolean(denyIp && egressIp && denyIp === egressIp);
           steps.push({
             step: "cart_get:all_profiles_denied",
             ok: false,
-            note: `get-token 200 but every GraphQL header profile Access Denied — ipStart=${egressIp ?? "?"} ipNow=${denyIp ?? "?"} same=${sameExit}. Same-jar get-token vs GraphQL ⇒ /gateway/graphql request shape (not mid-run IP rotate). Profiles tried include mriwd cache-control/pragma.`,
+            note: "get-token ok but every GraphQL header profile got Akamai Access Denied — a1d9 path (no post-seed ProxyAgent reset, sticky-only sensor refresh)",
           });
           gqlCartBlocked = true;
-          // Stash for early return after cart_get — do not burn cart_create/ATC.
-          ctx.__kmart_gql_deny = {
-            sameExit,
-            egressIp: egressIp ?? null,
-            denyIp,
-          };
+          ctx.__kmart_gql_deny = { sameExit: true, egressIp: egressIp ?? null, denyIp: null };
           return {
             status: res.status,
             ok: false,

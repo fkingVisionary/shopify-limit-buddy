@@ -184,6 +184,15 @@ With `sbsd_pdp` restored, tip still denies GraphQL. Diff vs `resi-dry-1`
 | query | minimal ~220b | HAR fragments ~2.4kb |
 | `explicitProxy` | false | true |
 
-Realign baseline to the success artifact; keep mriwd_full as fallback; refresh
-ProxyAgent after get-token before GraphQL (`api_conn_refresh`) so gateway does
-not reuse the shopping-agent keep-alive socket.
+Realign baseline to the success artifact.
+
+### Tip `#52` made the gap worse (`api_conn_refresh`)
+
+`#52` reset ProxyAgent **after** get-token for every proxied run. That is the
+same failure class already documented for mistaken `api_tunnel_refresh` on ISP
+(get-token 200 → every GraphQL profile AkamaiGHost). a1d9 only paused after
+get-token for **soft-entry**, and only sensor-refreshed on **sticky** deny.
+
+Restore a1d9 get-token→GraphQL gap: no post-seed `resetUndici`, soft-entry sleep
+only, sticky-only `cart_get:sticky_sensor_refresh`. Keep SoftBlock jar protect +
+always-run `sbsd_pdp` + bare-IP not sticky.
