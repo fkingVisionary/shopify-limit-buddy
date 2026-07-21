@@ -12,6 +12,7 @@ export const LIVE = {
   threeds: "Waiting for bank approval",
   order: "Placing order",
   done: "Done",
+  switching: "Switching proxy",
 } as const;
 
 export const OUTCOME = {
@@ -106,11 +107,17 @@ export function isPaymentDeclined(res: RunLike | null | undefined): boolean {
 export function consumerProgressMessage(progress: {
   stage?: string | null;
   label?: string | null;
+  detail?: string | null;
   done?: boolean;
   ok?: boolean | null;
   orderNumber?: string | null;
 } | null | undefined): string {
   if (!progress) return LIVE.warm;
+  const label = String(progress.label || "");
+  const detail = String(progress.detail || "");
+  if (/switching proxy/i.test(label) || /switching proxy/i.test(detail)) {
+    return LIVE.switching;
+  }
   const stage = progress.stage || "warm";
   if (progress.done) {
     if (progress.ok && progress.orderNumber) return OUTCOME.confirmed;
