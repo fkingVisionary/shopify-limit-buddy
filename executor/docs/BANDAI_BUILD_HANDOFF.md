@@ -220,35 +220,36 @@ Mirror Kmart’s adapter registration / job-runner patterns; **copy structure, d
 ## 8. Build phases (execute in order)
 
 ### Phase A — Scaffold (1 PR)
-- [ ] Branch from `main`
-- [ ] `executor/otp/imapInbox.js` + unit/smoke (login IMAP, search recent mail)
-- [ ] `executor/otp/onlinesim.js` + smoke (`getBalance` / getNum with owner key)
-- [ ] Desktop Settings fields (persist locally, never log secrets)
-- [ ] Stub `adapters/bandai.js` `warm()` → CSRF + cookies on sticky proxy
-- [ ] Docs: link this handoff from PR body
+- [x] Branch from `main`
+- [x] `executor/otp/imapInbox.js` + unit/smoke (login IMAP, search recent mail)
+- [x] `executor/otp/onlinesim.js` + smoke (`getBalance` / getNum with owner key)
+- [x] Desktop Settings fields (persist locally, never log secrets)
+- [x] Stub `adapters/bandai.js` `warm()` → CSRF + cookies on sticky proxy
+- [x] Docs: link this handoff from PR body
 
-**Exit:** OTP helpers proven with owner credentials; warm returns CSRF.
+**Exit:** OTP helpers proven with owner credentials; warm returns CSRF.  
+_Code landed; live IMAP/OnlineSim proof still needs owner keys._
 
 ### Phase B — Account gen
-- [ ] Implement `bandai-agen` full flow (§5)
-- [ ] Password rule validator (§4.2 in research doc)
-- [ ] Vault schema: email, password, phone, proxyId, status, createdAt, lastLoginAt, shipping
-- [ ] Low concurrency (1–2); sticky proxy per attempt
+- [x] Implement `bandai-agen` full flow (§5)
+- [x] Password rule validator (§4.2 in research doc)
+- [x] Vault schema: email, password, phone, proxyId, status, createdAt, lastLoginAt, shipping
+- [x] Low concurrency (1–2); sticky proxy per attempt
 - [ ] Dry-run with owner IMAP + OnlineSim until **one `ready` account**
 
 **Exit:** ≥1 vault-ready account without manual OTP typing.
 
 ### Phase C — Login + ATC
-- [ ] Password login + restriction gate handling
-- [ ] `addToCart` + `cart/detail` with test or agen account
-- [ ] Stop before GE (`placeOrder:false` / no checkout POST) for first green ATC
+- [x] Password login + restriction gate handling
+- [x] `addToCart` + `cart/detail` with test or agen account
+- [x] Stop before GE (`placeOrder:false` / no checkout POST) for first green ATC
 - [ ] If ATC still 501 on ISP: pause and request HAR from owner (logged-in ATC)
 
 **Exit:** Logged-in ATC returns JSON success (or clear next HAR ask).
 
 ### Phase D — Global-e checkout
-- [ ] Resolve `merchantCartToken` suffix
-- [ ] `POST …/checkout` → `checkoutSn`
+- [x] Resolve `merchantCartToken` suffix _(best-effort from cart HTML PRELOAD)_
+- [x] `POST …/checkout` → `checkoutSn` _(scaffold; stops before GE widget)_
 - [ ] GE client path: prefer minimal browser/WebView for captcha+fp if HTTP fails
 - [ ] `preComplete` → order number
 - [ ] Document 3DS / PayPal outcomes
@@ -256,8 +257,8 @@ Mirror Kmart’s adapter registration / job-runner patterns; **copy structure, d
 **Exit:** One successful test order (or intentional dry cancel) on owner account.
 
 ### Phase E — Chance + monitor (parallelizable)
-- [ ] `applyDraw` across vault
-- [ ] Monitor poll `/api/search` + `/api/products/{code}` for availability / campaign flips
+- [x] `applyDraw` across vault _(single-account mode)_
+- [x] Monitor poll `/api/search` + `/api/products/{code}` for availability / campaign flips
 - [ ] Notify (desktop / webhook as existing product does)
 
 ---

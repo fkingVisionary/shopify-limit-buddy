@@ -43,6 +43,15 @@ const DEFAULT_SETTINGS = {
   paydockPublicKey: "",
   /** Toymate Cloudflare + form captcha (CapSolver). Not used by Kmart. */
   capsolverApiKey: "",
+  /** Shared agen OTP — Bandai first; future store agen reuses these. Never commit. */
+  onlinesimApiKey: "",
+  onlinesimMode: "rent", // rent | activation
+  onlinesimServiceSlug: "other",
+  imapHost: "",
+  imapPort: 993,
+  imapUser: "",
+  imapAppPassword: "",
+  imapMailbox: "INBOX",
   maxConcurrent: 5,
   placeOrderDefault: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid

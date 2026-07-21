@@ -1,7 +1,7 @@
 # Premium Bandai AU — Module Research (Bandai-first)
 
 _Date: 2026-07-18 (deep dig refresh)_  
-_Status: research only — no adapter code yet_  
+_Status: adapter scaffolded (OTP + agen + login/ATC + GE stub) — harden with owner HAR / live OTP_  
 _Why first: owner call — English bots already cover AusPost; **no known Bandai AU support** → greenfield edge on One Piece / exclusives._  
 _Build: storefront `CONFIG_DATA.buildVersion=2.20260716` (2026-07-16)_
 
