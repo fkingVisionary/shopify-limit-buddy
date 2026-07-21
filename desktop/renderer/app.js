@@ -62,10 +62,16 @@ function renderTasks() {
   }
   el.innerHTML = tasks
     .map((t) => {
+      const statusLabel = t.lastLabel || t.lastStatus || "idle";
       const badge =
-        t.lastStatus === "confirmed" || t.lastStatus === "ok"
+        t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok"
           ? "ok"
-          : t.lastStatus === "failed"
+          : t.lastStatus === "failed" ||
+              t.lastStatus === "error" ||
+              t.lastStatus === "akamai" ||
+              t.lastStatus === "proxy" ||
+              t.lastStatus === "declined" ||
+              t.lastStatus === "oos"
             ? "err"
             : t.lastStatus === "queued"
               ? "run"
@@ -73,9 +79,9 @@ function renderTasks() {
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
-          <span class="badge ${badge}">${esc(t.store)} · ${esc(t.lastStatus || "idle")}</span>
+          <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(t.pdpUrl)}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · order ${esc(t.lastOrderNumber)}` : ""}${t.lastError ? ` · ${esc(t.lastError)}` : ""}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}</div>
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
@@ -145,19 +151,14 @@ function renderResults() {
   el.innerHTML = rows
     .map((r) => {
       const cls = r.ok ? "ok" : "err";
-      const stepTail = Array.isArray(r.lastSteps)
-        ? r.lastSteps
-            .filter((s) => !s.ok)
-            .slice(-3)
-            .map((s) => `${s.step}: ${s.note || ""}`)
-            .join(" · ")
-        : "";
+      const label =
+        r.consumerLabel ||
+        (r.ok ? (r.orderNumber ? "Order confirmed" : "Complete") : r.error || "Something went wrong");
       return `<div class="item">
         <div>
-          <span class="badge ${cls}">${r.ok ? "OK" : "FAIL"}</span>
+          <span class="badge ${cls}">${esc(label)}</span>
           <strong>${esc(r.runId || r.taskId)}</strong>
-          <div class="meta">${r.orderNumber ? `Order ${esc(r.orderNumber)}` : esc(r.error || r.checkoutStage || "")}${r.elapsedMs != null ? ` · ${r.elapsedMs}ms` : ""}</div>
-          ${stepTail ? `<div class="meta">${esc(stepTail)}</div>` : ""}
+          <div class="meta">${r.orderNumber ? esc(r.orderNumber) : ""}${r.elapsedMs != null ? `${r.orderNumber ? " · " : ""}${r.elapsedMs}ms` : ""}</div>
         </div>
       </div>`;
     })
@@ -414,33 +415,18 @@ window.desktop.onEvent((evt) => {
   }
   if (evt.type === "job") {
     if (evt.phase === "start") {
-      appendLog(`START ${esc(evt.runId)} — ${esc(evt.label || "")}`, "muted");
-      if (evt.summary) {
-        appendLog(
-          `${esc(evt.runId)} payload proxy=${esc(evt.summary.proxy)} placeOrder=${evt.summary.placeOrder} card=${evt.summary.hasCard}`,
-          "muted",
-        );
-      }
+      appendLog(`${esc(evt.label || evt.runId)} — Starting`, "muted");
     } else if (evt.phase === "log") {
       const cls = evt.level === "err" ? "err" : evt.level === "ok" ? "ok" : "muted";
-      appendLog(`${esc(evt.runId)} ${esc(evt.message || "")}`, cls);
-    } else if (evt.phase === "progress" && evt.progress) {
-      // Prefer runner-built message (includes step + detail); fall back to label/hint.
-      const line =
-        evt.message ||
-        `${evt.progress.label || evt.progress.stage}${evt.progress.step ? " [" + evt.progress.step + "]" : ""}${
-          evt.progress.detail || evt.progress.hint ? " — " + (evt.progress.detail || evt.progress.hint) : ""
-        }`;
-      appendLog(`${esc(evt.runId)} · ${esc(line)}`, "muted");
+      appendLog(esc(evt.message || ""), cls);
+    } else if (evt.phase === "progress") {
+      const line = evt.consumerLabel || evt.message || evt.progress?.label || "Starting";
+      appendLog(esc(line), "muted");
     } else if (evt.phase === "done") {
-      appendLog(
-        evt.ok
-          ? `OK ${esc(evt.runId)}${evt.orderNumber ? " order " + esc(evt.orderNumber) : ""}${
-              evt.checkoutStage ? " · " + esc(evt.checkoutStage) : ""
-            }`
-          : `FAIL ${esc(evt.runId)} — ${esc(evt.error || "checkout failed")}`,
-        evt.ok ? "ok" : "err",
-      );
+      const label =
+        evt.consumerLabel ||
+        (evt.ok ? (evt.orderNumber ? "Order confirmed" : "Complete") : evt.error || "Something went wrong");
+      appendLog(esc(label), evt.ok ? "ok" : "err");
       refresh();
     }
   }

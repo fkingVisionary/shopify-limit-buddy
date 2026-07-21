@@ -1,6 +1,11 @@
 /** Shared helpers for running the proven Kmart AU executor flow from Tasks / pools. */
 
 import { classifyProxy, rotateStickyProxySession } from "@/lib/proxy-format";
+import {
+  OUTCOME,
+  consumerOutcome,
+  consumerProgressMessage,
+} from "@/lib/consumer-status";
 import type { LiveProgress, WorkflowStageId } from "@/lib/kmart-workflow";
 import { WORKFLOW_STAGES, stageRank } from "@/lib/kmart-workflow";
 
@@ -213,10 +218,7 @@ export function stageLabel(stage: string | null | undefined): string {
 }
 
 export function progressMessage(progress: LiveProgress | null | undefined): string {
-  if (!progress) return "Starting Kmart checkout…";
-  const label = progress.label || stageLabel(progress.stage);
-  const hint = progress.hint ? ` — ${progress.hint}` : "";
-  return `${label}${hint}`;
+  return consumerProgressMessage(progress);
 }
 
 export function mapKmartRunToTaskPatch(res: {
@@ -247,7 +249,9 @@ export function mapKmartRunToTaskPatch(res: {
   running: boolean;
   /** True when bank/user rejected 3DS or issuer declined the charge. */
   declined?: boolean;
-  outcome: "confirmed" | "dry_run" | "declined" | "failed";
+  outcome: "confirmed" | "dry_run" | "declined" | "failed" | "oos" | "akamai" | "proxy";
+  consumerCode?: string;
+  stockStatus?: "ok" | "oos" | "unknown";
 } {
   const body = res.result;
   const elapsed = res.elapsedMs ?? 0;
@@ -260,33 +264,33 @@ export function mapKmartRunToTaskPatch(res: {
       }))
     : undefined;
 
-  const textBlob = [
-    res.error,
-    body?.error,
-    body?.failedStep,
-    body?.checkoutStage,
-    body?.paymentStatus,
-    JSON.stringify(body?.paymentSummary ?? {}),
-    ...(body?.steps ?? []).map((s) => `${s.step} ${s.note ?? ""}`),
-    ...(body?.paymentTail ?? []).map((s) => `${s.step} ${s.note ?? ""}`),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-
-  const declined = /chargeauthreject|auth.?reject|payment declined|declined|user.?cancel|cancelled|canceled|reject(?:ed)? the payment|3ds (?:reject|fail)|token_inactive|invalid_transaction/.test(
-    textBlob,
-  );
+  const runShape = {
+    ok: Boolean(body?.ok ?? (res.ok && body)),
+    error: body?.error || res.error,
+    failedStep: body?.failedStep,
+    checkoutStage: body?.checkoutStage,
+    orderNumber: body?.orderNumber ?? body?.orderId ?? null,
+    steps: body?.steps,
+    paymentTail: body?.paymentTail,
+    paymentSummary: body?.paymentSummary,
+    paymentStatus: body?.paymentStatus,
+  };
 
   if (res.error && !body) {
+    const outcome = consumerOutcome({
+      ok: false,
+      error: res.error,
+    });
     return {
       status: "failed",
       running: false,
       browserlessElapsedMs: elapsed,
       steps: stepsArr,
-      message: res.error,
-      declined,
-      outcome: declined ? "declined" : "failed",
+      message: outcome.label,
+      declined: outcome.code === "declined",
+      outcome: outcome.code === "declined" ? "declined" : "failed",
+      consumerCode: outcome.code,
+      stockStatus: outcome.stockStatus,
     };
   }
 
@@ -299,9 +303,11 @@ export function mapKmartRunToTaskPatch(res: {
       steps: stepsArr,
       browserlessElapsedMs: elapsed,
       running: false,
-      message: `Order ${orderNumber} · ${Math.round(elapsed / 1000)}s`,
+      message: OUTCOME.confirmed,
       declined: false,
       outcome: "confirmed",
+      consumerCode: "confirmed",
+      stockStatus: "ok",
     };
   }
 
@@ -313,9 +319,11 @@ export function mapKmartRunToTaskPatch(res: {
       steps: stepsArr,
       browserlessElapsedMs: elapsed,
       running: false,
-      message: `Kmart dry-run OK (${body.checkoutStage ?? "done"}) · ${Math.round(elapsed / 1000)}s`,
+      message: OUTCOME.complete,
       declined: false,
       outcome: "dry_run",
+      consumerCode: "complete",
+      stockStatus: "ok",
     };
   }
 
@@ -327,25 +335,40 @@ export function mapKmartRunToTaskPatch(res: {
       steps: stepsArr,
       browserlessElapsedMs: elapsed,
       running: false,
-      message: `Payment captured · ${Math.round(elapsed / 1000)}s`,
+      message: OUTCOME.confirmed,
       declined: false,
       outcome: "confirmed",
+      consumerCode: "confirmed",
+      stockStatus: "ok",
     };
   }
 
-  const failedAt = body?.failedStep ?? body?.checkoutStage ?? "kmart";
-  const errText = body?.error || res.error || (declined ? "Payment declined or 3DS rejected" : "Kmart checkout failed");
+  const classified = consumerOutcome({
+    ...runShape,
+    ok: false,
+  });
+  const outcomeMap = {
+    declined: "declined",
+    oos: "oos",
+    akamai: "akamai",
+    proxy: "proxy",
+  } as const;
+  const outcome =
+    classified.code in outcomeMap
+      ? outcomeMap[classified.code as keyof typeof outcomeMap]
+      : "failed";
+
   return {
     status: "failed",
     finalUrl: body?.finalUrl,
     steps: stepsArr,
     browserlessElapsedMs: elapsed,
     running: false,
-    declined,
-    outcome: declined ? "declined" : "failed",
-    message: declined
-      ? `Payment declined / rejected · ${errText} · ${Math.round(elapsed / 1000)}s`
-      : `Failed at ${failedAt}: ${errText}`,
+    declined: classified.code === "declined",
+    outcome,
+    message: classified.label,
+    consumerCode: classified.code,
+    stockStatus: classified.stockStatus,
   };
 }
 

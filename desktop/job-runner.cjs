@@ -14,8 +14,8 @@ const {
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
   summarizePayload,
-  stageLogLine,
 } = require("./run-format.cjs");
+const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -206,7 +206,8 @@ function emitLog(runId, taskId, level, message, extra) {
 }
 
 function finishResult(job, res, summary) {
-  const errorText = res?.ok ? null : formatExecutorFailure(res);
+  const debugError = res?.ok ? null : formatExecutorFailure(res);
+  const outcome = consumerOutcome(res);
   const lastSteps = Array.isArray(res?.lastSteps)
     ? res.lastSteps
     : Array.isArray(res?.steps)
@@ -221,9 +222,11 @@ function finishResult(job, res, summary) {
     JSON.stringify({
       runId: job.runId,
       ok: res?.ok,
+      consumer: outcome.label,
+      consumerCode: outcome.code,
       checkoutStage: res?.checkoutStage,
       failedStep,
-      error: errorText,
+      error: debugError,
       lastSteps: lastSteps?.slice?.(-8) ?? lastSteps,
       elapsedMs: res?.elapsedMs,
       proxy: summary.proxy,
@@ -236,7 +239,12 @@ function finishResult(job, res, summary) {
     taskId: job.task?.id,
     runId: job.runId,
     orderNumber: res?.orderNumber ?? null,
-    error: errorText,
+    // Consumer-facing label (UI). Analytical detail stays in debugError / console.
+    error: res?.ok ? null : outcome.label,
+    consumerLabel: outcome.label,
+    consumerCode: outcome.code,
+    stockStatus: outcome.stockStatus,
+    debugError,
     checkoutStage: res?.checkoutStage ?? null,
     failedStep,
     elapsedMs: res?.elapsedMs ?? null,
@@ -262,17 +270,18 @@ function logResultTail(job, result) {
       job.runId,
       job.task?.id,
       "ok",
-      `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms`,
+      result.consumerLabel || "Order confirmed",
     );
     return;
   }
-  emitLog(job.runId, job.task?.id, "err", `done FAIL — ${result.error}`);
+  emitLog(job.runId, job.task?.id, "err", result.consumerLabel || result.error || "Something went wrong");
+  // Keep analytical step tail in the main-process console only — not the consumer log.
+  if (result.debugError) {
+    console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
+  }
   for (const s of (result.lastSteps || []).slice(-8)) {
-    emitLog(
-      job.runId,
-      job.task?.id,
-      s.ok ? "info" : "err",
-      `  step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
+    console.log(
+      `[desktop:run:debug] ${job.runId} step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
     );
   }
 }
@@ -280,8 +289,9 @@ function logResultTail(job, result) {
 /** Sticky-only: Akamai / soft-API denial worth a fresh exit. */
 function isResidentialAkamaiBlock(result) {
   if (!result || result.ok) return false;
+  if (result.consumerCode === "akamai") return true;
   const blob = [
-    result.error,
+    result.debugError,
     result.failedStep,
     result.checkoutStage,
     ...(result.lastSteps || []).map((s) => `${s.step} ${s.note}`),
@@ -298,7 +308,7 @@ function isStickyTunnelDead(result) {
   if (!result || result.ok) return false;
   if (isProxyEgressFailed(result)) return false;
   const blob = [
-    result.error,
+    result.debugError,
     result.failedStep,
     ...(result.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note}`),
   ]
@@ -320,7 +330,11 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       ok: false,
       taskId: job.task?.id,
       runId: job.runId,
-      error: built.error,
+      error: "Something went wrong",
+      consumerLabel: "Something went wrong",
+      consumerCode: "error",
+      stockStatus: "unknown",
+      debugError: built.error,
       at: Date.now(),
       attempt: attemptLabel,
     };
@@ -330,21 +344,28 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
 
-  emitLog(
-    job.runId,
-    job.task?.id,
-    "info",
-    `→ executor (${attemptLabel}) | proxy=${summary.proxy} | transport=${summary.transport} | mode=${summary.kmartMode} | placeOrder=${summary.placeOrder}`,
+  console.log(
+    "[desktop:run]",
+    JSON.stringify({
+      runId: job.runId,
+      phase: "start-executor",
+      attempt: attemptLabel,
+      proxy: summary.proxy,
+      transport: summary.transport,
+      kmartMode: summary.kmartMode,
+      placeOrder: summary.placeOrder,
+      pdp: summary.storeUrl,
+    }),
   );
-  emitLog(job.runId, job.task?.id, "info", `pdp=${summary.storeUrl}`);
+  emitLog(job.runId, job.task?.id, "info", "Starting");
 
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
     try {
       const p = await sidecar.progress(payload.taskId);
       if (p?.found && p.progress) {
-        const line = stageLogLine(p.progress);
-        const key = `${p.progress.stage}|${p.progress.step || ""}|${p.progress.detail || ""}`;
+        const line = consumerProgressMessage(p.progress);
+        const key = `${p.progress.stage}|${line}`;
         if (key !== lastStageKey) {
           lastStageKey = key;
           emit({
@@ -353,12 +374,13 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
             taskId: job.task?.id,
             runId: job.runId,
             progress: p.progress,
-            message: `[${attemptLabel}] ${line}`,
+            message: line,
+            consumerLabel: line,
           });
         }
       }
     } catch (e) {
-      emitLog(job.runId, job.task?.id, "warn", `progress poll: ${e.message || e}`);
+      console.warn(`[desktop:run] progress poll: ${e.message || e}`);
     }
   }, 1500);
 
@@ -412,7 +434,7 @@ async function runOne(job) {
       stickyRetries += 1;
       const why = isStickyTunnelDead(result)
         ? "tunnel/TLS failure"
-        : /akamai_unsolved/i.test(`${result.failedStep} ${result.error}`)
+        : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
           ? "unsolved _abck"
           : "Akamai denial";
 
@@ -422,20 +444,16 @@ async function runOne(job) {
         job.proxyRaw = entries[job.proxyIndex];
         // After one full pass of listed exits, mint a fresh session- token.
         rotateSession = stickyRetries >= entries.length;
-        emitLog(
-          job.runId,
-          job.task?.id,
-          "warn",
-          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} entry ${job.proxyIndex + 1}/${entries.length}${rotateSession ? " (fresh session)" : ""} (ISP unchanged)`,
+        console.warn(
+          `[desktop:run] sticky retry ${stickyRetries}/${maxStickyRetries} (${why}) entry ${job.proxyIndex + 1}/${entries.length}${rotateSession ? " fresh session" : ""}`,
         );
+        emitLog(job.runId, job.task?.id, "warn", "Retrying…");
       } else {
         rotateSession = true;
-        emitLog(
-          job.runId,
-          job.task?.id,
-          "warn",
-          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} with a fresh session exit (ISP unchanged)`,
+        console.warn(
+          `[desktop:run] sticky retry ${stickyRetries}/${maxStickyRetries} (${why}) fresh session`,
         );
+        emitLog(job.runId, job.task?.id, "warn", "Retrying…");
       }
 
       result = await executeOnce(job, {
@@ -448,14 +466,20 @@ async function runOne(job) {
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   } catch (e) {
+    const debugError = e.message || String(e);
+    console.error(`[desktop:run] executor threw: ${debugError}`);
     const result = {
       ok: false,
       taskId: job.task?.id,
       runId: job.runId,
-      error: e.message || String(e),
+      error: "Something went wrong",
+      consumerLabel: "Something went wrong",
+      consumerCode: "error",
+      stockStatus: "unknown",
+      debugError,
       at: Date.now(),
     };
-    emitLog(job.runId, job.task?.id, "err", `executor threw: ${result.error}`);
+    emitLog(job.runId, job.task?.id, "err", result.consumerLabel);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   }

@@ -70,6 +70,9 @@ runner.setFinishedHandler((result) => {
     runId: result.runId,
     orderNumber: result.orderNumber || null,
     error: result.error || null,
+    consumerLabel: result.consumerLabel || result.error || null,
+    consumerCode: result.consumerCode || null,
+    stockStatus: result.stockStatus || null,
     checkoutStage: result.checkoutStage || null,
     failedStep: result.failedStep || null,
     elapsedMs: result.elapsedMs ?? null,
@@ -81,10 +84,14 @@ runner.setFinishedHandler((result) => {
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
     if (t) {
-      t.lastStatus = result.ok ? (result.orderNumber ? "confirmed" : "ok") : "failed";
-      t.lastError = result.error || null;
+      t.lastStatus =
+        result.consumerCode ||
+        (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
+      t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
+      t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
       t.lastOrderNumber = result.orderNumber || null;
       t.lastCheckoutStage = result.checkoutStage || null;
+      t.stockStatus = result.stockStatus || null;
       t.updatedAt = Date.now();
     }
   }
@@ -354,6 +361,9 @@ async function e2eAutorun() {
       runId: result.runId,
       orderNumber: result.orderNumber || null,
       error: result.error || null,
+      consumerLabel: result.consumerLabel || result.error || null,
+      consumerCode: result.consumerCode || null,
+      stockStatus: result.stockStatus || null,
       checkoutStage: result.checkoutStage || null,
       failedStep: result.failedStep || null,
       elapsedMs: result.elapsedMs ?? null,
@@ -364,10 +374,14 @@ async function e2eAutorun() {
     if (result.taskId) {
       const t = state.db.tasks.find((x) => x.id === result.taskId);
       if (t) {
-        t.lastStatus = result.ok ? (result.orderNumber ? "confirmed" : "ok") : "failed";
-        t.lastError = result.error || null;
+        t.lastStatus =
+          result.consumerCode ||
+          (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
+        t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
+        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = result.orderNumber || null;
         t.lastCheckoutStage = result.checkoutStage || null;
+        t.stockStatus = result.stockStatus || null;
         t.updatedAt = Date.now();
       }
     }
