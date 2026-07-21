@@ -137,6 +137,24 @@ SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh
 | `akamai_unsolved` | IP SoftBlock / Hyper / script | One retry other ISP exit; do **not** enable tls by default |
 | `pdp_get` Ghost | SBSD / cookie | Ensure SBSD ran; same undici |
 | `cart_get` Ghost after get-token | Burnt exit **or** client split / jar break | `/run` auto-rotates pool (see `proxyAttempts`); if **many** exits fail the same way, diff tip vs bible — not one IP |
+| `cart_get` Ghost on **many** ISP + sticky exits, tip still undici | Not request-shape (see below) | App-layer GraphQL moment matches wins — next lever is below HTTP (TLS/JA3), not more header/cookie tweaks |
+
+### GraphQL-moment diff (2026-07-21) — wins vs current Ghosts
+
+Compared charge-path wins (`29790423175`, `29792597295`) vs Ghost fails (ISP rotate + fresh Noontide sticky) at the **exact** `cart_get` call:
+
+| Signal | Win | Ghost fail |
+|--------|-----|------------|
+| Transport | undici | undici |
+| `api_get_token` | 200 + `bm_sv` | 200 + `bm_sv` |
+| GraphQL `authorization` | absent (same as slim HAR) | absent |
+| `cart_get:hdrs` headerKeys | baseline apollo set | **identical** |
+| Cookie names at GraphQL | `_abck` `bm_sv` `ak_bmsc` `bm_sz` … | **identical** (no `ko_token` on either) |
+| `_abck` marker | `ind=0` / `~0~` | `ind=0` / `~0~` |
+| Step gap token → cart | sensor skipped → cart_get | **identical** |
+| Response | JSON 200 (`srv=-`) | AkamaiGHost HTML 403 |
+
+**Conclusion:** nothing app-layer (headers / cookie names / auth / step order) explains the break. Same shape that cleared GraphQL earlier now gets edge-denied. Do **not** chase more GraphQL header profiles; next experiment is controlled all-`chrome_131` tls end-to-end (never mixed) or wait for exit/fingerprint heat to cool — keep undici defaults as bible.
 | Dies before tokenize | Profile/address | Check task.profile / fixtures |
 | `create_3ds_token` ok, no Revolut | Card/Paydock | Card secrets / gateway |
 | Revolut then widget reject | Operator Reject or ACS timeout | Approve promptly; not cart regression |
