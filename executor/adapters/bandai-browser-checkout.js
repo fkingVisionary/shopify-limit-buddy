@@ -488,8 +488,33 @@ export async function browserBandaiCheckout(opts = {}) {
     let paymentStatus = "unknown";
     let filled = false;
     try {
-      // Wait a bit more for nested GE frames / payment form
-      for (let tick = 0; tick < 15 && !filled; tick++) {
+      // Prefer waiting for the secure card form frame (flaky timing on GE boot).
+      await page
+        .waitForFunction(
+          () =>
+            [...document.querySelectorAll("iframe")].some((f) =>
+              /CreditCardForm|secure-bandai\.global-e|payments\//i.test(f.src || ""),
+            ),
+          null,
+          { timeout: 60_000 },
+        )
+        .catch(() => null);
+
+      // Click Credit Card / Card payment method inside Checkout iframe if needed.
+      for (const frame of page.frames()) {
+        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        const cardOpt = frame
+          .locator(
+            'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card"), [data-payment*="card" i]',
+          )
+          .first();
+        if (await cardOpt.count().catch(() => 0)) {
+          await cardOpt.click({ timeout: 5000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+        }
+      }
+
+      for (let tick = 0; tick < 20 && !filled; tick++) {
         await page.waitForTimeout(1500);
         for (const frame of page.frames()) {
           const url = frame.url();
@@ -498,7 +523,7 @@ export async function browserBandaiCheckout(opts = {}) {
 
           const num = frame
             .locator(
-              'input[autocomplete="cc-number"], input[name*="cardNumber" i], input[id*="cardNumber" i], input[placeholder*="card number" i]',
+              'input[autocomplete="cc-number"], input[name*="cardNumber" i], input[id*="cardNumber" i], input[placeholder*="card number" i], input[type="tel"]',
             )
             .first();
           if (!(await num.count().catch(() => 0))) continue;
