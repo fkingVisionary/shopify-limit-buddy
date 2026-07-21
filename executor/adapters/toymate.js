@@ -332,6 +332,15 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
     if (!challenged && status > 0 && status < 400) {
       return { ok: true, status, note: `home ${status} (no CF challenge)` };
     }
+    if (!challenged) {
+      // Soft-block / empty / odd status without a CapSolver-ready interstitial.
+      return {
+        ok: false,
+        status,
+        note: `home ${status} bytes=${html.length} (no CapSolver-ready CF HTML)`,
+        blocked: true,
+      };
+    }
     if (!capsolverKey()) {
       return {
         ok: false,
@@ -347,6 +356,19 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
       userAgent: UA,
     });
     if (!solved.ok) {
+      // Don't burn retries on "challenge not found" — detection was wrong or HTML stale.
+      const soft =
+        /challenge not found|INVALID_TASK_DATA/i.test(String(solved.error || "")) &&
+        status > 0 &&
+        status < 400;
+      if (soft) {
+        return {
+          ok: true,
+          status,
+          note: `CapSolver skipped (${solved.error}); continuing with jar`,
+          blocked: false,
+        };
+      }
       return { ok: false, status, note: solved.error || "CF solve failed", blocked: true };
     }
     applyCookiesToJar(ctx.jar, solved.cookies);
@@ -401,18 +423,19 @@ export const toymateAdapter = {
     const profile = profileFromTask(task);
     const proxyRaw = task.proxy || null;
 
-    // Prefer apex for form actions (create-account posts to toymate.com.au).
-    let base = "https://www.toymate.com.au";
+    // Apex is canonical (www often 301s; Storefront API POSTs must not hit a 301).
+    const apex = "https://toymate.com.au";
+    const www = "https://www.toymate.com.au";
+    let base = apex;
     try {
-      const u = new URL(String(task.storeUrl || task.pdpUrl || base));
+      const u = new URL(String(task.storeUrl || task.pdpUrl || apex));
       if (/toymate\.com\.au$/i.test(u.hostname)) {
-        base = `${u.protocol}//${u.hostname === "toymate.com.au" ? "www.toymate.com.au" : u.hostname}`;
+        base = apex;
       }
     } catch {
       /* default */
     }
-    const apex = "https://toymate.com.au";
-    const origin = base;
+    const origin = apex;
 
     const tStep = async (name, fn) => {
       const s0 = Date.now();
@@ -443,7 +466,7 @@ export const toymateAdapter = {
 
     // ── Account gen ────────────────────────────────────────────────────
     if (mode === "account_gen") {
-      const warm = await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      const warm = await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
       const ua = warm.solvedUa || UA;
 
       const createUrl = `${apex}/login.php?action=create_account`;
@@ -606,23 +629,16 @@ export const toymateAdapter = {
 
     // ── Keyword monitor ────────────────────────────────────────────────
     if (mode === "monitor") {
-      await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
       const q = String(task.input || task.keywords || task.pdpUrl || "").trim();
-      const searchUrl = `${base}/search.php?search_query=${encodeURIComponent(q)}`;
+      const searchUrl = `${apex}/search.php?search_query=${encodeURIComponent(q)}`;
       const mon = await tStep("keyword_search", async () => {
         const res = await request(searchUrl, {
-          headers: navHeaders({ referer: `${base}/` }),
+          headers: navHeaders({ referer: `${apex}/` }),
         }, ctx);
         const html = await readText(res);
-        const productUrl =
-          html.match(/href=["'](https?:\/\/[^"']*\/[^"']*\/?\d+\/?)["']/i)?.[1] ||
-          html.match(/href=["'](\/[^"']*\/\d+\/?)["']/i)?.[1] ||
-          null;
-        const abs = productUrl
-          ? productUrl.startsWith("http")
-            ? productUrl
-            : new URL(productUrl, base).href
-          : null;
+        const pid = html.match(/data-product-id=["'](\d+)["']/i)?.[1];
+        const abs = pid ? `${apex}/products.php?productId=${pid}` : null;
         return {
           ok: res.status === 200,
           status: res.status,
@@ -642,7 +658,7 @@ export const toymateAdapter = {
     }
 
     // ── Checkout (guest or logged-in) ──────────────────────────────────
-    await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+    await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
 
     const account = accountFromTask(task);
     if (account?.email && account?.password) {
@@ -687,26 +703,36 @@ export const toymateAdapter = {
       };
     }
 
+    // Prefer productId from the URL — listing pages embed many data-product-id attrs.
+    let urlProductId = null;
+    try {
+      const u = new URL(productUrl);
+      urlProductId = u.searchParams.get("productId") || u.searchParams.get("product_id");
+    } catch {
+      /* ignore */
+    }
+
     const pdp = await tStep("pdp_get", async () => {
       const res = await request(productUrl, {
-        headers: navHeaders({ referer: `${base}/` }),
+        headers: navHeaders({ referer: `${apex}/` }),
       }, ctx);
       const html = await readText(res);
       const ids = extractProductIds(html);
+      if (urlProductId) ids.productId = String(urlProductId);
       const blocked = looksLikeCfChallenge(html, res.status);
       return {
-        ok: res.status === 200 && Boolean(ids.productId || ids.variantId || task.variantId),
+        ok: res.status === 200 && Boolean(ids.productId || ids.variantId || task.variantId || urlProductId),
         status: res.status,
         note: blocked
           ? `WAF ${res.status}`
-          : `productId=${ids.productId || "?"} variant=${ids.variantId || task.variantId || "?"}`,
+          : `productId=${ids.productId || "?"} variant=${ids.variantId || task.variantId || ids.productId || "?"}`,
         ids,
         title: ids.title,
         blocked,
       };
     });
 
-    const productId = Number(task.productId || pdp.ids?.productId || 0) || null;
+    const productId = Number(task.productId || urlProductId || pdp.ids?.productId || 0) || null;
     const variantId = Number(task.variantId || pdp.ids?.variantId || productId || 0) || null;
     const qty = Math.max(1, Math.min(20, Number(task.qty) || 1));
     if (!variantId) {
