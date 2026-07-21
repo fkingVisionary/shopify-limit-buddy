@@ -1,131 +1,179 @@
-# Kmart bulletproof recipe (LOCK)
+# Kmart bible — why it works, how to run it, what not to touch
 
-**Bank-confirmed tip:** Fly `gitSha` **`9a7e895`** / undici one-client (#81+#82)  
-**Proof run:** GitHub Actions `29790423175` · task `smoke-isp-20260721-002925`  
-**Bank:** Revolut 3DS push · **2026-07-21 ~00:30–00:31 UTC**  
-**Cart:** SKU `43722280` · $20.00 · ISP exit `45.42.47.235` · `file:resi.proxies`
-
-Score order of truth: **bank/Revolut → Fly milestones → `/run` JSON → smoke ladder.**  
-Client timeout or `paydock_3ds_process:false` does **not** mean cart dead if Revolut fired.
+This is the charge-path contract. If something breaks later, read this before
+changing transport, sensors, or GraphQL.
 
 ---
 
-## Locked runtime (do not “improve” without a new bank proof)
+## 1. The proof (not theory)
 
-| Knob | Locked value | Notes |
-|------|----------------|------|
-| Engine | Fly `j1ms-bot-executor` only | Lovable/UI is control plane only |
-| Transport | **undici** end-to-end | WWW + Hyper sensors + api GraphQL |
-| `sensorTls` | **OFF** | Opt-in only — park/handoff Ghosted GraphQL |
-| `apiTls` | **OFF** | Same |
-| Proxy | `useProxy:true` → `executor/resi.proxies` | Static AU ISP list |
-| Dead pools | refused | WealthProxies / IPFist / “Test Pool” |
-| Category | either | skip or browse both cleared on undici |
-| Hyper | ≤3 rounds, stop on `ind=0` | No SoftBlock-poll loops |
-| Card | `KMART_CARD_*` or task.card | Required for 3DS / bank |
-| Monitor | **off** | Never burn ISP on a timer |
+| Field | Value |
+|-------|--------|
+| **Bank** | Revolut 3DS push (operator confirmed) |
+| **When** | 2026-07-21 ~00:30–00:31 UTC |
+| **Actions run** | [`29790423175`](https://github.com/fkingVisionary/shopify-limit-buddy/actions/runs/29790423175) |
+| **Task** | `smoke-isp-20260721-002925` |
+| **Fly tip** | `9a7e895` (undici one-client #81 + smoke YAML #82) |
+| **Proxy?** | **YES — ISP pool, not local / not Fly direct** |
+| **`proxySource`** | `file:resi.proxies` |
+| **`resolveIp`** | `45.42.47.235` |
+| **Transport** | `undici` end-to-end (no `sensor_tls_*`, no `api_tls_*`) |
+| **SKU / cart** | `43722280` · $20.00 · ATC + address + Paydock tokenize |
+| **3DS** | `create_3ds_token` → `charge_3ds_id=f31c879c-…` → Canvas3ds challenge |
 
-**Forbidden on the charge path (until a new tip beats this bank proof):**
+**Proxy is required for the live charge class.** The win was `useProxy:true` /
+Smoke ISP mode picking a line from `executor/resi.proxies`. Fly datacenter
+direct (`89.187.186.9`) SoftBlocks BM often and is **not** the charge recipe.
 
-- Defaulting `sensorTls` / `apiTls` on  
-- Mid-run JA3 switches (tls-worker park → undici PDP → tls api)  
-- Treating Fly direct SoftBlock as “Akamai moved”  
-- Fail-closed deploy gates that block ship on sensor flake  
-- SoftBlock-polling the same egress for hours  
+Lovable never ran a separate Kmart engine — phone UI → Fly `/run` only.
 
 ---
 
-## Pass ladder (this tip)
+## 2. Why it works (the actual mechanism)
+
+Akamai scores **session consistency**: one HTTP client, one egress IP, one
+cookie jar, one UA — from homepage warm through GraphQL and Paydock.
+
+### What the successful session does
 
 ```
-akamai_solved → pdp HTML → api_get_token → cart_get JSON
-  → cart_atc → checkout address/billing → paydock_tokenize
-  → create_3ds_token → (Revolut / ACS) → place_order
+ISP exit (resi.proxies)
+  → undici warm_home          (seed bm_* / discover sensor path)
+  → Hyper sensors ×≤3         (same undici, stop on _abck ~0~)
+  → SBSD home (if script)     (same undici)
+  → PDP (+ SBSD pdp if tag)   (same undici)
+  → api get-token             (same undici, same jar)
+  → GraphQL cart_get / ATC    (same undici — TRUST WALL)
+  → checkout address/billing
+  → Paydock tokenize
+  → create_3ds_token          (Revolut / issuer push)
+  → (operator Approve on bank) → Kmart/Paydock complete charge
 ```
 
-Proven on `29790423175`:
+### Why GraphQL clears
 
-| Step | Result |
-|------|--------|
-| undici + ISP | no `sensor_tls_*` / `api_tls_*` |
-| `cart_get` | JSON 200 |
-| `cart_atc` | sku in cart, $20 |
-| `create_3ds_token` | `charge_3ds_id=f31c879c-…` |
-| Canvas3ds | challenge started → **Revolut push** |
-| Widget | later `chargeAuthReject` — bank already pinged |
-| `place_order` | skipped in bot after reject — **not** the score |
+`api.kmart.com.au/gateway/graphql` trusts cookies that were minted and used on
+the **same client + same IP** as the WWW Bot Manager phase. get-token alone is
+not enough — we proved get-token 200 + GraphQL Ghost when JA3 was split.
+
+### Why Revolut fired
+
+`create_3ds_token` + Canvas3ds challenge is a real issuer auth. Bank push =
+challenge started. Operator Approve/Reject is on the bank side; reject yields
+`chargeAuthReject` in our widget (expected). Approve is assumed to let
+Kmart/Paydock finish without further bot magic for a frictionless-enough path.
+
+### Score order of truth
+
+1. **Bank / Revolut push**  
+2. Fly `/milestones` (`reached3ds`, stage)  
+3. `/run` JSON / smoke artifacts  
+4. Never “failedStep after timeout” alone  
 
 ---
 
-## Smoke (phone)
+## 3. Locked knobs (charge path)
 
-1. Confirm `/health` `gitSha` includes this recipe tip (or later **only** if bank-proven).  
+| Knob | Value | Why |
+|------|--------|-----|
+| Engine | Fly `j1ms-bot-executor` | Only real checkout |
+| Transport | **undici** whole session | Proven cart + 3DS on ISP |
+| `sensorTls` | **OFF** (opt-in only) | See §5 |
+| `apiTls` | **OFF** (opt-in only) | See §5 |
+| Proxy | `useProxy:true` → `resi.proxies` | Charge class |
+| Hyper | ≤3 rounds, stop `ind=0` | Hyper docs |
+| Monitor | **off** | Don’t burn ISP |
+| Card | secrets or task.card | Needed for 3DS |
+
+`/health` must show a tip that still has these defaults (post-#81).  
+If someone turns `sensorTls`/`apiTls` default on again, treat as regression.
+
+---
+
+## 4. How to run it (phone)
+
+1. Deploy executor if tip drifted; check `/health` → `gitSha`, `monitorEnabled:false`.  
 2. Actions → **Smoke executor** → Run  
-   - `skip_direct`: **on** (default)  
-   - `with_card`: **on** for bank proof  
-   - `place_order`: on only when you intend a real submit  
-3. Artifacts → read `verdict` / `wall` / `ladderCleared` / `paymentSummary`  
-4. If Revolut fired: **win**, even if wall=`paydock_3ds_process`
+   - `skip_direct`: on  
+   - `with_card`: on for bank proof  
+3. Open artifact `*.summary.json`  
+   - Expect: `proxySource=file:resi.proxies`, `transport=undici`, `resolveIp` set  
+   - Ladder through `create_3ds_token`; Revolut may fire  
+4. Approve on Revolut to complete; Reject will show widget reject (not a cart bug)
 
 ```bash
-# Local one-shot (same knobs)
 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh
 ```
 
 ---
 
-## Phases (harden → Electron → speed)
+## 5. What NOT to do (regressions we already paid for)
 
-Do **not** reorder. Each phase needs a smoke (and bank proof when touching payment).
-
-### Phase 0 — Freeze (now)
-
-- [x] Undici one-client defaults (#81)  
-- [x] Smoke YAML valid (#82)  
-- [x] Bank proof on ISP (`29790423175`)  
-- [ ] Tag / note tip `9a7e895` as charge baseline in deploy notes  
-- [ ] No feature PRs that touch `kmart.js` transport/sensor/apiTls without an ISP smoke first  
-
-### Phase 1 — Harden without breaking (next)
-
-Order matters; stop if ISP `cart_get` regresses.
-
-1. **ACS / Canvas3ds completion** after challenge (Revolut push already works)  
-   - Prefer completing challenge so `paydock_3ds_process` + `place_order` succeed in-bot  
-   - Hint already says prefer no-proxy for widget if cart cleared — try that first  
-2. **Smoke scoring** — treat `reached3ds` + `create_3ds_token` as charge-path pass when card on  
-3. **Jar SoftBlock protect** — keep refuse `_abck` demotion (already in `http.js`)  
-4. **Profile/card from UI** — stop relying only on `KMART_CARD_*` secrets for desktop later  
-5. **No TLS experiments on `main`** — branch + explicit `sensorTls:true` only  
-
-### Phase 2 — Electron / desktop
-
-- Point desktop sidecar at **same Fly tip** (or ship identical undici defaults)  
-- Do **not** reintroduce Playwright as default Kmart lane  
-- Local executor only if Fly tip SHA matches recipe  
-- Prove one desktop→Fly ISP run to `create_3ds_token` before any desktop “optimizations”
-
-### Phase 3 — Speed (only after Phase 1 bank-complete order)
-
-- Trim sleeps that are not Hyper-required  
-- Parallelize only non-BM work (never parallelize sensor rounds)  
-- Keep sticky exit for full checkout duration  
-- Measure: warm→cart_get, cart→3ds, 3ds→order — change one at a time  
+| Don’t | What happened |
+|-------|----------------|
+| Default **tls-worker for sensors** then undici PDP then tls api | get-token 200, **every GraphQL profile Ghost** |
+| **Keep** tls for PDP after solve | PDP #1–#3 Access Denied |
+| Blame **egress class** when other bots clear same ISP | It was our JA3/cookie split |
+| SoftBlock-**poll** Fly direct for hours | Burns time; charge path is ISP undici |
+| Treat Lovable as the executor | UI only; Fly runs Kmart |
+| Turn monitor on in prod | Burns `resi.proxies` |
+| “Fix” GraphQL with more header profiles first | Exhausted; one-client fixed it |
+| Delete SoftBlock `_abck` jar protect | Demotes solved cookie |
 
 ---
 
-## Rollback
+## 6. If it breaks later — triage (in order)
 
-If a tip loses `cart_get` JSON on ISP smoke:
+### A. Confirm tip + mode
 
-1. Redeploy tip **`56abec1`** (#81 undici defaults) or **`9a7e895`** (this recipe + smoke fix)  
-2. Do not “fix” with tls handoff  
-3. One ISP smoke with card; score Revolut / milestones  
+- `/health` `gitSha` still undici-default tip?  
+- Smoke summary: `proxySource=file:resi.proxies`, `transport=undici`?  
+- Any `sensor_tls_handoff` / `api_tls_handoff`? → **turn them off**
+
+### B. Where did the ladder die?
+
+| Wall | Likely cause | First move |
+|------|----------------|------------|
+| `akamai_unsolved` | IP SoftBlock / Hyper / script | One retry other ISP exit; do **not** enable tls by default |
+| `pdp_get` Ghost | SBSD / cookie | Ensure SBSD ran; same undici |
+| `cart_get` Ghost after get-token | **Client split or jar break** | Diff vs this bible; restore one undici; check SoftBlock demotion |
+| Dies before tokenize | Profile/address | Check task.profile / fixtures |
+| `create_3ds_token` ok, no Revolut | Card/Paydock | Card secrets / gateway |
+| Revolut then widget reject | Operator Reject or ACS timeout | Approve promptly; not cart regression |
+
+### C. Rollback
+
+Redeploy tip **`9a7e895`** or **`56abec1`** (#81 undici defaults).  
+Do **not** “fix” with tls park. Re-smoke ISP + card; score bank / milestones.
+
+### D. Compare to known-good
+
+Artifact shape to match: run `29790423175` summary — ISP, undici, ladder through
+`create_3ds_token`, `paymentSummary.charge3dsId` set.
 
 ---
 
-## Related
+## 7. Architecture reminder
 
-- `HYPER_HAR_ALIGNMENT.md` — why tls park failed / undici cleared  
-- `KMART_REGRESSION_FORENSICS.md` — historical spirals  
-- `CHECKOUT_HANDOFF.md` — task contract / profile fields  
+```
+Phone / UI  →  EXECUTOR_URL  →  Fly j1ms-bot-executor (this recipe)
+                                      ↓
+                               resi.proxies exit
+                                      ↓
+                          www.kmart.com.au + api.kmart.com.au
+                          (one undici dispatcher, one jar)
+```
+
+Desktop/Electron later must use **this same tip and knobs** — not a fork with
+tls defaults.
+
+---
+
+## 8. Related docs
+
+- `HYPER_HAR_ALIGNMENT.md` — tls-park autopsy + undici proof matrix  
+- `KMART_REGRESSION_FORENSICS.md` — older spirals  
+- `CHECKOUT_HANDOFF.md` — `/run` task contract  
+
+Phases when ready: ACS polish → Electron on this tip → speed (see prior recipe
+freeze). Speed changes must not alter §3 knobs without a new bank proof.
