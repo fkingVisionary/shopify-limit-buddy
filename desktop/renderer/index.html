@@ -67,6 +67,19 @@
               <label>Account password <span class="optional">(optional)</span></label>
               <input id="taskAccountPassword" type="text" autocomplete="off" placeholder="e.g. Password1 — needs letter+number" />
             </div>
+            <div id="taskAccountAssignWrap" hidden>
+              <label>Checkout account</label>
+              <select id="taskAccountAssign">
+                <option value="auto">Auto — match profile email</option>
+                <option value="manual">Manual — pick from vault</option>
+                <option value="guest">Guest — no login</option>
+              </select>
+              <p id="taskAccountAutoHint" class="field-hint">Uses a generated account whose email matches this profile (e.g. you+tag@domain).</p>
+              <div id="taskAccountManualWrap" hidden>
+                <label>Vault account</label>
+                <select id="taskAccountId"></select>
+              </div>
+            </div>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
           <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
@@ -148,7 +161,7 @@
       <div class="split">
         <div>
           <h2>Accounts</h2>
-          <p class="hint">Generated retailer logins (Toymate today). Run a task with mode <strong>Account gen</strong> to fill this vault.</p>
+          <p class="hint">Generated retailer logins (Toymate today). Checkout tasks auto-assign by profile email; override per-task under Checkout account.</p>
           <div class="row" style="margin-bottom:12px">
             <button type="button" class="secondary" id="btnClearAccounts">Clear all</button>
           </div>

@@ -46,6 +46,40 @@ function fillSelects() {
   if (curX) px.value = curX;
 }
 
+function emailBaseClient(email) {
+  const raw = String(email || "")
+    .trim()
+    .toLowerCase();
+  const m = raw.match(/^([^@]+)@(.+)$/);
+  if (!m) return "";
+  let local = m[1].replace(/\+.*$/, "");
+  const domain = m[2];
+  if (/^(gmail|googlemail)\.com$/i.test(domain)) local = local.replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
+function fillVaultAccountSelect() {
+  const sel = $("taskAccountId");
+  if (!sel || !state) return;
+  const cur = sel.value;
+  const rows = (state.accounts || []).filter((a) => (a.storeId || "toymate") === "toymate");
+  sel.innerHTML =
+    `<option value="">Select account…</option>` +
+    rows
+      .map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`)
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function syncAccountAssignUi() {
+  const assign = $("taskAccountAssign")?.value || "auto";
+  const manual = $("taskAccountManualWrap");
+  const hint = $("taskAccountAutoHint");
+  if (manual) manual.hidden = assign !== "manual";
+  if (hint) hint.hidden = assign !== "auto";
+  if (assign === "manual") fillVaultAccountSelect();
+}
+
 function syncTaskFormForStore() {
   const store = $("taskStore")?.value || "kmart";
   const toy = store === "toymate";
@@ -77,8 +111,11 @@ function syncTaskFormForStore() {
   if (payWrap) payWrap.hidden = !toy || mode !== "checkout";
   const passWrap = $("taskAccountPassWrap");
   if (passWrap) passWrap.hidden = !toy || mode !== "account_gen";
+  const assignWrap = $("taskAccountAssignWrap");
+  if (assignWrap) assignWrap.hidden = !toy || mode !== "checkout";
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) placeWrap.hidden = toy && mode !== "checkout";
+  if (toy && mode === "checkout") syncAccountAssignUi();
 }
 
 function esc(s) {
@@ -112,12 +149,28 @@ function renderTasks() {
               ? "run"
               : "";
       const storeLabel = t.store === "toymate" ? `Toymate · ${t.toymateMode || "checkout"}` : "Kmart";
+      let accountMeta = "";
+      if (t.store === "toymate" && (t.toymateMode || "checkout") === "checkout") {
+        const assign = t.accountAssign || "auto";
+        if (assign === "guest") accountMeta = "account: guest";
+        else if (assign === "manual") {
+          const acc = (state.accounts || []).find((a) => a.id === t.accountId);
+          accountMeta = acc ? `account: ${acc.email}` : "account: manual (missing)";
+        } else {
+          const prof = (state.profiles || []).find((p) => p.id === t.profileId);
+          const base = emailBaseClient(prof?.email);
+          const n = (state.accounts || []).filter(
+            (a) => (a.storeId || "toymate") === "toymate" && emailBaseClient(a.email) === base,
+          ).length;
+          accountMeta = base ? `account: auto (${n} match ${base})` : "account: auto (no profile email)";
+        }
+      }
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(storeLabel)} · ${esc(t.pdpUrl || (t.toymateMode === "account_gen" ? "account gen" : ""))}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
@@ -138,12 +191,18 @@ function renderAccounts() {
     return;
   }
   el.innerHTML = rows
-    .map(
-      (a) => `<div class="item">
+    .map((a) => {
+      const prof = (state.profiles || []).find((p) => p.id === a.profileId);
+      const match =
+        prof?.email && emailBaseClient(prof.email) === emailBaseClient(a.email)
+          ? `profile ${prof.name || prof.email}`
+          : a.emailBase || emailBaseClient(a.email);
+      return `<div class="item">
         <div>
           <strong>${esc(a.email)}</strong>
           <span class="badge ok">${esc(a.storeName || a.storeId || "store")}</span>
           <div class="meta"><code>${esc(a.password || "")}</code></div>
+          <div class="meta">match ${esc(match)}${a.lastUsedAt ? ` · used ${new Date(a.lastUsedAt).toLocaleString()}` : ""}</div>
           <div class="meta">${a.createdAt ? new Date(a.createdAt).toLocaleString() : ""}</div>
         </div>
         <div class="actions">
@@ -151,8 +210,8 @@ function renderAccounts() {
           <button type="button" class="secondary" data-copy-acc-pass="${esc(a.id)}">Pass</button>
           <button type="button" class="danger" data-del-acc="${esc(a.id)}">Del</button>
         </div>
-      </div>`,
-    )
+      </div>`;
+    })
     .join("");
 }
 
@@ -284,6 +343,7 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskToymateMode")) $("taskToymateMode").value = task.toymateMode || "checkout";
     if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
     if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
+    if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     $("taskPdp").value = task.pdpUrl || "";
     $("taskQty").value = task.qty || 1;
     $("taskQuantity").value = task.quantity || 1;
@@ -291,6 +351,10 @@ document.body.addEventListener("click", async (e) => {
     $("taskProxy").value = task.proxyGroupId || "";
     $("taskPlaceOrder").checked = task.placeOrder !== false;
     syncTaskFormForStore();
+    if ($("taskAccountId") && task.accountId) {
+      fillVaultAccountSelect();
+      $("taskAccountId").value = task.accountId;
+    }
     setTab("tasks");
   }
   if (t.dataset.delAcc) {
@@ -356,6 +420,8 @@ document.body.addEventListener("click", async (e) => {
 
 function readTaskForm() {
   const store = $("taskStore").value;
+  const accountAssign =
+    store === "toymate" ? $("taskAccountAssign")?.value || "auto" : undefined;
   return {
     id: $("taskId").value || undefined,
     label: $("taskLabel").value,
@@ -370,11 +436,17 @@ function readTaskForm() {
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
     accountPassword:
       store === "toymate" ? $("taskAccountPassword")?.value || "" : undefined,
+    accountAssign,
+    accountId:
+      store === "toymate" && accountAssign === "manual"
+        ? $("taskAccountId")?.value || null
+        : null,
   };
 }
 
 $("taskStore").onchange = () => syncTaskFormForStore();
 $("taskToymateMode").onchange = () => syncTaskFormForStore();
+if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
 
 $("taskForm").onsubmit = async (e) => {
   e.preventDefault();

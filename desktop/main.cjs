@@ -8,6 +8,7 @@ const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
+const { resolveAccountForTask, emailBase } = require("./account-assign.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -37,6 +38,7 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
   const row = {
     id: existing?.id || store.id("acc"),
     email,
+    emailBase: emailBase(email),
     password: String(account.password),
     storeId: sid,
     adapter: sid === "toymate" ? "toymate" : sid,
@@ -44,6 +46,7 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
     profileId: profileId || null,
     source,
     status: "active",
+    lastUsedAt: existing?.lastUsedAt || null,
     createdAt: existing?.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
@@ -289,6 +292,19 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
       storeId === "toymate" && typeof task.accountPassword === "string"
         ? task.accountPassword
         : undefined,
+    // auto = match vault by profile email; manual = accountId; guest = no login.
+    accountAssign:
+      storeId === "toymate"
+        ? ["auto", "manual", "guest"].includes(String(task.accountAssign || "").toLowerCase())
+          ? String(task.accountAssign).toLowerCase()
+          : "auto"
+        : undefined,
+    accountId:
+      storeId === "toymate" && task.accountAssign === "manual" && task.accountId
+        ? String(task.accountId)
+        : storeId === "toymate"
+          ? null
+          : undefined,
     enabled: task.enabled !== false,
     updatedAt: now,
   };
@@ -329,6 +345,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
   }
   const ids = Array.isArray(taskIds) && taskIds.length ? taskIds : state.db.tasks.filter((t) => t.enabled).map((t) => t.id);
   const jobs = [];
+  const claimedAccountIds = [];
   for (const tid of ids) {
     const task = state.db.tasks.find((t) => t.id === tid);
     if (!task) continue;
@@ -340,17 +357,58 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
     const entries = group?.entries?.length ? group.entries : [null];
     const n = Math.max(1, Math.min(50, Number(task.quantity) || 1));
+    let assignError = null;
     for (let i = 0; i < n; i++) {
       const proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
+      const taskCopy = { ...task };
+      // Wire vault account into Toymate checkout (auto by profile email, or manual).
+      if (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") {
+        const resolved = resolveAccountForTask({
+          task,
+          profile,
+          accounts: state.db.accounts || [],
+          excludeIds: claimedAccountIds,
+        });
+        if (resolved.error) {
+          assignError = resolved.error;
+          break;
+        }
+        if (resolved.account) {
+          claimedAccountIds.push(resolved.account.id);
+          const acc = (state.db.accounts || []).find((a) => a.id === resolved.account.id);
+          if (acc) {
+            acc.lastUsedAt = Date.now();
+            acc.updatedAt = Date.now();
+          }
+          taskCopy.account = {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          };
+          taskCopy.accountAssignSource = resolved.source;
+          taskCopy.resolvedAccountEmail = resolved.account.email;
+        } else {
+          taskCopy.account = null;
+          taskCopy.accountAssignSource = "guest";
+        }
+      }
       jobs.push({
-        task: { ...task },
+        task: taskCopy,
         profile,
         proxyRaw,
         proxyEntries: entries.filter(Boolean),
         proxyIndex,
         placeOrder: task.placeOrder !== false,
+        accounts: state.db.accounts || [],
       });
+    }
+    if (assignError) {
+      send({ type: "job", phase: "done", taskId: tid, ok: false, error: assignError });
+      task.lastStatus = "error";
+      task.lastLabel = assignError;
+      task.updatedAt = Date.now();
+      continue;
     }
     task.lastStatus = "queued";
     task.updatedAt = Date.now();

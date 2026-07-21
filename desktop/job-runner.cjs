@@ -16,6 +16,7 @@ const {
   summarizePayload,
 } = require("./run-format.cjs");
 const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
+const { resolveAccountForTask } = require("./account-assign.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -146,7 +147,7 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession 
   };
 }
 
-function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSession }) {
+function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSession, accounts, excludeAccountIds }) {
   const mode = String(task.toymateMode || "checkout").toLowerCase();
   const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
   if (mode !== "account_gen" && !/^https:\/\/(www\.)?toymate\.com\.au\//i.test(input)) {
@@ -190,6 +191,42 @@ function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSessio
       ? "https://www.toymate.com.au"
       : input || "https://www.toymate.com.au";
 
+  // Checkout: vault login — prefer pre-resolved task.account from main enqueue.
+  let resolvedAccount = null;
+  let accountAssignSource = null;
+  if (mode === "checkout") {
+    const assign = String(task.accountAssign || "auto").toLowerCase();
+    if (assign === "guest" || assign === "none" || task.accountAssignSource === "guest") {
+      resolvedAccount = null;
+      accountAssignSource = "guest";
+    } else if (task.account?.email && task.account?.password) {
+      resolvedAccount = {
+        email: task.account.email,
+        password: task.account.password,
+        id: task.account.id || null,
+      };
+      accountAssignSource = task.accountAssignSource || "pre";
+    } else {
+      const resolved = resolveAccountForTask({
+        task,
+        profile,
+        accounts: accounts || task._accounts || [],
+        excludeIds: excludeAccountIds || task._excludeAccountIds || [],
+      });
+      if (resolved.error) {
+        return { ok: false, error: resolved.error };
+      }
+      resolvedAccount = resolved.account
+        ? {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          }
+        : null;
+      accountAssignSource = resolved.source;
+    }
+  }
+
   return {
     ok: true,
     data: {
@@ -212,9 +249,8 @@ function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSessio
         typeof task.accountPassword === "string" && task.accountPassword.trim()
           ? task.accountPassword.trim()
           : null,
-      account: task.accountEmail && task.accountPassword
-        ? { email: task.accountEmail, password: task.accountPassword }
-        : task.account || null,
+      account: resolvedAccount,
+      accountAssignSource,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -454,6 +490,16 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }),
   );
   emitLog(job.runId, job.task?.id, "info", "Starting");
+  if (payload.account?.email) {
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Account ${payload.accountAssignSource || "assigned"}: ${payload.account.email}`,
+    );
+  } else if (job.task?.store === "toymate" && String(job.task?.toymateMode || "checkout") === "checkout") {
+    emitLog(job.runId, job.task?.id, "info", "Guest checkout (no vault login)");
+  }
 
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
