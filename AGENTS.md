@@ -16,6 +16,11 @@ Lovable.” Cloud-agent smokes may hit a stale preview host that still has old
 `proxySource` / milestones. Prefer Fly `/run` + `/milestones` (Bearer
 `EXECUTOR_TOKEN`) or local `bun run dev` → Fly.
 
+### Kmart charge path (lock)
+Proven tip: undici one-client + ISP (`executor/resi.proxies`). Bank proof
+2026-07-21 Revolut on Actions run `29790423175`. See
+`executor/docs/KMART_WINNING_RECIPE.md`. Do not default `sensorTls`/`apiTls` on.
+
 ### Root web app (primary service)
 - Package manager is **Bun** (`bun.lock`, `bunfig.toml`); do not use npm/pnpm here.
   Bun installs to `~/.bun/bin/bun`.
