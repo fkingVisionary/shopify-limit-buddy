@@ -249,6 +249,8 @@ summary = {
     "transport": data.get("transport"),
     "gitSha": data.get("gitSha") or miles.get("gitSha"),
     "proxySource": data.get("proxySource"),
+    "proxyRotated": data.get("proxyRotated"),
+    "proxyAttempts": data.get("proxyAttempts"),
     "resolveIp": ip,
     "elapsedMs": data.get("elapsedMs"),
     "nsteps": len(steps),

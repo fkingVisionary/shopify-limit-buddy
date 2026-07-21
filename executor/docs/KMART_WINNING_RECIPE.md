@@ -136,7 +136,7 @@ SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh
 |------|----------------|------------|
 | `akamai_unsolved` | IP SoftBlock / Hyper / script | One retry other ISP exit; do **not** enable tls by default |
 | `pdp_get` Ghost | SBSD / cookie | Ensure SBSD ran; same undici |
-| `cart_get` Ghost after get-token | **Client split or jar break** | Diff vs this bible; restore one undici; check SoftBlock demotion |
+| `cart_get` Ghost after get-token | Burnt exit **or** client split / jar break | `/run` auto-rotates pool (see `proxyAttempts`); if **many** exits fail the same way, diff tip vs bible — not one IP |
 | Dies before tokenize | Profile/address | Check task.profile / fixtures |
 | `create_3ds_token` ok, no Revolut | Card/Paydock | Card secrets / gateway |
 | Revolut then widget reject | Operator Reject or ACS timeout | Approve promptly; not cart regression |

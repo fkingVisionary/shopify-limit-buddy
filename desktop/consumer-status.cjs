@@ -10,6 +10,7 @@ const LIVE = {
   threeds: "Waiting for bank approval",
   order: "Placing order",
   done: "Done",
+  switching: "Switching proxy",
 };
 
 const OUTCOME = {
@@ -85,11 +86,16 @@ function isPaymentDeclined(res) {
  */
 function consumerProgressMessage(progress) {
   if (!progress) return LIVE.warm;
+  const label = String(progress.label || "");
+  const detail = String(progress.detail || "");
+  if (/switching proxy/i.test(label) || /switching proxy/i.test(detail)) {
+    return LIVE.switching;
+  }
   const stage = progress.stage || "warm";
   if (progress.done) {
     if (progress.ok && progress.orderNumber) return OUTCOME.confirmed;
     if (progress.ok) return OUTCOME.complete;
-    return OUTCOME.stopped;
+    return OUTCOME.error;
   }
   return LIVE[stage] || LIVE.warm;
 }

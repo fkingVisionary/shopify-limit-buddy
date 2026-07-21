@@ -244,6 +244,8 @@ function finishResult(job, res, summary) {
     consumerLabel: outcome.label,
     consumerCode: outcome.code,
     stockStatus: outcome.stockStatus,
+    proxyAttempts: Array.isArray(res?.proxyAttempts) ? res.proxyAttempts : null,
+    proxyRotated: Boolean(res?.proxyRotated),
     debugError,
     checkoutStage: res?.checkoutStage ?? null,
     failedStep,
@@ -414,24 +416,28 @@ async function runOne(job) {
 
     // Sticky: use the listed session- token first (user-provided exits).
     // Always minting a random session on attempt 1 ignored the proxy list and
-    // often landed on worse Noontide exits. ISP has no session- → unchanged.
+    // often landed on worse Noontide exits. ISP advances host:port lines only.
     let result = await executeOnce(job, {
       rotateSession: false,
       attemptLabel: sticky ? "resi" : "run",
     });
     logResultTail(job, result);
 
-    // Sticky only: advance through group entries, then mint a fresh session-
-    // on the last entry. ISP never enters this loop.
-    const maxStickyRetries = Math.min(4, Math.max(2, entries.length || 2));
-    let stickyRetries = 0;
+    // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
+    // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
+    const maxProxyRetries = sticky
+      ? Math.min(4, Math.max(2, entries.length || 2))
+      : entries.length > 1
+        ? Math.min(3, entries.length - 1)
+        : 0;
+    let proxyRetries = 0;
     while (
       !result.ok &&
-      sticky &&
       shouldStickyResiRetry(result) &&
-      stickyRetries < maxStickyRetries
+      proxyRetries < maxProxyRetries &&
+      (entries.length > 1 || sticky)
     ) {
-      stickyRetries += 1;
+      proxyRetries += 1;
       const why = isStickyTunnelDead(result)
         ? "tunnel/TLS failure"
         : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
@@ -442,23 +448,31 @@ async function runOne(job) {
       if (entries.length > 1) {
         job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
         job.proxyRaw = entries[job.proxyIndex];
-        // After one full pass of listed exits, mint a fresh session- token.
-        rotateSession = stickyRetries >= entries.length;
-        console.warn(
-          `[desktop:run] sticky retry ${stickyRetries}/${maxStickyRetries} (${why}) entry ${job.proxyIndex + 1}/${entries.length}${rotateSession ? " fresh session" : ""}`,
-        );
-        emitLog(job.runId, job.task?.id, "warn", "Retrying…");
+        rotateSession = sticky && proxyRetries >= entries.length;
       } else {
-        rotateSession = true;
-        console.warn(
-          `[desktop:run] sticky retry ${stickyRetries}/${maxStickyRetries} (${why}) fresh session`,
-        );
-        emitLog(job.runId, job.task?.id, "warn", "Retrying…");
+        rotateSession = sticky;
       }
+      console.warn(
+        `[desktop:run] proxy rotate ${proxyRetries}/${maxProxyRetries} (${why}) entry ${
+          entries.length ? `${(job.proxyIndex || 0) + 1}/${entries.length}` : "session"
+        }${rotateSession ? " fresh session" : ""}`,
+      );
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "warn",
+        `Switching proxy (${proxyRetries}/${maxProxyRetries})`,
+      );
 
       result = await executeOnce(job, {
         rotateSession,
-        attemptLabel: stickyRetries === 1 ? "resi-retry" : `resi-retry#${stickyRetries}`,
+        attemptLabel: sticky
+          ? proxyRetries === 1
+            ? "resi-retry"
+            : `resi-retry#${proxyRetries}`
+          : proxyRetries === 1
+            ? "isp-retry"
+            : `isp-retry#${proxyRetries}`,
       });
       logResultTail(job, result);
     }

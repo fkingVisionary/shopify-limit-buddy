@@ -11,9 +11,14 @@ import { runDeepHealth } from "./health.js";
 import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
-import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { getTaskProgress, setTaskProgress, WORKFLOW_STAGES } from "./progress.js";
 import { listRunMilestones } from "./run-milestones.js";
 import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
+import {
+  isGraphqlAkamaiWall,
+  pickUnusedResiProxy,
+  proxyHostFromUrl,
+} from "./proxy-rotate.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -232,63 +237,132 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
-  // Resolve proxy on Fly: honor useProxy → resi.proxies; refuse dead
-  // WealthProxies/IPFist even if the Cloudflare Worker still sends Test Pool.
-  const resolved = resolveRunProxy({
-    proxy: task.proxy,
-    proxies: task.proxies,
-    proxyEntries: task.proxyEntries,
-    useProxy: task.useProxy === true,
-  });
-  req.log.info(
-    {
-      proxySource: resolved.source,
-      proxyPoolSize: resolved.poolSize,
-      proxyIndex: resolved.index,
-      hasProxy: Boolean(resolved.proxy),
-    },
-    "run proxy resolved",
+  // Proxy rotate budget when GraphQL cart_get is Akamai-denied after a good
+  // warm/token. Default 3 attempts (initial + 2 rotates). Cap at 6.
+  const maxProxyAttempts = Math.min(
+    6,
+    Math.max(1, Number(task.proxyRetries ?? process.env.KMART_PROXY_RETRIES ?? 3) || 3),
   );
+  const listRaw =
+    (Array.isArray(task.proxies) && task.proxies.length ? task.proxies : null) ||
+    (Array.isArray(task.proxyEntries) && task.proxyEntries.length ? task.proxyEntries : null);
+  const canRotatePool = task.useProxy === true || Boolean(listRaw?.length);
 
   inflight++;
   try {
-    const result = await runCheckout({
-      taskId: String(task.taskId),
-      storeUrl: String(task.storeUrl),
-      variantId: Number(task.variantId),
-      qty: Number(task.qty ?? 1),
-      profile: task.profile ?? null,
-      card,
-      proxy: resolved.proxy,
-      dryRun: task.dryRun !== false,
-      placeOrder: task.placeOrder === true,
-      placeOrderMutation,
-      debugTrace: task.debugTrace === true,
-      kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
-      transport: typeof task.transport === "string" ? task.transport : undefined,
-      forceTls: task.forceTls === true,
-      forceUndici: task.forceUndici === true,
-      // api.* tls-worker — opt-in only (default undici with WWW). true forces.
-      ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
-      // Hyper sensor tls-worker — opt-in only (default undici one-client path).
-      ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
-      // Park sensor tls for api reuse after undici PDP (default ON when parked).
-      ...(task.sensorTlsPark === true || task.sensorTlsPark === false
-        ? { sensorTlsPark: task.sensorTlsPark }
-        : {}),
-      ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
-      resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
-      seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
-      httpHandoff: task.httpHandoff !== false,
-      skipAtc: task.skipAtc === true,
-      apiSensor: task.apiSensor === true,
-      // undefined = let adapter default (skip category when proxied)
-      skipCategory:
-        task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
+    const triedHosts = new Set();
+    const proxyAttempts = [];
+    let resolved = resolveRunProxy({
+      proxy: task.proxy,
+      proxies: task.proxies,
+      proxyEntries: task.proxyEntries,
+      useProxy: task.useProxy === true,
     });
+    let result = null;
+
+    for (let attempt = 1; attempt <= maxProxyAttempts; attempt++) {
+      if (!resolved?.proxy && attempt > 1) break;
+
+      const host = proxyHostFromUrl(resolved?.proxy);
+      if (host) triedHosts.add(host);
+
+      req.log.info(
+        {
+          attempt,
+          maxProxyAttempts,
+          proxySource: resolved?.source,
+          proxyPoolSize: resolved?.poolSize,
+          proxyIndex: resolved?.index,
+          proxyHost: host || null,
+          hasProxy: Boolean(resolved?.proxy),
+        },
+        "run proxy resolved",
+      );
+
+      if (attempt === 1) {
+        setTaskProgress(String(task.taskId), {
+          stage: "warm",
+          label: "Starting",
+          detail: host ? `proxy ${host}` : null,
+          running: true,
+          done: false,
+        });
+      } else {
+        setTaskProgress(String(task.taskId), {
+          stage: "warm",
+          label: "Switching proxy",
+          detail: `attempt ${attempt}/${maxProxyAttempts}${host ? ` · ${host}` : ""}`,
+          running: true,
+          done: false,
+        });
+      }
+
+      result = await runCheckout({
+        taskId: String(task.taskId),
+        storeUrl: String(task.storeUrl),
+        variantId: Number(task.variantId),
+        qty: Number(task.qty ?? 1),
+        profile: task.profile ?? null,
+        card,
+        proxy: resolved?.proxy ?? null,
+        dryRun: task.dryRun !== false,
+        placeOrder: task.placeOrder === true,
+        placeOrderMutation,
+        debugTrace: task.debugTrace === true,
+        kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
+        transport: typeof task.transport === "string" ? task.transport : undefined,
+        forceTls: task.forceTls === true,
+        forceUndici: task.forceUndici === true,
+        // api.* tls-worker — opt-in only (default undici with WWW). true forces.
+        ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
+        // Hyper sensor tls-worker — opt-in only (default undici one-client path).
+        ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
+        // Park sensor tls for api reuse after undici PDP (default ON when parked).
+        ...(task.sensorTlsPark === true || task.sensorTlsPark === false
+          ? { sensorTlsPark: task.sensorTlsPark }
+          : {}),
+        ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
+        resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
+        seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
+        httpHandoff: task.httpHandoff !== false,
+        skipAtc: task.skipAtc === true,
+        apiSensor: task.apiSensor === true,
+        // undefined = let adapter default (skip category when proxied)
+        skipCategory:
+          task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
+      });
+
+      proxyAttempts.push({
+        attempt,
+        host: host || null,
+        source: resolved?.source ?? null,
+        index: resolved?.index ?? -1,
+        ok: Boolean(result?.ok),
+        checkoutStage: result?.checkoutStage ?? null,
+        graphqlWall: isGraphqlAkamaiWall(result),
+      });
+
+      if (result?.ok || !isGraphqlAkamaiWall(result) || !canRotatePool) break;
+      if (attempt >= maxProxyAttempts) break;
+
+      // Next unused exit from request list or baked resi.proxies.
+      const next = pickUnusedResiProxy(triedHosts, listRaw);
+      if (!next.proxy) {
+        req.log.warn({ triedHosts: [...triedHosts], attempt }, "proxy rotate exhausted");
+        break;
+      }
+      resolved = next;
+      req.log.warn(
+        { from: host, to: proxyHostFromUrl(next.proxy), attempt: attempt + 1, maxProxyAttempts },
+        "GraphQL Akamai wall — switching proxy",
+      );
+    }
+
     if (result && typeof result === "object") {
-      result.proxySource = resolved.source;
-      result.proxyPoolSize = resolved.poolSize;
+      result.proxySource = resolved?.source ?? null;
+      result.proxyPoolSize = resolved?.poolSize ?? resiPoolSize();
+      result.proxyAttempts = proxyAttempts;
+      result.proxyRotated = proxyAttempts.length > 1;
       result.gitSha = GIT_SHA;
     }
     return result;
