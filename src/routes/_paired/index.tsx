@@ -1561,7 +1561,6 @@ function Index() {
                   const finish = (b: any, elapsed: number) => {
                     const stepsArr = Array.isArray(b?.steps) ? b.steps : [];
                     const lastStep = stepsArr.length ? stepsArr[stepsArr.length - 1] : null;
-                    const stepSummary = lastStep ? ` (reached: ${lastStep.step})` : "";
                     const paymentRejected = !!b?.paymentRejected;
                     const finalUrl: string = typeof b?.finalUrl === "string" ? b.finalUrl : "";
                     const looksConfirmed = !!b?.orderId || /\/thank_you|orders\//i.test(finalUrl);
