@@ -196,28 +196,35 @@ function buildCreateAccountBody(html, profile, password, captchaToken, email) {
     return hints.some((h) => n.includes(h));
   };
 
-  // Opaque BigCommerce FormField[row][col] — fill left→right heuristics by index.
-  const formFields = fields.filter((f) => /^FormField\[\d+\]\[\d+\]$/i.test(f.name));
-  const sortedOpaque = formFields
-    .map((f) => {
-      const mm = f.name.match(/^FormField\[(\d+)\]\[(\d+)\]$/i);
-      return { ...f, r: Number(mm[1]), c: Number(mm[2]) };
-    })
-    .sort((a, b) => a.r - b.r || a.c - b.c);
-
-  // Common Toymate BC layout (observed): email/password named fields + FormField grid for profile.
   const namedValues = {};
+
+  // Pass 1: type + name hints (password/email inputs win even when named FormField[n][m]).
+  let passwordFieldsSeen = 0;
   for (const f of fields) {
     const n = f.name;
     const nl = n.toLowerCase();
+    if (n === "g-recaptcha-response" || nl.includes("recaptcha")) {
+      namedValues[n] = captchaToken || "";
+      continue;
+    }
     if (f.type === "hidden" || f.type === "checkbox" || f.type === "radio") {
       if (f.value) namedValues[n] = f.value;
       continue;
     }
-    if (byHint(nl, ["email", "login_email"])) namedValues[n] = email;
-    else if (byHint(nl, ["password", "login_pass"]) && !/confirm|verify/.test(nl)) namedValues[n] = password;
-    else if (byHint(nl, ["confirm", "password2", "verify"])) namedValues[n] = password;
-    else if (byHint(nl, ["first", "fname"])) namedValues[n] = first;
+    if (f.type === "password") {
+      namedValues[n] = password;
+      passwordFieldsSeen++;
+      continue;
+    }
+    if (f.type === "email" || byHint(nl, ["email", "login_email"])) {
+      namedValues[n] = email;
+      continue;
+    }
+    if (byHint(nl, ["password", "login_pass"])) {
+      namedValues[n] = password;
+      continue;
+    }
+    if (byHint(nl, ["first", "fname"])) namedValues[n] = first;
     else if (byHint(nl, ["last", "lname", "surname"])) namedValues[n] = last;
     else if (byHint(nl, ["phone", "mobile", "tel"])) namedValues[n] = phone;
     else if (byHint(nl, ["company"])) namedValues[n] = company;
@@ -226,48 +233,40 @@ function buildCreateAccountBody(html, profile, password, captchaToken, email) {
     else if (byHint(nl, ["state", "province", "region"])) namedValues[n] = province;
     else if (byHint(nl, ["zip", "postcode", "postal"])) namedValues[n] = zip;
     else if (byHint(nl, ["country"])) namedValues[n] = f.value || "Australia";
-    else if (n === "g-recaptcha-response" || nl.includes("recaptcha")) namedValues[n] = captchaToken || "";
     else if (f.value) namedValues[n] = f.value;
   }
 
-  // Fill remaining opaque FormFields with profile values in a stable order.
-  const opaqueQueue = [
-    first,
-    last,
-    company,
-    phone,
-    address1,
-    "",
-    city,
-    province,
-    zip,
-    "Australia",
-    email,
-    password,
-    password,
-  ];
+  // Pass 2: remaining opaque FormField[*][*] text inputs — profile order (skip email/password slots).
+  const opaqueQueue = [first, last, company, phone, address1, "", city, province, zip, "Australia"];
   let oi = 0;
+  const sortedOpaque = fields
+    .filter((f) => /^FormField\[\d+\]\[\d+\]$/i.test(f.name))
+    .map((f) => {
+      const mm = f.name.match(/^FormField\[(\d+)\]\[(\d+)\]$/i);
+      return { ...f, r: Number(mm[1]), c: Number(mm[2]) };
+    })
+    .sort((a, b) => a.r - b.r || a.c - b.c);
+
   for (const f of sortedOpaque) {
     if (namedValues[f.name] != null && namedValues[f.name] !== "") continue;
-    if (f.type === "hidden" && f.value) {
-      namedValues[f.name] = f.value;
-      continue;
-    }
-    namedValues[f.name] = opaqueQueue[oi] ?? f.value ?? "";
+    if (f.type === "password" || f.type === "email" || f.type === "hidden") continue;
+    namedValues[f.name] = opaqueQueue[oi] ?? "";
     oi++;
   }
 
-  // Ensure email/password keys exist even if heuristics missed names.
-  if (![...body.keys()].length) {
-    /* filled below */
+  // If no password-type inputs were found, force common BC password slots by index.
+  if (passwordFieldsSeen === 0) {
+    for (const f of sortedOpaque) {
+      // Observed Toymate layout: FormField[1][12]/[1][13] = password / confirm.
+      if (/^FormField\[1\]\[(12|13)\]$/i.test(f.name)) namedValues[f.name] = password;
+      if (/^FormField\[1\]\[11\]$/i.test(f.name)) namedValues[f.name] = email;
+    }
   }
+
   for (const [k, v] of Object.entries(namedValues)) {
     body.set(k, v == null ? "" : String(v));
   }
-  if (captchaToken) {
-    body.set("g-recaptcha-response", captchaToken);
-  }
-  // Always set common BC create keys if present in the form.
+  if (captchaToken) body.set("g-recaptcha-response", captchaToken);
   for (const f of fields) {
     if (!body.has(f.name) && f.type === "hidden" && f.value) body.set(f.name, f.value);
   }
@@ -354,6 +353,17 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
 
   return { html, status, origin };
 }
+
+// Pure helpers exported for fixture tests (no network / no CapSolver).
+export const __test = {
+  uniquifyAccountEmail,
+  ensureToymatePassword,
+  buildCreateAccountBody,
+  accountCreatedOk,
+  extractFormAction,
+  parseFormFields,
+  extractProductIds,
+};
 
 export const toymateAdapter = {
   id: "toymate",

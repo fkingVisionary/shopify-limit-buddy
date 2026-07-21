@@ -35,3 +35,6 @@ dist-ssr
 desktop/release/
 desktop/node_modules/
 
+.env.local
+desktop/.env.local
+*.secrets
