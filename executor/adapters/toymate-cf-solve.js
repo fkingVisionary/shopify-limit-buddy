@@ -107,12 +107,19 @@ async function capsolverCreateAndPoll(task, { timeoutMs = 120_000 } = {}) {
 }
 
 function looksLikeCfChallenge(html, status) {
-  if (status === 403 || status === 503) return true;
   const h = String(html || "");
-  return (
-    /cf-browser-verification|challenge-platform|just a moment|cf-challenge|__cf_chl|/i.test(h) ||
-    /Attention Required|Cloudflare/i.test(h)
-  );
+  // Real create-account / stencil pages are large 200s — never treat those as CF.
+  if (status === 200 && h.length > 20_000 && /<form\b/i.test(h) && !/just a moment/i.test(h)) {
+    return false;
+  }
+  if (/just a moment\.\.\.|cf-browser-verification|challenge-platform|cf-challenge|__cf_chl_/i.test(h)) {
+    return true;
+  }
+  // Soft: 403/503 with short CF interstitial (not a full storefront page).
+  if ((status === 403 || status === 503) && h.length < 20_000) {
+    if (/cloudflare|cf-ray|attention required|request blocked/i.test(h)) return true;
+  }
+  return false;
 }
 
 /**

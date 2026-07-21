@@ -20,9 +20,9 @@ import {
 const sleep = (ms, jitter = 0) =>
   new Promise((r) => setTimeout(r, ms + Math.floor(Math.random() * (jitter + 1))));
 
-function navHeaders({ referer, origin } = {}) {
+function navHeaders({ referer, origin, userAgent } = {}) {
   return {
-    "user-agent": UA,
+    "user-agent": userAgent || UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
     "cache-control": "no-cache",
@@ -40,9 +40,9 @@ function navHeaders({ referer, origin } = {}) {
   };
 }
 
-function apiHeaders({ referer, origin } = {}) {
+function apiHeaders({ referer, origin, userAgent } = {}) {
   return {
-    "user-agent": UA,
+    "user-agent": userAgent || UA,
     accept: "application/json, text/plain, */*",
     "accept-language": "en-AU,en;q=0.9",
     "content-type": "application/json",
@@ -140,11 +140,33 @@ function extractProductIds(html) {
   return { productId, variantId, title, sku };
 }
 
+/** Prefer the create-account form — page also has search/newsletter/cart forms. */
+function extractCreateAccountFormHtml(html) {
+  const h = String(html || "");
+  const re = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
+  let m;
+  let fallback = null;
+  while ((m = re.exec(h))) {
+    const attrs = m[1] || "";
+    const body = m[2] || "";
+    const action = attrs.match(/\baction=["']([^"']+)["']/i)?.[1] || "";
+    if (/save_new_account/i.test(action) || /save_new_account/i.test(body)) {
+      return { attrs, body, action };
+    }
+    if (!fallback && /FormField\[1\]\[\d+\]/i.test(body) && /type=["']password["']/i.test(body)) {
+      fallback = { attrs, body, action };
+    }
+  }
+  return fallback;
+}
+
 function parseFormFields(html) {
+  const scoped = extractCreateAccountFormHtml(html);
+  const source = scoped?.body || String(html || "");
   const fields = [];
   const inputRe = /<input\b([^>]*)>/gi;
   let m;
-  while ((m = inputRe.exec(html))) {
+  while ((m = inputRe.exec(source))) {
     const attrs = m[1];
     const name = attrs.match(/\bname=["']([^"']+)["']/i)?.[1];
     if (!name) continue;
@@ -154,14 +176,22 @@ function parseFormFields(html) {
     fields.push({ name, type, value, tag: "input" });
   }
   const selectRe = /<select\b([^>]*)>([\s\S]*?)<\/select>/gi;
-  while ((m = selectRe.exec(html))) {
+  while ((m = selectRe.exec(source))) {
     const name = m[1].match(/\bname=["']([^"']+)["']/i)?.[1];
     if (!name) continue;
-    const opt = m[2].match(/<option[^>]*value=["']([^"']*)["'][^>]*>/i);
-    fields.push({ name, type: "select", value: opt?.[1] ?? "", tag: "select" });
+    // Prefer a non-empty option (skip "Choose a Country").
+    const opts = [...m[2].matchAll(/<option[^>]*value=["']([^"']*)["'][^>]*>([^<]*)/gi)];
+    let value = "";
+    for (const o of opts) {
+      if (o[1]) {
+        value = o[1];
+        break;
+      }
+    }
+    fields.push({ name, type: "select", value, tag: "select", options: opts.map((o) => o[1]) });
   }
   const taRe = /<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/gi;
-  while ((m = taRe.exec(html))) {
+  while ((m = taRe.exec(source))) {
     const name = m[1].match(/\bname=["']([^"']+)["']/i)?.[1];
     if (!name) continue;
     fields.push({ name, type: "textarea", value: m[2] || "", tag: "textarea" });
@@ -170,13 +200,34 @@ function parseFormFields(html) {
 }
 
 function extractFormAction(html, base) {
-  const m = String(html || "").match(/<form\b[^>]*action=["']([^"']+)["'][^>]*>/i);
-  if (!m?.[1]) return `${base}/login.php?action=save_new_account`;
-  try {
-    return new URL(m[1], base).href;
-  } catch {
-    return `${base}/login.php?action=save_new_account`;
+  const scoped = extractCreateAccountFormHtml(html);
+  const raw = scoped?.action || "";
+  if (raw) {
+    try {
+      return new URL(raw, base).href;
+    } catch {
+      /* fall through */
+    }
   }
+  return `${base}/login.php?action=save_new_account`;
+}
+
+function auStateName(province) {
+  const p = String(province || "").trim().toUpperCase();
+  const map = {
+    NSW: "New South Wales",
+    VIC: "Victoria",
+    QLD: "Queensland",
+    WA: "Western Australia",
+    SA: "South Australia",
+    TAS: "Tasmania",
+    ACT: "Australian Capital Territory",
+    NT: "Northern Territory",
+  };
+  if (map[p]) return map[p];
+  // Already a full name?
+  const full = Object.values(map).find((x) => x.toLowerCase() === String(province || "").trim().toLowerCase());
+  return full || map.NSW;
 }
 
 function buildCreateAccountBody(html, profile, password, captchaToken, email) {
@@ -187,99 +238,58 @@ function buildCreateAccountBody(html, profile, password, captchaToken, email) {
   const phone = String(profile?.phone || "0400000000").replace(/\s+/g, "");
   const address1 = String(profile?.address1 || "1 Test St").trim();
   const city = String(profile?.city || "Sydney").trim();
-  const province = String(profile?.province || "NSW").trim();
+  const state = auStateName(profile?.province || "NSW");
   const zip = String(profile?.zip || "2000").trim();
   const company = "";
+  const country = "Australia";
 
-  const byHint = (name, hints) => {
-    const n = name.toLowerCase();
-    return hints.some((h) => n.includes(h));
+  // Observed Toymate BC create-account layout (2026-07-21 HTML dump).
+  const byId = {
+    "FormField[1][1]": email,
+    "FormField[1][2]": password,
+    "FormField[1][3]": password,
+    "FormField[2][4]": first,
+    "FormField[2][5]": last,
+    "FormField[2][6]": company,
+    "FormField[2][7]": phone,
+    "FormField[2][8]": address1,
+    "FormField[2][9]": "",
+    "FormField[2][10]": city,
+    "FormField[2][11]": country,
+    "FormField[2][12]": state,
+    "FormField[2][13]": zip,
   };
 
-  const namedValues = {};
-
-  // Pass 1: type + name hints (password/email inputs win even when named FormField[n][m]).
-  let passwordFieldsSeen = 0;
   for (const f of fields) {
-    const n = f.name;
-    const nl = n.toLowerCase();
-    if (n === "g-recaptcha-response" || nl.includes("recaptcha")) {
-      namedValues[n] = captchaToken || "";
+    if (byId[f.name] !== undefined) {
+      body.set(f.name, byId[f.name]);
       continue;
     }
-    if (f.type === "hidden" || f.type === "checkbox" || f.type === "radio") {
-      if (f.value) namedValues[n] = f.value;
-      continue;
-    }
-    if (f.type === "password") {
-      namedValues[n] = password;
-      passwordFieldsSeen++;
-      continue;
-    }
-    if (f.type === "email" || byHint(nl, ["email", "login_email"])) {
-      namedValues[n] = email;
-      continue;
-    }
-    if (byHint(nl, ["password", "login_pass"])) {
-      namedValues[n] = password;
-      continue;
-    }
-    if (byHint(nl, ["first", "fname"])) namedValues[n] = first;
-    else if (byHint(nl, ["last", "lname", "surname"])) namedValues[n] = last;
-    else if (byHint(nl, ["phone", "mobile", "tel"])) namedValues[n] = phone;
-    else if (byHint(nl, ["company"])) namedValues[n] = company;
-    else if (byHint(nl, ["address", "street"]) && !/2|line2/.test(nl)) namedValues[n] = address1;
-    else if (byHint(nl, ["city", "suburb"])) namedValues[n] = city;
-    else if (byHint(nl, ["state", "province", "region"])) namedValues[n] = province;
-    else if (byHint(nl, ["zip", "postcode", "postal"])) namedValues[n] = zip;
-    else if (byHint(nl, ["country"])) namedValues[n] = f.value || "Australia";
-    else if (f.value) namedValues[n] = f.value;
+    if (f.type === "hidden" && f.value) body.set(f.name, f.value);
+    if (f.name === "g-recaptcha-response") body.set(f.name, captchaToken || "");
   }
-
-  // Pass 2: remaining opaque FormField[*][*] text inputs — profile order (skip email/password slots).
-  const opaqueQueue = [first, last, company, phone, address1, "", city, province, zip, "Australia"];
-  let oi = 0;
-  const sortedOpaque = fields
-    .filter((f) => /^FormField\[\d+\]\[\d+\]$/i.test(f.name))
-    .map((f) => {
-      const mm = f.name.match(/^FormField\[(\d+)\]\[(\d+)\]$/i);
-      return { ...f, r: Number(mm[1]), c: Number(mm[2]) };
-    })
-    .sort((a, b) => a.r - b.r || a.c - b.c);
-
-  for (const f of sortedOpaque) {
-    if (namedValues[f.name] != null && namedValues[f.name] !== "") continue;
-    if (f.type === "password" || f.type === "email" || f.type === "hidden") continue;
-    namedValues[f.name] = opaqueQueue[oi] ?? "";
-    oi++;
-  }
-
-  // If no password-type inputs were found, force common BC password slots by index.
-  if (passwordFieldsSeen === 0) {
-    for (const f of sortedOpaque) {
-      // Observed Toymate layout: FormField[1][12]/[1][13] = password / confirm.
-      if (/^FormField\[1\]\[(12|13)\]$/i.test(f.name)) namedValues[f.name] = password;
-      if (/^FormField\[1\]\[11\]$/i.test(f.name)) namedValues[f.name] = email;
-    }
-  }
-
-  for (const [k, v] of Object.entries(namedValues)) {
-    body.set(k, v == null ? "" : String(v));
+  // Ensure required keys even if parse missed a select.
+  for (const [k, v] of Object.entries(byId)) {
+    if (!body.has(k)) body.set(k, v);
   }
   if (captchaToken) body.set("g-recaptcha-response", captchaToken);
-  for (const f of fields) {
-    if (!body.has(f.name) && f.type === "hidden" && f.value) body.set(f.name, f.value);
-  }
 
   return body;
 }
 
-function accountCreatedOk(status, text, finalUrl) {
+function accountCreatedOk(status, text, finalUrl, locationHeader = null) {
   const t = String(text || "");
   const u = String(finalUrl || "");
-  if (/action=account_created/i.test(u) || /action=account_created/i.test(t)) return true;
+  const loc = String(locationHeader || "");
+  if (/action=account_created/i.test(u) || /action=account_created/i.test(t) || /action=account_created/i.test(loc)) {
+    return true;
+  }
   if (/Your Account Has Been Created/i.test(t)) return true;
   if (status >= 200 && status < 400 && /account has been created/i.test(t)) return true;
+  // BC often 303s to account_created with an empty body under redirect:manual.
+  if ((status === 302 || status === 303) && /account_created|account\.php|login\.php\?action=account/i.test(loc)) {
+    return true;
+  }
   // Reject false positives from nav copy / password policy strings in scripts.
   if (/password.*(alphabetic|number|numeric)/i.test(t) && /error|invalid|must/i.test(t)) return false;
   return false;
@@ -311,6 +321,8 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
   const origin = base;
   let html = "";
   let status = 0;
+  // CapSolver may return a UA that must match cf_clearance.
+  let solvedUa = null;
 
   await tStep("cf_warm", async () => {
     const res = await request(`${base}/`, { headers: navHeaders() }, ctx);
@@ -338,20 +350,30 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
       return { ok: false, status, note: solved.error || "CF solve failed", blocked: true };
     }
     applyCookiesToJar(ctx.jar, solved.cookies);
-    const res2 = await request(`${base}/`, { headers: navHeaders() }, ctx);
+    solvedUa = solved.userAgent || UA;
+    ctx.extraHeaders = { ...(ctx.extraHeaders || {}), "user-agent": solvedUa };
+    // Apex is the canonical host after CF (www often 301s).
+    const res2 = await request(`https://toymate.com.au/`, {
+      headers: navHeaders({ referer: `${base}/`, userAgent: solvedUa }),
+    }, ctx);
     const html2 = await readText(res2);
     const still = looksLikeCfChallenge(html2, res2.status);
     html = html2;
     status = res2.status;
+    const ok =
+      !still &&
+      ((res2.status > 0 && res2.status < 400) || (res2.status === 301 || res2.status === 302));
     return {
-      ok: !still && res2.status > 0 && res2.status < 400,
+      ok,
       status: res2.status,
-      note: still ? "CF still challenging after solve" : `cf_clearance ok (${solved.note})`,
+      note: still
+        ? "CF still challenging after solve"
+        : `cf_clearance ok (${solved.note}); post=${res2.status}`,
       blocked: still,
     };
   });
 
-  return { html, status, origin };
+  return { html, status, origin, solvedUa };
 }
 
 // Pure helpers exported for fixture tests (no network / no CapSolver).
@@ -421,19 +443,25 @@ export const toymateAdapter = {
 
     // ── Account gen ────────────────────────────────────────────────────
     if (mode === "account_gen") {
-      await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      const warm = await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      const ua = warm.solvedUa || UA;
 
       const createUrl = `${apex}/login.php?action=create_account`;
       const page = await tStep("create_account_get", async () => {
         const res = await request(createUrl, {
-          headers: navHeaders({ referer: `${base}/` }),
+          headers: navHeaders({ referer: `${apex}/`, userAgent: ua }),
         }, ctx);
         const html = await readText(res);
         const blocked = looksLikeCfChallenge(html, res.status);
+        const hasForm = /save_new_account|FormField\[|action=create_account/i.test(html);
         return {
-          ok: res.status === 200 && !blocked,
+          ok: res.status === 200 && !blocked && hasForm,
           status: res.status,
-          note: blocked ? "CF blocked create page" : `form ${res.status}`,
+          note: blocked
+            ? "CF blocked create page"
+            : hasForm
+              ? `form ${res.status}`
+              : `create page missing form (${res.status})`,
           html,
           blocked,
         };
@@ -481,7 +509,7 @@ export const toymateAdapter = {
         const res = await request(actionUrl, {
           method: "POST",
           headers: {
-            ...navHeaders({ referer: createUrl, origin: apex }),
+            ...navHeaders({ referer: createUrl, origin: apex, userAgent: ua }),
             "content-type": "application/x-www-form-urlencoded",
             "sec-fetch-dest": "document",
             "sec-fetch-mode": "navigate",
@@ -490,23 +518,83 @@ export const toymateAdapter = {
           body: body.toString(),
         }, ctx);
         const text = await readText(res);
-        const ok = accountCreatedOk(res.status, text, res.url);
+        const location = res.headers?.get?.("location") || null;
+        const ok = accountCreatedOk(res.status, text, res.url, location);
+        const errBits = [
+          ...text.matchAll(
+            /(?:class|id)=["'][^"']*(?:error|alert|message)[^"']*["'][^>]*>([^<]{3,140})/gi,
+          ),
+        ]
+          .map((m) => m[1].replace(/\s+/g, " ").trim())
+          .filter(Boolean)
+          .slice(0, 8);
+        const fieldErrs = [
+          ...text.matchAll(
+            /FormFieldLabel[^>]*>\s*([^<]{2,80})[\s\S]{0,200}?class=["'][^"']*error/gi,
+          ),
+        ]
+          .map((m) => m[1].trim())
+          .slice(0, 8);
+        const noteErr =
+          [...errBits, ...fieldErrs].join(" | ") ||
+          (location ? `Location: ${location}` : "") ||
+          text.replace(/\s+/g, " ").slice(0, 160);
         return {
           ok,
           status: res.status,
           note: ok
-            ? `account_created ${email}`
-            : `create failed ${res.status} — ${text.replace(/\s+/g, " ").slice(0, 160)}`,
+            ? `account_created ${email}${location ? ` → ${location}` : ""}`
+            : `create failed ${res.status} — ${noteErr}`,
           text,
-          finalUrl: res.url,
+          finalUrl: location || res.url,
+          location,
+          submittedKeys: [...body.keys()],
         };
       });
+
+      // Cheap login verify (no CapSolver) — proves the account is real.
+      let loginOk = null;
+      if (created.ok) {
+        const login = await tStep("account_login_verify", async () => {
+          const loginPage = await request(`${apex}/login.php`, {
+            headers: navHeaders({ referer: `${apex}/`, userAgent: ua }),
+          }, ctx);
+          const loginHtml = await readText(loginPage);
+          const tokenM = loginHtml.match(/name=["']authenticity_token["']\s+value=["']([^"']+)["']/i);
+          const loginBody = new URLSearchParams({
+            login_email: email,
+            login_pass: password,
+            ...(tokenM?.[1] ? { authenticity_token: tokenM[1] } : {}),
+          });
+          const res = await request(`${apex}/login.php?action=check_login`, {
+            method: "POST",
+            headers: {
+              ...navHeaders({ referer: `${apex}/login.php`, origin: apex, userAgent: ua }),
+              "content-type": "application/x-www-form-urlencoded",
+            },
+            body: loginBody.toString(),
+          }, ctx);
+          const loginText = await readText(res);
+          const loc = res.headers?.get?.("location") || "";
+          const ok =
+            (res.status >= 200 && res.status < 400 && !/invalid|incorrect|unsuccessful/i.test(loginText)) ||
+            /account\.php|account_created|logged/i.test(loc);
+          return {
+            ok,
+            status: res.status,
+            note: ok ? `login ok ${email}` : `login verify failed ${res.status}`,
+            location: loc || null,
+          };
+        });
+        loginOk = Boolean(login.ok);
+      }
 
       return {
         ok: Boolean(created.ok),
         steps,
         accountGen: true,
         account: created.ok ? { email, password } : null,
+        loginVerified: loginOk,
         error: created.ok ? null : created.note,
         failedStep: created.ok ? null : "create_account_post",
         checkoutStage: "warm",
