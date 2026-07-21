@@ -325,19 +325,43 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
   let solvedUa = null;
 
   await tStep("cf_warm", async () => {
-    const res = await request(`${base}/`, { headers: navHeaders() }, ctx);
-    status = res.status;
-    html = await readText(res);
-    const challenged = looksLikeCfChallenge(html, status);
-    if (!challenged && status > 0 && status < 400) {
-      return { ok: true, status, note: `home ${status} (no CF challenge)` };
+    // Home sometimes returns empty 403 / fetch-failed on sticky exits while
+    // /login.php still serves a CapSolver-ready "Just a moment..." interstitial.
+    const candidates = [
+      `${base}/`,
+      "https://www.toymate.com.au/",
+      "https://toymate.com.au/",
+      "https://www.toymate.com.au/login.php",
+      "https://toymate.com.au/login.php",
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    let pageUrl = candidates[0];
+    let challenged = false;
+    let lastErr = null;
+    for (const url of candidates) {
+      try {
+        const res = await request(url, { headers: navHeaders() }, ctx);
+        status = res.status;
+        html = await readText(res);
+        pageUrl = url;
+        challenged = looksLikeCfChallenge(html, status);
+        if (!challenged && status > 0 && status < 400 && html.length > 500) {
+          return { ok: true, status, note: `${url} ${status} (no CF challenge)` };
+        }
+        if (challenged) break;
+      } catch (e) {
+        lastErr = e?.message || String(e);
+      }
     }
+
     if (!challenged) {
-      // Soft-block / empty / odd status without a CapSolver-ready interstitial.
       return {
         ok: false,
         status,
-        note: `home ${status} bytes=${html.length} (no CapSolver-ready CF HTML)`,
+        note:
+          lastErr && !html
+            ? `warm fetch failed: ${lastErr}`
+            : `warm ${status} bytes=${html.length} via ${pageUrl} (no CapSolver-ready CF HTML)`,
         blocked: true,
       };
     }
@@ -350,7 +374,7 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
       };
     }
     const solved = await solveCloudflareChallenge({
-      pageUrl: `${base}/`,
+      pageUrl,
       html,
       proxyRaw,
       userAgent: UA,
@@ -376,7 +400,7 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
     ctx.extraHeaders = { ...(ctx.extraHeaders || {}), "user-agent": solvedUa };
     // Apex is the canonical host after CF (www often 301s).
     const res2 = await request(`https://toymate.com.au/`, {
-      headers: navHeaders({ referer: `${base}/`, userAgent: solvedUa }),
+      headers: navHeaders({ referer: pageUrl, userAgent: solvedUa }),
     }, ctx);
     const html2 = await readText(res2);
     const still = looksLikeCfChallenge(html2, res2.status);
@@ -384,13 +408,13 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
     status = res2.status;
     const ok =
       !still &&
-      ((res2.status > 0 && res2.status < 400) || (res2.status === 301 || res2.status === 302));
+      ((res2.status > 0 && res2.status < 400) || res2.status === 301 || res2.status === 302);
     return {
       ok,
       status: res2.status,
       note: still
-        ? "CF still challenging after solve"
-        : `cf_clearance ok (${solved.note}); post=${res2.status}`,
+        ? `CF still challenging after solve (via ${pageUrl})`
+        : `cf_clearance ok (${solved.note}); warm=${pageUrl}; post=${res2.status}`,
       blocked: still,
     };
   });
