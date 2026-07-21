@@ -1,8 +1,8 @@
 // Bounded local job queue. Stability first: cap concurrent /run calls so
-// Chromium 3DS tails don't OOM the machine. Future store adapters plug in
-// via buildPayload(store) — Kmart is the only v1 adapter.
+// Chromium 3DS tails don't OOM the machine. Store adapters plug in via
+// buildPayload(store) — Kmart + Toymate (isolated branches).
 //
-// Payload shape intentionally mirrors src/lib/kmart-task.ts
+// Kmart payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
 // Single undici attempt — no TLS/Playwright auto-retry ladder (not scalable).
 
@@ -146,10 +146,97 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession 
   };
 }
 
+function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSession }) {
+  const mode = String(task.toymateMode || "checkout").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  if (mode !== "account_gen" && !/^https:\/\/(www\.)?toymate\.com\.au\//i.test(input)) {
+    return { ok: false, error: "Toymate product URL required (or use Account gen mode)" };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw); // same URL normalisation; store-agnostic parser
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+  const cvv = String(profile?.card_cvv || "").trim();
+  const mm = String(profile?.card_exp_month || "").trim();
+  const yy = String(profile?.card_exp_year || "").trim();
+  const holder =
+    String(profile?.card_name || "").trim() ||
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim() ||
+    "Cardholder";
+
+  const wantsPlace = mode === "checkout" && placeOrder;
+  if (wantsPlace && (pan.length < 12 || cvv.length < 3 || !mm || yy.length < 2)) {
+    return { ok: false, error: "Place order needs complete card on the profile" };
+  }
+
+  const card =
+    pan.length >= 12 && cvv.length >= 3
+      ? {
+          number: pan,
+          cvv,
+          expMonth: mm.padStart(2, "0").slice(-2),
+          expYear: yy.slice(-2),
+          holder,
+        }
+      : null;
+
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
+
+  const storeUrl =
+    mode === "account_gen"
+      ? "https://www.toymate.com.au"
+      : input || "https://www.toymate.com.au";
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "account_gen" ? storeUrl : input,
+      variantId: Number(task.variantId) || 1,
+      qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      // Force undici — Toymate CF path was proven without tls-worker.
+      forceUndici: true,
+      forceTls: false,
+      toymateMode: mode,
+      paymentMethod: task.paymentMethod || "credit_card",
+      captchaToken: task.captchaToken || null,
+      accountPassword:
+        typeof task.accountPassword === "string" && task.accountPassword.trim()
+          ? task.accountPassword.trim()
+          : null,
+      account: task.accountEmail && task.accountPassword
+        ? { email: task.accountEmail, password: task.accountPassword }
+        : task.account || null,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+      card: mode === "checkout" ? card : null,
+    },
+  };
+}
+
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
     return buildKmartPayload(job);
+  }
+  if (store === "toymate") {
+    return buildToymatePayload(job);
   }
   return { ok: false, error: `Store adapter not installed yet: ${store}` };
 }
@@ -241,7 +328,10 @@ function finishResult(job, res, summary) {
     orderNumber: res?.orderNumber ?? null,
     // Consumer-facing label (UI). Analytical detail stays in debugError / console.
     error: res?.ok ? null : outcome.label,
-    consumerLabel: outcome.label,
+    consumerLabel:
+      res?.ok && res?.accountGen && res?.account?.email
+        ? `Account ${res.account.email}`
+        : outcome.label,
     consumerCode: outcome.code,
     stockStatus: outcome.stockStatus,
     proxyAttempts: Array.isArray(res?.proxyAttempts) ? res.proxyAttempts : null,
@@ -254,6 +344,9 @@ function finishResult(job, res, summary) {
     lastSteps,
     steps: Array.isArray(res?.steps) ? res.steps : null,
     paymentTail: Array.isArray(res?.paymentTail) ? res.paymentTail : null,
+    account: res?.account ?? null,
+    accountGen: Boolean(res?.accountGen),
+    paypalApproveUrl: res?.paypalApproveUrl ?? null,
     attempt: "undici",
     raw: {
       ok: res?.ok,
@@ -262,6 +355,7 @@ function finishResult(job, res, summary) {
       failedStep,
       adapter: res?.adapter,
       transport: res?.transport,
+      accountGen: Boolean(res?.accountGen),
     },
   };
 }

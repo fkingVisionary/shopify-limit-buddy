@@ -24,6 +24,7 @@
   <nav class="tabs">
     <button type="button" data-tab="tasks" class="active">Tasks</button>
     <button type="button" data-tab="profiles">Profiles</button>
+    <button type="button" data-tab="accounts">Accounts</button>
     <button type="button" data-tab="proxies">Proxies</button>
     <button type="button" data-tab="results">Results</button>
     <button type="button" data-tab="settings">Settings</button>
@@ -34,8 +35,8 @@
     <section id="tab-tasks" class="panel active">
       <div class="split">
         <div>
-          <h2>Kmart tasks</h2>
-          <p class="hint">Full checkout runs on this machine (localhost proxies OK). Future stores use the same task list.</p>
+          <h2>Tasks</h2>
+          <p class="hint">Kmart + Toymate run on this machine. Kmart still uses Hyper; Toymate uses CapSolver for Cloudflare.</p>
           <div id="taskList" class="list"></div>
         </div>
         <form id="taskForm" class="form-card">
@@ -46,8 +47,28 @@
           <label>Store</label>
           <select id="taskStore">
             <option value="kmart">Kmart AU</option>
+            <option value="toymate">Toymate AU</option>
           </select>
-          <label>Product URL (PDP)</label>
+          <div id="taskToymateOpts" hidden>
+            <label>Toymate mode</label>
+            <select id="taskToymateMode">
+              <option value="checkout">Autocheckout</option>
+              <option value="account_gen">Account gen</option>
+              <option value="monitor">Keyword monitor</option>
+            </select>
+            <div id="taskToymatePayWrap">
+              <label>Payment</label>
+              <select id="taskToymatePay">
+                <option value="credit_card">Credit card</option>
+                <option value="paypal_manual">PayPal (manual)</option>
+              </select>
+            </div>
+            <div id="taskAccountPassWrap" hidden>
+              <label>Account password <span class="optional">(optional)</span></label>
+              <input id="taskAccountPassword" type="text" autocomplete="off" placeholder="e.g. Password1 — needs letter+number" />
+            </div>
+          </div>
+          <label id="taskPdpLabel">Product URL (PDP)</label>
           <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
           <div class="grid2">
             <div>
@@ -65,7 +86,7 @@
           <select id="taskProxy">
             <option value="">Direct (no proxy)</option>
           </select>
-          <label class="check"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
+          <label class="check" id="taskPlaceOrderWrap"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
           <div class="row">
             <button type="submit">Save task</button>
             <button type="button" class="secondary" id="taskReset">Clear</button>
@@ -122,6 +143,30 @@
       </div>
     </section>
 
+    <!-- ACCOUNTS -->
+    <section id="tab-accounts" class="panel">
+      <div class="split">
+        <div>
+          <h2>Accounts</h2>
+          <p class="hint">Generated retailer logins (Toymate today). Run a task with mode <strong>Account gen</strong> to fill this vault.</p>
+          <div class="row" style="margin-bottom:12px">
+            <button type="button" class="secondary" id="btnClearAccounts">Clear all</button>
+          </div>
+          <div id="accountList" class="list"></div>
+        </div>
+        <div class="form-card">
+          <h3>How to generate</h3>
+          <ol class="hint" style="padding-left:18px;line-height:1.6">
+            <li>Settings → CapSolver API key</li>
+            <li>Profiles → shipping/email base</li>
+            <li>Proxies → residential/ISP group</li>
+            <li>Tasks → Store <strong>Toymate</strong>, mode <strong>Account gen</strong>, Run</li>
+          </ol>
+          <p class="hint">Password needs letters + numbers (e.g. <code>Password1</code>). Leave blank to randomise.</p>
+        </div>
+      </div>
+    </section>
+
     <!-- PROXIES -->
     <section id="tab-proxies" class="panel">
       <div class="split">
@@ -161,11 +206,14 @@
         <input id="setApiKey" placeholder="Your license API key" autocomplete="off" />
         <label>Control plane URL (optional for now)</label>
         <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
-        <label>Hyper API key (BYO — recommended for v1)</label>
+        <label>Hyper API key (BYO — required for Kmart)</label>
         <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
         <label>Paydock public key (Kmart widget — static)</label>
         <input id="setPaydockPk" placeholder="Paste once; used for card tokenize" autocomplete="off" />
         <p class="hint">This is Kmart’s client-side Paydock public key (same value the browser widget uses). It does not rotate. Leave blank to use PAYDOCK_PUBLIC_KEY from the environment / baked-in default.</p>
+        <label>CapSolver API key (Toymate Cloudflare + captcha)</label>
+        <input id="setCapsolver" placeholder="CapSolver key" autocomplete="off" />
+        <p class="hint">Used only by Toymate. Kmart ignores this key.</p>
         <label>Max concurrent checkouts</label>
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>

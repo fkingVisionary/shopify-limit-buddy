@@ -24,6 +24,38 @@ function persistSettings() {
   store.saveSettings(state.settings);
 }
 
+function upsertGeneratedAccount(account, { storeId, profileId, source = "generated" } = {}) {
+  if (!account?.email || !account?.password) return null;
+  if (!Array.isArray(state.db.accounts)) state.db.accounts = [];
+  const email = String(account.email).trim();
+  const sid = storeId || "toymate";
+  const existing = state.db.accounts.find(
+    (a) =>
+      String(a.storeId || "") === sid &&
+      String(a.email || "").toLowerCase() === email.toLowerCase(),
+  );
+  const row = {
+    id: existing?.id || store.id("acc"),
+    email,
+    password: String(account.password),
+    storeId: sid,
+    adapter: sid === "toymate" ? "toymate" : sid,
+    storeName: sid === "toymate" ? "Toymate AU" : sid,
+    profileId: profileId || null,
+    source,
+    status: "active",
+    createdAt: existing?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  if (existing) {
+    state.db.accounts = state.db.accounts.map((a) => (a.id === existing.id ? row : a));
+  } else {
+    state.db.accounts.unshift(row);
+  }
+  state.db.accounts = state.db.accounts.slice(0, 500);
+  return row;
+}
+
 function snapshot() {
   return {
     settings: {
@@ -31,11 +63,13 @@ function snapshot() {
       // Never echo full secrets back longer than needed in UI — still needed for form edit.
       apiKey: state.settings.apiKey || "",
       hyperApiKey: state.settings.hyperApiKey || "",
+      capsolverApiKey: state.settings.capsolverApiKey || "",
     },
     profiles: state.db.profiles,
     proxyGroups: state.db.proxyGroups,
     tasks: state.db.tasks,
     results: state.db.results.slice(-50),
+    accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
   };
@@ -84,12 +118,24 @@ runner.setFinishedHandler((result) => {
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
     if (t) {
-      t.lastStatus =
-        result.consumerCode ||
-        (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
-      t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
-      t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
-      t.lastOrderNumber = result.orderNumber || null;
+      if (result.ok && result.accountGen && result.account?.email) {
+        upsertGeneratedAccount(result.account, {
+          storeId: t.store || "toymate",
+          profileId: t.profileId,
+          source: "generated",
+        });
+        t.lastStatus = "complete";
+        t.lastLabel = `Account ${result.account.email}`;
+        t.lastError = null;
+        t.lastOrderNumber = null;
+      } else {
+        t.lastStatus =
+          result.consumerCode ||
+          (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
+        t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
+        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
+        t.lastOrderNumber = result.orderNumber || null;
+      }
       t.lastCheckoutStage = result.checkoutStage || null;
       t.stockStatus = result.stockStatus || null;
       t.updatedAt = Date.now();
@@ -155,6 +201,7 @@ ipcMain.handle("desktop:start-engine", async () => {
   const started = await sidecar.startSidecar({
     hyperApiKey: hyper,
     paydockPublicKey: state.settings.paydockPublicKey,
+    capsolverApiKey: state.settings.capsolverApiKey,
     maxConcurrent: state.settings.maxConcurrent,
   });
   if (!started.ok) return { ...started, snapshot: snapshot() };
@@ -223,9 +270,10 @@ ipcMain.handle("desktop:delete-proxy-group", (_e, groupId) => {
 // Tasks
 ipcMain.handle("desktop:upsert-task", (_e, task) => {
   const now = Date.now();
+  const storeId = task.store || "kmart";
   const row = {
     id: task.id || store.id("task"),
-    store: task.store || "kmart",
+    store: storeId,
     label: String(task.label || "").slice(0, 120),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
@@ -234,6 +282,13 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     proxyGroupId: task.proxyGroupId || null,
     placeOrder: task.placeOrder !== false,
     kmartMode: "current",
+    // Toymate-only fields (ignored by Kmart payload builder).
+    toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
+    paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
+    accountPassword:
+      storeId === "toymate" && typeof task.accountPassword === "string"
+        ? task.accountPassword
+        : undefined,
     enabled: task.enabled !== false,
     updatedAt: now,
   };
@@ -246,6 +301,24 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
 
 ipcMain.handle("desktop:delete-task", (_e, taskId) => {
   state.db.tasks = state.db.tasks.filter((t) => t.id !== taskId);
+  persistDb();
+  return snapshot();
+});
+
+ipcMain.handle("desktop:delete-account", (_e, accountId) => {
+  const id = String(accountId || "");
+  state.db.accounts = (state.db.accounts || []).filter((a) => a.id !== id);
+  persistDb();
+  return snapshot();
+});
+
+ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
+  const sid = storeId ? String(storeId) : "";
+  if (sid) {
+    state.db.accounts = (state.db.accounts || []).filter((a) => String(a.storeId || "") !== sid);
+  } else {
+    state.db.accounts = [];
+  }
   persistDb();
   return snapshot();
 });
@@ -307,6 +380,8 @@ async function e2eAutorun() {
     if (!hyper) return { ok: false, error: "Hyper API key required in Settings" };
     return sidecar.startSidecar({
       hyperApiKey: hyper,
+      paydockPublicKey: state.settings.paydockPublicKey,
+      capsolverApiKey: state.settings.capsolverApiKey,
       maxConcurrent: state.settings.maxConcurrent,
     });
   })();

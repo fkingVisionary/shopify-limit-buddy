@@ -1,13 +1,16 @@
 // Adapter registry. Pick by hostname; return null when nothing matches so
 // the caller can fall back to the legacy generic-Shopify chain in checkout.js.
 //
-// Checkout path only: kmart (raw HTTP) + kmart-playwright (opt-in via
-// kmartMode="playwright" in checkout.js). Lab/recon modules live under
-// ../experiments/ and are mounted as separate HTTP endpoints.
+// Checkout path: kmart (raw HTTP) + toymate (BigCommerce/CF) + kmart-playwright
+// (opt-in via kmartMode="playwright" in checkout.js). Lab/recon modules live
+// under ../experiments/ and are mounted as separate HTTP endpoints.
+//
+// Adding a store = new adapter file + push here. Do not change kmartAdapter.
 
 import { kmartAdapter } from "./kmart.js";
+import { toymateAdapter } from "./toymate.js";
 
-const ADAPTERS = [kmartAdapter];
+const ADAPTERS = [kmartAdapter, toymateAdapter];
 
 export function pickAdapter(storeUrl) {
   let host;

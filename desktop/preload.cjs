@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld("desktop", {
   upsertTask: (t) => ipcRenderer.invoke("desktop:upsert-task", t),
   deleteTask: (id) => ipcRenderer.invoke("desktop:delete-task", id),
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
+  deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
+  clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

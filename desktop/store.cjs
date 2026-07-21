@@ -41,6 +41,8 @@ const DEFAULT_SETTINGS = {
   hyperApiKey: "", // BYO Hyper; empty = try control-plane provision later
   /** Kmart Paydock widget public key (static client key — not a secret). */
   paydockPublicKey: "",
+  /** Toymate Cloudflare + form captcha (CapSolver). Not used by Kmart. */
+  capsolverApiKey: "",
   maxConcurrent: 5,
   placeOrderDefault: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
@@ -52,6 +54,8 @@ const DEFAULT_DB = {
   proxyGroups: [],
   tasks: [],
   results: [],
+  /** Generated retailer accounts (Toymate account gen, etc.). */
+  accounts: [],
 };
 
 function loadAll() {
@@ -61,6 +65,7 @@ function loadAll() {
   db.proxyGroups = Array.isArray(db.proxyGroups) ? db.proxyGroups : [];
   db.tasks = Array.isArray(db.tasks) ? db.tasks : [];
   db.results = Array.isArray(db.results) ? db.results.slice(-200) : [];
+  db.accounts = Array.isArray(db.accounts) ? db.accounts : [];
   return { settings, db };
 }
 
@@ -74,6 +79,7 @@ function saveDb(db) {
     proxyGroups: db.proxyGroups,
     tasks: db.tasks,
     results: (db.results || []).slice(-200),
+    accounts: (db.accounts || []).slice(0, 500),
   });
 }
 
