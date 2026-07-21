@@ -174,6 +174,12 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 
 ## Other dossiers (condensed)
 
+### Pokémon Centre AU — `pokemoncenter.com/en-au` — **full dig:** [`POKEMON_CENTRE_MODULE.md`](./POKEMON_CENTRE_MODULE.md)
+- **Incapsula + DataDome + hCaptcha**; Elastic Path **Cortex**; AU **Global-e**.
+- DC: Incapsula iframe on all app paths; `robots.txt` soft (Cortex Disallow list).
+- Hyper ✅ on Incapsula/DD; ❌ hCaptcha. Crowded English bots. Phase 2 after Bandai + DD/Incapsula wiring.
+- JP `pokemoncenter-online.com` = SFCC + volt-adc — separate / skip for AU.
+
 ### JB Hi-Fi — `jbhifi.com.au` — **full dig:** [`JB_HIFI_MODULE.md`](./JB_HIFI_MODULE.md)
 - **Shopify Plus** custom + **Cloudflare Workers** (robots.txt explicit). **Not Akamai.**
 - reCAPTCHA Enterprise `6LewUkQo…` + **Riskified**; DC **429/503** on home/products/collections.
@@ -261,13 +267,14 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | Store | Drop $ | Hyper antibot | Account friction | Verdict |
 |---|---|---|---|---|
 | Bandai AU | OP / exclusives ★★★★★ | F5 (API soft) | BNID + SMS agen | **Build first** |
+| Pokémon Centre AU | PC exclusives / ETBs ★★★★★ | Incapsula+DD ✅ · hCaptcha ❌ | Med + address fraud | Phase 2 — `POKEMON_CENTRE_MODULE.md` |
 | AusPost Shop | Coins ★★★★ | DataDome ✅ | MyPost Auth0 | Parked |
 | Costco | Hot Buys ★★★★ | Akamai+Kasada ✅ | Paid membership | Backlog |
 | Target / Big W / Uniqlo | Electronics / UT ★★★ | Akamai ✅ | Low | Akamai reuse |
 | Harvey Norman | Electronics / TCG ★★★ | Incapsula ✅ | Low–med | Strong next Hyper |
 | Foot Locker / Platypus | Sneakers ★★★★ | Kasada / DD ✅ | Low–med | After Kasada/DD wired |
 | JB Hi-Fi | Pokémon MSRP ★★★★★ | CF + reCAPTCHA ❌ | Low | Monitor / later browser |
-| EB / Toymate / Pop Mart | TCG / Labubu ★★★★ | CF ❌ | Membership / EQL | Browser-only |
+| EB / Toymate / Pop Mart | TCG / Labubu ★★★★ | CF ❌ | Membership / EQL | Browser / agen |
 | Good Guys | Electronics ★★ | CF + Shopify ❌ | Low | Skip |
 | Officeworks / Myer | Low–med exclusives ★★ | Soft / unclear | Auth0 / account | Low priority |
 
@@ -281,12 +288,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 |---|---|
 | Akamai sensor/SBSD/pixel | ✅ in `antibot.js` (Kmart) → Target / Costco / Uniqlo / Big W |
 | Kasada CT + CD | ✅ Hyper API · ❌ not wired → **Costco + Foot Locker** |
-| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost + Platypus** |
-| Incapsula Reese84 / UTMVC | ✅ Hyper API · ❌ not wired → **Harvey Norman / DJ / Smyths** |
+| DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost + Platypus + Pokémon Centre** |
+| Incapsula Reese84 / UTMVC | ✅ Hyper API · ❌ not wired → **Harvey Norman / DJ / Smyths / Pokémon Centre** |
 | Cloudflare Turnstile / managed challenge | ❌ → JB / EB / Toymate / Pop Mart / Good Guys / Rebel |
 | Google reCAPTCHA Enterprise | ❌ (not Hyper) → JB / Disney / many checkouts |
-| F5 / Volterra / Shape | ❌ → Bandai HTML edge; APIs may bypass |
-| Global‑e checkout | N/A vendor · custom work → Bandai / Disney |
+| hCaptcha | ❌ (not Hyper) → **Pokémon Centre** drop/Imperva challenges |
+| F5 / Volterra / Shape | ❌ → Bandai HTML edge; JP `pokemoncenter-online.com` volt-adc |
+| Global‑e checkout | N/A vendor · custom work → Bandai / Disney / **Pokémon Centre AU** |
 | Auth0 MyPost / BNID / Costco membership | Custom session machines |
 
 ---
@@ -328,6 +336,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | bigw.com.au | Timeout |
 | toymate.com.au | CF Request Blocked |
 | ebgames.com.au | CF Just a moment |
+| pokemoncenter.com/en-au | Incapsula challenge (~1 KB iframe); robots.txt Cortex paths soft |
 | costco.com.au | Akamai 403 almost everywhere; `/favicon.ico` → Spartacus shell; REST baseSite `australia` from urlscan |
 | jbhifi.com.au | CF 429/503; robots = Shopify + CF Workers; reCAPTCHA Enterprise + Riskified (urlscan) |
 | harveynorman.com.au | Incapsula “Pardon Our Interruption” |
@@ -337,6 +346,33 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | thegoodguys.com.au | Shopify Oxygen/Hydrogen + CF |
 | popmart.com/au | CF `__cf_bm` |
 | disneystore.com.au | 200 SFCC + Akamai cookies + Global‑e + reCAPTCHA |
+
+---
+
+## Deep dive — Pokémon Centre AU
+
+**Canonical:** `https://www.pokemoncenter.com/en-au` · **Full dig:** [`POKEMON_CENTRE_MODULE.md`](./POKEMON_CENTRE_MODULE.md)
+
+### Why it matters
+- Official PC exclusives / PC ETBs; AU locale since 2024.
+- Same TPCI stack as US/UK — English bots already compete hard.
+
+### Stack
+| Layer | Detail |
+|---|---|
+| Edge | **Imperva Incapsula** (DC hard challenge) |
+| App | **DataDome** (`dd.pokemoncenter.com`) + **hCaptcha** |
+| Commerce | **Elastic Path Cortex** (`/cortex`, `/carts`, `/items`, …) |
+| AU checkout | **Global-e** (`/intl-checkout`) — GST/duties via GE |
+| Pay | CyberSource/Cardinal + PayPal / Apple Pay / Klarna / Amazon Pay (AU) |
+
+### Module plan
+1. Wire Incapsula + DataDome (shared with HN / AusPost).
+2. AU ISP HAR → Cortex ATC → Global-e.
+3. Desktop hCaptcha harvest for drop windows.
+4. **Not JP** `pokemoncenter-online.com` (SFCC + volt-adc).
+
+**Feasibility:** High once DD+Incapsula live; hCaptcha + crowded market keep it behind Bandai.
 
 ---
 
