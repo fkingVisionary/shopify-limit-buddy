@@ -1116,7 +1116,7 @@ function Index() {
         storeName: t.storeName || KMART_STORE_NAME,
         checkoutStartedAt: Date.now(),
         scheduledAt: null,
-        message: "Starting Kmart checkout…",
+        message: "Starting",
         lastChecked: Date.now(),
         orderId: null,
       });
@@ -1561,9 +1561,7 @@ function Index() {
                   const finish = (b: any, elapsed: number) => {
                     const stepsArr = Array.isArray(b?.steps) ? b.steps : [];
                     const lastStep = stepsArr.length ? stepsArr[stepsArr.length - 1] : null;
-                    const stepSummary = lastStep ? ` (reached: ${lastStep.step})` : "";
                     const paymentRejected = !!b?.paymentRejected;
-                    const declineMsg = (b?.paymentMessage as string) || "Payment declined";
                     const finalUrl: string = typeof b?.finalUrl === "string" ? b.finalUrl : "";
                     const looksConfirmed = !!b?.orderId || /\/thank_you|orders\//i.test(finalUrl);
 
@@ -1575,9 +1573,9 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Payment declined: ${declineMsg} · ${Math.round(elapsed / 1000)}s`,
+                        message: "Payment declined",
                       });
-                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `declined: ${declineMsg}` });
+                      fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "Payment declined" });
                       return;
                     }
                     if (b?.ok && b.dryRun) {
@@ -1588,7 +1586,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Dry-run OK${stepSummary} · ${Math.round(elapsed / 1000)}s`,
+                        message: "Complete",
                       });
                       return;
                     }
@@ -1600,7 +1598,7 @@ function Index() {
                         steps: stepsArr,
                         screenshotB64: b.screenshotB64,
                         browserlessElapsedMs: elapsed,
-                        message: `Order ${b.orderId ?? "?"} confirmed · ${Math.round(elapsed / 1000)}s`,
+                        message: "Order confirmed",
                       });
                       notify("ORDER CONFIRMED", `${t.productTitle ?? t.input}`);
                       fireWebhook("confirmed", { ...t, orderId: b.orderId ?? null, checkoutElapsedMs: elapsed });
@@ -1614,7 +1612,7 @@ function Index() {
                         screenshotB64: b.screenshotB64 ?? null,
                         finalUrl: b.finalUrl,
                         browserlessElapsedMs: elapsed,
-                        message: `Outcome uncertain${stepSummary} · ${Math.round(elapsed / 1000)}s`,
+                        message: "Something went wrong",
                       });
                       fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: "outcome uncertain (no order id)" });
                       return;
@@ -1626,18 +1624,23 @@ function Index() {
                     // has already gone through.
                     const failedAt = b?.failedStep ?? lastStep?.step ?? "unknown";
                     const errText = b?.error ?? "unknown error";
-                    const pastSubmit = /submit|payment_result|three_d_secure|confirm/.test(String(failedAt));
-                    const hint = pastSubmit ? " · Payment may have completed — verify in bank / Shopify order email" : "";
+                    const failMsg = /declin|reject/i.test(`${failedAt} ${errText}`)
+                      ? "Payment declined"
+                      : "Something went wrong";
                     updateTask(t.id, {
                       status: "failed",
                       steps: stepsArr,
                       screenshotB64: b?.screenshotB64 ?? null,
                       finalUrl: b?.finalUrl,
                       browserlessElapsedMs: elapsed,
-                      message: `Failed at ${failedAt}: ${errText}${hint}`,
+                      message: failMsg,
                     });
 
-                    fireWebhook("failed", { ...t, checkoutElapsedMs: elapsed, message: `${failedAt}: ${errText}` });
+                    fireWebhook("failed", {
+                      ...t,
+                      checkoutElapsedMs: elapsed,
+                      message: failMsg,
+                    });
                   };
                   const fire = async () => {
                     // Local runner path — keep the existing synchronous flow.
@@ -2452,15 +2455,15 @@ function TasksView({
           t.retailer === "kmart" || isKmartStoreId(t.storeId) || isKmartHost(t.storeUrl) || isKmartHost(t.input);
         const statusInfo = (() => {
           switch (t.status) {
-            case "in_stock":       return { label: "IN STOCK", color: "text-green-400" };
-            case "adding_to_cart": return { label: "Adding to cart…", color: "text-amber-400" };
-            case "checkout_ready": return { label: isKmartCard ? (t.message ?? "Checkout ready") : "Checkout ready", color: "text-green-400" };
+            case "in_stock":       return { label: "In stock", color: "text-green-400" };
+            case "adding_to_cart": return { label: "Adding to cart", color: "text-amber-400" };
+            case "checkout_ready": return { label: isKmartCard ? (t.message ?? "Complete") : "Checkout ready", color: "text-green-400" };
             case "opened":         return { label: "Checkout opened", color: "text-primary" };
-            case "checking_out":   return { label: t.message ?? (isKmartCard ? "Checking out…" : "Submitting order…"), color: "text-amber-400" };
-            case "confirmed":      return { label: `ORDER ${t.orderId ?? "CONFIRMED"}`, color: "text-emerald-400" };
-            case "failed":         return { label: t.message ?? "Checkout failed", color: "text-destructive" };
+            case "checking_out":   return { label: t.message ?? (isKmartCard ? "Starting" : "Submitting order…"), color: "text-amber-400" };
+            case "confirmed":      return { label: t.message ?? "Order confirmed", color: "text-emerald-400" };
+            case "failed":         return { label: t.message ?? "Something went wrong", color: "text-destructive" };
             case "monitoring":     return { label: t.message ?? "Waiting for restock", color: "text-sky-400" };
-            case "error":          return { label: t.message ?? "Error", color: "text-destructive" };
+            case "error":          return { label: t.message ?? "Something went wrong", color: "text-destructive" };
             default:               return { label: "Idle", color: "text-muted-foreground" };
           }
         })();
