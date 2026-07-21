@@ -51,10 +51,11 @@ Wire missing solvers in `antibot.js` once, then store adapters:
 | Order | Store | Antibot | Doc |
 |---|---|---|---|
 | 2a | AusPost Shop (un-park for coin season) | DataDome | `AUSPOST_SHOP_MODULE.md` |
-| 2b | Costco AU | Akamai (reuse) + Kasada (wire) | `COSTCO_AU_MODULE.md` |
-| 2c | Target / Uniqlo / Big W | Akamai reuse | `NEXT_STORE_MODULES.md` |
-| 2d | Harvey Norman | Incapsula | scoreboard |
-| 2e | Foot Locker / Platypus | Kasada / DataDome | scoreboard |
+| 2b | Harvey Norman | Incapsula | scoreboard |
+| 2c | **Pokémon Centre AU** | Incapsula + DataDome (+ hCaptcha gap) | `POKEMON_CENTRE_MODULE.md` |
+| 2d | Costco AU | Akamai (reuse) + Kasada (wire) | `COSTCO_AU_MODULE.md` |
+| 2e | Target / Uniqlo / Big W | Akamai reuse | `NEXT_STORE_MODULES.md` |
+| 2f | Foot Locker / Platypus | Kasada / DataDome | scoreboard |
 
 ---
 
@@ -88,4 +89,5 @@ Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outsi
 | `COSTCO_AU_MODULE.md` | Costco dig |
 | `JB_HIFI_MODULE.md` | JB dig (CF correction) |
 | `hyper-solutions-brief.md` | Hyper vendor API notes |
+| `POKEMON_CENTRE_MODULE.md` | Pokémon Centre AU dig (Incapsula+DD+GE) |
 | `FUTURE_ROADMAP.md` | This plan |
