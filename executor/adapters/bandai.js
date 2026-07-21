@@ -9,15 +9,14 @@
 
 import { request } from "../http.js";
 import { createBandaiAccount } from "./bandai-agen.js";
+import { browserLoginBandai } from "./bandai-login-browser.js";
+import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import {
   createBandaiSession,
-  profileFromTask,
   parseAreaItemNo,
   extractPreloadSuffix,
   readText,
-  readJson,
   BANDAI_BASE,
-  BANDAI_ORIGIN,
   GLOBALE_MID,
   bandaiNavHeaders,
 } from "./bandai-session.js";
@@ -157,15 +156,14 @@ async function runChance(task, ctx, session, tStep, steps) {
     };
   }
 
-  await tStep("warm", () => session.warm());
-  const login = await tStep("login", () => session.loginPassword(email, password));
-  if (!login.ok) {
+  const authed = await ensureBandaiLogin(task, ctx, session, tStep, email, password);
+  if (!authed.ok) {
     return {
       ok: false,
       steps,
-      error: login.note || "login failed",
-      failedStep: "login",
-      restrictedType: login.restrictedType,
+      error: authed.login?.note || "login failed",
+      failedStep: authed.via === "browser" ? "login_browser" : "login",
+      restrictedType: authed.login?.restrictedType,
       checkoutStage: "chance",
     };
   }
@@ -217,6 +215,53 @@ async function runChance(task, ctx, session, tStep, steps) {
   };
 }
 
+async function ensureBandaiLogin(task, ctx, session, tStep, email, password) {
+  await tStep("warm", () => session.warm());
+  const login = await tStep("login", () => session.loginPassword(email, password));
+  if (login.ok) return { ok: true, login, via: "http" };
+
+  // F5 often returns 501 HTML PAGE NOT AVAILABLE for POST /login from raw HTTP.
+  // Narrow Playwright login harvests SESSION, then ATC stays on HTTP.
+  const wantBrowser =
+    task.bandaiBrowserLogin !== false &&
+    (login.status === 501 ||
+      /PAGE NOT AVAILABLE|login 501/i.test(String(login.note || "")) ||
+      task.bandaiBrowserLogin === true);
+
+  if (!wantBrowser) {
+    return { ok: false, login, via: "http" };
+  }
+
+  const browser = await tStep("login_browser", async () => {
+    const out = await browserLoginBandai({
+      email,
+      password,
+      proxy: task.proxy || null,
+      timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+    });
+    if (out.cookies && ctx.jar?.load) ctx.jar.load(out.cookies);
+    // Refresh CSRF after cookie handoff
+    if (out.ok) {
+      const w = await session.warm();
+      return {
+        ok: out.ok && w.ok,
+        status: out.loginStatus,
+        note: out.note || (out.ok ? "browser login ok" : out.error),
+        restrictedType: out.restrictedType,
+        memberRefreshOk: out.memberRefreshOk,
+      };
+    }
+    return {
+      ok: false,
+      status: out.loginStatus ?? null,
+      note: out.detail || out.error || out.note || "browser_login_failed",
+      restrictedType: out.restrictedType,
+    };
+  });
+
+  return { ok: browser.ok, login: browser, via: "browser" };
+}
+
 async function runCheckout(task, ctx, session, tStep, steps) {
   const placeOrder = task.placeOrder === true && task.dryRun !== true;
   const account = task.account || {};
@@ -233,20 +278,6 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  await tStep("warm", () => session.warm());
-  const login = await tStep("login", () => session.loginPassword(email, password));
-  if (!login.ok) {
-    return {
-      ok: false,
-      steps,
-      error: login.note || "login failed",
-      failedStep: "login",
-      restrictedType: login.restrictedType,
-      checkoutStage: "pre_cart",
-      cookies: ctx.jar?.dump?.() ?? {},
-    };
-  }
-
   const productCode = parseAreaItemNo(task);
   if (!productCode) {
     return {
@@ -255,6 +286,82 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       error: "Bandai product URL / areaItemNo / product code required",
       failedStep: "product",
       checkoutStage: "pre_cart",
+    };
+  }
+
+  // F5 binds login + ATC to browser TLS. Prefer one Playwright session for the
+  // whole cart path (HTTP POST /login and ATC return 501/503 outside the browser).
+  const forceHttp = task.bandaiHttpOnly === true;
+  if (!forceHttp && task.bandaiBrowserCheckout !== false) {
+    const s0 = Date.now();
+    const out = await browserBandaiCheckout({
+      email,
+      password,
+      productCode,
+      qty: Number(task.qty) || 1,
+      proxy: task.proxy || null,
+      placeOrder,
+      // Decline-only fake card — never charge the owner's real card.
+      card: placeOrder
+        ? {
+            number: "4000000000000002",
+            expMonth: "12",
+            expYear: "30",
+            cvv: "999",
+            holder: "DECLINE TEST",
+          }
+        : null,
+      shippingAreaCode: task.shippingAreaCode || "au",
+      globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
+      timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+    });
+    if (Array.isArray(out.steps)) {
+      for (const s of out.steps) steps.push(s);
+    } else {
+      steps.push({
+        step: "browser_checkout",
+        ok: out.ok !== false,
+        status: null,
+        ms: Date.now() - s0,
+        note: out.note || out.error || null,
+      });
+    }
+    if (out.cookies && ctx.jar?.load) ctx.jar.load(out.cookies);
+    return {
+      ok: Boolean(out.ok),
+      steps,
+      failedStep: out.failedStep || null,
+      error: out.ok ? null : out.error || out.note || null,
+      checkoutStage: out.checkoutStage || (out.ok ? "cart" : "pre_cart"),
+      dryRun: out.dryRun ?? !placeOrder,
+      areaItemNo: out.areaItemNo,
+      cartSn: out.cartSn,
+      cartId: out.cartId,
+      cartItemSn: out.cartItemSn,
+      checkoutSn: out.checkoutSn,
+      title: out.title,
+      paymentStatus: out.paymentStatus,
+      declineTarget: out.declineTarget,
+      finalUrl: out.finalUrl || `${BANDAI_BASE}/cart`,
+      cookies: out.cookies || ctx.jar?.dump?.() || {},
+      note: out.note,
+      via: "browser",
+      globaleMid: GLOBALE_MID,
+      orderNumber: out.orderNumber ?? null,
+    };
+  }
+
+  // Legacy HTTP-only path (usually F5-blocked for login/ATC — kept for labs).
+  const authed = await ensureBandaiLogin(task, ctx, session, tStep, email, password);
+  if (!authed.ok) {
+    return {
+      ok: false,
+      steps,
+      error: authed.login?.note || "login failed",
+      failedStep: authed.via === "browser" ? "login_browser" : "login",
+      restrictedType: authed.login?.restrictedType,
+      checkoutStage: "pre_cart",
+      cookies: ctx.jar?.dump?.() ?? {},
     };
   }
 
@@ -279,166 +386,28 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     const err = json?.detail || json?.errorCode || json?.message || null;
     const business =
       err ||
-      (typeof json === "string" ? json : null) ||
       (/PAGE NOT AVAILABLE|NETWORK CONGESTION/i.test(textHint) ? textHint.slice(0, 40) : null);
-    const added = json?.items?.[0]?.addedNewCart ?? json?.totalCartCount != null;
     return {
       ok: status >= 200 && status < 300 && !/CouldNotAddToCart/i.test(String(err || "")),
       status,
-      note: business
-        ? String(business)
-        : added
-          ? `ATC ok cart=${json?.totalCartCount ?? "?"}`
-          : `ATC ${status}`,
-      json,
-      totalCartCount: json?.totalCartCount,
-    };
-  });
-
-  if (!atc.ok) {
-    return {
-      ok: false,
-      steps,
-      error: atc.note || "addToCart failed",
-      failedStep: "addToCart",
-      checkoutStage: "cart",
-      areaItemNo: pdp.areaItemNo,
-      cookies: ctx.jar?.dump?.() ?? {},
-      note:
-        /501|PAGE NOT AVAILABLE/i.test(String(atc.note))
-          ? "ATC gated — need logged-in AU ISP HAR if this persists"
-          : atc.note,
-    };
-  }
-
-  const cart = await tStep("cart_detail", async () => {
-    const { status, json } = await session.apiJson("GET", "/api/cart/detail", {
-      referer: `${BANDAI_BASE}/cart`,
-    });
-    const cartSn = json?.cartSn || json?.cart?.cartSn || json?.sn || null;
-    const cartId = json?.cartId || json?.cart?.cartId || cartSn;
-    const lines = json?.items || json?.cartItems || json?.lineItems || [];
-    const cartItemSn =
-      lines?.[0]?.cartItemSn || lines?.[0]?.sn || lines?.[0]?.cartLineItemSn || null;
-    return {
-      ok: status === 200 && Boolean(json),
-      status,
-      note: cartSn ? `cartSn ${cartSn}` : `cart ${status}`,
-      cartSn,
-      cartId,
-      cartItemSn,
+      note: business || `ATC ${status}`,
       json,
     };
   });
 
-  // Phase C exit: stop before GE when placeOrder is false (default dry-run).
-  if (!placeOrder) {
-    return {
-      ok: true,
-      steps,
-      checkoutStage: "cart",
-      dryRun: true,
-      areaItemNo: pdp.areaItemNo,
-      cartSn: cart.cartSn,
-      cartItemSn: cart.cartItemSn,
-      title: pdp.title,
-      finalUrl: `${BANDAI_BASE}/cart`,
-      cookies: ctx.jar?.dump?.() ?? {},
-      note: "ATC + cart detail ok — GE checkout skipped (placeOrder:false)",
-    };
-  }
-
-  // Phase D scaffold: resolve merchantCartToken suffix + checkout POST.
-  // Global-e captcha/fingerprint may require browser — surface clearly if blocked.
-  let tokenSuffix = task.globaleMerchantCartTokenSuffix || null;
-  if (!tokenSuffix) {
-    await tStep("cart_page_preload", async () => {
-      const res = await request(`${BANDAI_BASE}/cart`, {
-        headers: bandaiNavHeaders({
-          referer: `${BANDAI_BASE}/`,
-          userAgent: session.state.userAgent,
-        }),
-      }, ctx);
-      const html = await readText(res);
-      ctx.jar?.ingest?.(res.headers);
-      tokenSuffix = extractPreloadSuffix(html);
-      return {
-        ok: Boolean(tokenSuffix),
-        status: res.status,
-        note: tokenSuffix
-          ? `suffix ${String(tokenSuffix).slice(0, 12)}…`
-          : "globaleMerchantCartTokenSuffix missing — need cart HAR",
-      };
-    });
-  }
-
-  if (!tokenSuffix || !cart.cartSn || !cart.cartItemSn) {
-    return {
-      ok: false,
-      steps,
-      error: "GE checkout needs cartSn, cartItemSn, and globaleMerchantCartTokenSuffix",
-      failedStep: "ge_token",
-      checkoutStage: "tokenize",
-      dryRun: false,
-      cartSn: cart.cartSn,
-      cookies: ctx.jar?.dump?.() ?? {},
-      note: "Ask owner for cart-page PRELOAD / HAR",
-    };
-  }
-
-  const merchantCartToken = `${cart.cartId || cart.cartSn}_Checkout_${tokenSuffix}`;
-  const shippingAreaCode = task.shippingAreaCode || "au";
-
-  const checkout = await tStep("cart_checkout", async () => {
-    const { status, json } = await session.apiJson(
-      "POST",
-      `/api/cart/${encodeURIComponent(cart.cartSn)}/checkout`,
-      {
-        body: {
-          merchantCartToken,
-          shippingAreaCode,
-          items: [{ cartItemSn: cart.cartItemSn }],
-        },
-        referer: `${BANDAI_BASE}/cart`,
-      },
-    );
-    const checkoutSn = json?.checkoutSn || json?.data?.checkoutSn || null;
-    const err = json?.detail || json?.message || null;
-    return {
-      ok: status >= 200 && status < 300 && Boolean(checkoutSn),
-      status,
-      note: checkoutSn ? `checkoutSn ${checkoutSn}` : String(err || status),
-      checkoutSn,
-      json,
-    };
-  });
-
-  if (!checkout.ok) {
-    return {
-      ok: false,
-      steps,
-      error: checkout.note || "checkout POST failed",
-      failedStep: "cart_checkout",
-      checkoutStage: "tokenize",
-      cookies: ctx.jar?.dump?.() ?? {},
-      note: `GE mid ${GLOBALE_MID} — browser handoff may be required for captcha/fp`,
-    };
-  }
-
-  // Stop before GE payment widget — HTTP-only path ends here until HAR proves otherwise.
   return {
-    ok: true,
+    ok: Boolean(atc.ok),
     steps,
-    checkoutStage: "tokenize",
-    dryRun: false,
-    checkoutSn: checkout.checkoutSn,
-    merchantCartToken,
-    globaleMid: GLOBALE_MID,
+    failedStep: atc.ok ? null : "addToCart",
+    error: atc.ok ? null : atc.note,
+    checkoutStage: "cart",
+    dryRun: true,
     areaItemNo: pdp.areaItemNo,
-    finalUrl: `${BANDAI_BASE}/orderdetails`,
+    title: pdp.title,
     cookies: ctx.jar?.dump?.() ?? {},
-    note:
-      "Bandai checkoutSn minted — complete Global-e (captcha/fp/pay) via browser handoff; preComplete not automated yet",
+    note: atc.ok
+      ? "HTTP ATC ok (unusual — F5 usually requires browser)"
+      : "HTTP ATC blocked — use default browser checkout path",
   };
 }
 
