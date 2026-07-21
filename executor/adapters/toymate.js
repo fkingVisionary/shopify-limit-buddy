@@ -40,8 +40,8 @@ function navHeaders({ referer, origin, userAgent } = {}) {
   };
 }
 
-function apiHeaders({ referer, origin, userAgent } = {}) {
-  return {
+function apiHeaders({ referer, origin, userAgent, jar } = {}) {
+  const headers = {
     "user-agent": userAgent || UA,
     accept: "application/json, text/plain, */*",
     "accept-language": "en-AU,en;q=0.9",
@@ -56,6 +56,17 @@ function apiHeaders({ referer, origin, userAgent } = {}) {
     ...(referer ? { referer } : {}),
     ...(origin ? { origin } : {}),
   };
+  // BigCommerce Storefront API returns 403 without the jar's XSRF-TOKEN.
+  const dump = jar?.dump?.() || {};
+  const xsrf = dump["XSRF-TOKEN"] || dump["xsrf-token"];
+  if (xsrf) {
+    try {
+      headers["x-xsrf-token"] = decodeURIComponent(String(xsrf));
+    } catch {
+      headers["x-xsrf-token"] = String(xsrf);
+    }
+  }
+  return headers;
 }
 
 async function readText(res) {
@@ -777,15 +788,18 @@ export const toymateAdapter = {
       if (productId && variantId && productId !== variantId) line.variantId = variantId;
       const res = await request(`${base}/api/storefront/carts`, {
         method: "POST",
-        headers: apiHeaders({ referer: productUrl, origin }),
+        headers: apiHeaders({ referer: productUrl, origin, jar: ctx.jar }),
         body: JSON.stringify({ lineItems: [line] }),
       }, ctx);
       const json = await readJson(res);
       const cartId = json?.id || json?.cartId || null;
+      const detail = json?.detail || json?.title || "";
       return {
         ok: Boolean(cartId) && res.status >= 200 && res.status < 300,
         status: res.status,
-        note: cartId ? `cart ${cartId}` : `cart ${res.status}`,
+        note: cartId
+          ? `cart ${cartId}`
+          : `cart ${res.status}${detail ? `: ${String(detail).slice(0, 120)}` : ""}`,
         cartId,
         json,
       };
@@ -808,7 +822,7 @@ export const toymateAdapter = {
     await tStep("checkout_get", async () => {
       const res = await request(
         `${base}/api/storefront/checkouts/${checkoutId}?include=cart.lineItems.physicalItems.options,customer,payments,promotions.banners`,
-        { headers: apiHeaders({ referer: `${base}/checkout`, origin }) },
+        { headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }) },
         ctx,
       );
       const json = await readJson(res);
@@ -839,7 +853,7 @@ export const toymateAdapter = {
         `${base}/api/storefront/checkouts/${checkoutId}/consignments?include=consignments.availableShippingOptions`,
         {
           method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
           body: JSON.stringify(consignmentBody),
         },
         ctx,
@@ -852,7 +866,7 @@ export const toymateAdapter = {
           `${base}/api/storefront/checkouts/${checkoutId}/consignments/${consignmentId}?include=consignments.availableShippingOptions`,
           {
             method: "PUT",
-            headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+            headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
             body: JSON.stringify({ shippingOptionId: optionId }),
           },
           ctx,
@@ -873,7 +887,7 @@ export const toymateAdapter = {
     await tStep("checkout_set_billing", async () => {
       const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/billing-address`, {
         method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
         body: JSON.stringify({ ...ship }),
       }, ctx);
       return {
@@ -891,7 +905,7 @@ export const toymateAdapter = {
       }
       const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
         method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
         body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
       }, ctx);
       return {
@@ -908,7 +922,7 @@ export const toymateAdapter = {
       await tStep("payment_paypal", async () => {
         const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/payments`, {
           method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
           body: JSON.stringify({ payment: { methodId: "paypalcommerce" } }),
         }, ctx);
         const json = await readJson(res);
@@ -951,13 +965,13 @@ export const toymateAdapter = {
         // Best-effort BC storefront instrument. Refine from operator HAR.
         const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/orders`, {
           method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
           body: JSON.stringify({}),
         }, ctx);
         if (res.status >= 400) {
           const payRes = await request(`${base}/api/storefront/checkouts/${checkoutId}/payments`, {
             method: "POST",
-            headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+            headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
             body: JSON.stringify({
               payment: {
                 methodId: task.cardMethodId || "creditcard",

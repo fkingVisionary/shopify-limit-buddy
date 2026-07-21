@@ -117,7 +117,11 @@ if (!process.env.CAPSOLVER_API_KEY) {
 const proxyRaw = toProxyUrl(pickProxy());
 const email = process.env.ACCOUNT_EMAIL || "proof3+mrv40gx11rzw@bullposted.com";
 const password = process.env.ACCOUNT_PASS || "Password1";
-let pdpUrl = process.argv[2] || process.env.PDP_URL || "";
+// Default to a known in-stock SKU when discover is skipped (Pokemon PDPs often OOS).
+let pdpUrl =
+  process.argv[2] ||
+  process.env.PDP_URL ||
+  "https://toymate.com.au/products.php?productId=53116";
 
 console.log(
   JSON.stringify({
