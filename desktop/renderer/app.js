@@ -46,6 +46,78 @@ function fillSelects() {
   if (curX) px.value = curX;
 }
 
+function emailBaseClient(email) {
+  const raw = String(email || "")
+    .trim()
+    .toLowerCase();
+  const m = raw.match(/^([^@]+)@(.+)$/);
+  if (!m) return "";
+  let local = m[1].replace(/\+.*$/, "");
+  const domain = m[2];
+  if (/^(gmail|googlemail)\.com$/i.test(domain)) local = local.replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
+function fillVaultAccountSelect() {
+  const sel = $("taskAccountId");
+  if (!sel || !state) return;
+  const cur = sel.value;
+  const rows = (state.accounts || []).filter((a) => (a.storeId || "toymate") === "toymate");
+  sel.innerHTML =
+    `<option value="">Select account…</option>` +
+    rows
+      .map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`)
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function syncAccountAssignUi() {
+  const assign = $("taskAccountAssign")?.value || "auto";
+  const manual = $("taskAccountManualWrap");
+  const hint = $("taskAccountAutoHint");
+  if (manual) manual.hidden = assign !== "manual";
+  if (hint) hint.hidden = assign !== "auto";
+  if (assign === "manual") fillVaultAccountSelect();
+}
+
+function syncTaskFormForStore() {
+  const store = $("taskStore")?.value || "kmart";
+  const toy = store === "toymate";
+  const opts = $("taskToymateOpts");
+  if (opts) opts.hidden = !toy;
+  const mode = $("taskToymateMode")?.value || "checkout";
+  const label = $("taskPdpLabel");
+  const input = $("taskPdp");
+  if (label) {
+    label.textContent = !toy
+      ? "Product URL (PDP)"
+      : mode === "account_gen"
+        ? "Store (auto)"
+        : mode === "monitor"
+          ? "Keywords"
+          : "Product URL";
+  }
+  if (input) {
+    input.disabled = toy && mode === "account_gen";
+    input.placeholder = !toy
+      ? "https://www.kmart.com.au/..."
+      : mode === "account_gen"
+        ? "Uses profile email/address"
+        : mode === "monitor"
+          ? "+pokemon -tin"
+          : "https://www.toymate.com.au/…";
+  }
+  const payWrap = $("taskToymatePayWrap");
+  if (payWrap) payWrap.hidden = !toy || mode !== "checkout";
+  const passWrap = $("taskAccountPassWrap");
+  if (passWrap) passWrap.hidden = !toy || mode !== "account_gen";
+  const assignWrap = $("taskAccountAssignWrap");
+  if (assignWrap) assignWrap.hidden = !toy || mode !== "checkout";
+  const placeWrap = $("taskPlaceOrderWrap");
+  if (placeWrap) placeWrap.hidden = toy && mode !== "checkout";
+  if (toy && mode === "checkout") syncAccountAssignUi();
+}
+
 function esc(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -57,7 +129,7 @@ function renderTasks() {
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
-    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart task on the right.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart or Toymate task on the right.</div></div></div>`;
     return;
   }
   el.innerHTML = tasks
@@ -76,17 +148,67 @@ function renderTasks() {
             : t.lastStatus === "queued"
               ? "run"
               : "";
+      const storeLabel = t.store === "toymate" ? `Toymate · ${t.toymateMode || "checkout"}` : "Kmart";
+      let accountMeta = "";
+      if (t.store === "toymate" && (t.toymateMode || "checkout") === "checkout") {
+        const assign = t.accountAssign || "auto";
+        if (assign === "guest") accountMeta = "account: guest";
+        else if (assign === "manual") {
+          const acc = (state.accounts || []).find((a) => a.id === t.accountId);
+          accountMeta = acc ? `account: ${acc.email}` : "account: manual (missing)";
+        } else {
+          const prof = (state.profiles || []).find((p) => p.id === t.profileId);
+          const base = emailBaseClient(prof?.email);
+          const n = (state.accounts || []).filter(
+            (a) => (a.storeId || "toymate") === "toymate" && emailBaseClient(a.email) === base,
+          ).length;
+          accountMeta = base ? `account: auto (${n} match ${base})` : "account: auto (no profile email)";
+        }
+      }
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
-          <div class="meta">${esc(t.pdpUrl)}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}</div>
+          <div class="meta">${esc(storeLabel)} · ${esc(t.pdpUrl || (t.toymateMode === "account_gen" ? "account gen" : ""))}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
           <button type="button" data-run-task="${t.id}">Run</button>
           <button type="button" class="danger" data-del-task="${t.id}">Del</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderAccounts() {
+  const el = $("accountList");
+  if (!el) return;
+  const rows = state.accounts || [];
+  if (!rows.length) {
+    el.innerHTML = `<div class="item"><div><strong>No accounts yet</strong><div class="meta">Run a Toymate Account gen task.</div></div></div>`;
+    return;
+  }
+  el.innerHTML = rows
+    .map((a) => {
+      const prof = (state.profiles || []).find((p) => p.id === a.profileId);
+      const match =
+        prof?.email && emailBaseClient(prof.email) === emailBaseClient(a.email)
+          ? `profile ${prof.name || prof.email}`
+          : a.emailBase || emailBaseClient(a.email);
+      return `<div class="item">
+        <div>
+          <strong>${esc(a.email)}</strong>
+          <span class="badge ok">${esc(a.storeName || a.storeId || "store")}</span>
+          <div class="meta"><code>${esc(a.password || "")}</code></div>
+          <div class="meta">match ${esc(match)}${a.lastUsedAt ? ` · used ${new Date(a.lastUsedAt).toLocaleString()}` : ""}</div>
+          <div class="meta">${a.createdAt ? new Date(a.createdAt).toLocaleString() : ""}</div>
+        </div>
+        <div class="actions">
+          <button type="button" class="secondary" data-copy-acc-email="${esc(a.id)}">Email</button>
+          <button type="button" class="secondary" data-copy-acc-pass="${esc(a.id)}">Pass</button>
+          <button type="button" class="danger" data-del-acc="${esc(a.id)}">Del</button>
         </div>
       </div>`;
     })
@@ -171,6 +293,7 @@ function renderSettings() {
   $("setControlPlane").value = s.controlPlaneUrl || "";
   $("setHyper").value = s.hyperApiKey || "";
   $("setPaydockPk").value = s.paydockPublicKey || "";
+  if ($("setCapsolver")) $("setCapsolver").value = s.capsolverApiKey || "";
   $("setMax").value = s.maxConcurrent ?? 5;
   $("setPlaceOrder").checked = s.placeOrderDefault !== false;
   $("licenseMsg").textContent = s.licenseMessage
@@ -181,8 +304,10 @@ function renderSettings() {
 function applyState(next) {
   state = next;
   fillSelects();
+  syncTaskFormForStore();
   renderTasks();
   renderProfiles();
+  renderAccounts();
   renderProxies();
   renderResults();
   renderSettings();
@@ -215,13 +340,38 @@ document.body.addEventListener("click", async (e) => {
     $("taskFormTitle").textContent = "Edit task";
     $("taskLabel").value = task.label || "";
     $("taskStore").value = task.store || "kmart";
+    if ($("taskToymateMode")) $("taskToymateMode").value = task.toymateMode || "checkout";
+    if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
+    if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
+    if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     $("taskPdp").value = task.pdpUrl || "";
     $("taskQty").value = task.qty || 1;
     $("taskQuantity").value = task.quantity || 1;
     $("taskProfile").value = task.profileId || "";
     $("taskProxy").value = task.proxyGroupId || "";
     $("taskPlaceOrder").checked = task.placeOrder !== false;
+    syncTaskFormForStore();
+    if ($("taskAccountId") && task.accountId) {
+      fillVaultAccountSelect();
+      $("taskAccountId").value = task.accountId;
+    }
     setTab("tasks");
+  }
+  if (t.dataset.delAcc) {
+    applyState(await window.desktop.deleteAccount(t.dataset.delAcc));
+  }
+  if (t.dataset.copyAccEmail || t.dataset.copyAccPass) {
+    const id = t.dataset.copyAccEmail || t.dataset.copyAccPass;
+    const acc = (state.accounts || []).find((a) => a.id === id);
+    if (acc) {
+      const text = t.dataset.copyAccEmail ? acc.email : acc.password;
+      try {
+        await navigator.clipboard.writeText(text || "");
+        appendLog(`Copied ${t.dataset.copyAccEmail ? "email" : "password"}`, "ok");
+      } catch {
+        appendLog("Clipboard unavailable", "err");
+      }
+    }
   }
   if (t.dataset.delTask) {
     applyState(await window.desktop.deleteTask(t.dataset.delTask));
@@ -268,21 +418,39 @@ document.body.addEventListener("click", async (e) => {
   }
 });
 
+function readTaskForm() {
+  const store = $("taskStore").value;
+  const accountAssign =
+    store === "toymate" ? $("taskAccountAssign")?.value || "auto" : undefined;
+  return {
+    id: $("taskId").value || undefined,
+    label: $("taskLabel").value,
+    store,
+    pdpUrl: $("taskPdp").value,
+    qty: Number($("taskQty").value),
+    quantity: Number($("taskQuantity").value),
+    profileId: $("taskProfile").value || null,
+    proxyGroupId: $("taskProxy").value || null,
+    placeOrder: $("taskPlaceOrder").checked,
+    toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
+    paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
+    accountPassword:
+      store === "toymate" ? $("taskAccountPassword")?.value || "" : undefined,
+    accountAssign,
+    accountId:
+      store === "toymate" && accountAssign === "manual"
+        ? $("taskAccountId")?.value || null
+        : null,
+  };
+}
+
+$("taskStore").onchange = () => syncTaskFormForStore();
+$("taskToymateMode").onchange = () => syncTaskFormForStore();
+if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
+
 $("taskForm").onsubmit = async (e) => {
   e.preventDefault();
-  applyState(
-    await window.desktop.upsertTask({
-      id: $("taskId").value || undefined,
-      label: $("taskLabel").value,
-      store: $("taskStore").value,
-      pdpUrl: $("taskPdp").value,
-      qty: Number($("taskQty").value),
-      quantity: Number($("taskQuantity").value),
-      profileId: $("taskProfile").value || null,
-      proxyGroupId: $("taskProxy").value || null,
-      placeOrder: $("taskPlaceOrder").checked,
-    }),
-  );
+  applyState(await window.desktop.upsertTask(readTaskForm()));
   $("taskReset").click();
 };
 
@@ -291,28 +459,29 @@ $("taskReset").onclick = () => {
   $("taskFormTitle").textContent = "New task";
   $("taskForm").reset();
   $("taskPlaceOrder").checked = true;
+  syncTaskFormForStore();
 };
 
 $("taskRunOne").onclick = async () => {
-  const saved = await window.desktop.upsertTask({
-    id: $("taskId").value || undefined,
-    label: $("taskLabel").value,
-    store: $("taskStore").value,
-    pdpUrl: $("taskPdp").value,
-    qty: Number($("taskQty").value),
-    quantity: Number($("taskQuantity").value),
-    profileId: $("taskProfile").value || null,
-    proxyGroupId: $("taskProxy").value || null,
-    placeOrder: $("taskPlaceOrder").checked,
-  });
+  const saved = await window.desktop.upsertTask(readTaskForm());
   applyState(saved);
+  const store = $("taskStore").value;
   const pdp = $("taskPdp").value.trim();
-  const match = state.tasks.find((t) => t.pdpUrl === pdp) || state.tasks[state.tasks.length - 1];
+  const match =
+    state.tasks.find((t) => t.store === store && (t.pdpUrl === pdp || (store === "toymate" && t.toymateMode === "account_gen"))) ||
+    state.tasks[state.tasks.length - 1];
   if (!match) return;
   const res = await window.desktop.runTasks([match.id]);
   if (!res.ok) appendLog(esc(res.error), "err");
   else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
   if (res.snapshot) applyState(res.snapshot);
+};
+
+$("btnClearAccounts").onclick = async () => {
+  const n = (state.accounts || []).length;
+  if (!n) return;
+  if (!window.confirm(`Delete all ${n} account(s)?`)) return;
+  applyState(await window.desktop.clearAccounts(null));
 };
 
 $("profileForm").onsubmit = async (e) => {
@@ -366,6 +535,7 @@ $("btnSaveSettings").onclick = async () => {
       controlPlaneUrl: $("setControlPlane").value.trim().replace(/\/$/, ""),
       hyperApiKey: $("setHyper").value.trim(),
       paydockPublicKey: $("setPaydockPk").value.trim(),
+      capsolverApiKey: $("setCapsolver")?.value?.trim() || "",
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
     }),

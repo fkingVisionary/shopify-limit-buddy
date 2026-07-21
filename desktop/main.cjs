@@ -8,6 +8,7 @@ const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
+const { resolveAccountForTask, emailBase } = require("./account-assign.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -24,6 +25,40 @@ function persistSettings() {
   store.saveSettings(state.settings);
 }
 
+function upsertGeneratedAccount(account, { storeId, profileId, source = "generated" } = {}) {
+  if (!account?.email || !account?.password) return null;
+  if (!Array.isArray(state.db.accounts)) state.db.accounts = [];
+  const email = String(account.email).trim();
+  const sid = storeId || "toymate";
+  const existing = state.db.accounts.find(
+    (a) =>
+      String(a.storeId || "") === sid &&
+      String(a.email || "").toLowerCase() === email.toLowerCase(),
+  );
+  const row = {
+    id: existing?.id || store.id("acc"),
+    email,
+    emailBase: emailBase(email),
+    password: String(account.password),
+    storeId: sid,
+    adapter: sid === "toymate" ? "toymate" : sid,
+    storeName: sid === "toymate" ? "Toymate AU" : sid,
+    profileId: profileId || null,
+    source,
+    status: "active",
+    lastUsedAt: existing?.lastUsedAt || null,
+    createdAt: existing?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  if (existing) {
+    state.db.accounts = state.db.accounts.map((a) => (a.id === existing.id ? row : a));
+  } else {
+    state.db.accounts.unshift(row);
+  }
+  state.db.accounts = state.db.accounts.slice(0, 500);
+  return row;
+}
+
 function snapshot() {
   return {
     settings: {
@@ -31,11 +66,13 @@ function snapshot() {
       // Never echo full secrets back longer than needed in UI — still needed for form edit.
       apiKey: state.settings.apiKey || "",
       hyperApiKey: state.settings.hyperApiKey || "",
+      capsolverApiKey: state.settings.capsolverApiKey || "",
     },
     profiles: state.db.profiles,
     proxyGroups: state.db.proxyGroups,
     tasks: state.db.tasks,
     results: state.db.results.slice(-50),
+    accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
   };
@@ -84,12 +121,24 @@ runner.setFinishedHandler((result) => {
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
     if (t) {
-      t.lastStatus =
-        result.consumerCode ||
-        (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
-      t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
-      t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
-      t.lastOrderNumber = result.orderNumber || null;
+      if (result.ok && result.accountGen && result.account?.email) {
+        upsertGeneratedAccount(result.account, {
+          storeId: t.store || "toymate",
+          profileId: t.profileId,
+          source: "generated",
+        });
+        t.lastStatus = "complete";
+        t.lastLabel = `Account ${result.account.email}`;
+        t.lastError = null;
+        t.lastOrderNumber = null;
+      } else {
+        t.lastStatus =
+          result.consumerCode ||
+          (result.ok ? (result.orderNumber ? "confirmed" : "complete") : "error");
+        t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
+        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
+        t.lastOrderNumber = result.orderNumber || null;
+      }
       t.lastCheckoutStage = result.checkoutStage || null;
       t.stockStatus = result.stockStatus || null;
       t.updatedAt = Date.now();
@@ -155,6 +204,7 @@ ipcMain.handle("desktop:start-engine", async () => {
   const started = await sidecar.startSidecar({
     hyperApiKey: hyper,
     paydockPublicKey: state.settings.paydockPublicKey,
+    capsolverApiKey: state.settings.capsolverApiKey,
     maxConcurrent: state.settings.maxConcurrent,
   });
   if (!started.ok) return { ...started, snapshot: snapshot() };
@@ -223,9 +273,10 @@ ipcMain.handle("desktop:delete-proxy-group", (_e, groupId) => {
 // Tasks
 ipcMain.handle("desktop:upsert-task", (_e, task) => {
   const now = Date.now();
+  const storeId = task.store || "kmart";
   const row = {
     id: task.id || store.id("task"),
-    store: task.store || "kmart",
+    store: storeId,
     label: String(task.label || "").slice(0, 120),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
@@ -234,6 +285,26 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     proxyGroupId: task.proxyGroupId || null,
     placeOrder: task.placeOrder !== false,
     kmartMode: "current",
+    // Toymate-only fields (ignored by Kmart payload builder).
+    toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
+    paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
+    accountPassword:
+      storeId === "toymate" && typeof task.accountPassword === "string"
+        ? task.accountPassword
+        : undefined,
+    // auto = match vault by profile email; manual = accountId; guest = no login.
+    accountAssign:
+      storeId === "toymate"
+        ? ["auto", "manual", "guest"].includes(String(task.accountAssign || "").toLowerCase())
+          ? String(task.accountAssign).toLowerCase()
+          : "auto"
+        : undefined,
+    accountId:
+      storeId === "toymate" && task.accountAssign === "manual" && task.accountId
+        ? String(task.accountId)
+        : storeId === "toymate"
+          ? null
+          : undefined,
     enabled: task.enabled !== false,
     updatedAt: now,
   };
@@ -250,12 +321,31 @@ ipcMain.handle("desktop:delete-task", (_e, taskId) => {
   return snapshot();
 });
 
+ipcMain.handle("desktop:delete-account", (_e, accountId) => {
+  const id = String(accountId || "");
+  state.db.accounts = (state.db.accounts || []).filter((a) => a.id !== id);
+  persistDb();
+  return snapshot();
+});
+
+ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
+  const sid = storeId ? String(storeId) : "";
+  if (sid) {
+    state.db.accounts = (state.db.accounts || []).filter((a) => String(a.storeId || "") !== sid);
+  } else {
+    state.db.accounts = [];
+  }
+  persistDb();
+  return snapshot();
+});
+
 ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
   if (!sidecar.status().running) {
     return { ok: false, error: "Start the engine first (app must stay open)" };
   }
   const ids = Array.isArray(taskIds) && taskIds.length ? taskIds : state.db.tasks.filter((t) => t.enabled).map((t) => t.id);
   const jobs = [];
+  const claimedAccountIds = [];
   for (const tid of ids) {
     const task = state.db.tasks.find((t) => t.id === tid);
     if (!task) continue;
@@ -267,17 +357,58 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
     const entries = group?.entries?.length ? group.entries : [null];
     const n = Math.max(1, Math.min(50, Number(task.quantity) || 1));
+    let assignError = null;
     for (let i = 0; i < n; i++) {
       const proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
+      const taskCopy = { ...task };
+      // Wire vault account into Toymate checkout (auto by profile email, or manual).
+      if (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") {
+        const resolved = resolveAccountForTask({
+          task,
+          profile,
+          accounts: state.db.accounts || [],
+          excludeIds: claimedAccountIds,
+        });
+        if (resolved.error) {
+          assignError = resolved.error;
+          break;
+        }
+        if (resolved.account) {
+          claimedAccountIds.push(resolved.account.id);
+          const acc = (state.db.accounts || []).find((a) => a.id === resolved.account.id);
+          if (acc) {
+            acc.lastUsedAt = Date.now();
+            acc.updatedAt = Date.now();
+          }
+          taskCopy.account = {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          };
+          taskCopy.accountAssignSource = resolved.source;
+          taskCopy.resolvedAccountEmail = resolved.account.email;
+        } else {
+          taskCopy.account = null;
+          taskCopy.accountAssignSource = "guest";
+        }
+      }
       jobs.push({
-        task: { ...task },
+        task: taskCopy,
         profile,
         proxyRaw,
         proxyEntries: entries.filter(Boolean),
         proxyIndex,
         placeOrder: task.placeOrder !== false,
+        accounts: state.db.accounts || [],
       });
+    }
+    if (assignError) {
+      send({ type: "job", phase: "done", taskId: tid, ok: false, error: assignError });
+      task.lastStatus = "error";
+      task.lastLabel = assignError;
+      task.updatedAt = Date.now();
+      continue;
     }
     task.lastStatus = "queued";
     task.updatedAt = Date.now();
@@ -307,6 +438,8 @@ async function e2eAutorun() {
     if (!hyper) return { ok: false, error: "Hyper API key required in Settings" };
     return sidecar.startSidecar({
       hyperApiKey: hyper,
+      paydockPublicKey: state.settings.paydockPublicKey,
+      capsolverApiKey: state.settings.capsolverApiKey,
       maxConcurrent: state.settings.maxConcurrent,
     });
   })();

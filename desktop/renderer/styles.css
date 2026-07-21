@@ -70,6 +70,8 @@ h2 { margin: 0 0 6px; font-size: 18px; }
 h3 { margin: 0 0 12px; font-size: 15px; }
 .hint { color: var(--muted); font-size: 12px; margin: 0 0 14px; }
 .hint code { color: var(--accent); font-family: var(--mono); font-size: 11px; }
+.field-hint { color: var(--muted); font-size: 11px; margin: 6px 0 0; line-height: 1.4; }
+.optional { color: var(--muted); font-weight: 400; }
 
 .split {
   display: grid;

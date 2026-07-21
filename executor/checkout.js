@@ -212,6 +212,12 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         orderId: out.orderId ?? null,
         paymentStatus: out.paymentStatus ?? null,
+        // Store-specific passthrough (Toymate account gen / PayPal manual, etc.).
+        // Kmart ignores these fields.
+        account: out.account ?? null,
+        accountGen: out.accountGen ?? null,
+        paypalApproveUrl: out.paypalApproveUrl ?? null,
+        paymentMethod: out.paymentMethod ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.
