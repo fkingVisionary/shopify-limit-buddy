@@ -178,6 +178,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - **Incapsula + DataDome + hCaptcha**; Elastic Path **Cortex**; AU **Global-e**.
 - DC: Incapsula iframe on all app paths; `robots.txt` soft (Cortex Disallow list).
 - Hyper ✅ on Incapsula/DD; ❌ hCaptcha. Crowded English bots. Phase 2 after Bandai + DD/Incapsula wiring.
+- **GE (2026-07-22):** Bandai proved issuer-path GE (Checkout/v2 + nested CreditCardForm + bank ground truth). PC P4 should reuse that playbook with PC merchant mid/hosts from HAR — see dig §5.1.
 - JP `pokemoncenter-online.com` = SFCC + volt-adc — separate / skip for AU.
 
 ### JB Hi-Fi — `jbhifi.com.au` — **full dig:** [`JB_HIFI_MODULE.md`](./JB_HIFI_MODULE.md)
