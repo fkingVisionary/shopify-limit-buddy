@@ -128,16 +128,27 @@ function listCartLines(cartJson) {
   return out;
 }
 
+function looksLike3ds(url, text = "") {
+  const u = String(url || "");
+  const t = String(text || "");
+  return (
+    /3ds|three.?d.?secure|acs|challenge|securecode|cardinalcommerce|authentication|creq|pareq|methodurl|stripe\.com\/.*3ds|revolut.*3ds|bankid|otp/i.test(
+      u + " " + t,
+    )
+  );
+}
+
 /**
- * Full browser checkout dry-run / decline attempt.
+ * Full browser checkout — dry-run stops at cart; placeOrder drives Global-e pay/3DS.
  * @param {object} opts
  * @param {string} opts.email
  * @param {string} opts.password
  * @param {string} opts.productCode — e.g. A2880191001
  * @param {string} [opts.proxy]
  * @param {number} [opts.qty=1]
- * @param {boolean} [opts.placeOrder=false] — if true, attempt GE with decline card
- * @param {object} [opts.card] — fake/decline card only
+ * @param {boolean} [opts.placeOrder=false]
+ * @param {object} [opts.card] — { number, expMonth, expYear, cvv, holder }
+ * @param {number} [opts.wait3dsMs=120000] — how long to wait for 3DS after Pay
  */
 export async function browserBandaiCheckout(opts = {}) {
   const email = String(opts.email || "").trim();
@@ -145,6 +156,7 @@ export async function browserBandaiCheckout(opts = {}) {
   const productCode = String(opts.productCode || "").trim();
   const qty = Math.max(1, Math.min(5, Number(opts.qty) || 1));
   const placeOrder = opts.placeOrder === true;
+  const wait3dsMs = Math.max(15_000, Number(opts.wait3dsMs) || 120_000);
   const steps = [];
   const t0 = Date.now();
 
@@ -466,7 +478,6 @@ export async function browserBandaiCheckout(opts = {}) {
     });
 
     const sGe = Date.now();
-    // Decline-only fake card — never the owner's real PAN.
     const card = opts.card || {
       number: "4000000000000002",
       expMonth: "12",
@@ -474,10 +485,14 @@ export async function browserBandaiCheckout(opts = {}) {
       cvv: "999",
       holder: "DECLINE TEST",
     };
+    const isDeclineLab = String(card.number).replace(/\s+/g, "") === "4000000000000002";
 
     let geNote = "";
     let paymentStatus = "unknown";
     let filled = false;
+    let reached3ds = false;
+    let threeDsUrl = null;
+    let orderNumber = null;
     try {
       // Prefer waiting for the secure card form frame (flaky timing on GE boot).
       await page
@@ -585,8 +600,7 @@ export async function browserBandaiCheckout(opts = {}) {
           if (await payBtn.count().catch(() => 0)) {
             if (await payBtn.isVisible().catch(() => false)) {
               await payBtn.click({ timeout: 10_000 }).catch(() => {});
-              await page.waitForTimeout(10_000);
-              paymentStatus = "submitted_decline_attempt";
+              paymentStatus = "pay_clicked";
               geNote += `; clicked pay on ${url.slice(0, 50)}`;
               paid = true;
               break;
@@ -594,17 +608,78 @@ export async function browserBandaiCheckout(opts = {}) {
           }
         }
         if (!paid) {
-          // Last resort: main page
           const mainPay = page
             .locator('button:has-text("Pay"), button:has-text("Place Order")')
             .first();
           if (await mainPay.count().catch(() => 0)) {
             await mainPay.click({ timeout: 5000 }).catch(() => {});
-            await page.waitForTimeout(8000);
-            paymentStatus = "submitted_decline_attempt";
+            paymentStatus = "pay_clicked";
             geNote += "; clicked pay on main";
           } else {
             paymentStatus = "card_filled_no_pay_button";
+          }
+        }
+
+        // Wait for 3DS / ACS challenge (Revolut push) or confirmation / decline.
+        if (paymentStatus === "pay_clicked") {
+          const deadline = Date.now() + wait3dsMs;
+          while (Date.now() < deadline && !reached3ds && !orderNumber) {
+            await page.waitForTimeout(2000);
+            for (const frame of page.frames()) {
+              const furl = frame.url();
+              let ftext = "";
+              try {
+                ftext = (await frame.locator("body").innerText({ timeout: 1000 })) || "";
+              } catch {
+                /* ignore */
+              }
+              if (looksLike3ds(furl, ftext)) {
+                reached3ds = true;
+                threeDsUrl = furl.slice(0, 160);
+                paymentStatus = "reached_3ds";
+                geNote += `; 3ds=${threeDsUrl}`;
+                break;
+              }
+            }
+            if (reached3ds) break;
+            // Also check popups / new pages
+            for (const p of context.pages()) {
+              const purl = p.url();
+              if (looksLike3ds(purl)) {
+                reached3ds = true;
+                threeDsUrl = purl.slice(0, 160);
+                paymentStatus = "reached_3ds";
+                geNote += `; 3ds_page=${threeDsUrl}`;
+                break;
+              }
+            }
+            if (reached3ds) break;
+
+            let bodyProbe = "";
+            try {
+              bodyProbe = await page.locator("body").innerText();
+            } catch {
+              /* ignore */
+            }
+            const orderHint = bodyProbe.match(
+              /order\s*(?:no|number|#)\s*[:：]?\s*([A-Z0-9-]{6,})/i,
+            );
+            if (orderHint) {
+              orderNumber = orderHint[1];
+              paymentStatus = "order_confirmed";
+              break;
+            }
+            if (
+              /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process|authentication failed|cancelled|canceled/i.test(
+                bodyProbe,
+              )
+            ) {
+              paymentStatus = "declined_or_auth_failed";
+              break;
+            }
+          }
+          if (paymentStatus === "pay_clicked") {
+            paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
           }
         }
       }
@@ -618,49 +693,38 @@ export async function browserBandaiCheckout(opts = {}) {
       geNote = String(e?.message || e).slice(0, 200);
     }
 
-    let bodyText = "";
-    try {
-      bodyText = await page.locator("body").innerText();
-      for (const frame of page.frames()) {
-        if (/global-e\.com/i.test(frame.url())) {
-          bodyText += " " + ((await frame.locator("body").innerText().catch(() => "")) || "");
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    const declined =
-      /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process/i.test(
-        bodyText,
-      );
-    if (declined) paymentStatus = "declined";
-
-    // Abort if an order number somehow appeared — never treat as success charge.
-    const orderHint = bodyText.match(/order\s*(?:no|number|#)\s*[:：]?\s*([A-Z0-9-]{6,})/i);
-    if (orderHint) {
+    // Decline-lab safety: abort if fake card somehow confirmed an order.
+    if (isDeclineLab && orderNumber) {
       push("ge_payment", {
         ok: false,
         status: null,
         ms: Date.now() - sGe,
-        note: `UNEXPECTED order-like token ${orderHint[1]} — abort`,
+        note: `UNEXPECTED order ${orderNumber} on decline PAN — abort`,
       });
       await browser.close();
       return {
         ok: false,
         steps,
         failedStep: "ge_payment",
-        error: "Unexpected order confirmation — aborting (decline-only mode)",
+        error: "Unexpected order confirmation on decline-lab card",
         checkoutStage: "order",
-        orderNumber: orderHint[1],
+        orderNumber,
         declineTarget: true,
+        reached3ds,
       };
     }
 
     push("ge_payment", {
-      ok: declined || paymentStatus.startsWith("submitted") || paymentStatus.startsWith("card_filled") || paymentStatus === "ge_iframe_not_filled",
+      ok:
+        reached3ds ||
+        Boolean(orderNumber) ||
+        paymentStatus === "declined_or_auth_failed" ||
+        paymentStatus.startsWith("card_filled") ||
+        paymentStatus === "ge_iframe_not_filled" ||
+        paymentStatus === "pay_submitted_no_3ds_seen",
       status: null,
       ms: Date.now() - sGe,
-      note: `${paymentStatus}; ${geNote}`.slice(0, 240),
+      note: `${paymentStatus}; reached3ds=${reached3ds}; ${geNote}`.slice(0, 280),
     });
 
     const finalUrl = page.url();
@@ -670,12 +734,14 @@ export async function browserBandaiCheckout(opts = {}) {
     browser = null;
 
     return {
-      ok: declined || Boolean(checkoutSn) || /orderdetails/i.test(finalUrl),
+      ok: reached3ds || Boolean(orderNumber) || Boolean(checkoutSn) || /orderdetails/i.test(finalUrl),
       steps,
-      checkoutStage: "tokenize",
+      checkoutStage: orderNumber ? "order" : reached3ds ? "three_ds" : "tokenize",
       dryRun: false,
-      declineTarget: true,
+      declineTarget: isDeclineLab,
       paymentStatus,
+      reached3ds,
+      threeDsUrl,
       checkoutSn,
       areaItemNo,
       cartSn,
@@ -684,12 +750,14 @@ export async function browserBandaiCheckout(opts = {}) {
       title,
       finalUrl: finalUrl || "https://p-bandai.com/au/orderdetails",
       cookies,
-      note: declined
-        ? "Payment declined (expected with fake card)"
-        : `GE UI handoff; paymentStatus=${paymentStatus}`,
+      note: reached3ds
+        ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
+        : orderNumber
+          ? `Order ${orderNumber}`
+          : `GE UI handoff; paymentStatus=${paymentStatus}`,
       elapsedMs: Date.now() - t0,
       via: "browser",
-      orderNumber: null,
+      orderNumber,
     };
   } catch (e) {
     try {

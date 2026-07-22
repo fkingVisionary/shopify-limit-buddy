@@ -365,6 +365,28 @@ function buildBandaiPayload({
     }
   }
 
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -380,9 +402,13 @@ function buildBandaiPayload({
       forceUndici: true,
       forceTls: false,
       // HTTP-first: F5 sensor bridge mints headers; full Playwright checkout opt-in only.
-      bandaiBrowserCheckout: task.bandaiBrowserCheckout === true,
+      // GE card/3DS still needs browser when placeOrder is true.
+      bandaiBrowserCheckout:
+        task.bandaiBrowserCheckout === true ||
+        (mode === "checkout" && Boolean(placeOrder)),
       bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
+      card,
       campaignSn: task.campaignSn || null,
       accountPassword:
         typeof task.accountPassword === "string" && task.accountPassword.trim()

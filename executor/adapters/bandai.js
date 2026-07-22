@@ -692,9 +692,43 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Opt-in full Playwright checkout (lab / GE decline demos only).
+  // Opt-in full Playwright checkout — needed for Global-e card / 3DS UI.
   if (task.bandaiBrowserCheckout === true) {
     const s0 = Date.now();
+    const taskCard = task.card || null;
+    const envCard =
+      process.env.BANDAI_CARD_NUMBER
+        ? {
+            number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
+            expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
+            expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
+            cvv: String(process.env.BANDAI_CARD_CVV || ""),
+            holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
+          }
+        : null;
+    const card =
+      placeOrder && taskCard?.number
+        ? {
+            number: String(taskCard.number).replace(/\s+/g, ""),
+            expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
+            expYear: String(taskCard.expYear || taskCard.exp_year || "")
+              .replace(/^20/, "")
+              .slice(-2),
+            cvv: String(taskCard.cvv || taskCard.cvc || ""),
+            holder: String(taskCard.holder || taskCard.name || "Cardholder"),
+          }
+        : placeOrder && envCard?.number
+          ? envCard
+          : placeOrder
+            ? {
+                // Lab fallback — issuer decline; never a real PAN in source.
+                number: "4000000000000002",
+                expMonth: "12",
+                expYear: "30",
+                cvv: "999",
+                holder: "DECLINE TEST",
+              }
+            : null;
     const out = await browserBandaiCheckout({
       email,
       password,
@@ -702,18 +736,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       qty: Number(task.qty) || 1,
       proxy: parseBandaiProxy(task.proxy).url || task.proxy || null,
       placeOrder,
-      card: placeOrder
-        ? {
-            number: "4000000000000002",
-            expMonth: "12",
-            expYear: "30",
-            cvv: "999",
-            holder: "DECLINE TEST",
-          }
-        : null,
+      card,
       shippingAreaCode: task.shippingAreaCode || "au",
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+      wait3dsMs: Number(task.wait3dsMs) || 120_000,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -742,6 +769,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       title: out.title,
       paymentStatus: out.paymentStatus,
       declineTarget: out.declineTarget,
+      reached3ds: out.reached3ds ?? null,
       finalUrl: out.finalUrl || `${BANDAI_BASE}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
