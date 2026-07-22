@@ -51,8 +51,9 @@ const task = {
   placeOrder: true,
   forceUndici: true,
   bandaiMode: "checkout",
+  // HTTP+F5 through cart, then GE on the same bridge (not bandaiBrowserFull).
   bandaiBrowserCheckout: true,
-  wait3dsMs: 180_000,
+  wait3dsMs: Number(process.env.BANDAI_WAIT_3DS_MS) || 45_000,
   account: { email, password },
   card: { number: pan, expMonth: mm, expYear: yy, cvv, holder },
 };

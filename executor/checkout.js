@@ -231,6 +231,14 @@ export async function runCheckout(task) {
         merchantCartToken: out.merchantCartToken ?? null,
         reached3ds: out.reached3ds ?? null,
         threeDsUrl: out.threeDsUrl ?? null,
+        // Bandai GE drop-path diagnostics
+        timeline: out.timeline ?? null,
+        declineSnippet: out.declineSnippet ?? null,
+        payClickCount: out.payClickCount ?? null,
+        sawAuthWire: out.sawAuthWire ?? null,
+        chargeReqCount: out.chargeReqCount ?? null,
+        blockedChargeReqCount: out.blockedChargeReqCount ?? null,
+        geNetTail: out.geNetTail ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.

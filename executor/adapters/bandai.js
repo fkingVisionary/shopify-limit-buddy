@@ -11,10 +11,14 @@
 // Transport policy:
 //   Default = undici HTTP. F5 Shape Defense headers (`p8komysnbc-*`) are minted
 //   by a narrow Playwright bridge that aborts probe XHRs — the real POSTs stay
-//   on HTTP. Full browser checkout is opt-in only (`bandaiBrowserCheckout:true`).
+//   on HTTP.
+//   placeOrder + bandaiBrowserCheckout = HTTP→cart on that same bridge, then
+//   SPA Proceed + single GE Pay (drop-speed path). Full browser login/PDP is
+//   only `bandaiBrowserFull:true` (slow — do not use for drops).
 
 import { createBandaiAccount } from "./bandai-agen.js";
 import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
+import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
 import {
@@ -545,7 +549,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   }
 
   // Optional early stop before checkout POST (default continues to checkoutSn).
-  if (task.bandaiStopAtCart === true) {
+  if (task.bandaiStopAtCart === true && !(placeOrder && opts.placeOrderGe)) {
     await closeBridge();
     return {
       ok: true,
@@ -563,6 +567,194 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       via: "http",
       globaleMid: GLOBALE_MID,
     };
+  }
+
+  // ── Drop-speed placeOrder: SPA Proceed + GE on the SAME F5 bridge browser ─
+  // Avoids a second Chromium login/PDP/ATC (that path was ~5min to issuer).
+  if (placeOrder && opts.placeOrderGe === true) {
+    const card = opts.card;
+    if (!bridge) {
+      return {
+        ok: false,
+        steps,
+        failedStep: "f5_bridge",
+        error: "placeOrder GE requires F5 bridge (bandaiF5Bridge)",
+        checkoutStage: "cart",
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartItemSn,
+        via: "http",
+      };
+    }
+    try {
+      const jarDump = ctx.jar?.dump?.() || {};
+      await bridge.syncCookies(jarDump);
+      // Playwright needs Domain=.p-bandai.com — url-scoped sync alone can leave cart SPA logged out.
+      try {
+        await bridge.context.addCookies(
+          Object.entries(jarDump).map(([name, value]) => ({
+            name,
+            value: String(value),
+            domain: ".p-bandai.com",
+            path: "/",
+          })),
+        );
+      } catch {
+        /* ignore */
+      }
+
+      // HTTP already logged in — sync jar into Playwright and go straight to GE cart UI.
+      // Do NOT browser-POST /login again (burns F5, 501s, and violates "HTTP after warm").
+      // Opt-in escape: task.bandaiBridgeRelogin=true
+      if (task.bandaiBridgeRelogin) {
+        await bridge.goto(`${session.base}/login`, { settleMs: 900 });
+        const loginBodyGe = new URLSearchParams({
+          grantType: "password",
+          memberId: String(email || "").trim(),
+          password: String(password || ""),
+          saveLoginId: "false",
+          autoLogin: "false",
+        }).toString();
+        let pageLoginOk = false;
+        let pageLoginStatus = null;
+        let pageLoginNote = "";
+        for (let loginAttempt = 1; loginAttempt <= 2 && !pageLoginOk; loginAttempt++) {
+          try {
+            const mintGe = await bridge.mint("POST", "/login", {
+              body: loginBodyGe,
+              contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+              csrf: session.state.csrfToken || (await bridge.csrfToken()),
+            });
+            const pageLogin = await bridge.page.evaluate(
+              async ({ body, csrf, areaCode, sensors }) => {
+                const headers = {
+                  accept: "application/json, text/plain, */*",
+                  "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                  "x-g1-area-code": areaCode,
+                  "x-requested-with": "XMLHttpRequest",
+                  ...(csrf ? { "x-csrf-token": csrf } : {}),
+                  ...(sensors || {}),
+                };
+                const res = await fetch("/login", {
+                  method: "POST",
+                  headers,
+                  body,
+                  credentials: "include",
+                });
+                const next = res.headers.get("x-csrf-token");
+                if (next) {
+                  window.__bandaiCsrf = next;
+                  if (window.USER_DATA) window.USER_DATA.csrfToken = next;
+                }
+                return { status: res.status, restricted: res.headers.get("x-restricted-type") };
+              },
+              {
+                body: loginBodyGe,
+                csrf: session.state.csrfToken || (await bridge.csrfToken()),
+                areaCode: session.area,
+                sensors: mintGe.sensors || {},
+              },
+            );
+            pageLoginStatus = pageLogin.status;
+            pageLoginOk = pageLogin.status >= 200 && pageLogin.status < 300;
+            pageLoginNote = pageLoginOk
+              ? `bridge page login ok restricted=${pageLogin.restricted || "none"} attempt=${loginAttempt}`
+              : `bridge page login ${pageLogin.status} attempt=${loginAttempt}`;
+            if (!pageLoginOk && loginAttempt < 2) {
+              await bridge.goto(`${session.base}/login`, { settleMs: 1200 });
+            }
+          } catch (e) {
+            pageLoginNote = e?.message || "bridge_login_failed";
+          }
+        }
+        steps.push({
+          step: "bridge_login",
+          ok: pageLoginOk,
+          status: pageLoginStatus,
+          ms: 0,
+          note: pageLoginNote,
+        });
+      } else {
+        steps.push({
+          step: "bridge_cookie_sync",
+          ok: Object.keys(jarDump).length > 0,
+          status: null,
+          ms: 0,
+          note: `HTTP jar → Playwright cookies=${Object.keys(jarDump).length} (no browser re-login)`,
+        });
+      }
+
+      const geOut = await browserBandaiGeFromCart({
+        page: bridge.page,
+        context: bridge.context,
+        base: session.base,
+        card,
+        wait3dsMs: Number(task.wait3dsMs) || 45_000,
+        onProgress: (event, row) => {
+          try {
+            ctx.onProgress?.(event, row?.note || row?.paymentStatus || event, row);
+          } catch {
+            /* ignore */
+          }
+        },
+        meta: {
+          areaItemNo: pdp.areaItemNo,
+          cartSn,
+          cartId,
+          cartItemSn,
+          title: pdp.title,
+        },
+      });
+      if (Array.isArray(geOut.steps)) {
+        for (const s of geOut.steps) steps.push(s);
+      }
+      if (geOut.cookies && ctx.jar?.load) ctx.jar.load(geOut.cookies);
+      await closeBridge();
+      return {
+        ok: Boolean(geOut.ok),
+        steps,
+        timeline: geOut.timeline || [],
+        failedStep: geOut.failedStep || null,
+        error: geOut.ok ? null : geOut.error || geOut.note || null,
+        checkoutStage: geOut.checkoutStage || "tokenize",
+        dryRun: false,
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartId,
+        cartItemSn,
+        checkoutSn: geOut.checkoutSn || null,
+        title: pdp.title,
+        paymentStatus: geOut.paymentStatus,
+        declineSnippet: geOut.declineSnippet || null,
+        reached3ds: geOut.reached3ds ?? null,
+        threeDsUrl: geOut.threeDsUrl || null,
+        payClickCount: geOut.payClickCount,
+        sawAuthWire: geOut.sawAuthWire,
+        chargeReqCount: geOut.chargeReqCount ?? null,
+        blockedChargeReqCount: geOut.blockedChargeReqCount ?? null,
+        geNetTail: geOut.geNetTail ?? null,
+        finalUrl: geOut.finalUrl || `${session.base}/orderdetails`,
+        cookies: geOut.cookies || ctx.jar?.dump?.() || {},
+        note: geOut.note,
+        via: "http+ge",
+        globaleMid: GLOBALE_MID,
+        orderNumber: geOut.orderNumber ?? null,
+        elapsedMs: geOut.elapsedMs,
+      };
+    } catch (e) {
+      await closeBridge();
+      return {
+        ok: false,
+        steps,
+        failedStep: "ge_payment",
+        error: e?.message || String(e),
+        checkoutStage: "tokenize",
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartItemSn,
+        via: "http+ge",
+      };
+    }
   }
 
   // ── Cart checkout → checkoutSn (still HTTP; GE iframe separate) ────────
@@ -694,43 +886,44 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Opt-in full Playwright checkout — needed for Global-e card / 3DS UI.
-  if (task.bandaiBrowserCheckout === true) {
+  const taskCard = task.card || null;
+  const envCard =
+    process.env.BANDAI_CARD_NUMBER
+      ? {
+          number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
+          expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
+          expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
+          cvv: String(process.env.BANDAI_CARD_CVV || ""),
+          holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
+        }
+      : null;
+  const card =
+    placeOrder && taskCard?.number
+      ? {
+          number: String(taskCard.number).replace(/\s+/g, ""),
+          expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
+          expYear: String(taskCard.expYear || taskCard.exp_year || "")
+            .replace(/^20/, "")
+            .slice(-2),
+          cvv: String(taskCard.cvv || taskCard.cvc || ""),
+          holder: String(taskCard.holder || taskCard.name || "Cardholder"),
+        }
+      : placeOrder && envCard?.number
+        ? envCard
+        : placeOrder
+          ? {
+              // Lab fallback — issuer decline; never a real PAN in source.
+              number: "4000000000000002",
+              expMonth: "12",
+              expYear: "30",
+              cvv: "999",
+              holder: "DECLINE TEST",
+            }
+          : null;
+
+  // Slow path: full Playwright login→PDP→ATC→GE (labs only).
+  if (task.bandaiBrowserFull === true) {
     const s0 = Date.now();
-    const taskCard = task.card || null;
-    const envCard =
-      process.env.BANDAI_CARD_NUMBER
-        ? {
-            number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
-            expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
-            expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
-            cvv: String(process.env.BANDAI_CARD_CVV || ""),
-            holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
-          }
-        : null;
-    const card =
-      placeOrder && taskCard?.number
-        ? {
-            number: String(taskCard.number).replace(/\s+/g, ""),
-            expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
-            expYear: String(taskCard.expYear || taskCard.exp_year || "")
-              .replace(/^20/, "")
-              .slice(-2),
-            cvv: String(taskCard.cvv || taskCard.cvc || ""),
-            holder: String(taskCard.holder || taskCard.name || "Cardholder"),
-          }
-        : placeOrder && envCard?.number
-          ? envCard
-          : placeOrder
-            ? {
-                // Lab fallback — issuer decline; never a real PAN in source.
-                number: "4000000000000002",
-                expMonth: "12",
-                expYear: "30",
-                cvv: "999",
-                holder: "DECLINE TEST",
-              }
-            : null;
     const out = await browserBandaiCheckout({
       email,
       password,
@@ -743,7 +936,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-      wait3dsMs: Number(task.wait3dsMs) || 120_000,
+      wait3dsMs: Number(task.wait3dsMs) || 45_000,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -780,6 +973,17 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       globaleMid: GLOBALE_MID,
       orderNumber: out.orderNumber ?? null,
     };
+  }
+
+  // Drop path: HTTP + F5 mint through cart, then GE Pay on the same bridge page.
+  if (placeOrder && task.bandaiBrowserCheckout === true) {
+    return runHttpCheckout(task, ctx, session, tStep, steps, {
+      email,
+      password,
+      productCode,
+      placeOrderGe: true,
+      card,
+    });
   }
 
   return runHttpCheckout(task, ctx, session, tStep, steps, {
