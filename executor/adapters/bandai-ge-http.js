@@ -471,12 +471,12 @@ export function decodeCcPaymentRedirectData(urlOrJwt) {
   }
 }
 
-/**
- * Revolut-silent 302s were ReloadBehaviour (+ DataCorruption) — NOT a bank hit.
- * Require a stronger payment signal in the redirect JWT / HTML.
- */
-export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "") {
-  const data = decodeCcPaymentRedirectData(redirectUrl);
+/** Key/Value list from CCPaymentRedirect JWT → flat map. */
+export function mapCcPaymentRedirect(redirectUrlOrData) {
+  const data =
+    typeof redirectUrlOrData === "string"
+      ? decodeCcPaymentRedirectData(redirectUrlOrData)
+      : redirectUrlOrData;
   const map = {};
   if (Array.isArray(data)) {
     for (const row of data) {
@@ -484,29 +484,42 @@ export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "
       if (k) map[k] = String(row?.Value ?? row?.value ?? "");
     }
   }
-  if (/DataCorruption/i.test(map.RedirectErrorType || "")) return false;
-  if (/^false$/i.test(map.Success || "") && /ReloadBehaviour/i.test(map.ReloadBehaviour || "Redirect")) {
-    return false;
-  }
-  const keys = Object.keys(map);
-  const weakOnly =
-    keys.length > 0 &&
-    keys.every((k) => /^(ReloadBehaviour|finalizeProcess)$/i.test(k));
-  if (weakOnly) return false;
+  return map;
+}
 
-  const blob = `${JSON.stringify(data || {})} ${redirectSnippet}`;
+/**
+ * Bank/PSP touched the card: non-zero TransactionId or a real auth status.
+ * DataCorruption with TransactionId=0 is NOT a bank hit (Revolut silent).
+ * AutherizationFailed (GE spelling) IS a bank hit (decline).
+ */
+export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "") {
+  const map = mapCcPaymentRedirect(redirectUrl);
+  const txId = String(map.TransactionId || map.MerchantReference || "0");
+  const status = String(map.TransactionStatusType || "");
+  const errType = String(map.RedirectErrorType || "");
+  if (/DataCorruption/i.test(errType) && (!txId || txId === "0")) return false;
+  if (txId && txId !== "0") return true;
   if (
-    /ReloadBehaviour/i.test(blob) &&
-    !/\b(TransactionStatus|PaymentId|ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult|IsSuccess)\b/i.test(
-      blob,
-    )
+    status &&
+    !/^Undefined$/i.test(status) &&
+    /Auth|Decline|Fail|Success|Pending|3ds|Challenge/i.test(status)
   ) {
-    return false;
+    return true;
   }
-  // Exact bank keys only — do not match TransactionStatusType=Undefined.
-  return /\b(TransactionStatus|PaymentId|ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult|IsSuccess)\b/i.test(
-    blob,
-  ) && !/\bTransactionStatusType["']?\s*:\s*["']?Undefined/i.test(blob);
+  const blob = `${JSON.stringify(map)} ${redirectSnippet}`;
+  return /\b(ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult)\b/i.test(blob);
+}
+
+/** GE decline / auth-failed popup (card reached PSP). */
+export function isBandaiGeRedirectDecline(redirectUrl, redirectSnippet = "") {
+  const map = mapCcPaymentRedirect(redirectUrl);
+  const status = String(map.TransactionStatusType || "");
+  const errBody = `${map.PaymentErrorBody || ""} ${map.ErrorMessage || ""} ${redirectSnippet}`;
+  if (/AutherizationFailed|AuthorizationFailed|Declined|Failed/i.test(status)) return true;
+  if (/weren.?t charged|couldn.?t be completed|declined|not authorised|not authorized/i.test(errBody)) {
+    return String(map.TransactionId || "0") !== "0";
+  }
+  return false;
 }
 
 /**
@@ -752,7 +765,8 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
       ? decodeCcPaymentRedirectData(redirectUrl)
       : null;
     const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", "");
-    const ok = Boolean(isPaymentRedirect && bankSignal);
+    const declineOnRedirect = isBandaiGeRedirectDecline(redirectUrl || "", "");
+    const ok = Boolean(isPaymentRedirect && (bankSignal || declineOnRedirect));
     return {
       ok,
       status,
@@ -763,9 +777,9 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
       redirectSnippet: null,
       redirectPayload,
       isPaymentRedirect,
-      reloadOnly: Boolean(isPaymentRedirect && !bankSignal),
-      bankSignal,
-      declineOnRedirect: false,
+      reloadOnly: Boolean(isPaymentRedirect && !bankSignal && !declineOnRedirect),
+      bankSignal: Boolean(bankSignal || declineOnRedirect),
+      declineOnRedirect,
       sawAuthWire: Boolean(ok),
       via: "page-ge-issuer",
       error: ok
@@ -881,11 +895,10 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       redirectUrlFull || "",
       redirectSnippet || "",
     );
-    const declineOnRedirect =
-      redirectSnippet &&
-      /\b(?:declined|decline|insufficient|not authorised|not authorized|failed)\b/i.test(
-        redirectSnippet,
-      );
+    const declineOnRedirect = isBandaiGeRedirectDecline(
+      redirectUrlFull || "",
+      redirectSnippet || "",
+    );
     // Direct 2xx JSON with payment fields also counts; bare ReloadBehaviour does not.
     const jsonOk =
       res.status >= 200 &&
@@ -1620,35 +1633,43 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ).slice(0, 280),
   });
 
-  const paymentStatus = !issuer.ok
-    ? issuer.reloadOnly
-      ? "ge_reload_only_no_bank"
-      : "issuer_http_failed"
-    : declineOnRedirect
-      ? "declined_or_auth_failed"
+  const paymentStatus = declineOnRedirect
+    ? "declined_or_auth_failed"
+    : !issuer.ok
+      ? issuer.reloadOnly
+        ? "ge_reload_only_no_bank"
+        : "issuer_http_failed"
       : "pay_submitted_http";
+  const orderOk = Boolean(issuer.ok && !declineOnRedirect);
   return {
-    ok: Boolean(issuer.ok),
+    ok: orderOk,
     steps,
     timeline,
-    failedStep: issuer.ok ? null : "ge_issuer_http",
-    error: issuer.ok ? null : issuer.error || issuer.bodySnippet,
+    failedStep: orderOk ? null : declineOnRedirect ? null : "ge_issuer_http",
+    error: orderOk || declineOnRedirect ? null : issuer.error || issuer.bodySnippet,
     paymentStatus,
     checkoutStage: declineOnRedirect ? "declined" : "tokenize",
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
     chargeReqCount: 1,
-    sawAuthWire: Boolean(issuer.sawAuthWire),
+    sawAuthWire: Boolean(issuer.sawAuthWire || declineOnRedirect),
     blockers,
     redirectUrl: issuer.redirectUrl || null,
     redirectPayload: issuer.redirectPayload || null,
+    transactionId: (() => {
+      const map = mapCcPaymentRedirect(issuer.redirectPayload || issuer.redirectUrlFull || "");
+      const id = map.TransactionId || map.MerchantReference || null;
+      return id && id !== "0" ? id : null;
+    })(),
     via: issuer.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
     elapsedMs: Date.now() - t0,
-    note: issuer.ok
-      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} via=${issuer.via} guid=${guid}`
-      : issuer.reloadOnly
-        ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid}`
-        : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
+    note: declineOnRedirect
+      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${mapCcPaymentRedirect(issuer.redirectPayload || "").TransactionId || "?"} via=${issuer.via} guid=${guid}`
+      : issuer.ok
+        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} via=${issuer.via} guid=${guid}`
+        : issuer.reloadOnly
+          ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid}`
+          : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
   };
 }
 
@@ -1668,6 +1689,8 @@ export default {
   pickShippingMethodId,
   decodeCcPaymentRedirectData,
   isBandaiGePaymentRedirectSignal,
+  isBandaiGeRedirectDecline,
+  mapCcPaymentRedirect,
   mintIovationBlackbox,
   loadIssuerCapture,
   postBandaiGeIssuerHttp,

@@ -31,6 +31,7 @@ import {
   parseCheckoutV2Form,
   buildHandleActionBodies,
   isBandaiGePaymentRedirectSignal,
+  isBandaiGeRedirectDecline,
   decodeCcPaymentRedirectData,
 } from "./bandai-ge-http.js";
 
@@ -300,5 +301,27 @@ assert.equal(
   true,
 );
 assert.ok(Array.isArray(decodeCcPaymentRedirectData(reloadJwt)));
+
+// AutherizationFailed + TransactionId = bank hit (decline), not DataCorruption
+const authFailJwt =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  Buffer.from(
+    JSON.stringify([
+      { Key: "ReloadBehaviour", Value: "Redirect" },
+      { Key: "TransactionStatusType", Value: "AutherizationFailed" },
+      { Key: "TransactionId", Value: "170555028" },
+      { Key: "Success", Value: "False" },
+      { Key: "MerchantId", Value: "1925" },
+      {
+        Key: "PaymentErrorBody",
+        Value: "Your payment couldn’t be completed, and you weren’t charged.",
+      },
+    ]),
+  )
+    .toString("base64url") +
+  ".sig";
+const authFailUrl = `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${authFailJwt}`;
+assert.equal(isBandaiGePaymentRedirectSignal(authFailUrl), true);
+assert.equal(isBandaiGeRedirectDecline(authFailUrl), true);
 
 console.log("bandai-flow.test.mjs ok");
