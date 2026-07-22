@@ -1661,20 +1661,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
         browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
         preferPageIssuer: opts.preferPageIssuer === true,
       });
-      // Drop the browser before undici issuer so GEM cannot race the PSP.
-      if (opts.preferPageIssuer !== true && opts.keepPageForIssuer !== true) {
-        await browserIssuerBlock.unroute();
-        try {
-          await issuerPage.context()?.close?.();
-        } catch {
-          try {
-            await issuerPage.close?.();
-          } catch {
-            /* ignore */
-          }
-        }
-        issuerPage = null;
-        mark("ge_browser_closed_before_issuer", { ok: true });
+      // Park Checkout/v2 away from payment UI before undici issuer (no GEM race).
+      if (opts.preferPageIssuer !== true) {
+        await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
+        mark("ge_browser_parked_before_issuer", { ok: true });
       }
     }
 
