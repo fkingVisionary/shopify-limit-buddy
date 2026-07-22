@@ -416,14 +416,23 @@ export function decodeCcPaymentRedirectData(urlOrJwt) {
 }
 
 /**
- * Revolut-silent 302s were ReloadBehaviour (+ optional finalizeProcess) only —
- * NOT a bank hit. Require a stronger payment signal in the redirect JWT / HTML.
+ * Revolut-silent 302s were ReloadBehaviour (+ DataCorruption) — NOT a bank hit.
+ * Require a stronger payment signal in the redirect JWT / HTML.
  */
 export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "") {
   const data = decodeCcPaymentRedirectData(redirectUrl);
-  const keys = Array.isArray(data)
-    ? data.map((x) => String(x?.Key || x?.key || "")).filter(Boolean)
-    : [];
+  const map = {};
+  if (Array.isArray(data)) {
+    for (const row of data) {
+      const k = String(row?.Key || row?.key || "");
+      if (k) map[k] = String(row?.Value ?? row?.value ?? "");
+    }
+  }
+  if (/DataCorruption/i.test(map.RedirectErrorType || "")) return false;
+  if (/^false$/i.test(map.Success || "") && /ReloadBehaviour/i.test(map.ReloadBehaviour || "Redirect")) {
+    return false;
+  }
+  const keys = Object.keys(map);
   const weakOnly =
     keys.length > 0 &&
     keys.every((k) => /^(ReloadBehaviour|finalizeProcess)$/i.test(k));
@@ -438,9 +447,10 @@ export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "
   ) {
     return false;
   }
+  // Exact bank keys only — do not match TransactionStatusType=Undefined.
   return /\b(TransactionStatus|PaymentId|ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult|IsSuccess)\b/i.test(
     blob,
-  );
+  ) && !/\bTransactionStatusType["']?\s*:\s*["']?Undefined/i.test(blob);
 }
 
 /**
@@ -465,11 +475,44 @@ async function cookiesFromPage(page) {
   }
 }
 
+/** Push undici jar cookies into Playwright so iovation mint shares GE session. */
+async function syncJarToPage(page, jar) {
+  if (!page?.context || !jar?.dump) return 0;
+  const dump = jar.dump() || {};
+  const list = [];
+  for (const [name, value] of Object.entries(dump)) {
+    if (!name || value == null) continue;
+    // GE hosts — cookie domain must match URL we navigate.
+    for (const url of [
+      `${BANDAI_GE_WEBSERVICES}/`,
+      `${BANDAI_GE_SECURE}/`,
+      `${BANDAI_GE_GEPI}/`,
+      "https://p-bandai.com/",
+    ]) {
+      list.push({ name, value: String(value), url });
+    }
+  }
+  if (!list.length) return 0;
+  try {
+    await page.context().addCookies(list);
+    return Object.keys(dump).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * machineId = iovation RED blackbox (#ioBlackBox) from snare.js on Checkout/v2.
+ * Not the GE Pay UI — only fingerprint mint. Prefer reusing the F5 bridge page.
+ */
 export async function mintIovationBlackbox(opts = {}) {
   const page = opts.page;
   const url = opts.checkoutV2Url;
   if (!page || !url) {
     return { ok: false, error: "page_and_checkoutV2Url_required", machineId: null };
+  }
+  if (opts.jar) {
+    await syncJarToPage(page, opts.jar);
   }
   const timeoutMs = Math.min(45_000, Math.max(5_000, Number(opts.timeoutMs) || 20_000));
   const t0 = Date.now();
@@ -919,33 +962,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
 
-  // Wire-proven Revolut issuer used gatewayId=2 + paymentMethodId=2.
-  // CreditCardForm HTML often shows pm=1; prefer proven ids unless overridden.
-  const paymentMethodId = String(opts.paymentMethodId || "2");
-  const gatewayId = String(opts.gatewayId || form.gatewayId || "2");
-  const ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
-  const cc = await httpText(ccUrl, {
-    ctx,
-    userAgent: opts.userAgent,
-    accept: "text/html,application/xhtml+xml,*/*",
-    headers: { referer: v2Url },
-  });
-  if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(cc.text);
-  if (!machineId) machineId = extractMachineId(cc.text);
-  push("ge_credit_card_form", {
-    ok: cc.ok,
-    status: cc.status,
-    ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
-  });
-
-  // iovation snare.js fills #ioBlackBox on Checkout/v2 — needs a real DOM.
-  // Reuse F5 bridge page when provided (not GE Pay UI fill/click).
+  // Mint iovation BEFORE CreditCardForm JWT. page.goto(Checkout/v2) refreshes
+  // GE cookies — scraping JWT first then minting caused DataCorruption /
+  // IsTheSameCartToken=False on issuer (Revolut silent).
   if (!machineId && opts.page) {
     const mint = await mintIovationBlackbox({
       page: opts.page,
       checkoutV2Url: v2Url,
       timeoutMs: opts.iovationTimeoutMs,
+      jar: ctx?.jar,
     });
     push("ge_iovation_mint", {
       ok: mint.ok,
@@ -956,7 +981,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) machineId = mint.machineId;
-    // Bridge cookies (GE session) must ride the undici issuer POST.
     if (mint.cookies && ctx?.jar?.load) {
       try {
         ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
@@ -965,6 +989,26 @@ export async function runBandaiGeHttpPay(opts = {}) {
       }
     }
   }
+
+  // Wire-proven Revolut issuer used gatewayId=2 + paymentMethodId=2.
+  const paymentMethodId = String(opts.paymentMethodId || "2");
+  const gatewayId = String(opts.gatewayId || form.gatewayId || "2");
+  const ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
+  const cc = await httpText(ccUrl, {
+    ctx,
+    userAgent: opts.userAgent,
+    accept: "text/html,application/xhtml+xml,*/*",
+    headers: { referer: v2Url },
+  });
+  // Always prefer JWT minted after iovation cookie sync.
+  urlStructureToken = extractUrlStructureToken(cc.text) || urlStructureToken;
+  if (!machineId) machineId = extractMachineId(cc.text);
+  push("ge_credit_card_form", {
+    ok: cc.ok,
+    status: cc.status,
+    ms: cc.ms,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
+  });
 
   try {
     const prev = fs.existsSync(BOOT_CAPTURE)
@@ -1104,17 +1148,32 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   const declineOnRedirect = Boolean(issuer.declineOnRedirect);
+  const redirectErr =
+    Array.isArray(issuer.redirectPayload)
+      ? issuer.redirectPayload.find((x) => /RedirectErrorType|ErrorMessage|Success/i.test(String(x?.Key || "")))
+      : null;
   push("ge_issuer_http", {
     ok: issuer.ok,
     status: issuer.status,
     ms: issuer.ms,
     note: (
       issuer.reloadOnly
-        ? `RELOAD_ONLY (no bank) ${issuer.status} ${issuer.redirectUrl || ""} ${JSON.stringify(issuer.redirectPayload || {}).slice(0, 120)}`
+        ? `RELOAD_ONLY ${issuer.status} err=${
+            Array.isArray(issuer.redirectPayload)
+              ? issuer.redirectPayload
+                  .filter((x) =>
+                    /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId/i.test(
+                      String(x?.Key || ""),
+                    ),
+                  )
+                  .map((x) => `${x.Key}=${x.Value}`)
+                  .join(";")
+              : ""
+          }`
         : issuer.redirectUrl
           ? `redirect ${issuer.status} bank=${issuer.bankSignal} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
           : issuer.bodySnippet || issuer.error || ""
-    ).slice(0, 240),
+    ).slice(0, 280),
   });
 
   const paymentStatus = !issuer.ok
