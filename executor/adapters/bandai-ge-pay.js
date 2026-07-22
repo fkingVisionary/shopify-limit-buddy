@@ -48,6 +48,18 @@ function looksLike3ds(url, text = "") {
   );
 }
 
+const DECLINE_RE =
+  /declin|payment failed|not authorised|not authorized|insufficient|low balance|not enough|do not honour|unable to process|authentication failed|card.*(denied|rejected|refused)|transaction.*(fail|denied)|issuer.*(fail|declin)|funds|cancelled by|canceled by|try another card|payment was not|could not be (processed|completed)/i;
+
+function extractDeclineSnippet(text) {
+  const t = String(text || "").replace(/\s+/g, " ").trim();
+  if (!t || !DECLINE_RE.test(t)) return null;
+  const m = t.match(
+    /.{0,40}(?:declin|insufficient|low balance|not (?:authori[sz]ed|enough)|do not honour|unable to process|payment failed).{0,80}/i,
+  );
+  return (m?.[0] || t).slice(0, 160);
+}
+
 /**
  * Cart UI → PROCEED → fill CreditCardForm → single Checkout/v2 Pay.
  * @param {object} opts
@@ -72,10 +84,27 @@ export async function browserBandaiGeFromCart(opts = {}) {
   };
   const meta = opts.meta || {};
   const steps = [];
+  const timeline = [];
   const t0 = Date.now();
+  const mark = (event, extra = {}) => {
+    const row = {
+      t: new Date().toISOString(),
+      elapsedMs: Date.now() - t0,
+      event,
+      ...extra,
+    };
+    timeline.push(row);
+    try {
+      opts.onProgress?.(event, row);
+    } catch {
+      /* ignore */
+    }
+    return row;
+  };
   const push = (step, row) => {
     const out = { step, ...row };
     steps.push(out);
+    mark(step, { ok: out.ok, note: out.note, ms: out.ms });
     return out;
   };
 
@@ -116,13 +145,16 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let orderNumber = null;
   let payClickCount = 0;
   let sawAuthWire = false;
+  let declineSnippet = null;
   let geNote = "";
 
   try {
+    mark("ge_from_cart_start");
     const sChk = Date.now();
     await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(500);
     await dismissCookieBanner(page);
+    mark("cart_ui_ready");
 
     const areaBoxes = page.locator(
       'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
@@ -188,6 +220,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
+    mark("proceed_click");
     await Promise.all([
       page.waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 35_000 }).catch(() => null),
       proceed.click({ timeout: 8_000 }),
@@ -197,6 +230,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     checkoutSn =
       (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn"))) || null;
+    mark("after_proceed", { checkoutSn });
 
     let geIframeReady = false;
     for (let i = 0; i < 25; i++) {
@@ -394,6 +428,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
           paid = true;
+          mark("pay_clicked", { payClickCount, frame: url.slice(0, 80) });
         } catch (e) {
           geNote += `; pay_click_fail@${attempt}:${String(e?.message || e).slice(0, 40)}`;
         }
@@ -442,7 +477,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
           : wait3dsMs);
       sawAuthWire = authReqs().length > 0;
       const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
-      const postWireObserveMs = Math.min(12_000, wait3dsMs);
+      // Stay long enough after wire to scrape issuer decline UI (bank soft-declines often have no ACS).
+      const postWireObserveMs = Math.min(20_000, Math.max(14_000, wait3dsMs));
 
       while (Date.now() < hardDeadline && !reached3ds && !orderNumber) {
         if (!sawAuthWire) {
@@ -451,11 +487,22 @@ export async function browserBandaiGeFromCart(opts = {}) {
             sawAuthWire = true;
             wireSeenAt.t = Date.now();
             geNote += `; authWire=${n}`;
+            mark("auth_wire", { authReqs: n });
           }
-        } else if (Date.now() - wireSeenAt.t >= postWireObserveMs) {
+        } else if (
+          Date.now() - wireSeenAt.t >= postWireObserveMs &&
+          paymentStatus !== "declined_or_auth_failed"
+        ) {
           break;
         }
-        await page.waitForTimeout(600);
+        await page.waitForTimeout(500);
+
+        // Also sniff GE JSON responses for decline codes.
+        for (const n of geNet.slice(netBefore)) {
+          if (n.kind !== "res" || !n.url) continue;
+          if (n._sniffed) continue;
+          n._sniffed = true;
+        }
 
         for (const frame of page.frames()) {
           const furl = frame.url();
@@ -469,14 +516,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
             reached3ds = true;
             threeDsUrl = furl.slice(0, 160);
             paymentStatus = "reached_3ds";
+            mark("reached_3ds", { threeDsUrl });
             break;
           }
-          if (
-            /declin|payment failed|not authorised|not authorized|insufficient|low balance|not enough|do not honour|unable to process/i.test(
-              ftext,
-            )
-          ) {
+          const snip = extractDeclineSnippet(ftext);
+          if (snip) {
+            declineSnippet = snip;
             paymentStatus = "declined_or_auth_failed";
+            mark("payment_declined", { declineSnippet: snip, where: "frame" });
             break;
           }
         }
@@ -487,6 +534,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
             reached3ds = true;
             threeDsUrl = p.url().slice(0, 160);
             paymentStatus = "reached_3ds";
+            mark("reached_3ds", { threeDsUrl });
             break;
           }
         }
@@ -502,19 +550,44 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (orderHint) {
           orderNumber = orderHint[1];
           paymentStatus = "order_confirmed";
+          mark("order_confirmed", { orderNumber });
           break;
         }
-        if (
-          /declin|payment failed|not authorised|not authorized|insufficient|low balance|not enough|do not honour|unable to process/i.test(
-            bodyProbe,
-          )
-        ) {
+        const snip = extractDeclineSnippet(bodyProbe);
+        if (snip) {
+          declineSnippet = snip;
           paymentStatus = "declined_or_auth_failed";
+          mark("payment_declined", { declineSnippet: snip, where: "page" });
           break;
         }
+
+        // Response URL/status hints (GE sometimes encodes fail in path/query).
+        for (const n of payNetHot.concat(geNet.slice(netBefore))) {
+          if (n.kind === "res" && (n.status >= 400 || /fail|declin|reject/i.test(n.url || ""))) {
+            if (!declineSnippet) {
+              declineSnippet = `http ${n.status || "?"} ${String(n.url || "").slice(0, 100)}`;
+              paymentStatus = "declined_or_auth_failed";
+              mark("payment_declined", { declineSnippet, where: "net" });
+              break;
+            }
+          }
+        }
+        if (paymentStatus === "declined_or_auth_failed") break;
       }
       if (paymentStatus === "pay_clicked") {
         paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
+      }
+      // Soft decline with no UI: still surface a clear terminal status when wire fired once.
+      if (
+        paymentStatus === "pay_submitted_no_3ds_seen" &&
+        sawAuthWire &&
+        payClickCount === 1 &&
+        !orderNumber &&
+        !reached3ds
+      ) {
+        // Keep pay_submitted… but attach note — bank may have declined without GE copy.
+        geNote += "; await_bank_confirm_if_no_ui_decline";
+        mark("pay_submitted_await_bank", { sawAuthWire: true });
       }
     }
 
@@ -535,10 +608,18 @@ export async function browserBandaiGeFromCart(opts = {}) {
     const cookies = {};
     for (const c of await context.cookies("https://p-bandai.com")) cookies[c.name] = c.value;
 
+    mark("ge_done", { paymentStatus, ok: gePayOk, elapsedMs: Date.now() - t0 });
     return {
       ok: gePayOk,
       steps,
-      checkoutStage: orderNumber ? "order" : reached3ds ? "three_ds" : "tokenize",
+      timeline,
+      checkoutStage: orderNumber
+        ? "order"
+        : paymentStatus === "declined_or_auth_failed"
+          ? "declined"
+          : reached3ds
+            ? "three_ds"
+            : "tokenize",
       dryRun: false,
       paymentStatus,
       reached3ds,
@@ -547,6 +628,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       orderNumber,
       payClickCount,
       sawAuthWire,
+      declineSnippet,
       geNetTail: geNet.slice(-20),
       cookies,
       ...meta,
@@ -555,7 +637,9 @@ export async function browserBandaiGeFromCart(opts = {}) {
         ? `3DS challenge seen (${threeDsUrl || "frame"})`
         : orderNumber
           ? `Order ${orderNumber}`
-          : `GE via http+bridge; ${paymentStatus}; elapsed=${Date.now() - t0}ms`,
+          : paymentStatus === "declined_or_auth_failed"
+            ? `Payment declined${declineSnippet ? `: ${declineSnippet}` : ""}`
+            : `GE via http+bridge; ${paymentStatus}; elapsed=${Date.now() - t0}ms`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,
