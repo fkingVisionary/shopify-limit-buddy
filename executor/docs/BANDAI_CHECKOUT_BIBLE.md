@@ -204,6 +204,8 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
+| Card expiry SELECT | DOM `value` + `input`/`change` events | Playwright `selectOption` on mismatch burned **~90s×N** and looked like “Pay blocked for 3 min” |
+| Pay enable poll | ≤12s after fill + T&Cs tick | Diagnose checkboxes/errors; do not sit in 90s locator timeouts |
 
 ---
 

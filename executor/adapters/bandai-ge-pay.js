@@ -11,9 +11,85 @@ export function isBandaiGeCheckoutPayFrame(url) {
 
 /** Issuer / payment submit URLs (wire proof after a single Pay click). */
 export function isBandaiGeAuthPaymentUrl(url) {
-  return /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|PaymentData/i.test(
+  // Keep broad enough for GE hosts — bank hit while payNetHot=0 when this was too narrow.
+  return /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|PaymentData|CreditCard|\/Pay\b|Charge|Checkout\/.*Pay|secure-bandai\.global-e\.com\/.*(?:pay|auth|transaction)/i.test(
     String(url || ""),
   );
+}
+
+/** Fast SELECT fill — never use Playwright selectOption (90s default on mismatch). */
+async function fillSelectFast(locator, rawValue) {
+  const v = String(rawValue ?? "");
+  const v2 = v.replace(/^0+/, "") || v;
+  const v4 = v.length === 2 ? `20${v}` : v;
+  return locator
+    .evaluate(
+      (el, opts) => {
+        const values = [opts.v, opts.v2, opts.v4].filter(Boolean);
+        const labels = values.map(String);
+        if (el.tagName !== "SELECT") {
+          el.value = opts.v;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ok: true, how: "input" };
+        }
+        const options = [...el.options];
+        for (const cand of values) {
+          const hit = options.find(
+            (o) =>
+              o.value === cand ||
+              o.value === String(Number(cand)) ||
+              o.text.trim() === cand ||
+              o.text.trim() === String(Number(cand)),
+          );
+          if (hit) {
+            el.value = hit.value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, how: "select", value: hit.value };
+          }
+        }
+        // Last resort: option whose value/text ends with year/month
+        for (const cand of labels) {
+          const hit = options.find(
+            (o) => o.value.endsWith(cand) || o.text.trim().endsWith(cand),
+          );
+          if (hit) {
+            el.value = hit.value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+            return { ok: true, how: "endsWith", value: hit.value };
+          }
+        }
+        return {
+          ok: false,
+          options: options.slice(0, 24).map((o) => ({ v: o.value, t: o.text.trim() })),
+        };
+      },
+      { v, v2, v4 },
+    )
+    .catch(() => ({ ok: false }));
+}
+
+async function fillInputFast(locator, value) {
+  const v = String(value ?? "");
+  // Prefer DOM set + events — GE validators listen for input/change; avoids 90s fills.
+  const ok = await locator
+    .evaluate((el, val) => {
+      el.focus();
+      el.value = "";
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.value = val;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.blur();
+      return el.value === val || String(el.value).replace(/\s/g, "") === String(val).replace(/\s/g, "");
+    }, v)
+    .catch(() => false);
+  if (ok) return true;
+  await locator.click({ timeout: 1500 }).catch(() => {});
+  await locator.fill(v, { timeout: 2000 }).catch(() => {});
+  return true;
 }
 
 async function dismissCookieBanner(page) {
@@ -313,6 +389,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     const sGe = Date.now();
     let filled = false;
+    // Cap every locator op — Playwright default 90s on SELECT mismatch was the 3min Pay stall.
+    page.setDefaultTimeout(8_000);
 
     await page
       .waitForFunction(
@@ -321,7 +399,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
             /CreditCardForm|secure-bandai\.global-e|payments\//i.test(f.src || ""),
           ),
         null,
-        { timeout: 20_000 },
+        { timeout: 12_000 },
       )
       .catch(() => null);
 
@@ -333,82 +411,71 @@ export async function browserBandaiGeFromCart(opts = {}) {
         )
         .first();
       if (await cardOpt.count().catch(() => 0)) {
-        await cardOpt.click({ timeout: 2500 }).catch(() => {});
-        await page.waitForTimeout(400);
+        await cardOpt.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(250);
       }
     }
 
-    for (let tick = 0; tick < 14 && !filled; tick++) {
-      if (tick) await page.waitForTimeout(300);
+    const mmRaw = String(card.expMonth || "").padStart(2, "0");
+    const yyRaw = String(card.expYear || "")
+      .replace(/^20/, "")
+      .slice(-2);
+    const pan = String(card.number).replace(/\s+/g, "");
+
+    for (let tick = 0; tick < 10 && !filled; tick++) {
+      if (tick) await page.waitForTimeout(200);
       for (const frame of page.frames()) {
         const url = frame.url();
         if (!/CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(url)) continue;
         if (/prefetcher/i.test(url)) continue;
-        const num = frame
-          .locator(
-            'input[autocomplete="cc-number"], input[name*="cardNumber" i], input[id*="cardNumber" i], input[name*="cardNum" i], input[placeholder*="card number" i], input[type="tel"]',
-          )
-          .first();
+
+        // Prefer Bandai GE field ids from form inspect.
+        const num = frame.locator("#cardNum, input[name='PaymentData.cardNum'], input[autocomplete='cc-number']").first();
         if (!(await num.count().catch(() => 0))) continue;
         if (!(await num.isVisible().catch(() => false))) continue;
 
-        const pan = String(card.number).replace(/\s+/g, "");
-        await num.click({ timeout: 2500 }).catch(() => {});
-        await num.fill(pan).catch(async () => {
-          await num.pressSequentially(pan, { delay: 15 });
-        });
+        await fillInputFast(num, pan);
         const mm = frame
           .locator(
-            'input[autocomplete="cc-exp-month"], select[name*="month" i], input[name*="expMonth" i], input[placeholder*="MM" i]',
+            "#cardExpiryMonth, select[name='PaymentData.cardExpiryMonth'], select[autocomplete='cc-exp-month'], select[name*='month' i]",
           )
           .first();
         const yy = frame
           .locator(
-            'input[autocomplete="cc-exp-year"], select[name*="year" i], input[name*="expYear" i], input[placeholder*="YY" i]',
-          )
-          .first();
-        const exp = frame
-          .locator(
-            'input[autocomplete="cc-exp"], input[name*="expiry" i], input[placeholder*="MM" i][placeholder*="YY" i]',
+            "#cardExpiryYear, select[name='PaymentData.cardExpiryYear'], select[autocomplete='cc-exp-year'], select[name*='year' i]",
           )
           .first();
         const cvv = frame
-          .locator(
-            'input[autocomplete="cc-csc"], input[name*="cvv" i], input[name*="cvc" i], input[name*="cvd" i], input[placeholder*="CVV" i]',
-          )
+          .locator("#cvdNumber, input[name='PaymentData.cvdNumber'], input[autocomplete='cc-csc']")
           .first();
         const name = frame
           .locator(
-            'input[autocomplete="cc-name"], input[name*="cardHolder" i], input[name*="holder" i], input[placeholder*="name on card" i]',
+            "input[autocomplete='cc-name'], input[name*='cardHolder' i], input[name*='holder' i]",
           )
           .first();
 
-        if (await exp.count().catch(() => 0)) {
-          await exp.fill(`${card.expMonth}/${card.expYear}`).catch(() => {});
-        } else {
-          if (await mm.count().catch(() => 0)) {
-            const tag = await mm.evaluate((el) => el.tagName).catch(() => "");
-            if (tag === "SELECT") {
-              await mm
-                .selectOption({ value: String(card.expMonth) })
-                .catch(() => mm.selectOption({ label: String(card.expMonth) }));
-            } else await mm.fill(String(card.expMonth)).catch(() => {});
-          }
-          if (await yy.count().catch(() => 0)) {
-            const tag = await yy.evaluate((el) => el.tagName).catch(() => "");
-            if (tag === "SELECT") {
-              await yy
-                .selectOption({ value: String(card.expYear) })
-                .catch(() => yy.selectOption({ value: `20${card.expYear}` }));
-            } else await yy.fill(String(card.expYear)).catch(() => {});
-          }
+        if (await mm.count().catch(() => 0)) {
+          const sel = await fillSelectFast(mm, mmRaw);
+          if (!sel?.ok) geNote += `; mm_select_fail=${JSON.stringify(sel?.options || []).slice(0, 80)}`;
         }
-        if (await cvv.count().catch(() => 0)) await cvv.fill(String(card.cvv)).catch(() => {});
-        if (await name.count().catch(() => 0)) await name.fill(String(card.holder)).catch(() => {});
-        await frame.evaluate(() => document.activeElement?.blur?.()).catch(() => {});
-        await page.keyboard.press("Escape").catch(() => {});
+        if (await yy.count().catch(() => 0)) {
+          const sel = await fillSelectFast(yy, yyRaw);
+          if (!sel?.ok) geNote += `; yy_select_fail=${JSON.stringify(sel?.options || []).slice(0, 80)}`;
+        }
+        if (await cvv.count().catch(() => 0)) await fillInputFast(cvv, card.cvv);
+        if (await name.count().catch(() => 0)) await fillInputFast(name, card.holder);
+
+        // Nudge GE validators / parent Checkout that card iframe changed.
+        await frame
+          .evaluate(() => {
+            document.activeElement?.blur?.();
+            window.parent?.postMessage?.({ type: "ge-card-updated" }, "*");
+          })
+          .catch(() => {});
+
         filled = true;
         geNote = `filled card form ${url.slice(0, 70)}`;
+        mark("card_filled", { ms: Date.now() - sGe });
         break;
       }
     }
@@ -423,6 +490,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return {
         ok: false,
         steps,
+        timeline,
         failedStep: "ge_payment",
         error: paymentStatus,
         checkoutStage: "tokenize",
@@ -434,13 +502,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
-    await page.waitForTimeout(900);
-
     let paid = false;
     const netBefore = geNet.length;
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+        // Explicit T&Cs labels first, then any remaining checkbox.
+        const labeled = frame.locator(
+          'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree")',
+        );
+        const nLab = await labeled.count().catch(() => 0);
+        for (let i = 0; i < nLab; i++) {
+          await labeled.nth(i).click({ timeout: 800 }).catch(() => {});
+        }
         const checks = frame.locator('input[type="checkbox"]');
         const n = await checks.count().catch(() => 0);
         for (let ci = 0; ci < n; ci++) {
@@ -451,13 +525,43 @@ export async function browserBandaiGeFromCart(opts = {}) {
         }
       }
     };
-    await tickTerms();
 
-    for (let attempt = 0; attempt < 6 && !paid; attempt++) {
+    // Poll Pay enable — max ~12s. Diagnose why disabled (terms / card / captcha).
+    mark("wait_pay_enabled");
+    let payDiag = null;
+    const payDeadline = Date.now() + 12_000;
+    while (Date.now() < payDeadline && !paid) {
       await tickTerms();
       for (const frame of page.frames()) {
         const url = frame.url();
         if (!isBandaiGeCheckoutPayFrame(url)) continue;
+        const state = await frame
+          .evaluate(() => {
+            const pay = [...document.querySelectorAll("button, input[type=submit]")].find((b) =>
+              /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
+            );
+            const checks = [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
+              checked: !!c.checked,
+              name: c.name || c.id || "",
+            }));
+            const errs = [...document.querySelectorAll(".error, .invalid, [class*=error i], [role=alert]")]
+              .map((e) => (e.innerText || "").replace(/\s+/g, " ").trim())
+              .filter(Boolean)
+              .slice(0, 4);
+            return {
+              hasPay: Boolean(pay),
+              disabled: pay ? !!pay.disabled || pay.getAttribute("aria-disabled") === "true" : null,
+              checks,
+              errs,
+              recaptcha: Boolean(
+                document.querySelector("#recapchaToken, [name='PaymentData.recapchaToken']")?.value ||
+                  document.querySelector("iframe[src*='recaptcha'], iframe[src*='hcaptcha']"),
+              ),
+            };
+          })
+          .catch(() => null);
+        if (state) payDiag = state;
+
         const payBtn = frame
           .locator(
             'button:has-text("Pay"):visible, button:has-text("Place Order"):visible, button:has-text("Pay now"):visible',
@@ -465,24 +569,31 @@ export async function browserBandaiGeFromCart(opts = {}) {
           .first();
         if (!(await payBtn.count().catch(() => 0))) continue;
         if (!(await payBtn.isVisible().catch(() => false))) continue;
-        if (await payBtn.isDisabled().catch(() => false)) {
-          geNote += `; pay_disabled@${attempt}`;
-          continue;
-        }
+        const disabled = await payBtn.isDisabled().catch(() => true);
+        if (disabled) continue;
+
         try {
-          await payBtn.click({ timeout: 8_000, noWaitAfter: true });
+          await payBtn.click({ timeout: 5_000, noWaitAfter: true });
           payClickCount += 1;
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
           paid = true;
-          mark("pay_clicked", { payClickCount, frame: url.slice(0, 80) });
+          mark("pay_clicked", {
+            payClickCount,
+            frame: url.slice(0, 80),
+            enableMs: Date.now() - sGe,
+          });
         } catch (e) {
-          geNote += `; pay_click_fail@${attempt}:${String(e?.message || e).slice(0, 40)}`;
+          geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
         break;
       }
       if (paid) break;
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(250);
+    }
+    if (!paid) {
+      geNote += `; pay_still_disabled diag=${JSON.stringify(payDiag || {}).slice(0, 180)}`;
+      mark("pay_still_disabled", { payDiag });
     }
 
     if (!paid) {
@@ -491,6 +602,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return {
         ok: false,
         steps,
+        timeline,
         failedStep: "ge_payment",
         error: paymentStatus,
         checkoutStage: "tokenize",
@@ -503,12 +615,22 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(800);
 
     const authReqs = () =>
-      geNet.slice(netBefore).filter((n) => n.kind === "req" && isBandaiGeAuthPaymentUrl(n.url));
+      geNet.slice(netBefore).filter((n) => {
+        if (n.kind !== "req") return false;
+        if (isBandaiGeAuthPaymentUrl(n.url)) return true;
+        // Bank-confirmed path sometimes uses opaque GE POSTs — count non-static GE writes.
+        return (
+          n.method &&
+          n.method !== "GET" &&
+          /global-e\.com/i.test(n.url || "") &&
+          !/prefetcher|\/static\/|includes\/js|\.js(?:\?|$)|\/css\//i.test(n.url || "")
+        );
+      });
     const payNet = geNet.slice(netBefore);
-    const payNetHot = payNet.filter((n) => isBandaiGeAuthPaymentUrl(n.url));
+    const payNetHot = authReqs();
     geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount}`;
     if (payClickCount > 1) geNote += "; WARN multi_pay_click";
     if (payNet.length === 0) {
