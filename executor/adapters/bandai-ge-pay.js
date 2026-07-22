@@ -290,15 +290,31 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // handleaction/1 = GEM init (must allow). /2 then /3 both hit Revolut on one
-  // Pay — let the first ≥2 reach the issuer; fulfill later ≥2 with the prior
-  // success JSON (aborting /3 leaves Pay disabled / T&Cs uncleared).
+  // Bank ground truth (owner): last Revolut hit ~14:09 AEST = retest8 with BOTH
+  // handleaction/2+/3 on the wire. Labs that let /2 through and fulfilled /3
+  // locally reported pay_submitted but bank stayed silent — /3 is the issuer
+  // authorize. Policy: /1 network, /2 fulfill local, first /3+ to issuer once.
   let armChargeGuard = false;
-  let allowedHandleActionGe2 = false;
+  let issuerHandleActionSent = false;
   let lastHandleActionOk = {
     status: 200,
     contentType: "application/json; charset=utf-8",
     body: '{"Success":true}',
+  };
+
+  const fulfillHandleActionLocal = async (route, actionId, url) => {
+    blockedChargeReqCount += 1;
+    mark("charge_req_fulfilled_local", {
+      n: chargeReqCount,
+      handleAction: true,
+      actionId,
+      url: url.slice(0, 140),
+    });
+    await route.fulfill({
+      status: lastHandleActionOk.status,
+      contentType: lastHandleActionOk.contentType,
+      body: lastHandleActionOk.body,
+    });
   };
 
   const chargeRoute = async (route) => {
@@ -326,7 +342,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return;
     }
 
-    // Always allow GEM init (action 1) — aborting it leaves Pay forever disabled.
+    // Always allow GEM init (action 1).
     if (handleAction && actionId === 1) {
       geNet.push({
         t: Date.now(),
@@ -343,7 +359,6 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return;
     }
 
-    // handleaction ≥2 and post-Pay charge URLs share one issuer slot.
     chargeReqCount += 1;
     geNet.push({
       t: Date.now(),
@@ -357,26 +372,29 @@ export async function browserBandaiGeFromCart(opts = {}) {
       chargeN: chargeReqCount,
     });
 
-    if (handleAction && actionId != null && actionId >= 2) {
-      if (allowedHandleActionGe2) {
-        blockedChargeReqCount += 1;
-        mark("charge_req_fulfilled_local", {
-          n: chargeReqCount,
-          handleAction: true,
-          actionId,
-          url: url.slice(0, 140),
-        });
-        await route.fulfill({
-          status: lastHandleActionOk.status,
-          contentType: lastHandleActionOk.contentType,
-          body: lastHandleActionOk.body,
-        });
+    if (handleAction && actionId != null) {
+      // /2 = card/update side-effect that paired with /3 on Revolut. Do not
+      // send it to the issuer; keep UI happy with prior success JSON.
+      if (actionId === 2) {
+        await fulfillHandleActionLocal(route, actionId, url);
         return;
       }
-      allowedHandleActionGe2 = true;
-      mark("charge_req_allowed", { handleAction: true, actionId, url: url.slice(0, 140) });
-      await route.continue();
-      return;
+      // /3+ = real authorize (bank silent when this was fulfilled locally).
+      if (actionId >= 3) {
+        if (issuerHandleActionSent) {
+          await fulfillHandleActionLocal(route, actionId, url);
+          return;
+        }
+        issuerHandleActionSent = true;
+        mark("charge_req_allowed", {
+          handleAction: true,
+          actionId,
+          issuer: true,
+          url: url.slice(0, 140),
+        });
+        await route.continue();
+        return;
+      }
     }
 
     if (chargeReqCount > 1) {
