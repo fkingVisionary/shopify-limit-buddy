@@ -1143,72 +1143,116 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   }
 
-  // Open CreditCardForm with checkout-selected pm (DOM usually 1; forcing 2
-  // mismatched JWT → DataCorruption).
+  // Keep Playwright on Checkout/v2 after iovation. Top-level goto(CreditCardForm)
+  // replaces the GE parent session → IsTheSameCartToken=False / DataCorruption.
+  // Browser keeps Checkout/v2 with a secure-bandai iframe for the card form.
   let paymentMethodId = String(
     opts.paymentMethodId || form.selectedPaymentMethodId || "1",
   );
   let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
-  // Prefer loading CreditCardForm in the same Playwright context that minted
-  // iovation so JWT + machineId + cookies share one GE session.
   let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
   let cc = { ok: false, status: 0, ms: 0, text: "" };
+
   if (issuerPage) {
     const tCc = Date.now();
     try {
       await syncJarToPage(issuerPage, ctx?.jar);
-      await issuerPage.goto(ccUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: Math.min(45_000, Number(opts.iovationTimeoutMs) || 20_000),
-      });
-      // Wait briefly for iframe/form fields + optional snare fill on secure host.
+      let frame = null;
       try {
-        await issuerPage.waitForSelector(
-          'input[name="PaymentData.UrlStructureTokenEncoded"], input[name="PaymentData.machineId"], #ioBlackBox',
-          { timeout: 8_000 },
-        );
+        frame =
+          issuerPage.frames().find((f) =>
+            /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url()),
+          ) || null;
       } catch {
-        /* continue with content scrape */
+        frame = null;
       }
-      const fromDom = await issuerPage.evaluate(() => {
-        const jwt =
-          document.querySelector('input[name="PaymentData.UrlStructureTokenEncoded"]')
-            ?.value || "";
-        const mid =
-          document.querySelector('input[name="PaymentData.machineId"]')?.value ||
-          document.getElementById("ioBlackBox")?.value ||
-          "";
-        const pm =
-          document.querySelector('input[name="PaymentData.paymentMethodId"]')?.value ||
-          "";
-        const gw =
-          document.querySelector('input[name="PaymentData.gatewayId"]')?.value || "";
-        return { jwt, mid, pm, gw, html: document.documentElement.outerHTML };
-      });
-      cc = {
-        ok: true,
-        status: 200,
-        ms: Date.now() - tCc,
-        text: fromDom.html || "",
-        domJwt: fromDom.jwt,
-        domMachineId: fromDom.mid,
-        domPm: fromDom.pm,
-        domGw: fromDom.gw,
-      };
+      if (!frame) {
+        await issuerPage
+          .evaluate((pm) => {
+            const radio = document.querySelector(
+              `input[name="CheckoutData.SelectedPaymentMethodID"][value="${pm}"]`,
+            );
+            if (radio) {
+              radio.checked = true;
+              radio.click();
+            }
+            const sel = document.querySelector("#SelectedPaymentMethodID");
+            if (sel) {
+              sel.value = String(pm);
+              sel.dispatchEvent(new Event("change", { bubbles: true }));
+            }
+          }, paymentMethodId)
+          .catch(() => null);
+        await issuerPage.waitForTimeout(2500);
+        try {
+          frame =
+            issuerPage.frames().find((f) =>
+              /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url()),
+            ) || null;
+        } catch {
+          frame = null;
+        }
+      }
+      if (frame) {
+        try {
+          await frame.waitForSelector(
+            'input[name="PaymentData.UrlStructureTokenEncoded"], input[name="PaymentData.machineId"]',
+            { timeout: 10_000 },
+          );
+        } catch {
+          /* scrape anyway */
+        }
+        const fromDom = await frame.evaluate(() => {
+          const jwt =
+            document.querySelector('input[name="PaymentData.UrlStructureTokenEncoded"]')
+              ?.value || "";
+          const mid =
+            document.querySelector('input[name="PaymentData.machineId"]')?.value ||
+            document.getElementById("ioBlackBox")?.value ||
+            "";
+          const pm =
+            document.querySelector('input[name="PaymentData.paymentMethodId"]')?.value ||
+            "";
+          const gw =
+            document.querySelector('input[name="PaymentData.gatewayId"]')?.value || "";
+          return {
+            jwt,
+            mid,
+            pm,
+            gw,
+            html: document.documentElement.outerHTML,
+            url: location.href,
+          };
+        });
+        cc = {
+          ok: Boolean(fromDom.jwt),
+          status: 200,
+          ms: Date.now() - tCc,
+          text: fromDom.html || "",
+          domJwt: fromDom.jwt,
+          domMachineId: fromDom.mid,
+          domPm: fromDom.pm,
+          domGw: fromDom.gw,
+          frameUrl: fromDom.url,
+        };
+        if (fromDom.url) ccUrl = fromDom.url.split("?")[0];
+      }
       const pageCookies = await cookiesFromPage(issuerPage);
       if (pageCookies && ctx?.jar?.load) {
         ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
       }
+      if (!cc.ms) cc.ms = Date.now() - tCc;
     } catch (e) {
       cc = {
         ok: false,
         status: 0,
         ms: Date.now() - tCc,
         text: "",
-        error: e?.message || "cc_form_page_failed",
+        error: e?.message || "cc_form_frame_failed",
       };
     }
   }
+
   if (!cc.ok || !(cc.domJwt || extractUrlStructureToken(cc.text))) {
     const httpCc = await httpText(ccUrl, {
       ctx,
@@ -1216,68 +1260,22 @@ export async function runBandaiGeHttpPay(opts = {}) {
       accept: "text/html,application/xhtml+xml,*/*",
       headers: { referer: v2Url },
     });
-    if (!cc.ok || extractUrlStructureToken(httpCc.text)) cc = httpCc;
+    cc = {
+      ...httpCc,
+      domJwt: extractUrlStructureToken(httpCc.text),
+      domMachineId: extractMachineId(httpCc.text),
+      viaHttp: true,
+    };
   }
-  // Align pm/gw from live CreditCardForm DOM (labs: domPm=1).
+
   paymentMethodId = String(
     opts.paymentMethodId || cc.domPm || form.selectedPaymentMethodId || paymentMethodId || "1",
   );
   gatewayId = String(opts.gatewayId || cc.domGw || form.gatewayId || gatewayId || "2");
-  if (
-    issuerPage &&
-    cc.ok &&
-    cc.domPm &&
-    String(opts.paymentMethodId || "") === "" &&
-    !String(ccUrl).endsWith(`/${paymentMethodId}`)
-  ) {
-    // Re-open form for the DOM payment method so JWT matches pm in body.
-    const alignedUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
-    const tRe = Date.now();
-    try {
-      await issuerPage.goto(alignedUrl, {
-        waitUntil: "domcontentloaded",
-        timeout: 20_000,
-      });
-      const fromDom = await issuerPage.evaluate(() => {
-        const jwt =
-          document.querySelector('input[name="PaymentData.UrlStructureTokenEncoded"]')
-            ?.value || "";
-        const mid =
-          document.querySelector('input[name="PaymentData.machineId"]')?.value ||
-          document.getElementById("ioBlackBox")?.value ||
-          "";
-        const pm =
-          document.querySelector('input[name="PaymentData.paymentMethodId"]')?.value ||
-          "";
-        const gw =
-          document.querySelector('input[name="PaymentData.gatewayId"]')?.value || "";
-        return { jwt, mid, pm, gw, html: document.documentElement.outerHTML };
-      });
-      cc = {
-        ok: true,
-        status: 200,
-        ms: (cc.ms || 0) + (Date.now() - tRe),
-        text: fromDom.html || "",
-        domJwt: fromDom.jwt,
-        domMachineId: fromDom.mid,
-        domPm: fromDom.pm || paymentMethodId,
-        domGw: fromDom.gw || gatewayId,
-      };
-      ccUrl = alignedUrl;
-      if (fromDom.pm) paymentMethodId = String(fromDom.pm);
-      if (fromDom.gw) gatewayId = String(fromDom.gw);
-      urlStructureToken = fromDom.jwt || urlStructureToken;
-      if (fromDom.mid) machineId = fromDom.mid;
-    } catch {
-      /* keep first form */
-    }
-  }
   urlStructureToken =
     cc.domJwt || extractUrlStructureToken(cc.text) || urlStructureToken;
   const formMachineId = cc.domMachineId || extractMachineId(cc.text);
   if (formMachineId) machineId = formMachineId;
-  // If CreditCardForm left machineId empty, stamp the iovation blackbox into
-  // the live DOM so page-issuer POST matches what a browser Pay would send.
   if (machineId && issuerPage && !formMachineId) {
     try {
       await issuerPage.evaluate((mid) => {
@@ -1286,10 +1284,22 @@ export async function runBandaiGeHttpPay(opts = {}) {
           document.getElementById("ioBlackBox");
         if (el) el.value = mid;
       }, machineId);
+      for (const f of issuerPage.frames()) {
+        if (!/secure-bandai|CreditCardForm/i.test(f.url())) continue;
+        await f
+          .evaluate((mid) => {
+            const el =
+              document.querySelector('input[name="PaymentData.machineId"]') ||
+              document.getElementById("ioBlackBox");
+            if (el) el.value = mid;
+          }, machineId)
+          .catch(() => null);
+      }
     } catch {
       /* ignore */
     }
   }
+
   const jwtCart = (() => {
     try {
       const payload = decodeCcPaymentRedirectData(urlStructureToken);
