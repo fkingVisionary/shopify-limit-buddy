@@ -12,6 +12,7 @@ _HAR status: **not available yet** — build from JS-derived research; owner can
 | Doc | Why |
 |---|---|
 | **This file** | Build scope, phases, constraints, acceptance |
+| [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md) | **Charge-path contract** — F5 + HTTP + GE invariants, failure matrix, restore rule |
 | [`BANDAI_AU_MODULE.md`](./BANDAI_AU_MODULE.md) | Full API map, signup DTO, ATC/Chance/GE payloads |
 | [`NEXT_STORE_MODULES.md`](./NEXT_STORE_MODULES.md) | Priority context (Bandai-first) |
 | [`AGENTS.md`](../../AGENTS.md) | Repo layout; **do not break Kmart** |

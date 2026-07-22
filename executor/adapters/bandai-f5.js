@@ -30,6 +30,8 @@ export function isBandaiF5Gated(method, urlOrPath) {
   } catch {
     /* keep */
   }
+  // Strip query/hash so modifyCartItem?cartItemSn=… still matches the allowlist.
+  path = path.split(/[?#]/)[0] || path;
   const m = String(method || "GET").toUpperCase();
   return BANDAI_F5_GATED.some((g) => g.method === m && g.path.test(path));
 }
