@@ -20,6 +20,7 @@ import {
   isBandaiGeIssuerPaymentUrl,
   bandaiGeHandleActionId,
 } from "./bandai-ge-pay.js";
+import { extractGeCheckoutGuid } from "./bandai-ge-http.js";
 
 // --- F5 gate matrix ---
 assert.equal(isBandaiF5Gated("POST", "/login"), true);
@@ -132,12 +133,24 @@ assert.equal(
   false,
 );
 assert.equal(isBandaiGeChargeRequest("GET", "https://webservices.global-e.com/ProcessPayment"), false);
-// Issuer = HandleCreditCardRequestV2 only (handleaction/save are not bank)
+// Issuer = HandleCreditCard* family (handleaction/save are not bank)
 assert.equal(
   isBandaiGeIssuerPaymentUrl(
     "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/08f4e43c?mode=1",
   ),
   true,
+);
+assert.equal(
+  isBandaiGeIssuerPaymentUrl(
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCard/8urc/abc",
+  ),
+  true,
+);
+assert.equal(
+  isBandaiGeIssuerPaymentUrl(
+    "https://secure-bandai.global-e.com/1/checkoutv2/save/x",
+  ),
+  false,
 );
 assert.equal(
   isBandaiGeChargeRequest(
@@ -174,6 +187,18 @@ assert.equal(
     "https://webservices.global-e.com/checkoutv2/handleaction/1/abc/8urc",
   ),
   1,
+);
+assert.equal(
+  extractGeCheckoutGuid(
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/08f4e43c-73ba-4a1e-9c2d-099033fe73ba?mode=1",
+  ),
+  "08f4e43c-73ba-4a1e-9c2d-099033fe73ba",
+);
+assert.equal(
+  extractGeCheckoutGuid(
+    "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba-4a1e-9c2d-08f4e43c73ba/8urc",
+  ),
+  "099033fe-73ba-4a1e-9c2d-08f4e43c73ba",
 );
 
 console.log("bandai-flow.test.mjs ok");

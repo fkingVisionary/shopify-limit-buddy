@@ -118,6 +118,9 @@ export async function createBandaiF5Bridge(opts = {}) {
     locale,
     userAgent,
     viewport: { width: 1280, height: 800 },
+    // SW can bypass page.route and was a suspect for Revolut pairs when
+    // chargeReqCount stayed 1. context.route still helps; blocking SW closes the gap.
+    serviceWorkers: "block",
   });
   const page = await context.newPage();
   page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);

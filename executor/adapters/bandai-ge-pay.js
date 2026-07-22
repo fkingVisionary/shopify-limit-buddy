@@ -104,12 +104,14 @@ export function bandaiGeHandleActionId(url) {
 }
 
 /**
- * Revolut-proven issuer POST (pool lab 2026-07-22).
- * NOT handleaction/1–3 (shipping/duties/summary) and NOT checkoutv2/save.
+ * Revolut-proven issuer family (pool lab 2026-07-22).
+ * Match any HandleCreditCard* under secure-bandai Payments — not handleaction/save.
  */
 export function isBandaiGeIssuerPaymentUrl(url) {
-  return /secure-bandai\.global-e\.com\/\d+\/Payments\/HandleCreditCardRequestV2\//i.test(
-    String(url || ""),
+  const u = String(url || "");
+  return (
+    /secure-bandai\.global-e\.com\/\d+\/Payments\/HandleCreditCard/i.test(u) ||
+    /secure-bandai\.global-e\.com\/[^?\s]*\/Payments\/HandleCreditCard/i.test(u)
   );
 }
 
@@ -289,37 +291,150 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let blockedChargeReqCount = 0;
   let armChargeGuard = false;
   let issuerPaymentSent = false;
+  let issuerBodyCapture = null;
 
-  // Narrow route: ONLY HandleCreditCardRequestV2 — allow 1, abort 2+.
-  // Dual Pay click (locator + MouseEvent) produced Revolut pairs on this URL.
+  // context.route — page.route can miss service-worker / cross-frame POSTs
+  // (lab showed 1 client POST while Revolut still paired). Allow first issuer
+  // to network; fulfill 2+ locally so GE does not retry on another URL.
   const issuerRoute = async (route) => {
     const req = route.request();
     const url = req.url();
-    if (!isBandaiGeIssuerPaymentUrl(url) || req.method() === "GET") {
+    const method = req.method();
+    if (method === "GET" || method === "OPTIONS" || method === "HEAD") {
+      await route.continue();
+      return;
+    }
+    if (!isBandaiGeIssuerPaymentUrl(url)) {
       await route.continue();
       return;
     }
     chargeReqCount += 1;
+    let postData = null;
+    try {
+      postData = req.postData();
+    } catch {
+      /* ignore */
+    }
     geNet.push({
       t: Date.now(),
       kind: "req",
-      method: req.method(),
+      method,
       url: url.slice(0, 220),
       issuer: true,
       chargeN: chargeReqCount,
       armed: armChargeGuard,
+      bodyBytes: postData ? String(postData).length : 0,
     });
     if (chargeReqCount > 1) {
       blockedChargeReqCount += 1;
-      mark("issuer_req_blocked", { n: chargeReqCount, url: url.slice(0, 140) });
-      await route.abort("failed");
+      mark("issuer_req_fulfilled_local", {
+        n: chargeReqCount,
+        url: url.slice(0, 140),
+        bodyBytes: postData ? String(postData).length : 0,
+      });
+      // Soft success — abort caused GE to hunt another charge path.
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json; charset=utf-8",
+        body: JSON.stringify({
+          Success: true,
+          success: true,
+          IsSuccess: true,
+          j1m: "duplicate_issuer_suppressed",
+        }),
+      });
       return;
     }
     issuerPaymentSent = true;
-    mark("issuer_req_allowed", { url: url.slice(0, 140) });
+    if (postData && !issuerBodyCapture) {
+      issuerBodyCapture = {
+        url,
+        method,
+        contentType: req.headers()["content-type"] || null,
+        body: String(postData).slice(0, 50_000),
+        at: new Date().toISOString(),
+      };
+      try {
+        const fs = await import("node:fs");
+        fs.writeFileSync(
+          "/tmp/bandai-ge-issuer-capture.json",
+          JSON.stringify(issuerBodyCapture, null, 2),
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+    mark("issuer_req_allowed", {
+      url: url.slice(0, 140),
+      bodyBytes: postData ? String(postData).length : 0,
+    });
     await route.continue();
   };
-  await page.route("**/Payments/HandleCreditCardRequestV2/**", issuerRoute);
+  // One predicate route only — dual patterns can double-count / fulfill the real 1st POST.
+  // Keep the same function reference for unroute().
+  const issuerUrlMatch = (url) => isBandaiGeIssuerPaymentUrl(url.href);
+  await context.route(issuerUrlMatch, issuerRoute);
+
+  // In-page single-flight (each frame). Catches fetch/XHR doubles even if a
+  // request somehow slips past context.route. Cross-origin GE frames get their
+  // own counter; Playwright route remains source of truth for the wire.
+  await context
+    .addInitScript(() => {
+      const KEY = "__j1mHandleCreditCardN";
+      const isIssuer = (u) => /HandleCreditCard/i.test(String(u || ""));
+      const bump = () => {
+        const n = (Number(window[KEY]) || 0) + 1;
+        window[KEY] = n;
+        return n;
+      };
+      const fakeOk = () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ Success: true, success: true, IsSuccess: true, j1m: "dup_inpage" }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+        );
+      const origFetch = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        const url = typeof input === "string" ? input : input && input.url;
+        const method = String(init?.method || (input && input.method) || "GET").toUpperCase();
+        if (isIssuer(url) && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+          if (bump() > 1) return fakeOk();
+        }
+        return origFetch(input, init);
+      };
+      const XO = XMLHttpRequest.prototype.open;
+      const XS = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+        this.__j1mMethod = String(method || "GET").toUpperCase();
+        this.__j1mUrl = String(url || "");
+        return XO.call(this, method, url, ...rest);
+      };
+      XMLHttpRequest.prototype.send = function (...args) {
+        if (
+          isIssuer(this.__j1mUrl) &&
+          this.__j1mMethod &&
+          this.__j1mMethod !== "GET" &&
+          this.__j1mMethod !== "HEAD" &&
+          this.__j1mMethod !== "OPTIONS"
+        ) {
+          if (bump() > 1) {
+            Object.defineProperty(this, "status", { get: () => 200 });
+            Object.defineProperty(this, "responseText", {
+              get: () =>
+                JSON.stringify({ Success: true, success: true, IsSuccess: true, j1m: "dup_inpage" }),
+            });
+            setTimeout(() => {
+              this.onload && this.onload();
+              this.onreadystatechange && this.onreadystatechange();
+            }, 0);
+            return;
+          }
+        }
+        return XS.apply(this, args);
+      };
+    })
+    .catch(() => {});
 
   const onReq = (req) => {
     const method = req.method();
@@ -829,35 +944,42 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (disabled) continue;
 
         try {
-          // Arm before click — issuer = HandleCreditCardRequestV2 only.
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
-          // ONE click only — locator + MouseEvent double-fired issuer (Revolut pairs).
-          await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          // Atomic single click inside the frame — disable in the same turn so
+          // GE cannot queue a second Pay (Revolut still paired with 1 route hit).
+          const clicked = await frame.evaluate(() => {
+            const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>
+              /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
+            );
+            const btn =
+              buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true") ||
+              buttons[0];
+            if (!btn || btn.dataset.j1mPaid === "1") return false;
+            btn.dataset.j1mPaid = "1";
+            btn.click();
+            for (const b of buttons) {
+              b.setAttribute("disabled", "true");
+              b.setAttribute("aria-disabled", "true");
+              b.style.pointerEvents = "none";
+            }
+            return true;
+          });
+          if (!clicked) {
+            await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          }
           payClickCount += 1;
           paymentStatus = "pay_clicked";
-          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
+          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=${clicked ? "eval1" : "locator"}`;
           paid = true;
           mark("pay_clicked", {
             payClickCount,
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
+            via: clicked ? "eval1" : "locator",
             payDiag,
           });
-          // Soft-disable after GE has a beat to POST the first issuer request.
-          setTimeout(() => {
-            frame
-              .evaluate(() => {
-                for (const b of document.querySelectorAll("button, input[type=submit]")) {
-                  if (/^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim())) {
-                    b.setAttribute("disabled", "true");
-                    b.style.pointerEvents = "none";
-                  }
-                }
-              })
-              .catch(() => {});
-          }, 400);
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
@@ -1081,7 +1203,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
   } finally {
     page.off("request", onReq);
     page.off("response", onRes);
-    await page.unroute("**/Payments/HandleCreditCardRequestV2/**", issuerRoute).catch(() => {});
+    await context.unroute(issuerUrlMatch, issuerRoute).catch(() => {});
   }
 }
 

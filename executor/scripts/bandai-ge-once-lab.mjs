@@ -65,9 +65,9 @@ const gemVia = ev("ge_iframe_ready")?.via;
 const gemAt = ev("ge_iframe_ready")?.elapsedMs;
 const proceedAt = ev("proceed_click")?.elapsedMs;
 const afterProceedAt = ev("after_proceed")?.elapsedMs;
-const allowed = tl.filter((e) => e.event === "charge_req_allowed").length;
-const blockedEv = tl.filter((e) => e.event === "charge_req_blocked").length;
-const fulfilledLocal = tl.filter((e) => e.event === "charge_req_fulfilled_local").length;
+const allowed = tl.filter((e) => e.event === "issuer_req_allowed").length;
+const blockedEv = tl.filter((e) => e.event === "issuer_req_blocked").length;
+const fulfilledLocal = tl.filter((e) => e.event === "issuer_req_fulfilled_local").length;
 
 log(
   `ATTEMPT_END — pay=${res.paymentStatus} clicks=${res.payClickCount} chargeReqs=${res.chargeReqCount} blocked=${res.blockedChargeReqCount} localFulfill=${fulfilledLocal} payAt=${payAt} gemAt=${gemAt} gemVia=${gemVia} proceed→gem=${gemAt != null && proceedAt != null ? gemAt - proceedAt : "?"} allowed=${allowed} blockedEv=${blockedEv}`,

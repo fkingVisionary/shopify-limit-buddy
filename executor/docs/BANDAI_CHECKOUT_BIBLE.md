@@ -169,11 +169,13 @@ mint sensors           →   POST …/checkout → checkoutSn   Pay → issuer /
 
 ### Can GE Pay skip Playwright?
 
-**Not yet — not as a reliable drop path.** Wire-proven issuer is:
+**Goal for drops: yes — GE UI Playwright will not scale under intensity.** Work started in `bandai-ge-http.js` (`postBandaiGeIssuerHttp` / capture replay). Wire-proven issuer is:
 
 `POST secure-bandai.global-e.com/…/Payments/HandleCreditCardRequestV2/…`
 
-That call needs a live Checkout/v2 session GUID, card iframe state, Forter, and often captcha/FingerprintJS tokens that GEM mints in-browser. HTTP `checkoutSn` alone boots `/orderdetails` **without** a payment frame (SPA **PROCEED** is what starts GEM). Pure undici replay of `HandleCreditCardRequestV2` is the forward research track; until Forter/fp tokens are solved HTTP-side, GE UI stays Playwright. Biggest GE latency today is GEM boot after Proceed (~25–40s), not login.
+That call needs a live Checkout/v2 session GUID, card iframe state, Forter, and often captcha/FingerprintJS tokens that GEM mints in-browser. HTTP `checkoutSn` alone boots `/orderdetails` **without** a payment frame (SPA **PROCEED** is what starts GEM).
+
+**Current contract:** GE Pay UI still Playwright until those tokens are HTTP-solvable. Lab capture of the first issuer body → `/tmp/bandai-ge-issuer-capture.json` feeds the undici prototype. Biggest GE latency today is GEM boot after Proceed (~25–40s), not login.
 
 ### HTTP default (`bandai.js`, F5 on)
 
@@ -230,7 +232,7 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
-| GE charge POSTs | **`HandleCreditCardRequestV2` allow 1, abort 2+**; **one Pay click** | Dual click (locator+MouseEvent) = Revolut pairs. `handleaction/*` ≠ bank. |
+| GE charge POSTs | **`HandleCreditCard*` allow 1, fulfill-local 2+**; **one eval Pay click**; **`serviceWorkers: block`** + in-page fetch/XHR guard | Dual click / SW bypass = Revolut pairs. Abort of 2nd made GE hunt another path — soft-fulfill instead. `handleaction/*` ≠ bank. |
 | Browser re-login before GE | **off** (HTTP jar sync) | Login stays HTTP; `bandaiBridgeRelogin` opt-in only. |
 | GEM boot | preload mid **1925** js/css + prefetcher iframe before Proceed; poll frames without blocking on `waitForURL` | Biggest remaining latency after Proceed (~40s cold); serial URL wait killed frame listeners early |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
