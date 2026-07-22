@@ -5,14 +5,40 @@
 import { chromium } from "playwright";
 
 import { parseBandaiProxy } from "./bandai-f5.js";
+import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 
 function proxyForPlaywright(rawProxy) {
   return parseBandaiProxy(rawProxy).playwright;
 }
 
-async function pageApi(page, method, path, body) {
+async function dismissCookieBanner(page) {
+  const sels = [
+    "#onetrust-accept-btn-handler",
+    "button:has-text('Accept All Cookies')",
+    "button:has-text('Accept All')",
+    "#accept-recommended-btn-handler",
+  ];
+  for (const sel of sels) {
+    const btn = page.locator(sel).first();
+    if (await btn.count().catch(() => 0)) {
+      if (await btn.isVisible().catch(() => false)) {
+        await btn.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(500);
+        return true;
+      }
+    }
+  }
+  // Close the floating bar if only Cookie Settings is visible
+  const close = page.locator("#onetrust-close-btn-handler, .onetrust-close-btn-handler").first();
+  if (await close.count().catch(() => 0)) {
+    await close.click({ timeout: 2000 }).catch(() => {});
+  }
+  return false;
+}
+
+async function pageApi(page, method, path, body, area = "au") {
   return page.evaluate(
-    async ({ method, path, body }) => {
+    async ({ method, path, body, areaCode }, area) => {
       window.__bandaiCsrf =
         window.__bandaiCsrf ||
         window.USER_DATA?.csrfToken ||
@@ -20,7 +46,7 @@ async function pageApi(page, method, path, body) {
       const csrf = window.__bandaiCsrf || window.USER_DATA?.csrfToken || "";
       const headers = {
         accept: "application/json, text/plain, */*",
-        "x-g1-area-code": "au",
+        "x-g1-area-code": areaCode,
         "x-requested-with": "XMLHttpRequest",
         ...(csrf ? { "x-csrf-token": csrf } : {}),
       };
@@ -64,7 +90,7 @@ async function pageApi(page, method, path, body) {
         preview: (json ? JSON.stringify(json) : text).replace(/\s+/g, " ").slice(0, 400),
       };
     },
-    { method, path, body: body ?? null },
+    { method, path, body: body ?? null, areaCode: area },
   );
 }
 
@@ -128,16 +154,27 @@ function listCartLines(cartJson) {
   return out;
 }
 
+function looksLike3ds(url, text = "") {
+  const u = String(url || "");
+  const t = String(text || "");
+  return (
+    /3ds|three.?d.?secure|acs|challenge|securecode|cardinalcommerce|authentication|creq|pareq|methodurl|stripe\.com\/.*3ds|revolut.*3ds|bankid|otp/i.test(
+      u + " " + t,
+    )
+  );
+}
+
 /**
- * Full browser checkout dry-run / decline attempt.
+ * Full browser checkout — dry-run stops at cart; placeOrder drives Global-e pay/3DS.
  * @param {object} opts
  * @param {string} opts.email
  * @param {string} opts.password
  * @param {string} opts.productCode — e.g. A2880191001
  * @param {string} [opts.proxy]
  * @param {number} [opts.qty=1]
- * @param {boolean} [opts.placeOrder=false] — if true, attempt GE with decline card
- * @param {object} [opts.card] — fake/decline card only
+ * @param {boolean} [opts.placeOrder=false]
+ * @param {object} [opts.card] — { number, expMonth, expYear, cvv, holder }
+ * @param {number} [opts.wait3dsMs=120000] — how long to wait for 3DS after Pay
  */
 export async function browserBandaiCheckout(opts = {}) {
   const email = String(opts.email || "").trim();
@@ -145,6 +182,9 @@ export async function browserBandaiCheckout(opts = {}) {
   const productCode = String(opts.productCode || "").trim();
   const qty = Math.max(1, Math.min(5, Number(opts.qty) || 1));
   const placeOrder = opts.placeOrder === true;
+  const wait3dsMs = Math.max(15_000, Number(opts.wait3dsMs) || 120_000);
+  const area = normalizeBandaiArea(opts.area || opts.shippingAreaCode) || "au";
+  const base = bandaiBaseFor(area);
   const steps = [];
   const t0 = Date.now();
 
@@ -176,7 +216,7 @@ export async function browserBandaiCheckout(opts = {}) {
       args: ["--disable-blink-features=AutomationControlled"],
     });
     const context = await browser.newContext({
-      locale: "en-AU",
+      locale: area === "fr" ? "fr-FR" : area === "us" ? "en-US" : "en-AU",
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       viewport: { width: 1360, height: 900 },
@@ -184,11 +224,42 @@ export async function browserBandaiCheckout(opts = {}) {
     const page = await context.newPage();
     page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
 
+    // Capture GE payment-related traffic so we know if Pay actually hit the wire.
+    const geNet = [];
+    page.on("request", (req) => {
+      const u = req.url();
+      if (
+        req.method() !== "GET" &&
+        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)
+      ) {
+        geNet.push({
+          t: Date.now(),
+          kind: "req",
+          method: req.method(),
+          url: u.slice(0, 200),
+        });
+      }
+    });
+    page.on("response", (res) => {
+      const u = res.url();
+      if (/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
+        if (res.request().method() === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay/i.test(u)) return;
+        geNet.push({
+          t: Date.now(),
+          kind: "res",
+          status: res.status(),
+          method: res.request().method(),
+          url: u.slice(0, 200),
+        });
+      }
+    });
+
     // ── Login ────────────────────────────────────────────────────────────
     const sLogin = Date.now();
-    await page.goto("https://p-bandai.com/au/login", { waitUntil: "domcontentloaded" });
+    await page.goto(`${base}/login`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1200);
-    const login = await page.evaluate(async ({ email: em, password: pw }) => {
+    await dismissCookieBanner(page);
+    const login = await page.evaluate(async ({ email: em, password: pw, areaCode }) => {
       const csrf = window.USER_DATA?.csrfToken || window.__bandaiCsrf || "";
       const body = `grantType=password&memberId=${encodeURIComponent(em)}&password=${encodeURIComponent(pw)}&saveLoginId=false&autoLogin=false`;
       const res = await fetch("/login", {
@@ -196,7 +267,7 @@ export async function browserBandaiCheckout(opts = {}) {
         headers: {
           accept: "application/json, text/plain, */*",
           "content-type": "application/x-www-form-urlencoded;charset=utf-8",
-          "x-g1-area-code": "au",
+          "x-g1-area-code": areaCode,
           "x-requested-with": "XMLHttpRequest",
           ...(csrf ? { "x-csrf-token": csrf } : {}),
         },
@@ -213,10 +284,10 @@ export async function browserBandaiCheckout(opts = {}) {
         restrictedType: res.headers.get("x-restricted-type"),
         csrf: next,
       };
-    }, { email, password });
+    }, { email, password, areaCode: area });
     await page.waitForTimeout(1500);
 
-    const member = await pageApi(page, "GET", "/api/context/member/refresh");
+    const member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
     const memberNo = member.json?.memberNo || null;
     const loginOk = login.status >= 200 && login.status < 300 && Boolean(memberNo);
     push("login_browser", {
@@ -241,13 +312,13 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // ── PDP warm (required before ATC — mints CSRF / cart cookies) ───────
     const sPdp = Date.now();
-    await page.goto(`https://p-bandai.com/au/item/${encodeURIComponent(productCode)}`, {
+    await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForTimeout(3500);
     // Re-seed CSRF after navigation (USER_DATA rotates on SPA route changes).
-    await pageApi(page, "GET", "/api/context/member");
-    const product = await pageApi(page, "GET", `/api/products/${encodeURIComponent(productCode)}`);
+    await pageApi(page, "GET", "/api/context/member", null, area);
+    const product = await pageApi(page, "GET", `/api/products/${encodeURIComponent(productCode)}`, null, area);
     const areaItemNo =
       product.json?.areaItemNos?.[0] ||
       Object.keys(product.json?.areaItemInventoryInfoMap || {})[0] ||
@@ -276,7 +347,7 @@ export async function browserBandaiCheckout(opts = {}) {
     }
 
     // If SKU already in cart (max 1 / prior dry-run), skip ATC and continue.
-    const cartBefore = await pageApi(page, "GET", "/api/cart/detail");
+    const cartBefore = await pageApi(page, "GET", "/api/cart/detail", null, area);
     const alreadyInCart = findCartLine(cartBefore.json, areaItemNo);
     let atc = { status: null, json: null, title: null };
 
@@ -302,17 +373,17 @@ export async function browserBandaiCheckout(opts = {}) {
       for (let attempt = 0; attempt < 2 && !atcOk; attempt++) {
         if (attempt > 0) {
           await page.waitForTimeout(2000);
-          await page.goto(`https://p-bandai.com/au/item/${encodeURIComponent(productCode)}`, {
+          await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
             waitUntil: "domcontentloaded",
           });
           await page.waitForTimeout(3000);
         }
-        atc = await pageApi(page, "POST", "/api/cart/addToCart", [{ areaItemNo, qty }]);
+        atc = await pageApi(page, "POST", "/api/cart/addToCart", [{ areaItemNo, qty }], area);
         const errCode = String(atc.json?.error || atc.json?.errorCode || "");
         atcOk = atc.status >= 200 && atc.status < 300 && !/CouldNotAddToCart/i.test(errCode);
         // Bandai returns HTTP 404 + JSON error for business ATC failures.
         if (!atcOk && /MaxPurchaseQty/i.test(errCode + String(atc.preview || ""))) {
-          const again = await pageApi(page, "GET", "/api/cart/detail");
+          const again = await pageApi(page, "GET", "/api/cart/detail", null, area);
           const line = findCartLine(again.json, areaItemNo);
           if (line?.cartItemSn) {
             atcOk = true;
@@ -347,7 +418,7 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // ── Cart detail ──────────────────────────────────────────────────────
     const sCart = Date.now();
-    let cart = await pageApi(page, "GET", "/api/cart/detail");
+    let cart = await pageApi(page, "GET", "/api/cart/detail", null, area);
     let hit = findCartLine(cart.json, areaItemNo);
     // Keep qty at 1 before any payment attempt (prior dry-runs may have stacked).
     if (hit?.cartItemSn && Number(hit.qty) > 1) {
@@ -355,13 +426,15 @@ export async function browserBandaiCheckout(opts = {}) {
         page,
         "PUT",
         `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=1`,
+        null,
+        area,
       );
       push("cart_qty_normalize", {
         ok: mod.status >= 200 && mod.status < 300,
         status: mod.status,
         note: `qty ${hit.qty}→1`,
       });
-      cart = await pageApi(page, "GET", "/api/cart/detail");
+      cart = await pageApi(page, "GET", "/api/cart/detail", null, area);
       hit = findCartLine(cart.json, areaItemNo);
     }
     const cartSn = hit?.cartSn || null;
@@ -391,7 +464,7 @@ export async function browserBandaiCheckout(opts = {}) {
         cartId,
         cartItemSn,
         title,
-        finalUrl: "https://p-bandai.com/au/cart",
+        finalUrl: `${base}/cart`,
         cookies,
         note: "Browser ATC + cart ok — GE skipped (placeOrder:false)",
         elapsedMs: Date.now() - t0,
@@ -399,15 +472,20 @@ export async function browserBandaiCheckout(opts = {}) {
       };
     }
 
-    // ── UI checkout → Global-e iframe (decline card only) ────────────────
+    // ── UI checkout → Global-e iframe ────────────────────────────────────
     // SPA "PROCEED TO CHECKOUT" boots GEM correctly; raw API checkoutSn alone
     // often leaves orderdetails without the payment iframe.
     const sChk = Date.now();
-    await page.goto("https://p-bandai.com/au/cart", { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(3500);
+    await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2500);
+    await dismissCookieBanner(page);
+    await page.waitForTimeout(1500);
 
     // PreOrder carts may show a shipping-area checkbox — tick if present.
-    const areaBoxes = page.locator('input[type="checkbox"]');
+    // Skip OneTrust / analytics checkboxes.
+    const areaBoxes = page.locator(
+      'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
+    );
     const boxCount = await areaBoxes.count();
     for (let i = 0; i < boxCount; i++) {
       const box = areaBoxes.nth(i);
@@ -445,28 +523,52 @@ export async function browserBandaiCheckout(opts = {}) {
         .catch(() => null),
       proceed.click(),
     ]);
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(3000);
+    await dismissCookieBanner(page);
 
     const checkoutSn =
       (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn"))) || null;
-    const geIframeReady = await page
-      .waitForSelector('iframe[src*="global-e.com"], iframe[src*="global-e"]', {
-        timeout: 45_000,
-      })
-      .then(() => true)
-      .catch(() => false);
+
+    // Wait for real Checkout/v2 (not just the prefetcher stub).
+    let geIframeReady = false;
+    for (let i = 0; i < 45; i++) {
+      const urls = page.frames().map((f) => f.url());
+      if (urls.some((u) => /Checkout\/v2|webservices\.global-e\.com\/Checkout/i.test(u))) {
+        geIframeReady = true;
+        break;
+      }
+      if (urls.some((u) => /CreditCardForm|secure-bandai\.global-e/i.test(u))) {
+        geIframeReady = true;
+        break;
+      }
+      await page.waitForTimeout(1000);
+      if (i === 10 || i === 25) await dismissCookieBanner(page);
+    }
 
     push("cart_checkout", {
-      ok: Boolean(checkoutSn) || /orderdetails/i.test(page.url()),
+      ok: Boolean(checkoutSn) && geIframeReady,
       status: null,
       ms: Date.now() - sChk,
       note: checkoutSn
-        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady}`
+        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length}`
         : `url=${page.url()} geIframe=${geIframeReady}`,
     });
+    if (!geIframeReady) {
+      await browser.close();
+      return {
+        ok: false,
+        steps,
+        failedStep: "cart_checkout",
+        error: "Global-e Checkout/v2 iframe never booted (cookie banner / GEM flake)",
+        checkoutStage: "tokenize",
+        checkoutSn,
+        areaItemNo,
+        cartSn,
+        cartItemSn,
+      };
+    }
 
     const sGe = Date.now();
-    // Decline-only fake card — never the owner's real PAN.
     const card = opts.card || {
       number: "4000000000000002",
       expMonth: "12",
@@ -474,10 +576,14 @@ export async function browserBandaiCheckout(opts = {}) {
       cvv: "999",
       holder: "DECLINE TEST",
     };
+    const isDeclineLab = String(card.number).replace(/\s+/g, "") === "4000000000000002";
 
     let geNote = "";
     let paymentStatus = "unknown";
     let filled = false;
+    let reached3ds = false;
+    let threeDsUrl = null;
+    let orderNumber = null;
     try {
       // Prefer waiting for the secure card form frame (flaky timing on GE boot).
       await page
@@ -520,7 +626,12 @@ export async function browserBandaiCheckout(opts = {}) {
           if (!(await num.count().catch(() => 0))) continue;
           if (!(await num.isVisible().catch(() => false))) continue;
 
-          await num.fill(String(card.number).replace(/\s+/g, ""), { timeout: 8000 });
+          const pan = String(card.number).replace(/\s+/g, "");
+          await num.click({ timeout: 5000 }).catch(() => {});
+          await num.fill("");
+          await num.pressSequentially(pan, { delay: 35 }).catch(async () => {
+            await num.type(pan, { delay: 35 });
+          });
           const mm = frame
             .locator(
               'input[autocomplete="cc-exp-month"], select[name*="month" i], input[name*="expMonth" i], input[placeholder*="MM" i]',
@@ -540,11 +651,17 @@ export async function browserBandaiCheckout(opts = {}) {
             )
             .first();
           const name = frame
-            .locator('input[autocomplete="cc-name"], input[name*="cardHolder" i], input[name*="name" i]')
+            .locator(
+              'input[autocomplete="cc-name"], input[name*="cardHolder" i], input[name*="holder" i], input[placeholder*="name on card" i]',
+            )
             .first();
 
           if (await exp.count().catch(() => 0)) {
-            await exp.fill(`${card.expMonth}/${card.expYear}`, { timeout: 5000 }).catch(() => {});
+            await exp.click().catch(() => {});
+            await exp.fill("");
+            await exp.pressSequentially(`${card.expMonth}/${card.expYear}`, { delay: 40 }).catch(async () => {
+              await exp.fill(`${card.expMonth}/${card.expYear}`);
+            });
           } else {
             if (await mm.count().catch(() => 0)) {
               const tag = await mm.evaluate((el) => el.tagName).catch(() => "");
@@ -560,8 +677,18 @@ export async function browserBandaiCheckout(opts = {}) {
               } else await yy.fill(String(card.expYear), { timeout: 3000 }).catch(() => {});
             }
           }
-          if (await cvv.count().catch(() => 0)) await cvv.fill(String(card.cvv), { timeout: 5000 }).catch(() => {});
-          if (await name.count().catch(() => 0)) await name.fill(String(card.holder), { timeout: 5000 }).catch(() => {});
+          if (await cvv.count().catch(() => 0)) {
+            await cvv.click().catch(() => {});
+            await cvv.fill("");
+            await cvv.pressSequentially(String(card.cvv), { delay: 40 }).catch(async () => {
+              await cvv.fill(String(card.cvv));
+            });
+          }
+          if (await name.count().catch(() => 0)) {
+            await name.click().catch(() => {});
+            await name.fill(String(card.holder));
+          }
+          await frame.evaluate(() => document.activeElement?.blur?.()).catch(() => {});
 
           filled = true;
           geNote = `filled card form ${url.slice(0, 70)}`;
@@ -569,42 +696,142 @@ export async function browserBandaiCheckout(opts = {}) {
         }
       }
 
+      // Give GE time to tokenize / enable Pay.
+      if (filled) await page.waitForTimeout(4000);
+
       // Pay / Place Order usually lives on the parent Checkout/v2 frame, not the card form.
       if (filled) {
         let paid = false;
-        for (const frame of page.frames()) {
-          const url = frame.url();
-          if (!/global-e\.com\/Checkout|webservices\.global-e|secure-bandai\.global-e/i.test(url)) {
-            continue;
-          }
-          const payBtn = frame
-            .locator(
-              'button:has-text("Pay"), button:has-text("Place Order"), button:has-text("Complete"), button:has-text("Confirm"), button[type="submit"], input[type="submit"]',
-            )
-            .first();
-          if (await payBtn.count().catch(() => 0)) {
-            if (await payBtn.isVisible().catch(() => false)) {
-              await payBtn.click({ timeout: 10_000 }).catch(() => {});
-              await page.waitForTimeout(10_000);
-              paymentStatus = "submitted_decline_attempt";
-              geNote += `; clicked pay on ${url.slice(0, 50)}`;
-              paid = true;
-              break;
+        const netBefore = geNet.length;
+        for (let attempt = 0; attempt < 8 && !paid; attempt++) {
+          for (const frame of page.frames()) {
+            const url = frame.url();
+            if (!/global-e\.com\/Checkout|webservices\.global-e|secure-bandai\.global-e/i.test(url)) {
+              continue;
             }
+            // Tick GE terms / confirm checkboxes if present
+            const checks = frame.locator('input[type="checkbox"]');
+            const nCheck = await checks.count().catch(() => 0);
+            for (let ci = 0; ci < nCheck; ci++) {
+              const c = checks.nth(ci);
+              if (!(await c.isChecked().catch(() => true))) {
+                await c.check({ force: true }).catch(() => {});
+              }
+            }
+            const payBtn = frame
+              .locator(
+                'button:has-text("Pay"), button:has-text("Place Order"), button:has-text("Complete"), button:has-text("Confirm"), button[type="submit"], input[type="submit"]',
+              )
+              .first();
+            if (!(await payBtn.count().catch(() => 0))) continue;
+            if (!(await payBtn.isVisible().catch(() => false))) continue;
+            const disabled = await payBtn.isDisabled().catch(() => false);
+            if (disabled) {
+              geNote += `; pay_disabled@${attempt}`;
+              continue;
+            }
+            await payBtn.click({ timeout: 10_000 }).catch(() => {});
+            paymentStatus = "pay_clicked";
+            geNote += `; clicked pay on ${url.slice(0, 50)}`;
+            paid = true;
+            break;
           }
+          if (!paid) await page.waitForTimeout(1500);
         }
         if (!paid) {
-          // Last resort: main page
           const mainPay = page
             .locator('button:has-text("Pay"), button:has-text("Place Order")')
             .first();
           if (await mainPay.count().catch(() => 0)) {
             await mainPay.click({ timeout: 5000 }).catch(() => {});
-            await page.waitForTimeout(8000);
-            paymentStatus = "submitted_decline_attempt";
+            paymentStatus = "pay_clicked";
             geNote += "; clicked pay on main";
+            paid = true;
           } else {
             paymentStatus = "card_filled_no_pay_button";
+          }
+        }
+        // Brief settle — did any payment POST leave the browser?
+        await page.waitForTimeout(5000);
+        // Broad match — GE hits many hosts (webservices / secure-bandai / gepi).
+        // 2026-07-22: Revolut declined A$317 "Globale /bandai Spirit" while our
+        // narrow filter reported payNet=0 — treat any post-click GE traffic as wire proof.
+        const payNet = geNet.slice(netBefore);
+        const payNetHot = payNet.filter((n) =>
+          /ProcessPayment|Authorize|Pay|payment|3ds|acs|CompleteOrder|CreatePayment|CreditCard|Checkout/i.test(
+            n.url,
+          ),
+        );
+        geNote += `; payNet=${payNet.length}/${payNetHot.length}`;
+        if (paid && payNet.length === 0) {
+          paymentStatus = "pay_clicked_no_payment_request";
+          geNote += "; WARN no GE traffic after click";
+        }
+
+        // Wait for 3DS / ACS challenge (Revolut push) or confirmation / decline.
+        if (paymentStatus === "pay_clicked" || paymentStatus === "pay_clicked_no_payment_request") {
+          const deadline =
+            Date.now() +
+            (paymentStatus === "pay_clicked_no_payment_request"
+              ? Math.min(30_000, wait3dsMs)
+              : wait3dsMs);
+          while (Date.now() < deadline && !reached3ds && !orderNumber) {
+            await page.waitForTimeout(2000);
+            for (const frame of page.frames()) {
+              const furl = frame.url();
+              let ftext = "";
+              try {
+                ftext = (await frame.locator("body").innerText({ timeout: 1000 })) || "";
+              } catch {
+                /* ignore */
+              }
+              if (looksLike3ds(furl, ftext)) {
+                reached3ds = true;
+                threeDsUrl = furl.slice(0, 160);
+                paymentStatus = "reached_3ds";
+                geNote += `; 3ds=${threeDsUrl}`;
+                break;
+              }
+            }
+            if (reached3ds) break;
+            // Also check popups / new pages
+            for (const p of context.pages()) {
+              const purl = p.url();
+              if (looksLike3ds(purl)) {
+                reached3ds = true;
+                threeDsUrl = purl.slice(0, 160);
+                paymentStatus = "reached_3ds";
+                geNote += `; 3ds_page=${threeDsUrl}`;
+                break;
+              }
+            }
+            if (reached3ds) break;
+
+            let bodyProbe = "";
+            try {
+              bodyProbe = await page.locator("body").innerText();
+            } catch {
+              /* ignore */
+            }
+            const orderHint = bodyProbe.match(
+              /order\s*(?:no|number|#)\s*[:：]?\s*([A-Z0-9-]{6,})/i,
+            );
+            if (orderHint) {
+              orderNumber = orderHint[1];
+              paymentStatus = "order_confirmed";
+              break;
+            }
+            if (
+              /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process|authentication failed|cancelled|canceled|insufficient|low balance|not enough/i.test(
+                bodyProbe,
+              )
+            ) {
+              paymentStatus = "declined_or_auth_failed";
+              break;
+            }
+          }
+          if (paymentStatus === "pay_clicked") {
+            paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
           }
         }
       }
@@ -618,49 +845,36 @@ export async function browserBandaiCheckout(opts = {}) {
       geNote = String(e?.message || e).slice(0, 200);
     }
 
-    let bodyText = "";
-    try {
-      bodyText = await page.locator("body").innerText();
-      for (const frame of page.frames()) {
-        if (/global-e\.com/i.test(frame.url())) {
-          bodyText += " " + ((await frame.locator("body").innerText().catch(() => "")) || "");
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-    const declined =
-      /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process/i.test(
-        bodyText,
-      );
-    if (declined) paymentStatus = "declined";
-
-    // Abort if an order number somehow appeared — never treat as success charge.
-    const orderHint = bodyText.match(/order\s*(?:no|number|#)\s*[:：]?\s*([A-Z0-9-]{6,})/i);
-    if (orderHint) {
+    // Decline-lab safety: abort if fake card somehow confirmed an order.
+    if (isDeclineLab && orderNumber) {
       push("ge_payment", {
         ok: false,
         status: null,
         ms: Date.now() - sGe,
-        note: `UNEXPECTED order-like token ${orderHint[1]} — abort`,
+        note: `UNEXPECTED order ${orderNumber} on decline PAN — abort`,
       });
       await browser.close();
       return {
         ok: false,
         steps,
         failedStep: "ge_payment",
-        error: "Unexpected order confirmation — aborting (decline-only mode)",
+        error: "Unexpected order confirmation on decline-lab card",
         checkoutStage: "order",
-        orderNumber: orderHint[1],
+        orderNumber,
         declineTarget: true,
+        reached3ds,
       };
     }
 
+    const gePayOk =
+      reached3ds ||
+      Boolean(orderNumber) ||
+      paymentStatus === "declined_or_auth_failed";
     push("ge_payment", {
-      ok: declined || paymentStatus.startsWith("submitted") || paymentStatus.startsWith("card_filled") || paymentStatus === "ge_iframe_not_filled",
+      ok: gePayOk,
       status: null,
       ms: Date.now() - sGe,
-      note: `${paymentStatus}; ${geNote}`.slice(0, 240),
+      note: `${paymentStatus}; reached3ds=${reached3ds}; ${geNote}`.slice(0, 280),
     });
 
     const finalUrl = page.url();
@@ -670,26 +884,35 @@ export async function browserBandaiCheckout(opts = {}) {
     browser = null;
 
     return {
-      ok: declined || Boolean(checkoutSn) || /orderdetails/i.test(finalUrl),
+      ok: gePayOk,
       steps,
-      checkoutStage: "tokenize",
+      checkoutStage: orderNumber ? "order" : reached3ds ? "three_ds" : "tokenize",
       dryRun: false,
-      declineTarget: true,
+      declineTarget: isDeclineLab,
       paymentStatus,
+      reached3ds,
+      threeDsUrl,
       checkoutSn,
       areaItemNo,
       cartSn,
       cartId,
       cartItemSn,
       title,
-      finalUrl: finalUrl || "https://p-bandai.com/au/orderdetails",
+      finalUrl: finalUrl || `${base}/orderdetails`,
       cookies,
-      note: declined
-        ? "Payment declined (expected with fake card)"
-        : `GE UI handoff; paymentStatus=${paymentStatus}`,
+      geNetTail: geNet.slice(-20),
+      note: reached3ds
+        ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
+        : orderNumber
+          ? `Order ${orderNumber}`
+          : paymentStatus === "pay_clicked_no_payment_request"
+            ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
+            : `GE UI handoff; paymentStatus=${paymentStatus}`,
+      failedStep: gePayOk ? null : "ge_payment",
+      error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,
       via: "browser",
-      orderNumber: null,
+      orderNumber,
     };
   } catch (e) {
     try {

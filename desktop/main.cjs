@@ -27,7 +27,7 @@ function persistSettings() {
 
 function storeDisplayName(sid) {
   if (sid === "toymate") return "Toymate AU";
-  if (sid === "bandai") return "Premium Bandai AU";
+  if (sid === "bandai") return "Premium Bandai";
   if (sid === "kmart") return "Kmart AU";
   return sid;
 }

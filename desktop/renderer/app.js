@@ -130,7 +130,7 @@ function syncTaskFormForStore() {
             ? "one piece  OR  N2903432003"
             : mode === "chance"
               ? "optional"
-              : "https://p-bandai.com/au/item/…";
+              : "https://p-bandai.com/au|us|nz|sg|hk|tw|fr/item/…";
     } else if (toy) {
       input.placeholder =
         mode === "account_gen"

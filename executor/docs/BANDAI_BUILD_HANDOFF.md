@@ -16,8 +16,9 @@ _HAR status: **not available yet** — build from JS-derived research; owner can
 | [`NEXT_STORE_MODULES.md`](./NEXT_STORE_MODULES.md) | Priority context (Bandai-first) |
 | [`AGENTS.md`](../../AGENTS.md) | Repo layout; **do not break Kmart** |
 
-Canonical storefront: **`https://p-bandai.com/au/`**  
-Do **not** use `www.bandai.com.au` (cert mismatch).
+Canonical storefront: **`https://p-bandai.com/{area}/`** where `area` ∈ `au|us|nz|sg|hk|tw|fr`  
+(Do **not** use `www.bandai.com.au` — cert mismatch. **JP is a different site** — out of scope.)  
+Region is taken from the product URL path or `task.bandaiArea` (default `au`).
 
 ---
 

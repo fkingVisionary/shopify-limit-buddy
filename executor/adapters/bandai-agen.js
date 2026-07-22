@@ -8,7 +8,7 @@ import {
   normalizeAuMsisdn,
 } from "../otp/onlinesim.js";
 import { validateBandaiPassword, generateBandaiPassword } from "./bandai-password.js";
-import { createBandaiSession, profileFromTask, BANDAI_BASE } from "./bandai-session.js";
+import { createBandaiSession, profileFromTask, resolveBandaiArea, bandaiBaseFor } from "./bandai-session.js";
 
 function uniquifyEmail(email) {
   const raw = String(email || "").trim().toLowerCase();
@@ -53,9 +53,11 @@ function adultDob() {
  */
 export async function createBandaiAccount(task, ctx, opts = {}) {
   const steps = ctx.steps || (ctx.steps = []);
-  const profile = profileFromTask(task);
+  const area = resolveBandaiArea({ ...task, bandaiArea: opts.area || task.bandaiArea });
+  const base = bandaiBaseFor(area);
+  const profile = profileFromTask({ ...task, bandaiArea: area });
   const otp = otpConfigFromTask(task);
-  const session = createBandaiSession(ctx);
+  const session = createBandaiSession(ctx, { area });
   const tStep = opts.tStep || defaultStep(steps, ctx);
 
   if (!otp.onlinesimApiKey) {
@@ -103,7 +105,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const emailAuth = await tStep("email_auth", async () => {
     const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/auth", {
       body: { email, agreeAgeTerms: true },
-      referer: `${BANDAI_BASE}/register`,
+      referer: `${base}/register`,
     });
     const authSn = json?.authSn || json?.data?.authSn || null;
     const detail = json?.detail || json?.message || json?.error || null;
@@ -155,7 +157,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const emailValidate = await tStep("email_validate", async () => {
     const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/validate", {
       body: { authCode: emailCode.code, authSn: emailAuth.authSn },
-      referer: `${BANDAI_BASE}/register/mailaddress/auth`,
+      referer: `${base}/register/mailaddress/auth`,
     });
     const err = json?.detail || json?.message || json?.errorCode || null;
     return {
@@ -203,7 +205,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       // Research path is `api/phoneNo` (sometimes without leading slash in JS)
       const { status, json } = await session.apiJson("POST", "/api/phoneNo", {
         body: phone1,
-        referer: `${BANDAI_BASE}/register/memberregistration`,
+        referer: `${base}/register/memberregistration`,
       });
       const existsFlag = Boolean(json?.exists ?? json?.data?.exists);
       return {
@@ -229,7 +231,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   // Terms
   const terms = await tStep("terms", async () => {
     const { status, json } = await session.apiJson("GET", "/api/terms/termsofuse", {
-      referer: `${BANDAI_BASE}/register/memberregistration`,
+      referer: `${base}/register/memberregistration`,
     });
     const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
     const termsCode = json?.termsCode || "termsofuse";
@@ -253,7 +255,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const smsAuth = await tStep("sms_auth", async () => {
     const { status, json } = await session.apiJson("POST", "/api/phoneNo/auth", {
       body: { phoneNo: phone1 },
-      referer: `${BANDAI_BASE}/sms/auth`,
+      referer: `${base}/sms/auth`,
     });
     const authSn = json?.authSn || json?.data?.authSn || null;
     const err = json?.detail || json?.errorCode || json?.message || null;
@@ -295,7 +297,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const smsValidate = await tStep("sms_validate", async () => {
     const { status, json } = await session.apiJson("POST", "/api/phoneNo/validate", {
       body: { authCode: smsCode.code, authSn: smsAuth.authSn },
-      referer: `${BANDAI_BASE}/sms/auth`,
+      referer: `${base}/sms/auth`,
     });
     const authResultCode =
       json?.authResultCode ||
@@ -322,7 +324,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
 
   const dob = adultDob();
   const homeAddress = {
-    areaCode: "au",
+    areaCode: area,
     homeAddressArea: profile.province || "NSW",
     homeAddressDetail: profile.city || "Sydney",
   };
@@ -364,7 +366,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const registered = await tStep("registerVerification", async () => {
     const { status, json } = await session.apiJson("POST", "/api/signUp/registerVerification", {
       body: signUpData,
-      referer: `${BANDAI_BASE}/register/confirm`,
+      referer: `${base}/register/confirm`,
     });
     const err = json?.detail || json?.errorCode || json?.message || null;
     return {
@@ -413,11 +415,11 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         name: { name1: profile.first_name || "Alex", name2: profile.last_name || "Buyer" },
         phone1,
         address,
-        areaCode: "AU",
+        areaCode: String(area || "au").toUpperCase(),
       };
       const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
         body,
-        referer: `${BANDAI_BASE}/mypage`,
+        referer: `${base}/mypage`,
       });
       return {
         ok: status >= 200 && status < 300,
@@ -452,7 +454,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     steps,
     checkoutStage: "agen",
     dryRun: true,
-    finalUrl: `${BANDAI_BASE}/`,
+    finalUrl: `${base}/`,
     cookies: ctx.jar?.dump?.() ?? {},
     note:
       vaultStatus === "ready"

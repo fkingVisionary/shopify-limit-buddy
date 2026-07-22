@@ -1,4 +1,5 @@
-// Premium Bandai AU adapter — F5/Volterra + BNID + Global-e (mid 1925).
+// Premium Bandai (p-bandai.com) adapter — F5/Volterra + BNID + Global-e (mid 1925).
+// Regions: au/us/nz/sg/hk/tw/fr via task.bandaiArea or URL path. JP is out of scope.
 // Completely separate from Kmart (no Hyper / Akamai / Paydock) and Toymate.
 //
 // Modes (task.bandaiMode):
@@ -21,7 +22,7 @@ import {
   parseAreaItemNo,
   extractPreloadSuffix,
   readText,
-  BANDAI_BASE,
+  resolveBandaiArea,
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
@@ -63,7 +64,7 @@ async function resolveAreaItemNo(session, productCode, tStep) {
   }
   const pdp = await tStep("product_get", async () => {
     const { status, json } = await session.apiJson("GET", `/api/products/${encodeURIComponent(code)}`, {
-      referer: `${BANDAI_BASE}/item/${code}`,
+      referer: `${session.base}/item/${code}`,
     });
     const areaItemNo =
       json?.areaItemNos?.[0] ||
@@ -104,7 +105,7 @@ async function runMonitor(task, ctx, session, tStep, steps) {
       flags: pdp.flags,
       title: pdp.title,
       checkoutStage: "monitor",
-      finalUrl: `${BANDAI_BASE}/item/${productCode}`,
+      finalUrl: `${session.base}/item/${productCode}`,
       cookies: ctx.jar?.dump?.() ?? {},
       note: pdp.note,
     };
@@ -115,7 +116,7 @@ async function runMonitor(task, ctx, session, tStep, steps) {
     const { status, json } = await session.apiJson(
       "GET",
       `/api/search?keyword=${encodeURIComponent(q)}&offset=0&limit=20`,
-      { referer: `${BANDAI_BASE}/search?keyword=${encodeURIComponent(q)}` },
+      { referer: `${session.base}/search?keyword=${encodeURIComponent(q)}` },
     );
     const products = json?.productResults?.products || json?.products || [];
     const hits = (Array.isArray(products) ? products : []).slice(0, 10).map((p) => ({
@@ -140,7 +141,7 @@ async function runMonitor(task, ctx, session, tStep, steps) {
     dryRun: true,
     products: search.hits || [],
     checkoutStage: "monitor",
-    finalUrl: `${BANDAI_BASE}/search?keyword=${encodeURIComponent(q)}`,
+    finalUrl: `${session.base}/search?keyword=${encodeURIComponent(q)}`,
     cookies: ctx.jar?.dump?.() ?? {},
     note: search.note,
   };
@@ -190,7 +191,7 @@ async function runChance(task, ctx, session, tStep, steps) {
       `/api/my/campaign/apply/${encodeURIComponent(campaignSn)}/applyDraw`,
       {
         body: { applyGroupNo },
-        referer: `${BANDAI_BASE}/hotdeals/`,
+        referer: `${session.base}/hotdeals/`,
       },
     );
     const err = json?.detail || json?.errorCode || json?.message || null;
@@ -209,7 +210,7 @@ async function runChance(task, ctx, session, tStep, steps) {
     dryRun: true,
     checkoutStage: "chance",
     campaignSn,
-    finalUrl: `${BANDAI_BASE}/mypage/chancetobuy`,
+    finalUrl: `${session.base}/mypage/chancetobuy`,
     cookies: ctx.jar?.dump?.() ?? {},
     note: draw.note,
   };
@@ -241,9 +242,10 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       const s0 = Date.now();
       bridge = await createBandaiF5Bridge({
         proxy: task.proxy || null,
+        area: session.area,
         timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
       });
-      await bridge.goto(`${BANDAI_BASE}/login`);
+      await bridge.goto(`${session.base}/login`);
       const csrf = await bridge.csrfToken();
       const cookies = await bridge.cookies();
       if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
@@ -254,8 +256,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         status: null,
         ms: Date.now() - s0,
         note: csrf
-          ? `bridge ready csrf=${String(csrf).slice(0, 8)}…`
-          : `bridge cookies=${Object.keys(cookies || {}).join(",")}`,
+          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}…`
+          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")}`,
       });
       ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
@@ -338,7 +340,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   // Confirm auth
   const member = await tStep("member_refresh", async () => {
     const { status, json } = await session.apiJson("GET", "/api/context/member/refresh", {
-      referer: `${BANDAI_BASE}/`,
+      referer: `${session.base}/`,
     });
     const memberNo = json?.memberNo || null;
     if (json?.csrfToken) session.state.csrfToken = json.csrfToken;
@@ -369,7 +371,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
 
   // ── Product ────────────────────────────────────────────────────────────
   if (bridge) {
-    await bridge.goto(`${BANDAI_BASE}/item/${encodeURIComponent(productCode)}`);
+    await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`);
     const csrf = await bridge.csrfToken();
     if (csrf) session.state.csrfToken = csrf;
     const c = await bridge.cookies();
@@ -395,7 +397,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
 
   // Prefer existing cart line (prior dry-runs / preallocation)
   let cartBefore = await session.apiJson("GET", "/api/cart/detail", {
-    referer: `${BANDAI_BASE}/cart`,
+    referer: `${session.base}/cart`,
   });
   let existing = findCartLine(cartBefore.json, pdp.areaItemNo);
 
@@ -424,7 +426,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     }
     const { status, json, res } = await session.apiJson("POST", "/api/cart/addToCart", {
       body: atcBodyObj,
-      referer: `${BANDAI_BASE}/item/${productCode}`,
+      referer: `${session.base}/item/${productCode}`,
       extraHeaders: sensors,
     });
     const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
@@ -432,7 +434,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     // Treat MaxPurchaseQty / Preallocation as soft-ok if line already present
     if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
       const again = await session.apiJson("GET", "/api/cart/detail", {
-        referer: `${BANDAI_BASE}/cart`,
+        referer: `${session.base}/cart`,
       });
       const line = findCartLine(again.json, pdp.areaItemNo);
       if (line?.cartItemSn) {
@@ -473,7 +475,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   // ── Cart detail + qty normalize ────────────────────────────────────────
   let cart = await tStep("cart_detail", async () => {
     const { status, json } = await session.apiJson("GET", "/api/cart/detail", {
-      referer: `${BANDAI_BASE}/cart`,
+      referer: `${session.base}/cart`,
     });
     let hit = findCartLine(json, pdp.areaItemNo);
     if (hit?.cartItemSn && Number(hit.qty) > qty) {
@@ -481,14 +483,14 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       const modPath = `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=${qty}`;
       if (bridge) {
         // Bridge page should be on cart for path context
-        await bridge.goto(`${BANDAI_BASE}/cart`);
+        await bridge.goto(`${session.base}/cart`);
         const mint = await bridge.mint("PUT", modPath, {
           csrf: session.state.csrfToken,
         });
         sensors = mint.sensors || {};
       }
       const mod = await session.apiJson("PUT", modPath, {
-        referer: `${BANDAI_BASE}/cart`,
+        referer: `${session.base}/cart`,
         extraHeaders: sensors,
       });
       steps.push({
@@ -499,7 +501,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         note: `qty ${hit.qty}→${qty}`,
       });
       const again = await session.apiJson("GET", "/api/cart/detail", {
-        referer: `${BANDAI_BASE}/cart`,
+        referer: `${session.base}/cart`,
       });
       hit = findCartLine(again.json, pdp.areaItemNo);
       return {
@@ -555,7 +557,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       cartId,
       cartItemSn,
       title: pdp.title,
-      finalUrl: `${BANDAI_BASE}/cart`,
+      finalUrl: `${session.base}/cart`,
       cookies: ctx.jar?.dump?.() ?? {},
       note: "HTTP ATC + cart ok — stopped before checkout (bandaiStopAtCart)",
       via: "http",
@@ -566,7 +568,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   // ── Cart checkout → checkoutSn (still HTTP; GE iframe separate) ────────
   let preloadSuffix = task.globaleMerchantCartTokenSuffix || null;
   if (!preloadSuffix && bridge) {
-    await bridge.goto(`${BANDAI_BASE}/cart`);
+    await bridge.goto(`${session.base}/cart`);
     const html = await bridge.page.content();
     preloadSuffix = extractPreloadSuffix(html);
   }
@@ -574,7 +576,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     // Guest cart HTML via undici
     const { request } = await import("../http.js");
     const nav = await request(
-      `${BANDAI_BASE}/cart`,
+      `${session.base}/cart`,
       {
         headers: {
           "user-agent": session.state.userAgent,
@@ -596,7 +598,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
 
   const checkoutBody = {
     merchantCartToken,
-    shippingAreaCode: task.shippingAreaCode || "au",
+    shippingAreaCode: task.shippingAreaCode || session.area,
     items: [{ cartItemSn }],
   };
 
@@ -607,7 +609,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     const path = `/api/cart/${encodeURIComponent(cartSn)}/checkout`;
     let sensors = {};
     if (bridge) {
-      await bridge.goto(`${BANDAI_BASE}/cart`);
+      await bridge.goto(`${session.base}/cart`);
       const mint = await bridge.mint("POST", path, {
         body: JSON.stringify(checkoutBody),
         contentType: "application/json",
@@ -619,7 +621,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     }
     const { status, json } = await session.apiJson("POST", path, {
       body: checkoutBody,
-      referer: `${BANDAI_BASE}/cart`,
+      referer: `${session.base}/cart`,
       extraHeaders: sensors,
     });
     const checkoutSn = json?.checkoutSn || json?.checkoutSN || null;
@@ -650,8 +652,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     checkoutSn: chk.checkoutSn || null,
     title: pdp.title,
     finalUrl: chk.checkoutSn
-      ? `${BANDAI_BASE}/orderdetails`
-      : `${BANDAI_BASE}/cart`,
+      ? `${session.base}/orderdetails`
+      : `${session.base}/cart`,
     cookies: ctx.jar?.dump?.() ?? {},
     note: chk.ok
       ? placeOrder
@@ -692,28 +694,56 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Opt-in full Playwright checkout (lab / GE decline demos only).
+  // Opt-in full Playwright checkout — needed for Global-e card / 3DS UI.
   if (task.bandaiBrowserCheckout === true) {
     const s0 = Date.now();
+    const taskCard = task.card || null;
+    const envCard =
+      process.env.BANDAI_CARD_NUMBER
+        ? {
+            number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
+            expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
+            expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
+            cvv: String(process.env.BANDAI_CARD_CVV || ""),
+            holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
+          }
+        : null;
+    const card =
+      placeOrder && taskCard?.number
+        ? {
+            number: String(taskCard.number).replace(/\s+/g, ""),
+            expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
+            expYear: String(taskCard.expYear || taskCard.exp_year || "")
+              .replace(/^20/, "")
+              .slice(-2),
+            cvv: String(taskCard.cvv || taskCard.cvc || ""),
+            holder: String(taskCard.holder || taskCard.name || "Cardholder"),
+          }
+        : placeOrder && envCard?.number
+          ? envCard
+          : placeOrder
+            ? {
+                // Lab fallback — issuer decline; never a real PAN in source.
+                number: "4000000000000002",
+                expMonth: "12",
+                expYear: "30",
+                cvv: "999",
+                holder: "DECLINE TEST",
+              }
+            : null;
     const out = await browserBandaiCheckout({
       email,
       password,
       productCode,
+      area: session.area,
       qty: Number(task.qty) || 1,
       proxy: parseBandaiProxy(task.proxy).url || task.proxy || null,
       placeOrder,
-      card: placeOrder
-        ? {
-            number: "4000000000000002",
-            expMonth: "12",
-            expYear: "30",
-            cvv: "999",
-            holder: "DECLINE TEST",
-          }
-        : null,
-      shippingAreaCode: task.shippingAreaCode || "au",
+      card,
+      shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+      wait3dsMs: Number(task.wait3dsMs) || 120_000,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -742,7 +772,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       title: out.title,
       paymentStatus: out.paymentStatus,
       declineTarget: out.declineTarget,
-      finalUrl: out.finalUrl || `${BANDAI_BASE}/cart`,
+      reached3ds: out.reached3ds ?? null,
+      finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
       via: "browser",
@@ -774,10 +805,17 @@ export const bandaiAdapter = {
         ? "account_gen"
         : mode;
 
-    const session = createBandaiSession(ctx);
+    const area = resolveBandaiArea(task);
+    task.bandaiArea = area;
+    const session = createBandaiSession(ctx, { area });
+    steps.push({
+      step: "bandai_region",
+      ok: true,
+      note: `area=${area} regions=au,us,nz,sg,hk,tw,fr (not jp)`,
+    });
 
     if (normalized === "account_gen") {
-      return createBandaiAccount(task, ctx, { tStep });
+      return createBandaiAccount(task, ctx, { tStep, area });
     }
 
     if (normalized === "monitor") {

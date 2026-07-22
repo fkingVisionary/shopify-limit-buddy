@@ -10,9 +10,7 @@
 // Full browser checkout stays opt-in lab-only (`bandaiBrowserCheckout`).
 
 import { chromium } from "playwright";
-
-const BANDAI_ORIGIN = "https://p-bandai.com";
-const BANDAI_BASE = `${BANDAI_ORIGIN}/au`;
+import { bandaiBaseFor, normalizeBandaiArea, BANDAI_ORIGIN } from "./bandai-session.js";
 
 const DEFAULT_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -96,13 +94,18 @@ export function parseBandaiProxy(rawProxy) {
 /**
  * @param {object} opts
  * @param {string} [opts.proxy]
+ * @param {string} [opts.area="au"]
  * @param {string} [opts.userAgent]
  * @param {boolean} [opts.headless=true]
  */
 export async function createBandaiF5Bridge(opts = {}) {
   const userAgent = opts.userAgent || DEFAULT_UA;
+  const area = normalizeBandaiArea(opts.area) || "au";
+  const BANDAI_BASE = bandaiBaseFor(area);
   const { playwright: pwProxy } = parseBandaiProxy(opts.proxy);
   const headless = opts.headless !== false;
+  const locale =
+    area === "fr" ? "fr-FR" : area === "us" ? "en-US" : area === "nz" ? "en-NZ" : "en-AU";
 
   const browser = await chromium.launch({
     headless,
@@ -110,7 +113,7 @@ export async function createBandaiF5Bridge(opts = {}) {
     args: ["--disable-blink-features=AutomationControlled"],
   });
   const context = await browser.newContext({
-    locale: "en-AU",
+    locale,
     userAgent,
     viewport: { width: 1280, height: 800 },
   });
@@ -122,7 +125,9 @@ export async function createBandaiF5Bridge(opts = {}) {
   async function goto(pathOrUrl) {
     const url = /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
-      : `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
+      : pathOrUrl.startsWith(`/${area}/`) || pathOrUrl.startsWith("/_ui/") || pathOrUrl.startsWith("/api/") || pathOrUrl.startsWith("/login")
+        ? `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`
+        : `${BANDAI_BASE}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
     // Allow common.js?async to hook XHR/fetch
     await page.waitForTimeout(2200);
@@ -200,12 +205,12 @@ export async function createBandaiF5Bridge(opts = {}) {
     await page.route("**/*", routeHandler);
     try {
       await page.evaluate(
-        async ({ method: meth, path: p, body: b, contentType: ct, csrf: tok }) => {
+        async ({ method: meth, path: p, body: b, contentType: ct, csrf: tok, areaCode }) => {
           await new Promise((resolve) => {
             const xhr = new XMLHttpRequest();
             xhr.open(meth, p, true);
             xhr.setRequestHeader("accept", "application/json, text/plain, */*");
-            xhr.setRequestHeader("x-g1-area-code", "au");
+            xhr.setRequestHeader("x-g1-area-code", areaCode);
             xhr.setRequestHeader("x-requested-with", "XMLHttpRequest");
             if (tok) xhr.setRequestHeader("x-csrf-token", tok);
             if (ct) xhr.setRequestHeader("content-type", ct);
@@ -227,6 +232,7 @@ export async function createBandaiF5Bridge(opts = {}) {
           body: body ?? null,
           contentType: contentType || null,
           csrf: csrf || (await csrfToken()),
+          areaCode: area,
         },
       );
       await page.waitForTimeout(200);
@@ -268,6 +274,7 @@ export async function createBandaiF5Bridge(opts = {}) {
     mint,
     close,
     userAgent,
+    area,
     BANDAI_BASE,
     BANDAI_ORIGIN,
   };

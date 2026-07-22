@@ -5,6 +5,7 @@
 import { chromium } from "playwright";
 
 import { parseBandaiProxy } from "./bandai-f5.js";
+import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 
 function proxyForPlaywright(rawProxy) {
   return parseBandaiProxy(rawProxy).playwright;
@@ -28,6 +29,8 @@ export async function browserLoginBandai(opts = {}) {
   const proxy = proxyForPlaywright(opts.proxy);
   const timeoutMs = Number(opts.timeoutMs) || 90_000;
   const headless = opts.headless !== false;
+  const area = normalizeBandaiArea(opts.area) || "au";
+  const base = bandaiBaseFor(area);
 
   let browser;
   try {
@@ -59,7 +62,7 @@ export async function browserLoginBandai(opts = {}) {
       }
     });
 
-    await page.goto("https://p-bandai.com/au/login", {
+    await page.goto(`${base}/login`, {
       waitUntil: "domcontentloaded",
       timeout: timeoutMs,
     });
@@ -121,7 +124,7 @@ export async function browserLoginBandai(opts = {}) {
       }
     } else {
       // DOM form not ready — call the same service the SPA uses if exposed, else fetch in-page.
-      loginResponse = await page.evaluate(async ({ email: em, password: pw }) => {
+      loginResponse = await page.evaluate(async ({ email: em, password: pw, areaCode }) => {
         const body = `grantType=password&memberId=${encodeURIComponent(em)}&password=${encodeURIComponent(pw)}&saveLoginId=false&autoLogin=false`;
         const csrf =
           window.USER_DATA?.csrfToken ||
@@ -132,7 +135,7 @@ export async function browserLoginBandai(opts = {}) {
           headers: {
             accept: "application/json, text/plain, */*",
             "content-type": "application/x-www-form-urlencoded;charset=utf-8",
-            "x-g1-area-code": "au",
+            "x-g1-area-code": areaCode,
             "x-requested-with": "XMLHttpRequest",
             ...(csrf ? { "x-csrf-token": csrf } : {}),
           },
@@ -145,7 +148,7 @@ export async function browserLoginBandai(opts = {}) {
           csrf: res.headers.get("x-csrf-token"),
           text: (await res.text()).slice(0, 200),
         };
-      }, { email, password });
+      }, { email, password, areaCode: area });
     }
 
     // Allow post-login redirects / cookie settle
@@ -171,17 +174,17 @@ export async function browserLoginBandai(opts = {}) {
     // Stronger ok: member refresh works in-page
     let memberOk = false;
     try {
-      memberOk = await page.evaluate(async () => {
+      memberOk = await page.evaluate(async (areaCode) => {
         const res = await fetch("/api/context/member/refresh", {
           credentials: "include",
           headers: {
             accept: "application/json",
-            "x-g1-area-code": "au",
+            "x-g1-area-code": areaCode,
             "x-requested-with": "XMLHttpRequest",
           },
         });
         return res.status === 200;
-      });
+      }, area);
     } catch {
       memberOk = false;
     }

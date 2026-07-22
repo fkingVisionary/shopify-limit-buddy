@@ -1,8 +1,9 @@
 # Pokémon Centre (TPCI) — Module Research
 
-_Date: 2026-07-21 (scope dig)_  
+_Date: 2026-07-22 (GE lessons refresh after Bandai)_  
 _Status: research only — no adapter code yet_  
-_Priority: **high yield / high difficulty** — Hyper can cover **Incapsula + DataDome**, but **hCaptcha + Global-e + crowded bot scene** make this a Phase-2+ module, not Bandai-first._
+_Priority: **high yield / high difficulty** — Hyper can cover **Incapsula + DataDome**, but **hCaptcha + Global-e + crowded bot scene** make this Phase-2+ after Bandai._  
+_GE update: Bandai AU (mid 1925) reached issuer wire proof 2026-07-22 — fold those patterns into P4 below._
 
 ### Canonical AU storefront
 **`https://www.pokemoncenter.com/en-au`**  
@@ -28,9 +29,9 @@ Antibot is a **stacked** setup:
 Commerce API surface (from `robots.txt`) is classic **Elastic Path Cortex**:
 `/cortex`, `/carts`, `/extcarts`, `/items`, `/itemdefinitions`, `/availabilities`, `/orders`, `/paymentinstruments`, …
 
-**Hyper fit: mixed-strong.** Incapsula + DataDome are Hyper-native (same wiring AusPost/HN need). Gaps: hCaptcha, Global-e checkout (Bandai-class custom), ThreatMetrix / Quantum Metric fingerprinting, strict address/fraud limits, and a mature English-bot market (Valor etc.).
+**Hyper fit: mixed-strong.** Incapsula + DataDome are Hyper-native (same wiring AusPost/HN need). Gaps: hCaptcha, Global-e checkout (now **partially demystified by Bandai**), ThreatMetrix / Quantum Metric fingerprinting, strict address/fraud limits, and a mature English-bot market (Valor etc.).
 
-**Vs Bandai:** PC exclusives pay, but competition is fierce and antibot is heavier. Prefer Bandai greenfield first; treat PC as **Phase 2 after DD + Incapsula are wired**, with a dedicated AU ISP HAR.
+**Vs Bandai:** PC exclusives pay, but competition is fierce and antibot is heavier. Prefer Bandai greenfield first (done / shipping); treat PC as **Phase 2 after DD + Incapsula are wired**. Global-e P4 should **reuse Bandai GE playbook**, not rediscover iframes from scratch.
 
 ---
 
@@ -60,6 +61,8 @@ Commerce API surface (from `robots.txt`) is classic **Elastic Path Cortex**:
 | CA | `/en-ca` |
 | UK | `/en-gb` |
 
+**Region note (from Bandai expansion):** locale path parameterization is cheap once one region is green. For PC, AU/NZ are the Global-e locales — US/UK may stay domestic Cortex checkout (confirm in HAR). Do **not** assume every locale hits GE.
+
 ---
 
 ## 3. Antibot behaviour
@@ -86,6 +89,8 @@ Challenge shape:
 - Queue when traffic spikes (session tied to IP)
 
 **Module implication:** sticky residential/ISP per task; Hyper Reese84/UTMVC + DataDome slider/interstitial; **separate hCaptcha harvest** (browser/desktop) — Hyper does not solve hCaptcha.
+
+**Transport lesson (Bandai):** keep **catalog/cart HTTP-first** once edge cookies are solved. Do **not** default a full Playwright checkout ladder for Cortex ATC. Browser is for (a) edge solve assist if Hyper stalls, (b) hCaptcha, (c) Global-e pay UI.
 
 ---
 
@@ -115,16 +120,47 @@ PDP URL pattern (urlscan):
 
 ---
 
-## 5. Checkout + payments (AU)
+## 5. Checkout + payments (AU) — Global-e
 
 | Topic | Detail |
 |---|---|
 | Fulfilment | **Global-e** for AU/NZ — GST inclusive; duties/taxes in total ([support](https://support.pokemoncenter.com/hc/en-us/articles/360000234573)) |
 | AU pay methods | Visa, MC, PayPal, Amex, Diners, Google Pay, Apple Pay, Klarna, Amazon Pay, UnionPay |
-| Card rail | CyberSource + Cardinal Commerce 3DS (CSP) |
+| Card rail | CyberSource + Cardinal Commerce 3DS (CSP) — **plus** GE-hosted card iframe (see Bandai) |
 | Limits | Community/bot docs: strict address / device / billing fingerprint — multi-ship same address often declined |
 
-`/intl-checkout` in robots strongly suggests AU path leaves Cortex for Global-e mid-flow (same class of work as Bandai GE, different merchant).
+`/intl-checkout` in robots strongly suggests AU leaves Cortex for Global-e mid-flow (same **class** as Bandai GE, **different merchant / mid / GEM CDN host**).
+
+### 5.1 Bandai Global-e lessons (2026-07-22) — apply to PC P4
+
+Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wire proof**: Revolut declined **A$317** to **“Globale /bandai Spirit”** (low balance) after automated Pay. Use this as the GE checklist for Pokémon Centre — do not relearn from zero.
+
+| Lesson | What happened on Bandai | PC plan implication |
+|---|---|---|
+| **HTTP through handoff, browser for Pay** | undici + F5 sensor bridge → `checkoutSn`; GE card/Pay stayed in Playwright | Cortex ATC + `/intl-checkout` handoff = HTTP once Incapsula/DD clear. **GE Pay UI = browser** (or later shared `ge-checkout` helper). |
+| **SPA boot > raw checkout id** | API `checkoutSn` alone often left orderdetails **without** payment iframe; UI **PROCEED TO CHECKOUT** booted GEM | Drive PC through the real **`/intl-checkout`** (or equivalent CTA), not only a Cortex order id. |
+| **Wait for Checkout/v2, not prefetcher** | Prefetcher iframe ≠ ready; need `webservices.global-e.com/Checkout/v2/…` and/or `CreditCardForm` | Gate Pay on Checkout/v2 + secure card form frame; fail closed if only prefetcher. |
+| **Cookie / CMP banners** | OneTrust overlay stalled GEM boot / empty page | Dismiss CMP (OneTrust / similar) before GE interactions. |
+| **Nested secure card iframe** | `#secureWindow` → `secure-bandai.global-e.com/payments/CreditCardForm/…` | Expect `secure-*.global-e.com` (merchant-specific subdomain). Fill **inside** that frame. |
+| **Field shape** | `cardNum` (tel), **SELECT** `cardExpiryMonth` / `cardExpiryYear`, `cvdNumber` (CVV); often **no** holder name | Use selects for expiry; don’t assume a single `MM/YY` input. |
+| **Mandatory T&Cs checkbox** | “I confirm no returns…” unchecked → Pay click does nothing useful | Explicitly tick GE purchase-agreement / terms before Pay. |
+| **Hidden fraud / captcha fields** | `PaymentData.recapchaToken` + `recapchaTime` (empty until solved); `CheckoutData.ForterToken` often empty at boot | Wait for token population / invisible captcha execute; Bandai JS also had cart-token captcha + FingerprintJS. PC CSP already lists hCaptcha + ThreatMetrix — expect **more** friction than Bandai. |
+| **“Pay clicked” ≠ bank hit** | Narrow network filters reported `payNet=0` while Revolut still got the auth | Treat **issuer / bank notification as ground truth**. Broaden GE traffic capture after Pay; scrape GE body for decline copy. |
+| **3DS is optional** | Low-balance soft-decline fired **without** ACS/3DS | Keep 3DS waiter as fallback; success/decline can be frictionless. Do not require `reached3ds` for “pay path green”. |
+| **Score order** | Bank ping → GE/Bandai order number / `preComplete` → not client `ok` alone | Same for PC: Revolut/bank → GE confirmation → Cortex/TPCI order id. Persist milestones so client timeouts don’t hide wins. |
+| **Lab cards** | Decline PAN for dry labs; disposable funded card for wire proof | Same. Never commit PANs. Stop before Pay on expensive SKUs unless owner opts in. |
+| **Merchant-specific GEM** | `gem-bandai` / `web-bandai` / mid **1925** | HAR must capture PC’s `gem-*` host + **merchant id** — do not hardcode Bandai mid. |
+| **Shared helper (future)** | Bandai logic lives in `bandai-browser-checkout.js` | When PC is built, extract a thin **`ge-pay.js`** (dismiss CMP → wait Checkout/v2 → fill CreditCardForm → tick T&Cs → Pay → wait 3DS/decline/order) parameterized by mid/hosts. |
+
+### 5.2 Expected GE host pattern (confirm in PC HAR)
+
+| Role | Bandai example | PC (TBD in HAR) |
+|---|---|---|
+| GEM script CDN | `gem-bandai.global-e.com/includes/js/{mid}` | `gem-*.global-e.com` or shared `web.global-e.com/merchant/…` |
+| Checkout UI | `webservices.global-e.com/Checkout/v2/…` | same family |
+| Card form | `secure-bandai.global-e.com/payments/CreditCardForm/…` | `secure-*.global-e.com` |
+| Cart token | `gepi.global-e.com/Checkout/GetCartToken?…` | same family |
+| Merchant mid | **1925** | **unknown — capture** |
 
 ---
 
@@ -135,20 +171,20 @@ PDP URL pattern (urlscan):
 | Yield | PC exclusives, PC ETBs, collab plush — high resale |
 | Competition | Mature English bots (Valor documents Incapsula+DD+hCaptcha) |
 | AU nuance | Same catalog family as US; shipping/GE friction; historically fewer local exclusives than JP |
-| Differentiator | Weaker than Bandai AU (greenfield). Stronger than random Shopify if Hyper DD+Incapsula already built for AusPost/HN |
+| Differentiator | Weaker than Bandai AU (greenfield). Stronger than random Shopify if Hyper DD+Incapsula already built for AusPost/HN. GE path is no longer a pure unknown. |
 
 ---
 
 ## 7. Module plan (when unparked)
 
-| Phase | Work |
-|---|---|
-| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → `/intl-checkout` → Global-e; capture DD + hCaptcha surfaces |
-| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` if not already from AusPost/HN |
-| **P2** | Monitor: soft catalog if any (or residential poll); notify on PC ETB / exclusive SKUs |
-| **P3** | Cortex cart machine + account session |
-| **P4** | Global-e AU checkout / pay (reuse Bandai GE patterns where possible) |
-| **P5** | hCaptcha harvest path (desktop) for drop windows |
+| Phase | Work | Bandai-informed notes |
+|---|---|---|
+| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | Capture: incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm fields, T&Cs checkbox, captcha/Forter/TMX, post-Pay network, any order/preComplete equivalent |
+| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` if not already from AusPost/HN | Hard gate before PC ATC reliability |
+| **P2** | Monitor: soft catalog if any (or residential poll); notify on PC ETB / exclusive SKUs | Keep HTTP; no Playwright in monitor |
+| **P3** | Cortex cart machine + account session (**HTTP-first**) | Mirror Bandai policy: browser only if edge/captcha forces it — not a full cart ladder |
+| **P4** | Global-e AU checkout / pay | Reuse Bandai GE checklist (§5.1). Prefer shared `ge-pay` helper. Score bank → confirmation. CMP dismiss + Checkout/v2 wait + nested iframe fill + T&Cs. |
+| **P5** | hCaptcha harvest path (desktop) for drop windows | Separate from GE captcha; both may appear |
 
 ### Feasibility
 
@@ -156,17 +192,18 @@ PDP URL pattern (urlscan):
 |---|---|
 | Hyper antibot | **High** for Incapsula+DD; **gap** on hCaptcha |
 | API clarity | Medium — Cortex paths known; bodies unknown |
+| Global-e | **Improved** — Bandai proved issuer path; PC still needs mid/HAR |
 | Account friction | Medium — accounts helpful; address/fraud hard limits |
 | Competitive | Crowded |
-| Executor reuse | GE experience from Bandai; DD from AusPost; Incapsula from HN |
+| Executor reuse | GE patterns from Bandai; DD from AusPost; Incapsula from HN |
 
-**Verdict:** Scope and park behind Bandai + shared DD/Incapsula plumbing. Do **not** start PC before those Hyper vendors are live in executor.
+**Verdict:** Still park behind shared DD/Incapsula plumbing. When unparked, **do not treat Global-e as greenfield** — copy Bandai’s HTTP-handoff + browser-Pay architecture and merchant-parameterize it.
 
 ---
 
 ## 8. Japan (out of scope note)
 
-`www.pokemoncenter-online.com` = **Demandware/SFCC** (`dwsid`, `dwac_*`) + **`server: volt-adc`** (F5 XC) + Cloudflare ray headers. Entirely different module; Hyper weak on F5. Ignore for AU TPCI work.
+`www.pokemoncenter-online.com` = **Demandware/SFCC** (`dwsid`, `dwac_*`) + **`server: volt-adc`** (F5 XC) + Cloudflare ray headers. Entirely different module; Hyper weak on F5. Ignore for AU TPCI work. (Bandai’s F5 `p8komysnbc-*` sensor bridge is **not** portable here without a JP-specific dig.)
 
 ---
 
@@ -175,10 +212,13 @@ PDP URL pattern (urlscan):
 1. Guest ATC on `/en-au` or account required for exclusives?
 2. Exact Cortex zoom for add-to-cart and cart GUID cookies
 3. When does DataDome fire vs Incapsula-only browse?
-4. hCaptcha sitekey / trigger (checkout only vs browse)?
-5. Global-e merchant id for TPCI AU and captcha/fingerprint at GE
+4. hCaptcha sitekey / trigger (browse vs checkout vs Imperva only)?
+5. **Global-e merchant id** for TPCI AU + GEM CDN host (`gem-…`) + whether GE cart-token captcha / FingerprintJS / Forter load
 6. Queue vendor (custom vs Queue-it) and cookie names
 7. One-order-per-address enforcement — soft or hard at payment?
+8. Does `/intl-checkout` always embed Checkout/v2, or sometimes redirect off-site?
+9. Domestic US/UK checkout vs GE — confirm AU/NZ-only GE assumption
+10. After Pay: does TPCI call a Cortex/order complete endpoint analogous to Bandai `preComplete`?
 
 ---
 
@@ -190,3 +230,4 @@ PDP URL pattern (urlscan):
 - Valor Pokémon Center task notes (Incapsula + DataDome + hCaptcha)
 - Elite Fourum / webcompat reports (layered antibot)
 - Press: AU/NZ launch June 2024
+- **Bandai AU executor labs 2026-07-22** — HTTP `checkoutSn`, GE Checkout/v2 + CreditCardForm, Revolut issuer decline (A$317 Globale/Bandai Spirit); see `BANDAI_AU_MODULE.md` §7 + `adapters/bandai-browser-checkout.js` / `bandai-f5.js`

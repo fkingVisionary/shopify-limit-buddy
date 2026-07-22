@@ -278,6 +278,17 @@ function buildBandaiPayload({
 }) {
   const mode = String(task.bandaiMode || "checkout").toLowerCase();
   const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const REGION_RE = /^(au|us|nz|sg|hk|tw|fr)$/i;
+  const areaFromUrl = (input.match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i) || [])[1];
+  const bandaiArea = String(task.bandaiArea || task.areaCode || areaFromUrl || "au")
+    .trim()
+    .toLowerCase();
+  if (!REGION_RE.test(bandaiArea)) {
+    return {
+      ok: false,
+      error: `Unsupported Bandai region "${bandaiArea}" (use au/us/nz/sg/hk/tw/fr — not jp)`,
+    };
+  }
   if (
     mode !== "account_gen" &&
     mode !== "monitor" &&
@@ -288,7 +299,7 @@ function buildBandaiPayload({
   ) {
     return {
       ok: false,
-      error: "Bandai product URL (p-bandai.com/au/…) or product code required",
+      error: "Bandai product URL (p-bandai.com/{au|us|…}/item/…) or product code required",
     };
   }
 
@@ -301,10 +312,10 @@ function buildBandaiPayload({
 
   const storeUrl =
     mode === "account_gen" || mode === "monitor" || !input
-      ? "https://p-bandai.com/au/"
+      ? `https://p-bandai.com/${bandaiArea}/`
       : /^https?:\/\//i.test(input)
         ? input
-        : `https://p-bandai.com/au/item/${input}`;
+        : `https://p-bandai.com/${bandaiArea}/item/${input}`;
 
   let resolvedAccount = null;
   let accountAssignSource = null;
@@ -365,6 +376,28 @@ function buildBandaiPayload({
     }
   }
 
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
   return {
     ok: true,
     data: {
@@ -380,9 +413,15 @@ function buildBandaiPayload({
       forceUndici: true,
       forceTls: false,
       // HTTP-first: F5 sensor bridge mints headers; full Playwright checkout opt-in only.
-      bandaiBrowserCheckout: task.bandaiBrowserCheckout === true,
+      // GE card/3DS still needs browser when placeOrder is true.
+      bandaiBrowserCheckout:
+        task.bandaiBrowserCheckout === true ||
+        (mode === "checkout" && Boolean(placeOrder)),
       bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
+      bandaiArea,
+      shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      card,
       campaignSn: task.campaignSn || null,
       accountPassword:
         typeof task.accountPassword === "string" && task.accountPassword.trim()
