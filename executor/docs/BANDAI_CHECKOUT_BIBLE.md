@@ -165,7 +165,15 @@ mint sensors           →   POST addToCart                 Checkout/v2 + card
 mint sensors           →   POST …/checkout → checkoutSn   Pay → issuer / 3DS
 ```
 
-**Rule:** after warm cookies for login, **business calls stay HTTP**. Do not browser-POST `/login` again before GE (opt-in `bandaiBridgeRelogin` only). GE iframe still needs Playwright — raw `checkoutSn` alone often boots `/orderdetails` without a payment frame.
+**Rule:** after warm cookies for login, **business calls stay HTTP**. Do not browser-POST `/login` again before GE (opt-in `bandaiBridgeRelogin` only).
+
+### Can GE Pay skip Playwright?
+
+**Not yet — not as a reliable drop path.** Wire-proven issuer is:
+
+`POST secure-bandai.global-e.com/…/Payments/HandleCreditCardRequestV2/…`
+
+That call needs a live Checkout/v2 session GUID, card iframe state, Forter, and often captcha/FingerprintJS tokens that GEM mints in-browser. HTTP `checkoutSn` alone boots `/orderdetails` **without** a payment frame (SPA **PROCEED** is what starts GEM). Pure undici replay of `HandleCreditCardRequestV2` is the forward research track; until Forter/fp tokens are solved HTTP-side, GE UI stays Playwright. Biggest GE latency today is GEM boot after Proceed (~25–40s), not login.
 
 ### HTTP default (`bandai.js`, F5 on)
 
@@ -222,7 +230,8 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
-| GE charge POSTs | **observe-only until post-Pay wire proven**; no `page.route` abort/fulfill | Route fulfill + card-form submit kill made Pay a no-op (Revolut silent after 14:09). 14:09 had `payNet=2/2` after Pay with no route guard. |
+| GE charge POSTs | **`HandleCreditCardRequestV2` allow 1, abort 2+**; **one Pay click** | Dual click (locator+MouseEvent) = Revolut pairs. `handleaction/*` ≠ bank. |
+| Browser re-login before GE | **off** (HTTP jar sync) | Login stays HTTP; `bandaiBridgeRelogin` opt-in only. |
 | GEM boot | preload mid **1925** js/css + prefetcher iframe before Proceed; poll frames without blocking on `waitForURL` | Biggest remaining latency after Proceed (~40s cold); serial URL wait killed frame listeners early |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
 | Card expiry SELECT | DOM `value` + `input`/`change` events | Playwright `selectOption` on mismatch burned **~90s×N** and looked like “Pay blocked for 3 min” |

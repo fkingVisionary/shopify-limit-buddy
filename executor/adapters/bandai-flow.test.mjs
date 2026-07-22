@@ -17,6 +17,7 @@ import {
   isBandaiGeAuthPaymentUrl,
   isBandaiGeChargeRequest,
   isBandaiGeHandleAction,
+  isBandaiGeIssuerPaymentUrl,
   bandaiGeHandleActionId,
 } from "./bandai-ge-pay.js";
 
@@ -131,26 +132,17 @@ assert.equal(
   false,
 );
 assert.equal(isBandaiGeChargeRequest("GET", "https://webservices.global-e.com/ProcessPayment"), false);
-// Opaque Checkout/v2 writes (bank 2× same-minute while chargeReqs=0 under verb-only matcher)
+// Issuer = HandleCreditCardRequestV2 only (handleaction/save are not bank)
 assert.equal(
-  isBandaiGeChargeRequest(
-    "POST",
-    "https://webservices.global-e.com/Checkout/v2/8urc/acb1323f-95b1/Submit",
+  isBandaiGeIssuerPaymentUrl(
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/08f4e43c?mode=1",
   ),
   true,
 );
 assert.equal(
-  isBandaiGeChargeRequest("POST", "https://secure-bandai.global-e.com/payments/api/opaque"),
-  true,
-);
-assert.equal(
-  isBandaiGeChargeRequest("POST", "https://gem-bandai.global-e.com/includes/js/1925"),
-  false,
-);
-// Wire-proven duplicate path: handleaction/2 on fill + /3 before Pay
-assert.equal(
-  isBandaiGeHandleAction(
-    "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba/8urc",
+  isBandaiGeChargeRequest(
+    "POST",
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/x",
   ),
   true,
 );
@@ -159,10 +151,16 @@ assert.equal(
     "POST",
     "https://webservices.global-e.com/checkoutv2/handleaction/3/099033fe-73ba/8urc",
   ),
+  false,
+);
+assert.equal(
+  isBandaiGeHandleAction(
+    "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba/8urc",
+  ),
   true,
 );
 assert.equal(
-  isBandaiGeChargeRequest("POST", "https://webservices.global-e.com/shared/WriteContextualLog"),
+  isBandaiGeChargeRequest("POST", "https://gem-bandai.global-e.com/includes/js/1925"),
   false,
 );
 assert.equal(

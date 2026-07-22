@@ -103,32 +103,31 @@ export function bandaiGeHandleActionId(url) {
   return m ? Number(m[1]) : null;
 }
 
-/** GE payment POSTs that hit the issuer — allow exactly one per task. */
+/**
+ * Revolut-proven issuer POST (pool lab 2026-07-22).
+ * NOT handleaction/1–3 (shipping/duties/summary) and NOT checkoutv2/save.
+ */
+export function isBandaiGeIssuerPaymentUrl(url) {
+  return /secure-bandai\.global-e\.com\/\d+\/Payments\/HandleCreditCardRequestV2\//i.test(
+    String(url || ""),
+  );
+}
+
+/** Broad GE mutating traffic (logging / diagnostics). Prefer issuer URL for guards. */
 export function isBandaiGeChargeRequest(method, url) {
   const m = String(method || "GET").toUpperCase();
   if (m === "GET" || m === "OPTIONS" || m === "HEAD") return false;
   const u = String(url || "");
   if (!/global-e\.com/i.test(u)) return false;
-  // GEM boot / static / analytics — never issuer charge.
   if (
-    /prefetcher|\/static\/|includes\/js|includes\/css|\.js(?:\?|$)|\/css\/|fingerprint|forter|GetCartToken|MerchantCartToken|analytics|telemetry|beacon|collect|client-event|WriteContextualLog|collectCheckout|\/log(?:ging)?\b|recaptcha|hcaptcha/i.test(
+    /prefetcher|\/static\/|includes\/js|includes\/css|\.js(?:\?|$)|\/css\/|fingerprint|forter|GetCartToken|MerchantCartToken|analytics|telemetry|beacon|collect|client-event|WriteContextualLog|collectCheckout|\/log(?:ging)?\b|recaptcha|hcaptcha|checkoutv2\/handleaction|checkoutv2\/save|VerifyAddress/i.test(
       u,
     )
   ) {
     return false;
   }
-  // Wire-proven Bandai charge path (fires on fill + again on Pay / terms).
-  if (isBandaiGeHandleAction(u)) return true;
-  // Explicit payment verbs / card-form hosts.
-  if (
-    /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|\bCharge\b|\/Pay\b|PaymentData|CreditCardForm|\/payments?\/|transaction|Capture|SecurePayment|DoPayment|SendPayment|ValidatePayment|Billing/i.test(
-      u,
-    )
-  ) {
-    return true;
-  }
-  // Opaque GE writes on payment shells.
-  return /secure-bandai\.global-e\.com|webservices\.global-e\.com\/Checkout|gem-bandai\.global-e\.com\/(?:Checkout|payments)|gepi\.global-e\.com\/(?:Checkout|Payment)/i.test(
+  if (isBandaiGeIssuerPaymentUrl(u)) return true;
+  return /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|\bCharge\b|HandleCreditCard|SecurePayment|DoPayment|SendPayment/i.test(
     u,
   );
 }
@@ -288,27 +287,54 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // OBSERVE-ONLY wire log. page.route abort/fulfill + card-form submit kill made
-  // Pay a no-op after 14:09 (labs green, Revolut silent). Restore 14:09 path:
-  // no route interception; log handleaction + GE POSTs; single Pay click.
   let armChargeGuard = false;
-  let issuerHandleActionSent = false;
+  let issuerPaymentSent = false;
+
+  // Narrow route: ONLY HandleCreditCardRequestV2 — allow 1, abort 2+.
+  // Dual Pay click (locator + MouseEvent) produced Revolut pairs on this URL.
+  const issuerRoute = async (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (!isBandaiGeIssuerPaymentUrl(url) || req.method() === "GET") {
+      await route.continue();
+      return;
+    }
+    chargeReqCount += 1;
+    geNet.push({
+      t: Date.now(),
+      kind: "req",
+      method: req.method(),
+      url: url.slice(0, 220),
+      issuer: true,
+      chargeN: chargeReqCount,
+      armed: armChargeGuard,
+    });
+    if (chargeReqCount > 1) {
+      blockedChargeReqCount += 1;
+      mark("issuer_req_blocked", { n: chargeReqCount, url: url.slice(0, 140) });
+      await route.abort("failed");
+      return;
+    }
+    issuerPaymentSent = true;
+    mark("issuer_req_allowed", { url: url.slice(0, 140) });
+    await route.continue();
+  };
+  await page.route("**/Payments/HandleCreditCardRequestV2/**", issuerRoute);
 
   const onReq = (req) => {
     const method = req.method();
     const u = req.url();
     if (method === "GET" || method === "OPTIONS" || method === "HEAD") return;
+    if (isBandaiGeIssuerPaymentUrl(u)) return; // logged in issuerRoute
     const isGe =
       /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u);
     const noise =
-      /WriteContextualLog|collectCheckout|prefetcher|\/static\/|\.js(?:\?|$)|\/css\/|google|facebook|hotjar|sentry|datadog/i.test(
+      /WriteContextualLog|collectCheckout|prefetcher|\/static\/|\.js(?:\?|$)|\/css\/|google|facebook|hotjar|sentry|datadog|forter|clarity\.ms/i.test(
         u,
       );
-    // After Pay — log every non-GET (any host) so we can see the real issuer path.
     if (armChargeGuard) {
       const handleAction = isBandaiGeHandleAction(u);
       const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
-      const chargeCandidate = isGe && !noise && isBandaiGeChargeRequest(method, u);
       const row = {
         t: Date.now(),
         kind: "req",
@@ -319,17 +345,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
         noise,
         handleAction,
         actionId,
-        chargeCandidate,
       };
-      if (chargeCandidate || (handleAction && actionId != null && actionId >= 3)) {
-        chargeReqCount += 1;
-        row.chargeN = chargeReqCount;
-        row.issuer = true;
-        issuerHandleActionSent = true;
-        mark("ge_post", { actionId, armed: true, postPay: true, url: u.slice(0, 140) });
-      } else if (!noise) {
-        mark("post_pay_req", { method, url: u.slice(0, 140) });
-      }
+      if (!noise) mark("post_pay_req", { method, url: u.slice(0, 140) });
       geNet.push(row);
       return;
     }
@@ -343,7 +360,6 @@ export async function browserBandaiGeFromCart(opts = {}) {
       url: u.slice(0, 200),
       handleAction,
       actionId,
-      chargeCandidate: isBandaiGeChargeRequest(method, u),
       armed: false,
     };
     if (handleAction) mark("ge_post", { actionId, armed: false, url: u.slice(0, 120) });
@@ -813,24 +829,12 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (disabled) continue;
 
         try {
-          // Arm before click — post-Pay POSTs are the only Revolut-relevant wire.
+          // Arm before click — issuer = HandleCreditCardRequestV2 only.
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
-          // Playwright click + synthetic MouseEvent (14:09-style tip used locator click;
-          // after regressions some sessions need both for GEM to POST).
+          // ONE click only — locator + MouseEvent double-fired issuer (Revolut pairs).
           await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
-          await frame
-            .evaluate(() => {
-              const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>
-                /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
-              );
-              const btn = buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true") || buttons[0];
-              if (!btn) return false;
-              btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-              return true;
-            })
-            .catch(() => false);
           payClickCount += 1;
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
@@ -841,6 +845,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
             enableMs: Date.now() - sGe,
             payDiag,
           });
+          // Soft-disable after GE has a beat to POST the first issuer request.
+          setTimeout(() => {
+            frame
+              .evaluate(() => {
+                for (const b of document.querySelectorAll("button, input[type=submit]")) {
+                  if (/^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim())) {
+                    b.setAttribute("disabled", "true");
+                    b.style.pointerEvents = "none";
+                  }
+                }
+              })
+              .catch(() => {});
+          }, 400);
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
@@ -878,26 +895,20 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     await page.waitForTimeout(800);
 
-    // Issuer wire = non-noise GE POSTs after Pay armed (pre-Pay /3 alone ≠ Revolut).
+    // Issuer wire = HandleCreditCardRequestV2 only (bank ground truth).
     const authReqs = () =>
-      geNet.filter((n) => {
-        if (n.kind !== "req" || n.noise) return false;
-        if (!n.armed && !n.issuer) return false;
-        if (n.issuer || n.chargeCandidate) return true;
-        if (n.handleAction && n.actionId != null && n.actionId >= 3 && n.armed) return true;
-        return isBandaiGeAuthPaymentUrl(n.url);
-      });
+      geNet.filter((n) => n.kind === "req" && (n.issuer || isBandaiGeIssuerPaymentUrl(n.url)));
     const payNet = geNet.filter((n) => n.kind === "req" && n.armed && !n.noise);
     const payNetHot = authReqs();
-    geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount} chargeReqs=${chargeReqCount} blocked=${blockedChargeReqCount}`;
+    geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount} issuerReqs=${chargeReqCount} blocked=${blockedChargeReqCount}`;
     if (payClickCount > 1) geNote += "; WARN multi_pay_click";
-    if (issuerHandleActionSent) {
+    if (issuerPaymentSent || payNetHot.length > 0) {
       sawAuthWire = true;
-      geNote += "; issuer_post_pay_on_wire";
+      geNote += "; issuer_HandleCreditCardRequestV2_on_wire";
     }
-    if (payNetHot.length === 0 && !issuerHandleActionSent) {
+    if (payNetHot.length === 0 && !issuerPaymentSent) {
       paymentStatus = "pay_clicked_no_payment_request";
-      geNote += "; WARN no GE payment POST after Pay click";
+      geNote += "; WARN no HandleCreditCardRequestV2 after Pay click";
     }
 
     if (paymentStatus === "pay_clicked" || paymentStatus === "pay_clicked_no_payment_request") {
@@ -906,7 +917,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
         (paymentStatus === "pay_clicked_no_payment_request"
           ? Math.min(12_000, wait3dsMs)
           : wait3dsMs);
-      sawAuthWire = authReqs().length > 0;
+      sawAuthWire = issuerPaymentSent || authReqs().length > 0;
       const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
       // Stay long enough after wire to scrape issuer decline UI (bank soft-declines often have no ACS).
       const postWireObserveMs = Math.min(20_000, Math.max(14_000, wait3dsMs));
@@ -1069,6 +1080,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
   } finally {
     page.off("request", onReq);
     page.off("response", onRes);
+    await page.unroute("**/Payments/HandleCreditCardRequestV2/**", issuerRoute).catch(() => {});
   }
 }
 
