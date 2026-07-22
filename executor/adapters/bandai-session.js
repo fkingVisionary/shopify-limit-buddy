@@ -1,21 +1,78 @@
-// Premium Bandai AU — shared HTTP session helpers (CSRF, headers, warm, login).
-// Completely separate from Kmart / Toymate. No Hyper / Akamai.
+// Premium Bandai (p-bandai.com) — shared HTTP session helpers (CSRF, headers, warm, login).
+// Regions on the same SPA/API/GE stack: au, us, nz, sg, hk, tw, fr.
+// JP is a different site — not supported here. Completely separate from Kmart / Toymate.
 
 import { request, UA } from "../http.js";
 
 export const BANDAI_ORIGIN = "https://p-bandai.com";
+/** @deprecated use resolveBandaiArea / bandaiBaseFor — kept as AU default */
 export const BANDAI_AREA = "au";
+/** @deprecated use bandaiBaseFor(area) */
 export const BANDAI_BASE = `${BANDAI_ORIGIN}/${BANDAI_AREA}`;
 export const GLOBALE_MID = 1925;
+
+/** Live `/api/customerAreas` keys (lowercase path segment). JP not included. */
+export const BANDAI_REGIONS = Object.freeze(["au", "us", "nz", "sg", "hk", "tw", "fr"]);
 
 const sleep = (ms, jitter = 0) =>
   new Promise((r) => setTimeout(r, ms + Math.floor(Math.random() * (jitter + 1))));
 
-export function bandaiNavHeaders({ referer, userAgent } = {}) {
+const AREA_ACCEPT_LANG = {
+  au: "en-AU,en;q=0.9",
+  us: "en-US,en;q=0.9",
+  nz: "en-NZ,en;q=0.9",
+  sg: "en-SG,en;q=0.9",
+  hk: "en-HK,en;q=0.9",
+  tw: "en-TW,en;q=0.9",
+  fr: "fr-FR,fr;q=0.9,en;q=0.8",
+};
+
+/**
+ * Normalize to lowercase path segment (au, us, …). Unknown → null.
+ */
+export function normalizeBandaiArea(raw) {
+  const a = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\//, "")
+    .split(/[/?#]/)[0];
+  if (!a) return null;
+  if (BANDAI_REGIONS.includes(a)) return a;
+  return null;
+}
+
+export function bandaiBaseFor(area) {
+  const a = normalizeBandaiArea(area) || "au";
+  return `${BANDAI_ORIGIN}/${a}`;
+}
+
+/**
+ * Resolve region from task / URL. Defaults to au.
+ * Prefers explicit task.bandaiArea / areaCode, then /{area}/ in pdp/store URL.
+ */
+export function resolveBandaiArea(task = {}) {
+  const explicit =
+    normalizeBandaiArea(task.bandaiArea) ||
+    normalizeBandaiArea(task.areaCode) ||
+    normalizeBandaiArea(task.area) ||
+    normalizeBandaiArea(task.shippingAreaCode);
+  if (explicit) return explicit;
+
+  const url = String(task.pdpUrl || task.storeUrl || task.input || "");
+  const m = url.match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i);
+  if (m) {
+    const fromUrl = normalizeBandaiArea(m[1]);
+    if (fromUrl) return fromUrl;
+  }
+  return "au";
+}
+
+export function bandaiNavHeaders({ referer, userAgent, area } = {}) {
+  const a = normalizeBandaiArea(area) || "au";
   return {
     "user-agent": userAgent || UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "accept-language": "en-AU,en;q=0.9",
+    "accept-language": AREA_ACCEPT_LANG[a] || "en,en;q=0.9",
     "cache-control": "no-cache",
     pragma: "no-cache",
     "upgrade-insecure-requests": "1",
@@ -30,15 +87,17 @@ export function bandaiNavHeaders({ referer, userAgent } = {}) {
   };
 }
 
-export function bandaiApiHeaders({ csrfToken, referer, userAgent, contentType } = {}) {
+export function bandaiApiHeaders({ csrfToken, referer, userAgent, contentType, area } = {}) {
+  const a = normalizeBandaiArea(area) || "au";
+  const base = bandaiBaseFor(a);
   const h = {
     "user-agent": userAgent || UA,
     accept: "application/json, text/plain, */*",
-    "accept-language": "en",
-    "x-g1-area-code": BANDAI_AREA,
+    "accept-language": a === "fr" ? "fr" : "en",
+    "x-g1-area-code": a,
     "x-requested-with": "XMLHttpRequest",
     origin: BANDAI_ORIGIN,
-    referer: referer || `${BANDAI_BASE}/`,
+    referer: referer || `${base}/`,
     "sec-ch-ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": `"macOS"`,
@@ -85,10 +144,14 @@ export function extractPreloadSuffix(html) {
 }
 
 /**
- * Create a Bandai session bound to ctx (dispatcher + jar).
+ * Create a Bandai session bound to ctx (dispatcher + jar) for one region.
  */
-export function createBandaiSession(ctx, { userAgent } = {}) {
+export function createBandaiSession(ctx, { userAgent, area } = {}) {
+  const region = normalizeBandaiArea(area) || "au";
+  const base = bandaiBaseFor(region);
   const state = {
+    area: region,
+    base,
     csrfToken: null,
     userAgent: userAgent || UA,
     restrictedType: null,
@@ -96,8 +159,8 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
   };
 
   async function warm() {
-    const home = await request(`${BANDAI_BASE}/`, {
-      headers: bandaiNavHeaders({ userAgent: state.userAgent }),
+    const home = await request(`${base}/`, {
+      headers: bandaiNavHeaders({ userAgent: state.userAgent, area: region }),
     }, ctx);
     const html = await readText(home);
     ctx.jar?.ingest?.(home.headers);
@@ -106,8 +169,9 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
     const member = await request(`${BANDAI_ORIGIN}/api/context/member`, {
       headers: bandaiApiHeaders({
         csrfToken: fromHtml,
-        referer: `${BANDAI_BASE}/`,
+        referer: `${base}/`,
         userAgent: state.userAgent,
+        area: region,
       }),
     }, ctx);
     ctx.jar?.ingest?.(member.headers);
@@ -123,7 +187,10 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
       status: member.status,
       csrfToken: csrf,
       homeStatus: home.status,
-      note: csrf ? `csrf ok (${String(csrf).slice(0, 8)}…)` : `no csrf (member ${member.status})`,
+      area: region,
+      note: csrf
+        ? `csrf ok area=${region} (${String(csrf).slice(0, 8)}…)`
+        : `no csrf area=${region} (member ${member.status})`,
       loadTime: json?.loadTime ?? null,
     };
   }
@@ -140,8 +207,9 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
     const headers = {
       ...bandaiApiHeaders({
         csrfToken: state.csrfToken,
-        referer: referer || `${BANDAI_BASE}/`,
+        referer: referer || `${base}/`,
         userAgent: state.userAgent,
+        area: region,
         contentType: isForm
           ? "application/x-www-form-urlencoded"
           : body != null
@@ -174,9 +242,6 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
     return { res, json, status: res.status };
   }
 
-  /**
-   * Password login. memberId = email.
-   */
   async function loginPassword(email, password, { extraHeaders } = {}) {
     const body = new URLSearchParams({
       grantType: "password",
@@ -191,8 +256,9 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
       headers: {
         ...bandaiApiHeaders({
           csrfToken: state.csrfToken,
-          referer: `${BANDAI_BASE}/login`,
+          referer: `${base}/login`,
           userAgent: state.userAgent,
+          area: region,
           contentType: "application/x-www-form-urlencoded;charset=utf-8",
         }),
         ...(extraHeaders || {}),
@@ -226,13 +292,15 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
       note: blocking
         ? `restricted:${restricted}`
         : res.status >= 200 && res.status < 300
-          ? "login ok"
+          ? `login ok area=${region}`
           : `login ${res.status}`,
     };
   }
 
   return {
     state,
+    area: region,
+    base,
     warm,
     api,
     apiJson,
@@ -242,36 +310,51 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
 }
 
 export function profileFromTask(task) {
+  const area = resolveBandaiArea(task);
   const p = task?.profile || {};
+  const defaults = {
+    au: { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" },
+    us: { city: "Los Angeles", province: "CA", zip: "90012", country: "US", address1: "100 S Main St" },
+    nz: { city: "Auckland", province: "AUK", zip: "1010", country: "NZ", address1: "1 Queen Street" },
+    sg: { city: "Singapore", province: "", zip: "018956", country: "SG", address1: "1 Raffles Place" },
+    hk: { city: "Hong Kong", province: "", zip: "", country: "HK", address1: "1 Queen's Road Central" },
+    tw: { city: "Taipei", province: "", zip: "100", country: "TW", address1: "1 Zhongxiao E Rd" },
+    fr: { city: "Paris", province: "", zip: "75001", country: "FR", address1: "1 Rue de Rivoli" },
+  }[area] || { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" };
+
   return {
     email: p.email || task?.email || null,
     first_name: p.first_name || p.firstName || "Alex",
     last_name: p.last_name || p.lastName || "Buyer",
-    address1: p.address1 || "1 George Street",
-    city: p.city || "Sydney",
-    province: p.province || p.state || "NSW",
-    zip: p.zip || p.postcode || "2000",
+    address1: p.address1 || defaults.address1,
+    city: p.city || defaults.city,
+    province: p.province || p.state || defaults.province,
+    zip: p.zip || p.postcode || defaults.zip,
     phone: p.phone || null,
-    country: "AU",
+    country: p.country || defaults.country,
+    area,
   };
 }
 
 export function parseAreaItemNo(task) {
   const url = String(task?.pdpUrl || task?.storeUrl || "");
-  // Direct SKU / areaItemNo
   if (task?.areaItemNo) return String(task.areaItemNo);
   if (task?.sku) return String(task.sku);
-  // Product code in path: /au/item/N2903432003 or /item/...
   const m =
     url.match(/\/item\/([A-Za-z0-9_-]+)/i) ||
     url.match(/\/products?\/([A-Za-z0-9_-]+)/i) ||
     url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
-    url.match(/\b(NAI[A-Z0-9]+)\b/i);
+    url.match(/\b(NAI[A-Z0-9]+)\b/i) ||
+    url.match(/\b(A\d{7,}[A-Z0-9]*)\b/i);
   return m?.[1] || String(task?.productCode || "").trim() || null;
 }
 
 export default {
   createBandaiSession,
+  resolveBandaiArea,
+  normalizeBandaiArea,
+  bandaiBaseFor,
+  BANDAI_REGIONS,
   BANDAI_BASE,
   BANDAI_ORIGIN,
   GLOBALE_MID,

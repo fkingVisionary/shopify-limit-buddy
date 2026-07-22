@@ -5,6 +5,7 @@
 import { chromium } from "playwright";
 
 import { parseBandaiProxy } from "./bandai-f5.js";
+import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 
 function proxyForPlaywright(rawProxy) {
   return parseBandaiProxy(rawProxy).playwright;
@@ -35,9 +36,9 @@ async function dismissCookieBanner(page) {
   return false;
 }
 
-async function pageApi(page, method, path, body) {
+async function pageApi(page, method, path, body, area = "au") {
   return page.evaluate(
-    async ({ method, path, body }) => {
+    async ({ method, path, body, areaCode }, area) => {
       window.__bandaiCsrf =
         window.__bandaiCsrf ||
         window.USER_DATA?.csrfToken ||
@@ -45,7 +46,7 @@ async function pageApi(page, method, path, body) {
       const csrf = window.__bandaiCsrf || window.USER_DATA?.csrfToken || "";
       const headers = {
         accept: "application/json, text/plain, */*",
-        "x-g1-area-code": "au",
+        "x-g1-area-code": areaCode,
         "x-requested-with": "XMLHttpRequest",
         ...(csrf ? { "x-csrf-token": csrf } : {}),
       };
@@ -89,7 +90,7 @@ async function pageApi(page, method, path, body) {
         preview: (json ? JSON.stringify(json) : text).replace(/\s+/g, " ").slice(0, 400),
       };
     },
-    { method, path, body: body ?? null },
+    { method, path, body: body ?? null, areaCode: area },
   );
 }
 
@@ -182,6 +183,8 @@ export async function browserBandaiCheckout(opts = {}) {
   const qty = Math.max(1, Math.min(5, Number(opts.qty) || 1));
   const placeOrder = opts.placeOrder === true;
   const wait3dsMs = Math.max(15_000, Number(opts.wait3dsMs) || 120_000);
+  const area = normalizeBandaiArea(opts.area || opts.shippingAreaCode) || "au";
+  const base = bandaiBaseFor(area);
   const steps = [];
   const t0 = Date.now();
 
@@ -213,7 +216,7 @@ export async function browserBandaiCheckout(opts = {}) {
       args: ["--disable-blink-features=AutomationControlled"],
     });
     const context = await browser.newContext({
-      locale: "en-AU",
+      locale: area === "fr" ? "fr-FR" : area === "us" ? "en-US" : "en-AU",
       userAgent:
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
       viewport: { width: 1360, height: 900 },
@@ -253,10 +256,10 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // ── Login ────────────────────────────────────────────────────────────
     const sLogin = Date.now();
-    await page.goto("https://p-bandai.com/au/login", { waitUntil: "domcontentloaded" });
+    await page.goto(`${base}/login`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(1200);
     await dismissCookieBanner(page);
-    const login = await page.evaluate(async ({ email: em, password: pw }) => {
+    const login = await page.evaluate(async ({ email: em, password: pw, areaCode }) => {
       const csrf = window.USER_DATA?.csrfToken || window.__bandaiCsrf || "";
       const body = `grantType=password&memberId=${encodeURIComponent(em)}&password=${encodeURIComponent(pw)}&saveLoginId=false&autoLogin=false`;
       const res = await fetch("/login", {
@@ -264,7 +267,7 @@ export async function browserBandaiCheckout(opts = {}) {
         headers: {
           accept: "application/json, text/plain, */*",
           "content-type": "application/x-www-form-urlencoded;charset=utf-8",
-          "x-g1-area-code": "au",
+          "x-g1-area-code": areaCode,
           "x-requested-with": "XMLHttpRequest",
           ...(csrf ? { "x-csrf-token": csrf } : {}),
         },
@@ -281,10 +284,10 @@ export async function browserBandaiCheckout(opts = {}) {
         restrictedType: res.headers.get("x-restricted-type"),
         csrf: next,
       };
-    }, { email, password });
+    }, { email, password, areaCode: area });
     await page.waitForTimeout(1500);
 
-    const member = await pageApi(page, "GET", "/api/context/member/refresh");
+    const member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
     const memberNo = member.json?.memberNo || null;
     const loginOk = login.status >= 200 && login.status < 300 && Boolean(memberNo);
     push("login_browser", {
@@ -309,13 +312,13 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // ── PDP warm (required before ATC — mints CSRF / cart cookies) ───────
     const sPdp = Date.now();
-    await page.goto(`https://p-bandai.com/au/item/${encodeURIComponent(productCode)}`, {
+    await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
       waitUntil: "domcontentloaded",
     });
     await page.waitForTimeout(3500);
     // Re-seed CSRF after navigation (USER_DATA rotates on SPA route changes).
-    await pageApi(page, "GET", "/api/context/member");
-    const product = await pageApi(page, "GET", `/api/products/${encodeURIComponent(productCode)}`);
+    await pageApi(page, "GET", "/api/context/member", null, area);
+    const product = await pageApi(page, "GET", `/api/products/${encodeURIComponent(productCode)}`, null, area);
     const areaItemNo =
       product.json?.areaItemNos?.[0] ||
       Object.keys(product.json?.areaItemInventoryInfoMap || {})[0] ||
@@ -344,7 +347,7 @@ export async function browserBandaiCheckout(opts = {}) {
     }
 
     // If SKU already in cart (max 1 / prior dry-run), skip ATC and continue.
-    const cartBefore = await pageApi(page, "GET", "/api/cart/detail");
+    const cartBefore = await pageApi(page, "GET", "/api/cart/detail", null, area);
     const alreadyInCart = findCartLine(cartBefore.json, areaItemNo);
     let atc = { status: null, json: null, title: null };
 
@@ -370,17 +373,17 @@ export async function browserBandaiCheckout(opts = {}) {
       for (let attempt = 0; attempt < 2 && !atcOk; attempt++) {
         if (attempt > 0) {
           await page.waitForTimeout(2000);
-          await page.goto(`https://p-bandai.com/au/item/${encodeURIComponent(productCode)}`, {
+          await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
             waitUntil: "domcontentloaded",
           });
           await page.waitForTimeout(3000);
         }
-        atc = await pageApi(page, "POST", "/api/cart/addToCart", [{ areaItemNo, qty }]);
+        atc = await pageApi(page, "POST", "/api/cart/addToCart", [{ areaItemNo, qty }], area);
         const errCode = String(atc.json?.error || atc.json?.errorCode || "");
         atcOk = atc.status >= 200 && atc.status < 300 && !/CouldNotAddToCart/i.test(errCode);
         // Bandai returns HTTP 404 + JSON error for business ATC failures.
         if (!atcOk && /MaxPurchaseQty/i.test(errCode + String(atc.preview || ""))) {
-          const again = await pageApi(page, "GET", "/api/cart/detail");
+          const again = await pageApi(page, "GET", "/api/cart/detail", null, area);
           const line = findCartLine(again.json, areaItemNo);
           if (line?.cartItemSn) {
             atcOk = true;
@@ -415,7 +418,7 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // ── Cart detail ──────────────────────────────────────────────────────
     const sCart = Date.now();
-    let cart = await pageApi(page, "GET", "/api/cart/detail");
+    let cart = await pageApi(page, "GET", "/api/cart/detail", null, area);
     let hit = findCartLine(cart.json, areaItemNo);
     // Keep qty at 1 before any payment attempt (prior dry-runs may have stacked).
     if (hit?.cartItemSn && Number(hit.qty) > 1) {
@@ -423,13 +426,15 @@ export async function browserBandaiCheckout(opts = {}) {
         page,
         "PUT",
         `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=1`,
+        null,
+        area,
       );
       push("cart_qty_normalize", {
         ok: mod.status >= 200 && mod.status < 300,
         status: mod.status,
         note: `qty ${hit.qty}→1`,
       });
-      cart = await pageApi(page, "GET", "/api/cart/detail");
+      cart = await pageApi(page, "GET", "/api/cart/detail", null, area);
       hit = findCartLine(cart.json, areaItemNo);
     }
     const cartSn = hit?.cartSn || null;
@@ -459,7 +464,7 @@ export async function browserBandaiCheckout(opts = {}) {
         cartId,
         cartItemSn,
         title,
-        finalUrl: "https://p-bandai.com/au/cart",
+        finalUrl: `${base}/cart`,
         cookies,
         note: "Browser ATC + cart ok — GE skipped (placeOrder:false)",
         elapsedMs: Date.now() - t0,
@@ -471,7 +476,7 @@ export async function browserBandaiCheckout(opts = {}) {
     // SPA "PROCEED TO CHECKOUT" boots GEM correctly; raw API checkoutSn alone
     // often leaves orderdetails without the payment iframe.
     const sChk = Date.now();
-    await page.goto("https://p-bandai.com/au/cart", { waitUntil: "domcontentloaded" });
+    await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(2500);
     await dismissCookieBanner(page);
     await page.waitForTimeout(1500);
@@ -893,7 +898,7 @@ export async function browserBandaiCheckout(opts = {}) {
       cartId,
       cartItemSn,
       title,
-      finalUrl: finalUrl || "https://p-bandai.com/au/orderdetails",
+      finalUrl: finalUrl || `${base}/orderdetails`,
       cookies,
       geNetTail: geNet.slice(-20),
       note: reached3ds

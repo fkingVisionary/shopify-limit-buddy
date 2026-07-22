@@ -278,6 +278,17 @@ function buildBandaiPayload({
 }) {
   const mode = String(task.bandaiMode || "checkout").toLowerCase();
   const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const REGION_RE = /^(au|us|nz|sg|hk|tw|fr)$/i;
+  const areaFromUrl = (input.match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i) || [])[1];
+  const bandaiArea = String(task.bandaiArea || task.areaCode || areaFromUrl || "au")
+    .trim()
+    .toLowerCase();
+  if (!REGION_RE.test(bandaiArea)) {
+    return {
+      ok: false,
+      error: `Unsupported Bandai region "${bandaiArea}" (use au/us/nz/sg/hk/tw/fr — not jp)`,
+    };
+  }
   if (
     mode !== "account_gen" &&
     mode !== "monitor" &&
@@ -288,7 +299,7 @@ function buildBandaiPayload({
   ) {
     return {
       ok: false,
-      error: "Bandai product URL (p-bandai.com/au/…) or product code required",
+      error: "Bandai product URL (p-bandai.com/{au|us|…}/item/…) or product code required",
     };
   }
 
@@ -301,10 +312,10 @@ function buildBandaiPayload({
 
   const storeUrl =
     mode === "account_gen" || mode === "monitor" || !input
-      ? "https://p-bandai.com/au/"
+      ? `https://p-bandai.com/${bandaiArea}/`
       : /^https?:\/\//i.test(input)
         ? input
-        : `https://p-bandai.com/au/item/${input}`;
+        : `https://p-bandai.com/${bandaiArea}/item/${input}`;
 
   let resolvedAccount = null;
   let accountAssignSource = null;
@@ -408,6 +419,8 @@ function buildBandaiPayload({
         (mode === "checkout" && Boolean(placeOrder)),
       bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
+      bandaiArea,
+      shippingAreaCode: task.shippingAreaCode || bandaiArea,
       card,
       campaignSn: task.campaignSn || null,
       accountPassword:
