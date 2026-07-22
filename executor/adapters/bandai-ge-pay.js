@@ -48,16 +48,20 @@ function looksLike3ds(url, text = "") {
   );
 }
 
+// Keep these tight — broad `transaction.*fail` / bare `funds` false-positive on order summaries.
 const DECLINE_RE =
-  /declin|payment failed|not authorised|not authorized|insufficient|low balance|not enough|do not honour|unable to process|authentication failed|card.*(denied|rejected|refused)|transaction.*(fail|denied)|issuer.*(fail|declin)|funds|cancelled by|canceled by|try another card|payment was not|could not be (processed|completed)/i;
+  /\b(?:declined|decline|card declined|payment declined|payment failed|not authorised|not authorized|insufficient funds|insufficient balance|low balance|do not honour|do not honor|unable to process|authentication failed|try another card|payment was not (?:successful|completed)|could not be (?:processed|completed))\b/i;
 
 function extractDeclineSnippet(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
-  if (!t || !DECLINE_RE.test(t)) return null;
+  if (!t) return null;
   const m = t.match(
-    /.{0,40}(?:declin|insufficient|low balance|not (?:authori[sz]ed|enough)|do not honour|unable to process|payment failed).{0,80}/i,
+    /.{0,50}(?:declined|decline|card declined|payment declined|payment failed|not authorised|not authorized|insufficient funds|insufficient balance|low balance|do not honour|do not honor|unable to process|authentication failed|try another card).{0,80}/i,
   );
-  return (m?.[0] || t).slice(0, 160);
+  if (!m) return null;
+  // Require a real decline token in the snippet (guards ORDER SUMMARY false hits).
+  if (!DECLINE_RE.test(m[0])) return null;
+  return m[0].slice(0, 160);
 }
 
 /**
@@ -604,18 +608,6 @@ export async function browserBandaiGeFromCart(opts = {}) {
           break;
         }
 
-        // Response URL/status hints (GE sometimes encodes fail in path/query).
-        for (const n of payNetHot.concat(geNet.slice(netBefore))) {
-          if (n.kind === "res" && (n.status >= 400 || /fail|declin|reject/i.test(n.url || ""))) {
-            if (!declineSnippet) {
-              declineSnippet = `http ${n.status || "?"} ${String(n.url || "").slice(0, 100)}`;
-              paymentStatus = "declined_or_auth_failed";
-              mark("payment_declined", { declineSnippet, where: "net" });
-              break;
-            }
-          }
-        }
-        if (paymentStatus === "declined_or_auth_failed") break;
       }
       if (paymentStatus === "pay_clicked") {
         paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
