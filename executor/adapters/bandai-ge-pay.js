@@ -908,9 +908,9 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (!isBandaiGeCheckoutPayFrame(url)) continue;
         const state = await frame
           .evaluate(() => {
-            const pay = [...document.querySelectorAll("button, input[type=submit]")].find((b) =>
-              /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
-            );
+            const payLabel = (b) => (b.innerText || b.value || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+            const isPay = (b) => /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
+            const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(isPay);
             const checks = [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
               checked: !!c.checked,
               name: c.name || c.id || "",
@@ -950,20 +950,24 @@ export async function browserBandaiGeFromCart(opts = {}) {
           // Atomic single click inside the frame — disable in the same turn so
           // GE cannot queue a second Pay (Revolut still paired with 1 route hit).
           const clicked = await frame.evaluate(() => {
-            const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>
-              /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
-            );
+            const payLabel = (b) =>
+              (b.innerText || b.value || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+            const isPay = (b) => /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
+            const buttons = [
+              ...document.querySelectorAll("button, input[type=submit], a[role=button]"),
+            ].filter(isPay);
             const btn =
               buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true") ||
               buttons[0];
             if (!btn || btn.dataset.j1mPaid === "1") return false;
             btn.dataset.j1mPaid = "1";
-            btn.click();
+            // Disable BEFORE click so GE/handlers cannot queue a second Pay.
             for (const b of buttons) {
               b.setAttribute("disabled", "true");
               b.setAttribute("aria-disabled", "true");
               b.style.pointerEvents = "none";
             }
+            btn.click();
             return true;
           });
           if (!clicked) {

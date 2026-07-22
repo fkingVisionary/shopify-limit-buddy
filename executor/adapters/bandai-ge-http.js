@@ -64,9 +64,11 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     return { ok: false, error: "body_required", note: "Need issuer POST body (capture or build)" };
   }
 
+  // Wire capture is application/x-www-form-urlencoded (not JSON).
   const headers = {
     accept: "application/json, text/plain, */*",
-    "content-type": opts.contentType || "application/json;charset=UTF-8",
+    "content-type":
+      opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
     origin: "https://secure-bandai.global-e.com",
     referer: "https://secure-bandai.global-e.com/",
     "user-agent":
