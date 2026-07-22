@@ -94,18 +94,92 @@ async function fillInputFast(locator, value) {
   return true;
 }
 
-/** GE payment POSTs that hit the issuer — allow exactly one per task. */
+/** GE payment POSTs that hit the issuer — allow exactly one per task (armed at Pay). */
 export function isBandaiGeChargeRequest(method, url) {
   const m = String(method || "GET").toUpperCase();
   if (m === "GET" || m === "OPTIONS" || m === "HEAD") return false;
   const u = String(url || "");
   if (!/global-e\.com/i.test(u)) return false;
-  if (/prefetcher|\/static\/|includes\/js|\.js(?:\?|$)|\/css\/|fingerprint|forter/i.test(u)) {
+  // GEM boot / static / analytics — never issuer charge.
+  if (
+    /prefetcher|\/static\/|includes\/js|includes\/css|\.js(?:\?|$)|\/css\/|fingerprint|forter|GetCartToken|MerchantCartToken|analytics|telemetry|beacon|collect|client-event|\/log(?:ging)?\b|recaptcha|hcaptcha/i.test(
+      u,
+    )
+  ) {
     return false;
   }
-  return /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|\bCharge\b|\/Pay\b|PaymentData|CreditCardForm|\/payments\/|transaction|Capture/i.test(
+  // Explicit payment verbs / card-form hosts.
+  if (
+    /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|\bCharge\b|\/Pay\b|PaymentData|CreditCardForm|\/payments?\/|transaction|Capture|SecurePayment|DoPayment|SendPayment|ValidatePayment|Billing/i.test(
+      u,
+    )
+  ) {
+    return true;
+  }
+  // Opaque GE writes on payment shells — bank showed 2× same-minute auths while
+  // payClicks=1 and the narrow verb matcher reported chargeReqs=0.
+  return /secure-bandai\.global-e\.com|webservices\.global-e\.com\/Checkout|gem-bandai\.global-e\.com\/(?:Checkout|payments)|gepi\.global-e\.com\/(?:Checkout|Payment)/i.test(
     u,
   );
+}
+
+const GLOBALE_MID_DEFAULT = "1925";
+
+/** Prefetch GEM bundle + prefetcher while cart UI is open (before Proceed). */
+async function warmGemAssets(page, mid = GLOBALE_MID_DEFAULT) {
+  await page
+    .evaluate((merchantId) => {
+      const hubs = [
+        "https://gem-bandai.global-e.com",
+        "https://webservices.global-e.com",
+        "https://secure-bandai.global-e.com",
+        "https://web-bandai.global-e.com",
+        "https://gepi.global-e.com",
+      ];
+      for (const href of hubs) {
+        for (const rel of ["preconnect", "dns-prefetch"]) {
+          const l = document.createElement("link");
+          l.rel = rel;
+          l.href = href;
+          l.crossOrigin = "anonymous";
+          document.head.appendChild(l);
+        }
+      }
+      const assets = [
+        {
+          href: `https://gem-bandai.global-e.com/includes/js/${merchantId}`,
+          as: "script",
+        },
+        {
+          href: `https://gem-bandai.global-e.com/includes/css/${merchantId}`,
+          as: "style",
+        },
+        {
+          href: `https://web-bandai.global-e.com/shared/prefetcher/${merchantId}/AU`,
+          as: "document",
+        },
+      ];
+      for (const a of assets) {
+        const l = document.createElement("link");
+        l.rel = "preload";
+        l.as = a.as;
+        l.href = a.href;
+        if (a.as !== "document") l.crossOrigin = "anonymous";
+        document.head.appendChild(l);
+        // Populate HTTP cache — GEM cold boot was ~40s waiting on these.
+        fetch(a.href, { mode: "no-cors", credentials: "omit" }).catch(() => {});
+      }
+      if (!document.getElementById("j1m-ge-prefetch")) {
+        const ifr = document.createElement("iframe");
+        ifr.id = "j1m-ge-prefetch";
+        ifr.src = `https://web-bandai.global-e.com/shared/prefetcher/${merchantId}/AU?cb=${Date.now()}`;
+        ifr.setAttribute("aria-hidden", "true");
+        ifr.style.cssText =
+          "position:absolute;width:1px;height:1px;left:-9999px;border:0;opacity:0;pointer-events:none";
+        document.body.appendChild(ifr);
+      }
+    }, String(mid))
+    .catch(() => {});
 }
 
 async function dismissCookieBanner(page) {
@@ -211,33 +285,43 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
+  // Arm only at Pay — GEM boot / tokenize POSTs before click must not consume the slot.
+  let armChargeGuard = false;
 
   // Hard single-flight: bank showed 2× same-second auths while payClicks=1 —
   // GE was firing a second payment POST (card iframe + Checkout Pay, or dual auth).
   const chargeRoute = async (route) => {
     const req = route.request();
-    if (!isBandaiGeChargeRequest(req.method(), req.url())) {
+    const method = req.method();
+    const url = req.url();
+    if (!isBandaiGeChargeRequest(method, url)) {
+      await route.continue();
+      return;
+    }
+    geNet.push({
+      t: Date.now(),
+      kind: "req",
+      method,
+      url: url.slice(0, 200),
+      chargeCandidate: true,
+      armed: armChargeGuard,
+    });
+    if (!armChargeGuard) {
       await route.continue();
       return;
     }
     chargeReqCount += 1;
-    geNet.push({
-      t: Date.now(),
-      kind: "req",
-      method: req.method(),
-      url: req.url().slice(0, 200),
-      chargeN: chargeReqCount,
-    });
+    geNet[geNet.length - 1].chargeN = chargeReqCount;
     if (chargeReqCount > 1) {
       blockedChargeReqCount += 1;
       mark("charge_req_blocked", {
         n: chargeReqCount,
-        url: req.url().slice(0, 120),
+        url: url.slice(0, 120),
       });
       await route.abort("failed");
       return;
     }
-    mark("charge_req_allowed", { url: req.url().slice(0, 120) });
+    mark("charge_req_allowed", { url: url.slice(0, 120) });
     await route.continue();
   };
   await page.route("**/*", chargeRoute);
@@ -305,6 +389,10 @@ export async function browserBandaiGeFromCart(opts = {}) {
     }
     mark("cart_ui_ready", { proceedVisible });
 
+    // Start GEM warm as soon as cart paints — overlaps checkbox / Proceed enable wait.
+    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+    mark("gem_warm_started");
+
     const areaBoxes = page.locator(
       'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
     );
@@ -371,94 +459,70 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
-    // Prefetch GEM origins before Proceed — cuts cold DNS/TLS into Checkout/v2 boot.
-    await page
-      .evaluate(() => {
-        const hubs = [
-          "https://gem-bandai.global-e.com",
-          "https://webservices.global-e.com",
-          "https://secure-bandai.global-e.com",
-          "https://web-bandai.global-e.com",
-        ];
-        for (const href of hubs) {
-          for (const rel of ["preconnect", "dns-prefetch"]) {
-            const l = document.createElement("link");
-            l.rel = rel;
-            l.href = href;
-            l.crossOrigin = "anonymous";
-            document.head.appendChild(l);
-          }
-        }
-      })
-      .catch(() => {});
+    // Refresh warm right before Proceed (cache may have filled during checkbox wait).
+    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
 
     mark("proceed_click");
-    const iframeReadyPromise = new Promise((resolve) => {
-      const onFrame = (frame) => {
-        const u = frame.url() || "";
-        if (/Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i.test(u)) {
-          page.off("frameattached", onFrame);
-          page.off("framenavigated", onNav);
-          resolve(u);
-        }
-      };
-      const onNav = (frame) => onFrame(frame);
-      page.on("frameattached", onFrame);
-      page.on("framenavigated", onNav);
-      setTimeout(() => {
-        page.off("frameattached", onFrame);
-        page.off("framenavigated", onNav);
-        resolve(null);
-      }, 28_000);
-    });
+    const geFrameRe =
+      /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i;
+    let earlyFrameUrl = null;
+    const onFrame = (frame) => {
+      const u = frame.url() || "";
+      if (geFrameRe.test(u) && !earlyFrameUrl) {
+        earlyFrameUrl = u;
+        mark("ge_frame_event", { url: u.slice(0, 100) });
+      }
+    };
+    page.on("frameattached", onFrame);
+    page.on("framenavigated", onFrame);
 
-    await Promise.all([
-      page.waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 28_000 }).catch(() => null),
-      proceed.click({ timeout: 8_000, noWaitAfter: true }),
-    ]);
-    await dismissCookieBanner(page);
-
-    checkoutSn =
-      (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn"))) || null;
-    mark("after_proceed", { checkoutSn });
+    // Do NOT block on waitForURL — prior tip burned ~28s here while GEM hadn't
+    // attached yet; listeners died at 28s and poll had to catch up (~18s more).
+    const urlWait = page
+      .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 20_000 })
+      .catch(() => null);
+    await proceed.click({ timeout: 8_000, noWaitAfter: true }).catch(() => {});
+    void dismissCookieBanner(page);
 
     let geIframeReady = false;
     let frameUrls = [];
-    const earlyFrame = await iframeReadyPromise;
-    frameUrls = page.frames().map((f) => f.url());
-    if (
-      earlyFrame ||
-      frameUrls.some((u) =>
-        /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i.test(
-          u,
-        ),
-      )
-    ) {
-      geIframeReady = true;
-      mark("ge_iframe_ready", { frames: frameUrls.length, via: earlyFrame ? "event" : "poll0" });
-    }
-    for (let i = 0; !geIframeReady && i < 40; i++) {
+    let gemVia = "timeout";
+    const gemDeadline = Date.now() + 45_000;
+    let pollI = 0;
+    while (Date.now() < gemDeadline) {
+      checkoutSn =
+        checkoutSn ||
+        (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
       frameUrls = page.frames().map((f) => f.url());
-      if (
-        frameUrls.some((u) =>
-          /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i.test(
-            u,
-          ),
-        )
-      ) {
+      if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
         geIframeReady = true;
-        mark("ge_iframe_ready", { frames: frameUrls.length, via: `poll${i}` });
+        gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
         break;
       }
-      await page.waitForTimeout(250);
-      if (i % 6 === 0) await dismissCookieBanner(page);
-      if (i === 8 || i === 16) {
+      if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
+      if (pollI === 5 || pollI === 12 || pollI === 20) {
         await page
-          .locator('label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card')
+          .locator(
+            'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+          )
           .first()
-          .click({ timeout: 1000 })
+          .click({ timeout: 800 })
           .catch(() => {});
       }
+      await page.waitForTimeout(150);
+      pollI += 1;
+    }
+    page.off("frameattached", onFrame);
+    page.off("framenavigated", onFrame);
+    await urlWait;
+    await dismissCookieBanner(page);
+
+    checkoutSn =
+      checkoutSn ||
+      (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+    mark("after_proceed", { checkoutSn, gemPoll: pollI });
+    if (geIframeReady) {
+      mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
     }
 
     push("cart_checkout", {
@@ -493,16 +557,29 @@ export async function browserBandaiGeFromCart(opts = {}) {
     // Cap every locator op — Playwright default 90s on SELECT mismatch was the 3min Pay stall.
     page.setDefaultTimeout(8_000);
 
-    await page
-      .waitForFunction(
-        () =>
-          [...document.querySelectorAll("iframe")].some((f) =>
-            /CreditCardForm|secure-bandai\.global-e|payments\//i.test(f.src || ""),
-          ),
-        null,
-        { timeout: 12_000 },
-      )
-      .catch(() => null);
+    // Card iframe often trails Checkout/v2 by a few seconds — tight poll, not 12s blind wait.
+    for (let i = 0; i < 40; i++) {
+      const hasCard = page
+        .frames()
+        .some((f) => /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url() || ""));
+      if (hasCard) {
+        mark("card_iframe_ready", { pollI: i });
+        break;
+      }
+      if (i === 3 || i === 10) {
+        for (const frame of page.frames()) {
+          if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+          await frame
+            .locator(
+              'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card")',
+            )
+            .first()
+            .click({ timeout: 600 })
+            .catch(() => {});
+        }
+      }
+      await page.waitForTimeout(150);
+    }
 
     for (const frame of page.frames()) {
       if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
@@ -690,6 +767,9 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (disabled) continue;
 
         try {
+          // Arm before click — only post-Pay GE writes count toward the single charge slot.
+          armChargeGuard = true;
+          mark("charge_guard_armed");
           // Single evaluate click + immediately disable every Pay CTA (no double fire).
           const clicked = await frame.evaluate(() => {
             const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>

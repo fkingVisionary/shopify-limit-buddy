@@ -129,5 +129,21 @@ assert.equal(
   false,
 );
 assert.equal(isBandaiGeChargeRequest("GET", "https://webservices.global-e.com/ProcessPayment"), false);
+// Opaque Checkout/v2 writes (bank 2× same-minute while chargeReqs=0 under verb-only matcher)
+assert.equal(
+  isBandaiGeChargeRequest(
+    "POST",
+    "https://webservices.global-e.com/Checkout/v2/8urc/acb1323f-95b1/Submit",
+  ),
+  true,
+);
+assert.equal(
+  isBandaiGeChargeRequest("POST", "https://secure-bandai.global-e.com/payments/api/opaque"),
+  true,
+);
+assert.equal(
+  isBandaiGeChargeRequest("POST", "https://gem-bandai.global-e.com/includes/js/1925"),
+  false,
+);
 
 console.log("bandai-flow.test.mjs ok");

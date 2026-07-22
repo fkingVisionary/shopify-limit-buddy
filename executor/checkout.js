@@ -236,6 +236,8 @@ export async function runCheckout(task) {
         declineSnippet: out.declineSnippet ?? null,
         payClickCount: out.payClickCount ?? null,
         sawAuthWire: out.sawAuthWire ?? null,
+        chargeReqCount: out.chargeReqCount ?? null,
+        blockedChargeReqCount: out.blockedChargeReqCount ?? null,
         geNetTail: out.geNetTail ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
