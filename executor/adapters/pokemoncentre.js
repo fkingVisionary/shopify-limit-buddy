@@ -10,7 +10,12 @@
 //
 // Transport: undici HTTP-first. Browser only for GE Pay (placeOrder) or hCaptcha assist.
 
-import { warmPokemonCentre, fetchWithEdgeClear, clearDataDome } from "./pokemoncentre-edge.js";
+import {
+  warmPokemonCentre,
+  fetchWithEdgeClear,
+  clearDataDome,
+  postDataDomeTags,
+} from "./pokemoncentre-edge.js";
 import {
   createPcSession,
   resolvePcLocale,
@@ -253,6 +258,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     parseProductUrl(task.pdpUrl || "")?.productUrl ||
     `${session.state.base}/product/${sku}`;
 
+  // Auth before tags — tags can rotate datadome; keep token mint close to interstitial clear.
   const auth = await tStep("cortex_auth", () =>
     getPublicToken(session, ctx, { locale: session.state.locale }),
   );
@@ -268,6 +274,14 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       cookies: ctx.jar?.dump?.() ?? {},
     };
   }
+
+  await tStep("datadome_tags", async () => {
+    try {
+      return await postDataDomeTags(session, ctx, { pageUrl: `${session.state.base}/` });
+    } catch (e) {
+      return { ok: false, note: e?.message || String(e) };
+    }
+  });
 
   const pdp = await tStep("pdp_fetch", async () => {
     const got = await fetchWithEdgeClear(session, ctx, productUrl, { tStep });
@@ -288,7 +302,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   });
 
-  const atc = await tStep("cortex_atc", async () => {
+  let atc = await tStep("cortex_atc", async () => {
     try {
       return await attemptGuestAtc(session, {
         sku,
@@ -301,6 +315,25 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       return { ok: false, note: e?.message || String(e) };
     }
   });
+  // BFF ATC can still escalate to DD captcha JSON — refresh tags once and retry.
+  if (atc.datadomeChallenge) {
+    await tStep("datadome_tags_retry", () =>
+      postDataDomeTags(session, ctx, { pageUrl: productUrl }),
+    );
+    atc = await tStep("cortex_atc_retry", async () => {
+      try {
+        return await attemptGuestAtc(session, {
+          sku,
+          qty: task.qty || 1,
+          task,
+          product: pdp.product,
+          pageUrl: productUrl,
+        });
+      } catch (e) {
+        return { ok: false, note: e?.message || String(e) };
+      }
+    });
+  }
 
   const usesGe = localeUsesGlobalE(session.state.locale);
   let geResult = null;

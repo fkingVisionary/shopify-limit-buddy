@@ -13,6 +13,7 @@ import {
   parseDataDomeObject,
   solveDataDomeInterstitial,
   solveDataDomeSlider,
+  solveDataDomeTags,
   parseSliderDeviceCheckUrl,
   parseInterstitialDeviceCheckUrl,
 } from "../antibot.js";
@@ -23,8 +24,10 @@ import { PC_ORIGIN } from "./pokemoncentre-session.js";
 export const PC_REESE_SCRIPT_PATH = "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C";
 /** Incapsula account/site id from visid_incap_* / incap_ses_* cookie names. */
 export const PC_INCAP_SITE_ID = "2682446";
-/** DataDome hsh observed on AU block pages (not a Hyper key — site fingerprint). */
+/** DataDome hsh / ddjskey observed on AU (tags + block pages). */
 export const PC_DATADOME_HSH = "5B45875B653A484CC79E57036CE9FC";
+/** First-party tags endpoint from home inline ddoptions. */
+export const PC_DATADOME_TAGS_URL = "https://dd.pokemoncenter.com/js/";
 
 function bufferToB64(buf) {
   return Buffer.from(buf).toString("base64");
@@ -360,6 +363,76 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
       ? "datadome slider cookie set (Hyper captcha/check)"
       : `slider verify ${verifyRes.status} body=${verifyText.slice(0, 80)}`,
     dd,
+  };
+}
+
+/**
+ * Post DataDome tags (ch → le) to raise trust before BFF ATC.
+ * @see https://docs.hypersolutions.co/datadome/tags.md
+ */
+export async function postDataDomeTags(session, ctx, { pageUrl } = {}) {
+  if (!hyperConfigured()) {
+    return { ok: false, note: "HYPER_API_KEY missing — skip tags" };
+  }
+  let ip = "";
+  try {
+    ip = (await resolveEgressIp(ctx)) || "";
+  } catch {
+    ip = "";
+  }
+  const referer = pageUrl || `${session.state.base}/`;
+  const cid = ctx.jar?.get?.("datadome") || "";
+  const results = [];
+  for (const type of ["ch", "le"]) {
+    const { payload } = await solveDataDomeTags({
+      userAgent: session.state.userAgent,
+      ddk: PC_DATADOME_HSH,
+      referer,
+      type,
+      ip,
+      acceptLanguage: session.state.acceptLanguage,
+      cid: ctx.jar?.get?.("datadome") || cid,
+    });
+    const body =
+      typeof payload === "string"
+        ? payload
+        : payload?.payload || JSON.stringify(payload);
+    const res = await session.post(PC_DATADOME_TAGS_URL, {
+      body,
+      headers: {
+        referer,
+        origin: PC_ORIGIN,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json, text/plain, */*",
+        "sec-fetch-site": "same-site",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+      },
+    });
+    ctx.jar?.ingest?.(res.headers);
+    const text = await session.readText(res);
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
+    const applied = applyDatadomeSolveJson(ctx.jar, json || {});
+    results.push({
+      type,
+      status: res.status,
+      cookie: Boolean(applied.cookie),
+    });
+  }
+  session.state.datadomeTags = true;
+  const ok = results.every((r) => r.status >= 200 && r.status < 400);
+  return {
+    ok,
+    results,
+    note: ok
+      ? `datadome tags ch+le posted (${results.map((r) => r.status).join("/")})`
+      : `datadome tags partial ${JSON.stringify(results)}`,
+    ref: "https://docs.hypersolutions.co/datadome/tags.md",
   };
 }
 

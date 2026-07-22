@@ -433,7 +433,7 @@ export async function solveDataDomeTags({
       type,
       ip ?? "",
       acceptLanguage || "en-AU,en;q=0.9",
-      version,
+      version || "5.1.6",
       cid || "",
     ),
   );
