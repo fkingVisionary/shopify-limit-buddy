@@ -304,18 +304,42 @@ export async function runGlobalEPay(opts = {}) {
       }
     });
 
-    // 1) Shipping/email first — gates Pay CTA on PC GE.
+    // 1) Billing address — PC GE shows "Mobile Phone is required" if empty.
+    const fillByLabel = async (frame, labelRe, value) => {
+      const byLabel = frame.getByLabel(labelRe).first();
+      if (await byLabel.count().catch(() => 0)) {
+        await byLabel.fill(value).catch(() => {});
+        return true;
+      }
+      const byRole = frame.getByRole("textbox", { name: labelRe }).first();
+      if (await byRole.count().catch(() => 0)) {
+        await byRole.fill(value).catch(() => {});
+        return true;
+      }
+      return false;
+    };
     let addressFilled = false;
+    let phoneFilled = false;
     for (let tick = 0; tick < 12 && !addressFilled; tick++) {
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
-        const email = frame.locator('input[type="email"], input[name*="email" i]').first();
-        if (!(await email.count().catch(() => 0))) continue;
-        await email.fill(opts.email || "decline.test@example.com").catch(() => {});
-        const phone = frame.locator('input[type="tel"], input[name*="phone" i]').first();
-        if (await phone.count().catch(() => 0)) {
-          await phone.fill(opts.phone || "0400000000").catch(() => {});
+        // Country Australia first (phone prefix +61)
+        const country = frame.locator('select[name*="Country" i], select#CheckoutData_BillingAddress_CountryID, select[id*="Country" i]').first();
+        if (await country.count().catch(() => 0)) {
+          await country.selectOption({ label: "Australia" }).catch(() =>
+            country.selectOption({ label: /Australia/i }).catch(() => {}),
+          );
         }
+        await fillByLabel(frame, /First Name/i, "Test");
+        await fillByLabel(frame, /Last Name/i, "User");
+        await fillByLabel(frame, /^Email$/i, opts.email || "decline.test@example.com");
+        const email = frame.locator('input[type="email"], input[name*="email" i]').first();
+        if (await email.count().catch(() => 0)) {
+          await email.fill(opts.email || "decline.test@example.com").catch(() => {});
+        }
+        await fillByLabel(frame, /Address Line 1/i, "1 George Street");
+        await fillByLabel(frame, /^City$/i, "Sydney");
+        await fillByLabel(frame, /Zip|Postcode/i, "2000");
         for (const [sel, val] of [
           ['input[name*="FirstName" i], input[autocomplete="given-name"]', "Test"],
           ['input[name*="LastName" i], input[autocomplete="family-name"]', "User"],
@@ -326,27 +350,36 @@ export async function runGlobalEPay(opts = {}) {
           const el = frame.locator(sel).first();
           if (await el.count().catch(() => 0)) await el.fill(val).catch(() => {});
         }
-        const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"]').first();
+        const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"], select[id*="State" i]').first();
         if (await state.count().catch(() => 0)) {
           await state.selectOption({ label: "New South Wales" }).catch(() =>
             state.selectOption("NSW").catch(() => {}),
           );
         }
-        // Continue / next shipping step if present
-        const next = frame
+        // Mobile Phone — required on PC GE (wire: red "Mobile Phone is required")
+        phoneFilled =
+          (await fillByLabel(frame, /Mobile Phone/i, opts.phone || "0412345678")) ||
+          phoneFilled;
+        const phone = frame
           .locator(
-            'button:has-text("Continue"), button:has-text("Next"), button:has-text("Save"), button:has-text("Ship")',
+            'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[placeholder*="phone" i]',
           )
           .first();
-        if (await next.count().catch(() => 0)) {
-          await next.click({ timeout: 4000 }).catch(() => {});
+        if (await phone.count().catch(() => 0)) {
+          await phone.fill(opts.phone || "0412345678").catch(() => {});
+          phoneFilled = true;
         }
         addressFilled = true;
         break;
       }
       if (!addressFilled) await page.waitForTimeout(1000);
     }
-    push("ge_address", { ok: addressFilled, note: addressFilled ? "guest address attempted" : "no address fields yet" });
+    push("ge_address", {
+      ok: addressFilled && phoneFilled,
+      note: addressFilled
+        ? `guest address attempted phone=${phoneFilled}`
+        : "no address fields yet",
+    });
     await page.waitForTimeout(2000);
 
     // 2) CreditCardForm (Bandai field shape — nested secure iframe common).
@@ -374,14 +407,19 @@ export async function runGlobalEPay(opts = {}) {
         await cardNum.fill(String(card.number).replace(/\s+/g, ""), { timeout: 5000 }).catch(() => {});
         const mm = frame.locator('select[name="cardExpiryMonth"], select#cardExpiryMonth, select[name*="Month" i]').first();
         const yy = frame.locator('select[name="cardExpiryYear"], select#cardExpiryYear, select[name*="Year" i]').first();
+        const expMonth = String(card.expMonth).padStart(2, "0");
+        // PC GE year dropdown is 4-digit (2026…); accept 2-digit env as 20xx.
+        let expYear = String(card.expYear);
+        if (/^\d{2}$/.test(expYear)) expYear = `20${expYear}`;
         if (await mm.count().catch(() => 0)) {
-          await mm.selectOption(String(card.expMonth).padStart(2, "0")).catch(() => {});
+          await mm.selectOption(expMonth).catch(() => mm.selectOption({ label: expMonth }).catch(() => {}));
         }
         if (await yy.count().catch(() => 0)) {
-          const y = String(card.expYear);
           await yy
-            .selectOption(y.length === 2 ? y : y.slice(-2))
-            .catch(() => yy.selectOption(y).catch(() => {}));
+            .selectOption(expYear)
+            .catch(() => yy.selectOption({ label: expYear }).catch(() =>
+              yy.selectOption(expYear.slice(-2)).catch(() => {}),
+            ));
         }
         // Some GE UIs use text expiry MM/YY
         const expText = frame.locator('input[autocomplete="cc-exp"], input[name*="expir" i][type="text"]').first();
@@ -484,6 +522,47 @@ export async function runGlobalEPay(opts = {}) {
         .filter((u) => /global-e|Checkout/i.test(u))
         .slice(0, 8),
     });
+
+    // If GE shows field validation (e.g. Mobile Phone), fix + click again once.
+    await page.waitForTimeout(2000);
+    let earlyText = "";
+    for (const frame of page.frames()) {
+      if (/Checkout\/v2|webservices\.global-e/i.test(frame.url())) {
+        earlyText += await frame.locator("body").innerText().catch(() => "");
+      }
+    }
+    if (/Mobile Phone is required|is required/i.test(earlyText)) {
+      for (const frame of page.frames()) {
+        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        await frame.getByLabel(/Mobile Phone/i).fill(opts.phone || "0412345678").catch(() => {});
+        const phone = frame.locator('input[type="tel"], input[name*="phone" i], input[id*="Phone" i]').first();
+        if (await phone.count().catch(() => 0)) {
+          await phone.fill(opts.phone || "0412345678").catch(() => {});
+        }
+        // dismiss validation modal if present
+        await frame.locator("#modalOk, button:has-text('Ok')").first().click({ timeout: 2000 }).catch(() => {});
+      }
+      // Re-assert expiry year on secure form
+      for (const frame of page.frames()) {
+        if (!/CreditCardForm|secure\.ges/i.test(frame.url())) continue;
+        let expYear = String(card.expYear);
+        if (/^\d{2}$/.test(expYear)) expYear = `20${expYear}`;
+        const yy = frame.locator('select[name="cardExpiryYear"], select#cardExpiryYear, select[name*="Year" i]').first();
+        if (await yy.count().catch(() => 0)) {
+          await yy.selectOption(expYear).catch(() => yy.selectOption({ label: expYear }).catch(() => {}));
+        }
+      }
+      await page.waitForTimeout(1000);
+      for (const frame of page.frames()) {
+        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        const payBtn = frame.locator("#btnPay, button:has-text('PURCHASE NOW')").first();
+        if (await payBtn.count().catch(() => 0)) {
+          await payBtn.click({ timeout: 8000 }).catch(() => {});
+          push("ge_pay_click_retry", { ok: true, note: "PURCHASE NOW after phone/year fix" });
+          break;
+        }
+      }
+    }
 
     // Optional 3DS / decline — success/decline can be frictionless (Bandai lesson).
     for (let i = 0; i < 45; i++) {
