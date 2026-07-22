@@ -748,13 +748,19 @@ export async function browserBandaiCheckout(opts = {}) {
         }
         // Brief settle — did any payment POST leave the browser?
         await page.waitForTimeout(5000);
-        const payNet = geNet.slice(netBefore).filter((n) =>
-          /ProcessPayment|Authorize|Pay|payment|3ds|acs|CompleteOrder|CreatePayment/i.test(n.url),
+        // Broad match — GE hits many hosts (webservices / secure-bandai / gepi).
+        // 2026-07-22: Revolut declined A$317 "Globale /bandai Spirit" while our
+        // narrow filter reported payNet=0 — treat any post-click GE traffic as wire proof.
+        const payNet = geNet.slice(netBefore);
+        const payNetHot = payNet.filter((n) =>
+          /ProcessPayment|Authorize|Pay|payment|3ds|acs|CompleteOrder|CreatePayment|CreditCard|Checkout/i.test(
+            n.url,
+          ),
         );
-        geNote += `; payNet=${payNet.length}`;
+        geNote += `; payNet=${payNet.length}/${payNetHot.length}`;
         if (paid && payNet.length === 0) {
           paymentStatus = "pay_clicked_no_payment_request";
-          geNote += "; WARN no GE payment POST after click";
+          geNote += "; WARN no GE traffic after click";
         }
 
         // Wait for 3DS / ACS challenge (Revolut push) or confirmation / decline.
@@ -811,7 +817,7 @@ export async function browserBandaiCheckout(opts = {}) {
               break;
             }
             if (
-              /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process|authentication failed|cancelled|canceled/i.test(
+              /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process|authentication failed|cancelled|canceled|insufficient|low balance|not enough/i.test(
                 bodyProbe,
               )
             ) {
