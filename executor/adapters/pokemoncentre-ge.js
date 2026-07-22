@@ -651,18 +651,22 @@ export async function runGlobalEPay(opts = {}) {
         break;
       }
       if (
-        /declin|insufficient|not authorised|not authorized|payment failed|could not be processed|unable to process|do not honour|do not honor|funds/i.test(
+        /declin|insufficient|not authorised|not authorized|payment failed|could not be processed|couldn.?t be completed|weren.?t charged|unable to process|do not honour|do not honor|funds|try another payment/i.test(
           bodyText,
         )
       ) {
         paymentStatus = "declined";
         break;
       }
-      // Also scan Checkout/v2 iframe body
+      // Also scan Checkout/v2 iframe body + decline modal
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
         const ft = await frame.locator("body").innerText().catch(() => "");
-        if (/declin|insufficient|not authorised|not authorized|payment failed|unable to process/i.test(ft)) {
+        if (
+          /declin|insufficient|not.?authori|payment failed|couldn.?t be completed|weren.?t charged|unable to process|try another payment/i.test(
+            ft,
+          )
+        ) {
           paymentStatus = "declined";
           break;
         }
@@ -686,14 +690,18 @@ export async function runGlobalEPay(opts = {}) {
       iframeText += `\n--- ${frame.url().slice(0, 120)} ---\n`;
       iframeText += await frame.locator("body").innerText().catch(() => "");
     }
-    if (
-      paymentStatus === "unknown" &&
-      /declin|insufficient|not.?authori|payment failed|unable to process|error|required|invalid/i.test(iframeText)
-    ) {
-      if (/declin|insufficient|not.?authori|payment failed|unable to process/i.test(iframeText)) {
+    if (paymentStatus === "unknown") {
+      if (
+        /declin|insufficient|not.?authori|payment failed|couldn.?t be completed|weren.?t charged|unable to process|try another payment/i.test(
+          iframeText,
+        )
+      ) {
         paymentStatus = "declined";
-      } else {
+      } else if (/is required|post code of 4 digits|invalid/i.test(iframeText)) {
         paymentStatus = "validation_error";
+      } else if (/HandleCreditCardRequestV2|CCPaymentRedirect/i.test(JSON.stringify(payResponses))) {
+        // Payment pipe was hit even if modal copy is thin — treat as attempted decline/fail.
+        paymentStatus = "declined";
       }
     }
     if (debugDir) {
