@@ -48,6 +48,7 @@
           <select id="taskStore">
             <option value="kmart">Kmart AU</option>
             <option value="toymate">Toymate AU</option>
+            <option value="bandai">Premium Bandai AU</option>
           </select>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>
@@ -79,6 +80,35 @@
                 <label>Vault account</label>
                 <select id="taskAccountId"></select>
               </div>
+            </div>
+          </div>
+          <div id="taskBandaiOpts" hidden>
+            <label>Bandai mode</label>
+            <select id="taskBandaiMode">
+              <option value="checkout">Autocheckout (login + ATC)</option>
+              <option value="account_gen">Account gen (IMAP + OnlineSim)</option>
+              <option value="monitor">Monitor (search / PDP)</option>
+              <option value="chance">Chance applyDraw</option>
+            </select>
+            <div id="taskBandaiAccountPassWrap" hidden>
+              <label>Account password <span class="optional">(optional — agen)</span></label>
+              <input id="taskBandaiAccountPassword" type="text" autocomplete="off" placeholder="Must pass Bandai rules (upper+lower+digit+symbol)" />
+            </div>
+            <div id="taskBandaiAssignWrap" hidden>
+              <label>Checkout account</label>
+              <select id="taskBandaiAccountAssign">
+                <option value="auto">Auto — match profile email</option>
+                <option value="manual">Manual — pick from vault</option>
+              </select>
+              <p class="field-hint">Bandai ATC requires login. Guest ATC returns 501.</p>
+              <div id="taskBandaiAccountManualWrap" hidden>
+                <label>Vault account</label>
+                <select id="taskBandaiAccountId"></select>
+              </div>
+            </div>
+            <div id="taskBandaiChanceWrap" hidden>
+              <label>Campaign SN</label>
+              <input id="taskBandaiCampaignSn" placeholder="campaignSn for applyDraw" />
             </div>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
@@ -227,6 +257,39 @@
         <label>CapSolver API key (Toymate Cloudflare + captcha)</label>
         <input id="setCapsolver" placeholder="CapSolver key" autocomplete="off" />
         <p class="hint">Used only by Toymate. Kmart ignores this key.</p>
+        <h3 style="margin-top:1.25rem">Account gen OTP (Bandai + future agen)</h3>
+        <p class="hint">Secrets stay on this computer. Used by Premium Bandai account gen (email IMAP + OnlineSim SMS). Never logged in full.</p>
+        <label>OnlineSim API key</label>
+        <input id="setOnlinesim" placeholder="OnlineSim apikey" autocomplete="off" />
+        <div class="grid2">
+          <div>
+            <label>OnlineSim mode</label>
+            <select id="setOnlinesimMode">
+              <option value="rent">Rent (preferred for Bandai)</option>
+              <option value="activation">Activation (service slug)</option>
+            </select>
+          </div>
+          <div>
+            <label>Service slug <span class="optional">(activation)</span></label>
+            <input id="setOnlinesimSlug" placeholder="other" />
+          </div>
+        </div>
+        <label>IMAP host</label>
+        <input id="setImapHost" placeholder="imap.gmail.com" />
+        <div class="grid2">
+          <div>
+            <label>IMAP port</label>
+            <input id="setImapPort" type="number" value="993" />
+          </div>
+          <div>
+            <label>Mailbox</label>
+            <input id="setImapMailbox" placeholder="INBOX" />
+          </div>
+        </div>
+        <label>IMAP user (email = Bandai memberId)</label>
+        <input id="setImapUser" type="email" placeholder="you@gmail.com" autocomplete="off" />
+        <label>IMAP app password</label>
+        <input id="setImapAppPassword" type="password" placeholder="App password (not Bandai password)" autocomplete="off" />
         <label>Max concurrent checkouts</label>
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
