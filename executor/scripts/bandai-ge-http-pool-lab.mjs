@@ -97,7 +97,7 @@ for (let i = 0; i < maxTries; i++) {
   const steps = (res.steps || []).map((s) => `${s.step}:${s.ok ? "ok" : "FAIL"}`).join(" ");
   const tl = res.timeline || [];
   console.log(
-    `  result via=${res.via} pay=${res.paymentStatus} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} ms=${Date.now() - t0}`,
+    `  result via=${res.via} pay=${res.paymentStatus} tx=${res.transactionId || "-"} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} sawAuth=${res.sawAuthWire} ms=${Date.now() - t0}`,
   );
   console.log(`  steps ${steps}`);
   for (const e of tl) {
@@ -159,6 +159,7 @@ for (let i = 0; i < maxTries; i++) {
       note: res.note,
       chargeReqCount: res.chargeReqCount,
       sawAuthWire: res.sawAuthWire,
+      transactionId: res.transactionId,
       redirectUrl: res.redirectUrl,
       redirectPayload: res.redirectPayload,
     },

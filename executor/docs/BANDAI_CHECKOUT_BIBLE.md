@@ -185,7 +185,11 @@ HTTP checkoutSn + merchantCartToken
 
 Lab (2026-07-22): GetCartToken + Checkout/v2 + CreditCardForm JWT all green over undici after HTTP `checkoutSn`. **`machineId` is iovation** (`s3.global-e.com/snare.js` → `#ioBlackBox`), not Forter — mint via F5 bridge `page.goto(Checkout/v2)` only (no Pay click / card fill). Pay UI Playwright is off the path.
 
-**False success:** 302 → `CCPaymentRedirect?Data=JWT` with only `ReloadBehaviour` / `finalizeProcess` is **not** a bank hit (Revolut silent). Score `ge_reload_only_no_bank`. Real hydrate needs GEM bodies (`ShippingOptions`/`TaxOptions`/`Totals` + `X-merchantId`) scraped from Checkout/v2 (incl. AU `<select>` StateId). Issuer defaults `gatewayId=2` / `paymentMethodId=2` (wire-proven).
+**False success:** 302 → `CCPaymentRedirect` with `RedirectErrorType=DataCorruption` + `TransactionId=0` is **not** a bank hit. Score `ge_reload_only_no_bank`.
+
+**Real bank (even on decline):** `TransactionId≠0` + `TransactionStatusType=AutherizationFailed` (GE spelling) + MerchantId=1925. Score `declined_or_auth_failed` / `sawAuthWire`. Check Revolut for the attempt.
+
+**Wire knobs:** CreditCardForm URL path = **gatewayId** (usually `/2`), body `paymentMethodId` usually `1`. SaveForm urlencoded + `X-merchantId` before Pay. Hydrate with GEM Action bodies + AU StateId.
 
 **Lab:** `node executor/scripts/bandai-ge-http-lab.mjs` (`bandaiGeHttpPay:true`)  
 **Legacy:** `bandaiBrowserCheckout` (SPA PROCEED + Playwright Pay).

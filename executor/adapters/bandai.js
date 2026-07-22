@@ -963,6 +963,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       blockers: geOut.blockers || [],
       chargeReqCount: geOut.chargeReqCount ?? null,
       sawAuthWire: geOut.sawAuthWire ?? null,
+      transactionId: geOut.transactionId ?? null,
       finalUrl: `${session.base}/orderdetails`,
       cookies: ctx.jar?.dump?.() ?? {},
       note: geOut.note || null,
