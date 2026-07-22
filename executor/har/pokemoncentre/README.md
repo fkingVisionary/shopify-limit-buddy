@@ -54,9 +54,21 @@ Full HAR kept local (`/tmp/pc-capture-isp/`) — not committed (large + tokens).
 
 Refs: [DataDome getting started](https://docs.hypersolutions.co/datadome/getting-started.md), [Reese84](https://docs.hypersolutions.co/incapsula/reese84.md), [TLS](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md).
 
+## Checkout wire (HTTP + Hyper, 2026-07-22)
+
+Proven on Noontide sticky after Reese + interstitial `view=redirect` (not a proxy spray):
+
+| Step | Request | Result |
+|---|---|---|
+| Auth | `POST /tpci-ecommweb-api/auth/get-public-token` body `grant_type=password&role=CATALOG_BROWSER&scope=pokemon-au` + `X-Store-Locale` / `X-Store-Scope` | 200 + `access_token` + `Set-Cookie: auth={…}` |
+| PDP | clear HTML `__NEXT_DATA__` → `product.addToCartForm` = `/carts/items/pokemon-au/{epItemId}/form` | e.g. AVAILABLE binder SKU |
+| ATC | `POST /tpci-ecommweb-api/cart/add-product/{epItemId}` + `Authorization: bearer …` body `{clobber:false,quantity:1,dynamicAdd:false}` | **201** line-item JSON |
+| Avoid | `configuration:{}` on ATC body; raw `/cortex/...` with bearer | DD captcha JSON / API Gateway IAM parse errors |
+| Note | Undici→Chromium cookie handoff re-challenges DataDome (TLS bind) — keep ATC on HTTP BFF | not “dead proxy” |
+
 ## Next capture (owner)
 
-1. Prefer Hyper Playwright `IncapsulaHandler` + `DataDomeHandler` (`experiments/pokemoncentre-hyper-pw-capture.mjs`) so TLS/header order match a real browser.
-2. Sticky AU residential: rotate **only** when Hyper’s slider hard-block applies (`t=bv` on slider / `parseSliderDeviceCheckUrl.isIpBanned`).
-3. Interstitial must return `{ cookie, view: "redirect", url }` — `view: "captcha"` is not success; fix implementation (header order / TLS / cookie parse) before spraying proxies.
-4. Desktop Chrome HAR once home clears: PDP → ATC → `/intl-checkout` → GE Pay (decline card OK). Grab Cortex zoom/ATC, `globaleMid`, `gem-*` / `secure-*`, hCaptcha sitekey.
+1. After ATC: refresh Next cart for `cartGuid` → `POST /auth/get-globale-m2m-token` → `/en-au/intl-checkout` → GE mid/`gem-*` / Pay (decline OK).
+2. Sticky AU residential: rotate **only** when Hyper’s slider hard-block applies (`t=bv` on slider).
+3. Interstitial must return `{ cookie, view: "redirect", url }` before BFF calls.
+4. Prefer Hyper Playwright handlers for browser GE Pay only — catalog/ATC stays HTTP-first.

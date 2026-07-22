@@ -15,7 +15,14 @@ import {
   looksLikeDataDomeBlock,
 } from "../antibot.js";
 import { extractHcaptchaSitekey, looksLikeHcaptcha } from "./pokemoncentre-hcaptcha.js";
-import { parsePdpAvailability } from "./pokemoncentre-cortex.js";
+import {
+  parsePdpAvailability,
+  epItemIdFromAddForm,
+  cortexAddToCartBody,
+  cortexAuthBody,
+  PC_API_BASE,
+  PC_CORTEX_SCOPE,
+} from "./pokemoncentre-cortex.js";
 
 assert.equal(normalizePcLocale("AU"), "en-au");
 assert.equal(normalizePcLocale("en_NZ"), "en-nz");
@@ -105,6 +112,19 @@ const avail = parsePdpAvailability(
 );
 assert.equal(avail.available, true);
 assert.equal(avail.title, "Pokémon TCG ETB");
+
+assert.equal(PC_API_BASE, "https://www.pokemoncenter.com/tpci-ecommweb-api");
+assert.equal(PC_CORTEX_SCOPE, "pokemon-au");
+assert.equal(
+  epItemIdFromAddForm("/carts/items/pokemon-au/qgqvhlbrgawtcmbtgiyc2mjqge=/form"),
+  "qgqvhlbrgawtcmbtgiyc2mjqge=",
+);
+const atcBody = cortexAddToCartBody("10-1", 2);
+assert.equal(atcBody.quantity, 2);
+assert.equal(atcBody.dynamicAdd, false);
+assert.equal("configuration" in atcBody, false);
+assert.match(cortexAuthBody(), /role=CATALOG_BROWSER/);
+assert.match(cortexAuthBody(), /scope=pokemon-au/);
 
 // Adapter host match — JP online must NOT match
 import { pokemoncentreAdapter } from "./pokemoncentre.js";

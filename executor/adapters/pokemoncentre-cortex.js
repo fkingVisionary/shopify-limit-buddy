@@ -1,11 +1,28 @@
-// Elastic Path Cortex helpers for Pokémon Centre.
-// Exact zoom URIs / cart bodies need AU ISP HAR (P0). Paths are from robots.txt
-// + Cortex norms — callers may override via task.cortex*.
+// Elastic Path Cortex helpers for Pokémon Centre AU (TPCI).
+// Wire-proven 2026-07-22 (HTTP + Hyper Reese/DD view=redirect):
+//   API base:  https://www.pokemoncenter.com/tpci-ecommweb-api
+//   Auth:      POST /auth/get-public-token  (role=CATALOG_BROWSER → PUBLIC token)
+//   ATC:       POST /cart/add-product/{epItemId}
+//              body { clobber, quantity, dynamicAdd }  — omit empty configuration
+//   Scope:     pokemon-au
+//   Headers:   X-Store-Locale, X-Store-Scope, Authorization: bearer <token>
+//   Cookie:    auth=<json> (HttpOnly from get-public-token Set-Cookie)
+//
+// Do not call raw /cortex/... through API Gateway with bearer — those routes
+// surface AWS IAM parse errors. BFF paths under /tpci-ecommweb-api are correct.
 
 import { PC_ORIGIN } from "./pokemoncentre-session.js";
 
-/** Default Cortex entrypoints (robots Disallow list). */
+export const PC_API_BASE = `${PC_ORIGIN}/tpci-ecommweb-api`;
+export const PC_CORTEX_SCOPE = "pokemon-au";
+
+/** Default Cortex / storefront entrypoints (robots Disallow + Next wire). */
 export const CORTEX_PATHS = {
+  api: "/tpci-ecommweb-api",
+  authPublic: "/tpci-ecommweb-api/auth/get-public-token",
+  authLogin: "/tpci-ecommweb-api/auth/login",
+  authGlobaleM2m: "/tpci-ecommweb-api/auth/get-globale-m2m-token",
+  addProduct: "/tpci-ecommweb-api/cart/add-product",
   cortex: "/cortex",
   carts: "/carts",
   extcarts: "/extcarts",
@@ -18,75 +35,298 @@ export const CORTEX_PATHS = {
   intlCheckout: "/intl-checkout",
 };
 
+/** Extract EP item id from product.addToCartForm URI. */
+export function epItemIdFromAddForm(formUri) {
+  const m = String(formUri || "").match(/\/(?:ext)?carts\/items\/[^/]+\/([^/]+)\/form/i);
+  return m?.[1] || null;
+}
+
+/** Parse __NEXT_DATA__ product + cart slice from clear PDP/home HTML. */
+export function parseNextData(html) {
+  const raw = (String(html || "").match(
+    /<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i,
+  ) || [])[1];
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function productFromNextData(nd) {
+  const p = nd?.props?.initialState?.product;
+  if (!p || typeof p !== "object") return null;
+  return {
+    code: p.code || null,
+    name: p.name || null,
+    availability: p.availability || null,
+    addToCartForm: p.addToCartForm || null,
+    addToDynamicCartForm: p.addToDynamicCartForm || null,
+    epEncodedId: p.epEncodedId || epItemIdFromAddForm(p.addToCartForm),
+    epItemId: epItemIdFromAddForm(p.addToCartForm) || p.epEncodedId || null,
+    listPrice: p.listPrice || null,
+    purchasePrice: p.purchasePrice || null,
+    quantityLimit: p.quantityLimit ?? null,
+    requireReCaptcha: Boolean(p.requireReCaptcha),
+  };
+}
+
+export function cartFromNextData(nd) {
+  const c = nd?.props?.initialState?.cart;
+  if (!c || typeof c !== "object") return null;
+  return {
+    cartGuid: c.cartGuid || null,
+    cartId: c.cartId || null,
+    quantity: c.quantity ?? null,
+    total: c.total || null,
+    subtotal: c.subtotal || null,
+    scope: nd?.props?.initialState?.cortex?.scope || PC_CORTEX_SCOPE,
+    apiHost: nd?.props?.host || null,
+  };
+}
+
+export function cortexAuthBody({ scope = PC_CORTEX_SCOPE, userName = "", password = "" } = {}) {
+  const role = userName && password ? "REGISTERED" : "CATALOG_BROWSER";
+  return new URLSearchParams({
+    username: userName,
+    password,
+    grant_type: "password",
+    role,
+    scope,
+  }).toString();
+}
+
+export function cortexApiHeaders({
+  accessToken,
+  locale = "en-au",
+  scope = PC_CORTEX_SCOPE,
+  referer,
+  origin = PC_ORIGIN,
+} = {}) {
+  const h = {
+    accept: "application/json",
+    "content-type": "application/json",
+    "X-Store-Locale": String(locale).toLowerCase(),
+    "X-Store-Scope": scope,
+    origin,
+  };
+  if (referer) h.referer = referer;
+  if (accessToken) h.Authorization = `bearer ${accessToken}`;
+  return h;
+}
+
 /**
- * Build a guest cart create URL. Override with task.cortexCartCreateUrl when HAR lands.
+ * Mint public Cortex token. Sets jar `auth` JSON cookie when Set-Cookie present.
+ * @see browser: POST /auth/get-public-token
  */
-export function cortexCartCreateUrl(task = {}) {
-  if (task.cortexCartCreateUrl) return String(task.cortexCartCreateUrl);
-  // Common EP pattern — may 404 until HAR confirms zoom.
-  return `${PC_ORIGIN}/cortex/carts/default?followlocation`;
-}
-
-export function cortexItemLookupUrl(sku, task = {}) {
-  if (task.cortexItemUrl) {
-    return String(task.cortexItemUrl).replace(/\{sku\}/gi, encodeURIComponent(sku));
+export async function getPublicToken(session, ctx, { locale = "en-au", scope = PC_CORTEX_SCOPE } = {}) {
+  const body = cortexAuthBody({ scope });
+  const res = await session.post(`${PC_API_BASE}/auth/get-public-token`, {
+    body,
+    headers: {
+      "content-type": "application/x-www-form-urlencoded;charset=utf-8",
+      accept: "application/json",
+      "X-Store-Locale": String(locale).toLowerCase(),
+      "X-Store-Scope": scope,
+      origin: PC_ORIGIN,
+      referer: `${session.state.base}/`,
+    },
+  });
+  const text = await session.readText(res);
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* ignore */
   }
-  return `${PC_ORIGIN}/cortex/items/${encodeURIComponent(sku)}`;
-}
-
-export function cortexAvailabilityUrl(sku, task = {}) {
-  if (task.cortexAvailabilityUrl) {
-    return String(task.cortexAvailabilityUrl).replace(/\{sku\}/gi, encodeURIComponent(sku));
+  if (json?.access_token) {
+    ctx.jar?.set?.("auth", JSON.stringify(json));
+    session.state.cortexAuth = {
+      accessToken: json.access_token,
+      role: json.role || null,
+      scope: json.scope || scope,
+      id: json.id || null,
+      expiresIn: json.expires_in || null,
+    };
   }
-  return `${PC_ORIGIN}/availabilities/${encodeURIComponent(sku)}`;
+  return {
+    ok: res.status === 200 && Boolean(json?.access_token),
+    status: res.status,
+    auth: json,
+    note: json?.access_token
+      ? `cortex token role=${json.role} scope=${json.scope}`
+      : `auth ${res.status} ${text.slice(0, 80)}`,
+  };
 }
 
 export function cortexAddToCartBody(sku, qty = 1, task = {}) {
   if (task.cortexAtcBody && typeof task.cortexAtcBody === "object") {
     return task.cortexAtcBody;
   }
-  // Placeholder shape — replace from HAR.
+  // Wire-proven shape — do NOT send configuration:{} (triggers DataDome on BFF).
   return {
-    code: String(sku),
+    clobber: Boolean(task.cortexClobber),
     quantity: Math.max(1, Number(qty) || 1),
+    dynamicAdd: Boolean(task.cortexDynamicAdd),
   };
 }
 
 /**
- * Probe Cortex surfaces after edge warm. Returns structured notes for HAR day.
+ * Resolve EP item id for ATC: task override → PDP Next data → sku fallback none.
+ */
+export function resolveEpItemId({ product, task, formUri } = {}) {
+  return (
+    task?.cortexEpItemId ||
+    task?.epItemId ||
+    product?.epItemId ||
+    epItemIdFromAddForm(formUri || product?.addToCartForm) ||
+    null
+  );
+}
+
+/**
+ * Guest ATC via BFF. Requires prior getPublicToken (session.state.cortexAuth).
+ */
+export async function attemptGuestAtc(session, { sku, qty, task, product, pageUrl } = {}) {
+  const token = session.state.cortexAuth?.accessToken;
+  if (!token) {
+    return { ok: false, note: "cortex auth missing — call getPublicToken first", needsAuth: true };
+  }
+  const epItemId = resolveEpItemId({ product, task });
+  if (!epItemId) {
+    return {
+      ok: false,
+      note: "ep item id missing — load clear PDP __NEXT_DATA__ (product.addToCartForm)",
+      needsHar: false,
+      needsPdp: true,
+      sku: sku || product?.code || null,
+    };
+  }
+
+  const body = cortexAddToCartBody(sku || product?.code, qty, task);
+  const url = `${PC_API_BASE}/cart/add-product/${epItemId}`;
+  const res = await session.post(url, {
+    body,
+    headers: cortexApiHeaders({
+      accessToken: token,
+      locale: session.state.locale || "en-au",
+      scope: session.state.cortexAuth?.scope || PC_CORTEX_SCOPE,
+      referer: pageUrl || `${session.state.base}/product/${sku || product?.code || ""}`,
+    }),
+  });
+  const text = await session.readText(res);
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* ignore */
+  }
+
+  // DataDome JSON challenge on BFF
+  if (json?.url && /captcha-delivery\.com/i.test(json.url)) {
+    return {
+      ok: false,
+      status: res.status,
+      datadomeChallenge: true,
+      captchaUrl: json.url,
+      note: "ATC hit DataDome captcha JSON — clear edge/tags; avoid empty configuration body",
+      epItemId,
+      url,
+    };
+  }
+
+  const ok = res.status >= 200 && res.status < 300 && Boolean(json?.self || json);
+  const cartUri =
+    json?.self?.uri?.match(/\/carts\/[^/]+\/[^/]+/)?.[0] ||
+    json?.self?.href?.match(/\/carts\/[^/]+\/[^/]+/)?.[0] ||
+    null;
+
+  return {
+    ok,
+    status: res.status,
+    epItemId,
+    url,
+    body,
+    json,
+    cartUri,
+    lineItemUri: json?.self?.uri || null,
+    note: ok
+      ? `ATC ${res.status} line=${json?.self?.type || "ok"}`
+      : `ATC ${res.status} ${text.slice(0, 100).replace(/\s+/g, " ")}`,
+    needsHar: false,
+  };
+}
+
+/**
+ * Global-e M2M token after cart has cartGuid (from Next cart state or GE cookie).
+ */
+export async function getGlobaleM2mToken(session, { cartGuid, scope } = {}) {
+  const token = session.state.cortexAuth?.accessToken;
+  if (!token) return { ok: false, note: "cortex auth missing" };
+  if (!cartGuid) return { ok: false, note: "cartGuid required for GE m2m token" };
+  const res = await session.post(`${PC_API_BASE}/auth/get-globale-m2m-token`, {
+    body: { cartGuid },
+    headers: cortexApiHeaders({
+      accessToken: token,
+      locale: session.state.locale || "en-au",
+      scope: scope || session.state.cortexAuth?.scope || PC_CORTEX_SCOPE,
+      referer: `${session.state.base}/`,
+    }),
+  });
+  const text = await session.readText(res);
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* ignore */
+  }
+  return {
+    ok: res.status === 200 && Boolean(json),
+    status: res.status,
+    json,
+    note: res.status === 200 ? "GE m2m token ok" : `GE m2m ${res.status} ${text.slice(0, 80)}`,
+  };
+}
+
+/**
+ * Probe BFF surfaces after edge warm + public token.
  */
 export async function probeCortex(session, { sku, task } = {}) {
+  const token = session.state.cortexAuth?.accessToken;
+  const headers = cortexApiHeaders({
+    accessToken: token,
+    locale: session.state.locale || "en-au",
+    referer: `${session.state.base}/`,
+  });
   const results = [];
   const probes = [
-    { name: "cortex_root", url: `${PC_ORIGIN}${CORTEX_PATHS.cortex}` },
-    { name: "carts", url: `${PC_ORIGIN}${CORTEX_PATHS.carts}` },
+    { name: "auth_public", url: `${PC_API_BASE}/auth/get-public-token`, skip: true },
+    { name: "search", url: `${PC_API_BASE}/search?q=pokemon&rows=1` },
     sku
-      ? { name: "item", url: cortexItemLookupUrl(sku, task) }
-      : null,
-    sku
-      ? { name: "availability", url: cortexAvailabilityUrl(sku, task) }
+      ? {
+          name: "product_status",
+          url: `${PC_API_BASE}/product/status/${encodeURIComponent(sku)}`,
+        }
       : null,
   ].filter(Boolean);
 
   for (const p of probes) {
+    if (p.skip) continue;
     try {
-      const res = await session.get(p.url, {
-        api: true,
-        headers: { referer: `${session.state.base}/` },
-      });
+      const res = await session.get(p.url, { headers });
       const text = await session.readText(res);
       let json = null;
       try {
         json = JSON.parse(text);
       } catch {
-        /* html / empty */
+        /* ignore */
       }
       results.push({
         name: p.name,
         status: res.status,
-        ok: res.status >= 200 && res.status < 400 && Boolean(json || text.length > 2),
+        ok: res.status >= 200 && res.status < 500,
         bytes: text.length,
-        contentType: res.headers?.get?.("content-type") || null,
         isJson: Boolean(json),
         note: json
           ? `json keys=${Object.keys(json).slice(0, 8).join(",")}`
@@ -100,74 +340,26 @@ export async function probeCortex(session, { sku, task } = {}) {
 }
 
 /**
- * Attempt guest ATC. Dry-run friendly — surfaces status for HAR iteration.
- */
-export async function attemptGuestAtc(session, { sku, qty, task } = {}) {
-  if (!sku) return { ok: false, note: "sku required for Cortex ATC" };
-  const createUrl = cortexCartCreateUrl(task);
-  const createRes = await session.post(createUrl, {
-    api: true,
-    body: {},
-    headers: { referer: `${session.state.base}/` },
-  });
-  const createText = await session.readText(createRes);
-  let createJson = null;
-  try {
-    createJson = JSON.parse(createText);
-  } catch {
-    /* ignore */
-  }
-
-  // Prefer Location / self URI from Cortex followlocation.
-  const location =
-    createRes.headers?.get?.("location") ||
-    createJson?.self?.uri ||
-    createJson?.cart?.self?.uri ||
-    null;
-
-  const lineUrl =
-    task.cortexLineItemUrl ||
-    (location
-      ? location.startsWith("http")
-        ? `${location}/lineitems`
-        : `${PC_ORIGIN}${location}/lineitems`
-      : `${PC_ORIGIN}/carts/default/lineitems`);
-
-  const body = cortexAddToCartBody(sku, qty, task);
-  const atcRes = await session.post(lineUrl, {
-    api: true,
-    body,
-    headers: { referer: `${session.state.base}/product/${sku}` },
-  });
-  const atcText = await session.readText(atcRes);
-  let atcJson = null;
-  try {
-    atcJson = JSON.parse(atcText);
-  } catch {
-    /* ignore */
-  }
-
-  const ok = atcRes.status >= 200 && atcRes.status < 300 && Boolean(atcJson);
-  return {
-    ok,
-    status: atcRes.status,
-    createStatus: createRes.status,
-    location,
-    lineUrl,
-    json: atcJson,
-    note: ok
-      ? `ATC ${atcRes.status}`
-      : `ATC ${atcRes.status} create=${createRes.status} — set task.cortex* from HAR`,
-    needsHar: !ok,
-  };
-}
-
-/**
- * Soft stock signal from PDP HTML once edge is clear.
+ * Soft stock signal from PDP HTML / Next product once edge is clear.
  */
 export function parsePdpAvailability(html) {
   const h = String(html || "");
   if (!h || h.length < 40) return { available: null, title: null, note: "html too short" };
+  const nd = parseNextData(h);
+  const product = productFromNextData(nd);
+  if (product) {
+    const avail = String(product.availability || "").toUpperCase();
+    return {
+      available: avail === "AVAILABLE" || avail === "AVAILABLE_FOR_PRE_ORDER" ? true : avail === "NOT_AVAILABLE" || avail === "SOLD_OUT" ? false : null,
+      title: product.name,
+      code: product.code,
+      epItemId: product.epItemId,
+      addToCartForm: product.addToCartForm,
+      note: product.availability || "next_product",
+      product,
+      cart: cartFromNextData(nd),
+    };
+  }
   const title =
     (h.match(/<h1[^>]*>([^<]+)<\/h1>/i) || [])[1]?.trim() ||
     (h.match(/property=["']og:title["']\s+content=["']([^"']+)/i) || [])[1]?.trim() ||
@@ -179,4 +371,24 @@ export function parsePdpAvailability(html) {
     title,
     note: soldOut ? "sold_out_signal" : addBtn ? "atc_signal" : "unknown",
   };
+}
+
+// Legacy helpers kept for task overrides / HAR experiments
+export function cortexCartCreateUrl(task = {}) {
+  if (task.cortexCartCreateUrl) return String(task.cortexCartCreateUrl);
+  return `${PC_API_BASE}/cart/add-product/{epItemId}`;
+}
+
+export function cortexItemLookupUrl(sku, task = {}) {
+  if (task.cortexItemUrl) {
+    return String(task.cortexItemUrl).replace(/\{sku\}/gi, encodeURIComponent(sku));
+  }
+  return `${PC_API_BASE}/product/status/${encodeURIComponent(sku)}`;
+}
+
+export function cortexAvailabilityUrl(sku, task = {}) {
+  if (task.cortexAvailabilityUrl) {
+    return String(task.cortexAvailabilityUrl).replace(/\{sku\}/gi, encodeURIComponent(sku));
+  }
+  return `${PC_ORIGIN}/en-au/product/${encodeURIComponent(sku)}`;
 }

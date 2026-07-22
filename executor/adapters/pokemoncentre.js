@@ -24,6 +24,8 @@ import {
   probeCortex,
   attemptGuestAtc,
   parsePdpAvailability,
+  getPublicToken,
+  getGlobaleM2mToken,
 } from "./pokemoncentre-cortex.js";
 import {
   extractHcaptchaSitekey,
@@ -190,26 +192,30 @@ async function runMonitor(task, ctx, session, tStep, steps) {
 async function runHarProbe(task, ctx, session, tStep, steps) {
   const warm = await warmPokemonCentre(session, ctx, { tStep });
   const sku = resolveSku(task);
+  const auth = warm.ok
+    ? await tStep("cortex_auth", () => getPublicToken(session, ctx, { locale: session.state.locale }))
+    : { ok: false, note: "skipped — edge not clear" };
   const probes = await tStep("cortex_probe", async () => {
     const rows = await probeCortex(session, { sku, task });
-    const anyJson = rows.some((r) => r.isJson);
+    const anyOk = rows.some((r) => r.ok);
     return {
-      ok: warm.ok && anyJson,
+      ok: warm.ok && auth.ok && anyOk,
       note: rows.map((r) => `${r.name}:${r.status || "?"}`).join(" "),
       rows,
     };
   });
   return {
-    ok: Boolean(warm.ok),
+    ok: Boolean(warm.ok && auth.ok),
     steps,
     dryRun: true,
     checkoutStage: "pre_cart",
     finalUrl: `${session.state.base}/`,
     cookies: ctx.jar?.dump?.() ?? {},
+    cortexAuth: auth.ok,
     cortexProbe: probes.rows,
-    note: `warm=${warm.ok} ${probes.note}`,
+    note: `warm=${warm.ok} auth=${auth.ok} ${probes.note}`,
     locale: session.state.locale,
-    needsHar: true,
+    needsHar: false,
   };
 }
 
@@ -243,7 +249,26 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  const productUrl = `${session.state.base}/product/${sku}`;
+  const productUrl =
+    parseProductUrl(task.pdpUrl || "")?.productUrl ||
+    `${session.state.base}/product/${sku}`;
+
+  const auth = await tStep("cortex_auth", () =>
+    getPublicToken(session, ctx, { locale: session.state.locale }),
+  );
+  if (!auth.ok) {
+    return {
+      ok: false,
+      steps,
+      dryRun,
+      checkoutStage: "pre_cart",
+      failedStep: "cortex_auth",
+      note: auth.note,
+      finalUrl: productUrl,
+      cookies: ctx.jar?.dump?.() ?? {},
+    };
+  }
+
   const pdp = await tStep("pdp_fetch", async () => {
     const got = await fetchWithEdgeClear(session, ctx, productUrl, { tStep });
     if (got.isIpBanned) return { ok: false, note: got.note, status: got.status };
@@ -253,10 +278,12 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     }
     const hc = await maybeSolveHcaptcha(session, ctx, task, got.html, productUrl, tStep);
     return {
-      ok: got.ok || Boolean(avail.title),
+      ok: got.ok || Boolean(avail.title || avail.product),
       status: got.status,
       note: avail.note,
       avail,
+      product: avail.product || null,
+      cart: avail.cart || null,
       hcaptchaToken: hc?.token || null,
     };
   });
@@ -267,20 +294,35 @@ async function runCheckout(task, ctx, session, tStep, steps) {
         sku,
         qty: task.qty || 1,
         task,
+        product: pdp.product,
+        pageUrl: productUrl,
       });
     } catch (e) {
-      return { ok: false, note: e?.message || String(e), needsHar: true };
+      return { ok: false, note: e?.message || String(e) };
     }
   });
 
   const usesGe = localeUsesGlobalE(session.state.locale);
   let geResult = null;
+  let geM2m = null;
   let checkoutStage = atc.ok ? "cart" : "pre_cart";
+
+  if (atc.ok && usesGe) {
+    // Prefer cartGuid from PDP Next state; refresh home if missing.
+    let cartGuid = pdp.cart?.cartGuid || task.cartGuid || null;
+    if (!cartGuid) {
+      const home = await fetchWithEdgeClear(session, ctx, `${session.state.base}/`, { tStep });
+      cartGuid = parsePdpAvailability(home.html)?.cart?.cartGuid || null;
+    }
+    if (cartGuid) {
+      geM2m = await tStep("ge_m2m", () => getGlobaleM2mToken(session, { cartGuid }));
+    }
+  }
 
   // Handoff URL — real SPA boot preferred over raw order id (Bandai lesson).
   const intlUrl =
     task.intlCheckoutUrl ||
-    (usesGe ? `${PC_ORIGIN}/intl-checkout` : `${PC_ORIGIN}/checkout`);
+    (usesGe ? `${session.state.base}/intl-checkout` : `${session.state.base}/checkout`);
 
   if (atc.ok && (task.pcBrowserCheckout === true || task.placeOrder === true)) {
     checkoutStage = "tokenize";
@@ -318,21 +360,24 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     finalUrl: productUrl,
     cookies: ctx.jar?.dump?.() ?? {},
     sku,
-    title: pdp.avail?.title || null,
+    title: pdp.avail?.title || pdp.product?.name || null,
+    epItemId: atc.epItemId || pdp.product?.epItemId || null,
+    cartUri: atc.cartUri || null,
     locale: session.state.locale,
+    geM2m: geM2m?.ok ? true : geM2m?.note || null,
     globaleMid: geResult?.globaleMid || task.globaleMid || null,
     orderNumber: geResult?.orderNumber || null,
     reached3ds: geResult?.reached3ds || null,
     threeDsUrl: geResult?.threeDsUrl || null,
     paymentStatus: geResult?.paymentStatus || null,
-    needsHar: Boolean(atc.needsHar),
-    note:
-      geResult?.note ||
-      atc.note ||
-      (atc.needsHar
-        ? "Cortex ATC bodies need AU ISP HAR — edge clear path is wired"
-        : pdp.note),
-    failedStep: ok ? null : atc.ok ? geResult?.failedStep || "ge_pay" : "cortex_atc",
+    note: geResult?.note || atc.note || pdp.note,
+    failedStep: ok
+      ? null
+      : atc.ok
+        ? geResult?.failedStep || "ge_pay"
+        : atc.datadomeChallenge
+          ? "datadome_atc"
+          : "cortex_atc",
   };
 }
 

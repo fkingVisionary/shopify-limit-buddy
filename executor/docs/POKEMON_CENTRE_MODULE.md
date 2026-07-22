@@ -216,7 +216,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | **Owner desk** — capture incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm, T&Cs, captcha/Forter/TMX, post-Pay |
 | **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
 | **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
-| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Stub** — `pokemoncentre-cortex.js` + `har_probe`; override via `task.cortex*` after HAR |
+| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Wired** — BFF `/tpci-ecommweb-api` public token + `POST /cart/add-product/{epItemId}` (201 proven 2026-07-22) |
 | **P4** | Global-e AU checkout / pay | **Stub** — `pokemoncentre-ge.js` (Bandai checklist; mid from `task.globaleMid` / `PC_GLOBALE_MID`) |
 | **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |
 
@@ -227,7 +227,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | `adapters/pokemoncentre.js` | Main adapter (`pcMode`: monitor / checkout / edge / har_probe) |
 | `adapters/pokemoncentre-session.js` | Locale (`en-au`…) + headers |
 | `adapters/pokemoncentre-edge.js` | Reese84 + DataDome clear on sticky proxy |
-| `adapters/pokemoncentre-cortex.js` | Cortex path probe + guest ATC placeholder |
+| `adapters/pokemoncentre-cortex.js` | BFF auth + guest ATC (`/cart/add-product/{id}`) + GE m2m stub |
 | `adapters/pokemoncentre-ge.js` | GE Checkout/v2 + CreditCardForm (browser Pay) |
 | `adapters/pokemoncentre-hcaptcha.js` | CapSolver hCaptcha |
 | `antibot.js` | Shared Incapsula + DataDome Hyper wrappers (Akamai untouched) |
