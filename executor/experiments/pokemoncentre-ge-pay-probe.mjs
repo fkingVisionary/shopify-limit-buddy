@@ -96,6 +96,7 @@ async function main() {
 
     const pay = await runGlobalEPay({
       checkoutUrl: `${session.state.base}/intl-checkout`,
+      cartUrl: `${session.state.base}/cart`,
       card: {
         number: "4000000000000002",
         expMonth: "12",
@@ -109,6 +110,7 @@ async function main() {
       globaleMid: PC_GLOBALE_MID,
       placeOrder: false,
       headless: true,
+      debugDir: OUT,
       onProgress: (n, note) => push("ge_pay_progress", { n, note }),
     });
     fs.writeFileSync(`${OUT}/ge-pay.json`, JSON.stringify(pay, null, 2));

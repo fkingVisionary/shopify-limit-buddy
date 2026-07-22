@@ -110,21 +110,14 @@ export async function runGlobalEPay(opts = {}) {
     viewport: { width: 1280, height: 900 },
   });
   if (opts.cookies && typeof opts.cookies === "object") {
-    const jarCookies = Object.entries(opts.cookies).map(([name, value]) => ({
-      name,
-      value: String(value),
-      domain: ".pokemoncenter.com",
-      path: "/",
-    }));
-    // Also seed global-e if present
+    const jarCookies = [];
     for (const [name, value] of Object.entries(opts.cookies)) {
+      const v = String(value);
+      // Reese is host-only on www in PC HAR; rest on eTLD+1.
+      const domain = name === "reese84" ? "www.pokemoncenter.com" : ".pokemoncenter.com";
+      jarCookies.push({ name, value: v, domain, path: "/" });
       if (/globale|GlobalE/i.test(name)) {
-        jarCookies.push({
-          name,
-          value: String(value),
-          domain: ".global-e.com",
-          path: "/",
-        });
+        jarCookies.push({ name, value: v, domain: ".global-e.com", path: "/" });
       }
     }
     await context.addCookies(jarCookies).catch(() => {});
@@ -138,14 +131,56 @@ export async function runGlobalEPay(opts = {}) {
   let geIframeReady = false;
   let filled = false;
   let payClicked = false;
+  const mid = opts.globaleMid || PC_GLOBALE_MID;
+  const debugDir = opts.debugDir || null;
 
   try {
     const s0 = Date.now();
-    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
+    // Prefer cart → Checkout click; bare /intl-checkout often 302s to /cart without GEM boot.
+    const cartUrl = opts.cartUrl || checkoutUrl.replace(/\/intl-checkout\/?$/i, "/cart");
+    await page.goto(cartUrl, { waitUntil: "domcontentloaded", timeout: 90_000 });
     await dismissCmp(page);
-    push("ge_nav", { ok: true, ms: Date.now() - s0, note: page.url() });
+    push("ge_cart", { ok: true, ms: Date.now() - s0, note: page.url() });
 
-    for (let i = 0; i < 45; i++) {
+    // Click storefront checkout CTA if present
+    const ctaSels = [
+      'a[href*="intl-checkout"]',
+      'button:has-text("Checkout")',
+      'a:has-text("Checkout")',
+      'button:has-text("Proceed to Checkout")',
+      '[data-testid*="checkout"]',
+      'button:has-text("Secure Checkout")',
+    ];
+    let clicked = false;
+    for (const sel of ctaSels) {
+      const el = page.locator(sel).first();
+      if (await el.count().catch(() => 0)) {
+        await el.click({ timeout: 4000 }).catch(() => {});
+        clicked = true;
+        await page.waitForTimeout(1500);
+        break;
+      }
+    }
+    if (!clicked && /intl-checkout/i.test(checkoutUrl)) {
+      await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 90_000 }).catch(() => {});
+      await dismissCmp(page);
+    }
+    push("ge_nav", { ok: true, note: page.url(), clickedCheckout: clicked });
+
+    // Ensure GEM script for mid is present (prod: gepi.global-e.com/includes/js/1634)
+    await page
+      .evaluate((scriptUrl) => {
+        if ([...document.scripts].some((s) => s.src && s.src.includes("global-e.com/includes/js/"))) {
+          return;
+        }
+        const s = document.createElement("script");
+        s.src = scriptUrl;
+        s.async = true;
+        document.head.appendChild(s);
+      }, PC_GLOBALE_SCRIPT)
+      .catch(() => {});
+
+    for (let i = 0; i < 50; i++) {
       const urls = page.frames().map((f) => f.url());
       if (urls.some((u) => /Checkout\/v2|webservices\.global-e\.com\/Checkout/i.test(u))) {
         geIframeReady = true;
@@ -155,16 +190,42 @@ export async function runGlobalEPay(opts = {}) {
         geIframeReady = true;
         break;
       }
+      // Keep trying checkout CTAs mid-wait (SPA hydrate)
+      if (i === 5 || i === 15) {
+        for (const sel of ctaSels) {
+          const el = page.locator(sel).first();
+          if (await el.count().catch(() => 0)) {
+            await el.click({ timeout: 2000 }).catch(() => {});
+            break;
+          }
+        }
+        await dismissCmp(page);
+      }
       await page.waitForTimeout(1000);
-      if (i === 10 || i === 25) await dismissCmp(page);
     }
     push("ge_checkout_v2", {
       ok: geIframeReady,
       note: geIframeReady
         ? `frames=${page.frames().length}`
         : "Checkout/v2 never booted (CMP / mid / GEM flake)",
+      frameSample: page
+        .frames()
+        .map((f) => f.url())
+        .filter((u) => u && u !== "about:blank")
+        .slice(0, 12),
+      url: page.url(),
     });
     if (!geIframeReady) {
+      if (debugDir) {
+        try {
+          const fs = await import("node:fs");
+          fs.mkdirSync(debugDir, { recursive: true });
+          fs.writeFileSync(`${debugDir}/ge-fail.html`, await page.content());
+          await page.screenshot({ path: `${debugDir}/ge-fail.png`, fullPage: true }).catch(() => {});
+        } catch {
+          /* ignore */
+        }
+      }
       await browser.close();
       return {
         ok: false,
@@ -172,7 +233,7 @@ export async function runGlobalEPay(opts = {}) {
         failedStep: "ge_checkout_v2",
         error: "Global-e Checkout/v2 iframe never booted",
         checkoutStage: "tokenize",
-        globaleMid: opts.globaleMid ?? null,
+        globaleMid: mid,
       };
     }
 
