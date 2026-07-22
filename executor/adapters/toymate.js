@@ -6,7 +6,7 @@
 //   account_gen  — create retailer account (proven path: CapSolver CF + form POST)
 //   monitor      — keyword search poll (lightweight)
 //
-// Payment tokenize for live card place-order still needs an operator HAR.
+// Live card: Adyen v3 `scheme` via checkout UI (Playwright hosted fields).
 
 import { request, UA } from "../http.js";
 import {
@@ -16,6 +16,11 @@ import {
   looksLikeCfChallenge,
   capsolverKey,
 } from "./toymate-cf-solve.js";
+import {
+  storefrontPaymentHeaders,
+  pickAdyenCardMethod,
+  placeOrderViaCheckoutUi,
+} from "./toymate-adyen.js";
 
 const sleep = (ms, jitter = 0) =>
   new Promise((r) => setTimeout(r, ms + Math.floor(Math.random() * (jitter + 1))));
@@ -899,9 +904,33 @@ export const toymateAdapter = {
 
     let captchaToken = task.captchaToken || null;
     await tStep("checkout_spam", async () => {
+      // Live place-order needs spam-protection when BC has it enabled.
+      if (!captchaToken && placeOrder && capsolverKey()) {
+        const sitekey =
+          task.recaptchaSitekey ||
+          "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
+        const solved = await solveRecaptchaV2({
+          pageUrl: `${apex}/checkout`,
+          sitekey,
+          proxyRaw,
+        });
+        if (solved.ok) captchaToken = solved.token;
+        else {
+          return {
+            ok: false,
+            status: null,
+            note: solved.error || "spam reCAPTCHA failed",
+          };
+        }
+      }
       if (!captchaToken) {
-        // Spam endpoint may 400 without token — still attempt; dry-run continues.
-        return { ok: true, status: null, note: "no captcha token — skip spam-protection" };
+        return {
+          ok: !placeOrder,
+          status: null,
+          note: placeOrder
+            ? "placeOrder needs CapSolver for checkout spam reCAPTCHA"
+            : "no captcha token — skip spam-protection",
+        };
       }
       const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
         method: "POST",
@@ -954,69 +983,78 @@ export const toymateAdapter = {
     await tStep("place_order_gate", async () => {
       if (!placeOrder) return { ok: true, status: null, note: "dry-run — skip charge" };
       if (!card?.ok) return { ok: false, status: null, note: "placeOrder requires card on profile" };
-      return { ok: true, status: null, note: "placeOrder armed — gateway fields may need HAR" };
+      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via checkout UI" };
     });
 
     let orderNumber = null;
     let paymentStatus = null;
+    let paymentDeclined = false;
 
     if (placeOrder && card?.ok) {
-      const pay = await tStep("place_order", async () => {
-        // Best-effort BC storefront instrument. Refine from operator HAR.
-        const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/orders`, {
-          method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-          body: JSON.stringify({}),
-        }, ctx);
-        if (res.status >= 400) {
-          const payRes = await request(`${base}/api/storefront/checkouts/${checkoutId}/payments`, {
-            method: "POST",
-            headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-            body: JSON.stringify({
-              payment: {
-                methodId: task.cardMethodId || "creditcard",
-                paymentData: {
-                  creditCardNumber: card.number,
-                  creditCardName: card.holder,
-                  creditCardMonth: Number(card.expMonth),
-                  creditCardYear: Number(
-                    card.expYear.length === 2 ? `20${card.expYear}` : card.expYear,
-                  ),
-                  creditCardCode: card.cvv,
-                  shouldSaveInstrument: false,
-                },
-              },
-            }),
-          }, ctx);
-          const payJson = await readJson(payRes);
-          orderNumber = payJson?.order?.orderId || payJson?.id || payJson?.orderId || null;
-          paymentStatus = payRes.status >= 200 && payRes.status < 300 ? "submitted" : "failed";
-          return {
-            ok: Boolean(orderNumber) || payRes.status < 300,
-            status: payRes.status,
-            note: orderNumber ? `order ${orderNumber}` : `payment ${payRes.status}`,
-          };
-        }
-        const json = await readJson(res);
-        orderNumber = json?.orderId || json?.id || null;
-        paymentStatus = res.status >= 200 && res.status < 300 ? "submitted" : "failed";
+      // Discover card method (Adyen scheme) — proves payments API + X-API-INTERNAL.
+      const methodsStep = await tStep("payment_methods", async () => {
+        const res = await request(
+          `${apex}/api/storefront/payments?cartId=${checkoutId}`,
+          {
+            method: "GET",
+            headers: storefrontPaymentHeaders(ctx.jar, ctx.extraHeaders?.["user-agent"] || UA),
+          },
+          ctx,
+        );
+        const methods = await readJson(res);
+        const adyen = pickAdyenCardMethod(methods);
         return {
-          ok: Boolean(orderNumber) || res.status < 300,
+          ok: res.status === 200 && Boolean(adyen),
           status: res.status,
-          note: orderNumber ? `order ${orderNumber}` : `order ${res.status}`,
+          note: adyen
+            ? `card method ${adyen.id}/${adyen.gateway}`
+            : `no Adyen scheme (status ${res.status})`,
+          adyen,
+          methods,
+        };
+      });
+
+      const pay = await tStep("place_order", async () => {
+        // Live Adyen hosted fields — same path the storefront uses (decline-friendly).
+        const ui = await placeOrderViaCheckoutUi({
+          proxyUrl: proxyRaw,
+          cookies: ctx.jar?.dump?.() || {},
+          userAgent: ctx.extraHeaders?.["user-agent"] || UA,
+          card,
+          checkoutUrl: `${apex}/checkout`,
+        });
+        orderNumber = ui.orderNumber || null;
+        paymentDeclined = Boolean(ui.declined);
+        paymentStatus = ui.declined
+          ? "declined"
+          : orderNumber
+            ? "submitted"
+            : ui.ok
+              ? "submitted"
+              : "failed";
+        return {
+          ok: Boolean(ui.ok || ui.declined),
+          status: ui.status,
+          note: ui.note,
+          declined: ui.declined,
+          paymentLogs: (ui.paymentLogs || []).slice(0, 8),
         };
       });
 
       return {
-        ok: Boolean(orderNumber) || pay.ok,
+        ok: Boolean(orderNumber) || paymentDeclined || pay.ok,
         steps,
-        checkoutStage: orderNumber ? "order" : "tokenize",
+        checkoutStage: orderNumber ? "order" : paymentDeclined ? "tokenize" : "tokenize",
         dryRun: false,
         orderNumber,
         orderId: orderNumber,
         paymentStatus,
+        paymentDeclined,
         paymentMethod: "credit_card",
-        finalUrl: orderNumber ? `${base}/checkout/order-confirmation` : `${base}/checkout`,
+        cardGateway: methodsStep.adyen?.gateway || "adyenv3",
+        finalUrl: orderNumber
+          ? `${apex}/checkout/order-confirmation`
+          : `${apex}/checkout`,
         cookies: ctx.jar?.dump?.() ?? {},
         title: pdp.title,
       };

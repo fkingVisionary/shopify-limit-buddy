@@ -153,14 +153,12 @@ export async function solveCloudflareChallenge({
     return { ok: false, error: "AntiCloudflareTask needs challenge HTML" };
   }
 
+  // CapSolver docs: html is a top-level task field (not metadata-only).
   const task = {
     type: "AntiCloudflareTask",
     websiteURL: pageUrl,
     proxy,
-    metadata: {
-      type: "challenge",
-      html: String(html).slice(0, 450_000),
-    },
+    html: String(html).slice(0, 450_000),
   };
   if (userAgent) task.userAgent = userAgent;
 
