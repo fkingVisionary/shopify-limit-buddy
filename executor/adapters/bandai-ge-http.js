@@ -1271,16 +1271,162 @@ export async function runBandaiGeHttpPay(opts = {}) {
     note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${opts.machineId ? "opts" : htmlMachineId ? "html" : "none"} bytes=${(v2.text || "").length}`,
   });
 
-  // Hydrate shipping / tax / totals with real GEM Action+Token bodies.
-  // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
   const form = parseCheckoutV2Form(v2.text);
   let shippingMethodId = form.selectedShippingOptionId || "";
   let hydrateShippingOk = false;
+
+  // Iovation FIRST (before handleaction), then undici-only hydrate→pay.
+  //
+  // 2026-07-23 Revolut (owner):
+  //   liveHtml+geMute @ 08:18 → PAIR (posts=1, one GE TransactionId)
+  //   noPage @ 08:39 → PAIR (browser_mutates=0)
+  // Doubles are GE/PSP dual-rail from one HandleCreditCard — not a second
+  // client POST. Still prefer no Playwright on GE: faster (~10s iovation +
+  // simpler) and keeps F5 bridge off the pay cart. Supply machineId via
+  // bandaiGeMachineId / BANDAI_GE_MACHINE_ID for the no-page path.
+  if (machineId && !opts.page) {
+    push("ge_iovation_mint", {
+      ok: true,
+      status: null,
+      ms: 0,
+      note: `reused machineId bytes=${String(machineId).length} via=noPage (no Playwright on GE)`,
+    });
+  }
+  let issuerPage = null;
+  const browserReqLog = [];
+  const logPageRequests = (page) => {
+    try {
+      const pctx = page?.context?.();
+      if (!pctx?.on) return;
+      const onReq = (req) => {
+        const method = String(req.method() || "GET").toUpperCase();
+        const url = String(req.url() || "");
+        if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+        if (!/global-e\.com/i.test(url)) return;
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: url.slice(0, 320),
+          issuer: isBandaiGeIssuerPaymentUrl(url),
+          phase: "iovation-mint",
+        };
+        browserReqLog.push(row);
+        try {
+          let arr = [];
+          try {
+            arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-browser-wire.json", "utf8"));
+          } catch {
+            /* ignore */
+          }
+          arr.push(row);
+          fs.writeFileSync("/tmp/bandai-ge-browser-wire.json", JSON.stringify(arr, null, 2));
+        } catch {
+          /* ignore */
+        }
+      };
+      pctx.on("request", onReq);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  if (!machineId && opts.page) {
+    logPageRequests(opts.page);
+    // Fallback mint only: load Checkout/v2 for snare.js with GE POSTs muted,
+    // then drop the page before any undici handleaction/save/issuer.
+    const pctx = opts.page.context?.();
+    const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
+    const geMuteRoute = async (route) => {
+      const req = route.request();
+      const method = String(req.method() || "GET").toUpperCase();
+      if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 204,
+        contentType: "text/plain",
+        body: "",
+      });
+    };
+    if (pctx?.route) {
+      await pctx.route(geMuteMatch, geMuteRoute);
+    }
+    let mint;
+    try {
+      mint = await mintIovationBlackbox({
+        page: opts.page,
+        checkoutV2Url: v2Url,
+        timeoutMs: opts.iovationTimeoutMs,
+        jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
+      });
+    } finally {
+      if (pctx?.unroute) {
+        try {
+          await pctx.unroute(geMuteMatch, geMuteRoute);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    const blockedMutates = browserReqLog.length;
+    push("ge_iovation_mint", {
+      ok: mint.ok,
+      status: null,
+      ms: mint.ms,
+      note: mint.ok
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(beforeHydrate) browserMutatesSeen=${blockedMutates} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
+        : `iovation fail ${mint.error || ""}`.slice(0, 160),
+    });
+    if (mint.machineId) {
+      machineId = mint.machineId;
+      try {
+        fs.writeFileSync("/tmp/bandai-ge-machineId.txt", String(mint.machineId));
+      } catch {
+        /* ignore */
+      }
+    }
+    if (opts.mergeIovationCookies === true && mint.cookies && ctx?.jar?.load) {
+      try {
+        ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
+      } catch {
+        /* ignore */
+      }
+    }
+    const keepPage =
+      opts.keepPageAfterIovation === true ||
+      opts.preferPageIssuer === true ||
+      opts.scrapeCardFormViaPage === true;
+    try {
+      await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+    } catch {
+      /* ignore */
+    }
+    if (keepPage) {
+      issuerPage = opts.page;
+      mark("ge_page_kept_after_iovation", {
+        ok: true,
+        warn: "live_cart_browser_may_pair_revolut",
+      });
+    } else {
+      mark("ge_page_dropped_after_iovation", {
+        ok: true,
+        liveGuid: guid,
+        geMuted: true,
+        beforeHydrate: true,
+        browserMutatesDuringMint: blockedMutates,
+        issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
+      });
+      issuerPage = null;
+    }
+  }
+
+  // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
+  // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
   for (const actionId of [1, 2, 3]) {
     const bodies = buildHandleActionBodies(form, {
       cartToken: guid,
       shippingMethodId,
-      // Totals/Tax use UI payment method; issuer POST still uses wire-proven ids.
       paymentMethodId: form.selectedPaymentMethodId || "1",
     });
     const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
@@ -1328,156 +1474,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
 
-  // Mint iovation (snare.js → #ioBlackBox).
-  //
-  // 2026-07-23 Revolut:
-  //   07:22 live Checkout/v2 in Playwright (unmuted) → PAIR
-  //   07:47 liveHtml+geMute → owner said SINGLE
-  //   08:18 liveHtml+geMute → owner said PAIR (one undici issuer, one GE tx id)
-  // Mute is necessary but not sufficient — loading the live pay guid in the
-  // browser after undici hydrate can still dual-rail the PSP. Prefer
-  // bandaiGeNoPage + supplied machineId when proving single charge.
-  if (machineId && !opts.page) {
-    push("ge_iovation_mint", {
-      ok: true,
-      status: null,
-      ms: 0,
-      note: `reused machineId bytes=${String(machineId).length} via=noPage (no Playwright on GE)`,
-    });
-  }
-  let issuerPage = null;
-  const browserReqLog = [];
-  const logPageRequests = (page) => {
-    try {
-      const pctx = page?.context?.();
-      if (!pctx?.on) return;
-      const onReq = (req) => {
-        const method = String(req.method() || "GET").toUpperCase();
-        const url = String(req.url() || "");
-        if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
-        if (!/global-e\.com/i.test(url)) return;
-        const row = {
-          t: new Date().toISOString(),
-          method,
-          url: url.slice(0, 320),
-          issuer: isBandaiGeIssuerPaymentUrl(url),
-          phase: "iovation-throwaway",
-        };
-        browserReqLog.push(row);
-        try {
-          let arr = [];
-          try {
-            arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-browser-wire.json", "utf8"));
-          } catch {
-            /* ignore */
-          }
-          arr.push(row);
-          fs.writeFileSync("/tmp/bandai-ge-browser-wire.json", JSON.stringify(arr, null, 2));
-        } catch {
-          /* ignore */
-        }
-      };
-      pctx.on("request", onReq);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  if (!machineId && opts.page) {
-    logPageRequests(opts.page);
-    // Load LIVE Checkout/v2 HTML only as a snare.js host, but BLOCK every GE
-    // mutate (handleaction/save/pay). Browser handleaction on the pay guid is
-    // what paired Revolut (07:22); blocking keeps undici as sole cart owner.
-    const pctx = opts.page.context?.();
-    const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
-    const geMuteRoute = async (route) => {
-      const req = route.request();
-      const method = String(req.method() || "GET").toUpperCase();
-      if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
-        await route.continue();
-        return;
-      }
-      // Swallow POSTs — snare/iovation talks to non-GE hosts.
-      await route.fulfill({
-        status: 204,
-        contentType: "text/plain",
-        body: "",
-      });
-    };
-    if (pctx?.route) {
-      await pctx.route(geMuteMatch, geMuteRoute);
-    }
-    let mint;
-    try {
-      mint = await mintIovationBlackbox({
-        page: opts.page,
-        checkoutV2Url: v2Url,
-        timeoutMs: opts.iovationTimeoutMs,
-        // Never seed/merge GE cookies into the undici pay jar.
-        jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
-      });
-    } finally {
-      if (pctx?.unroute) {
-        try {
-          await pctx.unroute(geMuteMatch, geMuteRoute);
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-    const blockedMutates = browserReqLog.length;
-    push("ge_iovation_mint", {
-      ok: mint.ok,
-      status: null,
-      ms: mint.ms,
-      note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute browserMutatesSeen=${blockedMutates} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
-        : `iovation fail ${mint.error || ""}`.slice(0, 160),
-    });
-    if (mint.machineId) {
-      machineId = mint.machineId;
-      try {
-        fs.writeFileSync("/tmp/bandai-ge-machineId.txt", String(mint.machineId));
-      } catch {
-        /* ignore */
-      }
-    }
-    if (opts.mergeIovationCookies === true && mint.cookies && ctx?.jar?.load) {
-      try {
-        ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
-      } catch {
-        /* ignore */
-      }
-    }
-    // Pay path stays undici-only unless caller opts into page issuer/scrape.
-    const keepPage =
-      opts.keepPageAfterIovation === true ||
-      opts.preferPageIssuer === true ||
-      opts.scrapeCardFormViaPage === true;
-    try {
-      await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
-    } catch {
-      /* ignore */
-    }
-    if (keepPage) {
-      issuerPage = opts.page;
-      mark("ge_page_kept_after_iovation", {
-        ok: true,
-        warn: "live_cart_browser_may_pair_revolut",
-      });
-    } else {
-      mark("ge_page_dropped_after_iovation", {
-        ok: true,
-        liveGuid: guid,
-        geMuted: true,
-        browserMutatesDuringMint: blockedMutates,
-        issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
-      });
-      issuerPage = null;
-    }
-  }
-
-  // Block browser/iframe issuer for the whole hydrate→pay window (single undici POST).
+  // Block browser/iframe issuer if page was explicitly kept (labs only).
   let browserIssuerBlock = { blocked: 0, unroute: async () => {} };
   if (issuerPage) {
     browserIssuerBlock = await installBrowserIssuerBlock(issuerPage);

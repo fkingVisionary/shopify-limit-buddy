@@ -920,14 +920,18 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
       });
     }
+    const geMachineId =
+      task.bandaiGeMachineId || process.env.BANDAI_GE_MACHINE_ID || null;
+    // Prefer zero Playwright on GE when a blackbox is already available.
+    // Faster (~10s iovation off the critical path). Revolut pairs persist
+    // even with noPage (GE/PSP dual-rail) — still the product angle.
+    const geNoPage =
+      task.bandaiGeNoPage === true ||
+      (task.bandaiGeNoPage !== false && Boolean(geMachineId));
     const geOut = await runBandaiGeHttpPay({
       ctx,
-      // bandaiGeNoPage: never hand Playwright to GE (needs bandaiGeMachineId / env).
-      page: task.bandaiGeNoPage === true ? null : bridge?.page || null,
-      machineId:
-        task.bandaiGeMachineId ||
-        process.env.BANDAI_GE_MACHINE_ID ||
-        null,
+      page: geNoPage ? null : bridge?.page || null,
+      machineId: geMachineId,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
       card: opts.card,
