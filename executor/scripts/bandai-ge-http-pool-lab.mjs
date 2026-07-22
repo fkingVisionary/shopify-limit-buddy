@@ -98,7 +98,7 @@ for (let i = 0; i < maxTries; i++) {
   const tl = res.timeline || [];
   const timing = res.timing || {};
   console.log(
-    `  result via=${res.via} pay=${res.paymentStatus} tx=${res.transactionId || "-"} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} sawAuth=${res.sawAuthWire} posts=${res.chargeReqCount ?? "-"} undiciAttempts=${res.undiciAttempts ?? "-"} blockedBrowser=${res.browserIssuerBlocked ?? "-"} wallMs=${Date.now() - t0}`,
+    `  result via=${res.via} pay=${res.paymentStatus} tx=${res.transactionId || "-"} sameCart=${res.isSameCartToken ?? "-"} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} sawAuth=${res.sawAuthWire} posts=${res.chargeReqCount ?? "-"} undiciAttempts=${res.undiciAttempts ?? "-"} blockedBrowser=${res.browserIssuerBlocked ?? "-"} wallMs=${Date.now() - t0}`,
   );
   console.log(
     `  TIMING total=${timing.totalSec ?? "?"}s gePath=${timing.gePathSec ?? "?"}s token=${timing.getCartTokenMs ?? "?"}ms v2=${timing.checkoutV2Ms ?? "?"}ms handle=${timing.handleActionMs ?? "?"}ms iovation=${timing.iovationMs ?? "?"}ms save=${timing.saveMs ?? "?"}ms cardForm=${timing.creditCardFormMs ?? "?"}ms issuer=${timing.issuerMs ?? "?"}ms`,
@@ -165,6 +165,7 @@ for (let i = 0; i < maxTries; i++) {
       undiciAttempts: res.undiciAttempts,
       browserIssuerBlocked: res.browserIssuerBlocked,
       framesNeutralized: res.framesNeutralized,
+      isSameCartToken: res.isSameCartToken,
       sawAuthWire: res.sawAuthWire,
       transactionId: res.transactionId,
       timing: res.timing,

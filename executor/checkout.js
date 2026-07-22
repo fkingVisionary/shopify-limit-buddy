@@ -241,6 +241,7 @@ export async function runCheckout(task) {
         browserIssuerBlocked: out.browserIssuerBlocked ?? null,
         framesNeutralized: out.framesNeutralized ?? null,
         undiciAttempts: out.undiciAttempts ?? null,
+        isSameCartToken: out.isSameCartToken ?? null,
         transactionId: out.transactionId ?? null,
         cartToken: out.cartToken ?? null,
         blockers: out.blockers ?? null,

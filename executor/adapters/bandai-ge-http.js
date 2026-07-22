@@ -573,31 +573,67 @@ export function buildBandaiGeTiming(timeline = [], steps = [], totalMs = 0) {
 async function installBrowserIssuerBlock(page) {
   const context = page?.context?.();
   if (!context?.route) {
-    return { blocked: 0, unroute: async () => {} };
+    return { blocked: 0, seen: [], unroute: async () => {} };
   }
   let blocked = 0;
-  const match = (url) => isBandaiGeIssuerPaymentUrl(url.href || String(url));
+  const seen = [];
+  const logPath = "/tmp/bandai-ge-browser-wire.json";
+  const logBrowser = (row) => {
+    seen.push(row);
+    try {
+      let arr = [];
+      try {
+        arr = JSON.parse(fs.readFileSync(logPath, "utf8"));
+      } catch {
+        /* ignore */
+      }
+      arr.push(row);
+      fs.writeFileSync(logPath, JSON.stringify(arr, null, 2));
+    } catch {
+      /* ignore */
+    }
+  };
+  // Catch ALL GE mutating browser traffic (not only HandleCreditCard*).
+  const match = (url) => /global-e\.com/i.test(url.href || String(url));
   const handler = async (route) => {
     const req = route.request();
-    if (req.method() !== "POST" || !isBandaiGeIssuerPaymentUrl(req.url())) {
+    const method = String(req.method() || "GET").toUpperCase();
+    const url = req.url();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
       await route.continue();
       return;
     }
-    blocked += 1;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        j1m: "browser_issuer_blocked",
-        suppressed: true,
-        n: blocked,
-      }),
+    const issuer = isBandaiGeIssuerPaymentUrl(url);
+    logBrowser({
+      t: new Date().toISOString(),
+      method,
+      url: String(url).slice(0, 320),
+      issuer,
+      resourceType: req.resourceType?.() || null,
     });
+    // Hard-block issuer family from browser/iframe — undici owns the one POST.
+    if (issuer) {
+      blocked += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          j1m: "browser_issuer_blocked",
+          suppressed: true,
+          n: blocked,
+        }),
+      });
+      return;
+    }
+    await route.continue();
   };
   await context.route(match, handler);
   return {
     get blocked() {
       return blocked;
+    },
+    get seen() {
+      return seen;
     },
     unroute: async () => {
       try {
@@ -1287,15 +1323,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
 
-  // Mint iovation BEFORE CreditCardForm JWT. page.goto(Checkout/v2) refreshes
-  // GE cookies — scraping JWT first then minting caused DataCorruption /
-  // IsTheSameCartToken=False on issuer (Revolut silent).
+  // Mint iovation BEFORE CreditCardForm JWT (snare.js → #ioBlackBox only).
+  // CRITICAL: do NOT merge Playwright GE cookies into the undici jar by default.
+  // page.goto(Checkout/v2) mints a parallel GE cookie jar; merging it made every
+  // bank JWT return IsTheSameCartToken=False and Revolut showed paired declines
+  // for a single undici HandleCreditCard POST (wire-tap 2026-07-22).
   let issuerPage = null;
   if (!machineId && opts.page) {
     const mint = await mintIovationBlackbox({
       page: opts.page,
       checkoutV2Url: v2Url,
       timeoutMs: opts.iovationTimeoutMs,
+      // Seed page from undici so snare sees the same cart, but we only keep machineId.
       jar: ctx?.jar,
     });
     push("ge_iovation_mint", {
@@ -1303,11 +1342,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookies=${Object.keys(mint.cookies || {}).length}`
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) machineId = mint.machineId;
-    if (mint.cookies && ctx?.jar?.load) {
+    if (opts.mergeIovationCookies === true && mint.cookies && ctx?.jar?.load) {
       try {
         ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
       } catch {
@@ -1315,19 +1354,19 @@ export async function runBandaiGeHttpPay(opts = {}) {
       }
     }
     issuerPage = opts.page;
-    // Re-bind guid if Playwright landed on a different CartToken.
+    // Never rebind guid from the Playwright URL — that cart belongs to the
+    // browser cookie jar, not the undici hydrate session.
     try {
       const pageGuid =
         extractGeCheckoutGuid(opts.page.url()) ||
         extractGeCheckoutGuid(await opts.page.content());
       if (pageGuid && pageGuid !== guid) {
-        push("ge_cart_token_rebind", {
+        push("ge_cart_token_page_diff", {
           ok: true,
           status: null,
           ms: 0,
-          note: `page guid ${pageGuid} (was ${guid})`,
+          note: `page guid ${pageGuid} ≠ undici ${guid} (kept undici; no rebind)`,
         });
-        guid = pageGuid;
       }
     } catch {
       /* ignore */
@@ -1400,16 +1439,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Default: undici CreditCardForm only. Live iframe + radio click can race GEM
   // pay JS (and costs ~10s). Opt-in scrapeCardFormViaPage=true for iframe scrape.
+  // Do not pull Playwright cookies into undici here (keeps cart-token session pure).
   if (issuerPage) {
     await neutralizeGePaymentFrames(issuerPage).catch(() => 0);
-    try {
-      const pageCookies = await cookiesFromPage(issuerPage);
-      if (pageCookies && ctx?.jar?.load) {
-        ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
-      }
-    } catch {
-      /* ignore */
-    }
   }
 
   const tCc = Date.now();
@@ -1546,6 +1578,36 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ms: cc.ms,
     note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
+  try {
+    const html = String(cc.text || "");
+    if (html.length > 200) {
+      fs.writeFileSync("/tmp/bandai-cc-form.html", html);
+      const action = (html.match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1] || "";
+      const modeAttr = (html.match(/<form[^>]*\smode=["']([^"']+)["']/i) || [])[1] || "";
+      const names = [...html.matchAll(/name=["']([^"']+)["']/gi)].map((m) => m[1]);
+      fs.writeFileSync(
+        "/tmp/bandai-cc-form-meta.json",
+        JSON.stringify(
+          {
+            at: new Date().toISOString(),
+            ccUrl,
+            action,
+            modeAttr,
+            gatewayId,
+            paymentMethodId,
+            fieldNames: [...new Set(names)].slice(0, 80),
+            hasPreEnroll: /preEnroll/i.test(html),
+            hasDdc: /ddc|DeviceData|collection/i.test(html),
+            formSnippet: html.replace(/\s+/g, " ").slice(0, 1200),
+          },
+          null,
+          2,
+        ),
+      );
+    }
+  } catch {
+    /* ignore */
+  }
 
   try {
     const prev = fs.existsSync(BOOT_CAPTURE)
@@ -1648,18 +1710,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
   try {
     if (issuerPage) {
       framesNeutralized = await neutralizeGePaymentFrames(issuerPage);
-      try {
-        const pageCookies = await cookiesFromPage(issuerPage);
-        if (pageCookies && ctx?.jar?.load) {
-          ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
-        }
-      } catch {
-        /* ignore */
-      }
       mark("ge_issuer_lock", {
         framesNeutralized,
         browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
         preferPageIssuer: opts.preferPageIssuer === true,
+        mergeIovationCookies: opts.mergeIovationCookies === true,
       });
       // Park Checkout/v2 away from payment UI before undici issuer (no GEM race).
       if (opts.preferPageIssuer !== true) {
@@ -1722,6 +1777,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
           undiciAttempts,
           browserIssuerBlocked: browserBlocked,
           framesNeutralized,
+          isSameCartToken: (() => {
+            const m = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");
+            return m.IsTheSameCartToken ?? null;
+          })(),
         },
         null,
         2,
@@ -1734,6 +1793,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const declineOnRedirect = Boolean(issuer?.declineOnRedirect);
   // Non-zero TransactionId always counts as bank (even if GE also sets IsTheSameCartToken=False).
   const txMap = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");
+  const isSameCartToken = /^(true|1)$/i.test(String(txMap.IsTheSameCartToken || ""));
   const transactionId =
     txMap.TransactionId && txMap.TransactionId !== "0"
       ? txMap.TransactionId
@@ -1765,7 +1825,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
               : ""
           }`
         : issuer?.redirectUrl || bankHit
-          ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
+          ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
           : issuer?.bodySnippet || issuer?.error || "issuer_null"
     ).slice(0, 280),
   });
@@ -1806,6 +1866,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     undiciAttempts,
     browserIssuerBlocked: browserBlocked,
     framesNeutralized,
+    isSameCartToken,
     sawAuthWire: Boolean(bankHit),
     blockers,
     redirectUrl: issuer?.redirectUrl || null,
@@ -1814,11 +1875,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     via: issuer?.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
     elapsedMs,
     note: paymentStatus === "declined_or_auth_failed"
-      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} via=${issuer?.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} guid=${guid} total=${timing.totalSec}s`
+      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer?.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
       : issuer?.ok
-        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} guid=${guid} total=${timing.totalSec}s`
+        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
         : issuer?.reloadOnly
-          ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
+          ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
           : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
   };
 }

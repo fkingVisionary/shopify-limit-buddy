@@ -412,6 +412,33 @@ function wrapFetchResponse(res, requestedUrl) {
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  // Optional GE mutate wire log (Bandai double-auth forensics).
+  if (process.env.BANDAI_GE_WIRE_TAP === "1") {
+    try {
+      const u = String(url || "");
+      if (/global-e\.com/i.test(u) && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        const fs = await import("node:fs");
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: u,
+          bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+          issuer: /HandleCreditCard/i.test(u),
+        };
+        let arr = [];
+        try {
+          arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-wire.json", "utf8"));
+        } catch {
+          /* ignore */
+        }
+        arr.push(row);
+        fs.writeFileSync("/tmp/bandai-ge-wire.json", JSON.stringify(arr, null, 2));
+        console.log("WIRE_TAP", method, u.slice(0, 160), "issuer=" + row.issuer);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation

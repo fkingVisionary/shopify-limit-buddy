@@ -965,6 +965,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       undiciAttempts: geOut.undiciAttempts ?? null,
       browserIssuerBlocked: geOut.browserIssuerBlocked ?? null,
       framesNeutralized: geOut.framesNeutralized ?? null,
+      isSameCartToken: geOut.isSameCartToken ?? null,
       sawAuthWire: geOut.sawAuthWire ?? null,
       transactionId: geOut.transactionId ?? null,
       timing: geOut.timing || null,
