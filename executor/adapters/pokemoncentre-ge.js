@@ -250,21 +250,97 @@ export async function runGlobalEPay(opts = {}) {
       };
     }
 
-    // Fill nested CreditCardForm (Bandai field shape — confirm on PC HAR).
+    let payNet = 0;
+    page.on("request", (req) => {
+      const u = req.url();
+      if (/global-e\.com|globale/i.test(u) && /pay|complete|preComplete|ProcessPayment/i.test(u)) {
+        payNet++;
+      }
+    });
+    page.on("response", async (res) => {
+      try {
+        const u = res.url();
+        if (!/global-e\.com|globale/i.test(u)) return;
+        if (!/pay|complete|ProcessPayment|Checkout\/v2/i.test(u)) return;
+        const st = res.status();
+        if (st >= 200 && st < 500) {
+          steps.push({ step: "ge_net", ok: st < 400, note: `${st} ${u.slice(0, 120)}` });
+        }
+      } catch {
+        /* ignore */
+      }
+    });
+
+    // 1) Shipping/email first — gates Pay CTA on PC GE.
+    let addressFilled = false;
+    for (let tick = 0; tick < 12 && !addressFilled; tick++) {
+      for (const frame of page.frames()) {
+        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        const email = frame.locator('input[type="email"], input[name*="email" i]').first();
+        if (!(await email.count().catch(() => 0))) continue;
+        await email.fill(opts.email || "decline.test@example.com").catch(() => {});
+        const phone = frame.locator('input[type="tel"], input[name*="phone" i]').first();
+        if (await phone.count().catch(() => 0)) {
+          await phone.fill(opts.phone || "0400000000").catch(() => {});
+        }
+        for (const [sel, val] of [
+          ['input[name*="FirstName" i], input[autocomplete="given-name"]', "Test"],
+          ['input[name*="LastName" i], input[autocomplete="family-name"]', "User"],
+          ['input[name*="Address1" i], input[autocomplete="address-line1"]', "1 George Street"],
+          ['input[name*="City" i], input[autocomplete="address-level2"]', "Sydney"],
+          ['input[name*="ZIP" i], input[name*="Postal" i], input[autocomplete="postal-code"]', "2000"],
+        ]) {
+          const el = frame.locator(sel).first();
+          if (await el.count().catch(() => 0)) await el.fill(val).catch(() => {});
+        }
+        const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"]').first();
+        if (await state.count().catch(() => 0)) {
+          await state.selectOption({ label: "New South Wales" }).catch(() =>
+            state.selectOption("NSW").catch(() => {}),
+          );
+        }
+        // Continue / next shipping step if present
+        const next = frame
+          .locator(
+            'button:has-text("Continue"), button:has-text("Next"), button:has-text("Save"), button:has-text("Ship")',
+          )
+          .first();
+        if (await next.count().catch(() => 0)) {
+          await next.click({ timeout: 4000 }).catch(() => {});
+        }
+        addressFilled = true;
+        break;
+      }
+      if (!addressFilled) await page.waitForTimeout(1000);
+    }
+    push("ge_address", { ok: addressFilled, note: addressFilled ? "guest address attempted" : "no address fields yet" });
+    await page.waitForTimeout(2000);
+
+    // 2) CreditCardForm (Bandai field shape — nested secure iframe common).
     for (let tick = 0; tick < 24 && !filled; tick++) {
       await page.waitForTimeout(1500);
       for (const frame of page.frames()) {
         const url = frame.url();
         if (!/global-e\.com|globale/i.test(url)) continue;
         if (/prefetcher/i.test(url)) continue;
-        if (!secureRe.test(url) && !/CreditCardForm|payments\//i.test(url)) continue;
+        // Allow Checkout/v2 parent + nested CreditCardForm / secure-* / payments
+        if (
+          !secureRe.test(url) &&
+          !/CreditCardForm|payments\/|Checkout\/v2|secure-/i.test(url)
+        ) {
+          continue;
+        }
 
-        const cardNum = frame.locator('input[name="cardNum"], input#cardNum, input[autocomplete="cc-number"]').first();
+        const cardNum = frame
+          .locator(
+            'input[name="cardNum"], input#cardNum, input[autocomplete="cc-number"], input[name*="card" i][type="text"], input[name*="card" i][type="tel"]',
+          )
+          .first();
         if (!(await cardNum.count().catch(() => 0))) continue;
 
         await cardNum.fill(String(card.number).replace(/\s+/g, ""), { timeout: 5000 }).catch(() => {});
-        const mm = frame.locator('select[name="cardExpiryMonth"], select#cardExpiryMonth').first();
-        const yy = frame.locator('select[name="cardExpiryYear"], select#cardExpiryYear').first();
+        const mm = frame.locator('select[name="cardExpiryMonth"], select#cardExpiryMonth, select[name*="Month" i]').first();
+        const yy = frame.locator('select[name="cardExpiryYear"], select#cardExpiryYear, select[name*="Year" i]').first();
         if (await mm.count().catch(() => 0)) {
           await mm.selectOption(String(card.expMonth).padStart(2, "0")).catch(() => {});
         }
@@ -274,9 +350,22 @@ export async function runGlobalEPay(opts = {}) {
             .selectOption(y.length === 2 ? y : y.slice(-2))
             .catch(() => yy.selectOption(y).catch(() => {}));
         }
-        const cvv = frame.locator('input[name="cvdNumber"], input#cvdNumber, input[autocomplete="cc-csc"]').first();
+        // Some GE UIs use text expiry MM/YY
+        const expText = frame.locator('input[autocomplete="cc-exp"], input[name*="expir" i][type="text"]').first();
+        if (await expText.count().catch(() => 0)) {
+          await expText
+            .fill(`${String(card.expMonth).padStart(2, "0")}/${String(card.expYear).slice(-2)}`)
+            .catch(() => {});
+        }
+        const cvv = frame
+          .locator('input[name="cvdNumber"], input#cvdNumber, input[autocomplete="cc-csc"], input[name*="cvv" i], input[name*="cvc" i]')
+          .first();
         if (await cvv.count().catch(() => 0)) {
           await cvv.fill(String(card.cvv), { timeout: 3000 }).catch(() => {});
+        }
+        const holder = frame.locator('input[autocomplete="cc-name"], input[name*="cardHolder" i], input[name*="Holder" i]').first();
+        if (await holder.count().catch(() => 0)) {
+          await holder.fill(String(card.holder || "TEST USER")).catch(() => {});
         }
         filled = true;
         break;
@@ -287,62 +376,37 @@ export async function runGlobalEPay(opts = {}) {
       note: filled ? "CreditCardForm filled" : "card form not found — confirm secure-* host in HAR",
     });
 
-    // T&Cs checkbox (Bandai: Pay no-ops if unchecked)
+    // 3) T&Cs checkbox (Bandai: Pay no-ops if unchecked)
     for (const frame of page.frames()) {
       if (!/global-e\.com|Checkout\/v2/i.test(frame.url())) continue;
-      const box = frame
-        .locator(
-          'input[type="checkbox"][name*="term" i], input[type="checkbox"][id*="term" i], label:has-text("I confirm") input',
-        )
-        .first();
-      if (await box.count().catch(() => 0)) {
-        await box.check({ force: true }).catch(() => box.click().catch(() => {}));
+      const boxes = frame.locator('input[type="checkbox"]');
+      const n = await boxes.count().catch(() => 0);
+      for (let i = 0; i < Math.min(n, 8); i++) {
+        const box = boxes.nth(i);
+        await box.check({ force: true }).catch(() => box.click({ force: true }).catch(() => {}));
       }
     }
-
-    // Wait briefly for invisible captcha / Forter tokens if present
     await page.waitForTimeout(2500);
 
-    let payNet = 0;
-    page.on("request", (req) => {
-      const u = req.url();
-      if (/global-e\.com|globale/i.test(u) && /pay|complete|preComplete|ProcessPayment/i.test(u)) {
-        payNet++;
-      }
-    });
-
-    // Shipping/email often gates the Pay CTA on PC GE — fill light AU guest fields if present.
+    // 4) Pay CTA — scan all GE frames + dump button labels if missing
+    const buttonDump = [];
     for (const frame of page.frames()) {
-      if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
-      const email = frame.locator('input[type="email"], input[name*="email" i]').first();
-      if (await email.count().catch(() => 0)) {
-        await email.fill(opts.email || "decline.test@example.com").catch(() => {});
-      }
-      const phone = frame.locator('input[type="tel"], input[name*="phone" i]').first();
-      if (await phone.count().catch(() => 0)) {
-        await phone.fill(opts.phone || "0400000000").catch(() => {});
-      }
-      for (const [sel, val] of [
-        ['input[name*="FirstName" i], input[autocomplete="given-name"]', "Decline"],
-        ['input[name*="LastName" i], input[autocomplete="family-name"]', "Test"],
-        ['input[name*="Address1" i], input[autocomplete="address-line1"]', "1 Test Street"],
-        ['input[name*="City" i], input[autocomplete="address-level2"]', "Sydney"],
-        ['input[name*="ZIP" i], input[name*="Postal" i], input[autocomplete="postal-code"]', "2000"],
-      ]) {
-        const el = frame.locator(sel).first();
-        if (await el.count().catch(() => 0)) await el.fill(val).catch(() => {});
-      }
-      const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"]').first();
-      if (await state.count().catch(() => 0)) {
-        await state.selectOption({ label: "New South Wales" }).catch(() =>
-          state.selectOption("NSW").catch(() => {}),
-        );
-      }
-    }
-    await page.waitForTimeout(2000);
-
-    for (const frame of page.frames()) {
-      if (!/Checkout\/v2|webservices\.global-e|CreditCardForm|secure-/i.test(frame.url())) continue;
+      if (!/Checkout\/v2|webservices\.global-e|CreditCardForm|secure-|global-e/i.test(frame.url())) continue;
+      const labels = await frame
+        .evaluate(() =>
+          [...document.querySelectorAll("button, a[role='button'], input[type='submit']")]
+            .map((el) => ({
+              tag: el.tagName,
+              text: (el.innerText || el.value || "").trim().slice(0, 60),
+              id: el.id || "",
+              cls: String(el.className || "").slice(0, 80),
+              disabled: Boolean(el.disabled),
+            }))
+            .filter((b) => b.text || b.id)
+            .slice(0, 20),
+        )
+        .catch(() => []);
+      if (labels?.length) buttonDump.push({ url: frame.url().slice(0, 100), labels });
       const payBtn = frame
         .locator(
           [
@@ -350,21 +414,25 @@ export async function runGlobalEPay(opts = {}) {
             'button:has-text("Place Order")',
             'button:has-text("Complete")',
             'button:has-text("Submit")',
+            'button:has-text("Confirm")',
             'button[data-testid*="pay" i]',
             'button.btn-pay',
             '#btnPay',
             'button[type="submit"]',
             ".pay-button",
+            'input[type="submit"]',
           ].join(", "),
         )
         .first();
       if (await payBtn.count().catch(() => 0)) {
-        await payBtn.click({ timeout: 8000 }).catch(() => {});
-        payClicked = true;
-        break;
+        const disabled = await payBtn.isDisabled().catch(() => false);
+        if (!disabled) {
+          await payBtn.click({ timeout: 8000 }).catch(() => {});
+          payClicked = true;
+          break;
+        }
       }
     }
-    // Parent page fallback
     if (!payClicked) {
       const payBtn = page
         .locator('button:has-text("Pay"), button:has-text("Place Order"), #btnPay')
@@ -374,9 +442,20 @@ export async function runGlobalEPay(opts = {}) {
         payClicked = true;
       }
     }
+    if (debugDir && !payClicked) {
+      try {
+        const fs = await import("node:fs");
+        fs.writeFileSync(`${debugDir}/ge-buttons.json`, JSON.stringify(buttonDump, null, 2));
+        fs.writeFileSync(`${debugDir}/ge-pay-fail.html`, await page.content());
+        await page.screenshot({ path: `${debugDir}/ge-pay-fail.png`, fullPage: true }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    }
     push("ge_pay_click", {
       ok: payClicked,
       note: payClicked ? `Pay clicked payNet≈${payNet}` : "Pay button missing (address/T&Cs may still gate)",
+      buttonDump: buttonDump.slice(0, 4),
       frames: page
         .frames()
         .map((f) => f.url())
@@ -401,10 +480,29 @@ export async function runGlobalEPay(opts = {}) {
         if (om) orderNumber = om[1];
         break;
       }
-      if (/declin|insufficient|not authorised|not authorized|payment failed/i.test(bodyText)) {
+      if (
+        /declin|insufficient|not authorised|not authorized|payment failed|could not be processed|unable to process|do not honour|do not honor|funds/i.test(
+          bodyText,
+        )
+      ) {
         paymentStatus = "declined";
         break;
       }
+      // Also scan Checkout/v2 iframe body
+      for (const frame of page.frames()) {
+        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        const ft = await frame.locator("body").innerText().catch(() => "");
+        if (/declin|insufficient|not authorised|not authorized|payment failed|unable to process/i.test(ft)) {
+          paymentStatus = "declined";
+          break;
+        }
+        if (/acs|3ds|challenge/i.test(frame.url()) || /one.?time.?password|verify your/i.test(ft)) {
+          reached3ds = true;
+          threeDsUrl = frame.url();
+          paymentStatus = "reached_3ds";
+        }
+      }
+      if (paymentStatus === "declined" || paymentStatus === "reached_3ds") break;
       if (reached3ds) {
         paymentStatus = "reached_3ds";
         break;

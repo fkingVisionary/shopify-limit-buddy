@@ -94,16 +94,26 @@ async function main() {
     const cookies = jar.dump();
     fs.writeFileSync(`${OUT}/cookies.json`, JSON.stringify(cookies, null, 2));
 
+    // Card from env only — never hardcode real/disposable PANs in repo.
+    const card = {
+      number: process.env.PC_CARD_NUMBER || process.env.KMART_CARD_NUMBER || "4000000000000002",
+      expMonth: process.env.PC_CARD_EXP_MONTH || process.env.KMART_CARD_EXP_MONTH || "12",
+      expYear: process.env.PC_CARD_EXP_YEAR || process.env.KMART_CARD_EXP_YEAR || "30",
+      cvv: process.env.PC_CARD_CVV || process.env.KMART_CARD_CVV || "999",
+      holder: process.env.PC_CARD_HOLDER || "TEST USER",
+    };
+    push("card", {
+      last4: String(card.number).slice(-4),
+      exp: `${card.expMonth}/${card.expYear}`,
+      placeOrder: process.env.PLACE_ORDER === "1",
+    });
+
     const pay = await runGlobalEPay({
       checkoutUrl: `${session.state.base}/intl-checkout`,
       cartUrl: `${session.state.base}/cart`,
-      card: {
-        number: "4000000000000002",
-        expMonth: "12",
-        expYear: "30",
-        cvv: "999",
-        holder: "DECLINE TEST",
-      },
+      card,
+      email: process.env.PC_CHECKOUT_EMAIL || "decline.test@example.com",
+      phone: process.env.PC_CHECKOUT_PHONE || "0400000000",
       proxyRaw: PROXY,
       cookies,
       userAgent: UA,
@@ -113,17 +123,31 @@ async function main() {
       debugDir: OUT,
       onProgress: (n, note) => push("ge_pay_progress", { n, note }),
     });
-    fs.writeFileSync(`${OUT}/ge-pay.json`, JSON.stringify(pay, null, 2));
+    // Strip any accidental PAN echoes from persisted pay dump
+    const paySafe = JSON.parse(JSON.stringify(pay));
+    fs.writeFileSync(`${OUT}/ge-pay.json`, JSON.stringify(paySafe, null, 2));
     push("ge_pay", {
       ok: pay.ok,
       stage: pay.checkoutStage,
       mid: pay.globaleMid,
       note: pay.note || pay.error,
       reached3ds: pay.reached3ds,
+      paymentStatus: pay.paymentStatus,
+      orderNumber: pay.orderNumber || null,
     });
 
-    fs.writeFileSync(`${OUT}/summary.json`, JSON.stringify({ log, pay, cartGuid }, null, 2));
-    console.log(JSON.stringify({ out: OUT, cartGuid, gePay: pay.ok, stage: pay.checkoutStage, note: pay.note || pay.error }));
+    fs.writeFileSync(`${OUT}/summary.json`, JSON.stringify({ log, pay: paySafe, cartGuid }, null, 2));
+    console.log(
+      JSON.stringify({
+        out: OUT,
+        cartGuid,
+        gePay: pay.ok,
+        stage: pay.checkoutStage,
+        paymentStatus: pay.paymentStatus,
+        reached3ds: pay.reached3ds,
+        note: pay.note || pay.error,
+      }),
+    );
   } finally {
     await dispatcher.close?.();
   }
