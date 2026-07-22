@@ -2,8 +2,9 @@
 // Owns: BrowserWindow, local store, executor sidecar, job runner, license IPC.
 // Does NOT execute Kmart checkout in-process — that stays in executor/ via sidecar.
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, dialog } = require("electron");
 const path = require("path");
+const fs = require("fs");
 const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
@@ -367,6 +368,43 @@ ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
   }
   persistDb();
   return snapshot();
+});
+
+/** Capture #flexCard from the Results tab and prompt for a PNG save path. */
+ipcMain.handle("desktop:export-flex-card", async () => {
+  if (!win || win.isDestroyed()) return { ok: false, error: "Window not ready" };
+  try {
+    await win.webContents.executeJavaScript(
+      `(() => { const el = document.getElementById("flexCard"); if (el) el.scrollIntoView({ block: "center", behavior: "instant" }); })()`,
+    );
+    await new Promise((r) => setTimeout(r, 80));
+    const rect = await win.webContents.executeJavaScript(`(() => {
+      const el = document.getElementById("flexCard");
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return {
+        x: Math.max(0, Math.floor(r.x)),
+        y: Math.max(0, Math.floor(r.y)),
+        width: Math.max(1, Math.ceil(r.width)),
+        height: Math.max(1, Math.ceil(r.height)),
+      };
+    })()`);
+    if (!rect) return { ok: false, error: "Flex card not found — open the Results tab" };
+    const image = await win.webContents.capturePage(rect);
+    const png = image.toPNG();
+    if (!png?.length) return { ok: false, error: "Capture produced empty image" };
+    const stamp = new Date().toISOString().slice(0, 10);
+    const { canceled, filePath } = await dialog.showSaveDialog(win, {
+      title: "Save flex card",
+      defaultPath: path.join(app.getPath("downloads"), `j1ms-flex-card-${stamp}.png`),
+      filters: [{ name: "PNG", extensions: ["png"] }],
+    });
+    if (canceled || !filePath) return { ok: false, canceled: true };
+    fs.writeFileSync(filePath, png);
+    return { ok: true, filePath };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
 });
 
 ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {

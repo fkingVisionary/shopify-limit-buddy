@@ -236,8 +236,100 @@
     <!-- RESULTS -->
     <section id="tab-results" class="panel">
       <h2>Results</h2>
+      <p class="hint">Live log + run history. Flex card below is shareable — blank slots until you fill or pull from session stats.</p>
       <div id="liveLog" class="log"></div>
       <div id="resultList" class="list"></div>
+
+      <div class="flex-studio">
+        <div class="flex-studio-head">
+          <h3>Flex card</h3>
+          <p class="hint">Blank HUD template. Edit title / spend; items &amp; success rate can pull from Results.</p>
+        </div>
+        <div class="flex-studio-controls">
+          <div>
+            <label for="flexTitle">Session title</label>
+            <input id="flexTitle" placeholder="e.g. POKÉMON 30TH ANNIVERSARY" maxlength="48" />
+          </div>
+          <div>
+            <label for="flexAmount">Amount spent</label>
+            <input id="flexAmount" placeholder="$0" maxlength="16" />
+          </div>
+          <div>
+            <label for="flexItems">Items secured</label>
+            <input id="flexItems" placeholder="—" maxlength="8" />
+          </div>
+          <div>
+            <label for="flexRate">Success rate</label>
+            <input id="flexRate" placeholder="—" maxlength="8" />
+          </div>
+          <div class="flex-studio-actions">
+            <button type="button" class="secondary" id="btnFlexFromResults">Pull from results</button>
+            <button type="button" class="secondary" id="btnFlexBlank">Reset blank</button>
+            <button type="button" id="btnFlexExport">Export PNG</button>
+          </div>
+        </div>
+        <p id="flexExportMsg" class="hint"></p>
+
+        <!-- Blank / filled flex card (capture target) -->
+        <div id="flexCard" class="flex-card" aria-label="Flex card">
+          <header class="flex-card-top">
+            <div class="flex-card-mark">
+              <span class="flex-bars" aria-hidden="true"></span>
+              <span class="flex-card-kicker">Flex card</span>
+            </div>
+            <div class="flex-card-brand">J1M'S BOT</div>
+          </header>
+
+          <div class="flex-card-body">
+            <div class="flex-card-stats">
+              <div class="flex-stat">
+                <div class="flex-stat-label">Amount spent</div>
+                <div class="flex-stat-frame corner" data-flex-slot="amount">
+                  <span class="flex-stat-value" id="flexSlotAmount"></span>
+                </div>
+              </div>
+              <div class="flex-stat">
+                <div class="flex-stat-label">Items secured</div>
+                <div class="flex-stat-frame corner" data-flex-slot="items">
+                  <span class="flex-stat-value" id="flexSlotItems"></span>
+                </div>
+              </div>
+              <div class="flex-stat">
+                <div class="flex-stat-label">Success rate</div>
+                <div class="flex-stat-frame rounded" data-flex-slot="rate">
+                  <span class="flex-stat-value" id="flexSlotRate"></span>
+                </div>
+              </div>
+            </div>
+            <div class="flex-card-art" aria-hidden="true">
+              <div class="flex-art-glow"></div>
+              <div class="flex-art-ground"></div>
+              <div class="flex-art-monolith flex-art-monolith-a"></div>
+              <div class="flex-art-monolith flex-art-monolith-b"></div>
+              <div class="flex-art-title" id="flexSlotTitle"></div>
+            </div>
+          </div>
+
+          <footer class="flex-card-foot">
+            <div class="flex-foot-left">
+              <svg class="flex-globe" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                <ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                <path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18" fill="none" stroke="currentColor" stroke-width="1"/>
+              </svg>
+              <div>
+                <div class="flex-powered">Powered by precision</div>
+                <div class="flex-powered-rule"></div>
+              </div>
+            </div>
+            <div class="flex-hazard" aria-hidden="true"></div>
+            <div class="flex-foot-brand">
+              <span class="flex-bars sm" aria-hidden="true"></span>
+              <span>J1M'S BOT</span>
+            </div>
+          </footer>
+        </div>
+      </div>
     </section>
 
     <!-- SETTINGS -->
