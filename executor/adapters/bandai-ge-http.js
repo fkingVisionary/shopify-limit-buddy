@@ -732,15 +732,31 @@ export async function runBandaiGeHttpPay(opts = {}) {
     body,
     ctx,
     userAgent: opts.userAgent,
+    referer: ccUrl,
   });
+  const declineOnRedirect =
+    issuer.redirectSnippet &&
+    /\b(?:declined|decline|insufficient|not authorised|not authorized|failed)\b/i.test(
+      issuer.redirectSnippet,
+    );
   push("ge_issuer_http", {
     ok: issuer.ok,
     status: issuer.status,
     ms: issuer.ms,
-    note: (issuer.bodySnippet || issuer.error || "").slice(0, 200),
+    note: (
+      issuer.redirectUrl
+        ? `redirect ${issuer.status} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
+        : issuer.bodySnippet || issuer.error || ""
+    ).slice(0, 220),
   });
 
-  const paymentStatus = issuer.ok ? "pay_submitted_http" : "issuer_http_failed";
+  const paymentStatus = !issuer.ok
+    ? "issuer_http_failed"
+    : declineOnRedirect
+      ? "declined_or_auth_failed"
+      : issuer.isPaymentRedirect
+        ? "pay_submitted_http"
+        : "pay_submitted_http";
   return {
     ok: Boolean(issuer.ok),
     steps,
@@ -748,16 +764,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
     failedStep: issuer.ok ? null : "ge_issuer_http",
     error: issuer.ok ? null : issuer.error || issuer.bodySnippet,
     paymentStatus,
-    checkoutStage: "tokenize",
+    checkoutStage: declineOnRedirect ? "declined" : "tokenize",
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
     chargeReqCount: 1,
-    sawAuthWire: Boolean(issuer.ok),
+    sawAuthWire: Boolean(issuer.ok || issuer.sawAuthWire),
     blockers,
+    redirectUrl: issuer.redirectUrl || null,
     via: "http-ge",
     elapsedMs: Date.now() - t0,
     note: issuer.ok
-      ? `HTTP issuer POST ok guid=${guid}`
+      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} guid=${guid}`
       : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
   };
 }

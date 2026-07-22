@@ -134,7 +134,9 @@ for (let i = 0; i < maxTries; i++) {
   const hit =
     Boolean(res.cartToken) ||
     res.paymentStatus === "pay_submitted_http" ||
+    res.paymentStatus === "declined_or_auth_failed" ||
     res.paymentStatus === "http_ge_hydrated" ||
+    res.sawAuthWire ||
     (res.steps || []).some((s) => s.step === "ge_iovation_mint" || s.step === "ge_issuer_http");
 
   const out = {
@@ -150,6 +152,7 @@ for (let i = 0; i < maxTries; i++) {
       note: res.note,
       chargeReqCount: res.chargeReqCount,
       sawAuthWire: res.sawAuthWire,
+      redirectUrl: res.redirectUrl,
     },
     steps: res.steps,
     timeline: res.timeline,
@@ -158,10 +161,14 @@ for (let i = 0; i < maxTries; i++) {
   if (hit) {
     best = out;
     console.log(`\n[${aest()} AEST] HTTP_GE_HIT session=${tag} — check bank if issuer fired`);
-    if (res.paymentStatus === "pay_submitted_http" || res.sawAuthWire) break;
-    // Keep going if only hydrated without issuer unless STOP_ON_HYDRATE=1
+    if (
+      res.paymentStatus === "pay_submitted_http" ||
+      res.paymentStatus === "declined_or_auth_failed" ||
+      res.sawAuthWire
+    ) {
+      break;
+    }
     if (process.env.BANDAI_STOP_ON_HYDRATE === "1") break;
-    if (res.cartToken && !(res.blockers || []).includes("machineId")) break;
   }
 }
 
