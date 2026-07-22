@@ -5,6 +5,8 @@ _Status: adapter scaffolded (OTP + agen + login/ATC + GE stub) — harden with o
 _Why first: owner call — English bots already cover AusPost; **no known Bandai AU support** → greenfield edge on One Piece / exclusives._  
 _Build: storefront `CONFIG_DATA.buildVersion=2.20260716` (2026-07-16)_
 
+**Runtime contract (if checkout breaks):** [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md)
+
 Canonical storefront: **`https://p-bandai.com/au/`**  
 (Do not use `www.bandai.com.au` — cert mismatch.)
 
