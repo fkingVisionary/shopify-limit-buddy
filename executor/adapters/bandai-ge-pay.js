@@ -94,7 +94,12 @@ async function fillInputFast(locator, value) {
   return true;
 }
 
-/** GE payment POSTs that hit the issuer — allow exactly one per task (armed at Pay). */
+/** True GE checkout action that can hit the issuer (not WriteContextualLog). */
+export function isBandaiGeHandleAction(url) {
+  return /webservices\.global-e\.com\/checkoutv2\/handleaction\//i.test(String(url || ""));
+}
+
+/** GE payment POSTs that hit the issuer — allow exactly one per task. */
 export function isBandaiGeChargeRequest(method, url) {
   const m = String(method || "GET").toUpperCase();
   if (m === "GET" || m === "OPTIONS" || m === "HEAD") return false;
@@ -102,12 +107,14 @@ export function isBandaiGeChargeRequest(method, url) {
   if (!/global-e\.com/i.test(u)) return false;
   // GEM boot / static / analytics — never issuer charge.
   if (
-    /prefetcher|\/static\/|includes\/js|includes\/css|\.js(?:\?|$)|\/css\/|fingerprint|forter|GetCartToken|MerchantCartToken|analytics|telemetry|beacon|collect|client-event|\/log(?:ging)?\b|recaptcha|hcaptcha/i.test(
+    /prefetcher|\/static\/|includes\/js|includes\/css|\.js(?:\?|$)|\/css\/|fingerprint|forter|GetCartToken|MerchantCartToken|analytics|telemetry|beacon|collect|client-event|WriteContextualLog|collectCheckout|\/log(?:ging)?\b|recaptcha|hcaptcha/i.test(
       u,
     )
   ) {
     return false;
   }
+  // Wire-proven Bandai charge path (fires on fill + again on Pay / terms).
+  if (isBandaiGeHandleAction(u)) return true;
   // Explicit payment verbs / card-form hosts.
   if (
     /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|\bCharge\b|\/Pay\b|PaymentData|CreditCardForm|\/payments?\/|transaction|Capture|SecurePayment|DoPayment|SendPayment|ValidatePayment|Billing/i.test(
@@ -116,8 +123,7 @@ export function isBandaiGeChargeRequest(method, url) {
   ) {
     return true;
   }
-  // Opaque GE writes on payment shells — bank showed 2× same-minute auths while
-  // payClicks=1 and the narrow verb matcher reported chargeReqs=0.
+  // Opaque GE writes on payment shells.
   return /secure-bandai\.global-e\.com|webservices\.global-e\.com\/Checkout|gem-bandai\.global-e\.com\/(?:Checkout|payments)|gepi\.global-e\.com\/(?:Checkout|Payment)/i.test(
     u,
   );
@@ -278,11 +284,11 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // Arm only at Pay — GEM boot / tokenize POSTs before click must not consume the slot.
+  // handleaction single-flight is always on (lab: /2 on fill + /3 before Pay =
+  // same-minute Revolut duplicates with payClicks=1). Other charge URLs arm at Pay.
   let armChargeGuard = false;
 
-  // Hard single-flight: bank showed 2× same-second auths while payClicks=1 —
-  // GE was firing a second payment POST (card iframe + Checkout Pay, or dual auth).
+  // Hard single-flight: bank showed 2× same-second auths while payClicks=1.
   const chargeRoute = async (route) => {
     const req = route.request();
     const method = req.method();
@@ -291,30 +297,42 @@ export async function browserBandaiGeFromCart(opts = {}) {
       await route.continue();
       return;
     }
+    const handleAction = isBandaiGeHandleAction(url);
+    // Non-handleaction candidates only count after Pay is armed.
+    if (!handleAction && !armChargeGuard) {
+      geNet.push({
+        t: Date.now(),
+        kind: "req",
+        method,
+        url: url.slice(0, 200),
+        chargeCandidate: true,
+        armed: false,
+      });
+      await route.continue();
+      return;
+    }
+    chargeReqCount += 1;
     geNet.push({
       t: Date.now(),
       kind: "req",
       method,
       url: url.slice(0, 200),
       chargeCandidate: true,
-      armed: armChargeGuard,
+      armed: armChargeGuard || handleAction,
+      handleAction,
+      chargeN: chargeReqCount,
     });
-    if (!armChargeGuard) {
-      await route.continue();
-      return;
-    }
-    chargeReqCount += 1;
-    geNet[geNet.length - 1].chargeN = chargeReqCount;
     if (chargeReqCount > 1) {
       blockedChargeReqCount += 1;
       mark("charge_req_blocked", {
         n: chargeReqCount,
-        url: url.slice(0, 120),
+        handleAction,
+        url: url.slice(0, 140),
       });
       await route.abort("failed");
       return;
     }
-    mark("charge_req_allowed", { url: url.slice(0, 120) });
+    mark("charge_req_allowed", { handleAction, url: url.slice(0, 140) });
     await route.continue();
   };
   await page.route("**/*", chargeRoute);
@@ -826,13 +844,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
     const authReqs = () =>
       geNet.slice(netBefore).filter((n) => {
         if (n.kind !== "req") return false;
+        if (n.chargeN || n.handleAction) return true;
         if (isBandaiGeAuthPaymentUrl(n.url)) return true;
-        // Bank-confirmed path sometimes uses opaque GE POSTs — count non-static GE writes.
+        if (isBandaiGeHandleAction(n.url)) return true;
+        // Opaque GE writes — exclude logging / analytics (were false-positive authWire).
         return (
           n.method &&
           n.method !== "GET" &&
           /global-e\.com/i.test(n.url || "") &&
-          !/prefetcher|\/static\/|includes\/js|\.js(?:\?|$)|\/css\//i.test(n.url || "")
+          !/prefetcher|\/static\/|includes\/js|\.js(?:\?|$)|\/css\/|WriteContextualLog|collectCheckout|analytics|telemetry|beacon/i.test(
+            n.url || "",
+          )
         );
       });
     const payNet = geNet.slice(netBefore);

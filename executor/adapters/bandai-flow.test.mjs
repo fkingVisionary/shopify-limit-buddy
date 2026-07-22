@@ -16,6 +16,7 @@ import {
   isBandaiGeCheckoutPayFrame,
   isBandaiGeAuthPaymentUrl,
   isBandaiGeChargeRequest,
+  isBandaiGeHandleAction,
 } from "./bandai-ge-pay.js";
 
 // --- F5 gate matrix ---
@@ -143,6 +144,24 @@ assert.equal(
 );
 assert.equal(
   isBandaiGeChargeRequest("POST", "https://gem-bandai.global-e.com/includes/js/1925"),
+  false,
+);
+// Wire-proven duplicate path: handleaction/2 on fill + /3 before Pay
+assert.equal(
+  isBandaiGeHandleAction(
+    "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba/8urc",
+  ),
+  true,
+);
+assert.equal(
+  isBandaiGeChargeRequest(
+    "POST",
+    "https://webservices.global-e.com/checkoutv2/handleaction/3/099033fe-73ba/8urc",
+  ),
+  true,
+);
+assert.equal(
+  isBandaiGeChargeRequest("POST", "https://webservices.global-e.com/shared/WriteContextualLog"),
   false,
 );
 
