@@ -596,6 +596,13 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         base: session.base,
         card,
         wait3dsMs: Number(task.wait3dsMs) || 45_000,
+        onProgress: (event, row) => {
+          try {
+            ctx.onProgress?.(event, row?.note || row?.paymentStatus || event, row);
+          } catch {
+            /* ignore */
+          }
+        },
         meta: {
           areaItemNo: pdp.areaItemNo,
           cartSn,
@@ -612,6 +619,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       return {
         ok: Boolean(geOut.ok),
         steps,
+        timeline: geOut.timeline || [],
         failedStep: geOut.failedStep || null,
         error: geOut.ok ? null : geOut.error || geOut.note || null,
         checkoutStage: geOut.checkoutStage || "tokenize",
@@ -623,6 +631,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         checkoutSn: geOut.checkoutSn || null,
         title: pdp.title,
         paymentStatus: geOut.paymentStatus,
+        declineSnippet: geOut.declineSnippet || null,
         reached3ds: geOut.reached3ds ?? null,
         threeDsUrl: geOut.threeDsUrl || null,
         payClickCount: geOut.payClickCount,
