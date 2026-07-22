@@ -20,7 +20,14 @@ import {
   isBandaiGeIssuerPaymentUrl,
   bandaiGeHandleActionId,
 } from "./bandai-ge-pay.js";
-import { extractGeCheckoutGuid } from "./bandai-ge-http.js";
+import {
+  extractGeCheckoutGuid,
+  parseJsonp,
+  buildGetCartTokenParams,
+  buildGetCartTokenUrl,
+  buildIssuerFormBody,
+  extractUrlStructureToken,
+} from "./bandai-ge-http.js";
 
 // --- F5 gate matrix ---
 assert.equal(isBandaiF5Gated("POST", "/login"), true);
@@ -199,6 +206,34 @@ assert.equal(
     "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba-4a1e-9c2d-08f4e43c73ba/8urc",
   ),
   "099033fe-73ba-4a1e-9c2d-08f4e43c73ba",
+);
+assert.deepEqual(
+  parseJsonp('callback_1({"Success":true,"CartToken":"bbb30554-2fd8-4780-995a-e4d29201cf96"})'),
+  { Success: true, CartToken: "bbb30554-2fd8-4780-995a-e4d29201cf96" },
+);
+assert.deepEqual(
+  parseJsonp('({"Success":true,"CartToken":"aaa30554-2fd8-4780-995a-e4d29201cf96"})'),
+  { Success: true, CartToken: "aaa30554-2fd8-4780-995a-e4d29201cf96" },
+);
+const gct = buildGetCartTokenParams({
+  merchantCartToken: "CART_Checkout_suffix",
+  area: "au",
+});
+assert.equal(gct.MerchantCartToken, "CART_Checkout_suffix");
+assert.equal(gct.MerchantId, "1925");
+assert.equal(gct.WebStoreInstanceCode, "au");
+assert.ok(buildGetCartTokenUrl({ merchantCartToken: "X" }).includes("/Checkout/GetCartToken?"));
+assert.ok(
+  buildIssuerFormBody({
+    card: { number: "4111111111111111", expMonth: "07", expYear: "31", cvv: "123" },
+    cartToken: "guid",
+    machineId: "m",
+    urlStructureToken: "jwt",
+  }).includes("PaymentData.cartToken=guid"),
+);
+assert.equal(
+  extractUrlStructureToken('name="PaymentData.UrlStructureTokenEncoded" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb"'),
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb",
 );
 
 console.log("bandai-flow.test.mjs ok");

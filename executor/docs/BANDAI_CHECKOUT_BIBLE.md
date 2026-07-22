@@ -169,13 +169,22 @@ mint sensors           →   POST …/checkout → checkoutSn   Pay → issuer /
 
 ### Can GE Pay skip Playwright?
 
-**Goal for drops: yes — GE UI Playwright will not scale under intensity.** Work started in `bandai-ge-http.js` (`postBandaiGeIssuerHttp` / capture replay). Wire-proven issuer is:
+**Goal for drops: yes — flag `bandaiGeHttpPay`.** Orchestrator: `runBandaiGeHttpPay` in `bandai-ge-http.js`.
 
-`POST secure-bandai.global-e.com/…/Payments/HandleCreditCardRequestV2/…`
+```
+HTTP checkoutSn + merchantCartToken
+  → GET gepi…/Checkout/GetCartToken?MerchantCartToken=…&MerchantId=1925&…   ✅ HTTP
+  → CartToken GUID
+  → GET webservices…/Checkout/v2/8urc/{guid}                               ✅ HTTP
+  → GET secure-bandai…/payments/CreditCardForm/{guid}/…                    ✅ HTTP (JWT)
+  → machineId = #ioBlackBox from snare.js (iovation RED)                   ⚠ needs DOM
+  → POST …/Payments/HandleCreditCardRequestV2/8urc/{guid}                  ✅ HTTP undici
+```
 
-That call needs a live Checkout/v2 session GUID, card iframe state, Forter, and often captcha/FingerprintJS tokens that GEM mints in-browser. HTTP `checkoutSn` alone boots `/orderdetails` **without** a payment frame (SPA **PROCEED** is what starts GEM).
+Lab (2026-07-22): GetCartToken + Checkout/v2 + CreditCardForm JWT all green over undici after HTTP `checkoutSn`. **`machineId` is iovation** (`s3.global-e.com/snare.js` → `#ioBlackBox`), not Forter — mint via F5 bridge `page.goto(Checkout/v2)` only (no Pay click / card fill). Pay UI Playwright is off the path.
 
-**Current contract:** GE Pay UI still Playwright until those tokens are HTTP-solvable. Lab capture of the first issuer body → `/tmp/bandai-ge-issuer-capture.json` feeds the undici prototype. Biggest GE latency today is GEM boot after Proceed (~25–40s), not login.
+**Lab:** `node executor/scripts/bandai-ge-http-lab.mjs` (`bandaiGeHttpPay:true`)  
+**Legacy:** `bandaiBrowserCheckout` (SPA PROCEED + Playwright Pay).
 
 ### HTTP default (`bandai.js`, F5 on)
 
