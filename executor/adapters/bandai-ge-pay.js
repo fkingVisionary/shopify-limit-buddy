@@ -592,7 +592,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
     let geIframeReady = false;
     let frameUrls = [];
     let gemVia = "timeout";
-    const gemDeadline = Date.now() + 45_000;
+    // Cold GEM can land just past 45s (lab: event @58948ms after 45s deadline).
+    const gemDeadline = Date.now() + 60_000;
     let pollI = 0;
     while (Date.now() < gemDeadline) {
       checkoutSn =
@@ -617,15 +618,21 @@ export async function browserBandaiGeFromCart(opts = {}) {
       await page.waitForTimeout(150);
       pollI += 1;
     }
-    page.off("frameattached", onFrame);
-    page.off("framenavigated", onFrame);
     await urlWait;
     await dismissCookieBanner(page);
 
     checkoutSn =
       checkoutSn ||
       (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
-    mark("after_proceed", { checkoutSn, gemPoll: pollI });
+    // Re-check after wait — frameattached can win the race against loop exit.
+    frameUrls = page.frames().map((f) => f.url());
+    if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
+      geIframeReady = true;
+      gemVia = earlyFrameUrl ? "event-late" : "poll-late";
+    }
+    page.off("frameattached", onFrame);
+    page.off("framenavigated", onFrame);
+    mark("after_proceed", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
     if (geIframeReady) {
       mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
     }
