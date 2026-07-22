@@ -290,10 +290,11 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // Bank ground truth (owner): last Revolut hit ~14:09 AEST = retest8 with BOTH
-  // handleaction/2+/3 on the wire. Labs that let /2 through and fulfilled /3
-  // locally reported pay_submitted but bank stayed silent — /3 is the issuer
-  // authorize. Policy: /1 network, /2 fulfill local, first /3+ to issuer once.
+  // Bank ground truth:
+  // - 14:09 AEST pair = unguarded /2+/3 on the wire (retest8)
+  // - 14:44 AEST: /2 network + /3 fulfilled local → Pay UI ok, Revolut silent
+  //   ⇒ /3 is authorize; /2 alone does not ping the bank (needed for card UI)
+  // Policy: /1+/2 always network; first /3+ to issuer once; later /3+ fulfill local.
   let armChargeGuard = false;
   let issuerHandleActionSent = false;
   let lastHandleActionOk = {
@@ -342,8 +343,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return;
     }
 
-    // Always allow GEM init (action 1).
-    if (handleAction && actionId === 1) {
+    // /1 init + /2 card/UI — always on the wire (fulfilling /2 broke card iframe).
+    if (handleAction && (actionId === 1 || actionId === 2)) {
       geNet.push({
         t: Date.now(),
         kind: "req",
@@ -351,10 +352,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
         url: url.slice(0, 200),
         chargeCandidate: true,
         handleAction: true,
-        actionId: 1,
-        init: true,
+        actionId,
+        init: actionId === 1,
       });
-      mark("charge_req_allowed", { handleAction: true, actionId: 1, url: url.slice(0, 140) });
+      mark("charge_req_allowed", {
+        handleAction: true,
+        actionId,
+        url: url.slice(0, 140),
+      });
       await route.continue();
       return;
     }
@@ -372,29 +377,21 @@ export async function browserBandaiGeFromCart(opts = {}) {
       chargeN: chargeReqCount,
     });
 
-    if (handleAction && actionId != null) {
-      // /2 = card/update side-effect that paired with /3 on Revolut. Do not
-      // send it to the issuer; keep UI happy with prior success JSON.
-      if (actionId === 2) {
+    // /3+ = issuer authorize — one network hit only.
+    if (handleAction && actionId != null && actionId >= 3) {
+      if (issuerHandleActionSent) {
         await fulfillHandleActionLocal(route, actionId, url);
         return;
       }
-      // /3+ = real authorize (bank silent when this was fulfilled locally).
-      if (actionId >= 3) {
-        if (issuerHandleActionSent) {
-          await fulfillHandleActionLocal(route, actionId, url);
-          return;
-        }
-        issuerHandleActionSent = true;
-        mark("charge_req_allowed", {
-          handleAction: true,
-          actionId,
-          issuer: true,
-          url: url.slice(0, 140),
-        });
-        await route.continue();
-        return;
-      }
+      issuerHandleActionSent = true;
+      mark("charge_req_allowed", {
+        handleAction: true,
+        actionId,
+        issuer: true,
+        url: url.slice(0, 140),
+      });
+      await route.continue();
+      return;
     }
 
     if (chargeReqCount > 1) {
