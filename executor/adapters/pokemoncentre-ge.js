@@ -1,11 +1,14 @@
-// Global-e pay helper for Pokémon Centre AU/NZ — Bandai-informed playbook.
+// Global-e BROWSER pay helper for Pokémon Centre AU/NZ — lab / wire-capture only.
 // Wire-proven mid (2026-07-22 Next `_app` prod config):
 //   globalE.iframeUrl = //gepi.global-e.com/includes/js/1634  → mid 1634
 // Do not use Bandai 1925.
 //
-// Policy: HTTP through Cortex → /intl-checkout handoff; browser only for GE Pay UI.
+// Product policy: scale path is HTTP (`pokemoncentre-ge-http.js`). This Playwright
+// driver is opt-in (`pcBrowserCheckout`) for HAR/wire capture — not production pay.
+// Bandai also stopped at HTTP handoff + browser Pay; do not claim Bandai was full HTTP GE.
 // Score: bank ping → GE confirmation → TPCI order id (not client ok alone).
 
+import fs from "node:fs";
 import { chromium } from "playwright";
 
 /** Prod Global-e merchant id from gepi `/includes/js/{mid}` (confirmed GEM_JS_1634). */
@@ -57,8 +60,16 @@ async function dismissCmp(page) {
   }
 }
 
+function redactSecrets(s) {
+  let out = String(s ?? "");
+  out = out.replace(/\b\d{13,19}\b/g, "[REDACTED_PAN]");
+  out = out.replace(/(cvv|cvd|cvc|securityCode|cardNum|cardNumber|pan)=([^&\s]+)/gi, "$1=[REDACTED]");
+  out = out.replace(/("(?:cvv|cvd|cvc|securityCode|cardNum|cardNumber|pan)"\s*:\s*")[^"]+"/gi, '$1[REDACTED]"');
+  return out;
+}
+
 /**
- * Drive Global-e Checkout/v2 + nested CreditCardForm after landing on intl-checkout.
+ * Browser-only GE Pay — lab / wire capture. Prefer `runGlobalEPayHttp` for product.
  *
  * @param {object} opts
  * @param {string} opts.checkoutUrl — PC /intl-checkout (or GE orderdetails) URL
@@ -69,6 +80,7 @@ async function dismissCmp(page) {
  * @param {string|number} [opts.globaleMid] — from HAR; optional
  * @param {string} [opts.secureHostPattern] — e.g. secure-pokemon / secure-*.global-e.com
  * @param {boolean} [opts.placeOrder]
+ * @param {string} [opts.debugDir] — dump redacted GE request wire here
  * @param {Function} [opts.onProgress]
  */
 export async function runGlobalEPay(opts = {}) {
@@ -131,8 +143,41 @@ export async function runGlobalEPay(opts = {}) {
   let geIframeReady = false;
   let filled = false;
   let payClicked = false;
+  let handleCreditPosted = false;
   const mid = opts.globaleMid || PC_GLOBALE_MID;
   const debugDir = opts.debugDir || null;
+  const wireLog = [];
+
+  // Full GE request wire (redacted) — needed to port Pay off Playwright.
+  page.on("request", (req) => {
+    const u = req.url();
+    if (!/global-e\.com|ges\.global-e/i.test(u)) return;
+    const method = req.method();
+    const interesting =
+      method !== "GET" ||
+      /Checkout|Payment|CreditCard|Handle|Cart|Address|Complete|Order|GEM/i.test(u);
+    if (!interesting) return;
+    if (/HandleCreditCardRequestV2/i.test(u) && method !== "GET") handleCreditPosted = true;
+    wireLog.push({
+      t: Date.now(),
+      method,
+      url: redactSecrets(u).slice(0, 500),
+      resourceType: req.resourceType(),
+      postData: redactSecrets(req.postData() || "").slice(0, 8000) || null,
+      headers: (() => {
+        try {
+          const h = req.headers();
+          const keep = {};
+          for (const k of ["content-type", "origin", "referer", "x-requested-with", "accept"]) {
+            if (h[k]) keep[k] = h[k];
+          }
+          return keep;
+        } catch {
+          return {};
+        }
+      })(),
+    });
+  });
 
   try {
     const s0 = Date.now();
@@ -218,9 +263,9 @@ export async function runGlobalEPay(opts = {}) {
     if (!geIframeReady) {
       if (debugDir) {
         try {
-          const fs = await import("node:fs");
           fs.mkdirSync(debugDir, { recursive: true });
           fs.writeFileSync(`${debugDir}/ge-fail.html`, await page.content());
+          fs.writeFileSync(`${debugDir}/ge-wire.json`, JSON.stringify(wireLog, null, 2));
           await page.screenshot({ path: `${debugDir}/ge-fail.png`, fullPage: true }).catch(() => {});
         } catch {
           /* ignore */
@@ -238,15 +283,41 @@ export async function runGlobalEPay(opts = {}) {
     }
 
     if (!placeOrder) {
+      if (debugDir) {
+        try {
+          fs.mkdirSync(debugDir, { recursive: true });
+          fs.writeFileSync(`${debugDir}/ge-wire.json`, JSON.stringify(wireLog, null, 2));
+          fs.writeFileSync(
+            `${debugDir}/ge-wire-posts.json`,
+            JSON.stringify(
+              wireLog.filter((w) => w.method && w.method !== "GET"),
+              null,
+              2,
+            ),
+          );
+          for (const frame of page.frames()) {
+            if (!/CreditCardForm|Checkout\/v2/i.test(frame.url())) continue;
+            const html = await frame.content().catch(() => "");
+            if (!html) continue;
+            const name = /CreditCardForm/i.test(frame.url())
+              ? "ge-creditcardform.html"
+              : "ge-checkout-v2.html";
+            fs.writeFileSync(`${debugDir}/${name}`, redactSecrets(html).slice(0, 200_000));
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       await browser.close();
       return {
         ok: true,
         steps,
         dryRun: true,
         checkoutStage: "tokenize",
-        note: "GE iframe ready — placeOrder=false (stop before Pay)",
+        note: "GE iframe ready — placeOrder=false (stop before Pay; wire dumped if debugDir)",
         globaleMid: opts.globaleMid ?? null,
         paymentStatus: "dry_run",
+        engine: "browser_capture",
       };
     }
 
@@ -608,7 +679,8 @@ export async function runGlobalEPay(opts = {}) {
         .slice(0, 8),
     });
 
-    // If GE shows field validation (e.g. Mobile Phone), fix + click again once.
+    // One retry only for explicit client validation — never if HandleCreditCard already fired
+    // (broad `/is required/` caused double auth → multiple bank declines per run).
     await page.waitForTimeout(2000);
     let earlyText = "";
     for (const frame of page.frames()) {
@@ -616,7 +688,12 @@ export async function runGlobalEPay(opts = {}) {
         earlyText += await frame.locator("body").innerText().catch(() => "");
       }
     }
-    if (/Mobile Phone is required|Address Line 1 is required|is required|post code of 4 digits/i.test(earlyText)) {
+    const needsFieldRetry =
+      !handleCreditPosted &&
+      /Mobile Phone is required|Address Line 1 is required|post code of 4 digits|Expiry Year is required/i.test(
+        earlyText,
+      );
+    if (needsFieldRetry) {
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
         await frame.getByLabel(/Address\s*Line\s*1/i).fill("1 George Street").catch(() => {});
@@ -643,7 +720,6 @@ export async function runGlobalEPay(opts = {}) {
         }
         await frame.locator("#modalOk, button:has-text('Ok')").first().click({ timeout: 2000 }).catch(() => {});
       }
-      // Re-assert expiry year on secure form
       for (const frame of page.frames()) {
         if (!/CreditCardForm|secure\.ges/i.test(frame.url())) continue;
         let expYear = String(card.expYear);
@@ -654,15 +730,19 @@ export async function runGlobalEPay(opts = {}) {
         }
       }
       await page.waitForTimeout(1000);
-      for (const frame of page.frames()) {
-        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
-        const payBtn = frame.locator("#btnPay, button:has-text('PURCHASE NOW')").first();
-        if (await payBtn.count().catch(() => 0)) {
-          await payBtn.click({ timeout: 8000 }).catch(() => {});
-          push("ge_pay_click_retry", { ok: true, note: "PURCHASE NOW after phone/year fix" });
-          break;
+      if (!handleCreditPosted) {
+        for (const frame of page.frames()) {
+          if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+          const payBtn = frame.locator("#btnPay, button:has-text('PURCHASE NOW')").first();
+          if (await payBtn.count().catch(() => 0)) {
+            await payBtn.click({ timeout: 8000 }).catch(() => {});
+            push("ge_pay_click_retry", { ok: true, note: "PURCHASE NOW after field fix (single retry)" });
+            break;
+          }
         }
       }
+    } else if (handleCreditPosted) {
+      push("ge_pay_no_retry", { ok: true, note: "HandleCreditCard already posted — skip second PURCHASE NOW" });
     }
 
     // Optional 3DS / decline — success/decline can be frictionless (Bandai lesson).
@@ -738,9 +818,22 @@ export async function runGlobalEPay(opts = {}) {
     }
     if (debugDir) {
       try {
-        const fs = await import("node:fs");
+        fs.mkdirSync(debugDir, { recursive: true });
         fs.writeFileSync(`${debugDir}/ge-after-pay.txt`, iframeText.slice(0, 20_000));
         fs.writeFileSync(`${debugDir}/ge-pay-responses.json`, JSON.stringify(payResponses, null, 2));
+        fs.writeFileSync(`${debugDir}/ge-wire.json`, JSON.stringify(wireLog, null, 2));
+        const posts = wireLog.filter((w) => w.method && w.method !== "GET");
+        fs.writeFileSync(`${debugDir}/ge-wire-posts.json`, JSON.stringify(posts, null, 2));
+        for (const frame of page.frames()) {
+          if (!/CreditCardForm/i.test(frame.url())) continue;
+          const html = await frame.content().catch(() => "");
+          if (html) {
+            fs.writeFileSync(
+              `${debugDir}/ge-creditcardform.html`,
+              redactSecrets(html).slice(0, 200_000),
+            );
+          }
+        }
         await page.screenshot({ path: `${debugDir}/ge-after-pay.png`, fullPage: true }).catch(() => {});
       } catch {
         /* ignore */
