@@ -956,41 +956,38 @@ export async function browserBandaiGeFromCart(opts = {}) {
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
-          // Atomic single click inside the frame — disable in the same turn so
-          // GE cannot queue a second Pay (Revolut still paired with 1 route hit).
-          const clicked = await frame.evaluate(() => {
-            const payLabel = (b) =>
-              (b.innerText || b.value || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
-            const isPay = (b) => /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
-            const buttons = [
-              ...document.querySelectorAll("button, input[type=submit], a[role=button]"),
-            ].filter(isPay);
-            const btn =
-              buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true") ||
-              buttons[0];
-            if (!btn || btn.dataset.j1mPaid === "1") return false;
-            btn.dataset.j1mPaid = "1";
-            // Disable BEFORE click so GE/handlers cannot queue a second Pay.
-            for (const b of buttons) {
-              b.setAttribute("disabled", "true");
-              b.setAttribute("aria-disabled", "true");
-              b.style.pointerEvents = "none";
-            }
-            btn.click();
-            return true;
-          });
-          if (!clicked) {
-            await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
-          }
+          // Playwright locator click only — bare btn.click() skips GE's issuer
+          // chain (labs: eval1 → no HandleCreditCard; locator → issuer on wire).
+          // ONE click; soft-disable Pay CTAs immediately after.
+          await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          await frame
+            .evaluate(() => {
+              const payLabel = (b) =>
+                (b.innerText || b.value || b.getAttribute("aria-label") || "")
+                  .replace(/\s+/g, " ")
+                  .trim();
+              const isPay = (b) =>
+                /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
+              for (const b of document.querySelectorAll(
+                "button, input[type=submit], a[role=button]",
+              )) {
+                if (!isPay(b)) continue;
+                b.dataset.j1mPaid = "1";
+                b.setAttribute("disabled", "true");
+                b.setAttribute("aria-disabled", "true");
+                b.style.pointerEvents = "none";
+              }
+            })
+            .catch(() => {});
           payClickCount += 1;
           paymentStatus = "pay_clicked";
-          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=${clicked ? "eval1" : "locator"}`;
+          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=locator`;
           paid = true;
           mark("pay_clicked", {
             payClickCount,
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
-            via: clicked ? "eval1" : "locator",
+            via: "locator",
             payDiag,
           });
         } catch (e) {
