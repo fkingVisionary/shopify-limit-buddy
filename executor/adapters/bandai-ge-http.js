@@ -1334,8 +1334,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
       page: opts.page,
       checkoutV2Url: v2Url,
       timeoutMs: opts.iovationTimeoutMs,
-      // Seed page from undici so snare sees the same cart, but we only keep machineId.
-      jar: ctx?.jar,
+      // Default: isolated fingerprint mint — do not seed/merge GE cookies.
+      // Seeding jar→page then merging page→jar was contaminating the undici
+      // cart session (IsTheSameCartToken=False on every bank JWT).
+      jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
     });
     push("ge_iovation_mint", {
       ok: mint.ok,
