@@ -216,8 +216,8 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | **Owner desk** — capture incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm, T&Cs, captcha/Forter/TMX, post-Pay |
 | **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
 | **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
-| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Wired** — BFF `/tpci-ecommweb-api` public token + `POST /cart/add-product/{epItemId}` (201 proven 2026-07-22) |
-| **P4** | Global-e AU checkout / pay | **Stub** — `pokemoncentre-ge.js` (Bandai checklist; mid from `task.globaleMid` / `PC_GLOBALE_MID`) |
+| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Proven** — public token → ATC **201** → `GET /cart/data?type=full` → `cart-guid` (tls-worker + sticky AU, 2026-07-22) |
+| **P4** | Global-e AU checkout / pay | **Wired** — `POST /auth/get-globale-m2m-token` → `access-token`; mid **1634** (`gepi.global-e.com/includes/js/1634`); browser Pay via `pokemoncentre-ge.js` |
 | **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |
 
 ### Adapter surface (2026-07-22)
@@ -240,12 +240,12 @@ Desktop: store **Pokémon Centre AU** → modes above. Sticky AU ISP + Hyper key
 |---|---|
 | Hyper antibot | **High** for Incapsula+DD; **gap** on hCaptcha |
 | API clarity | Medium — Cortex paths known; bodies unknown |
-| Global-e | **Improved** — Bandai proved issuer path; PC still needs mid/HAR |
+| Global-e | **mid 1634 + m2m proven**; browser Checkout/v2 boot still the open gate |
 | Account friction | Medium — accounts helpful; address/fraud hard limits |
 | Competitive | Crowded |
 | Executor reuse | GE patterns from Bandai; DD from AusPost; Incapsula from HN |
 
-**Verdict:** Scaffold shipped on a feature branch (Kmart untouched). Next critical path is **AU ISP HAR** for Cortex ATC bodies + GE merchant mid — then harden P3/P4 against wire proof (bank → confirmation).
+**Verdict:** HTTP cart + GE m2m are wire-proven on **tls-worker** (undici often `view=captcha`). Next: Playwright GE Pay with mid **1634** through decline/3DS, then harden.
 
 ---
 

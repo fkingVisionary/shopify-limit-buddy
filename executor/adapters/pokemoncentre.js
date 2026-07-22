@@ -8,7 +8,9 @@
 //   edge      — warm only (Incapsula + DD probe)
 //   har_probe — warm + Cortex path probe (for HAR day)
 //
-// Transport: undici HTTP-first. Browser only for GE Pay (placeOrder) or hCaptcha assist.
+// Transport: prefer tls-worker (chrome_131) for DataDome BFF trust; undici often
+// escalates interstitial → view=captcha. Browser only for GE Pay / hCaptcha assist.
+// Global-e mid: 1634 (gepi.global-e.com/includes/js/1634).
 
 import {
   warmPokemonCentre,
@@ -31,6 +33,9 @@ import {
   parsePdpAvailability,
   getPublicToken,
   getGlobaleM2mToken,
+  cartGuidFromCartData,
+  cortexApiHeaders,
+  PC_API_BASE,
 } from "./pokemoncentre-cortex.js";
 import {
   extractHcaptchaSitekey,
@@ -38,7 +43,7 @@ import {
   solveHcaptcha,
   capsolverKey,
 } from "./pokemoncentre-hcaptcha.js";
-import { runGlobalEPay } from "./pokemoncentre-ge.js";
+import { runGlobalEPay, PC_GLOBALE_MID } from "./pokemoncentre-ge.js";
 import { looksLikeDataDomeBlock, hyperConfigured } from "../antibot.js";
 
 function makeStep(steps, ctx) {
@@ -340,19 +345,54 @@ async function runCheckout(task, ctx, session, tStep, steps) {
   let geM2m = null;
   let checkoutStage = atc.ok ? "cart" : "pre_cart";
 
+  let cartGuid = pdp.cart?.cartGuid || task.cartGuid || null;
   if (atc.ok && usesGe) {
-    // Prefer cartGuid from PDP Next state; refresh home if missing.
-    let cartGuid = pdp.cart?.cartGuid || task.cartGuid || null;
+    // Prefer BFF /cart/data?type=full → cart-guid (wire-proven 2026-07-22).
+    if (!cartGuid) {
+      const cartData = await tStep("cart_data", async () => {
+        try {
+          const apiH = cortexApiHeaders({
+            accessToken: session.state.cortexAuth?.accessToken,
+            locale: session.state.locale,
+            referer: `${session.state.base}/`,
+            userAgent: session.state.userAgent,
+          });
+          const res = await session.get(`${PC_API_BASE}/cart/data?type=full`, {
+            api: true,
+            headers: apiH,
+          });
+          const text = await session.readText(res);
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            /* ignore */
+          }
+          const guid = cartGuidFromCartData(json);
+          return {
+            ok: Boolean(guid),
+            cartGuid: guid,
+            status: res.status,
+            note: guid ? `cart-guid ${guid}` : `cart/data ${res.status} no cart-guid`,
+          };
+        } catch (e) {
+          return { ok: false, note: e?.message || String(e) };
+        }
+      });
+      cartGuid = cartData?.cartGuid || null;
+    }
     if (!cartGuid) {
       const home = await fetchWithEdgeClear(session, ctx, `${session.state.base}/`, { tStep });
       cartGuid = parsePdpAvailability(home.html)?.cart?.cartGuid || null;
     }
     if (cartGuid) {
       geM2m = await tStep("ge_m2m", () => getGlobaleM2mToken(session, { cartGuid }));
+      checkoutStage = geM2m?.ok ? "tokenize" : "cart";
     }
   }
 
   // Handoff URL — real SPA boot preferred over raw order id (Bandai lesson).
+  // Note: bare GET /intl-checkout may 302 → /cart; GE iframe boots client-side with mid 1634.
   const intlUrl =
     task.intlCheckoutUrl ||
     (usesGe ? `${session.state.base}/intl-checkout` : `${session.state.base}/checkout`);
@@ -360,7 +400,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
   if (atc.ok && (task.pcBrowserCheckout === true || task.placeOrder === true)) {
     checkoutStage = "tokenize";
     geResult = await tStep("ge_pay", async () => {
-      const mid = task.globaleMid || task.geMerchantId || process.env.PC_GLOBALE_MID || null;
+      const mid =
+        task.globaleMid ||
+        task.geMerchantId ||
+        process.env.PC_GLOBALE_MID ||
+        PC_GLOBALE_MID;
       return runGlobalEPay({
         checkoutUrl: task.geCheckoutUrl || intlUrl,
         card: task.card || null,
@@ -379,8 +423,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       step: "intl_checkout_stub",
       ok: true,
       note: usesGe
-        ? `would open ${intlUrl} (set placeOrder or pcBrowserCheckout for GE Pay)`
+        ? `would open ${intlUrl} mid=${PC_GLOBALE_MID} (set placeOrder or pcBrowserCheckout for GE Pay)`
         : "domestic checkout locale — GE skipped",
+      cartGuid,
+      geM2m: geM2m?.ok || false,
+      globaleMid: PC_GLOBALE_MID,
     });
   }
 

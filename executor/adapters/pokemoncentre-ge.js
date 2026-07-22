@@ -1,10 +1,16 @@
 // Global-e pay helper for Pokémon Centre AU/NZ — Bandai-informed playbook.
-// Merchant mid / gem-* hosts are UNKNOWN until HAR (do not hardcode Bandai 1925).
+// Wire-proven mid (2026-07-22 Next `_app` prod config):
+//   globalE.iframeUrl = //gepi.global-e.com/includes/js/1634  → mid 1634
+// Do not use Bandai 1925.
 //
 // Policy: HTTP through Cortex → /intl-checkout handoff; browser only for GE Pay UI.
 // Score: bank ping → GE confirmation → TPCI order id (not client ok alone).
 
 import { chromium } from "playwright";
+
+/** Prod Global-e merchant id from gepi `/includes/js/{mid}` (confirmed GEM_JS_1634). */
+export const PC_GLOBALE_MID = 1634;
+export const PC_GLOBALE_SCRIPT = "https://gepi.global-e.com/includes/js/1634";
 
 function parseProxy(raw) {
   if (!raw) return null;
