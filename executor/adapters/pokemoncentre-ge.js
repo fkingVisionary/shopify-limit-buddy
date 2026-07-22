@@ -363,7 +363,8 @@ export async function runGlobalEPay(opts = {}) {
           [/FirstName|first.?name/i, "Test", "firstName"],
           [/LastName|last.?name/i, "User", "lastName"],
           [/(^|[^a-z])Email([^a-z]|$)/i, opts.email || "decline.test@example.com", "email"],
-          [/Address1|AddressLine1|address-line1/i, "1 George Street", "address1"],
+          // GE labels this "Address Line 1" — spaced form must match; exclude Line 2.
+          [/Address\s*Line\s*1|Address1|AddressLine1|address-line-?1/i, "1 George Street", "address1"],
           [/City|Suburb/i, "Sydney", "city"],
           [/ZIP|ZipCode|Postcode|PostalCode/i, "2000", "zip"],
           [/MobilePhone|(^|[^a-z])Phone([^a-z]|$)|PhoneNumber/i, opts.phone || "0412345678", "phone"],
@@ -379,6 +380,7 @@ export async function runGlobalEPay(opts = {}) {
             // Keep zip vs phone strictly separate (saw zip=2000041234 when phone typed into postcode).
             if (key === "zip" && /phone|mobile/i.test(hay)) continue;
             if (key === "phone" && /zip|postal|postcode/i.test(hay)) continue;
+            if (key === "address1" && /Address\s*Line\s*2|Address2|AddressLine2|address-line-?2/i.test(hay)) continue;
             const uid = `${d.tag}|${d.id}|${d.name}`;
             if (used.has(uid)) continue;
             const parts = [];
@@ -392,7 +394,10 @@ export async function runGlobalEPay(opts = {}) {
               break;
             }
           }
-          if (!ok && key !== "phone") {
+          if (!ok && key === "address1") {
+            ok = await typeInto(frame.getByLabel(/Address\s*Line\s*1/i).first(), val);
+          }
+          if (!ok && key !== "phone" && key !== "address1") {
             ok = await typeInto(frame.getByLabel(re).first(), val);
           }
           if (!ok && key === "phone") {
@@ -414,9 +419,22 @@ export async function runGlobalEPay(opts = {}) {
           filledKeys.push("state");
         }
 
-        // Hard re-assert zip (4 digits) + mobile — GE rejected zip "2000041234" and empty phone.
+        // Hard re-assert address1 + zip (4 digits) + mobile — GE rejected empty Address Line 1 / bad zip.
         for (const d of discovered || []) {
           const hay = `${d.name} ${d.id} ${d.aria}`;
+          if (
+            /Address\s*Line\s*1|Address1|AddressLine1|address-line-?1/i.test(hay) &&
+            !/Address\s*Line\s*2|Address2|AddressLine2|address-line-?2/i.test(hay) &&
+            d.tag !== "SELECT"
+          ) {
+            const parts = [];
+            if (d.id) parts.push(`[id="${d.id.replace(/"/g, '\\"')}"]`);
+            if (d.name) parts.push(`[name="${d.name.replace(/"/g, '\\"')}"]`);
+            if (parts.length) {
+              const ok = await typeInto(frame.locator(parts.join(", ")).first(), "1 George Street");
+              if (ok) filledKeys.push("address1");
+            }
+          }
           if (/ZIP|ZipCode|Postcode|PostalCode/i.test(hay) && !/phone|mobile/i.test(hay) && d.tag !== "SELECT") {
             const parts = [];
             if (d.id) parts.push(`[id="${d.id.replace(/"/g, '\\"')}"]`);
@@ -433,9 +451,13 @@ export async function runGlobalEPay(opts = {}) {
             }
           }
         }
+        if (!filledKeys.includes("address1")) {
+          const ok = await typeInto(frame.getByLabel(/Address\s*Line\s*1/i).first(), "1 George Street");
+          if (ok) filledKeys.push("address1");
+        }
 
-        addressFilled = filledKeys.length >= 3;
-        if (phoneFilled) break;
+        addressFilled = filledKeys.includes("address1") && filledKeys.length >= 3;
+        if (phoneFilled && filledKeys.includes("address1")) break;
       }
       if (!phoneFilled) await page.waitForTimeout(1000);
     }
@@ -594,11 +616,21 @@ export async function runGlobalEPay(opts = {}) {
         earlyText += await frame.locator("body").innerText().catch(() => "");
       }
     }
-    if (/Mobile Phone is required|is required|post code of 4 digits/i.test(earlyText)) {
+    if (/Mobile Phone is required|Address Line 1 is required|is required|post code of 4 digits/i.test(earlyText)) {
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        await frame.getByLabel(/Address\s*Line\s*1/i).fill("1 George Street").catch(() => {});
         await frame.getByLabel(/Zip|Postcode/i).fill("2000").catch(() => {});
         await frame.getByLabel(/Mobile Phone/i).fill(opts.phone || "0412345678").catch(() => {});
+        const addr1 = frame
+          .locator(
+            'input[name*="Address1" i], input[id*="Address1" i], input[name*="AddressLine1" i], input[id*="AddressLine1" i], input[autocomplete="address-line1"]',
+          )
+          .first();
+        if (await addr1.count().catch(() => 0)) {
+          await addr1.click().catch(() => {});
+          await addr1.fill("1 George Street").catch(() => {});
+        }
         const zip = frame.locator('input[name*="ZIP" i], input[id*="ZIP" i], input[name*="Postal" i]').first();
         if (await zip.count().catch(() => 0)) {
           await zip.click().catch(() => {});
