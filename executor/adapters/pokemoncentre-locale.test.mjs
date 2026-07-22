@@ -51,10 +51,43 @@ assert.equal(
   "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C",
 );
 
-import { PC_REESE_SCRIPT_PATH, PC_INCAP_SITE_ID, PC_DATADOME_HSH } from "./pokemoncentre-edge.js";
+import {
+  PC_REESE_SCRIPT_PATH,
+  PC_INCAP_SITE_ID,
+  PC_DATADOME_HSH,
+  parseDatadomeSetCookie,
+  applyDatadomeSolveJson,
+} from "./pokemoncentre-edge.js";
 assert.equal(PC_REESE_SCRIPT_PATH, "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C");
 assert.equal(PC_INCAP_SITE_ID, "2682446");
 assert.equal(PC_DATADOME_HSH, "5B45875B653A484CC79E57036CE9FC");
+
+// Hyper interstitial cookie field is a Set-Cookie line — store VALUE only.
+assert.equal(
+  parseDatadomeSetCookie(
+    "datadome=ABC123; Max-Age=31536000; Domain=.pokemoncenter.com; Path=/; Secure; SameSite=Lax",
+  ),
+  "ABC123",
+);
+assert.equal(parseDatadomeSetCookie("plainValueOnly"), "plainValueOnly");
+{
+  const jar = { store: null, set(k, v) { this.store = { k, v }; } };
+  const redirect = applyDatadomeSolveJson(jar, {
+    cookie: "datadome=GOOD; Max-Age=1; Path=/",
+    view: "redirect",
+    url: "https://www.pokemoncenter.com/en-au/",
+  });
+  assert.equal(redirect.ok, true);
+  assert.equal(jar.store.v, "GOOD");
+  const captcha = applyDatadomeSolveJson(jar, {
+    cookie: "datadome=ESC; Max-Age=1; Path=/",
+    view: "captcha",
+    url: "https://geo.captcha-delivery.com/captcha/?t=fe",
+  });
+  // Cookie may be applied, but view≠redirect is not Hyper interstitial success.
+  assert.equal(captcha.ok, false);
+  assert.equal(captcha.view, "captcha");
+}
 
 const ddHtml = `<html><body><script>var dd={'rt':'c','cid':'ABC','hsh':'HASH','t':'bv','s':9817,'e':'ee','host':'geo.captcha-delivery.com','cookie':'ddcookie'}</script></body></html>`;
 assert.equal(looksLikeDataDomeBlock(ddHtml, 403, { get: () => "protected" }), true);

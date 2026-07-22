@@ -92,11 +92,11 @@ Playwright HAR via sticky ISP (see `executor/har/pokemoncentre/`).
 | Reese script | `/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C` (confirmed) |
 | Reese POST | `POST …?d=www.pokemoncenter.com` `text/plain` → `{"token":"3:…"}` → cookie `reese84` **minted in browser** |
 | Incapsula site id | **2682446** (`visid_incap_2682446`, `incap_ses_*_2682446`) |
-| DataDome | **`t:'bv'` IP ban** on `/en-au/` even after Reese — `rt:'c'`, `hsh:'5B45875B653A484CC79E57036CE9FC'`, `s:9817`, `ct.captcha-delivery.com/c.js` |
+| DataDome | Slider block with **`t:'bv'`** after Reese — `rt:'c'`, `hsh:'5B45875B653A484CC79E57036CE9FC'`, `s:9817`, `ct.captcha-delivery.com/c.js` ([Hyper: hard IP block on slider `t=bv`](https://docs.hypersolutions.co/datadome/getting-started.md)) |
 | Cortex / GE | Not reached on this exit |
-| Proxy note | CONNECT to `pokemoncenter.com` often **403** after a short burst — dwell in one context; don’t spray navigations |
+| CONNECT flakes | Seen after bursts — classify with §3.4; do not spray proxies or assume “burnt exit” from a single connection error |
 
-**Implication:** This Wealth-style ISP exit is **DataDome-banned** for TPCI. Reese alone is insufficient. Next capture needs a fresher residential sticky (or Hyper DD once `t≠bv`). Artifacts: `har/pokemoncentre/README.md`.
+**Implication:** On that Chromium HAR, Reese worked and DataDome returned a Hyper-documented **slider hard block** (`t=bv`) — rotate sticky for *that* signal only. Reese alone is never enough. Prefer Hyper handlers / correct TLS+header order before churning exits. Artifacts: `har/pokemoncentre/README.md`.
 
 ### 3.3 Known layered checks (public + bot docs)
 - Incapsula clear → browse
@@ -105,6 +105,22 @@ Playwright HAR via sticky ISP (see `executor/har/pokemoncentre/`).
 - Queue when traffic spikes (session tied to IP)
 
 **Module implication:** sticky residential/ISP per task; Hyper Reese84/UTMVC + DataDome slider/interstitial; **separate hCaptcha harvest** (browser/desktop) — Hyper does not solve hCaptcha.
+
+### 3.4 Failure triage (Hyper Solutions — do not over-blame proxies)
+
+Connection errors, 403s, and challenge loops are **easy to mislabel as proxy issues**. Classify against Hyper docs first:
+
+| Signal | Meaning (Hyper) | Action |
+|---|---|---|
+| Interstitial POST → `{ cookie, view: "redirect", url }` | **Solved** ([getting started](https://docs.hypersolutions.co/datadome/getting-started.md)) | Parse `datadome=VALUE` only; retry protected URL |
+| Interstitial → `view: "captcha"` (not `redirect`) | **Not solved** — usually TLS / header-order / cookie-jar mismatch, not automatic “dead proxy” | Fix client per [header order](https://docs.hypersolutions.co/request-based-basics/header-order.md) + [TLS fingerprinting](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md); prefer Hyper Playwright `DataDomeHandler` |
+| Slider block page with `t: "bv"` / SDK `isIpBanned` | **Hard IP block** — “solving the challenge will not have any effect” ([slider warning](https://docs.hypersolutions.co/datadome/getting-started.md)) | Rotate sticky session |
+| Escalated captcha URL containing `t=bv` | Treat as Hyper hard-block hint **after** confirming it is a slider/captcha path, not an interstitial parse bug | Rotate only if implementation already matches Hyper success shape |
+| Tags `ch` then `le` | Trust telemetry — not a block page ([tags](https://docs.hypersolutions.co/datadome/tags.md)) | POST `/js`, update `datadome` from JSON cookie |
+| CONNECT timeout / `net::ERR_*` / undici socket errors | Often handshake / TLS / proxy *path* flake | Retry once on same sticky; check TLS client profile — **do not** condemn the whole pool from one error |
+| Cookie field `datadome=VALUE; Max-Age=…` stored whole | Implementation bug (we hit this) | Strip to VALUE only (`parseDatadomeSetCookie`) |
+
+**Rule of thumb:** bank-style proof for antibot is Hyper’s documented success shapes (`view: "redirect"`, slider check cookie). Proxy rotation is a last resort for documented `t=bv` hard blocks — not the default explanation for every failure.
 
 **Transport lesson (Bandai):** keep **catalog/cart HTTP-first** once edge cookies are solved. Do **not** default a full Playwright checkout ladder for Cortex ATC. Browser is for (a) edge solve assist if Hyper stalls, (b) hCaptcha, (c) Global-e pay UI.
 
@@ -261,3 +277,4 @@ Desktop: store **Pokémon Centre AU** → modes above. Sticky AU ISP + Hyper key
 - Elite Fourum / webcompat reports (layered antibot)
 - Press: AU/NZ launch June 2024
 - **Bandai AU executor labs 2026-07-22** — HTTP `checkoutSn`, GE Checkout/v2 + CreditCardForm, Revolut issuer decline (A$317 Globale/Bandai Spirit); see `BANDAI_AU_MODULE.md` §7 + `adapters/bandai-browser-checkout.js` / `bandai-f5.js`
+- **Hyper Solutions** — [DataDome getting started](https://docs.hypersolutions.co/datadome/getting-started.md) (`view: "redirect"`, slider `t=bv`), [tags](https://docs.hypersolutions.co/datadome/tags.md), [header order](https://docs.hypersolutions.co/request-based-basics/header-order.md), [TLS fingerprinting](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md), [Incapsula Reese84](https://docs.hypersolutions.co/incapsula/reese84.md)

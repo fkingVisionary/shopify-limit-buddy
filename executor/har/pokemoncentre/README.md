@@ -10,11 +10,11 @@ _Tooling: Playwright HAR (`experiments/pokemoncentre-isp-capture.mjs`)_
 |---|---|
 | Proxy egress | ✅ `45.42.47.34` |
 | Incapsula Reese84 | ✅ Browser minted `reese84` via `POST /vice-come-…?d=www.pokemoncenter.com` → `{ token: "3:…" }` |
-| DataDome | ❌ **`t:'bv'` IP ban** on `/en-au/` (rt=`c`, hsh=`5B45875B653A484CC79E57036CE9FC`, s=`9817`) |
+| DataDome | Slider block page with **`t:'bv'`** (rt=`c`, hsh=`5B45875B653A484CC79E57036CE9FC`, s=`9817`) — Hyper documents this as a hard IP block ([getting started → Slider](https://docs.hypersolutions.co/datadome/getting-started.md)) |
 | Cortex / Global-e | Not reached — blocked before SPA boot |
-| Proxy stability | CONNECT to `pokemoncenter.com` often **403** after a short burst — space requests / reuse one browser context |
+| CONNECT / nav flakes | Observed after bursts — **do not auto-blame the proxy**; check TLS/header order and handler status first ([TLS](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md), [header order](https://docs.hypersolutions.co/request-based-basics/header-order.md)) |
 
-**Ground truth:** Reese clears on this ISP in Chromium, but DataDome has already banned the exit. Need a **fresh residential sticky** (or Hyper DD after IP rotate) before Cortex HAR is possible. Do not burn the same three Wealth-style exits hoping DD lifts.
+**Ground truth for this Chromium HAR:** Reese cleared; DataDome served a **slider** page with `t=bv`, which Hyper says solving will not fix — rotate sticky session for that case only. Other failures (undici `view=captcha`, connection errors) need the Hyper triage in `docs/POKEMON_CENTRE_MODULE.md` §3.4 before calling the exit dead.
 
 ## Confirmed wire
 
@@ -43,7 +43,7 @@ Full HAR kept local (`/tmp/pc-capture-isp/`) — not committed (large + tokens).
 
 ## Next capture (owner)
 
-1. Fresh sticky AU residential **not** in the banned `45.42.47.*` set (or wait for DD ban TTL).
-2. Desktop Chrome HAR: home → PDP → ATC → `/intl-checkout` → GE Pay (decline card).
-3. Grab: Cortex zoom/ATC JSON, `globaleMid`, `gem-*` / `secure-*` hosts, hCaptcha sitekey if shown.
-4. Optional: set `HYPER_API_KEY` in the cloud agent env so executor can clear DD slider/interstitial when `t≠bv`.
+1. Prefer Hyper Playwright `IncapsulaHandler` + `DataDomeHandler` (`experiments/pokemoncentre-hyper-pw-capture.mjs`) so TLS/header order match a real browser.
+2. Sticky AU residential: rotate **only** when Hyper’s slider hard-block applies (`t=bv` on slider / `parseSliderDeviceCheckUrl.isIpBanned`).
+3. Interstitial must return `{ cookie, view: "redirect", url }` — `view: "captcha"` is not success; fix implementation (header order / TLS / cookie parse) before spraying proxies.
+4. Desktop Chrome HAR once home clears: PDP → ATC → `/intl-checkout` → GE Pay (decline card OK). Grab Cortex zoom/ATC, `globaleMid`, `gem-*` / `secure-*`, hCaptcha sitekey.

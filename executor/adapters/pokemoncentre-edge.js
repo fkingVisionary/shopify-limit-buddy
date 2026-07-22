@@ -1,5 +1,7 @@
 // Pokémon Centre edge clear: Imperva Reese84 → DataDome interstitial/slider.
-// HTTP-first. Sticky residential/ISP required (DC often gets t:'bv' IP ban on DD).
+// HTTP-first. Prefer sticky AU residential/ISP for session affinity — but do not
+// treat every 403 / CONNECT flake / view=captcha as “proxy dead”. Classify with
+// Hyper DataDome + header-order + TLS docs (see docs/POKEMON_CENTRE_MODULE.md §3.4).
 // hCaptcha (CapSolver) is separate — see pokemoncentre-hcaptcha.js.
 
 import {
@@ -33,8 +35,38 @@ async function readArrayBuffer(res) {
     const ab = await res.arrayBuffer();
     return Buffer.from(ab);
   }
+  // undici wrap in http.js exposes text() only — binary via base64 roundtrip is lossy for
+  // puzzle images; prefer fetching image URLs with plain fetch (Hyper docs: image GETs
+  // need not share the TLS client).
   const t = await res.text();
   return Buffer.from(t, "binary");
+}
+
+/** Parse `datadome=VALUE; Max-Age=…` from Hyper/DataDome JSON cookie field. */
+export function parseDatadomeSetCookie(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  const m = s.match(/^(?:datadome=)?([^;]+)/i);
+  return m?.[1] || null;
+}
+
+/**
+ * Apply interstitial/slider JSON result to jar.
+ * Hyper success shapes:
+ *   interstitial → { cookie, view:"redirect", url }
+ *   slider check → { cookie }
+ * @see https://docs.hypersolutions.co/datadome/getting-started.md
+ */
+export function applyDatadomeSolveJson(jar, json) {
+  const value = parseDatadomeSetCookie(json?.cookie);
+  if (value && jar?.set) jar.set("datadome", value);
+  return {
+    cookie: value,
+    view: json?.view || null,
+    url: json?.url || null,
+    // Interstitial solved only when view === redirect (Hyper docs).
+    ok: Boolean(value) && (json?.view == null || json.view === "redirect"),
+  };
 }
 
 /**
@@ -129,24 +161,40 @@ async function fetchDeviceHtml(session, deviceLink, referer) {
 
 /**
  * Clear DataDome block page (interstitial or slider).
- * Returns { ok, note, isIpBanned?, kind }.
+ *
+ * Hyper DataDome getting-started:
+ * - Interstitial: rt=i + i.js → deviceLink → POST geo…/interstitial/ →
+ *   success JSON is { cookie, view:"redirect", url }. Anything else (e.g. view:"captcha")
+ *   is not a solved interstitial — usually header-order / TLS mismatch, not “dead proxy”.
+ * - Slider: rt=c + c.js → if t=bv, Hyper documents a hard IP block (solving has no effect).
+ * - Always parse `datadome=VALUE` out of the JSON cookie field (not the whole Set-Cookie).
+ *
+ * @see https://docs.hypersolutions.co/datadome/getting-started.md
+ * @see https://docs.hypersolutions.co/request-based-basics/header-order.md
  */
 export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {}) {
   if (!hyperConfigured()) {
     return { ok: false, note: "HYPER_API_KEY missing — cannot solve DataDome" };
   }
   const dd = parseDataDomeObject(html) || {};
-  const datadomeCookie =
-    ctx.jar?.get?.("datadome") || dd.cookie || "";
+  const datadomeCookie = ctx.jar?.get?.("datadome") || dd.cookie || "";
+  const htmlStr = String(html || "");
+  const isInterstitial =
+    dd.rt === "i" || /ct\.captcha-delivery\.com\/i\.js/i.test(htmlStr);
+  const isSlider = dd.rt === "c" || /ct\.captcha-delivery\.com\/c\.js/i.test(htmlStr);
 
-  // IP ban short-circuit (Hyper: t === 'bv')
-  const sliderProbe = parseSliderDeviceCheckUrl(html, datadomeCookie, pageUrl || "");
-  if (sliderProbe?.isIpBanned || dd.t === "bv") {
+  // Hyper: t=bv is meaningful on slider block pages. Do not treat interstitial rt=i as ban.
+  const sliderProbe = isSlider
+    ? parseSliderDeviceCheckUrl(html, datadomeCookie, pageUrl || "")
+    : null;
+  if (isSlider && (sliderProbe?.isIpBanned || dd.t === "bv")) {
     return {
       ok: false,
       isIpBanned: true,
-      kind: "ip_ban",
-      note: "DataDome IP banned (t=bv) — rotate sticky AU ISP/residential",
+      kind: "slider_hard_block",
+      note: "DataDome slider t=bv — Hyper docs: hard IP block; rotate sticky session (solving has no effect)",
+      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+      dd,
     };
   }
 
@@ -157,16 +205,10 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
     ip = "";
   }
 
-  const isInterstitial =
-    dd.rt === "i" ||
-    /captcha-delivery\.com\/i\.js|interstitial/i.test(String(html || "")) ||
-    (!dd.rt && /geo\.captcha-delivery\.com\/interstitial/i.test(String(html || "")));
-
-  if (isInterstitial || dd.rt === "i") {
-    // Parse deviceLink first (no Hyper call), fetch HTML on sticky proxy, then solve.
+  if (isInterstitial) {
     const deviceLink = parseInterstitialDeviceCheckUrl(html, datadomeCookie, pageUrl || "");
     if (!deviceLink) {
-      return { ok: false, kind: "interstitial", note: "DataDome interstitial deviceLink missing" };
+      return { ok: false, kind: "interstitial", note: "DataDome interstitial deviceLink missing", dd };
     }
     const deviceHtml = await fetchDeviceHtml(session, deviceLink, pageUrl);
     const solved = await solveDataDomeInterstitial({
@@ -178,56 +220,102 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
       acceptLanguage: session.state.acceptLanguage,
       deviceLinkHtml: deviceHtml,
     });
+    // Hyper returns sec-ch-* headers that must be used on the POST (never hardcode).
     const postRes = await session.post(solved.postUrl, {
       body: solved.payload,
       headers: {
         referer: pageUrl,
         "content-type": "application/x-www-form-urlencoded",
         origin: "https://geo.captcha-delivery.com",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
         ...(solved.headers || {}),
       },
     });
     ctx.jar?.ingest?.(postRes.headers);
-    const cookie = ctx.jar?.get?.("datadome");
-    session.state.datadomeCleared = Boolean(cookie);
+    const postText = await session.readText(postRes);
+    let json = null;
+    try {
+      json = JSON.parse(postText);
+    } catch {
+      return {
+        ok: false,
+        kind: "interstitial",
+        status: postRes.status,
+        note: `interstitial POST non-JSON ${postRes.status}`,
+        dd,
+      };
+    }
+    const applied = applyDatadomeSolveJson(ctx.jar, json);
+    if (json.view === "redirect" && applied.cookie) {
+      session.state.datadomeCleared = true;
+      return {
+        ok: true,
+        status: postRes.status,
+        kind: "interstitial",
+        view: "redirect",
+        redirectUrl: applied.url,
+        note: "datadome interstitial view=redirect (Hyper success)",
+        dd,
+      };
+    }
+    if (json.view === "captcha") {
+      // Escalation — usually TLS/header fingerprint, not an automatic proxy condemnation.
+      return {
+        ok: false,
+        kind: "interstitial_escalated",
+        view: json.view,
+        captchaUrl: json.url || null,
+        status: postRes.status,
+        note: "interstitial returned view=captcha (not redirect) — check Hyper header-order/TLS before blaming proxy",
+        refs: [
+          "https://docs.hypersolutions.co/datadome/getting-started.md#posting-payload-solving-challenge",
+          "https://docs.hypersolutions.co/request-based-basics/header-order.md",
+        ],
+        dd,
+      };
+    }
     return {
-      ok: Boolean(cookie) || postRes.status < 400,
-      status: postRes.status,
+      ok: false,
       kind: "interstitial",
-      note: cookie ? `datadome interstitial ok` : `interstitial POST ${postRes.status}`,
+      view: json.view || null,
+      status: postRes.status,
+      note: `interstitial unexpected view=${json.view || "?"} cookie=${Boolean(applied.cookie)}`,
+      dd,
     };
   }
 
-  // Slider / captcha (rt:'c' etc.)
-  // Need device page to discover puzzle/piece image URLs.
+  // Slider / captcha (rt:'c' + c.js)
   const deviceLink = sliderProbe?.url;
   if (!deviceLink) {
-    return { ok: false, kind: "slider", note: "DataDome slider deviceLink missing" };
+    return { ok: false, kind: "slider", note: "DataDome slider deviceLink missing", dd };
   }
   const deviceHtml = await fetchDeviceHtml(session, deviceLink, pageUrl);
-  const puzzleUrl =
-    (deviceHtml.match(/https?:\/\/[^"' ]+\.jpg/i) || [])[0] ||
-    (deviceHtml.match(/\/image\/[^"' ]+\.jpg/i) || [])[0];
-  const pieceUrl =
-    (deviceHtml.match(/https?:\/\/[^"' ]+\.frag\.png/i) || [])[0] ||
-    (deviceHtml.match(/\/image\/[^"' ]+\.frag\.png/i) || [])[0];
+  const puzzleUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.jpg)/i) ||
+    deviceHtml.match(/(https?:\/\/[^"' ]+\.jpg)/i) ||
+    [])[1];
+  const pieceUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.frag\.png)/i) ||
+    deviceHtml.match(/(https?:\/\/[^"' ]+\.frag\.png)/i) ||
+    [])[1];
   if (!puzzleUrl || !pieceUrl) {
     return {
       ok: false,
       kind: "slider",
       note: "DataDome slider puzzle/piece URLs not found — may need hCaptcha path",
       needsHcaptcha: /hcaptcha|h-captcha/i.test(deviceHtml),
+      dd,
     };
   }
-  const abs = (u) => (u.startsWith("http") ? u : `https://dd.prod.captcha-delivery.com${u}`);
-  const puzzleRes = await session.get(abs(puzzleUrl), { headers: { referer: deviceLink } });
-  const pieceRes = await session.get(abs(pieceUrl), { headers: { referer: deviceLink } });
-  const puzzleB64 = bufferToB64(await readArrayBuffer(puzzleRes));
-  const pieceB64 = bufferToB64(await readArrayBuffer(pieceRes));
+  // Hyper: image GETs need not use the TLS client.
+  const [puzzleB64, pieceB64] = await Promise.all([
+    fetch(puzzleUrl).then(async (r) => bufferToB64(Buffer.from(await r.arrayBuffer()))),
+    fetch(pieceUrl).then(async (r) => bufferToB64(Buffer.from(await r.arrayBuffer()))),
+  ]);
 
   const solved = await solveDataDomeSlider({
     html,
-    datadomeCookie,
+    datadomeCookie: ctx.jar?.get?.("datadome") || datadomeCookie,
     referer: pageUrl,
     parentUrl: pageUrl,
     userAgent: session.state.userAgent,
@@ -241,11 +329,13 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
     return {
       ok: false,
       isIpBanned: true,
-      kind: "ip_ban",
-      note: "DataDome IP banned during slider solve",
+      kind: "slider_hard_block",
+      note: "DataDome slider t=bv — Hyper docs: hard IP block",
+      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+      dd,
     };
   }
-  // Slider payload is a verification URL to GET.
+  // Slider payload is a captcha/check URL — GET it, parse JSON cookie.
   const verifyRes = await session.get(solved.payload, {
     headers: {
       referer: pageUrl,
@@ -253,13 +343,23 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
     },
   });
   ctx.jar?.ingest?.(verifyRes.headers);
-  const cookie = ctx.jar?.get?.("datadome");
-  session.state.datadomeCleared = Boolean(cookie);
+  const verifyText = await session.readText(verifyRes);
+  let verifyJson = null;
+  try {
+    verifyJson = JSON.parse(verifyText);
+  } catch {
+    /* ignore */
+  }
+  const applied = applyDatadomeSolveJson(ctx.jar, verifyJson || {});
+  session.state.datadomeCleared = Boolean(applied.cookie);
   return {
-    ok: Boolean(cookie) || verifyRes.status < 400,
+    ok: Boolean(applied.cookie),
     status: verifyRes.status,
     kind: "slider",
-    note: cookie ? "datadome slider ok" : `slider verify ${verifyRes.status}`,
+    note: applied.cookie
+      ? "datadome slider cookie set (Hyper captcha/check)"
+      : `slider verify ${verifyRes.status} body=${verifyText.slice(0, 80)}`,
+    dd,
   };
 }
 
