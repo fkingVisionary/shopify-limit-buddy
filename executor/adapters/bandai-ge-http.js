@@ -610,48 +610,96 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
   if (!body) return { ok: false, error: "body_required", via: "page-ge-issuer" };
   const t0 = Date.now();
   try {
-    const result = await page.evaluate(
-      async ({ url: u, body: b, referer, contentType }) => {
-        const res = await fetch(u, {
-          method: "POST",
-          headers: {
-            accept: "text/html,application/xhtml+xml,application/json,*/*",
-            "content-type": contentType || "application/x-www-form-urlencoded; charset=UTF-8",
-            origin: "https://secure-bandai.global-e.com",
-            referer: referer || "https://secure-bandai.global-e.com/payments/CreditCardForm/",
-          },
-          body: b,
-          redirect: "manual",
-          credentials: "include",
-        });
-        const text = await res.text().catch(() => "");
-        return {
-          status: res.status,
-          location: res.headers.get("location") || "",
-          type: res.type,
-          bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
-        };
-      },
-      {
-        url,
-        body,
-        referer: opts.referer || null,
-        contentType: opts.contentType || null,
-      },
-    );
-    const redirectUrl = result.location || null;
+    // Prefer Playwright APIRequestContext — page.evaluate(fetch) often hides
+    // 302 Location (opaqueredirect), which forced undici fallback.
+    const api = page.context()?.request || page.request;
+    let status = 0;
+    let location = "";
+    let text = "";
+    if (api?.post) {
+      const res = await api.post(url, {
+        data: body,
+        headers: {
+          accept: "text/html,application/xhtml+xml,application/json,*/*",
+          "content-type":
+            opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+          origin: BANDAI_GE_SECURE,
+          referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
+        },
+        maxRedirects: 0,
+        timeout: Math.min(60_000, Number(opts.timeoutMs) || 45_000),
+      });
+      status = res.status();
+      location =
+        res.headers()?.location ||
+        res.headers()?.Location ||
+        (typeof res.headerValue === "function"
+          ? (await res.headerValue("location").catch(() => null)) || ""
+          : "") ||
+        "";
+      text = await res.text().catch(() => "");
+      // Some Playwright builds follow anyway — scrape Object moved / body.
+      if (!location) {
+        const m = String(text || "").match(
+          /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
+        );
+        if (m) location = m[1];
+      }
+    } else {
+      const result = await page.evaluate(
+        async ({ url: u, body: b, referer, contentType }) => {
+          const res = await fetch(u, {
+            method: "POST",
+            headers: {
+              accept: "text/html,application/xhtml+xml,application/json,*/*",
+              "content-type":
+                contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+              origin: "https://secure-bandai.global-e.com",
+              referer:
+                referer || "https://secure-bandai.global-e.com/payments/CreditCardForm/",
+            },
+            body: b,
+            redirect: "manual",
+            credentials: "include",
+          });
+          const t = await res.text().catch(() => "");
+          return {
+            status: res.status,
+            location: res.headers.get("location") || "",
+            bodySnippet: String(t || "").replace(/\s+/g, " ").slice(0, 240),
+            body: t,
+          };
+        },
+        {
+          url,
+          body,
+          referer: opts.referer || null,
+          contentType: opts.contentType || null,
+        },
+      );
+      status = result.status;
+      location = result.location || "";
+      text = result.body || result.bodySnippet || "";
+      if (!location) {
+        const m = String(text || "").match(
+          /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
+        );
+        if (m) location = m[1];
+      }
+    }
+
+    const redirectUrl = location || null;
     const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
     const redirectPayload = isPaymentRedirect
       ? decodeCcPaymentRedirectData(redirectUrl)
       : null;
     const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", "");
-    const declineOnRedirect = false;
     const ok = Boolean(isPaymentRedirect && bankSignal);
     return {
       ok,
-      status: result.status,
+      status,
       ms: Date.now() - t0,
-      bodySnippet: result.bodySnippet,
+      bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
       redirectUrl: redirectUrl ? String(redirectUrl).slice(0, 320) : null,
       redirectUrlFull: redirectUrl,
       redirectSnippet: null,
@@ -659,14 +707,16 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
       isPaymentRedirect,
       reloadOnly: Boolean(isPaymentRedirect && !bankSignal),
       bankSignal,
-      declineOnRedirect,
+      declineOnRedirect: false,
       sawAuthWire: Boolean(ok),
       via: "page-ge-issuer",
       error: ok
         ? null
         : isPaymentRedirect
           ? "ge_reload_only_no_bank"
-          : "issuer_page_failed",
+          : status
+            ? "issuer_page_no_redirect"
+            : "issuer_page_failed",
     };
   } catch (e) {
     return {
@@ -1108,8 +1158,40 @@ export async function runBandaiGeHttpPay(opts = {}) {
         waitUntil: "domcontentloaded",
         timeout: Math.min(45_000, Number(opts.iovationTimeoutMs) || 20_000),
       });
-      const text = await issuerPage.content();
-      cc = { ok: true, status: 200, ms: Date.now() - tCc, text };
+      // Wait briefly for iframe/form fields + optional snare fill on secure host.
+      try {
+        await issuerPage.waitForSelector(
+          'input[name="PaymentData.UrlStructureTokenEncoded"], input[name="PaymentData.machineId"], #ioBlackBox',
+          { timeout: 8_000 },
+        );
+      } catch {
+        /* continue with content scrape */
+      }
+      const fromDom = await issuerPage.evaluate(() => {
+        const jwt =
+          document.querySelector('input[name="PaymentData.UrlStructureTokenEncoded"]')
+            ?.value || "";
+        const mid =
+          document.querySelector('input[name="PaymentData.machineId"]')?.value ||
+          document.getElementById("ioBlackBox")?.value ||
+          "";
+        const pm =
+          document.querySelector('input[name="PaymentData.paymentMethodId"]')?.value ||
+          "";
+        const gw =
+          document.querySelector('input[name="PaymentData.gatewayId"]')?.value || "";
+        return { jwt, mid, pm, gw, html: document.documentElement.outerHTML };
+      });
+      cc = {
+        ok: true,
+        status: 200,
+        ms: Date.now() - tCc,
+        text: fromDom.html || "",
+        domJwt: fromDom.jwt,
+        domMachineId: fromDom.mid,
+        domPm: fromDom.pm,
+        domGw: fromDom.gw,
+      };
       const pageCookies = await cookiesFromPage(issuerPage);
       if (pageCookies && ctx?.jar?.load) {
         ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
@@ -1124,7 +1206,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       };
     }
   }
-  if (!cc.ok || !extractUrlStructureToken(cc.text)) {
+  if (!cc.ok || !(cc.domJwt || extractUrlStructureToken(cc.text))) {
     const httpCc = await httpText(ccUrl, {
       ctx,
       userAgent: opts.userAgent,
@@ -1133,17 +1215,51 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
     if (!cc.ok || extractUrlStructureToken(httpCc.text)) cc = httpCc;
   }
-  // Always prefer JWT + machineId from the same CreditCardForm response
-  // (after iovation cookie sync). Mixing Playwright blackbox with an older
-  // JWT was one DataCorruption / IsTheSameCartToken=False path.
-  urlStructureToken = extractUrlStructureToken(cc.text) || urlStructureToken;
-  const formMachineId = extractMachineId(cc.text);
+  // Prefer DOM fields from the live CreditCardForm page (same session as issuer).
+  urlStructureToken =
+    cc.domJwt || extractUrlStructureToken(cc.text) || urlStructureToken;
+  const formMachineId = cc.domMachineId || extractMachineId(cc.text);
   if (formMachineId) machineId = formMachineId;
+  if (cc.domPm && !opts.paymentMethodId) {
+    // Keep wire-proven default unless DOM clearly differs and opts unset —
+    // still prefer opts/default 2; log DOM for debug.
+  }
+  const jwtCart = (() => {
+    try {
+      const payload = decodeCcPaymentRedirectData(urlStructureToken);
+      // UrlStructureToken payload is object, not Key/Value list.
+      if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+        return payload.CartToken || payload.cartToken || null;
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const parts = String(urlStructureToken || "").split(".");
+      if (parts.length < 2) return null;
+      const pad = parts[1] + "=".repeat((4 - (parts[1].length % 4)) % 4);
+      const json = JSON.parse(
+        Buffer.from(pad.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
+      );
+      return json.CartToken || json.cartToken || null;
+    } catch {
+      return null;
+    }
+  })();
+  if (jwtCart && jwtCart !== guid) {
+    push("ge_cart_token_rebind", {
+      ok: true,
+      status: null,
+      ms: 0,
+      note: `jwt guid ${jwtCart} (was ${guid})`,
+    });
+    guid = jwtCart;
+  }
   push("ge_credit_card_form", {
     ok: cc.ok,
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${issuerPage && cc.ok ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${issuerPage && cc.ok ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
 
   try {
@@ -1246,7 +1362,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     gatewayId,
     paymentMethodId,
   });
-  // Prefer Playwright fetch (same TLS/cookies as iovation) when page is live.
+  // Prefer Playwright request (same cookie jar as CreditCardForm page).
+  // Do not discard a page ReloadBehaviour result in favor of undici — both fail
+  // the same way; keeping via=page makes the session path honest in logs.
   let issuer =
     issuerPage && opts.preferHttpIssuer !== true
       ? await postBandaiGeIssuerViaPage({
@@ -1256,7 +1374,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
           referer: ccUrl,
         })
       : null;
-  if (!issuer || (issuer.error === "issuer_page_failed" && !issuer.isPaymentRedirect)) {
+  if (
+    !issuer ||
+    (!issuer.isPaymentRedirect &&
+      (issuer.error === "issuer_page_failed" ||
+        issuer.error === "issuer_page_no_redirect"))
+  ) {
     const httpIssuer = await postBandaiGeIssuerHttp({
       url: issuerUrl,
       body,
@@ -1264,9 +1387,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       userAgent: opts.userAgent,
       referer: ccUrl,
     });
-    if (!issuer || httpIssuer.bankSignal || (!issuer.ok && httpIssuer.ok)) {
-      issuer = httpIssuer;
-    } else if (!issuer.redirectPayload && httpIssuer.redirectPayload) {
+    if (!issuer || (!issuer.isPaymentRedirect && httpIssuer.isPaymentRedirect)) {
       issuer = httpIssuer;
     }
   }
@@ -1329,7 +1450,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
               : ""
           }`
         : issuer.redirectUrl
-          ? `redirect ${issuer.status} bank=${issuer.bankSignal} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
+          ? `redirect ${issuer.status} via=${issuer.via || "http"} bank=${issuer.bankSignal} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
           : issuer.bodySnippet || issuer.error || ""
     ).slice(0, 280),
   });
@@ -1356,12 +1477,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
     blockers,
     redirectUrl: issuer.redirectUrl || null,
     redirectPayload: issuer.redirectPayload || null,
-    via: "http-ge",
+    via: issuer.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
     elapsedMs: Date.now() - t0,
     note: issuer.ok
-      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} guid=${guid}`
+      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} via=${issuer.via} guid=${guid}`
       : issuer.reloadOnly
-        ? `HTTP issuer ReloadBehaviour only (no Revolut) guid=${guid}`
+        ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid}`
         : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
   };
 }
