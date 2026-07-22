@@ -68,7 +68,7 @@ Proven on Noontide sticky after Reese + interstitial `view=redirect` (not a prox
 
 ## Next capture (owner)
 
-1. After ATC: `GET /cart/data?type=full` → `cart-guid` → `POST /auth/get-globale-m2m-token` (`access-token`) → GE mid **1634** (`gepi.global-e.com/includes/js/1634`) → Playwright Checkout/v2 Pay (decline OK). Prefer **tls-worker** for BFF trust.
+1. After ATC: `GET /cart/data?type=full` → `cart-guid` → `POST /auth/get-globale-m2m-token` (`access-token`) → GE mid **1634** → Playwright `webservices.global-e.com/Checkout/v2/…?gaSesID=….1634` (CreditCardForm filled 2026-07-22; Pay CTA next). Prefer **tls-worker** for BFF trust.
 2. Sticky AU residential: rotate **only** when Hyper’s slider hard-block applies (`t=bv` on slider).
 3. Interstitial must return `{ cookie, view: "redirect", url }` before BFF calls.
 4. Prefer Hyper Playwright handlers for browser GE Pay only — catalog/ATC stays HTTP-first.

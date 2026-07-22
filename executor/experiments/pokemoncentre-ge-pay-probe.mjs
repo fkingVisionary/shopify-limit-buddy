@@ -108,7 +108,7 @@ async function main() {
       cookies,
       userAgent: UA,
       globaleMid: PC_GLOBALE_MID,
-      placeOrder: false,
+      placeOrder: process.env.PLACE_ORDER === "1",
       headless: true,
       debugDir: OUT,
       onProgress: (n, note) => push("ge_pay_progress", { n, note }),

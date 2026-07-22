@@ -217,7 +217,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
 | **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
 | **P3** | Cortex cart machine + account session (**HTTP-first**) | **Proven** — public token → ATC **201** → `GET /cart/data?type=full` → `cart-guid` (tls-worker + sticky AU, 2026-07-22) |
-| **P4** | Global-e AU checkout / pay | **Wired** — `POST /auth/get-globale-m2m-token` → `access-token`; mid **1634** (`gepi.global-e.com/includes/js/1634`); browser Pay via `pokemoncentre-ge.js` |
+| **P4** | Global-e AU checkout / pay | **Proven through CreditCardForm** — m2m `access-token`; mid **1634**; Checkout/v2 on `webservices.global-e.com` (`gaSesID=…1634`); card fill OK; Pay CTA still gated (address/T&Cs) |
 | **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |
 
 ### Adapter surface (2026-07-22)

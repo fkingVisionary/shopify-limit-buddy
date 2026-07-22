@@ -311,11 +311,51 @@ export async function runGlobalEPay(opts = {}) {
       }
     });
 
+    // Shipping/email often gates the Pay CTA on PC GE — fill light AU guest fields if present.
     for (const frame of page.frames()) {
       if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+      const email = frame.locator('input[type="email"], input[name*="email" i]').first();
+      if (await email.count().catch(() => 0)) {
+        await email.fill(opts.email || "decline.test@example.com").catch(() => {});
+      }
+      const phone = frame.locator('input[type="tel"], input[name*="phone" i]').first();
+      if (await phone.count().catch(() => 0)) {
+        await phone.fill(opts.phone || "0400000000").catch(() => {});
+      }
+      for (const [sel, val] of [
+        ['input[name*="FirstName" i], input[autocomplete="given-name"]', "Decline"],
+        ['input[name*="LastName" i], input[autocomplete="family-name"]', "Test"],
+        ['input[name*="Address1" i], input[autocomplete="address-line1"]', "1 Test Street"],
+        ['input[name*="City" i], input[autocomplete="address-level2"]', "Sydney"],
+        ['input[name*="ZIP" i], input[name*="Postal" i], input[autocomplete="postal-code"]', "2000"],
+      ]) {
+        const el = frame.locator(sel).first();
+        if (await el.count().catch(() => 0)) await el.fill(val).catch(() => {});
+      }
+      const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"]').first();
+      if (await state.count().catch(() => 0)) {
+        await state.selectOption({ label: "New South Wales" }).catch(() =>
+          state.selectOption("NSW").catch(() => {}),
+        );
+      }
+    }
+    await page.waitForTimeout(2000);
+
+    for (const frame of page.frames()) {
+      if (!/Checkout\/v2|webservices\.global-e|CreditCardForm|secure-/i.test(frame.url())) continue;
       const payBtn = frame
         .locator(
-          'button:has-text("Pay"), button:has-text("Place Order"), button[type="submit"], .pay-button',
+          [
+            'button:has-text("Pay")',
+            'button:has-text("Place Order")',
+            'button:has-text("Complete")',
+            'button:has-text("Submit")',
+            'button[data-testid*="pay" i]',
+            'button.btn-pay',
+            '#btnPay',
+            'button[type="submit"]',
+            ".pay-button",
+          ].join(", "),
         )
         .first();
       if (await payBtn.count().catch(() => 0)) {
@@ -324,9 +364,24 @@ export async function runGlobalEPay(opts = {}) {
         break;
       }
     }
+    // Parent page fallback
+    if (!payClicked) {
+      const payBtn = page
+        .locator('button:has-text("Pay"), button:has-text("Place Order"), #btnPay')
+        .first();
+      if (await payBtn.count().catch(() => 0)) {
+        await payBtn.click({ timeout: 5000 }).catch(() => {});
+        payClicked = true;
+      }
+    }
     push("ge_pay_click", {
       ok: payClicked,
-      note: payClicked ? `Pay clicked payNet≈${payNet}` : "Pay button missing",
+      note: payClicked ? `Pay clicked payNet≈${payNet}` : "Pay button missing (address/T&Cs may still gate)",
+      frames: page
+        .frames()
+        .map((f) => f.url())
+        .filter((u) => /global-e|Checkout/i.test(u))
+        .slice(0, 8),
     });
 
     // Optional 3DS — success/decline can be frictionless (Bandai lesson).
