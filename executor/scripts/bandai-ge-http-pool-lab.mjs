@@ -100,6 +100,13 @@ for (let i = 0; i < maxTries; i++) {
       bandaiGeMachineId: noPage ? machineId : undefined,
       bandaiGeStopBeforeIssuer: process.env.BANDAI_GE_STOP_BEFORE_ISSUER === "1",
       bandaiGeForceIssuer: process.env.BANDAI_GE_FORCE_ISSUER === "1",
+      bandaiGeCreateTransaction:
+        process.env.BANDAI_GE_CREATE_TRANSACTION === "0"
+          ? false
+          : process.env.BANDAI_GE_CREATE_TRANSACTION === "1"
+            ? true
+            : undefined,
+      bandaiGeIssuerMode: process.env.BANDAI_GE_ISSUER_MODE || undefined,
       account: { email, password },
       card: { number: pan, expMonth: mm, expYear: yy, cvv, holder },
     });

@@ -945,6 +945,15 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       preferPageIssuer: task.bandaiGePreferPageIssuer === true,
       scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
       mergeIovationCookies: task.bandaiGeMergeIovationCookies === true,
+      createTransaction:
+        task.bandaiGeCreateTransaction === false
+          ? false
+          : task.bandaiGeCreateTransaction === true
+            ? true
+            : process.env.BANDAI_GE_CREATE_TRANSACTION === "0"
+              ? false
+              : undefined,
+      issuerMode: task.bandaiGeIssuerMode || process.env.BANDAI_GE_ISSUER_MODE || undefined,
       onProgress: (event, row) => {
         try {
           ctx.onProgress?.(event, row?.note || event, row);

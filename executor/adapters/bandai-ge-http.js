@@ -798,7 +798,12 @@ export function buildIssuerFormBody(opts = {}) {
   params.set("PaymentData.gatewayId", String(opts.gatewayId || "2"));
   params.set("PaymentData.paymentMethodId", String(opts.paymentMethodId || "1"));
   params.set("PaymentData.machineId", String(opts.machineId || ""));
-  params.set("PaymentData.createTransaction", "true");
+  // Form default is "true". Opt false to probe GE soft-decline dual-rail.
+  const createTxn =
+    opts.createTransaction === false || opts.createTransaction === "false"
+      ? "false"
+      : "true";
+  params.set("PaymentData.createTransaction", createTxn);
   params.set("PaymentData.checkoutCDNEnabled", opts.checkoutCDNEnabled || "value");
   params.set("PaymentData.recapchaToken", opts.recapchaToken || "");
   params.set("PaymentData.recapchaTime", opts.recapchaTime || "");
@@ -1799,6 +1804,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     urlStructureToken,
     gatewayId,
     paymentMethodId,
+    createTransaction: opts.createTransaction,
   });
 
   // Hard-lock single issuer POST.
