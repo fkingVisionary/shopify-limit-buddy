@@ -124,15 +124,17 @@ export async function createBandaiF5Bridge(opts = {}) {
 
   let closed = false;
 
-  async function goto(pathOrUrl) {
+  async function goto(pathOrUrl, gotoOpts = {}) {
     const url = /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
       : pathOrUrl.startsWith(`/${area}/`) || pathOrUrl.startsWith("/_ui/") || pathOrUrl.startsWith("/api/") || pathOrUrl.startsWith("/login")
         ? `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`
         : `${BANDAI_BASE}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    // Allow common.js?async to hook XHR/fetch
-    await page.waitForTimeout(2200);
+    // Allow common.js?async to hook XHR/fetch. Cart/GE nav can use a shorter settle.
+    const settle =
+      gotoOpts.settleMs != null ? Number(gotoOpts.settleMs) : 1800;
+    if (settle > 0) await page.waitForTimeout(settle);
     return { url: page.url() };
   }
 

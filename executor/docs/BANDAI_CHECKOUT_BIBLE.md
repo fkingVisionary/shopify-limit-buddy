@@ -39,18 +39,20 @@ Bandai is **not** one monolithic checkout. It is two pipelines glued at cart / G
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  Pipeline A — HTTP (product default)                        │
-│  Playwright F5 bridge (mint only) + undici real POSTs       │
-│  login → ATC → cart → POST …/checkout → checkoutSn          │
-│  STOP here unless bandaiBrowserCheckout / placeOrder        │
+│  Pipeline A — HTTP + F5 bridge (mint only, undici POSTs)    │
+│  login → ATC → cart                                         │
 └────────────────────────────┬────────────────────────────────┘
-                             │
+                             │ same Chromium (F5 bridge page)
 ┌────────────────────────────▼────────────────────────────────┐
-│  Pipeline B — Browser GE (desktop placeOrder / charge lab)  │
-│  Playwright: cart UI → PROCEED TO CHECKOUT → GEM → Pay      │
+│  Pipeline B — GE on that page (placeOrder drop path)        │
+│  /cart → PROCEED → Checkout/v2 → fill → Pay once            │
 │  Score: bank ping → orderNo / decline → not client ok alone │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+**Drop timing:** `placeOrder` + `bandaiBrowserCheckout` uses **http+ge** on the
+F5 bridge — **not** a second full-browser login/PDP (that path was ~5 minutes
+to Revolut). Escape hatch only: `bandaiBrowserFull:true`.
 
 **Desktop end-state:** Electron on the user’s machine + **local** `executor/`
 sidecar on `127.0.0.1` (not a shared Fly executor). Fly remains lab/cloud only.
@@ -58,8 +60,9 @@ sidecar on `127.0.0.1` (not a shared Fly executor). Fly remains lab/cloud only.
 | Flag | Meaning |
 |------|---------|
 | `bandaiF5Bridge` (default **true**) | Mint sensors in Chromium; undici does real POSTs |
-| `bandaiBrowserCheckout` | Full Playwright through GE Pay |
-| Desktop `placeOrder` | Forces `bandaiBrowserCheckout: true` |
+| `bandaiBrowserCheckout` | With `placeOrder`: HTTP→cart then GE on F5 bridge (`via=http+ge`) |
+| `bandaiBrowserFull` | Slow full Playwright login→PDP→GE — labs only, not drops |
+| Desktop `placeOrder` | Forces `bandaiBrowserCheckout: true` → http+ge path |
 | `bandaiStopAtCart` | HTTP early exit after cart detail |
 | `forceUndici: true` | Desktop payload — keep undici |
 

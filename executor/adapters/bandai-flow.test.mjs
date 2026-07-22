@@ -15,7 +15,7 @@ import { findCartLine, listCartLines } from "./bandai-cart.js";
 import {
   isBandaiGeCheckoutPayFrame,
   isBandaiGeAuthPaymentUrl,
-} from "./bandai-browser-checkout.js";
+} from "./bandai-ge-pay.js";
 
 // --- F5 gate matrix ---
 assert.equal(isBandaiF5Gated("POST", "/login"), true);
