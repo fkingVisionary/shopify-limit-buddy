@@ -251,20 +251,53 @@ export async function runGlobalEPay(opts = {}) {
     }
 
     let payNet = 0;
+    const payResponses = [];
+    let countingPay = false;
     page.on("request", (req) => {
+      if (!countingPay) return;
       const u = req.url();
-      if (/global-e\.com|globale/i.test(u) && /pay|complete|preComplete|ProcessPayment/i.test(u)) {
+      if (
+        /global-e\.com|globale|ges\.global-e/i.test(u) &&
+        /ProcessPayment|CompleteOrder|preComplete|ValidatePayment|PayOrder|Checkoutv2\/.*(Pay|Complete|Process)/i.test(
+          u,
+        )
+      ) {
         payNet++;
       }
     });
     page.on("response", async (res) => {
       try {
         const u = res.url();
-        if (!/global-e\.com|globale/i.test(u)) return;
-        if (!/pay|complete|ProcessPayment|Checkout\/v2/i.test(u)) return;
+        if (!/global-e\.com|globale|ges\.global-e/i.test(u)) return;
+        const interesting =
+          /ProcessPayment|CompleteOrder|preComplete|ValidatePayment|PayOrder|GetPayment|Checkoutv2\/.*(Pay|Complete|Process)|payments\//i.test(
+            u,
+          );
+        if (!interesting && !countingPay) return;
+        if (!interesting) return;
         const st = res.status();
-        if (st >= 200 && st < 500) {
-          steps.push({ step: "ge_net", ok: st < 400, note: `${st} ${u.slice(0, 120)}` });
+        let bodySnippet = "";
+        try {
+          const ct = res.headers()["content-type"] || "";
+          if (/json|text|javascript/i.test(ct)) {
+            bodySnippet = (await res.text()).slice(0, 400);
+          }
+        } catch {
+          /* ignore */
+        }
+        const row = { status: st, url: u.slice(0, 160), bodySnippet };
+        payResponses.push(row);
+        steps.push({
+          step: "ge_net",
+          ok: st < 400,
+          note: `${st} ${u.slice(0, 100)}${bodySnippet ? ` body=${bodySnippet.slice(0, 120).replace(/\s+/g, " ")}` : ""}`,
+        });
+        if (/declin|insufficient|not.?authori|failed|error|do not honour|funds/i.test(bodySnippet)) {
+          paymentStatus = "declined";
+        }
+        if (/3ds|challenge|acsurl|pareq/i.test(bodySnippet)) {
+          reached3ds = true;
+          paymentStatus = "reached_3ds";
         }
       } catch {
         /* ignore */
@@ -388,8 +421,9 @@ export async function runGlobalEPay(opts = {}) {
     }
     await page.waitForTimeout(2500);
 
-    // 4) Pay CTA — scan all GE frames + dump button labels if missing
+    // 4) Pay CTA — PC uses #btnPay "PURCHASE NOW"
     const buttonDump = [];
+    countingPay = true;
     for (const frame of page.frames()) {
       if (!/Checkout\/v2|webservices\.global-e|CreditCardForm|secure-|global-e/i.test(frame.url())) continue;
       const labels = await frame
@@ -410,23 +444,23 @@ export async function runGlobalEPay(opts = {}) {
       const payBtn = frame
         .locator(
           [
+            "#btnPay",
+            'button.pay-button-pm-id-1',
+            'button:has-text("PURCHASE NOW")',
+            'button:has-text("Purchase Now")',
             'button:has-text("Pay")',
             'button:has-text("Place Order")',
             'button:has-text("Complete")',
-            'button:has-text("Submit")',
-            'button:has-text("Confirm")',
-            'button[data-testid*="pay" i]',
             'button.btn-pay',
-            '#btnPay',
-            'button[type="submit"]',
             ".pay-button",
-            'input[type="submit"]',
+            'button[type="submit"]',
           ].join(", "),
         )
         .first();
       if (await payBtn.count().catch(() => 0)) {
         const disabled = await payBtn.isDisabled().catch(() => false);
         if (!disabled) {
+          await payBtn.scrollIntoViewIfNeeded().catch(() => {});
           await payBtn.click({ timeout: 8000 }).catch(() => {});
           payClicked = true;
           break;
@@ -434,27 +468,15 @@ export async function runGlobalEPay(opts = {}) {
       }
     }
     if (!payClicked) {
-      const payBtn = page
-        .locator('button:has-text("Pay"), button:has-text("Place Order"), #btnPay')
-        .first();
+      const payBtn = page.locator("#btnPay, button:has-text('PURCHASE NOW')").first();
       if (await payBtn.count().catch(() => 0)) {
         await payBtn.click({ timeout: 5000 }).catch(() => {});
         payClicked = true;
       }
     }
-    if (debugDir && !payClicked) {
-      try {
-        const fs = await import("node:fs");
-        fs.writeFileSync(`${debugDir}/ge-buttons.json`, JSON.stringify(buttonDump, null, 2));
-        fs.writeFileSync(`${debugDir}/ge-pay-fail.html`, await page.content());
-        await page.screenshot({ path: `${debugDir}/ge-pay-fail.png`, fullPage: true }).catch(() => {});
-      } catch {
-        /* ignore */
-      }
-    }
     push("ge_pay_click", {
       ok: payClicked,
-      note: payClicked ? `Pay clicked payNet≈${payNet}` : "Pay button missing (address/T&Cs may still gate)",
+      note: payClicked ? `PURCHASE NOW clicked` : "Pay button missing (address/T&Cs may still gate)",
       buttonDump: buttonDump.slice(0, 4),
       frames: page
         .frames()
@@ -463,8 +485,8 @@ export async function runGlobalEPay(opts = {}) {
         .slice(0, 8),
     });
 
-    // Optional 3DS — success/decline can be frictionless (Bandai lesson).
-    for (let i = 0; i < 30; i++) {
+    // Optional 3DS / decline — success/decline can be frictionless (Bandai lesson).
+    for (let i = 0; i < 45; i++) {
       await page.waitForTimeout(1000);
       for (const frame of page.frames()) {
         const u = frame.url();
@@ -509,6 +531,34 @@ export async function runGlobalEPay(opts = {}) {
       }
     }
 
+    // Final iframe text dump for decline wording / validation errors
+    let iframeText = "";
+    for (const frame of page.frames()) {
+      if (!/Checkout\/v2|webservices\.global-e|secure\.ges/i.test(frame.url())) continue;
+      iframeText += `\n--- ${frame.url().slice(0, 120)} ---\n`;
+      iframeText += await frame.locator("body").innerText().catch(() => "");
+    }
+    if (
+      paymentStatus === "unknown" &&
+      /declin|insufficient|not.?authori|payment failed|unable to process|error|required|invalid/i.test(iframeText)
+    ) {
+      if (/declin|insufficient|not.?authori|payment failed|unable to process/i.test(iframeText)) {
+        paymentStatus = "declined";
+      } else {
+        paymentStatus = "validation_error";
+      }
+    }
+    if (debugDir) {
+      try {
+        const fs = await import("node:fs");
+        fs.writeFileSync(`${debugDir}/ge-after-pay.txt`, iframeText.slice(0, 20_000));
+        fs.writeFileSync(`${debugDir}/ge-pay-responses.json`, JSON.stringify(payResponses, null, 2));
+        await page.screenshot({ path: `${debugDir}/ge-after-pay.png`, fullPage: true }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    }
+
     const cookies = {};
     for (const c of await context.cookies()) cookies[c.name] = c.value;
     await browser.close();
@@ -527,10 +577,13 @@ export async function runGlobalEPay(opts = {}) {
       threeDsUrl,
       orderNumber,
       payClicked,
+      payNet,
+      payResponses: payResponses.slice(0, 20),
       cardFilled: filled,
-      globaleMid: opts.globaleMid ?? null,
+      globaleMid: opts.globaleMid ?? mid,
       cookies,
-      note: `GE payStatus=${paymentStatus} 3ds=${reached3ds} order=${orderNumber || "-"}`,
+      note: `GE payStatus=${paymentStatus} 3ds=${reached3ds} order=${orderNumber || "-"} payNet=${payNet}`,
+      iframeTextSnippet: iframeText.slice(0, 500).replace(/\s+/g, " "),
     };
   } catch (e) {
     try {
