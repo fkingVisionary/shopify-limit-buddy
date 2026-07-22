@@ -95,7 +95,7 @@ for (let i = 0; i < maxTries; i++) {
   );
   console.log(`  steps ${steps}`);
   for (const e of tl) {
-    if (/ge_post|post_pay|pay_clicked|charge_guard|ge_iframe|card_filled/.test(e.event || "")) {
+    if (/ge_post|post_pay|pay_clicked|charge_guard|ge_iframe|card_filled|issuer_req/.test(e.event || "")) {
       console.log(`  +${e.elapsedMs}ms ${e.event}`, JSON.stringify({ ...e, t: undefined, elapsedMs: undefined, event: undefined }).slice(0, 180));
     }
   }
