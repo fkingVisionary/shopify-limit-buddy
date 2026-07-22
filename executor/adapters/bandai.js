@@ -15,10 +15,13 @@
 //   placeOrder + bandaiBrowserCheckout = HTTP→cart on that same bridge, then
 //   SPA Proceed + single GE Pay (drop-speed path). Full browser login/PDP is
 //   only `bandaiBrowserFull:true` (slow — do not use for drops).
+//   placeOrder + bandaiGeHttpPay = HTTP through checkoutSn + GEPI GetCartToken
+//   → Checkout/v2 hydrate → issuer (no Playwright GE UI).
 
 import { createBandaiAccount } from "./bandai-agen.js";
 import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
+import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
 import {
@@ -549,7 +552,10 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   }
 
   // Optional early stop before checkout POST (default continues to checkoutSn).
-  if (task.bandaiStopAtCart === true && !(placeOrder && opts.placeOrderGe)) {
+  if (
+    task.bandaiStopAtCart === true &&
+    !(placeOrder && (opts.placeOrderGe || opts.placeOrderGeHttp))
+  ) {
     await closeBridge();
     return {
       ok: true,
@@ -571,7 +577,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
 
   // ── Drop-speed placeOrder: SPA Proceed + GE on the SAME F5 bridge browser ─
   // Avoids a second Chromium login/PDP/ATC (that path was ~5min to issuer).
-  if (placeOrder && opts.placeOrderGe === true) {
+  // Skipped when bandaiGeHttpPay — that path uses HTTP cart_checkout + GEPI.
+  if (placeOrder && opts.placeOrderGe === true && !opts.placeOrderGeHttp) {
     const card = opts.card;
     if (!bridge) {
       return {
@@ -828,6 +835,63 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     };
   });
 
+  // ── HTTP GE Pay (no Playwright Pay UI): GetCartToken → hydrate → issuer ─
+  // F5 bridge page kept only to mint iovation #ioBlackBox (snare.js) — not Pay.
+  if (placeOrder && opts.placeOrderGeHttp === true && chk.ok) {
+    const geOut = await runBandaiGeHttpPay({
+      ctx,
+      page: bridge?.page || null,
+      merchantCartToken,
+      checkoutSn: chk.checkoutSn,
+      card: opts.card,
+      area: session.area,
+      customerEmail: email,
+      userAgent: session.state.userAgent,
+      referer: `${session.base}/orderdetails`,
+      stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
+      forceIssuer: task.bandaiGeForceIssuer === true,
+      onProgress: (event, row) => {
+        try {
+          ctx.onProgress?.(event, row?.note || event, row);
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+    await closeBridge();
+    if (Array.isArray(geOut.steps)) {
+      for (const s of geOut.steps) steps.push(s);
+    }
+    return {
+      ok: Boolean(geOut.ok),
+      steps,
+      timeline: geOut.timeline || [],
+      failedStep: geOut.failedStep || null,
+      error: geOut.ok ? null : geOut.error || geOut.note || null,
+      checkoutStage: geOut.checkoutStage || "tokenize",
+      dryRun: false,
+      areaItemNo: pdp.areaItemNo,
+      cartSn,
+      cartId,
+      cartItemSn,
+      checkoutSn: chk.checkoutSn || null,
+      cartToken: geOut.cartToken || null,
+      title: pdp.title,
+      paymentStatus: geOut.paymentStatus,
+      blockers: geOut.blockers || [],
+      chargeReqCount: geOut.chargeReqCount ?? null,
+      sawAuthWire: geOut.sawAuthWire ?? null,
+      finalUrl: `${session.base}/orderdetails`,
+      cookies: ctx.jar?.dump?.() ?? {},
+      note: geOut.note || null,
+      via: "http-ge",
+      globaleMid: GLOBALE_MID,
+      merchantCartToken,
+      orderNumber: geOut.orderNumber ?? null,
+      elapsedMs: geOut.elapsedMs,
+    };
+  }
+
   await closeBridge();
 
   return {
@@ -975,7 +1039,18 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Drop path: HTTP + F5 mint through cart, then GE Pay on the same bridge page.
+  // Preferred drop path: full GE over HTTP (no Playwright Pay UI).
+  if (placeOrder && task.bandaiGeHttpPay === true) {
+    return runHttpCheckout(task, ctx, session, tStep, steps, {
+      email,
+      password,
+      productCode,
+      placeOrderGeHttp: true,
+      card,
+    });
+  }
+
+  // Legacy drop path: HTTP + F5 mint through cart, then GE Pay on bridge page.
   if (placeOrder && task.bandaiBrowserCheckout === true) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
