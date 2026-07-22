@@ -36,7 +36,10 @@ function storeMatches(account, storeId) {
  * @returns {{ account: object|null, source: string, error?: string, candidates: number }}
  */
 function resolveAccountForTask({ task, profile, accounts, excludeIds = [] } = {}) {
-  const mode = String(task?.toymateMode || task?.mode || "checkout").toLowerCase();
+  const storeId = task?.store || "toymate";
+  const mode = String(
+    (storeId === "bandai" ? task?.bandaiMode : task?.toymateMode) || task?.mode || "checkout",
+  ).toLowerCase();
   if (mode === "account_gen" || mode === "monitor") {
     return { account: null, source: "n/a", candidates: 0 };
   }
@@ -44,7 +47,6 @@ function resolveAccountForTask({ task, profile, accounts, excludeIds = [] } = {}
   const assign = String(task?.accountAssign || "auto").toLowerCase();
   const list = Array.isArray(accounts) ? accounts : [];
   const excluded = new Set((excludeIds || []).map(String));
-  const storeId = task?.store || "toymate";
 
   if (assign === "guest" || assign === "none") {
     return { account: null, source: "guest", candidates: 0 };
@@ -69,6 +71,10 @@ function resolveAccountForTask({ task, profile, accounts, excludeIds = [] } = {}
     (a) =>
       storeMatches(a, storeId) &&
       a.status !== "disabled" &&
+      a.status !== "banned" &&
+      a.status !== "burned" &&
+      // Bandai: prefer vault-ready; still allow legacy "active"
+      (storeId !== "bandai" || a.status === "ready" || a.status === "active" || !a.status) &&
       !excluded.has(String(a.id)) &&
       a.email &&
       a.password,

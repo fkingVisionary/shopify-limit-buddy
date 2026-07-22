@@ -1,6 +1,6 @@
 // Bounded local job queue. Stability first: cap concurrent /run calls so
 // Chromium 3DS tails don't OOM the machine. Store adapters plug in via
-// buildPayload(store) — Kmart + Toymate (isolated branches).
+// buildPayload(store) — Kmart + Toymate + Bandai (isolated branches).
 //
 // Kmart payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
@@ -266,6 +266,184 @@ function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSessio
   };
 }
 
+function buildBandaiPayload({
+  task,
+  profile,
+  proxyRaw,
+  placeOrder,
+  rotateSession,
+  accounts,
+  excludeAccountIds,
+  settings,
+}) {
+  const mode = String(task.bandaiMode || "checkout").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const REGION_RE = /^(au|us|nz|sg|hk|tw|fr)$/i;
+  const areaFromUrl = (input.match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i) || [])[1];
+  const bandaiArea = String(task.bandaiArea || task.areaCode || areaFromUrl || "au")
+    .trim()
+    .toLowerCase();
+  if (!REGION_RE.test(bandaiArea)) {
+    return {
+      ok: false,
+      error: `Unsupported Bandai region "${bandaiArea}" (use au/us/nz/sg/hk/tw/fr — not jp)`,
+    };
+  }
+  if (
+    mode !== "account_gen" &&
+    mode !== "monitor" &&
+    mode !== "chance" &&
+    input &&
+    !/^https:\/\/(www\.)?p-bandai\.com\//i.test(input) &&
+    !/^[A-Za-z0-9_-]+$/.test(input)
+  ) {
+    return {
+      ok: false,
+      error: "Bandai product URL (p-bandai.com/{au|us|…}/item/…) or product code required",
+    };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw);
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
+
+  const storeUrl =
+    mode === "account_gen" || mode === "monitor" || !input
+      ? `https://p-bandai.com/${bandaiArea}/`
+      : /^https?:\/\//i.test(input)
+        ? input
+        : `https://p-bandai.com/${bandaiArea}/item/${input}`;
+
+  let resolvedAccount = null;
+  let accountAssignSource = null;
+  if (mode === "checkout" || mode === "chance") {
+    if (task.account?.email && task.account?.password) {
+      resolvedAccount = {
+        email: task.account.email,
+        password: task.account.password,
+        id: task.account.id || null,
+      };
+      accountAssignSource = task.accountAssignSource || "pre";
+    } else {
+      const resolved = resolveAccountForTask({
+        task,
+        profile,
+        accounts: accounts || task._accounts || [],
+        excludeIds: excludeAccountIds || task._excludeAccountIds || [],
+      });
+      if (resolved.error) {
+        return { ok: false, error: resolved.error };
+      }
+      resolvedAccount = resolved.account
+        ? {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          }
+        : null;
+      accountAssignSource = resolved.source;
+    }
+    if (!resolvedAccount?.email || !resolvedAccount?.password) {
+      return {
+        ok: false,
+        error: "Bandai login required — generate an account or assign one from the vault",
+      };
+    }
+  }
+
+  const s = settings || task._settings || {};
+  const otp = {
+    onlinesimApiKey: String(s.onlinesimApiKey || "").trim(),
+    onlinesimMode: String(s.onlinesimMode || "rent"),
+    onlinesimServiceSlug: String(s.onlinesimServiceSlug || "other"),
+    onlinesimCountry: 61,
+    imapHost: String(s.imapHost || "").trim(),
+    imapPort: Number(s.imapPort) || 993,
+    imapUser: String(s.imapUser || "").trim(),
+    imapAppPassword: String(s.imapAppPassword || "").trim(),
+    imapMailbox: String(s.imapMailbox || "INBOX"),
+  };
+
+  if (mode === "account_gen") {
+    if (!otp.onlinesimApiKey) {
+      return { ok: false, error: "OnlineSim API key missing in Settings" };
+    }
+    if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
+      return { ok: false, error: "IMAP host/user/app password required in Settings" };
+    }
+  }
+
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "account_gen" ? storeUrl : input || storeUrl,
+      variantId: Number(task.variantId) || 1,
+      qty: Math.max(1, Math.min(5, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      forceUndici: true,
+      forceTls: false,
+      // HTTP-first: F5 sensor bridge mints headers; full Playwright checkout opt-in only.
+      // GE card/3DS still needs browser when placeOrder is true.
+      bandaiBrowserCheckout:
+        task.bandaiBrowserCheckout === true ||
+        (mode === "checkout" && Boolean(placeOrder)),
+      bandaiF5Bridge: task.bandaiF5Bridge !== false,
+      bandaiMode: mode,
+      bandaiArea,
+      shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      card,
+      campaignSn: task.campaignSn || null,
+      accountPassword:
+        typeof task.accountPassword === "string" && task.accountPassword.trim()
+          ? task.accountPassword.trim()
+          : null,
+      account: resolvedAccount,
+      accountAssignSource,
+      otp: mode === "account_gen" ? otp : undefined,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+    },
+  };
+}
+
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
@@ -273,6 +451,9 @@ function buildPayload(job) {
   }
   if (store === "toymate") {
     return buildToymatePayload(job);
+  }
+  if (store === "bandai") {
+    return buildBandaiPayload(job);
   }
   return { ok: false, error: `Store adapter not installed yet: ${store}` };
 }

@@ -25,6 +25,13 @@ function persistSettings() {
   store.saveSettings(state.settings);
 }
 
+function storeDisplayName(sid) {
+  if (sid === "toymate") return "Toymate AU";
+  if (sid === "bandai") return "Premium Bandai";
+  if (sid === "kmart") return "Kmart AU";
+  return sid;
+}
+
 function upsertGeneratedAccount(account, { storeId, profileId, source = "generated" } = {}) {
   if (!account?.email || !account?.password) return null;
   if (!Array.isArray(state.db.accounts)) state.db.accounts = [];
@@ -35,19 +42,28 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
       String(a.storeId || "") === sid &&
       String(a.email || "").toLowerCase() === email.toLowerCase(),
   );
+  const status =
+    account.status && ["ready", "needs_sms", "banned", "burned", "active", "disabled"].includes(account.status)
+      ? account.status
+      : sid === "bandai"
+        ? "ready"
+        : "active";
   const row = {
     id: existing?.id || store.id("acc"),
     email,
     emailBase: emailBase(email),
     password: String(account.password),
+    phone: account.phone || existing?.phone || null,
+    shipping: account.shipping || existing?.shipping || null,
     storeId: sid,
-    adapter: sid === "toymate" ? "toymate" : sid,
-    storeName: sid === "toymate" ? "Toymate AU" : sid,
+    adapter: sid,
+    storeName: storeDisplayName(sid),
     profileId: profileId || null,
     source,
-    status: "active",
+    status,
     lastUsedAt: existing?.lastUsedAt || null,
-    createdAt: existing?.createdAt || Date.now(),
+    lastLoginAt: account.lastLoginAt || existing?.lastLoginAt || null,
+    createdAt: existing?.createdAt || account.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
   if (existing) {
@@ -67,6 +83,8 @@ function snapshot() {
       apiKey: state.settings.apiKey || "",
       hyperApiKey: state.settings.hyperApiKey || "",
       capsolverApiKey: state.settings.capsolverApiKey || "",
+      onlinesimApiKey: state.settings.onlinesimApiKey || "",
+      imapAppPassword: state.settings.imapAppPassword || "",
     },
     profiles: state.db.profiles,
     proxyGroups: state.db.proxyGroups,
@@ -121,15 +139,17 @@ runner.setFinishedHandler((result) => {
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
     if (t) {
-      if (result.ok && result.accountGen && result.account?.email) {
+      if (result.accountGen && result.account?.email && result.account?.password) {
         upsertGeneratedAccount(result.account, {
-          storeId: t.store || "toymate",
+          storeId: t.store || result.account.storeId || "toymate",
           profileId: t.profileId,
           source: "generated",
         });
-        t.lastStatus = "complete";
-        t.lastLabel = `Account ${result.account.email}`;
-        t.lastError = null;
+        t.lastStatus = result.ok ? "complete" : "error";
+        t.lastLabel = result.ok
+          ? `Account ${result.account.email}`
+          : result.consumerLabel || result.error || `Account ${result.account.email} (${result.account.status || "partial"})`;
+        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = null;
       } else {
         t.lastStatus =
@@ -285,24 +305,34 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     proxyGroupId: task.proxyGroupId || null,
     placeOrder: task.placeOrder !== false,
     kmartMode: "current",
-    // Toymate-only fields (ignored by Kmart payload builder).
+    // Toymate-only fields (ignored by Kmart / Bandai payload builders).
     toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
+    // Bandai-only fields (ignored by Kmart / Toymate payload builders).
+    bandaiMode: storeId === "bandai" ? String(task.bandaiMode || "checkout") : undefined,
+    campaignSn:
+      storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
     accountPassword:
-      storeId === "toymate" && typeof task.accountPassword === "string"
+      (storeId === "toymate" || storeId === "bandai") && typeof task.accountPassword === "string"
         ? task.accountPassword
         : undefined,
-    // auto = match vault by profile email; manual = accountId; guest = no login.
+    // auto = match vault by profile email; manual = accountId; guest = no login (Toymate).
     accountAssign:
       storeId === "toymate"
         ? ["auto", "manual", "guest"].includes(String(task.accountAssign || "").toLowerCase())
           ? String(task.accountAssign).toLowerCase()
           : "auto"
-        : undefined,
+        : storeId === "bandai"
+          ? ["auto", "manual"].includes(String(task.accountAssign || "").toLowerCase())
+            ? String(task.accountAssign).toLowerCase()
+            : "auto"
+          : undefined,
     accountId:
-      storeId === "toymate" && task.accountAssign === "manual" && task.accountId
+      (storeId === "toymate" || storeId === "bandai") &&
+      task.accountAssign === "manual" &&
+      task.accountId
         ? String(task.accountId)
-        : storeId === "toymate"
+        : storeId === "toymate" || storeId === "bandai"
           ? null
           : undefined,
     enabled: task.enabled !== false,
@@ -362,8 +392,12 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
       const proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
       const taskCopy = { ...task };
-      // Wire vault account into Toymate checkout (auto by profile email, or manual).
-      if (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") {
+      // Wire vault account into Toymate / Bandai checkout (auto by profile email, or manual).
+      const needsVault =
+        (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
+        (task.store === "bandai" &&
+          ["checkout", "chance"].includes(String(task.bandaiMode || "checkout")));
+      if (needsVault) {
         const resolved = resolveAccountForTask({
           task,
           profile,
@@ -401,6 +435,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
         proxyIndex,
         placeOrder: task.placeOrder !== false,
         accounts: state.db.accounts || [],
+        settings: state.settings,
       });
     }
     if (assignError) {

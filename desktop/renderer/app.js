@@ -58,15 +58,16 @@ function emailBaseClient(email) {
   return `${local}@${domain}`;
 }
 
-function fillVaultAccountSelect() {
-  const sel = $("taskAccountId");
+function fillVaultAccountSelect(storeId = "toymate", selectId = "taskAccountId") {
+  const sel = $(selectId);
   if (!sel || !state) return;
   const cur = sel.value;
-  const rows = (state.accounts || []).filter((a) => (a.storeId || "toymate") === "toymate");
+  const sid = storeId || "toymate";
+  const rows = (state.accounts || []).filter((a) => (a.storeId || "toymate") === sid);
   sel.innerHTML =
     `<option value="">Select account…</option>` +
     rows
-      .map((a) => `<option value="${esc(a.id)}">${esc(a.email)}</option>`)
+      .map((a) => `<option value="${esc(a.id)}">${esc(a.email)}${a.status && a.status !== "ready" && a.status !== "active" ? ` (${esc(a.status)})` : ""}</option>`)
       .join("");
   if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
 }
@@ -77,35 +78,69 @@ function syncAccountAssignUi() {
   const hint = $("taskAccountAutoHint");
   if (manual) manual.hidden = assign !== "manual";
   if (hint) hint.hidden = assign !== "auto";
-  if (assign === "manual") fillVaultAccountSelect();
+  if (assign === "manual") fillVaultAccountSelect("toymate", "taskAccountId");
+}
+
+function syncBandaiAccountAssignUi() {
+  const assign = $("taskBandaiAccountAssign")?.value || "auto";
+  const manual = $("taskBandaiAccountManualWrap");
+  if (manual) manual.hidden = assign !== "manual";
+  if (assign === "manual") fillVaultAccountSelect("bandai", "taskBandaiAccountId");
 }
 
 function syncTaskFormForStore() {
   const store = $("taskStore")?.value || "kmart";
   const toy = store === "toymate";
+  const bandai = store === "bandai";
   const opts = $("taskToymateOpts");
   if (opts) opts.hidden = !toy;
-  const mode = $("taskToymateMode")?.value || "checkout";
+  const bOpts = $("taskBandaiOpts");
+  if (bOpts) bOpts.hidden = !bandai;
+  const mode = toy
+    ? $("taskToymateMode")?.value || "checkout"
+    : bandai
+      ? $("taskBandaiMode")?.value || "checkout"
+      : "checkout";
   const label = $("taskPdpLabel");
   const input = $("taskPdp");
   if (label) {
-    label.textContent = !toy
-      ? "Product URL (PDP)"
-      : mode === "account_gen"
-        ? "Store (auto)"
-        : mode === "monitor"
-          ? "Keywords"
-          : "Product URL";
+    if (bandai) {
+      label.textContent =
+        mode === "account_gen"
+          ? "Store (auto)"
+          : mode === "monitor"
+            ? "Keywords or product code"
+            : mode === "chance"
+              ? "Optional product URL"
+              : "Product URL / code";
+    } else if (toy) {
+      label.textContent =
+        mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
+    } else {
+      label.textContent = "Product URL (PDP)";
+    }
   }
   if (input) {
-    input.disabled = toy && mode === "account_gen";
-    input.placeholder = !toy
-      ? "https://www.kmart.com.au/..."
-      : mode === "account_gen"
-        ? "Uses profile email/address"
-        : mode === "monitor"
-          ? "+pokemon -tin"
-          : "https://www.toymate.com.au/…";
+    input.disabled = (toy || bandai) && mode === "account_gen";
+    if (bandai) {
+      input.placeholder =
+        mode === "account_gen"
+          ? "Uses IMAP mailbox + profile address"
+          : mode === "monitor"
+            ? "one piece  OR  N2903432003"
+            : mode === "chance"
+              ? "optional"
+              : "https://p-bandai.com/au|us|nz|sg|hk|tw|fr/item/…";
+    } else if (toy) {
+      input.placeholder =
+        mode === "account_gen"
+          ? "Uses profile email/address"
+          : mode === "monitor"
+            ? "+pokemon -tin"
+            : "https://www.toymate.com.au/…";
+    } else {
+      input.placeholder = "https://www.kmart.com.au/...";
+    }
   }
   const payWrap = $("taskToymatePayWrap");
   if (payWrap) payWrap.hidden = !toy || mode !== "checkout";
@@ -113,9 +148,19 @@ function syncTaskFormForStore() {
   if (passWrap) passWrap.hidden = !toy || mode !== "account_gen";
   const assignWrap = $("taskAccountAssignWrap");
   if (assignWrap) assignWrap.hidden = !toy || mode !== "checkout";
+  const bPass = $("taskBandaiAccountPassWrap");
+  if (bPass) bPass.hidden = !bandai || mode !== "account_gen";
+  const bAssign = $("taskBandaiAssignWrap");
+  if (bAssign) bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance");
+  const bChance = $("taskBandaiChanceWrap");
+  if (bChance) bChance.hidden = !bandai || mode !== "chance";
   const placeWrap = $("taskPlaceOrderWrap");
-  if (placeWrap) placeWrap.hidden = toy && mode !== "checkout";
+  if (placeWrap) {
+    placeWrap.hidden =
+      (toy && mode !== "checkout") || (bandai && mode !== "checkout");
+  }
   if (toy && mode === "checkout") syncAccountAssignUi();
+  if (bandai && (mode === "checkout" || mode === "chance")) syncBandaiAccountAssignUi();
 }
 
 function esc(s) {
@@ -129,7 +174,7 @@ function renderTasks() {
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
-    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart or Toymate task on the right.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart, Toymate, or Bandai task on the right.</div></div></div>`;
     return;
   }
   el.innerHTML = tasks
@@ -148,7 +193,12 @@ function renderTasks() {
             : t.lastStatus === "queued"
               ? "run"
               : "";
-      const storeLabel = t.store === "toymate" ? `Toymate · ${t.toymateMode || "checkout"}` : "Kmart";
+      const storeLabel =
+        t.store === "toymate"
+          ? `Toymate · ${t.toymateMode || "checkout"}`
+          : t.store === "bandai"
+            ? `Bandai · ${t.bandaiMode || "checkout"}`
+            : "Kmart";
       let accountMeta = "";
       if (t.store === "toymate" && (t.toymateMode || "checkout") === "checkout") {
         const assign = t.accountAssign || "auto";
@@ -165,11 +215,31 @@ function renderTasks() {
           accountMeta = base ? `account: auto (${n} match ${base})` : "account: auto (no profile email)";
         }
       }
+      if (
+        t.store === "bandai" &&
+        ["checkout", "chance"].includes(String(t.bandaiMode || "checkout"))
+      ) {
+        const assign = t.accountAssign || "auto";
+        if (assign === "manual") {
+          const acc = (state.accounts || []).find((a) => a.id === t.accountId);
+          accountMeta = acc ? `account: ${acc.email}` : "account: manual (missing)";
+        } else {
+          const prof = (state.profiles || []).find((p) => p.id === t.profileId);
+          const base = emailBaseClient(prof?.email);
+          const n = (state.accounts || []).filter(
+            (a) => (a.storeId || "") === "bandai" && emailBaseClient(a.email) === base,
+          ).length;
+          accountMeta = base ? `account: auto (${n} match ${base})` : "account: auto (no profile email)";
+        }
+      }
+      const pdpMeta =
+        t.pdpUrl ||
+        (t.toymateMode === "account_gen" || t.bandaiMode === "account_gen" ? "account gen" : "");
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
-          <div class="meta">${esc(storeLabel)} · ${esc(t.pdpUrl || (t.toymateMode === "account_gen" ? "account gen" : ""))}</div>
+          <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
           <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
         </div>
         <div class="actions">
@@ -187,7 +257,7 @@ function renderAccounts() {
   if (!el) return;
   const rows = state.accounts || [];
   if (!rows.length) {
-    el.innerHTML = `<div class="item"><div><strong>No accounts yet</strong><div class="meta">Run a Toymate Account gen task.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No accounts yet</strong><div class="meta">Run a Toymate or Bandai Account gen task.</div></div></div>`;
     return;
   }
   el.innerHTML = rows
@@ -294,6 +364,14 @@ function renderSettings() {
   $("setHyper").value = s.hyperApiKey || "";
   $("setPaydockPk").value = s.paydockPublicKey || "";
   if ($("setCapsolver")) $("setCapsolver").value = s.capsolverApiKey || "";
+  if ($("setOnlinesim")) $("setOnlinesim").value = s.onlinesimApiKey || "";
+  if ($("setOnlinesimMode")) $("setOnlinesimMode").value = s.onlinesimMode || "rent";
+  if ($("setOnlinesimSlug")) $("setOnlinesimSlug").value = s.onlinesimServiceSlug || "other";
+  if ($("setImapHost")) $("setImapHost").value = s.imapHost || "";
+  if ($("setImapPort")) $("setImapPort").value = s.imapPort ?? 993;
+  if ($("setImapMailbox")) $("setImapMailbox").value = s.imapMailbox || "INBOX";
+  if ($("setImapUser")) $("setImapUser").value = s.imapUser || "";
+  if ($("setImapAppPassword")) $("setImapAppPassword").value = s.imapAppPassword || "";
   $("setMax").value = s.maxConcurrent ?? 5;
   $("setPlaceOrder").checked = s.placeOrderDefault !== false;
   $("licenseMsg").textContent = s.licenseMessage
@@ -344,6 +422,12 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
     if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
     if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
+    if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
+    if ($("taskBandaiAccountPassword"))
+      $("taskBandaiAccountPassword").value = task.accountPassword || "";
+    if ($("taskBandaiAccountAssign"))
+      $("taskBandaiAccountAssign").value = task.accountAssign || "auto";
+    if ($("taskBandaiCampaignSn")) $("taskBandaiCampaignSn").value = task.campaignSn || "";
     $("taskPdp").value = task.pdpUrl || "";
     $("taskQty").value = task.qty || 1;
     $("taskQuantity").value = task.quantity || 1;
@@ -351,9 +435,13 @@ document.body.addEventListener("click", async (e) => {
     $("taskProxy").value = task.proxyGroupId || "";
     $("taskPlaceOrder").checked = task.placeOrder !== false;
     syncTaskFormForStore();
-    if ($("taskAccountId") && task.accountId) {
-      fillVaultAccountSelect();
+    if ($("taskAccountId") && task.accountId && task.store === "toymate") {
+      fillVaultAccountSelect("toymate", "taskAccountId");
       $("taskAccountId").value = task.accountId;
+    }
+    if ($("taskBandaiAccountId") && task.accountId && task.store === "bandai") {
+      fillVaultAccountSelect("bandai", "taskBandaiAccountId");
+      $("taskBandaiAccountId").value = task.accountId;
     }
     setTab("tasks");
   }
@@ -421,7 +509,11 @@ document.body.addEventListener("click", async (e) => {
 function readTaskForm() {
   const store = $("taskStore").value;
   const accountAssign =
-    store === "toymate" ? $("taskAccountAssign")?.value || "auto" : undefined;
+    store === "toymate"
+      ? $("taskAccountAssign")?.value || "auto"
+      : store === "bandai"
+        ? $("taskBandaiAccountAssign")?.value || "auto"
+        : undefined;
   return {
     id: $("taskId").value || undefined,
     label: $("taskLabel").value,
@@ -433,20 +525,31 @@ function readTaskForm() {
     proxyGroupId: $("taskProxy").value || null,
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
+    bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
     accountPassword:
-      store === "toymate" ? $("taskAccountPassword")?.value || "" : undefined,
+      store === "toymate"
+        ? $("taskAccountPassword")?.value || ""
+        : store === "bandai"
+          ? $("taskBandaiAccountPassword")?.value || ""
+          : undefined,
     accountAssign,
     accountId:
       store === "toymate" && accountAssign === "manual"
         ? $("taskAccountId")?.value || null
-        : null,
+        : store === "bandai" && accountAssign === "manual"
+          ? $("taskBandaiAccountId")?.value || null
+          : null,
+    campaignSn: store === "bandai" ? $("taskBandaiCampaignSn")?.value || "" : undefined,
   };
 }
 
 $("taskStore").onchange = () => syncTaskFormForStore();
 $("taskToymateMode").onchange = () => syncTaskFormForStore();
+if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForStore();
 if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
+if ($("taskBandaiAccountAssign"))
+  $("taskBandaiAccountAssign").onchange = () => syncBandaiAccountAssignUi();
 
 $("taskForm").onsubmit = async (e) => {
   e.preventDefault();
@@ -468,8 +571,13 @@ $("taskRunOne").onclick = async () => {
   const store = $("taskStore").value;
   const pdp = $("taskPdp").value.trim();
   const match =
-    state.tasks.find((t) => t.store === store && (t.pdpUrl === pdp || (store === "toymate" && t.toymateMode === "account_gen"))) ||
-    state.tasks[state.tasks.length - 1];
+    state.tasks.find(
+      (t) =>
+        t.store === store &&
+        (t.pdpUrl === pdp ||
+          (store === "toymate" && t.toymateMode === "account_gen") ||
+          (store === "bandai" && t.bandaiMode === "account_gen")),
+    ) || state.tasks[state.tasks.length - 1];
   if (!match) return;
   const res = await window.desktop.runTasks([match.id]);
   if (!res.ok) appendLog(esc(res.error), "err");
@@ -536,6 +644,14 @@ $("btnSaveSettings").onclick = async () => {
       hyperApiKey: $("setHyper").value.trim(),
       paydockPublicKey: $("setPaydockPk").value.trim(),
       capsolverApiKey: $("setCapsolver")?.value?.trim() || "",
+      onlinesimApiKey: $("setOnlinesim")?.value?.trim() || "",
+      onlinesimMode: $("setOnlinesimMode")?.value || "rent",
+      onlinesimServiceSlug: $("setOnlinesimSlug")?.value?.trim() || "other",
+      imapHost: $("setImapHost")?.value?.trim() || "",
+      imapPort: Number($("setImapPort")?.value) || 993,
+      imapUser: $("setImapUser")?.value?.trim() || "",
+      imapAppPassword: $("setImapAppPassword")?.value?.trim() || "",
+      imapMailbox: $("setImapMailbox")?.value?.trim() || "INBOX",
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
     }),
