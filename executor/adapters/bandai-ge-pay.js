@@ -167,16 +167,9 @@ async function warmGemAssets(page, mid = GLOBALE_MID_DEFAULT) {
         if (a.as !== "document") l.crossOrigin = "anonymous";
         document.head.appendChild(l);
         // Populate HTTP cache — GEM cold boot was ~40s waiting on these.
+        // Do NOT inject a live prefetcher iframe here — that can race the SPA's
+        // real GEM mount on /orderdetails (lab: checkoutSn ok, frames=1).
         fetch(a.href, { mode: "no-cors", credentials: "omit" }).catch(() => {});
-      }
-      if (!document.getElementById("j1m-ge-prefetch")) {
-        const ifr = document.createElement("iframe");
-        ifr.id = "j1m-ge-prefetch";
-        ifr.src = `https://web-bandai.global-e.com/shared/prefetcher/${merchantId}/AU?cb=${Date.now()}`;
-        ifr.setAttribute("aria-hidden", "true");
-        ifr.style.cssText =
-          "position:absolute;width:1px;height:1px;left:-9999px;border:0;opacity:0;pointer-events:none";
-        document.body.appendChild(ifr);
       }
     }, String(mid))
     .catch(() => {});
