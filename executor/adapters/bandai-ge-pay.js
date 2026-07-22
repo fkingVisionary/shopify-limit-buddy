@@ -290,10 +290,16 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // handleaction/1 = GEM init (must allow). /2+/3 both hit Revolut on one Pay —
-  // allow only the first actionId>=2. Other charge URLs arm at Pay.
+  // handleaction/1 = GEM init (must allow). /2 then /3 both hit Revolut on one
+  // Pay — let the first ≥2 reach the issuer; fulfill later ≥2 with the prior
+  // success JSON (aborting /3 leaves Pay disabled / T&Cs uncleared).
   let armChargeGuard = false;
   let allowedHandleActionGe2 = false;
+  let lastHandleActionOk = {
+    status: 200,
+    contentType: "application/json; charset=utf-8",
+    body: '{"Success":true}',
+  };
 
   const chargeRoute = async (route) => {
     const req = route.request();
@@ -354,13 +360,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
     if (handleAction && actionId != null && actionId >= 2) {
       if (allowedHandleActionGe2) {
         blockedChargeReqCount += 1;
-        mark("charge_req_blocked", {
+        mark("charge_req_fulfilled_local", {
           n: chargeReqCount,
           handleAction: true,
           actionId,
           url: url.slice(0, 140),
         });
-        await route.abort("failed");
+        await route.fulfill({
+          status: lastHandleActionOk.status,
+          contentType: lastHandleActionOk.contentType,
+          body: lastHandleActionOk.body,
+        });
         return;
       }
       allowedHandleActionGe2 = true;
@@ -384,6 +394,24 @@ export async function browserBandaiGeFromCart(opts = {}) {
     await route.continue();
   };
   await page.route("**/*", chargeRoute);
+
+  // Cache successful handleaction JSON so duplicate ≥2 can be fulfilled locally.
+  const onHandleActionRes = async (res) => {
+    try {
+      if (!isBandaiGeHandleAction(res.url())) return;
+      if (res.status() < 200 || res.status() >= 300) return;
+      const body = await res.text();
+      if (!body || body.length > 200_000) return;
+      lastHandleActionOk = {
+        status: res.status(),
+        contentType: res.headers()["content-type"] || "application/json; charset=utf-8",
+        body,
+      };
+    } catch {
+      /* ignore */
+    }
+  };
+  page.on("response", onHandleActionRes);
 
   const onReq = (req) => {
     const u = req.url();
@@ -1108,6 +1136,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
   } finally {
     page.off("request", onReq);
     page.off("response", onRes);
+    page.off("response", onHandleActionRes);
     await page.unroute("**/*", chargeRoute).catch(() => {});
   }
 }

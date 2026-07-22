@@ -203,7 +203,7 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
-| GE charge POSTs | **`handleaction/1` always; first `handleaction≥2` only; abort further ≥2**; other charge URLs arm at Pay | Revolut same-minute pairs = `/2`+`/3`. Aborting `/1` leaves Pay disabled (lab). |
+| GE charge POSTs | **`handleaction/1` always; first `≥2` to issuer; later `≥2` fulfilled locally** (not aborted) | Revolut pairs = `/2`+`/3`. Aborting `/3` leaves Pay/T&Cs broken; local fulfill keeps UI alive with one issuer hit. |
 | GEM boot | preload mid **1925** js/css + prefetcher iframe before Proceed; poll frames without blocking on `waitForURL` | Biggest remaining latency after Proceed (~40s cold); serial URL wait killed frame listeners early |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
 | Card expiry SELECT | DOM `value` + `input`/`change` events | Playwright `selectOption` on mismatch burned **~90s×N** and looked like “Pay blocked for 3 min” |
