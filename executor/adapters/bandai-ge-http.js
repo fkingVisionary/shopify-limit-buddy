@@ -8,8 +8,9 @@
  *   GET gepi.global-e.com/Checkout/GetCartToken?MerchantCartToken=…&MerchantId=1925&…
  *   → CartToken GUID → Checkout/v2 → handleaction/1..3 → CreditCardForm → issuer
  *
- * Remaining hard fields on issuer body: machineId (device blob), UrlStructureTokenEncoded (JWT).
- * Scrape both from Checkout/v2 + CreditCardForm HTML when possible.
+ * Single Revolut (2026-07-22 07:24 AEST): never open the LIVE pay cart in Playwright.
+ * Iovation mints on a throwaway Checkout/v2 guid; pay stays undici-only.
+ * Remaining hard fields: machineId (iovation blackbox), UrlStructureTokenEncoded (JWT).
  */
 
 import { request } from "../http.js";
@@ -1324,17 +1325,20 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
 
-  // Mint iovation BEFORE CreditCardForm JWT (snare.js → #ioBlackBox only).
-  // CRITICAL: do NOT merge Playwright GE cookies into the undici jar by default.
-  // page.goto(Checkout/v2) mints a parallel GE cookie jar; merging it made every
-  // bank JWT return IsTheSameCartToken=False and Revolut showed paired declines
-  // for a single undici HandleCreditCard POST (wire-tap 2026-07-22).
+  // Mint iovation (snare.js → #ioBlackBox) on a THROWAWAY Checkout/v2 cart.
+  //
+  // Proof 2026-07-22 AEST:
+  //   07:22 goto(LIVE Checkout/v2) then undici issuer → Revolut PAIR
+  //   07:24 pure undici (no Playwright on live cart) → Revolut SINGLE
+  // Browser handleaction on the live guid contaminates GE → dual PSP auth
+  // even when we only POST HandleCreditCard once. Never open the pay cart
+  // in Playwright unless explicitly opted in.
   let issuerPage = null;
   const browserReqLog = [];
   const logPageRequests = (page) => {
     try {
-      const ctx = page?.context?.();
-      if (!ctx?.on) return;
+      const pctx = page?.context?.();
+      if (!pctx?.on) return;
       const onReq = (req) => {
         const method = String(req.method() || "GET").toUpperCase();
         const url = String(req.url() || "");
@@ -1345,7 +1349,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           method,
           url: url.slice(0, 320),
           issuer: isBandaiGeIssuerPaymentUrl(url),
-          phase: "pre-block",
+          phase: "iovation-throwaway",
         };
         browserReqLog.push(row);
         try {
@@ -1361,7 +1365,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           /* ignore */
         }
       };
-      ctx.on("request", onReq);
+      pctx.on("request", onReq);
     } catch {
       /* ignore */
     }
@@ -1369,28 +1373,56 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   if (!machineId && opts.page) {
     logPageRequests(opts.page);
-    const mint = await mintIovationBlackbox({
-      page: opts.page,
-      checkoutV2Url: v2Url,
-      timeoutMs: opts.iovationTimeoutMs,
-      // Default: isolated fingerprint mint — do not seed/merge GE cookies.
-      jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
-    });
+    let mintUrl = null;
+    let throwawayGuid = null;
+    // Fresh GEPI cart used only as a snare.js host — not the pay guid.
+    try {
+      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}`;
+      const iovToken = await getBandaiGeCartToken({
+        ctx,
+        merchantCartToken: iovMct,
+        merchantId: mid,
+        area,
+        webStoreInstanceCode: area,
+        customerEmail: opts.customerEmail,
+        cultureCode: opts.cultureCode || "en-GB",
+        preferedCultureCode: opts.preferedCultureCode || "en-GB",
+        userAgent: opts.userAgent,
+        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+      });
+      if (iovToken.ok && iovToken.cartToken) {
+        throwawayGuid = iovToken.cartToken;
+        mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
+      }
+    } catch {
+      /* fall through */
+    }
+    if (!mintUrl && opts.allowLiveCartIovation === true) {
+      // Explicit escape hatch only — known to pair Revolut auths.
+      mintUrl = v2Url;
+      throwawayGuid = guid;
+    }
+    const mint = mintUrl
+      ? await mintIovationBlackbox({
+          page: opts.page,
+          checkoutV2Url: mintUrl,
+          timeoutMs: opts.iovationTimeoutMs,
+          // Never seed/merge GE cookies into the undici pay jar.
+          jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
+        })
+      : { ok: false, error: "no_throwaway_cart_for_iovation", ms: 0 };
     push("ge_iovation_mint", {
       ok: mint.ok,
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"} browserMutates=${browserReqLog.length}`
-        : `iovation fail ${mint.error || ""}`.slice(0, 160),
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=throwaway:${String(throwawayGuid || "").slice(0, 8)}… liveCart=${throwawayGuid === guid} browserMutates=${browserReqLog.length}`
+        : `iovation fail ${mint.error || "no_mint_url"}`.slice(0, 160),
     });
     if (mint.machineId) {
       machineId = mint.machineId;
       try {
-        fs.writeFileSync(
-          "/tmp/bandai-ge-machineId.txt",
-          String(mint.machineId),
-        );
+        fs.writeFileSync("/tmp/bandai-ge-machineId.txt", String(mint.machineId));
       } catch {
         /* ignore */
       }
@@ -1402,37 +1434,28 @@ export async function runBandaiGeHttpPay(opts = {}) {
         /* ignore */
       }
     }
-    // Default: drop Playwright after fingerprint mint. Keep undici jar pure and
-    // prove whether browser Checkout/v2 traffic was the silent second Revolut hit.
+    // Pay path stays undici-only unless caller opts into page issuer/scrape.
     const keepPage =
       opts.keepPageAfterIovation === true ||
       opts.preferPageIssuer === true ||
       opts.scrapeCardFormViaPage === true;
+    try {
+      await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+    } catch {
+      /* ignore */
+    }
     if (keepPage) {
+      // Only re-enter LIVE cart in the browser when explicitly requested.
       issuerPage = opts.page;
-      try {
-        const pageGuid =
-          extractGeCheckoutGuid(opts.page.url()) ||
-          extractGeCheckoutGuid(await opts.page.content().catch(() => ""));
-        if (pageGuid && pageGuid !== guid) {
-          push("ge_cart_token_page_diff", {
-            ok: true,
-            status: null,
-            ms: 0,
-            note: `page guid ${pageGuid} ≠ undici ${guid} (kept undici; no rebind)`,
-          });
-        }
-      } catch {
-        /* ignore */
-      }
+      mark("ge_page_kept_after_iovation", {
+        ok: true,
+        warn: "live_cart_browser_may_pair_revolut",
+      });
     } else {
-      try {
-        await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
-      } catch {
-        /* ignore */
-      }
       mark("ge_page_dropped_after_iovation", {
         ok: true,
+        throwawayGuid: throwawayGuid || null,
+        liveGuid: guid,
         browserMutatesDuringMint: browserReqLog.length,
         issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
       });
