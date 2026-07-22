@@ -1258,7 +1258,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
     },
   });
   let urlStructureToken = extractUrlStructureToken(v2.text);
-  let machineId = extractMachineId(v2.text);
+  // Prefer HTML scrape, then caller-supplied blackbox (no-Playwright GE experiments).
+  let machineId = extractMachineId(v2.text) || opts.machineId || null;
   push("ge_checkout_v2", {
     ok: v2.ok,
     status: v2.status,
@@ -1329,14 +1330,50 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // bank JWT return IsTheSameCartToken=False and Revolut showed paired declines
   // for a single undici HandleCreditCard POST (wire-tap 2026-07-22).
   let issuerPage = null;
+  const browserReqLog = [];
+  const logPageRequests = (page) => {
+    try {
+      const ctx = page?.context?.();
+      if (!ctx?.on) return;
+      const onReq = (req) => {
+        const method = String(req.method() || "GET").toUpperCase();
+        const url = String(req.url() || "");
+        if (method === "GET" || method === "HEAD" || method === "OPTIONS") return;
+        if (!/global-e\.com/i.test(url)) return;
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: url.slice(0, 320),
+          issuer: isBandaiGeIssuerPaymentUrl(url),
+          phase: "pre-block",
+        };
+        browserReqLog.push(row);
+        try {
+          let arr = [];
+          try {
+            arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-browser-wire.json", "utf8"));
+          } catch {
+            /* ignore */
+          }
+          arr.push(row);
+          fs.writeFileSync("/tmp/bandai-ge-browser-wire.json", JSON.stringify(arr, null, 2));
+        } catch {
+          /* ignore */
+        }
+      };
+      ctx.on("request", onReq);
+    } catch {
+      /* ignore */
+    }
+  };
+
   if (!machineId && opts.page) {
+    logPageRequests(opts.page);
     const mint = await mintIovationBlackbox({
       page: opts.page,
       checkoutV2Url: v2Url,
       timeoutMs: opts.iovationTimeoutMs,
       // Default: isolated fingerprint mint — do not seed/merge GE cookies.
-      // Seeding jar→page then merging page→jar was contaminating the undici
-      // cart session (IsTheSameCartToken=False on every bank JWT).
       jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
     });
     push("ge_iovation_mint", {
@@ -1344,10 +1381,20 @@ export async function runBandaiGeHttpPay(opts = {}) {
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"} browserMutates=${browserReqLog.length}`
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
-    if (mint.machineId) machineId = mint.machineId;
+    if (mint.machineId) {
+      machineId = mint.machineId;
+      try {
+        fs.writeFileSync(
+          "/tmp/bandai-ge-machineId.txt",
+          String(mint.machineId),
+        );
+      } catch {
+        /* ignore */
+      }
+    }
     if (opts.mergeIovationCookies === true && mint.cookies && ctx?.jar?.load) {
       try {
         ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
@@ -1355,23 +1402,41 @@ export async function runBandaiGeHttpPay(opts = {}) {
         /* ignore */
       }
     }
-    issuerPage = opts.page;
-    // Never rebind guid from the Playwright URL — that cart belongs to the
-    // browser cookie jar, not the undici hydrate session.
-    try {
-      const pageGuid =
-        extractGeCheckoutGuid(opts.page.url()) ||
-        extractGeCheckoutGuid(await opts.page.content());
-      if (pageGuid && pageGuid !== guid) {
-        push("ge_cart_token_page_diff", {
-          ok: true,
-          status: null,
-          ms: 0,
-          note: `page guid ${pageGuid} ≠ undici ${guid} (kept undici; no rebind)`,
-        });
+    // Default: drop Playwright after fingerprint mint. Keep undici jar pure and
+    // prove whether browser Checkout/v2 traffic was the silent second Revolut hit.
+    const keepPage =
+      opts.keepPageAfterIovation === true ||
+      opts.preferPageIssuer === true ||
+      opts.scrapeCardFormViaPage === true;
+    if (keepPage) {
+      issuerPage = opts.page;
+      try {
+        const pageGuid =
+          extractGeCheckoutGuid(opts.page.url()) ||
+          extractGeCheckoutGuid(await opts.page.content().catch(() => ""));
+        if (pageGuid && pageGuid !== guid) {
+          push("ge_cart_token_page_diff", {
+            ok: true,
+            status: null,
+            ms: 0,
+            note: `page guid ${pageGuid} ≠ undici ${guid} (kept undici; no rebind)`,
+          });
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
+    } else {
+      try {
+        await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+      } catch {
+        /* ignore */
+      }
+      mark("ge_page_dropped_after_iovation", {
+        ok: true,
+        browserMutatesDuringMint: browserReqLog.length,
+        issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
+      });
+      issuerPage = null;
     }
   }
 

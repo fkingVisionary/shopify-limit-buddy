@@ -922,7 +922,12 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     }
     const geOut = await runBandaiGeHttpPay({
       ctx,
-      page: bridge?.page || null,
+      // bandaiGeNoPage: never hand Playwright to GE (needs bandaiGeMachineId / env).
+      page: task.bandaiGeNoPage === true ? null : bridge?.page || null,
+      machineId:
+        task.bandaiGeMachineId ||
+        process.env.BANDAI_GE_MACHINE_ID ||
+        null,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
       card: opts.card,
@@ -932,6 +937,10 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       referer: `${session.base}/orderdetails`,
       stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
       forceIssuer: task.bandaiGeForceIssuer === true,
+      keepPageAfterIovation: task.bandaiGeKeepPage === true,
+      preferPageIssuer: task.bandaiGePreferPageIssuer === true,
+      scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
+      mergeIovationCookies: task.bandaiGeMergeIovationCookies === true,
       onProgress: (event, row) => {
         try {
           ctx.onProgress?.(event, row?.note || event, row);
