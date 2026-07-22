@@ -4,12 +4,13 @@
 // Secrets via env only. Rotate sticky only on Hyper t=bv hard-block.
 
 import fs from "node:fs";
-import { createJar, makeDispatcher, UA } from "../http.js";
+import { createJar, makeDispatcher, makeRemoteTlsDispatcher, UA } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, looksLikeDataDomeBlock } from "../antibot.js";
 import { createPcSession } from "../adapters/pokemoncentre-session.js";
 import {
   warmPokemonCentre,
+  clearIncapsulaReese,
   postDataDomeTags,
   solveDatadomeCaptchaUrl,
 } from "../adapters/pokemoncentre-edge.js";
@@ -36,6 +37,7 @@ const PDP =
   `${ORIGIN}/en-au/product/10-10320-101/pokemon-tcg-mewtwo-and-mew-dna-premium-zip-binder`;
 const MAX = Number(process.env.PC_GRIND_MAX || 16);
 const SKU = process.env.PC_SKU || "10-10320-101";
+const TRANSPORT = String(process.env.TRANSPORT || "undici").toLowerCase();
 
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -70,13 +72,17 @@ function stageRank(stage) {
 async function runOne(proxyRaw, idx) {
   const dir = `${OUT}/try-${idx}`;
   fs.mkdirSync(dir, { recursive: true });
-  const dispatcher = makeDispatcher(proxyRaw, { forceUndici: true });
+  const dispatcher =
+    TRANSPORT === "tls-worker"
+      ? await makeRemoteTlsDispatcher(proxyRaw)
+      : makeDispatcher(proxyRaw, { forceUndici: true });
   const jar = createJar();
   const ctx = { jar, dispatcher };
   const session = createPcSession(ctx, { locale: "en-au", userAgent: UA });
   const summary = {
     idx,
     proxyHost: proxyRaw.split(":")[0],
+    transport: TRANSPORT,
     ok: false,
     stage: "start",
   };
@@ -103,10 +109,18 @@ async function runOne(proxyRaw, idx) {
       return summary;
     }
 
+    // Fresh Reese immediately before BFF auth (Incapsula incidentId fix)
+    const reese = await clearIncapsulaReese(session, ctx, {
+      pageUrl: HOME,
+      html: edge.home?.html || "",
+    });
+    summary.reesePreAuth = Boolean(reese.hasToken);
+
     const auth = await getPublicToken(session, ctx, { locale: "en-au", scope: PC_CORTEX_SCOPE });
     if (!auth.ok) {
       summary.stage = "auth";
       summary.note = auth.note;
+      summary.incapBlock = auth.incapBlock;
       return summary;
     }
     summary.stage = "auth";
