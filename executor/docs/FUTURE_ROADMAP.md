@@ -64,9 +64,11 @@ Wire missing solvers in `antibot.js` once, then store adapters:
 | Store | Notes | Doc |
 |---|---|---|
 | JB Hi-Fi | Shopify + **CF** + reCAPTCHA Enterprise — not Akamai | `JB_HIFI_MODULE.md` |
+| **Topps (US+JP first)** | Per-region Shopify + **CF**; guest-first; EU hCaptcha likely | `TOPPS_MODULE.md` |
 | EB / Toymate / Pop Mart | CF / EQL / membership | scoreboard |
 
-Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outside Hyper.
+Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outside Hyper.  
+Topps: one adapter × region table (`shop.topps.com` / `shop-jp.topps.com` / EU `shop-*`); Magento paths are dead.
 
 ---
 
@@ -90,4 +92,5 @@ Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outsi
 | `JB_HIFI_MODULE.md` | JB dig (CF correction) |
 | `hyper-solutions-brief.md` | Hyper vendor API notes |
 | `POKEMON_CENTRE_MODULE.md` | Pokémon Centre AU dig (Incapsula+DD+GE) |
+| `TOPPS_MODULE.md` | Topps multi-region (US/JP + EU/IN/BR Shopify fleet) |
 | `FUTURE_ROADMAP.md` | This plan |
