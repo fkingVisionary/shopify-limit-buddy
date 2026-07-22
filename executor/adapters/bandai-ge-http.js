@@ -1373,51 +1373,54 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   if (!machineId && opts.page) {
     logPageRequests(opts.page);
-    let mintUrl = null;
-    let throwawayGuid = null;
-    // Fresh GEPI cart used only as a snare.js host — not the pay guid.
-    try {
-      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}`;
-      const iovToken = await getBandaiGeCartToken({
-        ctx,
-        merchantCartToken: iovMct,
-        merchantId: mid,
-        area,
-        webStoreInstanceCode: area,
-        customerEmail: opts.customerEmail,
-        cultureCode: opts.cultureCode || "en-GB",
-        preferedCultureCode: opts.preferedCultureCode || "en-GB",
-        userAgent: opts.userAgent,
-        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-      });
-      if (iovToken.ok && iovToken.cartToken) {
-        throwawayGuid = iovToken.cartToken;
-        mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
+    // Load LIVE Checkout/v2 HTML only as a snare.js host, but BLOCK every GE
+    // mutate (handleaction/save/pay). Browser handleaction on the pay guid is
+    // what paired Revolut (07:22); blocking keeps undici as sole cart owner.
+    const pctx = opts.page.context?.();
+    const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
+    const geMuteRoute = async (route) => {
+      const req = route.request();
+      const method = String(req.method() || "GET").toUpperCase();
+      if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
+        await route.continue();
+        return;
       }
-    } catch {
-      /* fall through */
+      // Swallow POSTs — snare/iovation talks to non-GE hosts.
+      await route.fulfill({
+        status: 204,
+        contentType: "text/plain",
+        body: "",
+      });
+    };
+    if (pctx?.route) {
+      await pctx.route(geMuteMatch, geMuteRoute);
     }
-    if (!mintUrl && opts.allowLiveCartIovation === true) {
-      // Explicit escape hatch only — known to pair Revolut auths.
-      mintUrl = v2Url;
-      throwawayGuid = guid;
+    let mint;
+    try {
+      mint = await mintIovationBlackbox({
+        page: opts.page,
+        checkoutV2Url: v2Url,
+        timeoutMs: opts.iovationTimeoutMs,
+        // Never seed/merge GE cookies into the undici pay jar.
+        jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
+      });
+    } finally {
+      if (pctx?.unroute) {
+        try {
+          await pctx.unroute(geMuteMatch, geMuteRoute);
+        } catch {
+          /* ignore */
+        }
+      }
     }
-    const mint = mintUrl
-      ? await mintIovationBlackbox({
-          page: opts.page,
-          checkoutV2Url: mintUrl,
-          timeoutMs: opts.iovationTimeoutMs,
-          // Never seed/merge GE cookies into the undici pay jar.
-          jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
-        })
-      : { ok: false, error: "no_throwaway_cart_for_iovation", ms: 0 };
+    const blockedMutates = browserReqLog.length;
     push("ge_iovation_mint", {
       ok: mint.ok,
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=throwaway:${String(throwawayGuid || "").slice(0, 8)}… liveCart=${throwawayGuid === guid} browserMutates=${browserReqLog.length}`
-        : `iovation fail ${mint.error || "no_mint_url"}`.slice(0, 160),
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute browserMutatesSeen=${blockedMutates} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
+        : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) {
       machineId = mint.machineId;
@@ -1445,7 +1448,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
       /* ignore */
     }
     if (keepPage) {
-      // Only re-enter LIVE cart in the browser when explicitly requested.
       issuerPage = opts.page;
       mark("ge_page_kept_after_iovation", {
         ok: true,
@@ -1454,9 +1456,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     } else {
       mark("ge_page_dropped_after_iovation", {
         ok: true,
-        throwawayGuid: throwawayGuid || null,
         liveGuid: guid,
-        browserMutatesDuringMint: browserReqLog.length,
+        geMuted: true,
+        browserMutatesDuringMint: blockedMutates,
         issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
       });
       issuerPage = null;
