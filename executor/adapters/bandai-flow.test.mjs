@@ -12,6 +12,10 @@ import {
   normalizeBandaiArea,
 } from "./bandai-session.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
+import {
+  isBandaiGeCheckoutPayFrame,
+  isBandaiGeAuthPaymentUrl,
+} from "./bandai-browser-checkout.js";
 
 // --- F5 gate matrix ---
 assert.equal(isBandaiF5Gated("POST", "/login"), true);
@@ -103,5 +107,17 @@ assert.equal(line.areaItemNo, "AAI0013787AU");
 assert.equal(findCartLine(cartJson, "NOPE"), null);
 assert.equal(listCartLines(cartJson).length, 1);
 assert.equal(listCartLines(cartJson)[0].cartItemSn, "LISN-9");
+
+// --- GE pay frame / auth URL (single-flight Pay contract) ---
+assert.equal(
+  isBandaiGeCheckoutPayFrame("https://webservices.global-e.com/Checkout/v2/abc"),
+  true,
+);
+assert.equal(
+  isBandaiGeCheckoutPayFrame("https://secure-bandai.global-e.com/payments/CreditCardForm/x"),
+  false,
+);
+assert.equal(isBandaiGeAuthPaymentUrl("https://webservices.global-e.com/ProcessPayment"), true);
+assert.equal(isBandaiGeAuthPaymentUrl("https://cdn.global-e.com/static.js"), false);
 
 console.log("bandai-flow.test.mjs ok");

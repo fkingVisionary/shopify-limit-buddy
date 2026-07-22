@@ -743,7 +743,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-      wait3dsMs: Number(task.wait3dsMs) || 120_000,
+      wait3dsMs: Number(task.wait3dsMs) || 45_000,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);

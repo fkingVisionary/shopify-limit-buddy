@@ -103,6 +103,20 @@ function extractPreloadSuffix(html) {
   return m?.[1] || null;
 }
 
+/** Only the GEM Checkout/v2 shell — never the nested CreditCardForm (avoids double charge). */
+export function isBandaiGeCheckoutPayFrame(url) {
+  return /webservices\.global-e\.com\/Checkout\/v2|global-e\.com\/Checkout\/v2/i.test(
+    String(url || ""),
+  );
+}
+
+/** Issuer / payment submit URLs (wire proof after a single Pay click). */
+export function isBandaiGeAuthPaymentUrl(url) {
+  return /ProcessPayment|Authorize|CompleteOrder|CreatePayment|SubmitPayment|PayOrder|PaymentData/i.test(
+    String(url || ""),
+  );
+}
+
 /** Walk Bandai cart.detail — lines live under subCarts[].combinedShippings[].lineItems[]. */
 function findCartLine(cartJson, areaItemNo) {
   const subs = Array.isArray(cartJson?.subCarts) ? cartJson.subCarts : [];
@@ -174,7 +188,7 @@ function looksLike3ds(url, text = "") {
  * @param {number} [opts.qty=1]
  * @param {boolean} [opts.placeOrder=false]
  * @param {object} [opts.card] — { number, expMonth, expYear, cvv, holder }
- * @param {number} [opts.wait3dsMs=120000] — how long to wait for 3DS after Pay
+ * @param {number} [opts.wait3dsMs=45000] — max observe after Pay (exits earlier on wire/decline/3DS)
  */
 export async function browserBandaiCheckout(opts = {}) {
   const email = String(opts.email || "").trim();
@@ -182,7 +196,8 @@ export async function browserBandaiCheckout(opts = {}) {
   const productCode = String(opts.productCode || "").trim();
   const qty = Math.max(1, Math.min(5, Number(opts.qty) || 1));
   const placeOrder = opts.placeOrder === true;
-  const wait3dsMs = Math.max(15_000, Number(opts.wait3dsMs) || 120_000);
+  // Cap hard — long 3DS polls made labs look like 5min charges while Pay already fired.
+  const wait3dsMs = Math.min(90_000, Math.max(8_000, Number(opts.wait3dsMs) || 45_000));
   const area = normalizeBandaiArea(opts.area || opts.shippingAreaCode) || "au";
   const base = bandaiBaseFor(area);
   const steps = [];
@@ -257,7 +272,7 @@ export async function browserBandaiCheckout(opts = {}) {
     // ── Login ────────────────────────────────────────────────────────────
     const sLogin = Date.now();
     await page.goto(`${base}/login`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(1200);
+    await page.waitForTimeout(400);
     await dismissCookieBanner(page);
     const login = await page.evaluate(async ({ email: em, password: pw, areaCode }) => {
       const csrf = window.USER_DATA?.csrfToken || window.__bandaiCsrf || "";
@@ -285,7 +300,7 @@ export async function browserBandaiCheckout(opts = {}) {
         csrf: next,
       };
     }, { email, password, areaCode: area });
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(300);
 
     const member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
     const memberNo = member.json?.memberNo || null;
@@ -315,7 +330,7 @@ export async function browserBandaiCheckout(opts = {}) {
     await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForTimeout(3500);
+    await page.waitForTimeout(900);
     // Re-seed CSRF after navigation (USER_DATA rotates on SPA route changes).
     await pageApi(page, "GET", "/api/context/member", null, area);
     const product = await pageApi(page, "GET", `/api/products/${encodeURIComponent(productCode)}`, null, area);
@@ -372,11 +387,11 @@ export async function browserBandaiCheckout(opts = {}) {
     } else {
       for (let attempt = 0; attempt < 2 && !atcOk; attempt++) {
         if (attempt > 0) {
-          await page.waitForTimeout(2000);
+          await page.waitForTimeout(800);
           await page.goto(`${base}/item/${encodeURIComponent(productCode)}`, {
             waitUntil: "domcontentloaded",
           });
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(900);
         }
         atc = await pageApi(page, "POST", "/api/cart/addToCart", [{ areaItemNo, qty }], area);
         const errCode = String(atc.json?.error || atc.json?.errorCode || "");
@@ -477,9 +492,9 @@ export async function browserBandaiCheckout(opts = {}) {
     // often leaves orderdetails without the payment iframe.
     const sChk = Date.now();
     await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(800);
     await dismissCookieBanner(page);
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(400);
 
     // PreOrder carts may show a shipping-area checkbox — tick if present.
     // Skip OneTrust / analytics checkboxes.
@@ -517,13 +532,48 @@ export async function browserBandaiCheckout(opts = {}) {
       };
     }
 
+    // Re-tick + wait for enable — don't burn 90s on a permanently disabled CTA.
+    let proceedReady = false;
+    for (let i = 0; i < 20; i++) {
+      for (let bi = 0; bi < boxCount; bi++) {
+        const box = areaBoxes.nth(bi);
+        if (!(await box.isChecked().catch(() => true))) {
+          await box.check({ force: true }).catch(() => {});
+        }
+      }
+      if (!(await proceed.isDisabled().catch(() => true))) {
+        proceedReady = true;
+        break;
+      }
+      await page.waitForTimeout(400);
+    }
+    if (!proceedReady) {
+      push("cart_checkout", {
+        ok: false,
+        status: null,
+        ms: Date.now() - sChk,
+        note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail / unticked area)",
+      });
+      await browser.close();
+      return {
+        ok: false,
+        steps,
+        failedStep: "cart_checkout",
+        error: "PROCEED TO CHECKOUT disabled",
+        checkoutStage: "cart",
+        areaItemNo,
+        cartSn,
+        cartItemSn,
+      };
+    }
+
     await Promise.all([
       page
-        .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 60_000 })
+        .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 45_000 })
         .catch(() => null),
-      proceed.click(),
+      proceed.click({ timeout: 10_000 }),
     ]);
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(800);
     await dismissCookieBanner(page);
 
     const checkoutSn =
@@ -531,7 +581,7 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // Wait for real Checkout/v2 (not just the prefetcher stub).
     let geIframeReady = false;
-    for (let i = 0; i < 45; i++) {
+    for (let i = 0; i < 30; i++) {
       const urls = page.frames().map((f) => f.url());
       if (urls.some((u) => /Checkout\/v2|webservices\.global-e\.com\/Checkout/i.test(u))) {
         geIframeReady = true;
@@ -541,8 +591,8 @@ export async function browserBandaiCheckout(opts = {}) {
         geIframeReady = true;
         break;
       }
-      await page.waitForTimeout(1000);
-      if (i === 10 || i === 25) await dismissCookieBanner(page);
+      await page.waitForTimeout(400);
+      if (i === 8 || i === 18) await dismissCookieBanner(page);
     }
 
     push("cart_checkout", {
@@ -584,6 +634,8 @@ export async function browserBandaiCheckout(opts = {}) {
     let reached3ds = false;
     let threeDsUrl = null;
     let orderNumber = null;
+    let payClickCount = 0;
+    let sawAuthWire = false;
     try {
       // Prefer waiting for the secure card form frame (flaky timing on GE boot).
       await page
@@ -593,44 +645,44 @@ export async function browserBandaiCheckout(opts = {}) {
               /CreditCardForm|secure-bandai\.global-e|payments\//i.test(f.src || ""),
             ),
           null,
-          { timeout: 60_000 },
+          { timeout: 25_000 },
         )
         .catch(() => null);
 
       // Click Credit Card / Card payment method inside Checkout iframe if needed.
       for (const frame of page.frames()) {
-        if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
         const cardOpt = frame
           .locator(
             'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card"), [data-payment*="card" i]',
           )
           .first();
         if (await cardOpt.count().catch(() => 0)) {
-          await cardOpt.click({ timeout: 5000 }).catch(() => {});
-          await page.waitForTimeout(2000);
+          await cardOpt.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(600);
         }
       }
 
-      for (let tick = 0; tick < 20 && !filled; tick++) {
-        await page.waitForTimeout(1500);
+      // Fill card iframe only — never submit here (Enter / form submit = 2nd charge risk).
+      for (let tick = 0; tick < 16 && !filled; tick++) {
+        if (tick) await page.waitForTimeout(350);
         for (const frame of page.frames()) {
           const url = frame.url();
-          if (!/global-e\.com|globale/i.test(url)) continue;
+          if (!/CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(url)) continue;
           if (/prefetcher/i.test(url)) continue;
 
           const num = frame
             .locator(
-              'input[autocomplete="cc-number"], input[name*="cardNumber" i], input[id*="cardNumber" i], input[placeholder*="card number" i], input[type="tel"]',
+              'input[autocomplete="cc-number"], input[name*="cardNumber" i], input[id*="cardNumber" i], input[name*="cardNum" i], input[placeholder*="card number" i], input[type="tel"]',
             )
             .first();
           if (!(await num.count().catch(() => 0))) continue;
           if (!(await num.isVisible().catch(() => false))) continue;
 
           const pan = String(card.number).replace(/\s+/g, "");
-          await num.click({ timeout: 5000 }).catch(() => {});
-          await num.fill("");
-          await num.pressSequentially(pan, { delay: 35 }).catch(async () => {
-            await num.type(pan, { delay: 35 });
+          await num.click({ timeout: 3000 }).catch(() => {});
+          await num.fill(pan).catch(async () => {
+            await num.pressSequentially(pan, { delay: 20 });
           });
           const mm = frame
             .locator(
@@ -647,7 +699,7 @@ export async function browserBandaiCheckout(opts = {}) {
             .first();
           const cvv = frame
             .locator(
-              'input[autocomplete="cc-csc"], input[name*="cvv" i], input[name*="cvc" i], input[placeholder*="CVV" i]',
+              'input[autocomplete="cc-csc"], input[name*="cvv" i], input[name*="cvc" i], input[name*="cvd" i], input[placeholder*="CVV" i]',
             )
             .first();
           const name = frame
@@ -657,16 +709,15 @@ export async function browserBandaiCheckout(opts = {}) {
             .first();
 
           if (await exp.count().catch(() => 0)) {
-            await exp.click().catch(() => {});
-            await exp.fill("");
-            await exp.pressSequentially(`${card.expMonth}/${card.expYear}`, { delay: 40 }).catch(async () => {
-              await exp.fill(`${card.expMonth}/${card.expYear}`);
-            });
+            await exp.fill(`${card.expMonth}/${card.expYear}`).catch(() => {});
           } else {
             if (await mm.count().catch(() => 0)) {
               const tag = await mm.evaluate((el) => el.tagName).catch(() => "");
-              if (tag === "SELECT") await mm.selectOption({ value: String(card.expMonth) }).catch(() => mm.selectOption({ label: String(card.expMonth) }));
-              else await mm.fill(String(card.expMonth), { timeout: 3000 }).catch(() => {});
+              if (tag === "SELECT") {
+                await mm
+                  .selectOption({ value: String(card.expMonth) })
+                  .catch(() => mm.selectOption({ label: String(card.expMonth) }));
+              } else await mm.fill(String(card.expMonth), { timeout: 2000 }).catch(() => {});
             }
             if (await yy.count().catch(() => 0)) {
               const tag = await yy.evaluate((el) => el.tagName).catch(() => "");
@@ -674,21 +725,22 @@ export async function browserBandaiCheckout(opts = {}) {
                 await yy
                   .selectOption({ value: String(card.expYear) })
                   .catch(() => yy.selectOption({ value: `20${card.expYear}` }));
-              } else await yy.fill(String(card.expYear), { timeout: 3000 }).catch(() => {});
+              } else await yy.fill(String(card.expYear), { timeout: 2000 }).catch(() => {});
             }
           }
           if (await cvv.count().catch(() => 0)) {
-            await cvv.click().catch(() => {});
-            await cvv.fill("");
-            await cvv.pressSequentially(String(card.cvv), { delay: 40 }).catch(async () => {
-              await cvv.fill(String(card.cvv));
-            });
+            await cvv.fill(String(card.cvv)).catch(() => {});
           }
           if (await name.count().catch(() => 0)) {
-            await name.click().catch(() => {});
-            await name.fill(String(card.holder));
+            await name.fill(String(card.holder)).catch(() => {});
           }
-          await frame.evaluate(() => document.activeElement?.blur?.()).catch(() => {});
+          // Blur + Escape — do not press Enter (can submit CreditCardForm = extra charge).
+          await frame
+            .evaluate(() => {
+              document.activeElement?.blur?.();
+            })
+            .catch(() => {});
+          await page.keyboard.press("Escape").catch(() => {});
 
           filled = true;
           geNote = `filled card form ${url.slice(0, 70)}`;
@@ -696,20 +748,19 @@ export async function browserBandaiCheckout(opts = {}) {
         }
       }
 
-      // Give GE time to tokenize / enable Pay.
-      if (filled) await page.waitForTimeout(4000);
+      // Short settle so GEM enables Pay — keep tight for sub-minute checkouts.
+      if (filled) await page.waitForTimeout(1200);
 
-      // Pay / Place Order usually lives on the parent Checkout/v2 frame, not the card form.
+      // SINGLE Pay click on Checkout/v2 only. Never click secure-bandai submit /
+      // generic Complete — that path was double-firing issuer payments.
       if (filled) {
         let paid = false;
         const netBefore = geNet.length;
-        for (let attempt = 0; attempt < 8 && !paid; attempt++) {
+        const payClickAt = { t: 0 };
+
+        const tickCheckoutTerms = async () => {
           for (const frame of page.frames()) {
-            const url = frame.url();
-            if (!/global-e\.com\/Checkout|webservices\.global-e|secure-bandai\.global-e/i.test(url)) {
-              continue;
-            }
-            // Tick GE terms / confirm checkboxes if present
+            if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
             const checks = frame.locator('input[type="checkbox"]');
             const nCheck = await checks.count().catch(() => 0);
             for (let ci = 0; ci < nCheck; ci++) {
@@ -718,9 +769,20 @@ export async function browserBandaiCheckout(opts = {}) {
                 await c.check({ force: true }).catch(() => {});
               }
             }
+          }
+        };
+        await tickCheckoutTerms();
+
+        for (let attempt = 0; attempt < 6 && !paid; attempt++) {
+          await tickCheckoutTerms();
+          let clickedThisAttempt = false;
+          for (const frame of page.frames()) {
+            const url = frame.url();
+            if (!isBandaiGeCheckoutPayFrame(url)) continue;
+            // Narrow CTA — no input[type=submit], no Complete/Confirm on nested forms.
             const payBtn = frame
               .locator(
-                'button:has-text("Pay"), button:has-text("Place Order"), button:has-text("Complete"), button:has-text("Confirm"), button[type="submit"], input[type="submit"]',
+                'button:has-text("Pay"):visible, button:has-text("Place Order"):visible, button:has-text("Pay now"):visible',
               )
               .first();
             if (!(await payBtn.count().catch(() => 0))) continue;
@@ -730,58 +792,77 @@ export async function browserBandaiCheckout(opts = {}) {
               geNote += `; pay_disabled@${attempt}`;
               continue;
             }
-            await payBtn.click({ timeout: 10_000 }).catch(() => {});
-            paymentStatus = "pay_clicked";
-            geNote += `; clicked pay on ${url.slice(0, 50)}`;
-            paid = true;
-            break;
+            try {
+              await payBtn.click({ timeout: 8_000, noWaitAfter: true });
+              payClickCount += 1;
+              payClickAt.t = Date.now();
+              paymentStatus = "pay_clicked";
+              geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
+              paid = true;
+              clickedThisAttempt = true;
+            } catch (e) {
+              geNote += `; pay_click_fail@${attempt}:${String(e?.message || e).slice(0, 40)}`;
+            }
+            break; // only one Checkout/v2 frame attempt per loop
           }
-          if (!paid) await page.waitForTimeout(1500);
+          if (paid || clickedThisAttempt) break;
+          await page.waitForTimeout(500);
         }
+
+        // Do NOT fall back to page-level / secure-bandai submit — that double-charged.
         if (!paid) {
-          const mainPay = page
-            .locator('button:has-text("Pay"), button:has-text("Place Order")')
-            .first();
-          if (await mainPay.count().catch(() => 0)) {
-            await mainPay.click({ timeout: 5000 }).catch(() => {});
-            paymentStatus = "pay_clicked";
-            geNote += "; clicked pay on main";
-            paid = true;
-          } else {
-            paymentStatus = "card_filled_no_pay_button";
-          }
+          paymentStatus = "card_filled_no_pay_button";
         }
-        // Brief settle — did any payment POST leave the browser?
-        await page.waitForTimeout(5000);
-        // Broad match — GE hits many hosts (webservices / secure-bandai / gepi).
-        // 2026-07-22: Revolut declined A$317 "Globale /bandai Spirit" while our
-        // narrow filter reported payNet=0 — treat any post-click GE traffic as wire proof.
+
+        // Brief settle for payment POSTs after the single click.
+        if (paid) await page.waitForTimeout(1500);
+
+        const authReqs = () =>
+          geNet
+            .slice(netBefore)
+            .filter((n) => n.kind === "req" && isBandaiGeAuthPaymentUrl(n.url));
         const payNet = geNet.slice(netBefore);
-        const payNetHot = payNet.filter((n) =>
-          /ProcessPayment|Authorize|Pay|payment|3ds|acs|CompleteOrder|CreatePayment|CreditCard|Checkout/i.test(
-            n.url,
-          ),
-        );
-        geNote += `; payNet=${payNet.length}/${payNetHot.length}`;
+        const payNetHot = payNet.filter((n) => isBandaiGeAuthPaymentUrl(n.url));
+        geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount}`;
+        if (payClickCount > 1) geNote += "; WARN multi_pay_click";
         if (paid && payNet.length === 0) {
           paymentStatus = "pay_clicked_no_payment_request";
           geNote += "; WARN no GE traffic after click";
         }
 
-        // Wait for 3DS / ACS challenge (Revolut push) or confirmation / decline.
+        // Observe for 3DS / decline / order — exit early once wire proof lands.
+        // Long waits made a ~instant issuer hit look like a 5-minute charge.
         if (paymentStatus === "pay_clicked" || paymentStatus === "pay_clicked_no_payment_request") {
-          const deadline =
+          const hardDeadline =
             Date.now() +
             (paymentStatus === "pay_clicked_no_payment_request"
-              ? Math.min(30_000, wait3dsMs)
+              ? Math.min(12_000, wait3dsMs)
               : wait3dsMs);
-          while (Date.now() < deadline && !reached3ds && !orderNumber) {
-            await page.waitForTimeout(2000);
+          sawAuthWire = authReqs().length > 0;
+          const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
+          // After first auth POST, only watch briefly for ACS/decline UI.
+          const postWireObserveMs = Math.min(12_000, wait3dsMs);
+
+          while (Date.now() < hardDeadline && !reached3ds && !orderNumber) {
+            if (!sawAuthWire) {
+              const n = authReqs().length;
+              if (n > 0) {
+                sawAuthWire = true;
+                wireSeenAt.t = Date.now();
+                geNote += `; authWire=${n}`;
+              }
+            } else if (Date.now() - wireSeenAt.t >= postWireObserveMs) {
+              // Payment already on the wire — stop burning time for ACS that may never open.
+              break;
+            }
+
+            await page.waitForTimeout(700);
+
             for (const frame of page.frames()) {
               const furl = frame.url();
               let ftext = "";
               try {
-                ftext = (await frame.locator("body").innerText({ timeout: 1000 })) || "";
+                ftext = (await frame.locator("body").innerText({ timeout: 600 })) || "";
               } catch {
                 /* ignore */
               }
@@ -792,9 +873,18 @@ export async function browserBandaiCheckout(opts = {}) {
                 geNote += `; 3ds=${threeDsUrl}`;
                 break;
               }
+              if (
+                /declin|payment failed|not authorised|not authorized|card.*invalid|do not honour|unable to process|authentication failed|insufficient|low balance|not enough/i.test(
+                  ftext,
+                )
+              ) {
+                paymentStatus = "declined_or_auth_failed";
+                geNote += "; decline_ui_frame";
+                break;
+              }
             }
-            if (reached3ds) break;
-            // Also check popups / new pages
+            if (reached3ds || paymentStatus === "declined_or_auth_failed") break;
+
             for (const p of context.pages()) {
               const purl = p.url();
               if (looksLike3ds(purl)) {
@@ -809,7 +899,7 @@ export async function browserBandaiCheckout(opts = {}) {
 
             let bodyProbe = "";
             try {
-              bodyProbe = await page.locator("body").innerText();
+              bodyProbe = await page.locator("body").innerText({ timeout: 800 });
             } catch {
               /* ignore */
             }
@@ -831,7 +921,11 @@ export async function browserBandaiCheckout(opts = {}) {
             }
           }
           if (paymentStatus === "pay_clicked") {
-            paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
+            paymentStatus = reached3ds
+              ? "reached_3ds"
+              : sawAuthWire
+                ? "pay_submitted_no_3ds_seen"
+                : "pay_submitted_no_3ds_seen";
           }
         }
       }
@@ -866,15 +960,22 @@ export async function browserBandaiCheckout(opts = {}) {
       };
     }
 
+    // Wire proof (single Pay → auth POST) counts even without ACS UI — bank is ground truth.
     const gePayOk =
       reached3ds ||
       Boolean(orderNumber) ||
-      paymentStatus === "declined_or_auth_failed";
+      paymentStatus === "declined_or_auth_failed" ||
+      (payClickCount === 1 &&
+        sawAuthWire &&
+        (paymentStatus === "pay_submitted_no_3ds_seen" || paymentStatus === "pay_clicked"));
     push("ge_payment", {
       ok: gePayOk,
       status: null,
       ms: Date.now() - sGe,
-      note: `${paymentStatus}; reached3ds=${reached3ds}; ${geNote}`.slice(0, 280),
+      note: `${paymentStatus}; reached3ds=${reached3ds}; payClicks=${payClickCount}; ${geNote}`.slice(
+        0,
+        280,
+      ),
     });
 
     const finalUrl = page.url();
@@ -901,13 +1002,17 @@ export async function browserBandaiCheckout(opts = {}) {
       finalUrl: finalUrl || `${base}/orderdetails`,
       cookies,
       geNetTail: geNet.slice(-20),
+      payClickCount,
+      sawAuthWire,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
         : orderNumber
           ? `Order ${orderNumber}`
           : paymentStatus === "pay_clicked_no_payment_request"
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
-            : `GE UI handoff; paymentStatus=${paymentStatus}`,
+            : payClickCount > 1
+              ? `MULTI pay click (${payClickCount}) — investigate double charge`
+              : `GE UI handoff; paymentStatus=${paymentStatus}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,
@@ -932,4 +1037,8 @@ export async function browserBandaiCheckout(opts = {}) {
   }
 }
 
-export default { browserBandaiCheckout };
+export default {
+  browserBandaiCheckout,
+  isBandaiGeCheckoutPayFrame,
+  isBandaiGeAuthPaymentUrl,
+};

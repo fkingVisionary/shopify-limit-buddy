@@ -52,7 +52,8 @@ const task = {
   forceUndici: true,
   bandaiMode: "checkout",
   bandaiBrowserCheckout: true,
-  wait3dsMs: 180_000,
+  // Observe only — Pay already hit the wire; do not burn 3 minutes waiting for ACS.
+  wait3dsMs: Number(process.env.BANDAI_WAIT_3DS_MS) || 45_000,
   account: { email, password },
   card: { number: pan, expMonth: mm, expYear: yy, cvv, holder },
 };

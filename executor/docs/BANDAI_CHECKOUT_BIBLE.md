@@ -199,6 +199,8 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | Hyper | not required | Not Akamai BM |
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
+| GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
+| Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
 
 ---
 
