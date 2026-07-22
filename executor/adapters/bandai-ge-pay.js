@@ -254,34 +254,56 @@ export async function browserBandaiGeFromCart(opts = {}) {
     mark("after_proceed", { checkoutSn });
 
     let geIframeReady = false;
-    for (let i = 0; i < 25; i++) {
-      const urls = page.frames().map((f) => f.url());
-      if (urls.some((u) => /Checkout\/v2|CreditCardForm|secure-bandai\.global-e/i.test(u))) {
+    let frameUrls = [];
+    for (let i = 0; i < 50; i++) {
+      frameUrls = page.frames().map((f) => f.url());
+      if (
+        frameUrls.some((u) =>
+          /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i.test(
+            u,
+          ),
+        )
+      ) {
         geIframeReady = true;
+        mark("ge_iframe_ready", { frames: frameUrls.length, i });
         break;
       }
-      await page.waitForTimeout(350);
-      if (i === 6 || i === 14) await dismissCookieBanner(page);
+      await page.waitForTimeout(400);
+      if (i % 5 === 0) await dismissCookieBanner(page);
+      // Nudge: some PreOrder carts leave GEM prefetcher-only until interaction.
+      if (i === 12 || i === 24) {
+        await page
+          .locator('label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card')
+          .first()
+          .click({ timeout: 1500 })
+          .catch(() => {});
+      }
     }
 
     push("cart_checkout", {
       ok: Boolean(checkoutSn) && geIframeReady,
       ms: Date.now() - sChk,
       note: checkoutSn
-        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length}`
+        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length} sample=${frameUrls
+            .filter((u) => /global/i.test(u))
+            .map((u) => u.slice(0, 60))
+            .join("|")}`
         : `url=${page.url()} geIframe=${geIframeReady}`,
     });
     if (!geIframeReady) {
       return {
         ok: false,
         steps,
+        timeline,
         failedStep: "cart_checkout",
         error: "Global-e Checkout/v2 iframe never booted",
         checkoutStage: "tokenize",
         checkoutSn,
+        paymentStatus: null,
         ...meta,
         via: "http+ge",
         elapsedMs: Date.now() - t0,
+        note: `checkoutSn=${checkoutSn} but GEM iframe missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
       };
     }
 
