@@ -99,6 +99,12 @@ export function isBandaiGeHandleAction(url) {
   return /webservices\.global-e\.com\/checkoutv2\/handleaction\//i.test(String(url || ""));
 }
 
+/** Action id from …/checkoutv2/handleaction/{id}/{guid}/… — 1=init, ≥2 can authorize. */
+export function bandaiGeHandleActionId(url) {
+  const m = String(url || "").match(/\/checkoutv2\/handleaction\/(\d+)\//i);
+  return m ? Number(m[1]) : null;
+}
+
 /** GE payment POSTs that hit the issuer — allow exactly one per task. */
 export function isBandaiGeChargeRequest(method, url) {
   const m = String(method || "GET").toUpperCase();
@@ -284,11 +290,11 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // handleaction single-flight is always on (lab: /2 on fill + /3 before Pay =
-  // same-minute Revolut duplicates with payClicks=1). Other charge URLs arm at Pay.
+  // handleaction/1 = GEM init (must allow). /2+/3 both hit Revolut on one Pay —
+  // allow only the first actionId>=2. Other charge URLs arm at Pay.
   let armChargeGuard = false;
+  let allowedHandleActionGe2 = false;
 
-  // Hard single-flight: bank showed 2× same-second auths while payClicks=1.
   const chargeRoute = async (route) => {
     const req = route.request();
     const method = req.method();
@@ -298,6 +304,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
       return;
     }
     const handleAction = isBandaiGeHandleAction(url);
+    const actionId = handleAction ? bandaiGeHandleActionId(url) : null;
+
     // Non-handleaction candidates only count after Pay is armed.
     if (!handleAction && !armChargeGuard) {
       geNet.push({
@@ -311,6 +319,25 @@ export async function browserBandaiGeFromCart(opts = {}) {
       await route.continue();
       return;
     }
+
+    // Always allow GEM init (action 1) — aborting it leaves Pay forever disabled.
+    if (handleAction && actionId === 1) {
+      geNet.push({
+        t: Date.now(),
+        kind: "req",
+        method,
+        url: url.slice(0, 200),
+        chargeCandidate: true,
+        handleAction: true,
+        actionId: 1,
+        init: true,
+      });
+      mark("charge_req_allowed", { handleAction: true, actionId: 1, url: url.slice(0, 140) });
+      await route.continue();
+      return;
+    }
+
+    // handleaction ≥2 and post-Pay charge URLs share one issuer slot.
     chargeReqCount += 1;
     geNet.push({
       t: Date.now(),
@@ -320,19 +347,40 @@ export async function browserBandaiGeFromCart(opts = {}) {
       chargeCandidate: true,
       armed: armChargeGuard || handleAction,
       handleAction,
+      actionId,
       chargeN: chargeReqCount,
     });
+
+    if (handleAction && actionId != null && actionId >= 2) {
+      if (allowedHandleActionGe2) {
+        blockedChargeReqCount += 1;
+        mark("charge_req_blocked", {
+          n: chargeReqCount,
+          handleAction: true,
+          actionId,
+          url: url.slice(0, 140),
+        });
+        await route.abort("failed");
+        return;
+      }
+      allowedHandleActionGe2 = true;
+      mark("charge_req_allowed", { handleAction: true, actionId, url: url.slice(0, 140) });
+      await route.continue();
+      return;
+    }
+
     if (chargeReqCount > 1) {
       blockedChargeReqCount += 1;
       mark("charge_req_blocked", {
         n: chargeReqCount,
         handleAction,
+        actionId,
         url: url.slice(0, 140),
       });
       await route.abort("failed");
       return;
     }
-    mark("charge_req_allowed", { handleAction, url: url.slice(0, 140) });
+    mark("charge_req_allowed", { handleAction, actionId, url: url.slice(0, 140) });
     await route.continue();
   };
   await page.route("**/*", chargeRoute);
@@ -712,7 +760,28 @@ export async function browserBandaiGeFromCart(opts = {}) {
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
-        // Explicit T&Cs labels first, then any remaining checkbox.
+        // Named GE consent boxes first (payDiag: CheckoutData_TnCConsent unchecked).
+        await frame
+          .evaluate(() => {
+            const names = [
+              "CheckoutData_TnCConsent",
+              "CheckoutData.TnCConsent0",
+              "CheckoutData.TnCConsent",
+              "TnCConsent",
+            ];
+            for (const name of names) {
+              const el =
+                document.querySelector(`input[name="${name}"]`) ||
+                document.querySelector(`#${CSS.escape(name)}`);
+              if (el && !el.checked) {
+                el.checked = true;
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+                el.click?.();
+              }
+            }
+          })
+          .catch(() => {});
         const labeled = frame.locator(
           'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree")',
         );
@@ -833,6 +902,9 @@ export async function browserBandaiGeFromCart(opts = {}) {
         checkoutSn,
         paymentStatus,
         payClickCount,
+        chargeReqCount,
+        blockedChargeReqCount,
+        geNetTail: geNet.slice(-20),
         ...meta,
         via: "http+ge",
         elapsedMs: Date.now() - t0,

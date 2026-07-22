@@ -17,6 +17,7 @@ import {
   isBandaiGeAuthPaymentUrl,
   isBandaiGeChargeRequest,
   isBandaiGeHandleAction,
+  bandaiGeHandleActionId,
 } from "./bandai-ge-pay.js";
 
 // --- F5 gate matrix ---
@@ -163,6 +164,18 @@ assert.equal(
 assert.equal(
   isBandaiGeChargeRequest("POST", "https://webservices.global-e.com/shared/WriteContextualLog"),
   false,
+);
+assert.equal(
+  bandaiGeHandleActionId(
+    "https://webservices.global-e.com/checkoutv2/handleaction/2/099033fe-73ba/8urc",
+  ),
+  2,
+);
+assert.equal(
+  bandaiGeHandleActionId(
+    "https://webservices.global-e.com/checkoutv2/handleaction/1/abc/8urc",
+  ),
+  1,
 );
 
 console.log("bandai-flow.test.mjs ok");
