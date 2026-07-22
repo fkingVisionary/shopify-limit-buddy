@@ -146,16 +146,35 @@ populate after form fill; do not assume Pay works before GEM is ready.
 
 ---
 
-## 4. Stage order (locked)
+## 4. Who handles what (Playwright vs HTTP)
+
+| Stage | Engine | What it does |
+|--------|--------|----------------|
+| **F5 warm** | **Playwright** | Open `/{area}/login` once → seed `SESSION` / `TS*` / CSRF. **No** full browse. |
+| **Sensor mint** | **Playwright probe** | Short aborted XHR to capture `p8komysnbc-*` headers for the *next* HTTP POST only. |
+| **Login** | **HTTP undici** | Real `POST /login` with minted sensors. |
+| **Member / PDP / ATC / cart / checkoutSn** | **HTTP undici** | All JSON APIs. ATC/checkout mint sensors then POST via undici. |
+| **Global-e Pay UI** | **Playwright** | Same sticky browser: sync HTTP cookies → `/cart` → PROCEED → Checkout/v2 → fill → Pay. **Only** remaining UI stage. |
+
+```
+Playwright (warm+mint)     HTTP undici (real work)        Playwright (GE only)
+─────────────────────      ─────────────────────────      ────────────────────
+goto /login → cookies  →   POST /login                    sync jar cookies
+mint sensors           →   GET member / product           /cart → PROCEED
+mint sensors           →   POST addToCart                 Checkout/v2 + card
+mint sensors           →   POST …/checkout → checkoutSn   Pay → issuer / 3DS
+```
+
+**Rule:** after warm cookies for login, **business calls stay HTTP**. Do not browser-POST `/login` again before GE (opt-in `bandaiBridgeRelogin` only). GE iframe still needs Playwright — raw `checkoutSn` alone often boots `/orderdetails` without a payment frame.
 
 ### HTTP default (`bandai.js`, F5 on)
 
 ```
 bandai_region
-  → f5_bridge          # goto /{area}/login; seed cookies + CSRF — NO warm after this
+  → f5_bridge          # Playwright: goto /{area}/login; seed cookies + CSRF — NO warm after this
   → login              # mint → undici POST /login
   → member_refresh     # GET /api/context/member/refresh
-  → [bridge.goto PDP]
+  → [bridge.goto PDP]  # cookie/CSRF nudge only
   → product_get        # GET /api/products/{code} → areaItemNo
   → addToCart          # mint → POST /api/cart/addToCart
   → cart_detail
@@ -166,12 +185,12 @@ bandai_region
   → stage=tokenize
 ```
 
-### Browser GE (`bandaiBrowserCheckout` / desktop placeOrder)
+### Drop path GE (`placeOrder` + `bandaiBrowserCheckout`)
 
 ```
-login_browser → product_get → addToCart → cart_detail
+(HTTP path above through cart)
+  → bridge_cookie_sync   # HTTP jar → Playwright (no browser re-login)
   → cart UI → PROCEED → ge_payment → (3DS | decline | order)
-  → preComplete NOT wired yet
 ```
 
 Login body (`application/x-www-form-urlencoded`):
