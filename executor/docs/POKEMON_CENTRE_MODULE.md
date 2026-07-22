@@ -171,7 +171,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 | Lesson | What happened on Bandai | PC plan implication |
 |---|---|---|
-| **HTTP through handoff, browser for Pay** | undici + F5 sensor bridge → `checkoutSn`; GE card/Pay stayed in Playwright | Cortex ATC + `/intl-checkout` handoff = HTTP once Incapsula/DD clear. **GE Pay UI = browser** (or later shared `ge-checkout` helper). |
+| **HTTP through handoff — not full HTTP GE** | undici + F5 → `checkoutSn`; **GE card/Pay stayed in Playwright** (Bandai never shipped scale HTTP Pay) | Cortex ATC + m2m = HTTP. **Product GE Pay = HTTP** (`pokemoncentre-ge-http.js`). Playwright only for one-shot wire capture (`pcBrowserCheckout`). |
 | **SPA boot > raw checkout id** | API `checkoutSn` alone often left orderdetails **without** payment iframe; UI **PROCEED TO CHECKOUT** booted GEM | Drive PC through the real **`/intl-checkout`** (or equivalent CTA), not only a Cortex order id. |
 | **Wait for Checkout/v2, not prefetcher** | Prefetcher iframe ≠ ready; need `webservices.global-e.com/Checkout/v2/…` and/or `CreditCardForm` | Gate Pay on Checkout/v2 + secure card form frame; fail closed if only prefetcher. |
 | **Cookie / CMP banners** | OneTrust overlay stalled GEM boot / empty page | Dismiss CMP (OneTrust / similar) before GE interactions. |
@@ -228,7 +228,8 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | `adapters/pokemoncentre-session.js` | Locale (`en-au`…) + headers |
 | `adapters/pokemoncentre-edge.js` | Reese84 + DataDome clear on sticky proxy |
 | `adapters/pokemoncentre-cortex.js` | BFF auth + guest ATC (`/cart/add-product/{id}`) + GE m2m stub |
-| `adapters/pokemoncentre-ge.js` | GE Checkout/v2 + CreditCardForm (browser Pay) |
+| `adapters/pokemoncentre-ge-http.js` | **Scale path** — HTTP GE cart-token → HandleCreditCardRequestV2 |
+| `adapters/pokemoncentre-ge.js` | Browser GE Pay — **wire capture only** (`pcBrowserCheckout`) |
 | `adapters/pokemoncentre-hcaptcha.js` | CapSolver hCaptcha |
 | `antibot.js` | Shared Incapsula + DataDome Hyper wrappers (Akamai untouched) |
 

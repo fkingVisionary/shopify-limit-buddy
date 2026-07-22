@@ -9,7 +9,9 @@
 //   har_probe — warm + Cortex path probe (for HAR day)
 //
 // Transport: prefer tls-worker (chrome_131) for DataDome BFF trust; undici often
-// escalates interstitial → view=captcha. Browser only for GE Pay / hCaptcha assist.
+// escalates interstitial → view=captcha.
+// GE Pay: HTTP-first (`pokemoncentre-ge-http.js`). Playwright only when
+// task.pcBrowserCheckout=true (wire capture). Bandai was HTTP→handoff, not full HTTP GE.
 // Global-e mid: 1634 (gepi.global-e.com/includes/js/1634).
 
 import {
@@ -43,7 +45,7 @@ import {
   solveHcaptcha,
   capsolverKey,
 } from "./pokemoncentre-hcaptcha.js";
-import { runGlobalEPay, PC_GLOBALE_MID } from "./pokemoncentre-ge.js";
+import { runGlobalEPayHttp, PC_GLOBALE_MID } from "./pokemoncentre-ge-http.js";
 import { looksLikeDataDomeBlock, hyperConfigured } from "../antibot.js";
 
 function makeStep(steps, ctx) {
@@ -397,9 +399,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     task.intlCheckoutUrl ||
     (usesGe ? `${session.state.base}/intl-checkout` : `${session.state.base}/checkout`);
 
-  if (atc.ok && (task.pcBrowserCheckout === true || task.placeOrder === true)) {
+  if (atc.ok && task.placeOrder === true && task.pcBrowserCheckout === true) {
+    // Explicit lab / wire-capture only — not the scale path.
+    const { runGlobalEPay } = await import("./pokemoncentre-ge.js");
     checkoutStage = "tokenize";
-    geResult = await tStep("ge_pay", async () => {
+    geResult = await tStep("ge_pay_browser", async () => {
       const mid =
         task.globaleMid ||
         task.geMerchantId ||
@@ -407,13 +411,40 @@ async function runCheckout(task, ctx, session, tStep, steps) {
         PC_GLOBALE_MID;
       return runGlobalEPay({
         checkoutUrl: task.geCheckoutUrl || intlUrl,
+        cartUrl: `${session.state.base}/cart`,
         card: task.card || null,
+        email: task.email || task.profile?.email,
+        phone: task.phone || task.profile?.phone,
         proxyRaw: task.proxy || null,
         cookies: ctx.jar?.dump?.() ?? {},
         userAgent: session.state.userAgent,
         globaleMid: mid,
         secureHostPattern: task.geSecureHostPattern || null,
+        placeOrder: true,
+        debugDir: task.debugDir || task.pcCaptureDir || null,
+        onProgress: (n, note) => ctx.onProgress?.(n, note),
+      });
+    });
+    checkoutStage = geResult.checkoutStage || checkoutStage;
+  } else if (atc.ok && (task.placeOrder === true || task.pcHttpCheckout === true)) {
+    checkoutStage = "tokenize";
+    geResult = await tStep("ge_pay_http", async () => {
+      const mid =
+        task.globaleMid ||
+        task.geMerchantId ||
+        process.env.PC_GLOBALE_MID ||
+        PC_GLOBALE_MID;
+      return runGlobalEPayHttp({
+        session,
+        ctx,
+        cartGuid,
+        geM2m,
+        card: task.card || null,
+        email: task.email || task.profile?.email,
+        phone: task.phone || task.profile?.phone,
+        globaleMid: mid,
         placeOrder: task.placeOrder === true,
+        gePayForm: task.gePayForm || null,
         onProgress: (n, note) => ctx.onProgress?.(n, note),
       });
     });
@@ -423,7 +454,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       step: "intl_checkout_stub",
       ok: true,
       note: usesGe
-        ? `would open ${intlUrl} mid=${PC_GLOBALE_MID} (set placeOrder or pcBrowserCheckout for GE Pay)`
+        ? `would HTTP GE pay mid=${PC_GLOBALE_MID} (placeOrder); browser wire via pcBrowserCheckout`
         : "domestic checkout locale — GE skipped",
       cartGuid,
       geM2m: geM2m?.ok || false,
