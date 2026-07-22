@@ -1143,9 +1143,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   }
 
-  // Wire-proven Revolut issuer used gatewayId=2 + paymentMethodId=2.
-  const paymentMethodId = String(opts.paymentMethodId || "2");
-  const gatewayId = String(opts.gatewayId || form.gatewayId || "2");
+  // Open CreditCardForm with checkout-selected pm (DOM usually 1; forcing 2
+  // mismatched JWT → DataCorruption).
+  let paymentMethodId = String(
+    opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+  );
+  let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
   // Prefer loading CreditCardForm in the same Playwright context that minted
   // iovation so JWT + machineId + cookies share one GE session.
   let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
@@ -1215,14 +1218,77 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
     if (!cc.ok || extractUrlStructureToken(httpCc.text)) cc = httpCc;
   }
-  // Prefer DOM fields from the live CreditCardForm page (same session as issuer).
+  // Align pm/gw from live CreditCardForm DOM (labs: domPm=1).
+  paymentMethodId = String(
+    opts.paymentMethodId || cc.domPm || form.selectedPaymentMethodId || paymentMethodId || "1",
+  );
+  gatewayId = String(opts.gatewayId || cc.domGw || form.gatewayId || gatewayId || "2");
+  if (
+    issuerPage &&
+    cc.ok &&
+    cc.domPm &&
+    String(opts.paymentMethodId || "") === "" &&
+    !String(ccUrl).endsWith(`/${paymentMethodId}`)
+  ) {
+    // Re-open form for the DOM payment method so JWT matches pm in body.
+    const alignedUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
+    const tRe = Date.now();
+    try {
+      await issuerPage.goto(alignedUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 20_000,
+      });
+      const fromDom = await issuerPage.evaluate(() => {
+        const jwt =
+          document.querySelector('input[name="PaymentData.UrlStructureTokenEncoded"]')
+            ?.value || "";
+        const mid =
+          document.querySelector('input[name="PaymentData.machineId"]')?.value ||
+          document.getElementById("ioBlackBox")?.value ||
+          "";
+        const pm =
+          document.querySelector('input[name="PaymentData.paymentMethodId"]')?.value ||
+          "";
+        const gw =
+          document.querySelector('input[name="PaymentData.gatewayId"]')?.value || "";
+        return { jwt, mid, pm, gw, html: document.documentElement.outerHTML };
+      });
+      cc = {
+        ok: true,
+        status: 200,
+        ms: (cc.ms || 0) + (Date.now() - tRe),
+        text: fromDom.html || "",
+        domJwt: fromDom.jwt,
+        domMachineId: fromDom.mid,
+        domPm: fromDom.pm || paymentMethodId,
+        domGw: fromDom.gw || gatewayId,
+      };
+      ccUrl = alignedUrl;
+      if (fromDom.pm) paymentMethodId = String(fromDom.pm);
+      if (fromDom.gw) gatewayId = String(fromDom.gw);
+      urlStructureToken = fromDom.jwt || urlStructureToken;
+      if (fromDom.mid) machineId = fromDom.mid;
+    } catch {
+      /* keep first form */
+    }
+  }
   urlStructureToken =
     cc.domJwt || extractUrlStructureToken(cc.text) || urlStructureToken;
   const formMachineId = cc.domMachineId || extractMachineId(cc.text);
   if (formMachineId) machineId = formMachineId;
-  if (cc.domPm && !opts.paymentMethodId) {
-    // Keep wire-proven default unless DOM clearly differs and opts unset —
-    // still prefer opts/default 2; log DOM for debug.
+  // If CreditCardForm left machineId empty, stamp the iovation blackbox into
+  // the live DOM so page-issuer POST matches what a browser Pay would send.
+  if (machineId && issuerPage && !formMachineId) {
+    try {
+      await issuerPage.evaluate((mid) => {
+        const el =
+          document.querySelector('input[name="PaymentData.machineId"]') ||
+          document.getElementById("ioBlackBox");
+        if (el) el.value = mid;
+      }, machineId);
+    } catch {
+      /* ignore */
+    }
   }
   const jwtCart = (() => {
     try {
