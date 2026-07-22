@@ -347,11 +347,20 @@ export async function browserBandaiGeFromCart(opts = {}) {
     }
     issuerPaymentSent = true;
     if (postData && !issuerBodyCapture) {
+      const rawBody = String(postData).slice(0, 50_000);
+      // Redact PAN/CVD in on-disk capture (schema research still usable).
+      const redacted = rawBody
+        .replace(/(PaymentData\.cardNum=)[^&]*/gi, "$1REDACTED")
+        .replace(/(PaymentData\.cvdNumber=)[^&]*/gi, "$1REDACTED")
+        .replace(/(cardNum%22%3A%22)[^%]*/gi, "$1REDACTED")
+        .replace(/("cardNum"\s*:\s*")[^"]*/gi, "$1REDACTED")
+        .replace(/("cvdNumber"\s*:\s*")[^"]*/gi, "$1REDACTED");
       issuerBodyCapture = {
         url,
         method,
         contentType: req.headers()["content-type"] || null,
-        body: String(postData).slice(0, 50_000),
+        body: redacted,
+        bodyBytes: rawBody.length,
         at: new Date().toISOString(),
       };
       try {
