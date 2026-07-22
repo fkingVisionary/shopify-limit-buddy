@@ -72,6 +72,19 @@ for (let i = 0; i < maxTries; i++) {
 
   let res;
   try {
+    const noPage = process.env.BANDAI_GE_NO_PAGE === "1";
+    let machineId =
+      process.env.BANDAI_GE_MACHINE_ID ||
+      (fs.existsSync("/tmp/bandai-ge-machineId.txt")
+        ? fs.readFileSync("/tmp/bandai-ge-machineId.txt", "utf8").trim()
+        : "");
+    if (noPage && (!machineId || machineId.length < 40)) {
+      console.log("  SKIP noPage requires BANDAI_GE_MACHINE_ID or /tmp/bandai-ge-machineId.txt");
+      break;
+    }
+    if (noPage) {
+      console.log(`  mode=noPage machineIdBytes=${machineId.length}`);
+    }
     res = await runCheckout({
       taskId: `bandai-http-ge-${tag}-${Date.now()}`,
       storeUrl: pdp,
@@ -83,6 +96,8 @@ for (let i = 0; i < maxTries; i++) {
       forceUndici: true,
       bandaiMode: "checkout",
       bandaiGeHttpPay: true,
+      bandaiGeNoPage: noPage,
+      bandaiGeMachineId: noPage ? machineId : undefined,
       bandaiGeStopBeforeIssuer: process.env.BANDAI_GE_STOP_BEFORE_ISSUER === "1",
       bandaiGeForceIssuer: process.env.BANDAI_GE_FORCE_ISSUER === "1",
       account: { email, password },

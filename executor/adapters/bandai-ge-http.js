@@ -1259,13 +1259,16 @@ export async function runBandaiGeHttpPay(opts = {}) {
     },
   });
   let urlStructureToken = extractUrlStructureToken(v2.text);
-  // Prefer HTML scrape, then caller-supplied blackbox (no-Playwright GE experiments).
-  let machineId = extractMachineId(v2.text) || opts.machineId || null;
+  // Caller-supplied blackbox wins (no-page labs / BANDAI_GE_MACHINE_ID). HTML
+  // scrape is fallback only — a false-positive extract previously skipped mint
+  // and still paired Revolut (07:43).
+  const htmlMachineId = extractMachineId(v2.text);
+  let machineId = opts.machineId || htmlMachineId || null;
   push("ge_checkout_v2", {
     ok: v2.ok,
     status: v2.status,
     ms: v2.ms,
-    note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} bytes=${(v2.text || "").length}`,
+    note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${opts.machineId ? "opts" : htmlMachineId ? "html" : "none"} bytes=${(v2.text || "").length}`,
   });
 
   // Hydrate shipping / tax / totals with real GEM Action+Token bodies.
@@ -1325,14 +1328,23 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
 
-  // Mint iovation (snare.js → #ioBlackBox) on a THROWAWAY Checkout/v2 cart.
+  // Mint iovation (snare.js → #ioBlackBox).
   //
-  // Proof 2026-07-22 AEST:
-  //   07:22 goto(LIVE Checkout/v2) then undici issuer → Revolut PAIR
-  //   07:24 pure undici (no Playwright on live cart) → Revolut SINGLE
-  // Browser handleaction on the live guid contaminates GE → dual PSP auth
-  // even when we only POST HandleCreditCard once. Never open the pay cart
-  // in Playwright unless explicitly opted in.
+  // 2026-07-23 Revolut:
+  //   07:22 live Checkout/v2 in Playwright (unmuted) → PAIR
+  //   07:47 liveHtml+geMute → owner said SINGLE
+  //   08:18 liveHtml+geMute → owner said PAIR (one undici issuer, one GE tx id)
+  // Mute is necessary but not sufficient — loading the live pay guid in the
+  // browser after undici hydrate can still dual-rail the PSP. Prefer
+  // bandaiGeNoPage + supplied machineId when proving single charge.
+  if (machineId && !opts.page) {
+    push("ge_iovation_mint", {
+      ok: true,
+      status: null,
+      ms: 0,
+      note: `reused machineId bytes=${String(machineId).length} via=noPage (no Playwright on GE)`,
+    });
+  }
   let issuerPage = null;
   const browserReqLog = [];
   const logPageRequests = (page) => {
