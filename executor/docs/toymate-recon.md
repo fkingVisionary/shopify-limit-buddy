@@ -16,8 +16,13 @@ _Status: adapter restored (isolated from Kmart)_
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.
-2. **`checkout`** — CF warm → optional login → PDP → Storefront cart/checkout scaffold. Live card tokenize still needs operator HAR.
+2. **`checkout`** — CF warm → optional login → PDP → Storefront cart/checkout → spam reCAPTCHA → **Adyen v3 `scheme`** place-order (Playwright hosted fields). Decline smokes are the safe live proof; a paid order is still bank-dependent.
 3. **`monitor`** — keyword search hit/miss.
+
+### Payment notes
+- Methods: `GET /api/storefront/payments?cartId=…` with `Accept: application/vnd.bc.v1+json` + `X-API-INTERNAL: This API endpoint is for internal use only and may change in the future`.
+- Card gateway on Toymate tip: Adyen v3 `scheme` (not raw Storefront PAN POST).
+- CLI live decline: `scripts/toymate-checkout-live-once.mjs` (CapSolver + `TOYMATE_CARD_*` env; do not commit card).
 
 ## Desktop
 

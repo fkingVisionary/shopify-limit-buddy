@@ -6,7 +6,7 @@
 //   account_gen  — create retailer account (proven path: CapSolver CF + form POST)
 //   monitor      — keyword search poll (lightweight)
 //
-// Payment tokenize for live card place-order still needs an operator HAR.
+// Live card: Adyen v3 `scheme` via checkout UI (Playwright hosted fields).
 
 import { request, UA } from "../http.js";
 import {
@@ -16,6 +16,11 @@ import {
   looksLikeCfChallenge,
   capsolverKey,
 } from "./toymate-cf-solve.js";
+import {
+  storefrontPaymentHeaders,
+  pickAdyenCardMethod,
+  placeOrderViaCheckoutUi,
+} from "./toymate-adyen.js";
 
 const sleep = (ms, jitter = 0) =>
   new Promise((r) => setTimeout(r, ms + Math.floor(Math.random() * (jitter + 1))));
@@ -40,8 +45,8 @@ function navHeaders({ referer, origin, userAgent } = {}) {
   };
 }
 
-function apiHeaders({ referer, origin, userAgent } = {}) {
-  return {
+function apiHeaders({ referer, origin, userAgent, jar } = {}) {
+  const headers = {
     "user-agent": userAgent || UA,
     accept: "application/json, text/plain, */*",
     "accept-language": "en-AU,en;q=0.9",
@@ -56,6 +61,17 @@ function apiHeaders({ referer, origin, userAgent } = {}) {
     ...(referer ? { referer } : {}),
     ...(origin ? { origin } : {}),
   };
+  // BigCommerce Storefront API returns 403 without the jar's XSRF-TOKEN.
+  const dump = jar?.dump?.() || {};
+  const xsrf = dump["XSRF-TOKEN"] || dump["xsrf-token"];
+  if (xsrf) {
+    try {
+      headers["x-xsrf-token"] = decodeURIComponent(String(xsrf));
+    } catch {
+      headers["x-xsrf-token"] = String(xsrf);
+    }
+  }
+  return headers;
 }
 
 async function readText(res) {
@@ -325,12 +341,45 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
   let solvedUa = null;
 
   await tStep("cf_warm", async () => {
-    const res = await request(`${base}/`, { headers: navHeaders() }, ctx);
-    status = res.status;
-    html = await readText(res);
-    const challenged = looksLikeCfChallenge(html, status);
-    if (!challenged && status > 0 && status < 400) {
-      return { ok: true, status, note: `home ${status} (no CF challenge)` };
+    // Home sometimes returns empty 403 / fetch-failed on sticky exits while
+    // /login.php still serves a CapSolver-ready "Just a moment..." interstitial.
+    const candidates = [
+      `${base}/`,
+      "https://www.toymate.com.au/",
+      "https://toymate.com.au/",
+      "https://www.toymate.com.au/login.php",
+      "https://toymate.com.au/login.php",
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    let pageUrl = candidates[0];
+    let challenged = false;
+    let lastErr = null;
+    for (const url of candidates) {
+      try {
+        const res = await request(url, { headers: navHeaders() }, ctx);
+        status = res.status;
+        html = await readText(res);
+        pageUrl = url;
+        challenged = looksLikeCfChallenge(html, status);
+        if (!challenged && status > 0 && status < 400 && html.length > 500) {
+          return { ok: true, status, note: `${url} ${status} (no CF challenge)` };
+        }
+        if (challenged) break;
+      } catch (e) {
+        lastErr = e?.message || String(e);
+      }
+    }
+
+    if (!challenged) {
+      return {
+        ok: false,
+        status,
+        note:
+          lastErr && !html
+            ? `warm fetch failed: ${lastErr}`
+            : `warm ${status} bytes=${html.length} via ${pageUrl} (no CapSolver-ready CF HTML)`,
+        blocked: true,
+      };
     }
     if (!capsolverKey()) {
       return {
@@ -341,12 +390,25 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
       };
     }
     const solved = await solveCloudflareChallenge({
-      pageUrl: `${base}/`,
+      pageUrl,
       html,
       proxyRaw,
       userAgent: UA,
     });
     if (!solved.ok) {
+      // Don't burn retries on "challenge not found" — detection was wrong or HTML stale.
+      const soft =
+        /challenge not found|INVALID_TASK_DATA/i.test(String(solved.error || "")) &&
+        status > 0 &&
+        status < 400;
+      if (soft) {
+        return {
+          ok: true,
+          status,
+          note: `CapSolver skipped (${solved.error}); continuing with jar`,
+          blocked: false,
+        };
+      }
       return { ok: false, status, note: solved.error || "CF solve failed", blocked: true };
     }
     applyCookiesToJar(ctx.jar, solved.cookies);
@@ -354,7 +416,7 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
     ctx.extraHeaders = { ...(ctx.extraHeaders || {}), "user-agent": solvedUa };
     // Apex is the canonical host after CF (www often 301s).
     const res2 = await request(`https://toymate.com.au/`, {
-      headers: navHeaders({ referer: `${base}/`, userAgent: solvedUa }),
+      headers: navHeaders({ referer: pageUrl, userAgent: solvedUa }),
     }, ctx);
     const html2 = await readText(res2);
     const still = looksLikeCfChallenge(html2, res2.status);
@@ -362,13 +424,13 @@ async function warmCloudflare(ctx, base, proxyRaw, steps, tStep) {
     status = res2.status;
     const ok =
       !still &&
-      ((res2.status > 0 && res2.status < 400) || (res2.status === 301 || res2.status === 302));
+      ((res2.status > 0 && res2.status < 400) || res2.status === 301 || res2.status === 302);
     return {
       ok,
       status: res2.status,
       note: still
-        ? "CF still challenging after solve"
-        : `cf_clearance ok (${solved.note}); post=${res2.status}`,
+        ? `CF still challenging after solve (via ${pageUrl})`
+        : `cf_clearance ok (${solved.note}); warm=${pageUrl}; post=${res2.status}`,
       blocked: still,
     };
   });
@@ -401,18 +463,19 @@ export const toymateAdapter = {
     const profile = profileFromTask(task);
     const proxyRaw = task.proxy || null;
 
-    // Prefer apex for form actions (create-account posts to toymate.com.au).
-    let base = "https://www.toymate.com.au";
+    // Apex is canonical (www often 301s; Storefront API POSTs must not hit a 301).
+    const apex = "https://toymate.com.au";
+    const www = "https://www.toymate.com.au";
+    let base = apex;
     try {
-      const u = new URL(String(task.storeUrl || task.pdpUrl || base));
+      const u = new URL(String(task.storeUrl || task.pdpUrl || apex));
       if (/toymate\.com\.au$/i.test(u.hostname)) {
-        base = `${u.protocol}//${u.hostname === "toymate.com.au" ? "www.toymate.com.au" : u.hostname}`;
+        base = apex;
       }
     } catch {
       /* default */
     }
-    const apex = "https://toymate.com.au";
-    const origin = base;
+    const origin = apex;
 
     const tStep = async (name, fn) => {
       const s0 = Date.now();
@@ -443,7 +506,7 @@ export const toymateAdapter = {
 
     // ── Account gen ────────────────────────────────────────────────────
     if (mode === "account_gen") {
-      const warm = await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      const warm = await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
       const ua = warm.solvedUa || UA;
 
       const createUrl = `${apex}/login.php?action=create_account`;
@@ -606,23 +669,16 @@ export const toymateAdapter = {
 
     // ── Keyword monitor ────────────────────────────────────────────────
     if (mode === "monitor") {
-      await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+      await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
       const q = String(task.input || task.keywords || task.pdpUrl || "").trim();
-      const searchUrl = `${base}/search.php?search_query=${encodeURIComponent(q)}`;
+      const searchUrl = `${apex}/search.php?search_query=${encodeURIComponent(q)}`;
       const mon = await tStep("keyword_search", async () => {
         const res = await request(searchUrl, {
-          headers: navHeaders({ referer: `${base}/` }),
+          headers: navHeaders({ referer: `${apex}/` }),
         }, ctx);
         const html = await readText(res);
-        const productUrl =
-          html.match(/href=["'](https?:\/\/[^"']*\/[^"']*\/?\d+\/?)["']/i)?.[1] ||
-          html.match(/href=["'](\/[^"']*\/\d+\/?)["']/i)?.[1] ||
-          null;
-        const abs = productUrl
-          ? productUrl.startsWith("http")
-            ? productUrl
-            : new URL(productUrl, base).href
-          : null;
+        const pid = html.match(/data-product-id=["'](\d+)["']/i)?.[1];
+        const abs = pid ? `${apex}/products.php?productId=${pid}` : null;
         return {
           ok: res.status === 200,
           status: res.status,
@@ -642,7 +698,7 @@ export const toymateAdapter = {
     }
 
     // ── Checkout (guest or logged-in) ──────────────────────────────────
-    await warmCloudflare(ctx, base, proxyRaw, steps, tStep);
+    await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
 
     const account = accountFromTask(task);
     if (account?.email && account?.password) {
@@ -687,26 +743,36 @@ export const toymateAdapter = {
       };
     }
 
+    // Prefer productId from the URL — listing pages embed many data-product-id attrs.
+    let urlProductId = null;
+    try {
+      const u = new URL(productUrl);
+      urlProductId = u.searchParams.get("productId") || u.searchParams.get("product_id");
+    } catch {
+      /* ignore */
+    }
+
     const pdp = await tStep("pdp_get", async () => {
       const res = await request(productUrl, {
-        headers: navHeaders({ referer: `${base}/` }),
+        headers: navHeaders({ referer: `${apex}/` }),
       }, ctx);
       const html = await readText(res);
       const ids = extractProductIds(html);
+      if (urlProductId) ids.productId = String(urlProductId);
       const blocked = looksLikeCfChallenge(html, res.status);
       return {
-        ok: res.status === 200 && Boolean(ids.productId || ids.variantId || task.variantId),
+        ok: res.status === 200 && Boolean(ids.productId || ids.variantId || task.variantId || urlProductId),
         status: res.status,
         note: blocked
           ? `WAF ${res.status}`
-          : `productId=${ids.productId || "?"} variant=${ids.variantId || task.variantId || "?"}`,
+          : `productId=${ids.productId || "?"} variant=${ids.variantId || task.variantId || ids.productId || "?"}`,
         ids,
         title: ids.title,
         blocked,
       };
     });
 
-    const productId = Number(task.productId || pdp.ids?.productId || 0) || null;
+    const productId = Number(task.productId || urlProductId || pdp.ids?.productId || 0) || null;
     const variantId = Number(task.variantId || pdp.ids?.variantId || productId || 0) || null;
     const qty = Math.max(1, Math.min(20, Number(task.qty) || 1));
     if (!variantId) {
@@ -727,15 +793,18 @@ export const toymateAdapter = {
       if (productId && variantId && productId !== variantId) line.variantId = variantId;
       const res = await request(`${base}/api/storefront/carts`, {
         method: "POST",
-        headers: apiHeaders({ referer: productUrl, origin }),
+        headers: apiHeaders({ referer: productUrl, origin, jar: ctx.jar }),
         body: JSON.stringify({ lineItems: [line] }),
       }, ctx);
       const json = await readJson(res);
       const cartId = json?.id || json?.cartId || null;
+      const detail = json?.detail || json?.title || "";
       return {
         ok: Boolean(cartId) && res.status >= 200 && res.status < 300,
         status: res.status,
-        note: cartId ? `cart ${cartId}` : `cart ${res.status}`,
+        note: cartId
+          ? `cart ${cartId}`
+          : `cart ${res.status}${detail ? `: ${String(detail).slice(0, 120)}` : ""}`,
         cartId,
         json,
       };
@@ -758,7 +827,7 @@ export const toymateAdapter = {
     await tStep("checkout_get", async () => {
       const res = await request(
         `${base}/api/storefront/checkouts/${checkoutId}?include=cart.lineItems.physicalItems.options,customer,payments,promotions.banners`,
-        { headers: apiHeaders({ referer: `${base}/checkout`, origin }) },
+        { headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }) },
         ctx,
       );
       const json = await readJson(res);
@@ -789,7 +858,7 @@ export const toymateAdapter = {
         `${base}/api/storefront/checkouts/${checkoutId}/consignments?include=consignments.availableShippingOptions`,
         {
           method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
           body: JSON.stringify(consignmentBody),
         },
         ctx,
@@ -802,7 +871,7 @@ export const toymateAdapter = {
           `${base}/api/storefront/checkouts/${checkoutId}/consignments/${consignmentId}?include=consignments.availableShippingOptions`,
           {
             method: "PUT",
-            headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+            headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
             body: JSON.stringify({ shippingOptionId: optionId }),
           },
           ctx,
@@ -823,7 +892,7 @@ export const toymateAdapter = {
     await tStep("checkout_set_billing", async () => {
       const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/billing-address`, {
         method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
         body: JSON.stringify({ ...ship }),
       }, ctx);
       return {
@@ -835,13 +904,37 @@ export const toymateAdapter = {
 
     let captchaToken = task.captchaToken || null;
     await tStep("checkout_spam", async () => {
+      // Live place-order needs spam-protection when BC has it enabled.
+      if (!captchaToken && placeOrder && capsolverKey()) {
+        const sitekey =
+          task.recaptchaSitekey ||
+          "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
+        const solved = await solveRecaptchaV2({
+          pageUrl: `${apex}/checkout`,
+          sitekey,
+          proxyRaw,
+        });
+        if (solved.ok) captchaToken = solved.token;
+        else {
+          return {
+            ok: false,
+            status: null,
+            note: solved.error || "spam reCAPTCHA failed",
+          };
+        }
+      }
       if (!captchaToken) {
-        // Spam endpoint may 400 without token — still attempt; dry-run continues.
-        return { ok: true, status: null, note: "no captcha token — skip spam-protection" };
+        return {
+          ok: !placeOrder,
+          status: null,
+          note: placeOrder
+            ? "placeOrder needs CapSolver for checkout spam reCAPTCHA"
+            : "no captcha token — skip spam-protection",
+        };
       }
       const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
         method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
         body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
       }, ctx);
       return {
@@ -858,7 +951,7 @@ export const toymateAdapter = {
       await tStep("payment_paypal", async () => {
         const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/payments`, {
           method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
           body: JSON.stringify({ payment: { methodId: "paypalcommerce" } }),
         }, ctx);
         const json = await readJson(res);
@@ -890,69 +983,78 @@ export const toymateAdapter = {
     await tStep("place_order_gate", async () => {
       if (!placeOrder) return { ok: true, status: null, note: "dry-run — skip charge" };
       if (!card?.ok) return { ok: false, status: null, note: "placeOrder requires card on profile" };
-      return { ok: true, status: null, note: "placeOrder armed — gateway fields may need HAR" };
+      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via checkout UI" };
     });
 
     let orderNumber = null;
     let paymentStatus = null;
+    let paymentDeclined = false;
 
     if (placeOrder && card?.ok) {
-      const pay = await tStep("place_order", async () => {
-        // Best-effort BC storefront instrument. Refine from operator HAR.
-        const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/orders`, {
-          method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin }),
-          body: JSON.stringify({}),
-        }, ctx);
-        if (res.status >= 400) {
-          const payRes = await request(`${base}/api/storefront/checkouts/${checkoutId}/payments`, {
-            method: "POST",
-            headers: apiHeaders({ referer: `${base}/checkout`, origin }),
-            body: JSON.stringify({
-              payment: {
-                methodId: task.cardMethodId || "creditcard",
-                paymentData: {
-                  creditCardNumber: card.number,
-                  creditCardName: card.holder,
-                  creditCardMonth: Number(card.expMonth),
-                  creditCardYear: Number(
-                    card.expYear.length === 2 ? `20${card.expYear}` : card.expYear,
-                  ),
-                  creditCardCode: card.cvv,
-                  shouldSaveInstrument: false,
-                },
-              },
-            }),
-          }, ctx);
-          const payJson = await readJson(payRes);
-          orderNumber = payJson?.order?.orderId || payJson?.id || payJson?.orderId || null;
-          paymentStatus = payRes.status >= 200 && payRes.status < 300 ? "submitted" : "failed";
-          return {
-            ok: Boolean(orderNumber) || payRes.status < 300,
-            status: payRes.status,
-            note: orderNumber ? `order ${orderNumber}` : `payment ${payRes.status}`,
-          };
-        }
-        const json = await readJson(res);
-        orderNumber = json?.orderId || json?.id || null;
-        paymentStatus = res.status >= 200 && res.status < 300 ? "submitted" : "failed";
+      // Discover card method (Adyen scheme) — proves payments API + X-API-INTERNAL.
+      const methodsStep = await tStep("payment_methods", async () => {
+        const res = await request(
+          `${apex}/api/storefront/payments?cartId=${checkoutId}`,
+          {
+            method: "GET",
+            headers: storefrontPaymentHeaders(ctx.jar, ctx.extraHeaders?.["user-agent"] || UA),
+          },
+          ctx,
+        );
+        const methods = await readJson(res);
+        const adyen = pickAdyenCardMethod(methods);
         return {
-          ok: Boolean(orderNumber) || res.status < 300,
+          ok: res.status === 200 && Boolean(adyen),
           status: res.status,
-          note: orderNumber ? `order ${orderNumber}` : `order ${res.status}`,
+          note: adyen
+            ? `card method ${adyen.id}/${adyen.gateway}`
+            : `no Adyen scheme (status ${res.status})`,
+          adyen,
+          methods,
+        };
+      });
+
+      const pay = await tStep("place_order", async () => {
+        // Live Adyen hosted fields — same path the storefront uses (decline-friendly).
+        const ui = await placeOrderViaCheckoutUi({
+          proxyUrl: proxyRaw,
+          cookies: ctx.jar?.dump?.() || {},
+          userAgent: ctx.extraHeaders?.["user-agent"] || UA,
+          card,
+          checkoutUrl: `${apex}/checkout`,
+        });
+        orderNumber = ui.orderNumber || null;
+        paymentDeclined = Boolean(ui.declined);
+        paymentStatus = ui.declined
+          ? "declined"
+          : orderNumber
+            ? "submitted"
+            : ui.ok
+              ? "submitted"
+              : "failed";
+        return {
+          ok: Boolean(ui.ok || ui.declined),
+          status: ui.status,
+          note: ui.note,
+          declined: ui.declined,
+          paymentLogs: (ui.paymentLogs || []).slice(0, 8),
         };
       });
 
       return {
-        ok: Boolean(orderNumber) || pay.ok,
+        ok: Boolean(orderNumber) || paymentDeclined || pay.ok,
         steps,
-        checkoutStage: orderNumber ? "order" : "tokenize",
+        checkoutStage: orderNumber ? "order" : paymentDeclined ? "tokenize" : "tokenize",
         dryRun: false,
         orderNumber,
         orderId: orderNumber,
         paymentStatus,
+        paymentDeclined,
         paymentMethod: "credit_card",
-        finalUrl: orderNumber ? `${base}/checkout/order-confirmation` : `${base}/checkout`,
+        cardGateway: methodsStep.adyen?.gateway || "adyenv3",
+        finalUrl: orderNumber
+          ? `${apex}/checkout/order-confirmation`
+          : `${apex}/checkout`,
         cookies: ctx.jar?.dump?.() ?? {},
         title: pdp.title,
       };

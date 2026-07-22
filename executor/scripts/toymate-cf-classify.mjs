@@ -34,7 +34,7 @@ function classify(status, html, headers) {
   if (status === 200 && /login\.php|bigcommerce|data-product/i.test(h) && !/just a moment/i.test(h)) {
     return "clear";
   }
-  if (/just a moment|cf-browser-verification|challenge-platform|__cf_chl/i.test(h)) {
+  if (/just a moment|cf-browser-verification|__cf_chl_opt|__cf_chl_tk|cf-challenge-running/i.test(h)) {
     return "challenge_html";
   }
   if (status === 403 && /request blocked|attention required/i.test(h)) return "hard_block";

@@ -108,16 +108,29 @@ async function capsolverCreateAndPoll(task, { timeoutMs = 120_000 } = {}) {
 
 function looksLikeCfChallenge(html, status) {
   const h = String(html || "");
-  // Real create-account / stencil pages are large 200s — never treat those as CF.
-  if (status === 200 && h.length > 20_000 && /<form\b/i.test(h) && !/just a moment/i.test(h)) {
+  const title = (h.match(/<title[^>]*>([^<]*)/i)?.[1] || "").trim();
+  const justAMoment =
+    /just a moment/i.test(title) || /just a moment\.\.\.|just a moment\b/i.test(h.slice(0, 4000));
+
+  // Real storefront / create-account pages are large 200s — never CapSolver those.
+  // Bare "challenge-platform" CDN refs appear on cleared pages and cause
+  // CapSolver ERROR_INVALID_TASK_DATA: Cloudflare challenge not found.
+  if (status === 200 && h.length > 12_000 && /<form\b|<body\b/i.test(h) && !justAMoment) {
     return false;
   }
-  if (/just a moment\.\.\.|cf-browser-verification|challenge-platform|cf-challenge|__cf_chl_/i.test(h)) {
+
+  // CapSolver AntiCloudflareTask only accepts a real interstitial.
+  if (justAMoment) return true;
+  if (/cf-browser-verification|cf-challenge-running|__cf_chl_opt|__cf_chl_tk/i.test(h)) {
     return true;
   }
+  if (/\/cdn-cgi\/challenge-platform\/(?:h\/[a-z]\/)?challenge-platform/i.test(h) && h.length < 30_000) {
+    return true;
+  }
+
   // Soft: 403/503 with short CF interstitial (not a full storefront page).
   if ((status === 403 || status === 503) && h.length < 20_000) {
-    if (/cloudflare|cf-ray|attention required|request blocked/i.test(h)) return true;
+    if (/cloudflare|cf-ray|attention required|request blocked|just a moment/i.test(h)) return true;
   }
   return false;
 }
@@ -140,14 +153,12 @@ export async function solveCloudflareChallenge({
     return { ok: false, error: "AntiCloudflareTask needs challenge HTML" };
   }
 
+  // CapSolver docs: html is a top-level task field (not metadata-only).
   const task = {
     type: "AntiCloudflareTask",
     websiteURL: pageUrl,
     proxy,
-    metadata: {
-      type: "challenge",
-      html: String(html).slice(0, 450_000),
-    },
+    html: String(html).slice(0, 450_000),
   };
   if (userAgent) task.userAgent = userAgent;
 
