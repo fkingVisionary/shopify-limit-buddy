@@ -798,6 +798,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   const checkoutBody = {
     merchantCartToken,
     shippingAreaCode: task.shippingAreaCode || session.area,
+    defaultAreaCode: task.defaultAreaCode || session.area,
     items: [{ cartItemSn }],
   };
 
@@ -824,20 +825,42 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       extraHeaders: sensors,
     });
     const checkoutSn = json?.checkoutSn || json?.checkoutSN || null;
+    const errBits = [
+      json?.error,
+      json?.message,
+      json?.detail,
+      json?.errorCode,
+      json?.title,
+    ]
+      .filter(Boolean)
+      .map(String)
+      .join(" | ");
     return {
       ok: status >= 200 && status < 300 && Boolean(checkoutSn),
       status,
       note: checkoutSn
-        ? `checkoutSn ${checkoutSn}`
-        : json?.error || json?.message || `checkout ${status}`,
+        ? `checkoutSn ${checkoutSn} mct=${String(merchantCartToken || "").slice(0, 48)}`
+        : `${errBits || `checkout ${status}`} mctSuffix=${preloadSuffix ? "yes" : "EMPTY"}`.slice(0, 220),
       checkoutSn,
       json,
+      preloadSuffix,
     };
   });
 
   // ── HTTP GE Pay (no Playwright Pay UI): GetCartToken → hydrate → issuer ─
   // F5 bridge page kept only to mint iovation #ioBlackBox (snare.js) — not Pay.
-  if (placeOrder && opts.placeOrderGeHttp === true && chk.ok) {
+  // GetCartToken needs merchantCartToken (cartId_Checkout_*), not checkoutSn —
+  // continue even when Bandai cart_checkout 500s (stuck open checkout).
+  if (placeOrder && opts.placeOrderGeHttp === true && merchantCartToken) {
+    if (!chk.ok) {
+      steps.push({
+        step: "cart_checkout_soft",
+        ok: false,
+        status: chk.status,
+        ms: 0,
+        note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
+      });
+    }
     const geOut = await runBandaiGeHttpPay({
       ctx,
       page: bridge?.page || null,
