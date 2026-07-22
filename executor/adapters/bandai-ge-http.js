@@ -297,6 +297,8 @@ export function buildIssuerFormBody(opts = {}) {
 
 /**
  * POST HandleCreditCardRequestV2 via undici (optional ctx jar/proxy).
+ * Wire often returns 302 → CCPaymentRedirect?Data=JWT (ASP.NET post-redirect).
+ * That IS the auth handoff — not a failure.
  */
 export async function postBandaiGeIssuerHttp(opts = {}) {
   const url = String(opts.url || "");
@@ -313,14 +315,16 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
   }
 
   const headers = {
-    accept: "application/json, text/plain, */*",
+    accept: "text/html,application/xhtml+xml,application/json,*/ *",
     "content-type":
       opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
     origin: BANDAI_GE_SECURE,
-    referer: `${BANDAI_GE_SECURE}/`,
+    referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
     "user-agent": opts.userAgent || DEFAULT_UA,
     ...(opts.headers || {}),
   };
+  // typo fix accept
+  headers.accept = "text/html,application/xhtml+xml,application/json,*/*";
   const cookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
   if (cookie) headers.cookie = cookie;
 
@@ -344,12 +348,57 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     } catch {
       /* ignore */
     }
+    const locHeader =
+      (typeof res.headers?.get === "function" &&
+        (res.headers.get("location") || res.headers.get("Location"))) ||
+      "";
+    const locHtml = (String(text || "").match(
+      /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
+    ) || [])[1];
+    const redirectUrl = locHeader || locHtml || null;
+    const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
+    // 2xx JSON or 3xx/200 HTML redirect into CCPaymentRedirect = issuer accepted.
+    const ok =
+      (res.status >= 200 && res.status < 300 && !/Object moved/i.test(text)) ||
+      ((res.status === 302 || res.status === 301 || res.status === 303 || res.status === 200) &&
+        isPaymentRedirect);
+
+    let redirectSnippet = null;
+    if (ok && isPaymentRedirect && redirectUrl && opts.followRedirect !== false) {
+      try {
+        const abs = /^https?:\/\//i.test(redirectUrl)
+          ? redirectUrl
+          : new URL(redirectUrl, BANDAI_GE_WEBSERVICES).href;
+        const followed = await request(
+          abs,
+          {
+            method: "GET",
+            headers: {
+              "user-agent": opts.userAgent || DEFAULT_UA,
+              accept: "text/html,*/*",
+              referer: url,
+              ...(cookie ? { cookie } : {}),
+            },
+          },
+          opts.ctx || {},
+        );
+        const ftext = await followed.text();
+        redirectSnippet = String(ftext || "").replace(/\s+/g, " ").slice(0, 280);
+      } catch {
+        /* ignore follow errors — redirect itself proves wire */
+      }
+    }
+
     return {
-      ok: res.status >= 200 && res.status < 300,
+      ok,
       status: res.status,
       ms,
       bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
+      redirectUrl: redirectUrl ? String(redirectUrl).slice(0, 220) : null,
+      redirectSnippet,
+      isPaymentRedirect,
       json,
+      sawAuthWire: ok,
       via: "http-ge-issuer",
     };
   } catch (e) {
