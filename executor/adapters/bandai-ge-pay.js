@@ -152,9 +152,28 @@ export async function browserBandaiGeFromCart(opts = {}) {
     mark("ge_from_cart_start");
     const sChk = Date.now();
     await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(800);
     await dismissCookieBanner(page);
-    mark("cart_ui_ready");
+
+    // Vue cart hydrates async — wait for CTA (or empty-cart copy) before failing.
+    const proceedSel =
+      'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
+    let proceedVisible = false;
+    for (let i = 0; i < 20; i++) {
+      await dismissCookieBanner(page);
+      const proceedProbe = page.locator(proceedSel).first();
+      if ((await proceedProbe.count().catch(() => 0)) && (await proceedProbe.isVisible().catch(() => false))) {
+        proceedVisible = true;
+        break;
+      }
+      // Nudge SPA — sometimes first paint is a skeleton.
+      if (i === 6 || i === 12) {
+        await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+        await page.waitForTimeout(600);
+      }
+      await page.waitForTimeout(400);
+    }
+    mark("cart_ui_ready", { proceedVisible });
 
     const areaBoxes = page.locator(
       'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
@@ -167,18 +186,20 @@ export async function browserBandaiGeFromCart(opts = {}) {
       }
     }
 
-    const proceed = page
-      .locator('button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout")')
-      .first();
-    if (!(await proceed.count()) || !(await proceed.isVisible().catch(() => false))) {
+    const proceed = page.locator(proceedSel).first();
+    if (!proceedVisible) {
+      const bodyHint = (await page.locator("body").innerText().catch(() => ""))
+        .replace(/\s+/g, " ")
+        .slice(0, 160);
       push("cart_checkout", {
         ok: false,
         ms: Date.now() - sChk,
-        note: "PROCEED TO CHECKOUT button missing",
+        note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
       });
       return {
         ok: false,
         steps,
+        timeline,
         failedStep: "cart_checkout",
         error: "PROCEED TO CHECKOUT button missing",
         checkoutStage: "cart",
