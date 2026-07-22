@@ -893,43 +893,35 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
+    // Issuer often lands 5–8s after Pay — don't fail-closed on an 800ms poll.
     await page.waitForTimeout(800);
 
     // Issuer wire = HandleCreditCardRequestV2 only (bank ground truth).
     const authReqs = () =>
       geNet.filter((n) => n.kind === "req" && (n.issuer || isBandaiGeIssuerPaymentUrl(n.url)));
     const payNet = geNet.filter((n) => n.kind === "req" && n.armed && !n.noise);
-    const payNetHot = authReqs();
+    let payNetHot = authReqs();
     geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount} issuerReqs=${chargeReqCount} blocked=${blockedChargeReqCount}`;
     if (payClickCount > 1) geNote += "; WARN multi_pay_click";
-    if (issuerPaymentSent || payNetHot.length > 0) {
-      sawAuthWire = true;
-      geNote += "; issuer_HandleCreditCardRequestV2_on_wire";
-    }
-    if (payNetHot.length === 0 && !issuerPaymentSent) {
-      paymentStatus = "pay_clicked_no_payment_request";
-      geNote += "; WARN no HandleCreditCardRequestV2 after Pay click";
-    }
 
     if (paymentStatus === "pay_clicked" || paymentStatus === "pay_clicked_no_payment_request") {
-      const hardDeadline =
-        Date.now() +
-        (paymentStatus === "pay_clicked_no_payment_request"
-          ? Math.min(12_000, wait3dsMs)
-          : wait3dsMs);
+      // Always wait for issuer POST (lab: ~7s after click) before labeling no_payment.
+      const hardDeadline = Date.now() + wait3dsMs;
       sawAuthWire = issuerPaymentSent || authReqs().length > 0;
       const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
-      // Stay long enough after wire to scrape issuer decline UI (bank soft-declines often have no ACS).
-      const postWireObserveMs = Math.min(20_000, Math.max(14_000, wait3dsMs));
+      const postWireObserveMs = Math.min(16_000, Math.max(10_000, wait3dsMs));
 
       while (Date.now() < hardDeadline && !reached3ds && !orderNumber) {
         if (!sawAuthWire) {
-          const n = authReqs().length;
-          if (n > 0) {
+          payNetHot = authReqs();
+          if (issuerPaymentSent || payNetHot.length > 0) {
             sawAuthWire = true;
             wireSeenAt.t = Date.now();
-            geNote += `; authWire=${n}`;
-            mark("auth_wire", { authReqs: n });
+            geNote += `; issuerWire=${payNetHot.length || 1}`;
+            mark("auth_wire", { issuerReqs: chargeReqCount });
+            if (paymentStatus === "pay_clicked_no_payment_request") {
+              paymentStatus = "pay_clicked";
+            }
           }
         } else if (
           Date.now() - wireSeenAt.t >= postWireObserveMs &&
@@ -1004,9 +996,18 @@ export async function browserBandaiGeFromCart(opts = {}) {
         }
 
       }
+      sawAuthWire = sawAuthWire || issuerPaymentSent || authReqs().length > 0;
       if (paymentStatus === "pay_clicked") {
-        paymentStatus = reached3ds ? "reached_3ds" : "pay_submitted_no_3ds_seen";
+        paymentStatus = reached3ds
+          ? "reached_3ds"
+          : sawAuthWire
+            ? "pay_submitted_no_3ds_seen"
+            : "pay_clicked_no_payment_request";
+      } else if (paymentStatus === "pay_clicked_no_payment_request" && sawAuthWire) {
+        paymentStatus = "pay_submitted_no_3ds_seen";
       }
+      if (!sawAuthWire) geNote += "; WARN no HandleCreditCardRequestV2 after Pay click";
+      else geNote += "; issuer_HandleCreditCardRequestV2_on_wire";
       // Soft decline with no UI: still surface a clear terminal status when wire fired once.
       if (
         paymentStatus === "pay_submitted_no_3ds_seen" &&
