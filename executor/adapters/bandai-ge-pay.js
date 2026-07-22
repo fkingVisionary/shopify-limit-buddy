@@ -290,167 +290,87 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const geNet = [];
   let chargeReqCount = 0;
   let blockedChargeReqCount = 0;
-  // Bank ground truth:
-  // - 14:09 AEST pair = unguarded /2+/3 on the wire (retest8)
-  // - 14:44 AEST: /2 network + /3 fulfilled local → Pay UI ok, Revolut silent
-  //   ⇒ /3 is authorize; /2 alone does not ping the bank (needed for card UI)
-  // Policy: /1+/2 always network; first /3+ to issuer once; later /3+ fulfill local.
+  // OBSERVE-ONLY wire log. page.route abort/fulfill + card-form submit kill made
+  // Pay a no-op after 14:09 (labs green, Revolut silent). Restore 14:09 path:
+  // no route interception; log handleaction + GE POSTs; single Pay click.
   let armChargeGuard = false;
   let issuerHandleActionSent = false;
-  let lastHandleActionOk = {
-    status: 200,
-    contentType: "application/json; charset=utf-8",
-    body: '{"Success":true}',
-  };
 
-  const fulfillHandleActionLocal = async (route, actionId, url) => {
-    blockedChargeReqCount += 1;
-    mark("charge_req_fulfilled_local", {
-      n: chargeReqCount,
-      handleAction: true,
-      actionId,
-      url: url.slice(0, 140),
-    });
-    await route.fulfill({
-      status: lastHandleActionOk.status,
-      contentType: lastHandleActionOk.contentType,
-      body: lastHandleActionOk.body,
-    });
-  };
-
-  const chargeRoute = async (route) => {
-    const req = route.request();
+  const onReq = (req) => {
     const method = req.method();
-    const url = req.url();
-    if (!isBandaiGeChargeRequest(method, url)) {
-      await route.continue();
+    const u = req.url();
+    if (method === "GET" || method === "OPTIONS" || method === "HEAD") return;
+    if (!/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
       return;
     }
-    const handleAction = isBandaiGeHandleAction(url);
-    const actionId = handleAction ? bandaiGeHandleActionId(url) : null;
-
-    // Non-handleaction candidates only count after Pay is armed.
-    if (!handleAction && !armChargeGuard) {
-      geNet.push({
-        t: Date.now(),
-        kind: "req",
-        method,
-        url: url.slice(0, 200),
-        chargeCandidate: true,
-        armed: false,
-      });
-      await route.continue();
+    if (/WriteContextualLog|collectCheckout|prefetcher|\/static\/|\.js(?:\?|$)|\/css\//i.test(u)) {
+      // Still record briefly for post-Pay diffs, but tag as noise.
+      if (armChargeGuard) {
+        geNet.push({ t: Date.now(), kind: "req", method, url: u.slice(0, 200), noise: true });
+      }
       return;
     }
-
-    // /1 init + /2 card/UI — always on the wire (fulfilling /2 broke card iframe).
-    if (handleAction && (actionId === 1 || actionId === 2)) {
-      geNet.push({
-        t: Date.now(),
-        kind: "req",
-        method,
-        url: url.slice(0, 200),
-        chargeCandidate: true,
-        handleAction: true,
-        actionId,
-        init: actionId === 1,
-      });
-      mark("charge_req_allowed", {
-        handleAction: true,
-        actionId,
-        url: url.slice(0, 140),
-      });
-      await route.continue();
-      return;
-    }
-
-    chargeReqCount += 1;
-    geNet.push({
+    const handleAction = isBandaiGeHandleAction(u);
+    const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
+    const chargeCandidate = isBandaiGeChargeRequest(method, u);
+    const row = {
       t: Date.now(),
       kind: "req",
       method,
-      url: url.slice(0, 200),
-      chargeCandidate: true,
-      armed: armChargeGuard || handleAction,
+      url: u.slice(0, 200),
       handleAction,
       actionId,
-      chargeN: chargeReqCount,
-    });
-
-    // /3+ = issuer authorize — one network hit only.
+      chargeCandidate,
+      armed: armChargeGuard,
+    };
     if (handleAction && actionId != null && actionId >= 3) {
-      if (issuerHandleActionSent) {
-        await fulfillHandleActionLocal(route, actionId, url);
-        return;
+      chargeReqCount += 1;
+      row.chargeN = chargeReqCount;
+      if (armChargeGuard) {
+        issuerHandleActionSent = true;
+        row.issuer = true;
       }
+      mark("ge_post", { actionId, armed: armChargeGuard, url: u.slice(0, 120) });
+    } else if (chargeCandidate && armChargeGuard) {
+      chargeReqCount += 1;
+      row.chargeN = chargeReqCount;
+      row.issuer = true;
       issuerHandleActionSent = true;
-      geNet[geNet.length - 1].issuer = true;
-      mark("charge_req_allowed", {
-        handleAction: true,
-        actionId,
-        issuer: true,
-        url: url.slice(0, 140),
-      });
-      await route.continue();
-      return;
+      mark("ge_post", { chargeCandidate: true, armed: true, url: u.slice(0, 120) });
+    } else if (handleAction) {
+      mark("ge_post", { actionId, armed: armChargeGuard, url: u.slice(0, 120) });
     }
-
-    if (chargeReqCount > 1) {
-      blockedChargeReqCount += 1;
-      mark("charge_req_blocked", {
-        n: chargeReqCount,
-        handleAction,
-        actionId,
-        url: url.slice(0, 140),
-      });
-      await route.abort("failed");
-      return;
-    }
-    mark("charge_req_allowed", { handleAction, actionId, url: url.slice(0, 140) });
-    await route.continue();
-  };
-  await page.route("**/*", chargeRoute);
-
-  // Cache successful handleaction JSON so duplicate ≥2 can be fulfilled locally.
-  const onHandleActionRes = async (res) => {
-    try {
-      if (!isBandaiGeHandleAction(res.url())) return;
-      if (res.status() < 200 || res.status() >= 300) return;
-      const body = await res.text();
-      if (!body || body.length > 200_000) return;
-      lastHandleActionOk = {
-        status: res.status(),
-        contentType: res.headers()["content-type"] || "application/json; charset=utf-8",
-        body,
-      };
-    } catch {
-      /* ignore */
-    }
-  };
-  page.on("response", onHandleActionRes);
-
-  const onReq = (req) => {
-    const u = req.url();
-    if (
-      req.method() !== "GET" &&
-      /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u) &&
-      !isBandaiGeChargeRequest(req.method(), u)
-    ) {
-      geNet.push({ t: Date.now(), kind: "req", method: req.method(), url: u.slice(0, 200) });
-    }
+    geNet.push(row);
   };
   const onRes = (res) => {
     const u = res.url();
-    if (/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
-      if (res.request().method() === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay/i.test(u)) return;
-      geNet.push({
-        t: Date.now(),
-        kind: "res",
-        status: res.status(),
-        method: res.request().method(),
-        url: u.slice(0, 200),
-      });
+    const method = res.request().method();
+    if (method === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay|handleaction/i.test(u)) return;
+    if (!/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
+      return;
     }
+    if (/WriteContextualLog|collectCheckout|prefetcher|\/static\//i.test(u) && !armChargeGuard) return;
+    const row = {
+      t: Date.now(),
+      kind: "res",
+      status: res.status(),
+      method,
+      url: u.slice(0, 200),
+    };
+    if (isBandaiGeHandleAction(u)) {
+      res
+        .text()
+        .then((body) => {
+          row.bodySnippet = String(body || "").replace(/\s+/g, " ").slice(0, 180);
+          mark("ge_post_res", {
+            actionId: bandaiGeHandleActionId(u),
+            status: res.status(),
+            bodySnippet: row.bodySnippet,
+          });
+        })
+        .catch(() => {});
+    }
+    geNet.push(row);
   };
   page.on("request", onReq);
   page.on("response", onRes);
@@ -729,27 +649,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (!(await num.count().catch(() => 0))) continue;
         if (!(await num.isVisible().catch(() => false))) continue;
 
-        // Kill card-iframe submit paths before fill — dual charge was card form + Checkout Pay.
-        await frame
-          .evaluate(() => {
-            for (const f of document.querySelectorAll("form")) {
-              f.setAttribute("onsubmit", "return false");
-              f.addEventListener(
-                "submit",
-                (e) => {
-                  e.preventDefault();
-                  e.stopImmediatePropagation();
-                  return false;
-                },
-                true,
-              );
-            }
-            for (const b of document.querySelectorAll('button[type="submit"], input[type="submit"]')) {
-              b.setAttribute("disabled", "true");
-              b.style.pointerEvents = "none";
-            }
-          })
-          .catch(() => {});
+        // Do NOT kill card-iframe submit/listeners — that made Checkout Pay a
+        // no-op after 14:09 (UI click ok, zero issuer POSTs, Revolut silent).
 
         await fillInputFast(num, pan);
         const mm = frame
@@ -905,26 +806,12 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (disabled) continue;
 
         try {
-          // Arm before click — only post-Pay GE writes count toward the single charge slot.
+          // Arm before click — post-Pay GE POSTs are the issuer wire (14:09 proof).
           armChargeGuard = true;
           mark("charge_guard_armed");
-          // Single evaluate click + immediately disable every Pay CTA (no double fire).
-          const clicked = await frame.evaluate(() => {
-            const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>
-              /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
-            );
-            const btn = buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true");
-            if (!btn) return false;
-            btn.click();
-            for (const b of buttons) {
-              b.setAttribute("disabled", "true");
-              b.style.pointerEvents = "none";
-            }
-            return true;
-          });
-          if (!clicked) {
-            await payBtn.click({ timeout: 3_000, noWaitAfter: true });
-          }
+          // Native Playwright click — do NOT sync-disable Pay in the same turn;
+          // that aborted GE's payment handler (labs green, Revolut silent).
+          await payBtn.click({ timeout: 3_000, noWaitAfter: true });
           payClickCount += 1;
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
@@ -934,6 +821,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
           });
+          // Soft single-flight: disable extra Pay CTAs after GE has a beat to POST.
+          setTimeout(() => {
+            frame
+              .evaluate(() => {
+                for (const b of document.querySelectorAll("button, input[type=submit]")) {
+                  if (/^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim())) {
+                    b.setAttribute("disabled", "true");
+                    b.style.pointerEvents = "none";
+                  }
+                }
+              })
+              .catch(() => {});
+          }, 750);
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
@@ -971,32 +871,26 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     await page.waitForTimeout(800);
 
+    // Issuer wire = non-noise GE POSTs after Pay armed (pre-Pay /3 alone ≠ Revolut).
     const authReqs = () =>
       geNet.filter((n) => {
-        if (n.kind !== "req") return false;
-        // Issuer slot = handleaction ≥3 (often fires during fill, before Pay click).
-        if (n.handleAction && n.actionId != null && n.actionId >= 3 && n.chargeN) return true;
-        if (n.issuer) return true;
-        if (isBandaiGeAuthPaymentUrl(n.url) && isBandaiGeHandleAction(n.url)) {
-          const id = bandaiGeHandleActionId(n.url);
-          return id != null && id >= 3;
-        }
-        if (isBandaiGeAuthPaymentUrl(n.url) && !isBandaiGeHandleAction(n.url)) return true;
-        return false;
+        if (n.kind !== "req" || n.noise) return false;
+        if (!n.armed && !n.issuer) return false;
+        if (n.issuer || n.chargeCandidate) return true;
+        if (n.handleAction && n.actionId != null && n.actionId >= 3 && n.armed) return true;
+        return isBandaiGeAuthPaymentUrl(n.url);
       });
-    const payNet = geNet.slice(netBefore);
+    const payNet = geNet.filter((n) => n.kind === "req" && n.armed && !n.noise);
     const payNetHot = authReqs();
     geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount} chargeReqs=${chargeReqCount} blocked=${blockedChargeReqCount}`;
     if (payClickCount > 1) geNote += "; WARN multi_pay_click";
-    if (chargeReqCount > 1) geNote += "; WARN multi_charge_req_blocked";
-    // /3 often lands during fill — before netBefore — still counts as issuer wire.
     if (issuerHandleActionSent) {
       sawAuthWire = true;
-      geNote += "; issuer_handleaction_on_wire";
+      geNote += "; issuer_post_pay_on_wire";
     }
-    if (payNet.length === 0 && chargeReqCount === 0 && !issuerHandleActionSent) {
+    if (payNetHot.length === 0 && !issuerHandleActionSent) {
       paymentStatus = "pay_clicked_no_payment_request";
-      geNote += "; WARN no GE traffic after click";
+      geNote += "; WARN no GE payment POST after Pay click";
     }
 
     if (paymentStatus === "pay_clicked" || paymentStatus === "pay_clicked_no_payment_request") {
@@ -1168,8 +1062,6 @@ export async function browserBandaiGeFromCart(opts = {}) {
   } finally {
     page.off("request", onReq);
     page.off("response", onRes);
-    page.off("response", onHandleActionRes);
-    await page.unroute("**/*", chargeRoute).catch(() => {});
   }
 }
 

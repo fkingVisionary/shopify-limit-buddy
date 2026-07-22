@@ -203,7 +203,7 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
-| GE charge POSTs | **`/1`+`/2` network; first `/3+` to issuer once; later `/3+` fulfill local** | `/3` fulfilled local ⇒ bank silent (14:44). `/2` alone ≠ Revolut ping but required for card iframe. |
+| GE charge POSTs | **observe-only until post-Pay wire proven**; no `page.route` abort/fulfill | Route fulfill + card-form submit kill made Pay a no-op (Revolut silent after 14:09). 14:09 had `payNet=2/2` after Pay with no route guard. |
 | GEM boot | preload mid **1925** js/css + prefetcher iframe before Proceed; poll frames without blocking on `waitForURL` | Biggest remaining latency after Proceed (~40s cold); serial URL wait killed frame listeners early |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |
 | Card expiry SELECT | DOM `value` + `input`/`change` events | Playwright `selectOption` on mismatch burned **~90s×N** and looked like “Pay blocked for 3 min” |
