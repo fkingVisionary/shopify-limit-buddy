@@ -82,7 +82,23 @@ Challenge shape:
 <iframe id="main-iframe" src="/_Incapsula_Resource?SWUDNSAI=31&…"></iframe>
 ```
 
-### 3.2 Known layered checks (public + bot docs)
+### 3.2 ISP capture (2026-07-22) — static `45.42.47.34`
+
+Playwright HAR via sticky ISP (see `executor/har/pokemoncentre/`).
+
+| Signal | Observation |
+|---|---|
+| Egress | ✅ `45.42.47.34` |
+| Reese script | `/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C` (confirmed) |
+| Reese POST | `POST …?d=www.pokemoncenter.com` `text/plain` → `{"token":"3:…"}` → cookie `reese84` **minted in browser** |
+| Incapsula site id | **2682446** (`visid_incap_2682446`, `incap_ses_*_2682446`) |
+| DataDome | **`t:'bv'` IP ban** on `/en-au/` even after Reese — `rt:'c'`, `hsh:'5B45875B653A484CC79E57036CE9FC'`, `s:9817`, `ct.captcha-delivery.com/c.js` |
+| Cortex / GE | Not reached on this exit |
+| Proxy note | CONNECT to `pokemoncenter.com` often **403** after a short burst — dwell in one context; don’t spray navigations |
+
+**Implication:** This Wealth-style ISP exit is **DataDome-banned** for TPCI. Reese alone is insufficient. Next capture needs a fresher residential sticky (or Hyper DD once `t≠bv`). Artifacts: `har/pokemoncentre/README.md`.
+
+### 3.3 Known layered checks (public + bot docs)
 - Incapsula clear → browse
 - DataDome interstitial/slider on protected XHR / PDP under suspicion
 - hCaptcha when Imperva / drop protection escalates

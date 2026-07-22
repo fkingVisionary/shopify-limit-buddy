@@ -1,0 +1,70 @@
+[
+  {
+    "step": "egress_ip",
+    "at": "2026-07-22T02:21:02.178Z",
+    "note": "{\"ip\":\"45.42.47.34\"}"
+  },
+  {
+    "step": "home",
+    "at": "2026-07-22T02:21:22.175Z",
+    "url": "https://www.pokemoncenter.com/en-au/",
+    "title": "pokemoncenter.com",
+    "bytes": 858,
+    "note": "still challenged"
+  },
+  {
+    "step": "nav",
+    "at": "2026-07-22T02:21:24.439Z",
+    "url": "/en-au/category/trading-card-game",
+    "status": 403,
+    "note": "title="
+  },
+  {
+    "step": "nav",
+    "at": "2026-07-22T02:21:26.942Z",
+    "url": "/sitemap.xml",
+    "status": 403,
+    "note": "title="
+  },
+  {
+    "step": "nav_fail",
+    "at": "2026-07-22T02:21:27.363Z",
+    "url": "/robots.txt",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/robots.txt\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/robots.txt\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "pdp_fail",
+    "at": "2026-07-22T02:21:27.776Z",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/en-au/product/10-10186-109/pokemon-tcg-scarlet-violet-prismatic-evolutions-elite-trainer-box\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/en-au/product/10-10186-109/pokemon-tcg-scarlet-violet-prismatic-evolutions-elite-trainer-box\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "checkout_nav_fail",
+    "at": "2026-07-22T02:21:28.198Z",
+    "url": "/carts",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/carts\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/carts\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "checkout_nav_fail",
+    "at": "2026-07-22T02:21:28.615Z",
+    "url": "/minicarts",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/minicarts\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/minicarts\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "checkout_nav_fail",
+    "at": "2026-07-22T02:21:29.043Z",
+    "url": "/intl-checkout",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/intl-checkout\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/intl-checkout\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "checkout_nav_fail",
+    "at": "2026-07-22T02:21:29.464Z",
+    "url": "/checkout",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/checkout\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/checkout\", waiting until \"domcontentloaded\"\n"
+  },
+  {
+    "step": "checkout_nav_fail",
+    "at": "2026-07-22T02:21:29.884Z",
+    "url": "/en-au/cart",
+    "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/en-au/cart\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/en-au/cart\", waiting until \"domcontentloaded\"\n"
+  }
+]

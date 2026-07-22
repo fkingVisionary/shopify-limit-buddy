@@ -17,6 +17,13 @@ import {
 import { resolveEgressIp } from "../ip-resolve.js";
 import { PC_ORIGIN } from "./pokemoncentre-session.js";
 
+/** Confirmed 2026-07-22 ISP HAR (45.42.47.34) — static per site until Imperva rotates. */
+export const PC_REESE_SCRIPT_PATH = "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C";
+/** Incapsula account/site id from visid_incap_* / incap_ses_* cookie names. */
+export const PC_INCAP_SITE_ID = "2682446";
+/** DataDome hsh observed on AU block pages (not a Hyper key — site fingerprint). */
+export const PC_DATADOME_HSH = "5B45875B653A484CC79E57036CE9FC";
+
 function bufferToB64(buf) {
   return Buffer.from(buf).toString("base64");
 }
@@ -37,7 +44,7 @@ export async function clearIncapsulaReese(session, ctx, { pageUrl, html } = {}) 
   if (!hyperConfigured()) {
     return { ok: false, note: "HYPER_API_KEY missing — cannot solve Incapsula Reese84" };
   }
-  const scriptPath = extractReeseScriptPath(html);
+  const scriptPath = extractReeseScriptPath(html) || PC_REESE_SCRIPT_PATH;
   if (!scriptPath) {
     return { ok: false, note: "reese script path not found in challenge HTML" };
   }
