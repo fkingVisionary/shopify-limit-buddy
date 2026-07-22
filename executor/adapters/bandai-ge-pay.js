@@ -384,6 +384,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
         return;
       }
       issuerHandleActionSent = true;
+      geNet[geNet.length - 1].issuer = true;
       mark("charge_req_allowed", {
         handleAction: true,
         actionId,
@@ -971,27 +972,29 @@ export async function browserBandaiGeFromCart(opts = {}) {
     await page.waitForTimeout(800);
 
     const authReqs = () =>
-      geNet.slice(netBefore).filter((n) => {
+      geNet.filter((n) => {
         if (n.kind !== "req") return false;
-        if (n.chargeN || n.handleAction) return true;
-        if (isBandaiGeAuthPaymentUrl(n.url)) return true;
-        if (isBandaiGeHandleAction(n.url)) return true;
-        // Opaque GE writes — exclude logging / analytics (were false-positive authWire).
-        return (
-          n.method &&
-          n.method !== "GET" &&
-          /global-e\.com/i.test(n.url || "") &&
-          !/prefetcher|\/static\/|includes\/js|\.js(?:\?|$)|\/css\/|WriteContextualLog|collectCheckout|analytics|telemetry|beacon/i.test(
-            n.url || "",
-          )
-        );
+        // Issuer slot = handleaction ≥3 (often fires during fill, before Pay click).
+        if (n.handleAction && n.actionId != null && n.actionId >= 3 && n.chargeN) return true;
+        if (n.issuer) return true;
+        if (isBandaiGeAuthPaymentUrl(n.url) && isBandaiGeHandleAction(n.url)) {
+          const id = bandaiGeHandleActionId(n.url);
+          return id != null && id >= 3;
+        }
+        if (isBandaiGeAuthPaymentUrl(n.url) && !isBandaiGeHandleAction(n.url)) return true;
+        return false;
       });
     const payNet = geNet.slice(netBefore);
     const payNetHot = authReqs();
     geNote += `; payNet=${payNet.length}/${payNetHot.length} payClicks=${payClickCount} chargeReqs=${chargeReqCount} blocked=${blockedChargeReqCount}`;
     if (payClickCount > 1) geNote += "; WARN multi_pay_click";
     if (chargeReqCount > 1) geNote += "; WARN multi_charge_req_blocked";
-    if (payNet.length === 0 && chargeReqCount === 0) {
+    // /3 often lands during fill — before netBefore — still counts as issuer wire.
+    if (issuerHandleActionSent) {
+      sawAuthWire = true;
+      geNote += "; issuer_handleaction_on_wire";
+    }
+    if (payNet.length === 0 && chargeReqCount === 0 && !issuerHandleActionSent) {
       paymentStatus = "pay_clicked_no_payment_request";
       geNote += "; WARN no GE traffic after click";
     }
