@@ -96,8 +96,12 @@ for (let i = 0; i < maxTries; i++) {
 
   const steps = (res.steps || []).map((s) => `${s.step}:${s.ok ? "ok" : "FAIL"}`).join(" ");
   const tl = res.timeline || [];
+  const timing = res.timing || {};
   console.log(
-    `  result via=${res.via} pay=${res.paymentStatus} tx=${res.transactionId || "-"} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} sawAuth=${res.sawAuthWire} ms=${Date.now() - t0}`,
+    `  result via=${res.via} pay=${res.paymentStatus} tx=${res.transactionId || "-"} checkoutSn=${res.checkoutSn} cartToken=${res.cartToken} blockers=${(res.blockers || []).join(",") || "-"} fail=${res.failedStep} sawAuth=${res.sawAuthWire} posts=${res.chargeReqCount ?? "-"} blockedBrowser=${res.browserIssuerBlocked ?? "-"} wallMs=${Date.now() - t0}`,
+  );
+  console.log(
+    `  TIMING total=${timing.totalSec ?? "?"}s gePath=${timing.gePathSec ?? "?"}s token=${timing.getCartTokenMs ?? "?"}ms v2=${timing.checkoutV2Ms ?? "?"}ms handle=${timing.handleActionMs ?? "?"}ms iovation=${timing.iovationMs ?? "?"}ms save=${timing.saveMs ?? "?"}ms cardForm=${timing.creditCardFormMs ?? "?"}ms issuer=${timing.issuerMs ?? "?"}ms`,
   );
   console.log(`  steps ${steps}`);
   for (const e of tl) {
@@ -158,13 +162,17 @@ for (let i = 0; i < maxTries; i++) {
       failedStep: res.failedStep,
       note: res.note,
       chargeReqCount: res.chargeReqCount,
+      browserIssuerBlocked: res.browserIssuerBlocked,
+      framesNeutralized: res.framesNeutralized,
       sawAuthWire: res.sawAuthWire,
       transactionId: res.transactionId,
+      timing: res.timing,
       redirectUrl: res.redirectUrl,
       redirectPayload: res.redirectPayload,
     },
     steps: res.steps,
     timeline: res.timeline,
+    timing: res.timing,
   };
   fs.writeFileSync("/tmp/bandai-ge-http-pool-result.json", JSON.stringify(out, null, 2));
   if (fs.existsSync("/tmp/bandai-ge-issuer-last.json")) {

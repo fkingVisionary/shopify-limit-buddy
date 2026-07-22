@@ -522,6 +522,117 @@ export function isBandaiGeRedirectDecline(redirectUrl, redirectSnippet = "") {
   return false;
 }
 
+/** Step/timeline → human timing for drop ops (seconds + ms). */
+export function buildBandaiGeTiming(timeline = [], steps = [], totalMs = 0) {
+  const at = (event) => {
+    const row = timeline.find((e) => e.event === event);
+    return row?.elapsedMs != null ? Number(row.elapsedMs) : null;
+  };
+  const stepMs = (name) => {
+    const row = steps.find((s) => s.step === name);
+    return row?.ms != null ? Number(row.ms) : null;
+  };
+  const sec = (ms) => (ms == null ? null : Math.round(ms / 100) / 10);
+  const issuerAt = at("ge_issuer_http");
+  const hydrateAt = at("ge_http_hydrate_done");
+  const cardAt = at("ge_credit_card_form");
+  const tokenAt = at("ge_get_cart_token");
+  return {
+    totalMs,
+    totalSec: sec(totalMs),
+    getCartTokenAtMs: tokenAt,
+    checkoutV2AtMs: at("ge_checkout_v2"),
+    hydrateDoneAtMs: hydrateAt,
+    creditCardFormAtMs: cardAt,
+    issuerAtMs: issuerAt,
+    getCartTokenMs: stepMs("ge_get_cart_token"),
+    checkoutV2Ms: stepMs("ge_checkout_v2"),
+    handleActionMs:
+      (stepMs("ge_handleaction_1") || 0) +
+      (stepMs("ge_handleaction_2") || 0) +
+      (stepMs("ge_handleaction_3") || 0) || null,
+    iovationMs: stepMs("ge_iovation_mint"),
+    saveMs: stepMs("ge_checkout_save"),
+    creditCardFormMs: stepMs("ge_credit_card_form"),
+    issuerMs: stepMs("ge_issuer_http"),
+    /** Full HTTP GE orchestrator wall (GetCartToken → issuer). */
+    gePathMs: totalMs || null,
+    gePathSec: null,
+    /** Login/ATC are outside this helper — lab reports wallMs separately. */
+    toIssuerFromTokenMs:
+      tokenAt != null && issuerAt != null
+        ? Math.max(0, issuerAt - (tokenAt - (stepMs("ge_get_cart_token") || 0)))
+        : null,
+  };
+}
+
+/**
+ * Block browser/iframe HandleCreditCard* so only our intentional undici/page
+ * issuer POST can hit the PSP (stops Revolut doubles from live GEM iframe).
+ */
+async function installBrowserIssuerBlock(page) {
+  const context = page?.context?.();
+  if (!context?.route) {
+    return { blocked: 0, unroute: async () => {} };
+  }
+  let blocked = 0;
+  const match = (url) => isBandaiGeIssuerPaymentUrl(url.href || String(url));
+  const handler = async (route) => {
+    const req = route.request();
+    if (req.method() !== "POST" || !isBandaiGeIssuerPaymentUrl(req.url())) {
+      await route.continue();
+      return;
+    }
+    blocked += 1;
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        j1m: "browser_issuer_blocked",
+        suppressed: true,
+        n: blocked,
+      }),
+    });
+  };
+  await context.route(match, handler);
+  return {
+    get blocked() {
+      return blocked;
+    },
+    unroute: async () => {
+      try {
+        await context.unroute(match, handler);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
+
+/** Kill live CreditCardForm iframes so GEM JS cannot race our issuer POST. */
+async function neutralizeGePaymentFrames(page) {
+  if (!page?.evaluate) return 0;
+  try {
+    return await page.evaluate(() => {
+      let n = 0;
+      for (const f of Array.from(document.querySelectorAll("iframe"))) {
+        const src = String(f.src || f.getAttribute("src") || "");
+        if (/CreditCardForm|secure-bandai|HandleCreditCard|global-e\.com\/payments/i.test(src)) {
+          try {
+            f.src = "about:blank";
+            n += 1;
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      return n;
+    });
+  } catch {
+    return 0;
+  }
+}
+
 /**
  * machineId = iovation RED blackbox (#ioBlackBox) from snare.js on Checkout/v2.
  * Not the GE Pay UI — only fingerprint mint. Prefer reusing the F5 bridge page.
@@ -1214,6 +1325,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   }
 
+  // Block browser/iframe issuer for the whole hydrate→pay window (single undici POST).
+  let browserIssuerBlock = { blocked: 0, unroute: async () => {} };
+  if (issuerPage) {
+    browserIssuerBlock = await installBrowserIssuerBlock(issuerPage);
+    mark("ge_browser_issuer_block_on", { ok: true });
+  }
+
   // Keep Playwright on Checkout/v2 after iovation. Top-level goto(CreditCardForm)
   // replaces the GE parent session → IsTheSameCartToken=False / DataCorruption.
   // Browser keeps Checkout/v2 with a secure-bandai iframe for the card form.
@@ -1508,10 +1626,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
   });
 
   if (stopBeforeIssuer || (blockers.length && !forceIssuer)) {
+    const elapsedMs = Date.now() - t0;
+    const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+    timing.gePathSec = timing.gePathMs != null ? Math.round(timing.gePathMs / 100) / 10 : null;
+    await browserIssuerBlock.unroute();
     return {
       ok: false,
       steps,
       timeline,
+      timing,
       failedStep: blockers[0] || "ge_http_stop",
       error: blockers.length ? `http_ge_blockers:${blockers.join(",")}` : "stop_before_issuer",
       paymentStatus: "http_ge_hydrated",
@@ -1521,9 +1644,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
       blockers,
       urlStructureToken: Boolean(urlStructureToken),
       machineId: Boolean(machineId),
+      browserIssuerBlocked: Number(browserIssuerBlock.blocked || 0),
       via: "http-ge",
-      elapsedMs: Date.now() - t0,
-      note: `HTTP GE hydrated guid=${guid}; blockers=${blockers.join(",") || "none"}`,
+      elapsedMs,
+      note: `HTTP GE hydrated guid=${guid}; blockers=${blockers.join(",") || "none"} total=${timing.totalSec}s`,
     };
   }
 
@@ -1540,44 +1664,63 @@ export async function runBandaiGeHttpPay(opts = {}) {
     gatewayId,
     paymentMethodId,
   });
-  // Prefer Playwright request (same cookie jar as CreditCardForm page).
-  // Do not discard a page ReloadBehaviour result in favor of undici — both fail
-  // the same way; keeping via=page makes the session path honest in logs.
-  let issuer =
-    issuerPage && opts.preferHttpIssuer !== true
-      ? await postBandaiGeIssuerViaPage({
-          page: issuerPage,
-          url: issuerUrl,
-          body,
-          referer: ccUrl,
-        })
-      : null;
-  if (
-    !issuer ||
-    (!issuer.isPaymentRedirect &&
-      (issuer.error === "issuer_page_failed" ||
-        issuer.error === "issuer_page_no_redirect"))
-  ) {
-    const httpIssuer = await postBandaiGeIssuerHttp({
-      url: issuerUrl,
-      body,
-      ctx,
-      userAgent: opts.userAgent,
-      referer: ccUrl,
-    });
-    if (!issuer || (!issuer.isPaymentRedirect && httpIssuer.isPaymentRedirect)) {
-      issuer = httpIssuer;
+
+  // Hard-lock single issuer POST (Revolut doubles = iframe + page/undici race).
+  // Default: undici only after cookie sync. Browser HandleCreditCard* blocked.
+  // Opt-in page issuer: preferPageIssuer=true (never falls back to a 2nd POST).
+  let framesNeutralized = 0;
+  let issuerPostCount = 0;
+  let issuer = null;
+  try {
+    if (issuerPage) {
+      framesNeutralized = await neutralizeGePaymentFrames(issuerPage);
+      // Final cookie sync after scrape / frame kill.
+      try {
+        const pageCookies = await cookiesFromPage(issuerPage);
+        if (pageCookies && ctx?.jar?.load) {
+          ctx.jar.load({ ...ctx.jar.dump(), ...pageCookies });
+        }
+      } catch {
+        /* ignore */
+      }
+      mark("ge_issuer_lock", {
+        framesNeutralized,
+        browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
+        preferPageIssuer: opts.preferPageIssuer === true,
+      });
     }
+
+    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
+    issuerPostCount = 1;
+    if (usePageIssuer) {
+      // Page APIRequestContext bypasses page.route in some Playwright builds —
+      // context.route (installBrowserIssuerBlock) still sees browser-frame POSTs.
+      // Our intentional page.request POST is allowed by fulfilling only routed
+      // page/frame requests; APIRequestContext is separate and not routed.
+      // To be safe: do NOT use page issuer while block is on if route catches it.
+      // preferPageIssuer temporarily unroutes, posts once, re-blocks — still one POST.
+      await browserIssuerBlock.unroute();
+      issuer = await postBandaiGeIssuerViaPage({
+        page: issuerPage,
+        url: issuerUrl,
+        body,
+        referer: ccUrl,
+      });
+    } else {
+      issuer = await postBandaiGeIssuerHttp({
+        url: issuerUrl,
+        body,
+        ctx,
+        userAgent: opts.userAgent,
+        referer: ccUrl,
+      });
+    }
+  } finally {
+    await browserIssuerBlock.unroute();
   }
-  if (!issuer) {
-    issuer = await postBandaiGeIssuerHttp({
-      url: issuerUrl,
-      body,
-      ctx,
-      userAgent: opts.userAgent,
-      referer: ccUrl,
-    });
-  }
+
+  const browserBlocked = Number(browserIssuerBlock.blocked || 0);
+  const chargeReqCount = issuerPostCount; // intentional wire POSTs only
 
   try {
     fs.writeFileSync(
@@ -1586,19 +1729,23 @@ export async function runBandaiGeHttpPay(opts = {}) {
         {
           at: new Date().toISOString(),
           issuerUrl,
-          status: issuer.status,
-          ok: issuer.ok,
-          reloadOnly: issuer.reloadOnly,
-          bankSignal: issuer.bankSignal,
-          redirectUrl: issuer.redirectUrlFull || issuer.redirectUrl,
-          redirectPayload: issuer.redirectPayload,
-          redirectSnippet: issuer.redirectSnippet,
-          bodySnippet: issuer.bodySnippet,
-          error: issuer.error,
+          status: issuer?.status,
+          ok: issuer?.ok,
+          reloadOnly: issuer?.reloadOnly,
+          bankSignal: issuer?.bankSignal,
+          redirectUrl: issuer?.redirectUrlFull || issuer?.redirectUrl,
+          redirectPayload: issuer?.redirectPayload,
+          redirectSnippet: issuer?.redirectSnippet,
+          bodySnippet: issuer?.bodySnippet,
+          error: issuer?.error,
+          via: issuer?.via,
           gatewayId,
           paymentMethodId,
           shippingMethodId,
           hydrateShippingOk,
+          issuerPostCount,
+          browserIssuerBlocked: browserBlocked,
+          framesNeutralized,
         },
         null,
         2,
@@ -1608,18 +1755,32 @@ export async function runBandaiGeHttpPay(opts = {}) {
     /* ignore */
   }
 
-  const declineOnRedirect = Boolean(issuer.declineOnRedirect);
+  const declineOnRedirect = Boolean(issuer?.declineOnRedirect);
+  // Non-zero TransactionId always counts as bank (even if GE also sets IsTheSameCartToken=False).
+  const txMap = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");
+  const transactionId =
+    txMap.TransactionId && txMap.TransactionId !== "0"
+      ? txMap.TransactionId
+      : txMap.MerchantReference && txMap.MerchantReference !== "0"
+        ? txMap.MerchantReference
+        : null;
+  const bankHit = Boolean(
+    issuer?.sawAuthWire ||
+      declineOnRedirect ||
+      issuer?.bankSignal ||
+      transactionId,
+  );
   push("ge_issuer_http", {
-    ok: issuer.ok,
-    status: issuer.status,
-    ms: issuer.ms,
+    ok: Boolean(issuer?.ok || (bankHit && declineOnRedirect) || (bankHit && transactionId)),
+    status: issuer?.status,
+    ms: issuer?.ms,
     note: (
-      issuer.reloadOnly
+      issuer?.reloadOnly && !bankHit
         ? `RELOAD_ONLY ${issuer.status} err=${
             Array.isArray(issuer.redirectPayload)
               ? issuer.redirectPayload
                   .filter((x) =>
-                    /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId/i.test(
+                    /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId|TransactionStatusType/i.test(
                       String(x?.Key || ""),
                     ),
                   )
@@ -1627,49 +1788,61 @@ export async function runBandaiGeHttpPay(opts = {}) {
                   .join(";")
               : ""
           }`
-        : issuer.redirectUrl
-          ? `redirect ${issuer.status} via=${issuer.via || "http"} bank=${issuer.bankSignal} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
-          : issuer.bodySnippet || issuer.error || ""
+        : issuer?.redirectUrl || bankHit
+          ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} posts=${issuerPostCount} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
+          : issuer?.bodySnippet || issuer?.error || "issuer_null"
     ).slice(0, 280),
   });
 
-  const paymentStatus = declineOnRedirect
+  const paymentStatus = declineOnRedirect || (bankHit && /Auth|Decline|Fail/i.test(txMap.TransactionStatusType || ""))
     ? "declined_or_auth_failed"
-    : !issuer.ok
-      ? issuer.reloadOnly
-        ? "ge_reload_only_no_bank"
-        : "issuer_http_failed"
-      : "pay_submitted_http";
-  const orderOk = Boolean(issuer.ok && !declineOnRedirect);
+    : bankHit && issuer?.ok
+      ? "pay_submitted_http"
+      : bankHit && transactionId
+        ? "declined_or_auth_failed"
+        : !issuer?.ok
+          ? issuer?.reloadOnly
+            ? "ge_reload_only_no_bank"
+            : "issuer_http_failed"
+          : "pay_submitted_http";
+  const orderOk = Boolean(issuer?.ok && !declineOnRedirect && paymentStatus === "pay_submitted_http");
+  const elapsedMs = Date.now() - t0;
+  const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+  timing.gePathSec = timing.gePathMs != null ? Math.round(timing.gePathMs / 100) / 10 : null;
+  mark("ge_timing", timing);
+
   return {
     ok: orderOk,
     steps,
     timeline,
-    failedStep: orderOk ? null : declineOnRedirect ? null : "ge_issuer_http",
-    error: orderOk || declineOnRedirect ? null : issuer.error || issuer.bodySnippet,
+    timing,
+    failedStep: orderOk || paymentStatus === "declined_or_auth_failed" ? null : "ge_issuer_http",
+    error:
+      orderOk || paymentStatus === "declined_or_auth_failed"
+        ? null
+        : issuer?.error || issuer?.bodySnippet,
     paymentStatus,
-    checkoutStage: declineOnRedirect ? "declined" : "tokenize",
+    checkoutStage:
+      paymentStatus === "declined_or_auth_failed" ? "declined" : "tokenize",
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
-    chargeReqCount: 1,
-    sawAuthWire: Boolean(issuer.sawAuthWire || declineOnRedirect),
+    chargeReqCount,
+    browserIssuerBlocked: browserBlocked,
+    framesNeutralized,
+    sawAuthWire: Boolean(bankHit),
     blockers,
-    redirectUrl: issuer.redirectUrl || null,
-    redirectPayload: issuer.redirectPayload || null,
-    transactionId: (() => {
-      const map = mapCcPaymentRedirect(issuer.redirectPayload || issuer.redirectUrlFull || "");
-      const id = map.TransactionId || map.MerchantReference || null;
-      return id && id !== "0" ? id : null;
-    })(),
-    via: issuer.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
-    elapsedMs: Date.now() - t0,
-    note: declineOnRedirect
-      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${mapCcPaymentRedirect(issuer.redirectPayload || "").TransactionId || "?"} via=${issuer.via} guid=${guid}`
-      : issuer.ok
-        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} via=${issuer.via} guid=${guid}`
-        : issuer.reloadOnly
-          ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid}`
-          : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
+    redirectUrl: issuer?.redirectUrl || null,
+    redirectPayload: issuer?.redirectPayload || null,
+    transactionId,
+    via: issuer?.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
+    elapsedMs,
+    note: paymentStatus === "declined_or_auth_failed"
+      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} via=${issuer?.via} posts=${issuerPostCount} blockedBrowser=${browserBlocked} guid=${guid} total=${timing.totalSec}s`
+      : issuer?.ok
+        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} via=${issuer.via} posts=${issuerPostCount} blockedBrowser=${browserBlocked} guid=${guid} total=${timing.totalSec}s`
+        : issuer?.reloadOnly
+          ? `HTTP issuer ReloadBehaviour only (no Revolut) via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
+          : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
   };
 }
 
@@ -1697,6 +1870,7 @@ export default {
   postBandaiGeIssuerViaPage,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
+  buildBandaiGeTiming,
   BANDAI_GE_MID,
   BANDAI_GE_ENCODED_MERCHANT,
 };
