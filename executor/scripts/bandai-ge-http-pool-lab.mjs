@@ -131,13 +131,20 @@ for (let i = 0; i < maxTries; i++) {
     via: res.via,
   });
 
-  const hit =
-    Boolean(res.cartToken) ||
+  const bankHit =
     res.paymentStatus === "pay_submitted_http" ||
     res.paymentStatus === "declined_or_auth_failed" ||
+    Boolean(res.sawAuthWire);
+  // Hydrate progress ≠ bank. ReloadBehaviour-only must not stop the pool.
+  const progress =
+    Boolean(res.cartToken) ||
     res.paymentStatus === "http_ge_hydrated" ||
-    res.sawAuthWire ||
-    (res.steps || []).some((s) => s.step === "ge_iovation_mint" || s.step === "ge_issuer_http");
+    (res.steps || []).some(
+      (s) =>
+        (s.step === "ge_handleaction_1" && s.ok) ||
+        s.step === "ge_iovation_mint" ||
+        s.step === "ge_issuer_http",
+    );
 
   const out = {
     proxyIdx: idx,
@@ -153,21 +160,27 @@ for (let i = 0; i < maxTries; i++) {
       chargeReqCount: res.chargeReqCount,
       sawAuthWire: res.sawAuthWire,
       redirectUrl: res.redirectUrl,
+      redirectPayload: res.redirectPayload,
     },
     steps: res.steps,
     timeline: res.timeline,
   };
   fs.writeFileSync("/tmp/bandai-ge-http-pool-result.json", JSON.stringify(out, null, 2));
-  if (hit) {
+  if (fs.existsSync("/tmp/bandai-ge-issuer-last.json")) {
+    console.log(
+      "  issuer-last",
+      fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8").replace(/\s+/g, " ").slice(0, 280),
+    );
+  }
+  if (bankHit || progress) {
     best = out;
-    console.log(`\n[${aest()} AEST] HTTP_GE_HIT session=${tag} — check bank if issuer fired`);
-    if (
-      res.paymentStatus === "pay_submitted_http" ||
-      res.paymentStatus === "declined_or_auth_failed" ||
-      res.sawAuthWire
-    ) {
+    if (bankHit) {
+      console.log(`\n[${aest()} AEST] HTTP_GE_BANK session=${tag} pay=${res.paymentStatus} — check Revolut`);
       break;
     }
+    console.log(
+      `\n[${aest()} AEST] HTTP_GE_PROGRESS session=${tag} pay=${res.paymentStatus} blockers=${(res.blockers || []).join(",") || "-"}`,
+    );
     if (process.env.BANDAI_STOP_ON_HYDRATE === "1") break;
   }
 }

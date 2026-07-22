@@ -213,10 +213,258 @@ export function extractMachineId(html) {
   return null;
 }
 
+/** Read input/select value from Checkout/v2 HTML. */
+export function htmlFormValue(html, name) {
+  const h = String(html || "");
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // <select name="…">…<option selected value="49181"> — state IDs live here.
+  const selectRe = new RegExp(
+    `<(?:select)[^>]*\\bname=["']${esc}["'][^>]*>([\\s\\S]*?)</select>`,
+    "i",
+  );
+  const selectBody = h.match(selectRe)?.[1];
+  if (selectBody != null) {
+    const selected =
+      selectBody.match(
+        /<option[^>]*\bselected\b[^>]*\bvalue=["']([^"']*)["']/i,
+      ) ||
+      selectBody.match(
+        /<option[^>]*\bvalue=["']([^"']*)["'][^>]*\bselected\b/i,
+      );
+    if (selected) return selected[1];
+  }
+  const patterns = [
+    new RegExp(`name=["']${esc}["'][^>]*value=["']([^"']*)["']`, "i"),
+    new RegExp(`value=["']([^"']*)["'][^>]*name=["']${esc}["']`, "i"),
+    // radio checked
+    new RegExp(
+      `name=["']${esc}["'][^>]*\\bchecked\\b[^>]*value=["']([^"']*)["']`,
+      "i",
+    ),
+    new RegExp(
+      `value=["']([^"']*)["'][^>]*name=["']${esc}["'][^>]*\\bchecked\\b`,
+      "i",
+    ),
+  ];
+  for (const re of patterns) {
+    const m = h.match(re);
+    if (m) return m[1];
+  }
+  return "";
+}
+
+function geAddressFromForm(v, prefix, countryId) {
+  const phoneNational = v(`CheckoutData.${prefix}Address.PhoneNational`);
+  const phone = v(`CheckoutData.${prefix}Phone`) || phoneNational;
+  const stateRaw = v(`CheckoutData.${prefix}StateID`);
+  return {
+    Address1: v(`CheckoutData.${prefix}Address1`),
+    Address2: v(`CheckoutData.${prefix}Address2`) || "",
+    City: v(`CheckoutData.${prefix}City`),
+    Zip: v(`CheckoutData.${prefix}ZIP`) || v(`CheckoutData.${prefix}Zip`),
+    StateId: stateRaw || null,
+    CountryId: countryId,
+    Email: v("CheckoutData.Email") || v(`CheckoutData.${prefix}Email`),
+    FirstName: v(`CheckoutData.${prefix}FirstName`),
+    LastName: v(`CheckoutData.${prefix}LastName`),
+    Phone: phone,
+    PhonePrefix: v(`CheckoutData.${prefix}PhonePrefix`) || "",
+    PhonePrefixCountryId: Number(
+      v(`CheckoutData.${prefix}PhonePrefixCountryId`) || countryId || 14,
+    ),
+  };
+}
+
+/** Address + culture scraped from Checkout/v2 HTML for handleaction bodies. */
+export function parseCheckoutV2Form(html) {
+  const v = (name) => htmlFormValue(html, name);
+  const countryId = Number(v("CheckoutData.ShippingCountryID") || v("ShippingCountryID") || 14);
+  const shipping = geAddressFromForm(v, "Shipping", countryId);
+  const billingCountryId = Number(v("CheckoutData.BillingCountryID") || countryId);
+  const billing = geAddressFromForm(v, "Billing", billingCountryId);
+  // ShippingSameAsBilling → billing fields may mirror shipping.
+  for (const k of Object.keys(shipping)) {
+    if (billing[k] == null || billing[k] === "") billing[k] = shipping[k];
+  }
+  const cultureFromInput = v("CheckoutData.CultureID");
+  const cultureMatch = String(html || "").match(/cultureID\s*:\s*["']?(\d+)/i);
+  const shippingType =
+    v("CheckoutData.ShippingType") ||
+    (String(html || "").match(
+      /name=["']CheckoutData\.ShippingType["'][^>]*value=["']([^"']+)["'][^>]*checked/i,
+    ) ||
+      String(html || "").match(
+        /value=["'](ShippingSameAsBilling|ShippingDifferent)["'][^>]*name=["']CheckoutData\.ShippingType["'][^>]*checked/i,
+      ) ||
+      [])[1] ||
+    "ShippingSameAsBilling";
+  return {
+    countryId,
+    cultureId: Number(cultureFromInput || cultureMatch?.[1] || 2057),
+    merchantId: BANDAI_GE_MID,
+    shipping,
+    billing,
+    email: shipping.Email || billing.Email,
+    shippingType,
+    selectedShippingOptionId: v("CheckoutData.SelectedShippingOptionID") || "",
+    selectedPaymentMethodId: v("CheckoutData.SelectedPaymentMethodID") || "1",
+    selectedTaxOption: v("CheckoutData.SelectedTaxOption") || "",
+    gatewayId: v("CheckoutData.CurrentPaymentGayewayID") || v("PaymentData.gatewayId") || "2",
+    hasAddress: Boolean(shipping.Address1 && shipping.City && shipping.Zip),
+  };
+}
+
+/**
+ * GEM CheckoutManagerV2 HandleAction bodies (cv2bot.js).
+ * Action enum: ShippingOptions=1, TaxOptions=2, Totals=3.
+ */
+export function buildHandleActionBodies(form, opts = {}) {
+  const merchantId = Number(opts.merchantId || form.merchantId || BANDAI_GE_MID);
+  const countryId = Number(opts.countryId || form.countryId || 14);
+  const cultureId = Number(opts.cultureId || form.cultureId || 2057);
+  const token = String(opts.cartToken || opts.token || "");
+  const shippingMethodId =
+    opts.shippingMethodId != null && opts.shippingMethodId !== ""
+      ? opts.shippingMethodId
+      : form.selectedShippingOptionId || "";
+  const shipping = form.shipping || {};
+  const billing = form.billing || shipping;
+  const billingSame =
+    opts.billingSameAsShipping != null
+      ? Boolean(opts.billingSameAsShipping)
+      : /SameAsBilling/i.test(String(form.shippingType || ""));
+
+  const shippingOptions = {
+    Action: 1,
+    Token: token,
+    MerchantId: merchantId,
+    ShippingCountryID: countryId,
+    ShippingMethodID: shippingMethodId || null,
+    CultureID: cultureId,
+    BillingData: billing,
+    ShippingData: shipping,
+    StoreID: 0,
+    IsCollectionPoints: false,
+    IsStoreCollection: false,
+    BillingSameAsShipping: billingSame,
+    ShippingType: form.shippingType || "ShippingSameAsBilling",
+  };
+  const taxOptions = {
+    Action: 2,
+    Token: token,
+    MerchantId: merchantId,
+    ShippingCountryID: countryId,
+    CountryID: countryId,
+    ShippingMethodID: shippingMethodId || 0,
+    ForceDDPType: opts.forceDDPType ?? null,
+    StateID: shipping.StateId || null,
+    IsSameDayDispatchChecked: false,
+    SelectedPaymentMethodID: String(
+      opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+    ),
+    TaxCalculationAddress: shipping,
+  };
+  const totals = {
+    Action: 3,
+    Token: token,
+    MerchantId: merchantId,
+    ShippingMethodID: shippingMethodId || null,
+    TaxOption: opts.taxOption || form.selectedTaxOption || null,
+    IsSameDayDispatchChecked: false,
+    SelectedPaymentMethodID: String(
+      opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+    ),
+    ShippingCountryID: countryId,
+  };
+  return { 1: shippingOptions, 2: taxOptions, 3: totals };
+}
+
+/** Pick cheapest / default shipping option id from ShippingOptions JSON. */
+export function pickShippingMethodId(shippingJson) {
+  const options =
+    shippingJson?.shippingOptions ||
+    shippingJson?.ShippingOptions ||
+    (Array.isArray(shippingJson?.Data) ? shippingJson.Data : null) ||
+    [];
+  if (!Array.isArray(options) || !options.length) return "";
+  const withId = options.filter((o) => o && (o.ID != null || o.Id != null || o.id != null));
+  if (!withId.length) return "";
+  const cheapest = withId.reduce((acc, curr) => {
+    const a = Number(acc.RegularPrice ?? acc.Price ?? Infinity);
+    const b = Number(curr.RegularPrice ?? curr.Price ?? Infinity);
+    return b < a ? curr : acc;
+  });
+  const preferred =
+    withId.find((o) => o.IsDefault || o.isDefault) ||
+    withId.find((o) => /express/i.test(String(o.Description || o.Name || ""))) ||
+    cheapest;
+  return String(preferred.ID ?? preferred.Id ?? preferred.id ?? "");
+}
+
+export function decodeCcPaymentRedirectData(urlOrJwt) {
+  const s = String(urlOrJwt || "");
+  const m = s.match(/(?:Data=)?(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    const payload = m[1].split(".")[1];
+    const pad = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    const json = JSON.parse(Buffer.from(pad.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"));
+    return json;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Revolut-silent 302s were ReloadBehaviour (+ optional finalizeProcess) only —
+ * NOT a bank hit. Require a stronger payment signal in the redirect JWT / HTML.
+ */
+export function isBandaiGePaymentRedirectSignal(redirectUrl, redirectSnippet = "") {
+  const data = decodeCcPaymentRedirectData(redirectUrl);
+  const keys = Array.isArray(data)
+    ? data.map((x) => String(x?.Key || x?.key || "")).filter(Boolean)
+    : [];
+  const weakOnly =
+    keys.length > 0 &&
+    keys.every((k) => /^(ReloadBehaviour|finalizeProcess)$/i.test(k));
+  if (weakOnly) return false;
+
+  const blob = `${JSON.stringify(data || {})} ${redirectSnippet}`;
+  if (
+    /ReloadBehaviour/i.test(blob) &&
+    !/\b(TransactionStatus|PaymentId|ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult|IsSuccess)\b/i.test(
+      blob,
+    )
+  ) {
+    return false;
+  }
+  return /\b(TransactionStatus|PaymentId|ThreeDS|3DS|CReq|ACS|Decline|Declined|OrderId|AuthResult|IsSuccess)\b/i.test(
+    blob,
+  );
+}
+
 /**
  * machineId = iovation RED blackbox (#ioBlackBox) from snare.js on Checkout/v2.
  * Not the GE Pay UI — only fingerprint mint. Prefer reusing the F5 bridge page.
  */
+async function cookiesFromPage(page) {
+  if (!page?.context) return {};
+  try {
+    const arr = await page.context().cookies();
+    const out = {};
+    for (const c of arr || []) {
+      if (!c?.name) continue;
+      const host = String(c.domain || "");
+      if (/global-e\.com|p-bandai\.com|bandai/i.test(host)) {
+        out[c.name] = c.value;
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 export async function mintIovationBlackbox(opts = {}) {
   const page = opts.page;
   const url = opts.checkoutV2Url;
@@ -239,7 +487,13 @@ export async function mintIovationBlackbox(opts = {}) {
       { timeout: timeoutMs },
     );
     const value = await machineId.jsonValue();
-    return { ok: Boolean(value), machineId: value, ms: Date.now() - t0 };
+    const cookies = await cookiesFromPage(page);
+    return {
+      ok: Boolean(value),
+      machineId: value,
+      ms: Date.now() - t0,
+      cookies,
+    };
   } catch (e) {
     let fallback = null;
     try {
@@ -250,11 +504,13 @@ export async function mintIovationBlackbox(opts = {}) {
     } catch {
       /* ignore */
     }
+    const cookies = await cookiesFromPage(page);
     return {
       ok: Boolean(fallback && fallback.length > 40),
       machineId: fallback || null,
       ms: Date.now() - t0,
       error: e?.message || "iovation_mint_failed",
+      cookies,
     };
   }
 }
@@ -297,8 +553,8 @@ export function buildIssuerFormBody(opts = {}) {
 
 /**
  * POST HandleCreditCardRequestV2 via undici (optional ctx jar/proxy).
- * Wire often returns 302 → CCPaymentRedirect?Data=JWT (ASP.NET post-redirect).
- * That IS the auth handoff — not a failure.
+ * Wire often returns 302 → CCPaymentRedirect?Data=JWT.
+ * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
  */
 export async function postBandaiGeIssuerHttp(opts = {}) {
   const url = String(opts.url || "");
@@ -315,7 +571,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
   }
 
   const headers = {
-    accept: "text/html,application/xhtml+xml,application/json,*/ *",
+    accept: "text/html,application/xhtml+xml,application/json,*/*",
     "content-type":
       opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
     origin: BANDAI_GE_SECURE,
@@ -323,8 +579,6 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     "user-agent": opts.userAgent || DEFAULT_UA,
     ...(opts.headers || {}),
   };
-  // typo fix accept
-  headers.accept = "text/html,application/xhtml+xml,application/json,*/*";
   const cookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
   if (cookie) headers.cookie = cookie;
 
@@ -356,15 +610,14 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
     ) || [])[1];
     const redirectUrl = locHeader || locHtml || null;
+    const redirectUrlFull = redirectUrl ? String(redirectUrl) : null;
     const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
-    // 2xx JSON or 3xx/200 HTML redirect into CCPaymentRedirect = issuer accepted.
-    const ok =
-      (res.status >= 200 && res.status < 300 && !/Object moved/i.test(text)) ||
-      ((res.status === 302 || res.status === 301 || res.status === 303 || res.status === 200) &&
-        isPaymentRedirect);
+    const redirectPayload = isPaymentRedirect
+      ? decodeCcPaymentRedirectData(redirectUrlFull)
+      : null;
 
     let redirectSnippet = null;
-    if (ok && isPaymentRedirect && redirectUrl && opts.followRedirect !== false) {
+    if (isPaymentRedirect && redirectUrl && opts.followRedirect !== false) {
       try {
         const abs = /^https?:\/\//i.test(redirectUrl)
           ? redirectUrl
@@ -385,21 +638,51 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
         const ftext = await followed.text();
         redirectSnippet = String(ftext || "").replace(/\s+/g, " ").slice(0, 280);
       } catch {
-        /* ignore follow errors — redirect itself proves wire */
+        /* ignore follow errors */
       }
     }
+
+    const bankSignal = isBandaiGePaymentRedirectSignal(
+      redirectUrlFull || "",
+      redirectSnippet || "",
+    );
+    const declineOnRedirect =
+      redirectSnippet &&
+      /\b(?:declined|decline|insufficient|not authorised|not authorized|failed)\b/i.test(
+        redirectSnippet,
+      );
+    // Direct 2xx JSON with payment fields also counts; bare ReloadBehaviour does not.
+    const jsonOk =
+      res.status >= 200 &&
+      res.status < 300 &&
+      !/Object moved/i.test(text) &&
+      Boolean(json) &&
+      /\b(Transaction|Payment|Order|Auth|3ds|Decline)\b/i.test(JSON.stringify(json));
+    const ok =
+      jsonOk ||
+      (isPaymentRedirect && (bankSignal || declineOnRedirect));
 
     return {
       ok,
       status: res.status,
       ms,
       bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
-      redirectUrl: redirectUrl ? String(redirectUrl).slice(0, 220) : null,
+      redirectUrl: redirectUrlFull ? redirectUrlFull.slice(0, 320) : null,
+      redirectUrlFull,
       redirectSnippet,
+      redirectPayload,
       isPaymentRedirect,
+      reloadOnly: Boolean(isPaymentRedirect && !bankSignal && !declineOnRedirect),
+      bankSignal: Boolean(bankSignal || declineOnRedirect),
+      declineOnRedirect: Boolean(declineOnRedirect),
       json,
-      sawAuthWire: ok,
+      sawAuthWire: Boolean(ok && (bankSignal || declineOnRedirect || jsonOk)),
       via: "http-ge-issuer",
+      error: ok
+        ? null
+        : isPaymentRedirect
+          ? "ge_reload_only_no_bank"
+          : "issuer_http_failed",
     };
   } catch (e) {
     return {
@@ -579,8 +862,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
     note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} bytes=${(v2.text || "").length}`,
   });
 
-  // Hydrate shipping / duties / summary (browser does this before Pay).
+  // Hydrate shipping / tax / totals with real GEM Action+Token bodies.
+  // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
+  const form = parseCheckoutV2Form(v2.text);
+  let shippingMethodId = form.selectedShippingOptionId || "";
+  let hydrateShippingOk = false;
   for (const actionId of [1, 2, 3]) {
+    const bodies = buildHandleActionBodies(form, {
+      cartToken: guid,
+      shippingMethodId,
+      // Totals/Tax use UI payment method; issuer POST still uses wire-proven ids.
+      paymentMethodId: form.selectedPaymentMethodId || "1",
+    });
     const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
     const ha = await httpText(haUrl, {
       ctx,
@@ -590,21 +883,47 @@ export async function runBandaiGeHttpPay(opts = {}) {
       headers: {
         origin: BANDAI_GE_WEBSERVICES,
         referer: v2Url,
-        "content-type": "application/json;charset=UTF-8",
+        "content-type": "application/json",
         "x-requested-with": "XMLHttpRequest",
+        "X-merchantId": String(mid),
       },
-      body: opts.handleActionBodies?.[actionId] || "{}",
+      body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
     });
+    let haJson = null;
+    try {
+      haJson = JSON.parse(String(ha.text || ""));
+    } catch {
+      haJson = null;
+    }
+    if (actionId === 1) {
+      const picked = pickShippingMethodId(haJson);
+      if (picked) shippingMethodId = picked;
+      hydrateShippingOk = Boolean(
+        ha.ok &&
+          (haJson?.success === true ||
+            haJson?.Success === true ||
+            haJson?.exists === true ||
+            (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
+      );
+    }
     if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
     push(`ge_handleaction_${actionId}`, {
-      ok: ha.ok,
+      ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
       status: ha.status,
       ms: ha.ms,
-      note: String(ha.text || "").replace(/\s+/g, " ").slice(0, 160),
+      note: (
+        actionId === 1
+          ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} addr=${form.hasAddress} state=${form.shipping?.StateId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
+          : String(ha.text || "").replace(/\s+/g, " ")
+      ).slice(0, 200),
     });
   }
 
-  const ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${opts.paymentMethodId || 2}`;
+  // Wire-proven Revolut issuer used gatewayId=2 + paymentMethodId=2.
+  // CreditCardForm HTML often shows pm=1; prefer proven ids unless overridden.
+  const paymentMethodId = String(opts.paymentMethodId || "2");
+  const gatewayId = String(opts.gatewayId || form.gatewayId || "2");
+  const ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
   const cc = await httpText(ccUrl, {
     ctx,
     userAgent: opts.userAgent,
@@ -613,18 +932,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
   });
   if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(cc.text);
   if (!machineId) machineId = extractMachineId(cc.text);
-  // CreditCardForm wire uses paymentMethodId=1 (hidden); issuer capture used 2.
-  let paymentMethodId = opts.paymentMethodId || null;
-  const pmMatch = String(cc.text || "").match(
-    /name=["']PaymentData\.paymentMethodId["'][^>]*value=["'](\d+)["']/i,
-  );
-  if (!paymentMethodId && pmMatch) paymentMethodId = pmMatch[1];
-  if (!paymentMethodId) paymentMethodId = "2";
   push("ge_credit_card_form", {
     ok: cc.ok,
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} pm=${paymentMethodId} bytes=${(cc.text || "").length}`,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
   });
 
   // iovation snare.js fills #ioBlackBox on Checkout/v2 — needs a real DOM.
@@ -640,10 +952,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length}`
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} cookies=${Object.keys(mint.cookies || {}).length}`
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) machineId = mint.machineId;
+    // Bridge cookies (GE session) must ride the undici issuer POST.
+    if (mint.cookies && ctx?.jar?.load) {
+      try {
+        ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   try {
@@ -662,6 +982,16 @@ export async function runBandaiGeHttpPay(opts = {}) {
           machineIdPresent: Boolean(machineId),
           machineIdBytes: machineId ? String(machineId).length : 0,
           paymentMethodId,
+          gatewayId,
+          shippingMethodId: shippingMethodId || null,
+          hydrateShippingOk,
+          form: {
+            hasAddress: form.hasAddress,
+            countryId: form.countryId,
+            stateId: form.shipping?.StateId || null,
+            zip: form.shipping?.Zip || null,
+            shippingType: form.shippingType,
+          },
         },
         null,
         2,
@@ -675,12 +1005,16 @@ export async function runBandaiGeHttpPay(opts = {}) {
   if (!urlStructureToken) blockers.push("urlStructureToken");
   if (!machineId) blockers.push("machineId");
   if (!card?.number || !card?.cvv) blockers.push("card");
+  if (!hydrateShippingOk) blockers.push("hydrate_shipping");
+  if (!form.hasAddress) blockers.push("checkout_address");
 
   mark("ge_http_hydrate_done", {
     guid,
     blockers,
     urlStructureToken: Boolean(urlStructureToken),
     machineId: Boolean(machineId),
+    hydrateShippingOk,
+    shippingMethodId: shippingMethodId || null,
   });
 
   if (stopBeforeIssuer || (blockers.length && !forceIssuer)) {
@@ -711,9 +1045,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
     headers: {
       origin: BANDAI_GE_WEBSERVICES,
       referer: v2Url,
-      "content-type": "application/json;charset=UTF-8",
+      "content-type": "application/json",
+      "X-merchantId": String(mid),
     },
-    body: "{}",
+    body: JSON.stringify({
+      Action: "Save",
+      Token: guid,
+      MerchantId: Number(mid),
+    }),
   }).catch(() => null);
 
   const issuerUrl =
@@ -724,7 +1063,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     cartToken: guid,
     machineId,
     urlStructureToken,
-    gatewayId: opts.gatewayId,
+    gatewayId,
     paymentMethodId,
   });
   const issuer = await postBandaiGeIssuerHttp({
@@ -734,29 +1073,57 @@ export async function runBandaiGeHttpPay(opts = {}) {
     userAgent: opts.userAgent,
     referer: ccUrl,
   });
-  const declineOnRedirect =
-    issuer.redirectSnippet &&
-    /\b(?:declined|decline|insufficient|not authorised|not authorized|failed)\b/i.test(
-      issuer.redirectSnippet,
+
+  try {
+    fs.writeFileSync(
+      "/tmp/bandai-ge-issuer-last.json",
+      JSON.stringify(
+        {
+          at: new Date().toISOString(),
+          issuerUrl,
+          status: issuer.status,
+          ok: issuer.ok,
+          reloadOnly: issuer.reloadOnly,
+          bankSignal: issuer.bankSignal,
+          redirectUrl: issuer.redirectUrlFull || issuer.redirectUrl,
+          redirectPayload: issuer.redirectPayload,
+          redirectSnippet: issuer.redirectSnippet,
+          bodySnippet: issuer.bodySnippet,
+          error: issuer.error,
+          gatewayId,
+          paymentMethodId,
+          shippingMethodId,
+          hydrateShippingOk,
+        },
+        null,
+        2,
+      ),
     );
+  } catch {
+    /* ignore */
+  }
+
+  const declineOnRedirect = Boolean(issuer.declineOnRedirect);
   push("ge_issuer_http", {
     ok: issuer.ok,
     status: issuer.status,
     ms: issuer.ms,
     note: (
-      issuer.redirectUrl
-        ? `redirect ${issuer.status} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
-        : issuer.bodySnippet || issuer.error || ""
-    ).slice(0, 220),
+      issuer.reloadOnly
+        ? `RELOAD_ONLY (no bank) ${issuer.status} ${issuer.redirectUrl || ""} ${JSON.stringify(issuer.redirectPayload || {}).slice(0, 120)}`
+        : issuer.redirectUrl
+          ? `redirect ${issuer.status} bank=${issuer.bankSignal} ${issuer.redirectUrl}${declineOnRedirect ? " DECLINE?" : ""} ${issuer.redirectSnippet || ""}`
+          : issuer.bodySnippet || issuer.error || ""
+    ).slice(0, 240),
   });
 
   const paymentStatus = !issuer.ok
-    ? "issuer_http_failed"
+    ? issuer.reloadOnly
+      ? "ge_reload_only_no_bank"
+      : "issuer_http_failed"
     : declineOnRedirect
       ? "declined_or_auth_failed"
-      : issuer.isPaymentRedirect
-        ? "pay_submitted_http"
-        : "pay_submitted_http";
+      : "pay_submitted_http";
   return {
     ok: Boolean(issuer.ok),
     steps,
@@ -768,14 +1135,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
     chargeReqCount: 1,
-    sawAuthWire: Boolean(issuer.ok || issuer.sawAuthWire),
+    sawAuthWire: Boolean(issuer.sawAuthWire),
     blockers,
     redirectUrl: issuer.redirectUrl || null,
+    redirectPayload: issuer.redirectPayload || null,
     via: "http-ge",
     elapsedMs: Date.now() - t0,
     note: issuer.ok
-      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} guid=${guid}`
-      : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
+      ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${issuer.bankSignal} guid=${guid}`
+      : issuer.reloadOnly
+        ? `HTTP issuer ReloadBehaviour only (no Revolut) guid=${guid}`
+        : `HTTP issuer failed; ${issuer.bodySnippet || issuer.error}`,
   };
 }
 
@@ -788,6 +1158,12 @@ export default {
   buildIssuerFormBody,
   extractUrlStructureToken,
   extractMachineId,
+  htmlFormValue,
+  parseCheckoutV2Form,
+  buildHandleActionBodies,
+  pickShippingMethodId,
+  decodeCcPaymentRedirectData,
+  isBandaiGePaymentRedirectSignal,
   mintIovationBlackbox,
   loadIssuerCapture,
   postBandaiGeIssuerHttp,
