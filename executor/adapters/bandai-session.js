@@ -137,10 +137,18 @@ export function extractCsrfFromHtml(html) {
 
 export function extractPreloadSuffix(html) {
   const h = String(html || "");
-  const m =
-    h.match(/globaleMerchantCartTokenSuffix["']?\s*[:=]\s*["']([^"']+)["']/i) ||
-    h.match(/PRELOAD_DATA\s*=\s*\{[\s\S]*?globaleMerchantCartTokenSuffix["']?\s*:\s*["']([^"']+)["']/i);
-  return m?.[1] || null;
+  const patterns = [
+    /globaleMerchantCartTokenSuffix["']?\s*[:=]\s*["']([^"']+)["']/i,
+    /PRELOAD_DATA\s*=\s*\{[\s\S]*?globaleMerchantCartTokenSuffix["']?\s*:\s*["']([^"']+)["']/i,
+    /"globaleMerchantCartTokenSuffix"\s*:\s*"([^"]+)"/i,
+    /merchantCartTokenSuffix["']?\s*[:=]\s*["']([^"']+)["']/i,
+    /_Checkout_([A-Za-z0-9_-]{6,})/i,
+  ];
+  for (const re of patterns) {
+    const m = h.match(re);
+    if (m?.[1]) return m[1];
+  }
+  return null;
 }
 
 /**

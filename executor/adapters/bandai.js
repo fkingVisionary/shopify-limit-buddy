@@ -766,10 +766,50 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
 
   // ── Cart checkout → checkoutSn (still HTTP; GE iframe separate) ────────
   let preloadSuffix = task.globaleMerchantCartTokenSuffix || null;
+  let preloadSource = preloadSuffix ? "task" : null;
   if (!preloadSuffix && bridge) {
     await bridge.goto(`${session.base}/cart`);
-    const html = await bridge.page.content();
-    preloadSuffix = extractPreloadSuffix(html);
+    try {
+      // SPA may paint before PRELOAD_DATA is hydrated — wait briefly.
+      await bridge.page.waitForFunction(
+        () => {
+          const p = window.PRELOAD_DATA || window.__PRELOAD_DATA__ || {};
+          return Boolean(
+            p.globaleMerchantCartTokenSuffix ||
+              window.globaleMerchantCartTokenSuffix ||
+              document.documentElement.innerHTML.includes("globaleMerchantCartTokenSuffix"),
+          );
+        },
+        { timeout: 12_000 },
+      );
+    } catch {
+      /* fall through to HTML scrape */
+    }
+    try {
+      preloadSuffix = await bridge.page.evaluate(() => {
+        const p = window.PRELOAD_DATA || window.__PRELOAD_DATA__ || {};
+        return (
+          p.globaleMerchantCartTokenSuffix ||
+          window.globaleMerchantCartTokenSuffix ||
+          null
+        );
+      });
+      if (preloadSuffix) preloadSource = "bridge_eval";
+    } catch {
+      /* ignore */
+    }
+    if (!preloadSuffix) {
+      const html = await bridge.page.content();
+      preloadSuffix = extractPreloadSuffix(html);
+      if (preloadSuffix) preloadSource = "bridge_html";
+      if (!preloadSuffix) {
+        try {
+          fs.writeFileSync("/tmp/bandai-cart-preload-miss.html", html.slice(0, 400_000));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
   if (!preloadSuffix) {
     // Guest cart HTML via undici
@@ -787,7 +827,25 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     );
     const html = await readText(nav);
     preloadSuffix = extractPreloadSuffix(html);
+    if (preloadSuffix) preloadSource = "undici_html";
+    if (!preloadSuffix) {
+      try {
+        fs.writeFileSync("/tmp/bandai-cart-preload-miss-undici.html", html.slice(0, 400_000));
+      } catch {
+        /* ignore */
+      }
+    }
   }
+
+  steps.push({
+    step: "cart_preload_suffix",
+    ok: Boolean(preloadSuffix),
+    status: null,
+    ms: 0,
+    note: preloadSuffix
+      ? `suffix ${String(preloadSuffix).slice(0, 24)}… via=${preloadSource}`
+      : `EMPTY via=${preloadSource || "none"} (see /tmp/bandai-cart-preload-miss*.html)`,
+  });
 
   const merchantCartToken = cartId && preloadSuffix
     ? `${cartId}_Checkout_${preloadSuffix}`

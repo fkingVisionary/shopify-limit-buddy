@@ -1000,14 +1000,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
     accept: "text/html,application/xhtml+xml,*/*",
     headers: { referer: v2Url },
   });
-  // Always prefer JWT minted after iovation cookie sync.
+  // Always prefer JWT + machineId from the same CreditCardForm response
+  // (after iovation cookie sync). Mixing Playwright blackbox with an older
+  // JWT was one DataCorruption / IsTheSameCartToken=False path.
   urlStructureToken = extractUrlStructureToken(cc.text) || urlStructureToken;
-  if (!machineId) machineId = extractMachineId(cc.text);
+  const formMachineId = extractMachineId(cc.text);
+  if (formMachineId) machineId = formMachineId;
+  else if (!machineId) machineId = null;
   push("ge_credit_card_form", {
     ok: cc.ok,
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} pm=${paymentMethodId} gw=${gatewayId} bytes=${(cc.text || "").length}`,
   });
 
   try {
@@ -1148,10 +1152,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   const declineOnRedirect = Boolean(issuer.declineOnRedirect);
-  const redirectErr =
-    Array.isArray(issuer.redirectPayload)
-      ? issuer.redirectPayload.find((x) => /RedirectErrorType|ErrorMessage|Success/i.test(String(x?.Key || "")))
-      : null;
   push("ge_issuer_http", {
     ok: issuer.ok,
     status: issuer.status,
