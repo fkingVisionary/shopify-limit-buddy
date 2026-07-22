@@ -367,6 +367,100 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
 }
 
 /**
+ * Solve a DataDome captcha URL returned as JSON from a BFF 403
+ * (`{ url: "https://geo.captcha-delivery.com/captcha/?..." }`).
+ * If URL has `t=bv`, treat as Hyper hard-block (do not solve).
+ * @see https://docs.hypersolutions.co/datadome/getting-started.md#slider
+ */
+export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUrl } = {}) {
+  const url = String(captchaUrl || "");
+  if (!url || !/captcha-delivery\.com\/captcha/i.test(url)) {
+    return { ok: false, note: "not a captcha-delivery captcha URL" };
+  }
+  if (/[?&]t=bv\b/i.test(url)) {
+    return {
+      ok: false,
+      isIpBanned: true,
+      hardBlock: true,
+      note: "ATC/captcha URL t=bv — Hyper hard IP block; rotate sticky",
+      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+    };
+  }
+  if (!hyperConfigured()) {
+    return { ok: false, note: "HYPER_API_KEY missing" };
+  }
+  let ip = "";
+  try {
+    ip = (await resolveEgressIp(ctx)) || "";
+  } catch {
+    ip = "";
+  }
+  const referer = pageUrl || `${session.state?.base || PC_ORIGIN}/`;
+  const deviceHtml = await fetchDeviceHtml(session, url, referer);
+  const puzzleUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.jpg)/i) ||
+    deviceHtml.match(/(https?:\/\/[^"' ]+\.jpg)/i) ||
+    [])[1];
+  const pieceUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.frag\.png)/i) ||
+    deviceHtml.match(/(https?:\/\/[^"' ]+\.frag\.png)/i) ||
+    [])[1];
+  if (!puzzleUrl || !pieceUrl) {
+    return {
+      ok: false,
+      note: "captcha page missing puzzle/piece — may be hCaptcha escalation",
+      needsHcaptcha: /hcaptcha|h-captcha/i.test(deviceHtml),
+      bytes: deviceHtml.length,
+    };
+  }
+  const [puzzleB64, pieceB64] = await Promise.all([
+    fetch(puzzleUrl).then(async (r) => bufferToB64(Buffer.from(await r.arrayBuffer()))),
+    fetch(pieceUrl).then(async (r) => bufferToB64(Buffer.from(await r.arrayBuffer()))),
+  ]);
+  const solved = await solveDataDomeSlider({
+    html: "",
+    datadomeCookie: ctx.jar?.get?.("datadome") || "",
+    referer,
+    parentUrl: referer,
+    userAgent: session.state?.userAgent || "",
+    ip,
+    acceptLanguage: session.state?.acceptLanguage || "en-AU,en;q=0.9",
+    deviceLinkHtml: deviceHtml,
+    puzzleB64,
+    pieceB64,
+    deviceLink: url,
+  });
+  if (solved.isIpBanned) {
+    return {
+      ok: false,
+      isIpBanned: true,
+      hardBlock: true,
+      note: "slider t=bv after captcha URL fetch",
+    };
+  }
+  if (!solved.payload) {
+    return { ok: false, note: "slider payload empty" };
+  }
+  const verifyRes = await session.get(solved.payload, {
+    headers: { referer, ...(solved.headers || {}) },
+  });
+  ctx.jar?.ingest?.(verifyRes.headers);
+  const verifyText = await session.readText(verifyRes);
+  let verifyJson = null;
+  try {
+    verifyJson = JSON.parse(verifyText);
+  } catch {
+    /* ignore */
+  }
+  const applied = applyDatadomeSolveJson(ctx.jar, verifyJson || {});
+  return {
+    ok: Boolean(applied.cookie),
+    status: verifyRes.status,
+    note: applied.cookie
+      ? "BFF captcha URL slider solved"
+      : `captcha check ${verifyRes.status} ${verifyText.slice(0, 80)}`,
+  };
+}
+
+/**
  * Post DataDome tags (ch → le) to raise trust before BFF ATC.
  * @see https://docs.hypersolutions.co/datadome/tags.md
  */

@@ -97,12 +97,47 @@ export function cortexAuthBody({ scope = PC_CORTEX_SCOPE, userName = "", passwor
   }).toString();
 }
 
+/**
+ * Browser device fingerprint headers from Next `_app` (`M=()` device map).
+ * Used on sensitive BFF calls alongside locale/scope.
+ */
+export function cortexDeviceHeaders({
+  userAgent,
+  language = "en-AU",
+  screenHeight = 1080,
+  screenWidth = 1920,
+  colorDepth = 24,
+  timeZoneOffset,
+} = {}) {
+  const tz =
+    timeZoneOffset != null
+      ? Number(timeZoneOffset)
+      : -Math.round(new Date().getTimezoneOffset()); // AU storefront often -600
+  return {
+    accept: "*/*",
+    "browser-language": language,
+    "browser-java-enabled": "false",
+    "browser-javascript-enabled": "true",
+    "color-depth": String(colorDepth),
+    "device-channel": "Browser",
+    "ip-address": "",
+    "screen-height": String(screenHeight),
+    "screen-width": String(screenWidth),
+    "time-zone": String(tz),
+    ...(userAgent ? { "user-agent": userAgent } : {}),
+  };
+}
+
 export function cortexApiHeaders({
   accessToken,
   locale = "en-au",
   scope = PC_CORTEX_SCOPE,
   referer,
   origin = PC_ORIGIN,
+  // Device map headers are for GE/3DS fingerprint posts — not default on every BFF call.
+  includeDevice = false,
+  acceptVersion = "1",
+  userAgent,
 } = {}) {
   const h = {
     accept: "application/json",
@@ -111,9 +146,44 @@ export function cortexApiHeaders({
     "X-Store-Scope": scope,
     origin,
   };
+  // Next BFF `apiVersion:"1"` — sent when storefront retries version mismatch.
+  if (acceptVersion) h["Accept-Version"] = String(acceptVersion);
+  if (includeDevice) {
+    Object.assign(
+      h,
+      cortexDeviceHeaders({
+        userAgent,
+        language: String(locale).toLowerCase() === "en-au" ? "en-AU" : "en",
+        // AU AEST offset minutes as browser getTimezoneOffset() would report from Sydney ≈ -600
+        timeZoneOffset: -600,
+      }),
+    );
+    // Keep JSON accept for API responses (device map uses accept:"/" for GE only).
+    h.accept = "application/json";
+  }
   if (referer) h.referer = referer;
   if (accessToken) h.Authorization = `bearer ${accessToken}`;
   return h;
+}
+
+/** Pull cartGuid from BFF `/cart/data` JSON (field `cart-guid`). */
+export function cartGuidFromCartData(json) {
+  if (!json || typeof json !== "object") return null;
+  return (
+    json.cartGuid ||
+    json["cart-guid"] ||
+    json._raw?.["cart-guid"] ||
+    json.cart?.cartGuid ||
+    json.cart?.["cart-guid"] ||
+    null
+  );
+}
+
+/** Cortex cart id from ATC line-item `self.uri` (not GE cartGuid). */
+export function cortexCartIdFromAtc(json) {
+  const uri = json?.self?.uri || json?.links?.find?.((l) => l.rel === "cart")?.uri || "";
+  const m = String(uri).match(/\/carts\/[^/]+\/([^/]+)/i);
+  return m?.[1] || null;
 }
 
 /**

@@ -365,12 +365,20 @@ export async function solveDataDomeSlider({
   deviceLinkHtml,
   puzzleB64,
   pieceB64,
+  /** Optional absolute captcha URL (e.g. BFF JSON `{url}`) — skips HTML parse when set. */
+  deviceLink: deviceLinkOverride = null,
 }) {
-  const parsed = parseSliderDeviceCheckUrl(html, datadomeCookie || "", referer || "");
+  if (deviceLinkOverride && /[?&]t=bv\b/i.test(String(deviceLinkOverride))) {
+    return { isIpBanned: true, payload: null, headers: {}, deviceLink: null };
+  }
+  const parsed = html
+    ? parseSliderDeviceCheckUrl(html, datadomeCookie || "", referer || "")
+    : null;
   if (parsed?.isIpBanned) {
     return { isIpBanned: true, payload: null, headers: {}, deviceLink: null };
   }
-  const deviceLink = parsed?.url || parsed?.deviceCheckUrl || null;
+  const deviceLink =
+    deviceLinkOverride || parsed?.url || parsed?.deviceCheckUrl || null;
   if (!deviceLink) {
     const err = new Error("datadome_slider: deviceLink parse failed");
     err.code = "datadome_parse";
