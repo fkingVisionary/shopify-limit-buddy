@@ -15,6 +15,7 @@ import { findCartLine, listCartLines } from "./bandai-cart.js";
 import {
   isBandaiGeCheckoutPayFrame,
   isBandaiGeAuthPaymentUrl,
+  isBandaiGeChargeRequest,
 } from "./bandai-ge-pay.js";
 
 // --- F5 gate matrix ---
@@ -119,5 +120,14 @@ assert.equal(
 );
 assert.equal(isBandaiGeAuthPaymentUrl("https://webservices.global-e.com/ProcessPayment"), true);
 assert.equal(isBandaiGeAuthPaymentUrl("https://cdn.global-e.com/static.js"), false);
+assert.equal(
+  isBandaiGeChargeRequest("POST", "https://webservices.global-e.com/Checkout/ProcessPayment"),
+  true,
+);
+assert.equal(
+  isBandaiGeChargeRequest("POST", "https://web-bandai.global-e.com/shared/prefetcher/1925/AU"),
+  false,
+);
+assert.equal(isBandaiGeChargeRequest("GET", "https://webservices.global-e.com/ProcessPayment"), false);
 
 console.log("bandai-flow.test.mjs ok");
