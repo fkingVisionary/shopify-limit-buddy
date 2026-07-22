@@ -16,6 +16,7 @@ import {
 import {
   getPublicToken,
   attemptGuestAtc,
+  getGlobaleM2mToken,
   cartGuidFromCartData,
   cortexApiHeaders,
   PC_API_BASE,
@@ -89,10 +90,19 @@ async function main() {
       availability: avail.product?.availability,
     });
 
+    // Known wire-proven EP id for binder SKU when PDP is DD-blocked
+    const FALLBACK_EP = "qgqvhlbrgawtcmbtgiyc2mjqge=";
+    const product = avail.product || {
+      code: "10-10320-101",
+      epItemId: FALLBACK_EP,
+      addToCartForm: `/carts/items/pokemon-au/${FALLBACK_EP}/form`,
+    };
+    if (!product.epItemId) product.epItemId = FALLBACK_EP;
+
     let atc = await attemptGuestAtc(session, {
       sku: "10-10320-101",
       qty: 1,
-      product: avail.product,
+      product,
       pageUrl: PDP,
     });
     fs.writeFileSync(`${OUT}/atc.json`, JSON.stringify(atc.json || { note: atc.note }, null, 2));
@@ -111,13 +121,16 @@ async function main() {
         atc = await attemptGuestAtc(session, {
           sku: "10-10320-101",
           qty: 1,
-          product: avail.product,
+          product,
           pageUrl: PDP,
         });
         push("atc_retry", { ok: atc.ok, status: atc.status, note: atc.note });
       }
     }
 
+    let cartGuid = null;
+    let ge = null;
+    let intlMeta = null;
     if (atc.ok) {
       const apiH = cortexApiHeaders({
         accessToken: session.state.cortexAuth.accessToken,
@@ -136,22 +149,60 @@ async function main() {
       } catch {
         /* ignore */
       }
-      const cartGuid = cartGuidFromCartData(cartJson);
+      cartGuid = cartGuidFromCartData(cartJson);
       push("cart", {
         status: cartRes.status,
-        cartGuid: Boolean(cartGuid),
+        cartGuid,
+        qty: cartJson?.["total-quantity"],
         keys: cartJson ? Object.keys(cartJson).slice(0, 12) : null,
       });
+
+      if (cartGuid) {
+        ge = await getGlobaleM2mToken(session, { cartGuid });
+        fs.writeFileSync(`${OUT}/ge-m2m.json`, JSON.stringify(ge.json || { note: ge.note }, null, 2));
+        push("ge_m2m", { ok: ge.ok, status: ge.status, keys: ge.json ? Object.keys(ge.json) : null, note: ge.note });
+
+        let intl = await session.get("https://www.pokemoncenter.com/en-au/intl-checkout", {
+          headers: { referer: `${session.state.base}/`, accept: "text/html,application/xhtml+xml" },
+        });
+        let intlHtml = await session.readText(intl);
+        if (intl.status >= 300 && intl.status < 400) {
+          const loc = intl.headers?.get?.("location");
+          if (loc) {
+            const abs = loc.startsWith("http") ? loc : `https://www.pokemoncenter.com${loc}`;
+            intl = await session.get(abs, { headers: { referer: `${session.state.base}/` } });
+            intlHtml = await session.readText(intl);
+            push("intl_redirect", { to: abs.slice(0, 160) });
+          }
+        }
+        fs.writeFileSync(`${OUT}/intl-checkout.html`, intlHtml.slice(0, 1_200_000));
+        intlMeta = {
+          status: intl.status,
+          bytes: intlHtml.length,
+          mid:
+            (intlHtml.match(/globaleMid["']?\s*[:=]\s*["']?(\d{3,6})/i) ||
+              intlHtml.match(/merchant\/clientsdk\/(\d{3,6})/i) ||
+              [])[1] || null,
+          gem: (intlHtml.match(/(gem-[a-z0-9-]+\.global-e\.com)/i) || [])[1] || null,
+          secure: (intlHtml.match(/(secure-[a-z0-9-]+\.global-e\.com)/i) || [])[1] || null,
+          checkoutV2: (intlHtml.match(/(https?:\/\/[^"'\\s]*Checkout\/v2[^"'\\s]*)/i) || [])[1]?.slice(0, 160) || null,
+          title: (intlHtml.match(/<title>([^<]+)/i) || [])[1] || null,
+        };
+        push("intl", intlMeta);
+      }
     }
 
     fs.writeFileSync(
       `${OUT}/summary.json`,
       JSON.stringify(
         {
-          ok: Boolean(atc.ok),
+          ok: Boolean(atc.ok && cartGuid),
           transport: TRANSPORT,
           reesePath: PC_REESE_SCRIPT_PATH,
           scope: PC_CORTEX_SCOPE,
+          cartGuid,
+          geOk: ge?.ok || false,
+          intl: intlMeta,
           cookies: Object.keys(jar.dump?.() || {}),
           log,
         },
@@ -159,7 +210,16 @@ async function main() {
         2,
       ),
     );
-    console.log(JSON.stringify({ out: OUT, ok: atc.ok, stage: log.at(-1)?.step }));
+    console.log(
+      JSON.stringify({
+        out: OUT,
+        ok: Boolean(atc.ok && cartGuid),
+        ge: ge?.status,
+        mid: intlMeta?.mid,
+        gem: intlMeta?.gem,
+        stage: log.at(-1)?.step,
+      }),
+    );
   } finally {
     await dispatcher.close?.();
   }
