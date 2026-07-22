@@ -634,8 +634,31 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
         html,
       };
     });
-    session.state.edgeNote = home3.ok ? "home clear after DD" : home3.note;
-    return { ok: home3.ok, home: home3, datadome: ddClear, note: session.state.edgeNote };
+    // Remint Reese after DD cookie swap — BFF auth otherwise hits Imperva incidentId 403
+    // even when HTML home looks clear (observed 2026-07-22 grind2).
+    let reeseAfterDd = null;
+    if (home3.ok) {
+      reeseAfterDd = await step("incapsula_reese_after_dd", async () => {
+        try {
+          return await clearIncapsulaReese(session, ctx, {
+            pageUrl: homeUrl,
+            html: home3.html,
+          });
+        } catch (e) {
+          return { ok: false, note: e?.message || String(e) };
+        }
+      });
+    }
+    session.state.edgeNote = home3.ok
+      ? `home clear after DD${reeseAfterDd?.hasToken ? "+reese" : ""}`
+      : home3.note;
+    return {
+      ok: home3.ok,
+      home: home3,
+      datadome: ddClear,
+      reeseAfterDd,
+      note: session.state.edgeNote,
+    };
   }
 
   session.state.edgeNote = home2.note || home.note;

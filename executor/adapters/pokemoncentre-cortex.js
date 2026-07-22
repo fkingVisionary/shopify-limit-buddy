@@ -190,20 +190,47 @@ export function cortexCartIdFromAtc(json) {
  * Mint public Cortex token. Sets jar `auth` JSON cookie when Set-Cookie present.
  * @see browser: POST /auth/get-public-token
  */
+function looksLikeIncapsulaApiBlock(text, status) {
+  if (status !== 403 && status !== 401) return false;
+  return /"incidentId"\s*:/i.test(String(text || "")) || /Pardon Our Interruption/i.test(String(text || ""));
+}
+
 export async function getPublicToken(session, ctx, { locale = "en-au", scope = PC_CORTEX_SCOPE } = {}) {
   const body = cortexAuthBody({ scope });
-  const res = await session.post(`${PC_API_BASE}/auth/get-public-token`, {
+  const headers = {
+    "content-type": "application/x-www-form-urlencoded;charset=utf-8",
+    accept: "application/json",
+    "X-Store-Locale": String(locale).toLowerCase(),
+    "X-Store-Scope": scope,
+    origin: PC_ORIGIN,
+    referer: `${session.state.base}/`,
+  };
+  let res = await session.post(`${PC_API_BASE}/auth/get-public-token`, {
     body,
-    headers: {
-      "content-type": "application/x-www-form-urlencoded;charset=utf-8",
-      accept: "application/json",
-      "X-Store-Locale": String(locale).toLowerCase(),
-      "X-Store-Scope": scope,
-      origin: PC_ORIGIN,
-      referer: `${session.state.base}/`,
-    },
+    api: true,
+    contentType: "application/x-www-form-urlencoded;charset=utf-8",
+    headers,
   });
-  const text = await session.readText(res);
+  let text = await session.readText(res);
+  // Imperva often blocks BFF until a fresh Reese after DD — remint once.
+  if (looksLikeIncapsulaApiBlock(text, res.status)) {
+    try {
+      const { clearIncapsulaReese } = await import("./pokemoncentre-edge.js");
+      await clearIncapsulaReese(session, ctx, {
+        pageUrl: `${session.state.base}/`,
+        html: "",
+      });
+      res = await session.post(`${PC_API_BASE}/auth/get-public-token`, {
+        body,
+        api: true,
+        contentType: "application/x-www-form-urlencoded;charset=utf-8",
+        headers,
+      });
+      text = await session.readText(res);
+    } catch {
+      /* keep first response */
+    }
+  }
   let json = null;
   try {
     json = JSON.parse(text);
@@ -224,6 +251,7 @@ export async function getPublicToken(session, ctx, { locale = "en-au", scope = P
     ok: res.status === 200 && Boolean(json?.access_token),
     status: res.status,
     auth: json,
+    incapBlock: looksLikeIncapsulaApiBlock(text, res.status),
     note: json?.access_token
       ? `cortex token role=${json.role} scope=${json.scope}`
       : `auth ${res.status} ${text.slice(0, 80)}`,
