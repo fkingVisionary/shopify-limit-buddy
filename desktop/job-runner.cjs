@@ -1,6 +1,6 @@
 // Bounded local job queue. Stability first: cap concurrent /run calls so
 // Chromium 3DS tails don't OOM the machine. Store adapters plug in via
-// buildPayload(store) — Kmart + Toymate + Bandai (isolated branches).
+// buildPayload(store) — Kmart + Toymate + Bandai + Pokémon Centre (isolated).
 //
 // Kmart payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
@@ -444,6 +444,112 @@ function buildBandaiPayload({
   };
 }
 
+function buildPokemonCentrePayload({
+  task,
+  profile,
+  proxyRaw,
+  placeOrder,
+  rotateSession,
+}) {
+  const mode = String(task.pcMode || task.pokemoncentreMode || "monitor").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const localeRaw = String(task.pcLocale || task.locale || "").trim().toLowerCase();
+  const localeFromUrl = (input.match(/pokemoncenter\.com\/(en-[a-z]{2})(?:\/|$)/i) || [])[1];
+  let pcLocale = localeRaw || localeFromUrl || "en-au";
+  if (/^(au|enau)$/i.test(pcLocale)) pcLocale = "en-au";
+  if (/^(nz|ennz)$/i.test(pcLocale)) pcLocale = "en-nz";
+  if (!/^en-(au|nz|ca|gb|us)$/i.test(pcLocale)) {
+    return {
+      ok: false,
+      error: `Unsupported Pokémon Centre locale "${pcLocale}" (use en-au/en-nz/en-ca/en-gb/en-us — not JP online)`,
+    };
+  }
+
+  if (
+    mode !== "edge" &&
+    mode !== "monitor" &&
+    mode !== "har_probe" &&
+    input &&
+    !/^https:\/\/(www\.)?pokemoncenter\.com\//i.test(input) &&
+    !/^[A-Za-z0-9._-]+$/.test(input)
+  ) {
+    return {
+      ok: false,
+      error: "Pokémon Centre PDP URL (pokemoncenter.com/en-au/product/…) or SKU required",
+    };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw);
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
+
+  const storeUrl =
+    mode === "edge" || mode === "monitor" || mode === "har_probe" || !input
+      ? `https://www.pokemoncenter.com/${pcLocale}/`
+      : /^https?:\/\//i.test(input)
+        ? input
+        : `https://www.pokemoncenter.com/${pcLocale}/product/${input}`;
+
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "edge" ? storeUrl : input || storeUrl,
+      variantId: Number(task.variantId) || 1,
+      sku: task.sku || (!/^https?:/i.test(input) ? input : undefined) || undefined,
+      qty: Math.max(1, Math.min(5, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      forceUndici: true,
+      forceTls: false,
+      pcMode: mode,
+      pcLocale,
+      pcBrowserCheckout:
+        task.pcBrowserCheckout === true || (mode === "checkout" && Boolean(placeOrder)),
+      globaleMid: task.globaleMid || task.geMerchantId || undefined,
+      card,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+    },
+  };
+}
+
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
@@ -454,6 +560,9 @@ function buildPayload(job) {
   }
   if (store === "bandai") {
     return buildBandaiPayload(job);
+  }
+  if (store === "pokemoncentre" || store === "pokemon" || store === "pokemoncenter") {
+    return buildPokemonCentrePayload(job);
   }
   return { ok: false, error: `Store adapter not installed yet: ${store}` };
 }

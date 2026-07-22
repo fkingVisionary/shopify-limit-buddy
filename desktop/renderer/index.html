@@ -49,6 +49,7 @@
             <option value="kmart">Kmart AU</option>
             <option value="toymate">Toymate AU</option>
             <option value="bandai">Premium Bandai AU</option>
+            <option value="pokemoncentre">Pokémon Centre AU</option>
           </select>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>
@@ -110,6 +111,16 @@
               <label>Campaign SN</label>
               <input id="taskBandaiCampaignSn" placeholder="campaignSn for applyDraw" />
             </div>
+          </div>
+          <div id="taskPcOpts" hidden>
+            <label>Pokémon Centre mode</label>
+            <select id="taskPcMode">
+              <option value="monitor">Monitor (edge + PDP stock)</option>
+              <option value="checkout">Checkout (Cortex ATC → Global-e)</option>
+              <option value="edge">Edge warm only (Incapsula + DD)</option>
+              <option value="har_probe">HAR probe (Cortex paths)</option>
+            </select>
+            <p class="field-hint">Needs sticky AU ISP/residential + Hyper (Incapsula/DD). CapSolver for hCaptcha drops. Cortex ATC bodies harden after HAR.</p>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
           <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />

@@ -311,6 +311,15 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     bandaiMode: storeId === "bandai" ? String(task.bandaiMode || "checkout") : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
+    // Pokémon Centre-only fields (ignored by other stores).
+    pcMode:
+      storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
+        ? String(task.pcMode || "monitor")
+        : undefined,
+    pcLocale:
+      storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
+        ? String(task.pcLocale || "en-au")
+        : undefined,
     paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
     accountPassword:
       (storeId === "toymate" || storeId === "bandai") && typeof task.accountPassword === "string"

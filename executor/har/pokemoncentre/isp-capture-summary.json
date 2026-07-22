@@ -1,0 +1,284 @@
+{
+  "entryCount": 19,
+  "hosts": [
+    "api.ipify.org",
+    "ct.captcha-delivery.com",
+    "www.pokemoncenter.com"
+  ],
+  "cookieNames": [
+    "datadome",
+    "incap_ses_811_2682446",
+    "nlbi_2682446",
+    "nlbi_2682446_2147483392",
+    "ss_qualtrics_tcr0825",
+    "visid_incap_2682446"
+  ],
+  "globaleMid": null,
+  "gemHost": null,
+  "secureHost": null,
+  "hcaptchaSitekey": null,
+  "reesePath": "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C",
+  "cortexHits": [
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/carts"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/minicarts"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/intl-checkout"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/checkout"
+    }
+  ],
+  "interesting": [
+    {
+      "kind": "incapsula",
+      "method": "GET",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "kind": "datadome",
+      "method": "GET",
+      "status": -1,
+      "url": "https://ct.captcha-delivery.com/c.js"
+    },
+    {
+      "kind": "incapsula",
+      "method": "POST",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C?d=www.pokemoncenter.com"
+    },
+    {
+      "kind": "incapsula",
+      "method": "GET",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "kind": "incapsula",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/_Incapsula_Resource?CWUDNSAI=23&xinfo=REDACTED&incident_id=REDACTED"
+    },
+    {
+      "kind": "incapsula",
+      "method": "POST",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C?d=www.pokemoncenter.com"
+    },
+    {
+      "kind": "incapsula",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "kind": "incapsula",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/_Incapsula_Resource?CWUDNSAI=23&xinfo=REDACTED&incident_id=REDACTED"
+    },
+    {
+      "kind": "cortex",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/carts"
+    },
+    {
+      "kind": "cortex",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/minicarts"
+    },
+    {
+      "kind": "cortex",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/intl-checkout"
+    },
+    {
+      "kind": "cortex",
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/checkout"
+    }
+  ],
+  "sampleUrls": [
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "https://api.ipify.org/?format=json"
+    },
+    {
+      "method": "GET",
+      "status": 403,
+      "url": "https://www.pokemoncenter.com/en-au/"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://ct.captcha-delivery.com/c.js"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C?d=www.pokemoncenter.com"
+    },
+    {
+      "method": "GET",
+      "status": 403,
+      "url": "https://www.pokemoncenter.com/en-au/category/trading-card-game"
+    },
+    {
+      "method": "GET",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/_Incapsula_Resource?CWUDNSAI=23&xinfo=REDACTED&incident_id=811000650349263264-618322574525009997&edet=15&cinfo"
+    },
+    {
+      "method": "POST",
+      "status": 200,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C?d=www.pokemoncenter.com"
+    },
+    {
+      "method": "GET",
+      "status": 403,
+      "url": "https://www.pokemoncenter.com/sitemap.xml"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/_Incapsula_Resource?CWUDNSAI=23&xinfo=REDACTED&incident_id=811000650349263264-663994591030743118&edet=15&cinfo"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/robots.txt"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/en-au/product/10-10186-109/pokemon-tcg-scarlet-violet-prismatic-evolutions-elite-trainer-box"
+    },
+    {
+      "method": "GET",
+      "status": -1,
+      "url": "https://www.pokemoncenter.com/carts"
+    }
+  ],
+  "steps": [
+    {
+      "step": "egress_ip",
+      "at": "2026-07-22T02:21:02.178Z",
+      "note": "{\"ip\":\"45.42.47.34\"}"
+    },
+    {
+      "step": "home",
+      "at": "2026-07-22T02:21:22.175Z",
+      "url": "https://www.pokemoncenter.com/en-au/",
+      "title": "pokemoncenter.com",
+      "bytes": 858,
+      "note": "still challenged"
+    },
+    {
+      "step": "nav",
+      "at": "2026-07-22T02:21:24.439Z",
+      "url": "/en-au/category/trading-card-game",
+      "status": 403,
+      "note": "title="
+    },
+    {
+      "step": "nav",
+      "at": "2026-07-22T02:21:26.942Z",
+      "url": "/sitemap.xml",
+      "status": 403,
+      "note": "title="
+    },
+    {
+      "step": "nav_fail",
+      "at": "2026-07-22T02:21:27.363Z",
+      "url": "/robots.txt",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/robots.txt\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/robots.txt\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "pdp_fail",
+      "at": "2026-07-22T02:21:27.776Z",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/en-au/product/10-10186-109/pokemon-tcg-scarlet-violet-prismatic-evolutions-elite-trainer-box\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/en-au/product/10-10186-109/pokemon-tcg-scarlet-violet-prismatic-evolutions-elite-trainer-box\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "checkout_nav_fail",
+      "at": "2026-07-22T02:21:28.198Z",
+      "url": "/carts",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/carts\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/carts\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "checkout_nav_fail",
+      "at": "2026-07-22T02:21:28.615Z",
+      "url": "/minicarts",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/minicarts\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/minicarts\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "checkout_nav_fail",
+      "at": "2026-07-22T02:21:29.043Z",
+      "url": "/intl-checkout",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/intl-checkout\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/intl-checkout\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "checkout_nav_fail",
+      "at": "2026-07-22T02:21:29.464Z",
+      "url": "/checkout",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/checkout\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/checkout\", waiting until \"domcontentloaded\"\n"
+    },
+    {
+      "step": "checkout_nav_fail",
+      "at": "2026-07-22T02:21:29.884Z",
+      "url": "/en-au/cart",
+      "note": "page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://www.pokemoncenter.com/en-au/cart\nCall log:\n  - navigating to \"https://www.pokemoncenter.com/en-au/cart\", waiting until \"domcontentloaded\"\n"
+    }
+  ],
+  "notes": {
+    "egressIp": "45.42.47.34",
+    "capturedAt": "2026-07-22T02:21:00Z",
+    "datadome": {
+      "t": "bv",
+      "rt": "c",
+      "hsh": "5B45875B653A484CC79E57036CE9FC",
+      "s": 9817,
+      "meaning": "t=bv => IP banned on this exit"
+    },
+    "incapsula": {
+      "siteId": "2682446",
+      "reesePath": "/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C",
+      "reesePost": "POST {path}?d=www.pokemoncenter.com text/plain → {token}",
+      "reeseCookieMinted": true
+    },
+    "proxy": "static ISP from resi pool — CONNECT to pokemoncenter often 403 after burst; space requests",
+    "globaleMid": null,
+    "blocker": "DataDome IP ban (t=bv) on 45.42.47.34 blocked catalog after Reese cleared in browser"
+  }
+}

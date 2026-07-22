@@ -35,7 +35,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ |
 | 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
 | 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M — see `AUSPOST_SHOP_MODULE.md` |
-| 4 | **Pokémon Centre AU** | Backlog (Hyper DD+Incapsula ✅ / hCaptcha ❌) | Incapsula + DataDome + hCaptcha | Elastic Path Cortex + Global‑e | L — see `POKEMON_CENTRE_MODULE.md` |
+| 4 | **Pokémon Centre AU** | **Scaffolded** (edge/monitor/GE stub; Cortex HAR next) | Incapsula + DataDome + hCaptcha | Elastic Path Cortex + Global‑e | L — see `POKEMON_CENTRE_MODULE.md` |
 | 5 | **Costco AU** | Backlog (Hyper Akamai+Kasada ✅) | Akamai BM (+ Kasada claimed) + Queue-it | Spartacus + SAP `australia` | L — membership — see `COSTCO_AU_MODULE.md` |
 | 6 | Harvey Norman | Contender (Incapsula ✅) | Imperva/Incapsula + Forter | Custom / WCS-family | M — Hyper Reese84 |
 | 7 | Foot Locker AU | Contender (Kasada ✅) | Kasada | Custom React | M — sneakers |

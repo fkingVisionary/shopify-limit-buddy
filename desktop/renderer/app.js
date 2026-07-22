@@ -92,15 +92,20 @@ function syncTaskFormForStore() {
   const store = $("taskStore")?.value || "kmart";
   const toy = store === "toymate";
   const bandai = store === "bandai";
+  const pc = store === "pokemoncentre";
   const opts = $("taskToymateOpts");
   if (opts) opts.hidden = !toy;
   const bOpts = $("taskBandaiOpts");
   if (bOpts) bOpts.hidden = !bandai;
+  const pcOpts = $("taskPcOpts");
+  if (pcOpts) pcOpts.hidden = !pc;
   const mode = toy
     ? $("taskToymateMode")?.value || "checkout"
     : bandai
       ? $("taskBandaiMode")?.value || "checkout"
-      : "checkout";
+      : pc
+        ? $("taskPcMode")?.value || "monitor"
+        : "checkout";
   const label = $("taskPdpLabel");
   const input = $("taskPdp");
   if (label) {
@@ -116,6 +121,13 @@ function syncTaskFormForStore() {
     } else if (toy) {
       label.textContent =
         mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
+    } else if (pc) {
+      label.textContent =
+        mode === "edge"
+          ? "Storefront (auto en-au)"
+          : mode === "monitor" || mode === "har_probe"
+            ? "PDP URL or SKU (optional for edge-only feel)"
+            : "Product URL / SKU";
     } else {
       label.textContent = "Product URL (PDP)";
     }
@@ -138,6 +150,11 @@ function syncTaskFormForStore() {
           : mode === "monitor"
             ? "+pokemon -tin"
             : "https://www.toymate.com.au/…";
+    } else if (pc) {
+      input.placeholder =
+        mode === "edge"
+          ? "https://www.pokemoncenter.com/en-au/"
+          : "https://www.pokemoncenter.com/en-au/product/{sku}/…";
     } else {
       input.placeholder = "https://www.kmart.com.au/...";
     }
@@ -157,7 +174,9 @@ function syncTaskFormForStore() {
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) {
     placeWrap.hidden =
-      (toy && mode !== "checkout") || (bandai && mode !== "checkout");
+      (toy && mode !== "checkout") ||
+      (bandai && mode !== "checkout") ||
+      (pc && mode !== "checkout");
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
   if (bandai && (mode === "checkout" || mode === "chance")) syncBandaiAccountAssignUi();
@@ -174,7 +193,7 @@ function renderTasks() {
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
-    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart, Toymate, or Bandai task on the right.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart, Toymate, Bandai, or Pokémon Centre task on the right.</div></div></div>`;
     return;
   }
   el.innerHTML = tasks
@@ -198,6 +217,8 @@ function renderTasks() {
           ? `Toymate · ${t.toymateMode || "checkout"}`
           : t.store === "bandai"
             ? `Bandai · ${t.bandaiMode || "checkout"}`
+            : t.store === "pokemoncentre"
+              ? `Pokémon Centre · ${t.pcMode || "monitor"}`
             : "Kmart";
       let accountMeta = "";
       if (t.store === "toymate" && (t.toymateMode || "checkout") === "checkout") {
@@ -423,6 +444,7 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
     if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
+    if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
     if ($("taskBandaiAccountPassword"))
       $("taskBandaiAccountPassword").value = task.accountPassword || "";
     if ($("taskBandaiAccountAssign"))
@@ -526,6 +548,8 @@ function readTaskForm() {
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
     bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
+    pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
+    pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
     accountPassword:
       store === "toymate"
@@ -547,6 +571,7 @@ function readTaskForm() {
 $("taskStore").onchange = () => syncTaskFormForStore();
 $("taskToymateMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForStore();
+if ($("taskPcMode")) $("taskPcMode").onchange = () => syncTaskFormForStore();
 if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
 if ($("taskBandaiAccountAssign"))
   $("taskBandaiAccountAssign").onchange = () => syncBandaiAccountAssignUi();

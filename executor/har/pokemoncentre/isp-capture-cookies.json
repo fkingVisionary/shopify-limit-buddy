@@ -1,0 +1,44 @@
+[
+  {
+    "name": "datadome",
+    "domain": ".pokemoncenter.com",
+    "path": "/",
+    "valueLen": 128,
+    "valuePrefix": "_BP_LO55…"
+  },
+  {
+    "name": "visid_incap_2682446",
+    "domain": ".pokemoncenter.com",
+    "path": "/",
+    "valueLen": 64,
+    "valuePrefix": "LYjkAFll…"
+  },
+  {
+    "name": "nlbi_2682446",
+    "domain": ".pokemoncenter.com",
+    "path": "/",
+    "valueLen": 48,
+    "valuePrefix": "GVWcMjIW…"
+  },
+  {
+    "name": "incap_ses_811_2682446",
+    "domain": ".pokemoncenter.com",
+    "path": "/",
+    "valueLen": 56,
+    "valuePrefix": "ubCfWRYu…"
+  },
+  {
+    "name": "reese84",
+    "domain": "www.pokemoncenter.com",
+    "path": "/",
+    "valueLen": 634,
+    "valuePrefix": "3:Hl9DsO…"
+  },
+  {
+    "name": "nlbi_2682446_2147483392",
+    "domain": ".pokemoncenter.com",
+    "path": "/",
+    "valueLen": 48,
+    "valuePrefix": "vCMvHAES…"
+  }
+]
