@@ -666,8 +666,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
     // Cap every locator op — Playwright default 90s on SELECT mismatch was the 3min Pay stall.
     page.setDefaultTimeout(8_000);
 
-    // Card iframe often trails Checkout/v2 by a few seconds — tight poll, not 12s blind wait.
-    for (let i = 0; i < 40; i++) {
+    // Card iframe trails Checkout/v2 — cold GEM often needs 15–25s + Credit Card click.
+    for (let i = 0; i < 100; i++) {
       const hasCard = page
         .frames()
         .some((f) => /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url() || ""));
@@ -675,7 +675,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
         mark("card_iframe_ready", { pollI: i });
         break;
       }
-      if (i === 3 || i === 10) {
+      if (i % 5 === 0) {
         for (const frame of page.frames()) {
           if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
           await frame
@@ -686,8 +686,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
             .click({ timeout: 600 })
             .catch(() => {});
         }
+        await page
+          .locator(
+            'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+          )
+          .first()
+          .click({ timeout: 600 })
+          .catch(() => {});
       }
-      await page.waitForTimeout(150);
+      await page.waitForTimeout(200);
     }
 
     for (const frame of page.frames()) {
