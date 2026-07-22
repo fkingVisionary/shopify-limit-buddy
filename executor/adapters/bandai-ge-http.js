@@ -379,6 +379,62 @@ export function buildHandleActionBodies(form, opts = {}) {
   return { 1: shippingOptions, 2: taxOptions, 3: totals };
 }
 
+/**
+ * GEM SaveForm posts MainForm.serialize() (urlencoded), not JSON.
+ * Minimal fields that bind shipping + payment method before issuer.
+ */
+export function buildCheckoutSaveBody(form, opts = {}) {
+  const shipping = form.shipping || {};
+  const billing = form.billing || shipping;
+  const params = new URLSearchParams();
+  const set = (k, v) => {
+    if (v == null || v === "") return;
+    params.set(k, String(v));
+  };
+  set("CheckoutData.CartToken", opts.cartToken || "");
+  set("CheckoutData.MerchantID", form.merchantId || BANDAI_GE_MID);
+  set("CheckoutData.CultureID", form.cultureId || 2057);
+  set("CheckoutData.Email", form.email || shipping.Email || "");
+  set("CheckoutData.ShippingType", form.shippingType || "ShippingSameAsBilling");
+  set("CheckoutData.ShippingCountryID", form.countryId || 14);
+  set("CheckoutData.ShippingAddress1", shipping.Address1);
+  set("CheckoutData.ShippingAddress2", shipping.Address2 || "");
+  set("CheckoutData.ShippingCity", shipping.City);
+  set("CheckoutData.ShippingZIP", shipping.Zip);
+  set("CheckoutData.ShippingStateID", shipping.StateId);
+  set("CheckoutData.ShippingFirstName", shipping.FirstName);
+  set("CheckoutData.ShippingLastName", shipping.LastName);
+  set("CheckoutData.ShippingPhone", shipping.Phone);
+  set("CheckoutData.ShippingAddress.PhoneNational", shipping.Phone?.replace?.(/^\+61/, "") || "");
+  set("CheckoutData.BillingCountryID", billing.CountryId || form.countryId || 14);
+  set("CheckoutData.BillingAddress1", billing.Address1 || shipping.Address1);
+  set("CheckoutData.BillingAddress2", billing.Address2 || "");
+  set("CheckoutData.BillingCity", billing.City || shipping.City);
+  set("CheckoutData.BillingZIP", billing.Zip || shipping.Zip);
+  set("CheckoutData.BillingStateID", billing.StateId || shipping.StateId);
+  set("CheckoutData.BillingFirstName", billing.FirstName || shipping.FirstName);
+  set("CheckoutData.BillingLastName", billing.LastName || shipping.LastName);
+  set("CheckoutData.BillingPhone", billing.Phone || shipping.Phone);
+  set(
+    "CheckoutData.SelectedShippingOptionID",
+    opts.shippingMethodId || form.selectedShippingOptionId || "",
+  );
+  set(
+    "CheckoutData.SelectedPaymentMethodID",
+    opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+  );
+  set(
+    "CheckoutData.CurrentPaymentGayewayID",
+    opts.gatewayId || form.gatewayId || "2",
+  );
+  set("CheckoutData.ExternalData.CurrentGatewayId", opts.gatewayId || form.gatewayId || "2");
+  set("CheckoutData.AddressVerified", "true");
+  set("CheckoutData.TnCConsent", "true");
+  set("CheckoutData.TnCConsent0", "true");
+  set("CheckoutData.IsValidationMessagesV2", "true");
+  return params.toString();
+}
+
 /** Pick cheapest / default shipping option id from ShippingOptions JSON. */
 export function pickShippingMethodId(shippingJson) {
   const options =
@@ -576,8 +632,10 @@ export function buildIssuerFormBody(opts = {}) {
   params.set("PaymentData.cvdNumber", String(card.cvv || ""));
   params.set("PaymentData.checkoutV2", "true");
   params.set("PaymentData.cartToken", String(guid || ""));
+  // Gateway id ≠ payment method id. Card form is usually pm=1 on gateway=2.
+  // CreditCardForm URL path uses gatewayId (GEM secureFrameURL+"/"+gateway).
   params.set("PaymentData.gatewayId", String(opts.gatewayId || "2"));
-  params.set("PaymentData.paymentMethodId", String(opts.paymentMethodId || "2"));
+  params.set("PaymentData.paymentMethodId", String(opts.paymentMethodId || "1"));
   params.set("PaymentData.machineId", String(opts.machineId || ""));
   params.set("PaymentData.createTransaction", "true");
   params.set("PaymentData.checkoutCDNEnabled", opts.checkoutCDNEnabled || "value");
@@ -1146,11 +1204,58 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // Keep Playwright on Checkout/v2 after iovation. Top-level goto(CreditCardForm)
   // replaces the GE parent session → IsTheSameCartToken=False / DataCorruption.
   // Browser keeps Checkout/v2 with a secure-bandai iframe for the card form.
+  //
+  // CRITICAL: CreditCardForm URL path is GATEWAY id (secureFrameURL+"/"+currentGatewayID),
+  // NOT paymentMethodId. Card UI is usually pm=1 with gateway=2.
   let paymentMethodId = String(
     opts.paymentMethodId || form.selectedPaymentMethodId || "1",
   );
   let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
-  let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${paymentMethodId}`;
+
+  // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
+  const saveBody = buildCheckoutSaveBody(form, {
+    cartToken: guid,
+    shippingMethodId,
+    paymentMethodId,
+    gatewayId,
+  });
+  const saveRes = await httpText(
+    `${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`,
+    {
+      ctx,
+      method: "POST",
+      userAgent: opts.userAgent,
+      accept: "application/json, text/plain, */*",
+      headers: {
+        origin: BANDAI_GE_WEBSERVICES,
+        referer: v2Url,
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "x-requested-with": "XMLHttpRequest",
+        "X-merchantId": String(mid),
+      },
+      body: saveBody,
+    },
+  ).catch((e) => ({ ok: false, status: 0, ms: 0, text: "", error: e?.message }));
+  let saveOk = false;
+  try {
+    const sj = JSON.parse(String(saveRes?.text || ""));
+    saveOk = Boolean(saveRes?.ok && (sj?.Success === true || sj?.success === true));
+  } catch {
+    saveOk = Boolean(saveRes?.ok);
+  }
+  push("ge_checkout_save", {
+    ok: saveOk,
+    status: saveRes?.status,
+    ms: saveRes?.ms,
+    note: (
+      saveOk
+        ? `save ok gw=${gatewayId} pm=${paymentMethodId} ship=${shippingMethodId || "none"}`
+        : `save fail ${String(saveRes?.text || saveRes?.error || "").replace(/\s+/g, " ")}`
+    ).slice(0, 200),
+  });
+
+  // Path segment = gatewayId (GEM ShowCCForm / secureFrameURL+"/"+currentGatewayID).
+  let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${gatewayId}`;
   let cc = { ok: false, status: 0, ms: 0, text: "" };
 
   if (issuerPage) {
@@ -1335,7 +1440,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ok: cc.ok,
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${issuerPage && cc.ok ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
+    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
 
   try {
@@ -1409,23 +1514,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     };
   }
 
-  // Optional save / verify (best-effort; browser fires these before issuer).
-  await httpText(`${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`, {
-    ctx,
-    method: "POST",
-    userAgent: opts.userAgent,
-    headers: {
-      origin: BANDAI_GE_WEBSERVICES,
-      referer: v2Url,
-      "content-type": "application/json",
-      "X-merchantId": String(mid),
-    },
-    body: JSON.stringify({
-      Action: "Save",
-      Token: guid,
-      MerchantId: Number(mid),
-    }),
-  }).catch(() => null);
+  // checkoutv2/save already ran before CreditCardForm (GEM SaveForm order).
 
   const issuerUrl =
     opts.issuerUrl ||
@@ -1575,6 +1664,7 @@ export default {
   htmlFormValue,
   parseCheckoutV2Form,
   buildHandleActionBodies,
+  buildCheckoutSaveBody,
   pickShippingMethodId,
   decodeCcPaymentRedirectData,
   isBandaiGePaymentRedirectSignal,

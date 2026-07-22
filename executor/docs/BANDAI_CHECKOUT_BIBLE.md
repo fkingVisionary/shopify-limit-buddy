@@ -177,7 +177,8 @@ HTTP checkoutSn + merchantCartToken
   → CartToken GUID
   → GET webservices…/Checkout/v2/8urc/{guid}                               ✅ HTTP
   → POST checkoutv2/handleaction/{1,2,3} with Action+Token+ShippingData    ✅ HTTP (not `{}`)
-  → GET secure-bandai…/payments/CreditCardForm/{guid}/2                    ✅ HTTP (JWT)
+  → POST checkoutv2/save/{8urc}/{guid} urlencoded MainForm + X-merchantId  ✅ HTTP (SaveForm)
+  → GET secure-bandai…/payments/CreditCardForm/{guid}/{gatewayId}          ✅ HTTP (JWT; path=gateway, usually 2)
   → machineId = #ioBlackBox from snare.js (iovation RED)                   ⚠ needs DOM
   → POST …/Payments/HandleCreditCardRequestV2/8urc/{guid}                  ✅ HTTP undici
 ```

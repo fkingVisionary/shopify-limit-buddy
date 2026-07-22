@@ -24,6 +24,7 @@ import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
+import fs from "node:fs";
 import {
   createBandaiSession,
   parseAreaItemNo,
