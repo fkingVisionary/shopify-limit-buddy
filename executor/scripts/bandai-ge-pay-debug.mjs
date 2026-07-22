@@ -152,8 +152,10 @@ console.log("logged in");
 
 // Cart → proceed
 await page.goto("https://p-bandai.com/au/cart", { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(4000);
-const areaBoxes = page.locator('input[type="checkbox"]');
+await page.waitForTimeout(2500);
+await dismissCookies();
+await page.waitForTimeout(1500);
+const areaBoxes = page.locator('input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])');
 const boxCount = await areaBoxes.count();
 for (let i = 0; i < boxCount; i++) {
   const box = areaBoxes.nth(i);
@@ -164,7 +166,14 @@ await Promise.all([
   page.waitForURL(/orderdetails/i, { timeout: 60_000 }).catch(() => null),
   proceed.click(),
 ]);
-await page.waitForTimeout(6000);
+await page.waitForTimeout(3000);
+await dismissCookies();
+// Wait for Checkout/v2
+for (let i = 0; i < 40; i++) {
+  if (page.frames().some((f) => /Checkout\/v2|CreditCardForm/i.test(f.url()))) break;
+  await page.waitForTimeout(1000);
+  if (i === 8) await dismissCookies();
+}
 console.log("checkoutSn", await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")));
 await dumpFrames("after-ge-boot");
 
