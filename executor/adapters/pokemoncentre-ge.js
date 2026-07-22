@@ -304,81 +304,110 @@ export async function runGlobalEPay(opts = {}) {
       }
     });
 
-    // 1) Billing address — PC GE shows "Mobile Phone is required" if empty.
-    const fillByLabel = async (frame, labelRe, value) => {
-      const byLabel = frame.getByLabel(labelRe).first();
-      if (await byLabel.count().catch(() => 0)) {
-        await byLabel.fill(value).catch(() => {});
-        return true;
-      }
-      const byRole = frame.getByRole("textbox", { name: labelRe }).first();
-      if (await byRole.count().catch(() => 0)) {
-        await byRole.fill(value).catch(() => {});
-        return true;
-      }
-      return false;
+    // 1) Billing address — PC GE validates required fields on PURCHASE NOW.
+    // Prefer click+type (Angular/GE binds better than locator.fill alone).
+    const typeInto = async (locator, value) => {
+      if (!(await locator.count().catch(() => 0))) return false;
+      await locator.click({ timeout: 3000 }).catch(() => {});
+      await locator.fill("").catch(() => {});
+      await locator.type(String(value), { delay: 25 }).catch(async () => {
+        await locator.fill(String(value)).catch(() => {});
+      });
+      await locator.evaluate((el, v) => {
+        el.value = v;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+        el.dispatchEvent(new Event("blur", { bubbles: true }));
+      }, String(value)).catch(() => {});
+      return true;
     };
     let addressFilled = false;
     let phoneFilled = false;
-    for (let tick = 0; tick < 12 && !addressFilled; tick++) {
+    let filledKeys = [];
+    for (let tick = 0; tick < 16 && !phoneFilled; tick++) {
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
-        // Country Australia first (phone prefix +61)
-        const country = frame.locator('select[name*="Country" i], select#CheckoutData_BillingAddress_CountryID, select[id*="Country" i]').first();
-        if (await country.count().catch(() => 0)) {
-          await country.selectOption({ label: "Australia" }).catch(() =>
-            country.selectOption({ label: /Australia/i }).catch(() => {}),
-          );
+        // Discover concrete input ids/names once
+        const discovered = await frame
+          .evaluate(() =>
+            [...document.querySelectorAll("input,select")]
+              .filter((el) => el.offsetWidth || el.offsetHeight || el.getClientRects().length)
+              .map((el) => ({
+                tag: el.tagName,
+                name: el.name || "",
+                id: el.id || "",
+                type: el.type || "",
+                aria: el.getAttribute("aria-label") || "",
+              }))
+              .slice(0, 100),
+          )
+          .catch(() => []);
+        if (discovered?.length && tick === 0) {
+          push("ge_fields", {
+            ok: true,
+            note: `discovered ${discovered.length} controls`,
+            sample: discovered.slice(0, 30),
+          });
         }
-        await fillByLabel(frame, /First Name/i, "Test");
-        await fillByLabel(frame, /Last Name/i, "User");
-        await fillByLabel(frame, /^Email$/i, opts.email || "decline.test@example.com");
-        const email = frame.locator('input[type="email"], input[name*="email" i]').first();
-        if (await email.count().catch(() => 0)) {
-          await email.fill(opts.email || "decline.test@example.com").catch(() => {});
-        }
-        await fillByLabel(frame, /Address Line 1/i, "1 George Street");
-        await fillByLabel(frame, /^City$/i, "Sydney");
-        await fillByLabel(frame, /Zip|Postcode/i, "2000");
-        for (const [sel, val] of [
-          ['input[name*="FirstName" i], input[autocomplete="given-name"]', "Test"],
-          ['input[name*="LastName" i], input[autocomplete="family-name"]', "User"],
-          ['input[name*="Address1" i], input[autocomplete="address-line1"]', "1 George Street"],
-          ['input[name*="City" i], input[autocomplete="address-level2"]', "Sydney"],
-          ['input[name*="ZIP" i], input[name*="Postal" i], input[autocomplete="postal-code"]', "2000"],
-        ]) {
-          const el = frame.locator(sel).first();
-          if (await el.count().catch(() => 0)) await el.fill(val).catch(() => {});
-        }
-        const state = frame.locator('select[name*="State" i], select[autocomplete="address-level1"], select[id*="State" i]').first();
-        if (await state.count().catch(() => 0)) {
-          await state.selectOption({ label: "New South Wales" }).catch(() =>
-            state.selectOption("NSW").catch(() => {}),
-          );
-        }
-        // Mobile Phone — required on PC GE (wire: red "Mobile Phone is required")
-        phoneFilled =
-          (await fillByLabel(frame, /Mobile Phone/i, opts.phone || "0412345678")) ||
-          phoneFilled;
-        const phone = frame
+
+        const country = frame
           .locator(
-            'input[type="tel"], input[name*="phone" i], input[id*="phone" i], input[placeholder*="phone" i]',
+            'select[name*="BillingAddress"][name*="Country" i], select[id*="BillingAddress"][id*="Country" i], select[name*="Country" i]',
           )
           .first();
-        if (await phone.count().catch(() => 0)) {
-          await phone.fill(opts.phone || "0412345678").catch(() => {});
-          phoneFilled = true;
+        if (await country.count().catch(() => 0)) {
+          await country.selectOption({ label: "Australia" }).catch(() => {});
         }
-        addressFilled = true;
-        break;
+
+        const pairs = [
+          [/FirstName|first.?name/i, "Test", "firstName"],
+          [/LastName|last.?name/i, "User", "lastName"],
+          [/Email/i, opts.email || "decline.test@example.com", "email"],
+          [/Address1|AddressLine1|address-line1/i, "1 George Street", "address1"],
+          [/City|Suburb/i, "Sydney", "city"],
+          [/ZIP|Zip|Postal|Postcode/i, "2000", "zip"],
+          [/Phone|Mobile/i, opts.phone || "0412345678", "phone"],
+        ];
+        for (const [re, val, key] of pairs) {
+          let ok = false;
+          // id/name match
+          for (const d of discovered || []) {
+            if (!re.test(`${d.name} ${d.id} ${d.aria}`)) continue;
+            if (d.tag === "SELECT") continue;
+            const loc = frame.locator(`#${CSS.escape(d.id)}, [name="${d.name}"]`).first();
+            ok = await typeInto(loc, val);
+            if (ok) break;
+          }
+          if (!ok) {
+            ok = await typeInto(frame.getByLabel(re).first(), val);
+          }
+          if (!ok) {
+            ok = await typeInto(frame.getByRole("textbox", { name: re }).first(), val);
+          }
+          if (ok) filledKeys.push(key);
+          if (key === "phone" && ok) phoneFilled = true;
+        }
+
+        const state = frame
+          .locator(
+            'select[name*="BillingAddress"][name*="State" i], select[id*="BillingAddress"][id*="State" i], select[name*="State" i]',
+          )
+          .first();
+        if (await state.count().catch(() => 0)) {
+          await state.selectOption({ label: "New South Wales" }).catch(() =>
+            state.selectOption({ label: /New South Wales/i }).catch(() => {}),
+          );
+          filledKeys.push("state");
+        }
+
+        addressFilled = filledKeys.length >= 3;
+        if (phoneFilled) break;
       }
-      if (!addressFilled) await page.waitForTimeout(1000);
+      if (!phoneFilled) await page.waitForTimeout(1000);
     }
     push("ge_address", {
       ok: addressFilled && phoneFilled,
-      note: addressFilled
-        ? `guest address attempted phone=${phoneFilled}`
-        : "no address fields yet",
+      note: `keys=${[...new Set(filledKeys)].join(",") || "none"} phone=${phoneFilled}`,
     });
     await page.waitForTimeout(2000);
 
