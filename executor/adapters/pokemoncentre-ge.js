@@ -362,27 +362,41 @@ export async function runGlobalEPay(opts = {}) {
         const pairs = [
           [/FirstName|first.?name/i, "Test", "firstName"],
           [/LastName|last.?name/i, "User", "lastName"],
-          [/Email/i, opts.email || "decline.test@example.com", "email"],
+          [/(^|[^a-z])Email([^a-z]|$)/i, opts.email || "decline.test@example.com", "email"],
           [/Address1|AddressLine1|address-line1/i, "1 George Street", "address1"],
           [/City|Suburb/i, "Sydney", "city"],
-          [/ZIP|Zip|Postal|Postcode/i, "2000", "zip"],
-          [/Phone|Mobile/i, opts.phone || "0412345678", "phone"],
+          [/ZIP|ZipCode|Postcode|PostalCode/i, "2000", "zip"],
+          [/MobilePhone|(^|[^a-z])Phone([^a-z]|$)|PhoneNumber/i, opts.phone || "0412345678", "phone"],
         ];
+        const used = new Set();
         for (const [re, val, key] of pairs) {
           let ok = false;
-          // id/name match
           for (const d of discovered || []) {
-            if (!re.test(`${d.name} ${d.id} ${d.aria}`)) continue;
+            const hay = `${d.name} ${d.id} ${d.aria}`;
+            if (!re.test(hay)) continue;
             if (d.tag === "SELECT") continue;
-            const loc = frame.locator(`#${CSS.escape(d.id)}, [name="${d.name}"]`).first();
+            if (/prefix|token|recaptcha|forter|fingerprint|shipping/i.test(hay)) continue;
+            // Keep zip vs phone strictly separate (saw zip=2000041234 when phone typed into postcode).
+            if (key === "zip" && /phone|mobile/i.test(hay)) continue;
+            if (key === "phone" && /zip|postal|postcode/i.test(hay)) continue;
+            const uid = `${d.tag}|${d.id}|${d.name}`;
+            if (used.has(uid)) continue;
+            const parts = [];
+            if (d.id) parts.push(`[id="${d.id.replace(/"/g, '\\"')}"]`);
+            if (d.name) parts.push(`[name="${d.name.replace(/"/g, '\\"')}"]`);
+            if (!parts.length) continue;
+            const loc = frame.locator(parts.join(", ")).first();
             ok = await typeInto(loc, val);
-            if (ok) break;
+            if (ok) {
+              used.add(uid);
+              break;
+            }
           }
-          if (!ok) {
+          if (!ok && key !== "phone") {
             ok = await typeInto(frame.getByLabel(re).first(), val);
           }
-          if (!ok) {
-            ok = await typeInto(frame.getByRole("textbox", { name: re }).first(), val);
+          if (!ok && key === "phone") {
+            ok = await typeInto(frame.getByLabel(/Mobile Phone/i).first(), val);
           }
           if (ok) filledKeys.push(key);
           if (key === "phone" && ok) phoneFilled = true;
@@ -398,6 +412,26 @@ export async function runGlobalEPay(opts = {}) {
             state.selectOption({ label: /New South Wales/i }).catch(() => {}),
           );
           filledKeys.push("state");
+        }
+
+        // Hard re-assert zip (4 digits) + mobile — GE rejected zip "2000041234" and empty phone.
+        for (const d of discovered || []) {
+          const hay = `${d.name} ${d.id} ${d.aria}`;
+          if (/ZIP|ZipCode|Postcode|PostalCode/i.test(hay) && !/phone|mobile/i.test(hay) && d.tag !== "SELECT") {
+            const parts = [];
+            if (d.id) parts.push(`[id="${d.id.replace(/"/g, '\\"')}"]`);
+            if (d.name) parts.push(`[name="${d.name.replace(/"/g, '\\"')}"]`);
+            if (parts.length) await typeInto(frame.locator(parts.join(", ")).first(), "2000");
+          }
+          if (/MobilePhone|PhoneNumber|(^|[^a-z])Phone([^a-z]|$)/i.test(hay) && !/zip|postal|prefix/i.test(hay) && d.tag !== "SELECT") {
+            const parts = [];
+            if (d.id) parts.push(`[id="${d.id.replace(/"/g, '\\"')}"]`);
+            if (d.name) parts.push(`[name="${d.name.replace(/"/g, '\\"')}"]`);
+            if (parts.length) {
+              const ok = await typeInto(frame.locator(parts.join(", ")).first(), opts.phone || "0412345678");
+              if (ok) phoneFilled = true;
+            }
+          }
         }
 
         addressFilled = filledKeys.length >= 3;
@@ -560,15 +594,21 @@ export async function runGlobalEPay(opts = {}) {
         earlyText += await frame.locator("body").innerText().catch(() => "");
       }
     }
-    if (/Mobile Phone is required|is required/i.test(earlyText)) {
+    if (/Mobile Phone is required|is required|post code of 4 digits/i.test(earlyText)) {
       for (const frame of page.frames()) {
         if (!/Checkout\/v2|webservices\.global-e/i.test(frame.url())) continue;
+        await frame.getByLabel(/Zip|Postcode/i).fill("2000").catch(() => {});
         await frame.getByLabel(/Mobile Phone/i).fill(opts.phone || "0412345678").catch(() => {});
-        const phone = frame.locator('input[type="tel"], input[name*="phone" i], input[id*="Phone" i]').first();
+        const zip = frame.locator('input[name*="ZIP" i], input[id*="ZIP" i], input[name*="Postal" i]').first();
+        if (await zip.count().catch(() => 0)) {
+          await zip.click().catch(() => {});
+          await zip.fill("2000").catch(() => {});
+        }
+        const phone = frame.locator('input[type="tel"], input[name*="Phone" i], input[id*="Phone" i]').first();
         if (await phone.count().catch(() => 0)) {
+          await phone.click().catch(() => {});
           await phone.fill(opts.phone || "0412345678").catch(() => {});
         }
-        // dismiss validation modal if present
         await frame.locator("#modalOk, button:has-text('Ok')").first().click({ timeout: 2000 }).catch(() => {});
       }
       // Re-assert expiry year on secure form
