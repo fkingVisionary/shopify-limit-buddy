@@ -603,7 +603,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         /* ignore */
       }
 
-      // Re-assert login in the bridge page (same sensors) so /cart SPA sees the member.
+      // Re-assert login in the bridge page (fresh sensors) so /cart SPA sees the member.
+      // 501 = stale F5 mint — retry once; Pay is a no-op when the bridge session is dead.
       await bridge.goto(`${session.base}/login`, { settleMs: 900 });
       const loginBodyGe = new URLSearchParams({
         grantType: "password",
@@ -613,61 +614,64 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         autoLogin: "false",
       }).toString();
       let pageLoginOk = false;
-      try {
-        const mintGe = await bridge.mint("POST", "/login", {
-          body: loginBodyGe,
-          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
-          csrf: session.state.csrfToken || (await bridge.csrfToken()),
-        });
-        const pageLogin = await bridge.page.evaluate(
-          async ({ body, csrf, areaCode, sensors }) => {
-            const headers = {
-              accept: "application/json, text/plain, */*",
-              "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
-              "x-g1-area-code": areaCode,
-              "x-requested-with": "XMLHttpRequest",
-              ...(csrf ? { "x-csrf-token": csrf } : {}),
-              ...(sensors || {}),
-            };
-            const res = await fetch("/login", {
-              method: "POST",
-              headers,
-              body,
-              credentials: "include",
-            });
-            const next = res.headers.get("x-csrf-token");
-            if (next) {
-              window.__bandaiCsrf = next;
-              if (window.USER_DATA) window.USER_DATA.csrfToken = next;
-            }
-            return { status: res.status, restricted: res.headers.get("x-restricted-type") };
-          },
-          {
+      let pageLoginStatus = null;
+      let pageLoginNote = "";
+      for (let loginAttempt = 1; loginAttempt <= 2 && !pageLoginOk; loginAttempt++) {
+        try {
+          const mintGe = await bridge.mint("POST", "/login", {
             body: loginBodyGe,
+            contentType: "application/x-www-form-urlencoded;charset=UTF-8",
             csrf: session.state.csrfToken || (await bridge.csrfToken()),
-            areaCode: session.area,
-            sensors: mintGe.sensors || {},
-          },
-        );
-        pageLoginOk = pageLogin.status >= 200 && pageLogin.status < 300;
-        steps.push({
-          step: "bridge_login",
-          ok: pageLoginOk,
-          status: pageLogin.status,
-          ms: 0,
-          note: pageLoginOk
-            ? `bridge page login ok restricted=${pageLogin.restricted || "none"}`
-            : `bridge page login ${pageLogin.status}`,
-        });
-      } catch (e) {
-        steps.push({
-          step: "bridge_login",
-          ok: false,
-          status: null,
-          ms: 0,
-          note: e?.message || "bridge_login_failed",
-        });
+          });
+          const pageLogin = await bridge.page.evaluate(
+            async ({ body, csrf, areaCode, sensors }) => {
+              const headers = {
+                accept: "application/json, text/plain, */*",
+                "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "x-g1-area-code": areaCode,
+                "x-requested-with": "XMLHttpRequest",
+                ...(csrf ? { "x-csrf-token": csrf } : {}),
+                ...(sensors || {}),
+              };
+              const res = await fetch("/login", {
+                method: "POST",
+                headers,
+                body,
+                credentials: "include",
+              });
+              const next = res.headers.get("x-csrf-token");
+              if (next) {
+                window.__bandaiCsrf = next;
+                if (window.USER_DATA) window.USER_DATA.csrfToken = next;
+              }
+              return { status: res.status, restricted: res.headers.get("x-restricted-type") };
+            },
+            {
+              body: loginBodyGe,
+              csrf: session.state.csrfToken || (await bridge.csrfToken()),
+              areaCode: session.area,
+              sensors: mintGe.sensors || {},
+            },
+          );
+          pageLoginStatus = pageLogin.status;
+          pageLoginOk = pageLogin.status >= 200 && pageLogin.status < 300;
+          pageLoginNote = pageLoginOk
+            ? `bridge page login ok restricted=${pageLogin.restricted || "none"} attempt=${loginAttempt}`
+            : `bridge page login ${pageLogin.status} attempt=${loginAttempt}`;
+          if (!pageLoginOk && loginAttempt < 2) {
+            await bridge.goto(`${session.base}/login`, { settleMs: 1200 });
+          }
+        } catch (e) {
+          pageLoginNote = e?.message || "bridge_login_failed";
+        }
       }
+      steps.push({
+        step: "bridge_login",
+        ok: pageLoginOk,
+        status: pageLoginStatus,
+        ms: 0,
+        note: pageLoginNote,
+      });
 
       const geOut = await browserBandaiGeFromCart({
         page: bridge.page,

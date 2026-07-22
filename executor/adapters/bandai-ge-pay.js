@@ -73,23 +73,21 @@ async function fillSelectFast(locator, rawValue) {
 
 async function fillInputFast(locator, value) {
   const v = String(value ?? "");
-  // Prefer DOM set + events — GE validators listen for input/change; avoids 90s fills.
-  // Do NOT submit the card form — blur/Enter historically double-charged with Checkout Pay.
-  const ok = await locator
-    .evaluate((el, val) => {
-      el.focus();
-      el.value = "";
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.value = val;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-      // Keep focus out of submit path; parent Checkout Pay is the only charge click.
-      el.blur();
-      return el.value === val || String(el.value).replace(/\s/g, "") === String(val).replace(/\s/g, "");
-    }, v)
-    .catch(() => false);
-  if (ok) return true;
-  await locator.click({ timeout: 1500 }).catch(() => {});
+  // Prefer real keystrokes — DOM value set left Pay enabled but posting nothing
+  // after click (Revolut silent). Fall back to fill/DOM if type is flaky.
+  try {
+    await locator.click({ timeout: 1500 });
+    await locator.fill("");
+    if (typeof locator.pressSequentially === "function") {
+      await locator.pressSequentially(v, { delay: 12 });
+    } else {
+      await locator.type(v, { delay: 12 });
+    }
+    const cur = await locator.inputValue().catch(() => "");
+    if (cur.replace(/\s/g, "") === v.replace(/\s/g, "")) return true;
+  } catch {
+    /* fall through */
+  }
   await locator.fill(v, { timeout: 2000 }).catch(() => {});
   return true;
 }
@@ -300,19 +298,44 @@ export async function browserBandaiGeFromCart(opts = {}) {
     const method = req.method();
     const u = req.url();
     if (method === "GET" || method === "OPTIONS" || method === "HEAD") return;
-    if (!/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
-      return;
-    }
-    if (/WriteContextualLog|collectCheckout|prefetcher|\/static\/|\.js(?:\?|$)|\/css\//i.test(u)) {
-      // Still record briefly for post-Pay diffs, but tag as noise.
-      if (armChargeGuard) {
-        geNet.push({ t: Date.now(), kind: "req", method, url: u.slice(0, 200), noise: true });
+    const isGe =
+      /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u);
+    const noise =
+      /WriteContextualLog|collectCheckout|prefetcher|\/static\/|\.js(?:\?|$)|\/css\/|google|facebook|hotjar|sentry|datadog/i.test(
+        u,
+      );
+    // After Pay — log every non-GET (any host) so we can see the real issuer path.
+    if (armChargeGuard) {
+      const handleAction = isBandaiGeHandleAction(u);
+      const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
+      const chargeCandidate = isGe && !noise && isBandaiGeChargeRequest(method, u);
+      const row = {
+        t: Date.now(),
+        kind: "req",
+        method,
+        url: u.slice(0, 220),
+        armed: true,
+        postPay: true,
+        noise,
+        handleAction,
+        actionId,
+        chargeCandidate,
+      };
+      if (chargeCandidate || (handleAction && actionId != null && actionId >= 3)) {
+        chargeReqCount += 1;
+        row.chargeN = chargeReqCount;
+        row.issuer = true;
+        issuerHandleActionSent = true;
+        mark("ge_post", { actionId, armed: true, postPay: true, url: u.slice(0, 140) });
+      } else if (!noise) {
+        mark("post_pay_req", { method, url: u.slice(0, 140) });
       }
+      geNet.push(row);
       return;
     }
+    if (!isGe || noise) return;
     const handleAction = isBandaiGeHandleAction(u);
     const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
-    const chargeCandidate = isBandaiGeChargeRequest(method, u);
     const row = {
       t: Date.now(),
       kind: "req",
@@ -320,26 +343,10 @@ export async function browserBandaiGeFromCart(opts = {}) {
       url: u.slice(0, 200),
       handleAction,
       actionId,
-      chargeCandidate,
-      armed: armChargeGuard,
+      chargeCandidate: isBandaiGeChargeRequest(method, u),
+      armed: false,
     };
-    if (handleAction && actionId != null && actionId >= 3) {
-      chargeReqCount += 1;
-      row.chargeN = chargeReqCount;
-      if (armChargeGuard) {
-        issuerHandleActionSent = true;
-        row.issuer = true;
-      }
-      mark("ge_post", { actionId, armed: armChargeGuard, url: u.slice(0, 120) });
-    } else if (chargeCandidate && armChargeGuard) {
-      chargeReqCount += 1;
-      row.chargeN = chargeReqCount;
-      row.issuer = true;
-      issuerHandleActionSent = true;
-      mark("ge_post", { chargeCandidate: true, armed: true, url: u.slice(0, 120) });
-    } else if (handleAction) {
-      mark("ge_post", { actionId, armed: armChargeGuard, url: u.slice(0, 120) });
-    }
+    if (handleAction) mark("ge_post", { actionId, armed: false, url: u.slice(0, 120) });
     geNet.push(row);
   };
   const onRes = (res) => {
@@ -806,12 +813,24 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (disabled) continue;
 
         try {
-          // Arm before click — post-Pay GE POSTs are the issuer wire (14:09 proof).
+          // Arm before click — post-Pay POSTs are the only Revolut-relevant wire.
           armChargeGuard = true;
           mark("charge_guard_armed");
-          // Native Playwright click — do NOT sync-disable Pay in the same turn;
-          // that aborted GE's payment handler (labs green, Revolut silent).
-          await payBtn.click({ timeout: 3_000, noWaitAfter: true });
+          await tickTerms();
+          // Playwright click + synthetic MouseEvent (14:09-style tip used locator click;
+          // after regressions some sessions need both for GEM to POST).
+          await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          await frame
+            .evaluate(() => {
+              const buttons = [...document.querySelectorAll("button, input[type=submit]")].filter((b) =>
+                /^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim()),
+              );
+              const btn = buttons.find((b) => !b.disabled && b.getAttribute("aria-disabled") !== "true") || buttons[0];
+              if (!btn) return false;
+              btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+              return true;
+            })
+            .catch(() => false);
           payClickCount += 1;
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)}`;
@@ -820,20 +839,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
             payClickCount,
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
+            payDiag,
           });
-          // Soft single-flight: disable extra Pay CTAs after GE has a beat to POST.
-          setTimeout(() => {
-            frame
-              .evaluate(() => {
-                for (const b of document.querySelectorAll("button, input[type=submit]")) {
-                  if (/^(pay|place order|pay now)$/i.test((b.innerText || b.value || "").trim())) {
-                    b.setAttribute("disabled", "true");
-                    b.style.pointerEvents = "none";
-                  }
-                }
-              })
-              .catch(() => {});
-          }, 750);
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }

@@ -78,7 +78,7 @@ for (const s of res.steps || []) {
 }
 for (const e of tl) {
   if (
-    /proceed|gem|ge_|charge|pay|frame|fill|auth|card_iframe/.test(String(e.event || ""))
+    /proceed|gem|ge_|charge|pay|frame|fill|auth|card_iframe|ge_post/.test(String(e.event || ""))
   ) {
     console.log(`  +${e.elapsedMs}ms ${e.event}`, JSON.stringify({ ...e, t: undefined, elapsedMs: undefined, event: undefined }));
   }
