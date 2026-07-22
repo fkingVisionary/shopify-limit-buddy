@@ -12,7 +12,64 @@
 import fs from "node:fs";
 import { chromium } from "playwright";
 import { Session } from "hyper-sdk-js";
+import { generateReese84Sensor, Reese84Input } from "hyper-sdk-js/incapsula/reese";
 import * as hyperPw from "hyper-sdk-playwright";
+
+/**
+ * hyper-sdk-playwright@1.0.0-beta.9 calls Reese84Input as:
+ *   (ua, ip, lang, pageUrl, emptyPowSlot, scriptBody, scriptUrl)
+ * but hyper-sdk-js@2.12 Reese84Input is:
+ *   (ua, ip, lang, pageUrl, script, scriptUrl, pow?)
+ * That swaps script/scriptUrl and yields Hyper `invalid scriptUrl` — an SDK
+ * wiring bug, not a proxy failure. Patch before initialize().
+ */
+function patchIncapsulaReeseArgOrder(Handler) {
+  if (!Handler?.prototype?.handleIncapsulaRequest || Handler.prototype.__pcReeseArgOrderFixed) {
+    return;
+  }
+  Handler.prototype.handleIncapsulaRequest = async function handleIncapsulaRequestFixed(
+    route,
+    page,
+    context,
+    scriptPath,
+    requestUrl,
+  ) {
+    const postData = route.request().postData();
+    if (postData && postData.startsWith('"')) {
+      console.log(`[IncapsulaHandler] Letting through Reese84 refresh POST for path: ${scriptPath}`);
+      return route.continue();
+    }
+    console.log(`[IncapsulaHandler] Intercepting Incapsula POST (arg-order fixed) for path: ${scriptPath}`);
+    if (!this.scriptCapture.interceptedPaths.includes(scriptPath)) {
+      this.scriptCapture.interceptedPaths.push(scriptPath);
+    }
+    if (!this.userAgent) {
+      this.userAgent = await page.evaluate(() => navigator.userAgent);
+    }
+    const script = this.scriptPathToScriptContent.get(scriptPath) || "";
+    const scriptUrl = this.scriptPathToScriptUrl.get(scriptPath) || "";
+    if (!script || !scriptUrl) {
+      console.error(
+        "[IncapsulaHandler] Missing script body/URL after detect — continuing original POST (impl gap, not proxy)",
+      );
+      return route.continue();
+    }
+    const result = await generateReese84Sensor(
+      this.session,
+      new Reese84Input(
+        this.userAgent,
+        this.ipAddress,
+        this.acceptLanguage,
+        page.url(),
+        script,
+        scriptUrl,
+        "",
+      ),
+    );
+    await route.continue({ postData: result });
+  };
+  Handler.prototype.__pcReeseArgOrderFixed = true;
+}
 
 const OUT = process.env.PC_CAPTURE_DIR || `/tmp/pc-hyper-pw-${Date.now()}`;
 const PROXY_RAW = String(process.env.PROXY || "").trim();
@@ -86,22 +143,58 @@ async function main() {
     recordHar: { path: `${OUT}/capture.har`, mode: "full", content: "embed" },
   });
 
-  // Resolve egress IP (Hyper APIs require the IP the target sees)
-  const ipPage = await context.newPage();
-  await ipPage.goto("https://api.ipify.org?format=json", { timeout: 45_000 });
-  const ipJson = await ipPage.textContent("body");
+  // Resolve egress IP (Hyper APIs need the IP the target sees).
+  // Connection errors here are often transient / TLS path flakes — retry before
+  // condemning the sticky (Hyper TLS docs; see POKEMON_CENTRE_MODULE.md §3.4).
   let ipAddress = "0.0.0.0";
-  try {
-    ipAddress = JSON.parse(ipJson).ip;
-  } catch {
-    ipAddress = String(ipJson || "").trim();
+  const ipPage = await context.newPage();
+  const ipUrls = [
+    "https://api.ipify.org?format=json",
+    "https://icanhazip.com",
+    "https://ifconfig.me/ip",
+  ];
+  let ipErr = null;
+  for (const ipUrl of ipUrls) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await ipPage.goto(ipUrl, { timeout: 30_000, waitUntil: "domcontentloaded" });
+        const body = (await ipPage.textContent("body"))?.trim() || "";
+        try {
+          ipAddress = JSON.parse(body).ip || ipAddress;
+        } catch {
+          const m = body.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
+          if (m) ipAddress = m[0];
+        }
+        if (ipAddress && ipAddress !== "0.0.0.0") {
+          ipErr = null;
+          break;
+        }
+      } catch (e) {
+        ipErr = e;
+        push("egress_retry", {
+          note: `${ipUrl} attempt ${attempt + 1}: ${e.message?.split("\n")[0]}`,
+          hint: "Nav/TLS flake ≠ automatic burnt proxy — retrying alternate IP endpoint",
+        });
+      }
+    }
+    if (ipAddress && ipAddress !== "0.0.0.0") break;
   }
   await ipPage.close();
+  if (!ipAddress || ipAddress === "0.0.0.0") {
+    throw ipErr || new Error("egress IP resolve failed after retries");
+  }
   push("egress", { note: ipAddress });
 
   const session = new Session(apiKey, undefined, undefined, undefined, { timeout: 25_000 });
   const page = await context.newPage();
   const handlerConfigs = { session, ipAddress, acceptLanguage, userAgent };
+  if (typeof hyperPw.IncapsulaHandler === "function") {
+    patchIncapsulaReeseArgOrder(hyperPw.IncapsulaHandler);
+    push("incapsula_patch", {
+      note: "Reese84Input arg order fixed (beta.9 vs sdk-js 2.12) — was invalid scriptUrl",
+      ref: "https://docs.hypersolutions.co/incapsula/reese84.md",
+    });
+  }
   const handlers = [
     ["incapsula", hyperPw.IncapsulaHandler],
     ["datadome", hyperPw.DataDomeHandler],

@@ -41,6 +41,19 @@ DataDome:      cookie datadome; block page var dd={ rt:'c', t:'bv', hsh:'5B45875
 
 Full HAR kept local (`/tmp/pc-capture-isp/`) — not committed (large + tokens).
 
+## Hyper Playwright triage (2026-07-22)
+
+`experiments/pokemoncentre-hyper-pw-capture.mjs` with `IncapsulaHandler` + `DataDomeHandler`:
+
+| Signal | Classification |
+|---|---|
+| Reese path detected | `/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C` (matches ISP HAR) |
+| `InvalidApiResponseError: invalid scriptUrl` from IncapsulaHandler | **SDK wiring** — `hyper-sdk-playwright` beta.9 passes `Reese84Input` args in the wrong order vs `hyper-sdk-js` 2.12 (script body landed in `scriptUrl`). Patched in the experiment. **Not a proxy verdict.** |
+| Home still slider `t=bv` (after/with broken Reese) | Hyper hard IP block when on slider — but if Reese never minted because of the SDK bug, fix that first before rotating |
+| `net::ERR_CONNECTION_CLOSED` on ipify | Transient path flake — retry alternate IP endpoints; do not spray the pool |
+
+Refs: [DataDome getting started](https://docs.hypersolutions.co/datadome/getting-started.md), [Reese84](https://docs.hypersolutions.co/incapsula/reese84.md), [TLS](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md).
+
 ## Next capture (owner)
 
 1. Prefer Hyper Playwright `IncapsulaHandler` + `DataDomeHandler` (`experiments/pokemoncentre-hyper-pw-capture.mjs`) so TLS/header order match a real browser.

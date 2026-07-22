@@ -119,6 +119,8 @@ Connection errors, 403s, and challenge loops are **easy to mislabel as proxy iss
 | Tags `ch` then `le` | Trust telemetry — not a block page ([tags](https://docs.hypersolutions.co/datadome/tags.md)) | POST `/js`, update `datadome` from JSON cookie |
 | CONNECT timeout / `net::ERR_*` / undici socket errors | Often handshake / TLS / proxy *path* flake | Retry once on same sticky; check TLS client profile — **do not** condemn the whole pool from one error |
 | Cookie field `datadome=VALUE; Max-Age=…` stored whole | Implementation bug (we hit this) | Strip to VALUE only (`parseDatadomeSetCookie`) |
+| Hyper Playwright `InvalidApiResponseError: invalid scriptUrl` on Reese POST | **SDK arg-order bug** in `hyper-sdk-playwright@1.0.0-beta.9` vs `hyper-sdk-js@2.12` (`Reese84Input` script/scriptUrl/pow swapped) | Patch handler call order (see `pokemoncentre-hyper-pw-capture.mjs`) — not a proxy issue |
+| Interstitial `view=captcha` after undici Reese success | Client TLS/header fingerprint vs browser | Prefer Hyper PW handlers (with Reese patch) / tls-client header order before rotating exits |
 
 **Rule of thumb:** bank-style proof for antibot is Hyper’s documented success shapes (`view: "redirect"`, slider check cookie). Proxy rotation is a last resort for documented `t=bv` hard blocks — not the default explanation for every failure.
 
