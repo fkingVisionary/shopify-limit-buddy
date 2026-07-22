@@ -1,22 +1,13 @@
-// Premium Bandai AU — browser session for F5-gated login + ATC (+ optional GE).
-// Raw HTTP can warm/search/product, but POST /login and ATC bind to browser TLS.
-// Keep OnlineSim/HTTP agen separate; this is checkout-path only.
+// Premium Bandai AU — OPT-IN full Playwright checkout (lab / GE decline demos).
+// Default product path is HTTP + F5 sensor bridge (`bandai.js` / `bandai-f5.js`).
+// Enable only with task.bandaiBrowserCheckout === true.
 
 import { chromium } from "playwright";
 
+import { parseBandaiProxy } from "./bandai-f5.js";
+
 function proxyForPlaywright(rawProxy) {
-  if (!rawProxy) return null;
-  let url;
-  try {
-    url = new URL(/^https?:\/\//i.test(rawProxy) ? rawProxy : `http://${rawProxy}`);
-  } catch {
-    return null;
-  }
-  return {
-    server: `${url.protocol}//${url.hostname}:${url.port || (url.protocol === "https:" ? 443 : 80)}`,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-  };
+  return parseBandaiProxy(rawProxy).playwright;
 }
 
 async function pageApi(page, method, path, body) {

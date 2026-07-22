@@ -1,25 +1,13 @@
-// Narrow Playwright login for Premium Bandai AU.
-// HTTP POST /login returns F5 "PAGE NOT AVAILABLE" (501) from undici/tls-worker;
-// guest /api/* POSTs still work. Use Chromium only to establish SESSION, then
-// hand cookies back to the HTTP jar for ATC/checkout.
-//
-// Opt-in / fallback — not a catalog/cart Playwright ladder.
+// Narrow Playwright login harvest for Premium Bandai AU (lab helper).
+// Prefer HTTP + F5 sensor bridge (`bandai-f5.js`). Cookie handoff alone is not
+// enough for ATC — gated POSTs need fresh p8komysnbc-* headers.
 
 import { chromium } from "playwright";
 
+import { parseBandaiProxy } from "./bandai-f5.js";
+
 function proxyForPlaywright(rawProxy) {
-  if (!rawProxy) return null;
-  let url;
-  try {
-    url = new URL(/^https?:\/\//i.test(rawProxy) ? rawProxy : `http://${rawProxy}`);
-  } catch {
-    return null;
-  }
-  return {
-    server: `${url.protocol}//${url.hostname}:${url.port || (url.protocol === "https:" ? 443 : 80)}`,
-    username: url.username ? decodeURIComponent(url.username) : undefined,
-    password: url.password ? decodeURIComponent(url.password) : undefined,
-  };
+  return parseBandaiProxy(rawProxy).playwright;
 }
 
 /**

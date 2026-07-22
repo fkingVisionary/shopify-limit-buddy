@@ -25,8 +25,8 @@ Do **not** use `www.bandai.com.au` (cert mismatch).
 
 1. **Branch off current `main`.** New work only: `cursor/bandai-au-module-<suffix>` (or repo’s required `cursor/…-709b` pattern if still enforced).
 2. **Do not modify `adapters/kmart.js` or Kmart desktop checkout path** unless fixing an accidental break. Kmart is production-green.
-3. **No Playwright recovery ladder for Bandai catalog/cart** unless Global-e Phase 4 needs a narrow browser handoff — prefer undici/HTTP like Kmart’s current mode.
-4. Hyper is **not** required for Bandai edge (F5/Volterra). Good TLS + cookie jar + sticky AU proxy.
+3. **HTTP-first checkout.** Default path is undici + F5 sensor bridge (`adapters/bandai-f5.js`): Playwright only mints `p8komysnbc-*` headers (probe XHR aborted); real `/login`, ATC, `modifyCartItem`, and `cart/{sn}/checkout` POSTs stay on HTTP. Full Playwright checkout is **opt-in only** (`bandaiBrowserCheckout:true`) for GE decline labs. Do not make browser the product default.
+4. Hyper is **not** required for Bandai edge (F5/Volterra). Good TLS + cookie jar + sticky AU proxy + F5 sensors.
 5. Secrets (**OnlineSim key, IMAP app password, test accounts**) come from owner / Desktop Settings — never commit them.
 
 ---

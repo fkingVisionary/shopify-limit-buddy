@@ -128,7 +128,7 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
     };
   }
 
-  async function api(method, path, { body, referer, form } = {}) {
+  async function api(method, path, { body, referer, form, extraHeaders } = {}) {
     if (!state.csrfToken) {
       const w = await warm();
       if (!w.ok) throw Object.assign(new Error(w.note || "bandai_warm_failed"), { code: "warm_failed" });
@@ -136,17 +136,20 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
     const url = path.startsWith("http")
       ? path
       : `${BANDAI_ORIGIN}${path.startsWith("/") ? "" : "/"}${path}`;
-    const isForm = form === true || (body != null && typeof body === "string");
-    const headers = bandaiApiHeaders({
-      csrfToken: state.csrfToken,
-      referer: referer || `${BANDAI_BASE}/`,
-      userAgent: state.userAgent,
-      contentType: isForm
-        ? "application/x-www-form-urlencoded"
-        : body != null
-          ? "application/json"
-          : undefined,
-    });
+    const isForm = form === true || (body != null && typeof body === "string" && !extraHeaders?.["content-type"]);
+    const headers = {
+      ...bandaiApiHeaders({
+        csrfToken: state.csrfToken,
+        referer: referer || `${BANDAI_BASE}/`,
+        userAgent: state.userAgent,
+        contentType: isForm
+          ? "application/x-www-form-urlencoded"
+          : body != null
+            ? "application/json"
+            : undefined,
+      }),
+      ...(extraHeaders || {}),
+    };
     const res = await request(url, {
       method: method || "GET",
       headers,
@@ -174,7 +177,7 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
   /**
    * Password login. memberId = email.
    */
-  async function loginPassword(email, password) {
+  async function loginPassword(email, password, { extraHeaders } = {}) {
     const body = new URLSearchParams({
       grantType: "password",
       memberId: String(email || "").trim(),
@@ -190,9 +193,9 @@ export function createBandaiSession(ctx, { userAgent } = {}) {
           csrfToken: state.csrfToken,
           referer: `${BANDAI_BASE}/login`,
           userAgent: state.userAgent,
-          contentType: "application/x-www-form-urlencoded",
+          contentType: "application/x-www-form-urlencoded;charset=utf-8",
         }),
-        // login also sends x-csrf-token per research
+        ...(extraHeaders || {}),
       },
       body,
     }, ctx);
