@@ -114,6 +114,10 @@ export async function createBandaiF5Bridge(opts = {}) {
     proxy: pwProxy || undefined,
     args: ["--disable-blink-features=AutomationControlled"],
   });
+  const recordHarPath =
+    opts.recordHarPath ||
+    process.env.BANDAI_F5_HAR_PATH ||
+    null;
   const context = await browser.newContext({
     locale,
     userAgent,
@@ -121,6 +125,16 @@ export async function createBandaiF5Bridge(opts = {}) {
     // SW can bypass page.route and was a suspect for Revolut pairs when
     // chargeReqCount stayed 1. context.route still helps; blocking SW closes the gap.
     serviceWorkers: "block",
+    // Optional full HAR for GE dual-rail forensics (flushed on context.close).
+    ...(recordHarPath
+      ? {
+          recordHar: {
+            path: recordHarPath,
+            mode: "full",
+            content: "embed",
+          },
+        }
+      : {}),
   });
   const page = await context.newPage();
   page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
