@@ -379,6 +379,9 @@ function buildBandaiPayload({
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
+      // HTTP-first: F5 sensor bridge mints headers; full Playwright checkout opt-in only.
+      bandaiBrowserCheckout: task.bandaiBrowserCheckout === true,
+      bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
       campaignSn: task.campaignSn || null,
       accountPassword:
