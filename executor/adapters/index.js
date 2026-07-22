@@ -2,6 +2,7 @@
 // the caller can fall back to the legacy generic-Shopify chain in checkout.js.
 //
 // Checkout path: kmart (raw HTTP) + toymate (BigCommerce/CF) + bandai (p-bandai)
+// + pokemoncentre (TPCI Incapsula/DD/Cortex/GE)
 // + kmart-playwright (opt-in via kmartMode="playwright" in checkout.js).
 // Lab/recon modules live under ../experiments/ and are mounted as separate HTTP endpoints.
 //
@@ -10,8 +11,9 @@
 import { kmartAdapter } from "./kmart.js";
 import { toymateAdapter } from "./toymate.js";
 import { bandaiAdapter } from "./bandai.js";
+import { pokemoncentreAdapter } from "./pokemoncentre.js";
 
-const ADAPTERS = [kmartAdapter, toymateAdapter, bandaiAdapter];
+const ADAPTERS = [kmartAdapter, toymateAdapter, bandaiAdapter, pokemoncentreAdapter];
 
 export function pickAdapter(storeUrl) {
   let host;

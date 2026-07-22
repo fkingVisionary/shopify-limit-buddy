@@ -1,21 +1,16 @@
-// Thin wrapper around hyper-sdk-js. Scope today: Akamai only (Kmart AU
-// is the only whitelisted domain on our Hyper key).
+// Thin wrapper around hyper-sdk-js.
 //
-// Surface:
-//   solveAkamaiSensor({ jar, pageUrl, userAgent, ip, acceptLanguage,
-//                       scriptUrl, scriptBody, prevContext })
-//     → { payload, postUrl, context }
+// Akamai (Kmart AU — primary):
+//   solveAkamaiSensor / solveAkamaiPixel / solveAkamaiSbsd
 //
-//   solveAkamaiPixel({ jar, pageUrl, html, userAgent, ip, acceptLanguage })
-//     → { payload, postUrl } | null   (null when no pixel challenge present)
+// Incapsula + DataDome (shared plumbing for Pokémon Centre / AusPost / HN):
+//   solveIncapsulaReese84 / solveIncapsulaUtmvc
+//   solveDataDomeInterstitial / solveDataDomeSlider / solveDataDomeTags
+//   parse helpers: looksLikeIncapsulaChallenge, extractReeseScriptPath,
+//                  looksLikeDataDomeBlock, parseDataDomeObject
 //
-//   solveAkamaiSbsd({ jar, pageUrl, scriptBody, uuid, oCookie, index,
-//                     userAgent, ip, acceptLanguage })
-//     → string payload
-//
-// The caller is responsible for POSTing the payload back to postUrl with the
-// retailer-shaped headers and ingesting the response cookies. Hyper just
-// produces the body.
+// The caller is responsible for POSTing payloads back to the retailer with
+// matching TLS/UA/IP and ingesting response cookies. Hyper just mints bodies.
 
 import {
   Session,
@@ -28,6 +23,19 @@ import {
   generatePixelData,
   SbsdInput,
   generateSbsdPayload,
+  Reese84Input,
+  generateReese84Sensor,
+  UtmvcInput,
+  generateUtmvcCookie,
+  getSessionIds,
+  InterstitialInput,
+  generateInterstitialPayload,
+  parseInterstitialDeviceCheckUrl,
+  SliderInput,
+  generateSliderPayload,
+  parseSliderDeviceCheckUrl,
+  TagsInput,
+  generateTagsPayload,
 } from "hyper-sdk-js";
 import { request } from "./http.js";
 
@@ -157,3 +165,282 @@ export async function solveAkamaiSbsd({
     new SbsdInput(index, uuid, oCookie ?? jar.get("sbsd_o") ?? "", pageUrl, userAgent, scriptBody, ip ?? "", acceptLanguage),
   );
 }
+
+// ─── Incapsula / Imperva ─────────────────────────────────────────────
+
+/** True when HTML is an Incapsula iframe / interruption shell (HTTP 200 ≠ clear). */
+export function looksLikeIncapsulaChallenge(html, status) {
+  const h = String(html || "");
+  if (!h) return false;
+  if (/Pardon Our Interruption/i.test(h)) return true;
+  if (/_Incapsula_Resource|incapsula incident|main-iframe/i.test(h)) return true;
+  if (/distil_referrer|visid_incap_/i.test(h) && h.length < 8_000) return true;
+  // Short 200/403 shells with the Reese script tag but no real app markup.
+  if (
+    (status === 200 || status === 403) &&
+    h.length < 8_000 &&
+    /<script[^>]+src=["']\/[^"']+["'][^>]*async/i.test(h) &&
+    !/<div[^>]+id=["']root["']/i.test(h) &&
+    !/<div[^>]+id=["']app["']/i.test(h)
+  ) {
+    return /Incapsula|incap_|ROBOTS.*NOINDEX/i.test(h);
+  }
+  return false;
+}
+
+/** Extract same-origin Reese84 script path from challenge HTML (`/obscure-path`). */
+export function extractReeseScriptPath(html) {
+  const h = String(html || "");
+  const m =
+    h.match(/<script[^>]+src=["'](\/[^"'?][^"']*)["'][^>]*(?:async|defer)/i) ||
+    h.match(/<script[^>]+src=["'](\/[^"']+)["']/i);
+  if (!m?.[1]) return null;
+  const path = m[1];
+  // Prefer non-Incapsula_Resource script tags (Reese lives on obscure paths).
+  if (/_Incapsula_Resource/i.test(path)) return null;
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
+/**
+ * Mint Reese84 sensor payload (string). Caller POSTs to
+ * `${origin}${scriptPath}?d=${hostname}` as text/plain, then sets `reese84`
+ * cookie from JSON `{ token }`.
+ */
+export async function solveIncapsulaReese84({
+  userAgent,
+  ip,
+  acceptLanguage,
+  pageUrl,
+  scriptBody,
+  scriptUrl,
+  pow = "",
+}) {
+  const payload = await generateReese84Sensor(
+    session(),
+    new Reese84Input(
+      userAgent,
+      ip ?? "",
+      acceptLanguage || "en-AU,en;q=0.9",
+      pageUrl,
+      scriptBody ?? "",
+      scriptUrl ?? "",
+      pow || "",
+    ),
+  );
+  return { payload };
+}
+
+/**
+ * Mint `___utmvc` cookie from Incapsula UTMVC script + incap_ses_* values.
+ * `sessionCookies` = array of `{name,value}` or a jar with `.dump()`.
+ */
+export async function solveIncapsulaUtmvc({ userAgent, scriptBody, sessionCookies }) {
+  let cookies = sessionCookies;
+  if (cookies && typeof cookies.dump === "function") {
+    const dumped = cookies.dump() || {};
+    cookies = Object.entries(dumped).map(([name, value]) => ({ name, value }));
+  }
+  if (!Array.isArray(cookies)) cookies = [];
+  const sessionIds = getSessionIds(cookies);
+  const { payload, swhanedl } = await generateUtmvcCookie(
+    session(),
+    new UtmvcInput(userAgent, scriptBody ?? "", sessionIds),
+  );
+  return { payload, swhanedl, sessionIds };
+}
+
+// ─── DataDome ────────────────────────────────────────────────────────
+
+/** Parse inline `var dd={…}` object from a DataDome block page. */
+export function parseDataDomeObject(html) {
+  const h = String(html || "");
+  const m = h.match(/var\s+dd\s*=\s*(\{[\s\S]*?\})\s*;?\s*<\/script>/i) || h.match(/var\s+dd\s*=\s*(\{[\s\S]*?\})/);
+  if (!m?.[1]) return null;
+  try {
+    // DD object uses single-quoted JS literals — normalize lightly.
+    const raw = m[1]
+      .replace(/'/g, '"')
+      .replace(/([,{]\s*)(\w+)\s*:/g, '$1"$2":');
+    return JSON.parse(raw);
+  } catch {
+    // Fallback: extract key fields with regex.
+    const get = (k) => {
+      const mm = h.match(new RegExp(`['"]?${k}['"]?\\s*:\\s*['"]([^'"]*)['"]`, "i"));
+      return mm?.[1] ?? null;
+    };
+    const getNum = (k) => {
+      const mm = h.match(new RegExp(`['"]?${k}['"]?\\s*:\\s*(-?\\d+)`, "i"));
+      return mm ? Number(mm[1]) : null;
+    };
+    return {
+      rt: get("rt"),
+      cid: get("cid"),
+      hsh: get("hsh"),
+      t: get("t"),
+      s: getNum("s") ?? get("s"),
+      e: get("e"),
+      host: get("host"),
+      cookie: get("cookie"),
+      b: getNum("b") ?? get("b"),
+    };
+  }
+}
+
+export function looksLikeDataDomeBlock(html, status, headers) {
+  const h = String(html || "");
+  const hdr =
+    headers?.get?.("x-datadome") ||
+    headers?.["x-datadome"] ||
+    headers?.get?.("X-DataDome") ||
+    "";
+  if (String(hdr).toLowerCase() === "protected") return true;
+  if (/geo\.captcha-delivery\.com|ct\.captcha-delivery\.com|var\s+dd\s*=/i.test(h)) return true;
+  if ((status === 403 || status === 401) && /datadome|captcha-delivery/i.test(h)) return true;
+  return false;
+}
+
+/**
+ * Solve DataDome interstitial (`rt` interstitial / i.js).
+ * Returns `{ payload, headers, postUrl }` — POST payload to postUrl, ingest `datadome` cookie.
+ */
+export async function solveDataDomeInterstitial({
+  html,
+  datadomeCookie,
+  referer,
+  userAgent,
+  ip,
+  acceptLanguage,
+  deviceLinkHtml,
+}) {
+  const deviceLink =
+    parseInterstitialDeviceCheckUrl(html, datadomeCookie || "", referer || "") || null;
+  if (!deviceLink) {
+    const err = new Error("datadome_interstitial: deviceLink parse failed");
+    err.code = "datadome_parse";
+    throw err;
+  }
+  let deviceHtml = deviceLinkHtml;
+  if (!deviceHtml) {
+    // Caller should prefer fetching via their sticky proxy; this is a last resort.
+    const res = await fetch(deviceLink, {
+      headers: {
+        "user-agent": userAgent,
+        accept: "text/html,application/xhtml+xml",
+        referer: referer || "",
+      },
+    });
+    deviceHtml = await res.text();
+  }
+  const { payload, headers } = await generateInterstitialPayload(
+    session(),
+    new InterstitialInput(
+      userAgent,
+      deviceLink,
+      deviceHtml,
+      ip ?? "",
+      acceptLanguage || "en-AU,en;q=0.9",
+    ),
+  );
+  return {
+    payload,
+    headers: headers || {},
+    postUrl: "https://geo.captcha-delivery.com/interstitial/",
+    deviceLink,
+  };
+}
+
+/**
+ * Solve DataDome slider captcha.
+ * `puzzleB64` / `pieceB64` = base64 image bytes from `.jpg` / `.frag.png`.
+ * Returns `{ payload, headers, isIpBanned }` — payload is a verification URL to GET.
+ */
+export async function solveDataDomeSlider({
+  html,
+  datadomeCookie,
+  referer,
+  parentUrl,
+  userAgent,
+  ip,
+  acceptLanguage,
+  deviceLinkHtml,
+  puzzleB64,
+  pieceB64,
+}) {
+  const parsed = parseSliderDeviceCheckUrl(html, datadomeCookie || "", referer || "");
+  if (parsed?.isIpBanned) {
+    return { isIpBanned: true, payload: null, headers: {}, deviceLink: null };
+  }
+  const deviceLink = parsed?.url || parsed?.deviceCheckUrl || null;
+  if (!deviceLink) {
+    const err = new Error("datadome_slider: deviceLink parse failed");
+    err.code = "datadome_parse";
+    throw err;
+  }
+  let deviceHtml = deviceLinkHtml;
+  if (!deviceHtml) {
+    const res = await fetch(deviceLink, {
+      headers: {
+        "user-agent": userAgent,
+        accept: "text/html,application/xhtml+xml",
+        referer: referer || "",
+      },
+    });
+    deviceHtml = await res.text();
+  }
+  if (!puzzleB64 || !pieceB64) {
+    const err = new Error("datadome_slider: puzzle/piece base64 required");
+    err.code = "datadome_slider_images";
+    throw err;
+  }
+  const { payload, headers } = await generateSliderPayload(
+    session(),
+    new SliderInput(
+      userAgent,
+      deviceLink,
+      deviceHtml,
+      puzzleB64,
+      pieceB64,
+      parentUrl || referer || "",
+      ip ?? "",
+      acceptLanguage || "en-AU,en;q=0.9",
+    ),
+  );
+  return {
+    payload,
+    headers: headers || {},
+    isIpBanned: false,
+    deviceLink,
+  };
+}
+
+/** Background DataDome tags payload (`type` = 'ch' then 'le'). */
+export async function solveDataDomeTags({
+  userAgent,
+  ddk,
+  referer,
+  type = "ch",
+  ip,
+  acceptLanguage,
+  version,
+  cid = "",
+}) {
+  const payload = await generateTagsPayload(
+    session(),
+    new TagsInput(
+      userAgent,
+      ddk,
+      referer,
+      type,
+      ip ?? "",
+      acceptLanguage || "en-AU,en;q=0.9",
+      version,
+      cid || "",
+    ),
+  );
+  return { payload };
+}
+
+export {
+  parseInterstitialDeviceCheckUrl,
+  parseSliderDeviceCheckUrl,
+};

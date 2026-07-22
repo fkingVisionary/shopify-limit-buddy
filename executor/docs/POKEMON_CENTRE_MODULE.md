@@ -1,8 +1,8 @@
 # Pokémon Centre (TPCI) — Module Research
 
-_Date: 2026-07-22 (GE lessons refresh after Bandai)_  
-_Status: research only — no adapter code yet_  
-_Priority: **high yield / high difficulty** — Hyper can cover **Incapsula + DataDome**, but **hCaptcha + Global-e + crowded bot scene** make this Phase-2+ after Bandai._  
+_Date: 2026-07-22 (adapter scaffold)_  
+_Status: **adapter scaffolded** — Incapsula/DD in `antibot.js` + `adapters/pokemoncentre*.js` + desktop store; Cortex ATC / GE mid still need AU ISP HAR_  
+_Priority: **high yield / high difficulty** — Hyper covers **Incapsula + DataDome**; **hCaptcha** via CapSolver; **Global-e** reuses Bandai playbook (merchant mid TBD)._  
 _GE update: Bandai AU (mid 1925) reached issuer wire proof 2026-07-22 — fold those patterns into P4 below._
 
 ### Canonical AU storefront
@@ -177,14 +177,28 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 ## 7. Module plan (when unparked)
 
-| Phase | Work | Bandai-informed notes |
+| Phase | Work | Status / Bandai-informed notes |
 |---|---|---|
-| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | Capture: incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm fields, T&Cs checkbox, captcha/Forter/TMX, post-Pay network, any order/preComplete equivalent |
-| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` if not already from AusPost/HN | Hard gate before PC ATC reliability |
-| **P2** | Monitor: soft catalog if any (or residential poll); notify on PC ETB / exclusive SKUs | Keep HTTP; no Playwright in monitor |
-| **P3** | Cortex cart machine + account session (**HTTP-first**) | Mirror Bandai policy: browser only if edge/captcha forces it — not a full cart ladder |
-| **P4** | Global-e AU checkout / pay | Reuse Bandai GE checklist (§5.1). Prefer shared `ge-pay` helper. Score bank → confirmation. CMP dismiss + Checkout/v2 wait + nested iframe fill + T&Cs. |
-| **P5** | hCaptcha harvest path (desktop) for drop windows | Separate from GE captcha; both may appear |
+| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | **Owner desk** — capture incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm, T&Cs, captcha/Forter/TMX, post-Pay |
+| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
+| **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
+| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Stub** — `pokemoncentre-cortex.js` + `har_probe`; override via `task.cortex*` after HAR |
+| **P4** | Global-e AU checkout / pay | **Stub** — `pokemoncentre-ge.js` (Bandai checklist; mid from `task.globaleMid` / `PC_GLOBALE_MID`) |
+| **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |
+
+### Adapter surface (2026-07-22)
+
+| File | Role |
+|---|---|
+| `adapters/pokemoncentre.js` | Main adapter (`pcMode`: monitor / checkout / edge / har_probe) |
+| `adapters/pokemoncentre-session.js` | Locale (`en-au`…) + headers |
+| `adapters/pokemoncentre-edge.js` | Reese84 + DataDome clear on sticky proxy |
+| `adapters/pokemoncentre-cortex.js` | Cortex path probe + guest ATC placeholder |
+| `adapters/pokemoncentre-ge.js` | GE Checkout/v2 + CreditCardForm (browser Pay) |
+| `adapters/pokemoncentre-hcaptcha.js` | CapSolver hCaptcha |
+| `antibot.js` | Shared Incapsula + DataDome Hyper wrappers (Akamai untouched) |
+
+Desktop: store **Pokémon Centre AU** → modes above. Sticky AU ISP + Hyper key + CapSolver (hCaptcha) in Settings.
 
 ### Feasibility
 
@@ -197,7 +211,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | Competitive | Crowded |
 | Executor reuse | GE patterns from Bandai; DD from AusPost; Incapsula from HN |
 
-**Verdict:** Still park behind shared DD/Incapsula plumbing. When unparked, **do not treat Global-e as greenfield** — copy Bandai’s HTTP-handoff + browser-Pay architecture and merchant-parameterize it.
+**Verdict:** Scaffold shipped on a feature branch (Kmart untouched). Next critical path is **AU ISP HAR** for Cortex ATC bodies + GE merchant mid — then harden P3/P4 against wire proof (bank → confirmation).
 
 ---
 

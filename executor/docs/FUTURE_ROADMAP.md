@@ -52,7 +52,7 @@ Wire missing solvers in `antibot.js` once, then store adapters:
 |---|---|---|---|
 | 2a | AusPost Shop (un-park for coin season) | DataDome | `AUSPOST_SHOP_MODULE.md` |
 | 2b | Harvey Norman | Incapsula | scoreboard |
-| 2c | **Pokémon Centre AU** | Incapsula + DataDome (+ hCaptcha gap); GE reuse Bandai playbook | `POKEMON_CENTRE_MODULE.md` |
+| 2c | **Pokémon Centre AU** | Incapsula + DataDome (+ CapSolver hCaptcha); GE reuse Bandai playbook — **adapter scaffolded** | `POKEMON_CENTRE_MODULE.md` |
 | 2d | Costco AU | Akamai (reuse) + Kasada (wire) | `COSTCO_AU_MODULE.md` |
 | 2e | Target / Uniqlo / Big W | Akamai reuse | `NEXT_STORE_MODULES.md` |
 | 2f | Foot Locker / Platypus | Kasada / DataDome | scoreboard |
