@@ -612,8 +612,9 @@ export async function runGlobalEPayHttp(opts = {}) {
         mint = await mintIovationBlackbox({
           page: mintPage,
           checkoutV2Url: v2Url,
-          timeoutMs: opts.iovationTimeoutMs || 20_000,
-          settleMs: opts.iovationSettleMs || 4_000,
+          // PC GEM/Checkout often slower than Bandai on sticky ISP — default 45s.
+          timeoutMs: opts.iovationTimeoutMs || 45_000,
+          settleMs: opts.iovationSettleMs || 5_000,
           jar,
         });
       } finally {
