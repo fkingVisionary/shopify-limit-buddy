@@ -284,6 +284,7 @@ const saveBody = buildCheckoutSaveBody(form, {
   gatewayId: "2",
   machineId: "blackbox-iovation-test-value-0123456789",
   forterToken: "forter-test-token",
+  selectedTaxOption: "3",
 });
 assert.match(saveBody, /ioBlackBox=blackbox-iovation/);
 assert.match(saveBody, /ForterToken=forter-test-token/);
@@ -293,7 +294,7 @@ const saveBadTax = buildCheckoutSaveBody(form, {
   selectedTaxOption: "{{:value}}",
   machineId: "x",
 });
-assert.doesNotMatch(saveBadTax, /SelectedTaxOption=/);
+assert.equal(/SelectedTaxOption=/.test(saveBadTax), false);
 
 // ReloadBehaviour-only JWT must NOT score as bank
 const reloadJwt =
