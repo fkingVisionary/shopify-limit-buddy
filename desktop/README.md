@@ -67,6 +67,11 @@ ATC is always HTTP+F5. Sticky AU ISP/resi proxy recommended. Place order needs a
 complete card on the profile. Score bank/Revolut + issuer JWT
 (`PossibleFraudDetected`, `TransactionStatusType`) — not client ok alone.
 
+**Accounts:** Account gen upserts into the Accounts tab with status truth
+(`ready` / `created` SoftBlock / `needs_sms` / `needs_terms`). Auto-checkout
+only picks `ready`/`active`. Exact emails already vault-registered for Bandai
+cannot be registered again (catchall `+tag` uniquify still mints fresh aliases).
+
 Contract: `executor/docs/BANDAI_CHECKOUT_BIBLE.md`.
 
 ## Future stores

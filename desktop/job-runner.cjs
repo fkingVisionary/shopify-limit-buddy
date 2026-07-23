@@ -18,6 +18,7 @@ const {
 const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
+const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -371,6 +372,8 @@ function buildBandaiPayload({
     imapMailbox: String(s.imapMailbox || "INBOX"),
   };
 
+  const vaultEmails = vaultRegisteredEmails(accounts || task._accounts || [], "bandai");
+
   if (mode === "account_gen") {
     const hasSms = Boolean(otp.smspoolApiKey || otp.onlinesimApiKey);
     if (!hasSms) {
@@ -378,6 +381,30 @@ function buildBandaiPayload({
     }
     if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
       return { ok: false, error: "IMAP host/user/app password required in Settings" };
+    }
+    // Without uniquify, refuse if this exact signup email is already vault-registered.
+    const signupGuess = String(
+      task.signupEmail || profile?.email || otp.imapUser || "",
+    )
+      .trim()
+      .toLowerCase();
+    const domain = signupGuess.split("@")[1] || "";
+    const catchallUniquify = domain === "bullposted.com";
+    const forceUniquify = task.uniquifyEmail === true || task.bandaiUniquifyEmail === true;
+    const willUniquify = forceUniquify || catchallUniquify;
+    if (signupGuess && !willUniquify) {
+      const hit = findRegisteredAccount({
+        accounts: accounts || task._accounts || [],
+        storeId: "bandai",
+        email: signupGuess,
+        matchBase: false,
+      });
+      if (hit) {
+        return {
+          ok: false,
+          error: `Bandai account already in vault for ${hit.email} (${hit.status}) — use checkout or delete the vault row before re-registering`,
+        };
+      }
     }
   }
 
@@ -435,6 +462,12 @@ function buildBandaiPayload({
       account: resolvedAccount,
       accountAssignSource,
       otp: mode === "account_gen" ? otp : undefined,
+      // Exact Bandai memberIds already vault-registered — agen must not re-register.
+      vaultEmails: mode === "account_gen" ? vaultEmails : undefined,
+      uniquifyEmail:
+        mode === "account_gen"
+          ? task.uniquifyEmail === true || task.bandaiUniquifyEmail === true || undefined
+          : undefined,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,

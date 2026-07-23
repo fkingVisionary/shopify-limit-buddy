@@ -2,6 +2,8 @@
 // Default: auto-match by profile email base (handles +tag / gmail-dot uniquify).
 // Manual: task.accountId. Guest: skip login.
 
+const { bandaiAutoAssignable } = require("./account-vault.cjs");
+
 function emailBase(email) {
   const raw = String(email || "")
     .trim()
@@ -67,18 +69,15 @@ function resolveAccountForTask({ task, profile, accounts, excludeIds = [] } = {}
   // auto — profileId link first, then email base
   const profileId = profile?.id || task?.profileId || null;
   const profileEmail = profile?.email || null;
-  const pool = list.filter(
-    (a) =>
-      storeMatches(a, storeId) &&
-      a.status !== "disabled" &&
-      a.status !== "banned" &&
-      a.status !== "burned" &&
-      // Bandai: prefer vault-ready; still allow legacy "active"
-      (storeId !== "bandai" || a.status === "ready" || a.status === "active" || !a.status) &&
-      !excluded.has(String(a.id)) &&
-      a.email &&
-      a.password,
-  );
+  const pool = list.filter((a) => {
+    if (!storeMatches(a, storeId)) return false;
+    if (a.status === "disabled" || a.status === "banned" || a.status === "burned") return false;
+    if (a.status === "register_failed") return false;
+    // Bandai auto: only ready/active (not SoftBlock "created" / needs_*)
+    if (storeId === "bandai" && !bandaiAutoAssignable(a)) return false;
+    if (excluded.has(String(a.id))) return false;
+    return Boolean(a.email && a.password);
+  });
 
   const byProfileId = profileId
     ? pool.filter((a) => String(a.profileId || "") === String(profileId))
