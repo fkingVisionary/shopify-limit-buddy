@@ -279,6 +279,14 @@ function renderTasks() {
     .join("");
 }
 
+function accountStatusBadge(status) {
+  const s = String(status || "unknown").toLowerCase();
+  if (s === "ready" || s === "active") return "ok";
+  if (s === "created" || s === "needs_sms" || s === "needs_terms") return "warn";
+  if (s === "banned" || s === "burned" || s === "disabled" || s === "register_failed") return "err";
+  return "";
+}
+
 function renderAccounts() {
   const el = $("accountList");
   if (!el) return;
@@ -294,10 +302,13 @@ function renderAccounts() {
         prof?.email && emailBaseClient(prof.email) === emailBaseClient(a.email)
           ? `profile ${prof.name || prof.email}`
           : a.emailBase || emailBaseClient(a.email);
+      const st = a.status || "unknown";
+      const badge = accountStatusBadge(st);
       return `<div class="item">
         <div>
           <strong>${esc(a.email)}</strong>
           <span class="badge ok">${esc(a.storeName || a.storeId || "store")}</span>
+          <span class="badge ${badge}">${esc(st)}</span>
           <div class="meta"><code>${esc(a.password || "")}</code></div>
           <div class="meta">match ${esc(match)}${a.lastUsedAt ? ` · used ${new Date(a.lastUsedAt).toLocaleString()}` : ""}</div>
           <div class="meta">${a.createdAt ? new Date(a.createdAt).toLocaleString() : ""}</div>

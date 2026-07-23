@@ -9,6 +9,11 @@ const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
 const { resolveAccountForTask, emailBase } = require("./account-assign.cjs");
+const {
+  normalizeVaultStatus,
+  shouldPersistGeneratedAccount,
+  findRegisteredAccount,
+} = require("./account-vault.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -42,12 +47,8 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
       String(a.storeId || "") === sid &&
       String(a.email || "").toLowerCase() === email.toLowerCase(),
   );
-  const status =
-    account.status && ["ready", "needs_sms", "banned", "burned", "active", "disabled"].includes(account.status)
-      ? account.status
-      : sid === "bandai"
-        ? "ready"
-        : "active";
+  // Preserve SoftBlock / needs_* truth — never coerce Bandai unknowns to "ready".
+  const status = normalizeVaultStatus(account.status, sid);
   const row = {
     id: existing?.id || store.id("acc"),
     email,
@@ -58,7 +59,7 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
     storeId: sid,
     adapter: sid,
     storeName: storeDisplayName(sid),
-    profileId: profileId || null,
+    profileId: profileId || existing?.profileId || null,
     source,
     status,
     lastUsedAt: existing?.lastUsedAt || null,
@@ -140,17 +141,27 @@ runner.setFinishedHandler((result) => {
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
     if (t) {
-      if (result.accountGen && result.account?.email && result.account?.password) {
-        upsertGeneratedAccount(result.account, {
-          storeId: t.store || result.account.storeId || "toymate",
-          profileId: t.profileId,
-          source: "generated",
-        });
-        t.lastStatus = result.ok ? "complete" : "error";
-        t.lastLabel = result.ok
-          ? `Account ${result.account.email}`
-          : result.consumerLabel || result.error || `Account ${result.account.email} (${result.account.status || "partial"})`;
-        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
+      if (result.accountGen) {
+        const sid = t.store || result.account?.storeId || "toymate";
+        const persisted = shouldPersistGeneratedAccount(result, sid)
+          ? upsertGeneratedAccount(result.account, {
+              storeId: sid,
+              profileId: t.profileId,
+              source: "generated",
+            })
+          : null;
+        const st = result.account?.status || (persisted?.status) || "partial";
+        t.lastStatus = result.ok && persisted ? "complete" : "error";
+        t.lastLabel = persisted
+          ? result.ok
+            ? `Account ${persisted.email} (${persisted.status})`
+            : `Account ${persisted.email} (${persisted.status}) — ${result.consumerLabel || result.error || "partial"}`
+          : result.consumerLabel ||
+            result.error ||
+            (result.account?.email
+              ? `Agen failed ${result.account.email} (${st}) — not vaulted`
+              : "Account gen failed");
+        t.lastError = result.ok && persisted ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = null;
       } else {
         t.lastStatus =
@@ -310,6 +321,12 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
     // Bandai-only fields (ignored by Kmart / Toymate payload builders).
     bandaiMode: storeId === "bandai" ? String(task.bandaiMode || "checkout") : undefined,
+    bandaiCheckoutMode:
+      storeId === "bandai"
+        ? ["fast", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
+          ? String(task.bandaiCheckoutMode).toLowerCase()
+          : "fast"
+        : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     // Pokémon Centre-only fields (ignored by other stores).

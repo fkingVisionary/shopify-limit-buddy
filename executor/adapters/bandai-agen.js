@@ -36,6 +36,31 @@ function uniquifyEmail(email) {
   return `${local}+${stamp}@${domain}`;
 }
 
+/** Lowercased set of memberIds that must not be registered again. */
+function vaultEmailSet(task) {
+  const raw = task?.vaultEmails || task?.existingEmails || [];
+  const set = new Set();
+  if (Array.isArray(raw)) {
+    for (const e of raw) {
+      const s = String(e || "")
+        .trim()
+        .toLowerCase();
+      if (s) set.add(s);
+    }
+  }
+  return set;
+}
+
+/** Pick a uniquified address that is not already in the vault set. */
+function uniquifyEmailUnused(email, taken, maxTries = 8) {
+  const blocked = taken instanceof Set ? taken : new Set();
+  for (let i = 0; i < maxTries; i++) {
+    const next = uniquifyEmail(email);
+    if (!blocked.has(next)) return next;
+  }
+  return uniquifyEmail(email);
+}
+
 function otpConfigFromTask(task) {
   const o = task?.otp || task?.bandaiOtp || {};
   const smsProvider = String(
@@ -157,9 +182,15 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     (task?.uniquifyEmail === true ||
       task?.bandaiUniquifyEmail === true ||
       (emailDomain && CATCHALL_DOMAINS.has(emailDomain)));
+  const takenEmails = vaultEmailSet(task);
   let email = signupEmail;
   if (allowUniquify && email) {
-    email = uniquifyEmail(email);
+    email = uniquifyEmailUnused(email, takenEmails);
+  } else if (email && takenEmails.has(email)) {
+    return fail(
+      "email_already_in_vault",
+      `Bandai account already registered/vaulted for ${email} — use checkout or enable uniquify (+tag) on a catchall domain`,
+    );
   }
   if (!email || !email.includes("@")) {
     return fail("otp_config", "signup email / imapUser required for Bandai memberId");
@@ -206,34 +237,48 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   }
 
   // ── Email OTP ──────────────────────────────────────────────────────────
+  // If Bandai says already registered and uniquify is on, mint a fresh +tag and retry once.
   const emailSince = new Date();
-  const emailAuth = await tStep("email_auth", async () => {
-    const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/auth", {
-      body: { email, agreeAgeTerms: true },
-      referer: `${base}/register`,
-    });
-    const authSn = json?.authSn || json?.data?.authSn || null;
-    const detail = json?.detail || json?.message || json?.error || null;
-    if (/already|exist|registered|duplicat/i.test(String(detail || "")) || status === 409) {
-      return { ok: false, status, note: "email_already_registered", authSn, json };
+  let emailAuth = null;
+  for (let attempt = 0; attempt < (allowUniquify ? 3 : 1); attempt++) {
+    if (attempt > 0) {
+      takenEmails.add(email);
+      email = uniquifyEmailUnused(signupEmail, takenEmails);
     }
-    return {
-      ok: status >= 200 && status < 300 && Boolean(authSn),
-      status,
-      note: authSn ? `authSn ${String(authSn).slice(0, 8)}…` : String(detail || status),
-      authSn,
-      json,
-    };
-  });
+    emailAuth = await tStep(attempt === 0 ? "email_auth" : `email_auth_retry_${attempt}`, async () => {
+      const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/auth", {
+        body: { email, agreeAgeTerms: true },
+        referer: `${base}/register`,
+      });
+      const authSn = json?.authSn || json?.data?.authSn || null;
+      const detail = json?.detail || json?.message || json?.error || null;
+      if (/already|exist|registered|duplicat/i.test(String(detail || "")) || status === 409) {
+        return { ok: false, status, note: "email_already_registered", authSn, json };
+      }
+      return {
+        ok: status >= 200 && status < 300 && Boolean(authSn),
+        status,
+        note: authSn ? `authSn ${String(authSn).slice(0, 8)}…` : String(detail || status),
+        authSn,
+        json,
+      };
+    });
+    if (emailAuth.ok) break;
+    if (emailAuth.note !== "email_already_registered" || !allowUniquify) break;
+  }
 
   if (!emailAuth.ok) {
     return {
       ok: false,
       accountGen: true,
       failedStep: "email_auth",
-      error: emailAuth.note || "email_auth_failed",
+      error:
+        emailAuth.note === "email_already_registered"
+          ? `email_already_registered (${email}) — already on Bandai; pick another alias or use vault checkout`
+          : emailAuth.note || "email_auth_failed",
       steps,
       checkoutStage: "agen",
+      // No password — desktop must not vault this as a login.
       account: { email, status: "burned" },
     };
   }
@@ -790,5 +835,5 @@ function fail(step, error, steps = []) {
   };
 }
 
-export { uniquifyEmail, otpConfigFromTask, normalizeAuMsisdn };
+export { uniquifyEmail, uniquifyEmailUnused, otpConfigFromTask, normalizeAuMsisdn };
 export default { createBandaiAccount };

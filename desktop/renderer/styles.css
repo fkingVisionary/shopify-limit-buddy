@@ -149,6 +149,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .badge.ok { color: var(--ok); border-color: #2a5a45; }
 .badge.err { color: var(--err); border-color: #5a3035; }
+.badge.warn { color: #d4a017; border-color: #5a4a20; }
 .badge.run { color: var(--accent); border-color: #2a5a55; }
 
 .log {
