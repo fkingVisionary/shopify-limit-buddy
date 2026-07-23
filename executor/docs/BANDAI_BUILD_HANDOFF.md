@@ -27,7 +27,13 @@ Region is taken from the product URL path or `task.bandaiArea` (default `au`).
 
 1. **Branch off current `main`.** New work only: `cursor/bandai-au-module-<suffix>` (or repo’s required `cursor/…-709b` pattern if still enforced).
 2. **Do not modify `adapters/kmart.js` or Kmart desktop checkout path** unless fixing an accidental break. Kmart is production-green.
-3. **HTTP-first checkout.** Default path is undici + F5 sensor bridge (`adapters/bandai-f5.js`): Playwright only mints `p8komysnbc-*` headers (probe XHR aborted); real `/login`, ATC, `modifyCartItem`, and `cart/{sn}/checkout` POSTs stay on HTTP. Full Playwright checkout is **opt-in only** (`bandaiBrowserCheckout:true`) for GE decline labs. Do not make browser the product default.
+3. **HTTP-first ATC; Fast/Safe pay.** Default path is undici + F5 sensor bridge
+   (`adapters/bandai-f5.js`): Playwright mints `p8komysnbc-*` (probe aborted);
+   real `/login`, ATC, cart checkout stay on HTTP. After cart hold:
+   **`bandaiCheckoutMode=fast`** (default) = HTTP GE + **riskHydrate**;
+   **`safe`** = Playwright GE on the F5 bridge. See
+   [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md) §0.1. Do not default
+   stale `bandaiGeNoPage`.
 4. Hyper is **not** required for Bandai edge (F5/Volterra). Good TLS + cookie jar + sticky AU proxy + F5 sensors.
 5. Secrets (**OnlineSim key, IMAP app password, test accounts**) come from owner / Desktop Settings — never commit them.
 

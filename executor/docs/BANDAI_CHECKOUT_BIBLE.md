@@ -452,7 +452,8 @@ login 200 + NoRestriction
 | `scripts/bandai-charge-lab.mjs` | placeOrder + card env |
 | `scripts/bandai-ge-pay-debug.mjs` | Frames/network around Pay |
 | `scripts/bandai-f5-probe.mjs` | Detect Shape / common.js drift |
-| `desktop/job-runner.cjs` | `buildBandaiPayload` (Fast/Safe flags) → local sidecar |
+| `desktop/job-runner.cjs` | `buildBandaiPayload` → local sidecar |
+| `desktop/bandai-pay-path.cjs` | Desktop Fast/Safe + riskHydrate flag resolution |
 | `desktop/renderer/*` | Checkout pay path select |
 | `desktop/executor-sidecar.cjs` | Spawn executor on `127.0.0.1` |
 
