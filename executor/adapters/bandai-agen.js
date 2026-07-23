@@ -216,12 +216,15 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   }
 
   const emailCode = await tStep("email_otp_imap", async () => {
+    // Shared inbox / Hide My Email: bind OTP to this task's signup alias (To:),
+    // not the newest Bandai mail for a different alias in the same mailbox.
     const got = await waitForCode({
       host: otp.imapHost,
       port: otp.imapPort,
       user: otp.imapUser,
       appPassword: otp.imapAppPassword,
       mailbox: otp.imapMailbox,
+      to: email,
       since: emailSince,
       timeoutMs: Number(task.emailOtpTimeoutMs) || 180_000,
       regex: /\b(\d{6})\b/,
@@ -229,7 +232,13 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     if (!got.ok) {
       return { ok: false, status: null, note: got.error || "imap_failed", detail: got.detail };
     }
-    return { ok: true, status: null, note: "code received", code: got.code };
+    return {
+      ok: true,
+      status: null,
+      note: `code for ${email}`,
+      code: got.code,
+      to: got.to || email,
+    };
   });
 
   if (!emailCode.ok) {
