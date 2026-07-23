@@ -412,6 +412,33 @@ function wrapFetchResponse(res, requestedUrl) {
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  // Optional GE mutate wire log (Bandai double-auth forensics).
+  if (process.env.BANDAI_GE_WIRE_TAP === "1") {
+    try {
+      const u = String(url || "");
+      if (/global-e\.com/i.test(u) && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        const fs = await import("node:fs");
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: u,
+          bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+          issuer: /HandleCreditCard/i.test(u),
+        };
+        let arr = [];
+        try {
+          arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-wire.json", "utf8"));
+        } catch {
+          /* ignore */
+        }
+        arr.push(row);
+        fs.writeFileSync("/tmp/bandai-ge-wire.json", JSON.stringify(arr, null, 2));
+        console.log("WIRE_TAP", method, u.slice(0, 160), "issuer=" + row.issuer);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
@@ -438,13 +465,20 @@ export async function request(url, opts, ctx) {
   }
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
-    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
-    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
+    // only — NEVER retry POST/PUT/PATCH/DELETE. A RST after GE/PSP already
+    // accepted HandleCreditCardRequestV2 produced paired Revolut auths
+    // (posts=1 in app code, two bank lines) on 2026-07-22 labs.
+    const safeRetry =
+      opts?.retry === true ||
+      (opts?.retry !== false &&
+        (method === "GET" || method === "HEAD" || method === "OPTIONS"));
+    const attempts = safeRetry ? 3 : 1;
     let lastError;
+    let undiciAttempts = 0;
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
+        undiciAttempts += 1;
         const res = await undiciFetch(url, {
           method,
           headers,
@@ -453,10 +487,17 @@ export async function request(url, opts, ctx) {
           ...(opts?.body !== undefined ? { body: opts.body } : {}),
         });
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
-        return wrapFetchResponse(res, url);
+        const wrapped = wrapFetchResponse(res, url);
+        wrapped.undiciAttempts = undiciAttempts;
+        return wrapped;
       } catch (e) {
         lastError = e;
-        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
+        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
+          if (lastError && typeof lastError === "object") {
+            lastError.undiciAttempts = undiciAttempts;
+          }
+          throw e;
+        }
         const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
         if (rebuildAgent) {
           try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }

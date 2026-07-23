@@ -325,7 +325,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
       armed: armChargeGuard,
       bodyBytes: postData ? String(postData).length : 0,
     });
-    if (chargeReqCount > 1) {
+    // HAR forensics: let every issuer hit the network (BANDAI_GE_ALLOW_ALL_ISSUERS=1).
+    if (chargeReqCount > 1 && process.env.BANDAI_GE_ALLOW_ALL_ISSUERS !== "1") {
       blockedChargeReqCount += 1;
       mark("issuer_req_fulfilled_local", {
         n: chargeReqCount,
@@ -344,6 +345,13 @@ export async function browserBandaiGeFromCart(opts = {}) {
         }),
       });
       return;
+    }
+    if (chargeReqCount > 1 && process.env.BANDAI_GE_ALLOW_ALL_ISSUERS === "1") {
+      mark("issuer_req_allowed_for_har", {
+        n: chargeReqCount,
+        url: url.slice(0, 140),
+        bodyBytes: postData ? String(postData).length : 0,
+      });
     }
     issuerPaymentSent = true;
     if (postData && !issuerBodyCapture) {

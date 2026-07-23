@@ -10,23 +10,74 @@ Kmart style twin: [`KMART_WINNING_RECIPE.md`](./KMART_WINNING_RECIPE.md)
 
 ---
 
+## 0. Win-con (drop timing)
+
+**Cart first. Pay second.**
+
+Bandai keeps a held cart / checkout window for ~**30 minutes** after ATC.
+The race that matters on a drop is:
+
+1. **F5 bridge → login → ATC** as fast as possible  
+2. Then hydrate / Global-e pay **inside that window** (can be slower, separate)
+
+Payment dual-rail / Revolut pairs are a real follow-up, but they are **not** the
+drop win-con. Do not trade ATC speed for pay polish.
+
+| Priority | Metric |
+|----------|--------|
+| **P0** | Wall time to `addToCart` ok / cart line held |
+| P1 | `checkoutSn` + `merchantCartToken` ready to pay |
+| P2 | GE issuer / bank (within ~30 min of cart) |
+
+Flags: `bandaiStopAtCart` (hold after ATC), `bandaiFastAtc` (default on —
+skip pre-ATC cart peek + skip Playwright `/item/*` nudge; mint ATC sensors from
+`/login` or `/cart`). **Do not mint `addToCart` sensors on `/item/*`** — lab
+showed zero `p8komysnbc-*` there when PDP `avail=false`. Pay via
+`bandaiGeHttpPay` after the hold.
+
+Lab wall→ATC (`bandaiFastAtc`, sticky AU ISP): ~**24s** to `cart_hold`.
+
+---
+
 ## 1. The proof (not theory)
 
 | Field | Value |
 |-------|--------|
 | **HTTP path** | undici + F5 sensor bridge → `checkoutSn` (e.g. `1512700` / `1514416` / `1515791`) |
 | **When (HTTP)** | 2026-07-22 labs on sticky AU ISP |
-| **GE wire** | Revolut declined **A$317** to **Globale /bandai Spirit** (~11:36 AEST 2026-07-22) |
-| **Card class** | Disposable Mastercard `…0501` — insufficient funds (issuer hit, no order) |
-| **SKU used** | `A2880191001` → `AAI0013787AU` |
-| **Transport** | undici for gated POSTs; Playwright only mints `p8komysnbc-*` (probe aborted) |
-| **GE path** | Playwright SPA → Checkout/v2 → nested CreditCardForm → Pay |
+| **GE wire (early)** | Revolut declined **A$317** to **Globale /bandai Spirit** (~11:36 AEST 2026-07-22) |
+| **GE wire** | Revolut declines AU$227 Globale /bandai — often **paired** lines |
+| **Card class** | Disposable / alt Revolut — insufficient funds (issuer hit, no order) |
+| **SKU used** | `A2849039001` (AU$227 labs); earlier `A2880191001` |
+| **Transport** | undici for gated POSTs; Playwright F5 mint only (`p8komysnbc-*` abort) |
+| **GE path** | **`bandaiGeHttpPay`**: undici hydrate + issuer; prefer **no Playwright on GE** |
 | **Edge** | CloudFront + F5 volt-adc (`TS*` cookies) — **not** Hyper / Akamai |
-| **Pay mid** | Global-e merchant **1925** |
+| **Pay mid** | Global-e merchant **1925** (`8urc`) |
 
 **Bank / issuer notification is ground truth.** Lab status can under-report
 (`pay_clicked_no_payment_request`) while Revolut still auths. Soft declines
 can fire **without** 3DS/ACS.
+
+**Revolut pairs (2026-07-23):** Client always sends **one**
+`HandleCreditCardRequestV2` (`posts=1`, retries off). GE JWT returns **one**
+`TransactionId`. Owner still sees **two** Revolut insufficient lines for:
+
+- `liveHtml+geMute` @ 08:18 (`170635774`)
+- `bandaiGeNoPage` @ 08:39 (`170637612`, `browser_mutates=0`)
+
+So pairs are **GE/PSP dual-rail**, not a second client POST. Product angle
+stays **no Playwright on GE** (speed + isolation). F5 bridge Playwright remains
+for login/ATC sensors only.
+
+**Timing (same SKU/card, sticky AU ISP labs):**
+
+| Path | Wall | GE path | Iovation |
+|------|------|---------|----------|
+| liveHtml+geMute | ~107s | ~35s | ~11s |
+| noPage (cached machineId) | ~67s | ~29s | **0s** |
+
+No-page cuts ~**10s** GE (iovation) and ~**40s** wall in that pair (wall also
+includes login/ATC variance).
 
 Full paid order + `preComplete` → `orderNo` is **not** closed yet. Do not
 burn another A$317 charge until there is a SKU the owner wants and a funded card.
@@ -176,12 +227,20 @@ HTTP checkoutSn + merchantCartToken
   → GET gepi…/Checkout/GetCartToken?MerchantCartToken=…&MerchantId=1925&…   ✅ HTTP
   → CartToken GUID
   → GET webservices…/Checkout/v2/8urc/{guid}                               ✅ HTTP
-  → GET secure-bandai…/payments/CreditCardForm/{guid}/…                    ✅ HTTP (JWT)
+  → POST checkoutv2/handleaction/{1,2,3} with Action+Token+ShippingData    ✅ HTTP (not `{}`)
+  → POST checkoutv2/save/{8urc}/{guid} urlencoded MainForm + X-merchantId  ✅ HTTP (SaveForm)
+  → GET secure-bandai…/payments/CreditCardForm/{guid}/{gatewayId}          ✅ HTTP (JWT; path=gateway, usually 2)
   → machineId = #ioBlackBox from snare.js (iovation RED)                   ⚠ needs DOM
   → POST …/Payments/HandleCreditCardRequestV2/8urc/{guid}                  ✅ HTTP undici
 ```
 
-Lab (2026-07-22): GetCartToken + Checkout/v2 + CreditCardForm JWT all green over undici after HTTP `checkoutSn`. **`machineId` is iovation** (`s3.global-e.com/snare.js` → `#ioBlackBox`), not Forter — mint via F5 bridge `page.goto(Checkout/v2)` only (no Pay click / card fill). Pay UI Playwright is off the path.
+Lab (2026-07-22/23): GetCartToken + Checkout/v2 + CreditCardForm JWT all green over undici after HTTP `checkoutSn`. **`machineId` is iovation** (`s3.global-e.com/snare.js` → `#ioBlackBox`), not Forter. **Prefer** `bandaiGeNoPage` + `bandaiGeMachineId` / `BANDAI_GE_MACHINE_ID` (zero Playwright on GE). Fallback: mint on Checkout/v2 **before** handleaction with GE POSTs muted, then drop page; undici owns hydrate→issuer.
+
+**False success:** 302 → `CCPaymentRedirect` with `RedirectErrorType=DataCorruption` + `TransactionId=0` is **not** a bank hit. Score `ge_reload_only_no_bank`.
+
+**Real bank (even on decline):** `TransactionId≠0` + `TransactionStatusType=AutherizationFailed` (GE spelling) + MerchantId=1925. Score `declined_or_auth_failed` / `sawAuthWire`. Check Revolut for the attempt.
+
+**Wire knobs:** CreditCardForm URL path = **gatewayId** (usually `/2`), body `paymentMethodId` usually `1`. SaveForm urlencoded + `X-merchantId` before Pay. Hydrate with GEM Action bodies + AU StateId.
 
 **Lab:** `node executor/scripts/bandai-ge-http-lab.mjs` (`bandaiGeHttpPay:true`)  
 **Legacy:** `bandaiBrowserCheckout` (SPA PROCEED + Playwright Pay).
@@ -241,7 +300,8 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
 | GE Pay click | **once**, Checkout/v2 only | Never click `secure-bandai` submit / nested Complete — double issuer charge |
-| GE charge POSTs | **`HandleCreditCard*` allow 1, fulfill-local 2+**; **one eval Pay click**; **`serviceWorkers: block`** + in-page fetch/XHR guard | Dual click / SW bypass = Revolut pairs. Abort of 2nd made GE hunt another path — soft-fulfill instead. `handleaction/*` ≠ bank. |
+| HTTP GE Playwright | **off when machineId supplied**; else mint-before-hydrate + drop | Faster; pairs remain GE/PSP dual-rail even with `browser_mutates=0` |
+| GE charge POSTs | **exactly one** undici `HandleCreditCardRequestV2` | `posts=1` locked; Revolut may still show two lines — score bank carefully |
 | Browser re-login before GE | **off** (HTTP jar sync) | Login stays HTTP; `bandaiBridgeRelogin` opt-in only. |
 | GEM boot | preload mid **1925** js/css + prefetcher iframe before Proceed; poll frames without blocking on `waitForURL` | Biggest remaining latency after Proceed (~40s cold); serial URL wait killed frame listeners early |
 | Post-Pay observe | **≤45s**, exit on auth wire (~12s more) | Do not burn 3min ACS wait after Pay already hit the bank |

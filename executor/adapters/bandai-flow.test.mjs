@@ -27,6 +27,12 @@ import {
   buildGetCartTokenUrl,
   buildIssuerFormBody,
   extractUrlStructureToken,
+  htmlFormValue,
+  parseCheckoutV2Form,
+  buildHandleActionBodies,
+  isBandaiGePaymentRedirectSignal,
+  isBandaiGeRedirectDecline,
+  decodeCcPaymentRedirectData,
 } from "./bandai-ge-http.js";
 
 // --- F5 gate matrix ---
@@ -235,5 +241,87 @@ assert.equal(
   extractUrlStructureToken('name="PaymentData.UrlStructureTokenEncoded" value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb"'),
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.aaa.bbb",
 );
+
+// --- Checkout/v2 form scrape + handleaction bodies (GEM wire) ---
+const checkoutHtml = `
+<select id="ShippingStateID" name="CheckoutData.ShippingStateID">
+  <option value="">Please select</option>
+  <option data-code="QLD" selected="selected" value="49181">Queensland</option>
+</select>
+<input name="CheckoutData.ShippingCountryID" value="14" />
+<input name="CheckoutData.ShippingAddress1" value="1/133 Allenby Road" />
+<input name="CheckoutData.ShippingCity" value="Alexandra Hills" />
+<input name="CheckoutData.ShippingZIP" value="4160" />
+<input name="CheckoutData.ShippingFirstName" value="Niamh" />
+<input name="CheckoutData.ShippingLastName" value="Erin" />
+<input name="CheckoutData.Email" value="a@b.com" />
+<input name="CheckoutData.ShippingPhone" value="+61402601618" />
+<input name="CheckoutData.CultureID" value="2057" />
+<input name="CheckoutData.SelectedPaymentMethodID" value="1" />
+<input name="CheckoutData.CurrentPaymentGayewayID" value="2" />
+<input name="CheckoutData.ShippingType" value="ShippingSameAsBilling" checked />
+`;
+assert.equal(htmlFormValue(checkoutHtml, "CheckoutData.ShippingStateID"), "49181");
+const form = parseCheckoutV2Form(checkoutHtml);
+assert.equal(form.shipping.StateId, "49181");
+assert.equal(form.shipping.Zip, "4160");
+assert.equal(form.hasAddress, true);
+const bodies = buildHandleActionBodies(form, { cartToken: "guid-1", shippingMethodId: "99" });
+assert.equal(bodies[1].Action, 1);
+assert.equal(bodies[1].Token, "guid-1");
+assert.equal(bodies[1].ShippingData.StateId, "49181");
+assert.equal(bodies[1].ShippingMethodID, "99");
+assert.equal(bodies[2].Action, 2);
+assert.equal(bodies[3].Action, 3);
+assert.equal(bodies[1].MerchantId, 1925);
+
+// ReloadBehaviour-only JWT must NOT score as bank
+const reloadJwt =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  Buffer.from(
+    JSON.stringify([
+      { Key: "ReloadBehaviour", Value: "Redirect" },
+      { Key: "finalizeProcess", Value: "1" },
+    ]),
+  )
+    .toString("base64url") +
+  ".sig";
+assert.equal(
+  isBandaiGePaymentRedirectSignal(`https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${reloadJwt}`),
+  false,
+);
+const bankJwt =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  Buffer.from(JSON.stringify([{ Key: "TransactionStatus", Value: "Declined" }])).toString(
+    "base64url",
+  ) +
+  ".sig";
+assert.equal(
+  isBandaiGePaymentRedirectSignal(`https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${bankJwt}`),
+  true,
+);
+assert.ok(Array.isArray(decodeCcPaymentRedirectData(reloadJwt)));
+
+// AutherizationFailed + TransactionId = bank hit (decline), not DataCorruption
+const authFailJwt =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  Buffer.from(
+    JSON.stringify([
+      { Key: "ReloadBehaviour", Value: "Redirect" },
+      { Key: "TransactionStatusType", Value: "AutherizationFailed" },
+      { Key: "TransactionId", Value: "170555028" },
+      { Key: "Success", Value: "False" },
+      { Key: "MerchantId", Value: "1925" },
+      {
+        Key: "PaymentErrorBody",
+        Value: "Your payment couldn’t be completed, and you weren’t charged.",
+      },
+    ]),
+  )
+    .toString("base64url") +
+  ".sig";
+const authFailUrl = `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${authFailJwt}`;
+assert.equal(isBandaiGePaymentRedirectSignal(authFailUrl), true);
+assert.equal(isBandaiGeRedirectDecline(authFailUrl), true);
 
 console.log("bandai-flow.test.mjs ok");
