@@ -126,20 +126,30 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("otp_config", "IMAP settings incomplete — host/user/app password required");
   }
 
-  // Email for Bandai memberId: prefer IMAP mailbox (receives OTP), allow uniquify when pool/catchall.
-  const emailDomain = String(profile.email || otp.imapUser || "")
-    .split("@")[1]
-    ?.toLowerCase();
+  // Bandai memberId email vs IMAP login:
+  // - Hide My Email / catchall: profile.email (or task.signupEmail) is the public address;
+  //   imapUser is the inbox that receives forwards (e.g. jimposted@icloud.com).
+  // - Simple case: memberId = imapUser when no separate signup email is set.
+  const signupEmail = String(
+    task?.signupEmail || profile.email || otp.imapUser || "",
+  )
+    .trim()
+    .toLowerCase();
+  const emailDomain = signupEmail.split("@")[1]?.toLowerCase();
+  const isHideMyEmail =
+    /@icloud\.com$/i.test(signupEmail) &&
+    signupEmail !== String(otp.imapUser || "").trim().toLowerCase();
   const allowUniquify =
-    task?.uniquifyEmail === true ||
-    task?.bandaiUniquifyEmail === true ||
-    (emailDomain && CATCHALL_DOMAINS.has(emailDomain));
-  let email = String(otp.imapUser || profile.email || "").trim().toLowerCase();
-  if (allowUniquify && (profile.email || otp.imapUser)) {
-    email = uniquifyEmail(profile.email || otp.imapUser);
+    !isHideMyEmail &&
+    (task?.uniquifyEmail === true ||
+      task?.bandaiUniquifyEmail === true ||
+      (emailDomain && CATCHALL_DOMAINS.has(emailDomain)));
+  let email = signupEmail;
+  if (allowUniquify && email) {
+    email = uniquifyEmail(email);
   }
   if (!email || !email.includes("@")) {
-    return fail("otp_config", "imapUser / email required for Bandai memberId");
+    return fail("otp_config", "signup email / imapUser required for Bandai memberId");
   }
 
   const password =

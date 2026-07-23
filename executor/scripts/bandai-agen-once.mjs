@@ -77,7 +77,12 @@ if (!imapHost || !imapUser || !imapPass) {
 }
 
 const proxyRaw = toProxyUrl(firstProxy());
-const email = String(process.env.EMAIL || "buyer@bullposted.com").trim().toLowerCase();
+// EMAIL = Bandai memberId (Hide My Email alias / catchall). IMAP_USER = inbox login.
+const email = String(process.env.EMAIL || imapUser).trim().toLowerCase();
+const uniquify =
+  process.env.UNIQUIFY_EMAIL === "1" ||
+  process.env.UNIQUIFY_EMAIL === "true" ||
+  (/bullposted\.com$/i.test(email) && process.env.UNIQUIFY_EMAIL !== "0");
 const dispatcher = makeDispatcher(proxyRaw, { forceUndici: true });
 const jar = createJar();
 const ctx = { dispatcher, jar, steps: [] };
@@ -90,7 +95,8 @@ const task = {
   proxy: proxyRaw,
   dryRun: true,
   placeOrder: false,
-  uniquifyEmail: true,
+  uniquifyEmail: uniquify,
+  signupEmail: email,
   smsProvider: "smspool",
   smspoolApiKey: smspoolKey,
   smspoolCountry: process.env.SMSPOOL_COUNTRY || "GB",
