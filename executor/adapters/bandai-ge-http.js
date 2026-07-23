@@ -958,6 +958,33 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
  * Wire often returns 302 → CCPaymentRedirect?Data=JWT.
  * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
  */
+function writeIssuerLast(row) {
+  try {
+    fs.writeFileSync("/tmp/bandai-ge-issuer-last.json", JSON.stringify(row, null, 2));
+  } catch {
+    /* ignore */
+  }
+}
+
+function networkErrorMeta(e) {
+  const cause = e?.cause && typeof e.cause === "object" ? e.cause : null;
+  const code =
+    e?.causeCode ||
+    cause?.code ||
+    e?.code ||
+    (e?.name === "TimeoutError" || e?.code === "ABORT_ERR" ? "TIMEOUT" : null);
+  const message = String(e?.causeMessage || cause?.message || e?.message || "issuer_http_failed");
+  const timedOut = Boolean(
+    e?.timedOut ||
+      code === "TIMEOUT" ||
+      code === "ABORT_ERR" ||
+      code === "UND_ERR_HEADERS_TIMEOUT" ||
+      code === "UND_ERR_BODY_TIMEOUT" ||
+      /timeout|aborted/i.test(message),
+  );
+  return { code, message, timedOut };
+}
+
 export async function postBandaiGeIssuerHttp(opts = {}) {
   const url = String(opts.url || "");
   if (!isBandaiGeIssuerPaymentUrl(url)) {
@@ -984,14 +1011,39 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
   const cookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
   if (cookie) headers.cookie = cookie;
 
+  // GE often holds the TCP stream while the bank auth completes (60–120s+).
+  // Default was effectively ~60s proxy/idle flake → "fetch failed" after Revolut
+  // already moved. Wait longer and always persist attempt + response/error.
+  const timeoutMs = Math.max(
+    60_000,
+    Math.min(300_000, Number(opts.timeoutMs) || 180_000),
+  );
+
   const t0 = Date.now();
   let undiciAttempts = 0;
+  writeIssuerLast({
+    at: new Date().toISOString(),
+    phase: "posting",
+    issuerUrl: url.slice(0, 320),
+    bodyBytes: body.length,
+    timeoutMs,
+    undiciAttempts: 0,
+  });
+
   try {
     // CRITICAL: retry:false — undici used to retry POST on proxy RST after GE
     // already authorized → paired Revolut lines with app-level posts=1.
     const res = await request(
       url,
-      { method: "POST", headers, body, retry: false },
+      {
+        method: "POST",
+        headers,
+        body,
+        retry: false,
+        timeoutMs,
+        headersTimeout: timeoutMs,
+        bodyTimeout: timeoutMs,
+      },
       opts.ctx || {},
     );
     undiciAttempts = Number(res.undiciAttempts || 1);
@@ -1041,6 +1093,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
               ...(cookie ? { cookie } : {}),
             },
             retry: false,
+            timeoutMs: Math.min(60_000, timeoutMs),
           },
           opts.ctx || {},
         );
@@ -1070,11 +1123,12 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       jsonOk ||
       (isPaymentRedirect && (bankSignal || declineOnRedirect));
 
-    return {
+    const out = {
       ok,
       status: res.status,
       ms,
       bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
+      bodyText: String(text || "").slice(0, 8000),
       redirectUrl: redirectUrlFull ? redirectUrlFull.slice(0, 320) : null,
       redirectUrlFull,
       redirectSnippet,
@@ -1087,20 +1141,68 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       sawAuthWire: Boolean(ok && (bankSignal || declineOnRedirect || jsonOk)),
       undiciAttempts,
       via: "http-ge-issuer",
+      responseLost: false,
       error: ok
         ? null
         : isPaymentRedirect
           ? "ge_reload_only_no_bank"
           : "issuer_http_failed",
     };
+    writeIssuerLast({
+      at: new Date().toISOString(),
+      phase: "response",
+      issuerUrl: url.slice(0, 320),
+      status: out.status,
+      ok: out.ok,
+      ms: out.ms,
+      undiciAttempts: out.undiciAttempts,
+      isPaymentRedirect: out.isPaymentRedirect,
+      bankSignal: out.bankSignal,
+      declineOnRedirect: out.declineOnRedirect,
+      reloadOnly: out.reloadOnly,
+      redirectUrl: out.redirectUrl,
+      redirectPayload: out.redirectPayload,
+      bodySnippet: out.bodySnippet,
+      error: out.error,
+      via: out.via,
+    });
+    return out;
   } catch (e) {
-    return {
+    const ms = Date.now() - t0;
+    undiciAttempts = Number(e?.undiciAttempts || undiciAttempts || 1);
+    const net = networkErrorMeta(e);
+    // POST almost certainly left the client (GE/bank may still settle).
+    // Do not score this as a clean miss — capture cause and check Revolut.
+    const responseLost = undiciAttempts >= 1;
+    const out = {
       ok: false,
-      error: e?.message || "issuer_http_failed",
-      ms: Date.now() - t0,
-      undiciAttempts: Number(e?.undiciAttempts || undiciAttempts || 1),
+      error: responseLost ? "issuer_response_lost" : net.message || "issuer_http_failed",
+      errorCode: net.code,
+      errorMessage: net.message,
+      timedOut: net.timedOut,
+      responseLost,
+      ms,
+      undiciAttempts,
       via: "http-ge-issuer",
+      bodySnippet: null,
+      status: null,
     };
+    writeIssuerLast({
+      at: new Date().toISOString(),
+      phase: "error",
+      issuerUrl: url.slice(0, 320),
+      ok: false,
+      ms: out.ms,
+      undiciAttempts: out.undiciAttempts,
+      error: out.error,
+      errorCode: out.errorCode,
+      errorMessage: out.errorMessage,
+      timedOut: out.timedOut,
+      responseLost: out.responseLost,
+      via: out.via,
+      note: "Issuer POST sent or in-flight; HTTP response not captured — score bank",
+    });
+    return out;
   }
 }
 
@@ -1848,6 +1950,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
         userAgent: opts.userAgent,
         referer: ccUrl,
         followRedirect: false,
+        // Hold for GE/bank settle — short waits were scoring "fetch failed"
+        // after Revolut already moved (2026-07-23 ~12:45 AEST).
+        timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
       });
     }
   } finally {
@@ -1858,13 +1963,19 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const undiciAttempts = Number(issuer?.undiciAttempts || 1);
   // Wire truth: undiciAttempts is how many times the HTTP stack sent the POST.
   const chargeReqCount = Math.max(issuerPostCount, undiciAttempts);
+  const responseLost = Boolean(issuer?.responseLost);
 
   try {
+    const prev = fs.existsSync("/tmp/bandai-ge-issuer-last.json")
+      ? JSON.parse(fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8"))
+      : {};
     fs.writeFileSync(
       "/tmp/bandai-ge-issuer-last.json",
       JSON.stringify(
         {
+          ...prev,
           at: new Date().toISOString(),
+          phase: prev.phase === "error" || responseLost ? "error" : "response",
           issuerUrl,
           status: issuer?.status,
           ok: issuer?.ok,
@@ -1874,7 +1985,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
           redirectPayload: issuer?.redirectPayload,
           redirectSnippet: issuer?.redirectSnippet,
           bodySnippet: issuer?.bodySnippet,
+          bodyText: issuer?.bodyText || prev.bodyText || null,
           error: issuer?.error,
+          errorCode: issuer?.errorCode || prev.errorCode || null,
+          errorMessage: issuer?.errorMessage || prev.errorMessage || null,
+          timedOut: issuer?.timedOut ?? prev.timedOut ?? null,
+          responseLost,
           via: issuer?.via,
           gatewayId,
           paymentMethodId,
@@ -1914,26 +2030,33 @@ export async function runBandaiGeHttpPay(opts = {}) {
       transactionId,
   );
   push("ge_issuer_http", {
-    ok: Boolean(issuer?.ok || (bankHit && declineOnRedirect) || (bankHit && transactionId)),
+    ok: Boolean(
+      issuer?.ok ||
+        (bankHit && declineOnRedirect) ||
+        (bankHit && transactionId) ||
+        responseLost,
+    ),
     status: issuer?.status,
     ms: issuer?.ms,
     note: (
-      issuer?.reloadOnly && !bankHit
-        ? `RELOAD_ONLY ${issuer.status} err=${
-            Array.isArray(issuer.redirectPayload)
-              ? issuer.redirectPayload
-                  .filter((x) =>
-                    /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId|TransactionStatusType/i.test(
-                      String(x?.Key || ""),
-                    ),
-                  )
-                  .map((x) => `${x.Key}=${x.Value}`)
-                  .join(";")
-              : ""
-          }`
-        : issuer?.redirectUrl || bankHit
-          ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
-          : issuer?.bodySnippet || issuer?.error || "issuer_null"
+      responseLost
+        ? `RESPONSE_LOST posts=${chargeReqCount} undiciAttempts=${undiciAttempts} code=${issuer?.errorCode || "?"} timedOut=${Boolean(issuer?.timedOut)} ${issuer?.errorMessage || ""} — check bank`
+        : issuer?.reloadOnly && !bankHit
+          ? `RELOAD_ONLY ${issuer.status} err=${
+              Array.isArray(issuer.redirectPayload)
+                ? issuer.redirectPayload
+                    .filter((x) =>
+                      /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId|TransactionStatusType/i.test(
+                        String(x?.Key || ""),
+                      ),
+                    )
+                    .map((x) => `${x.Key}=${x.Value}`)
+                    .join(";")
+                : ""
+            }`
+          : issuer?.redirectUrl || bankHit
+            ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
+            : issuer?.bodySnippet || issuer?.error || "issuer_null"
     ).slice(0, 280),
   });
 
@@ -1943,11 +2066,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ? "pay_submitted_http"
       : bankHit && transactionId
         ? "declined_or_auth_failed"
-        : !issuer?.ok
-          ? issuer?.reloadOnly
-            ? "ge_reload_only_no_bank"
-            : "issuer_http_failed"
-          : "pay_submitted_http";
+        : responseLost
+          ? "pay_submitted_no_response"
+          : !issuer?.ok
+            ? issuer?.reloadOnly
+              ? "ge_reload_only_no_bank"
+              : "issuer_http_failed"
+            : "pay_submitted_http";
   const orderOk = Boolean(issuer?.ok && !declineOnRedirect && paymentStatus === "pay_submitted_http");
   const elapsedMs = Date.now() - t0;
   const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
@@ -1959,18 +2084,30 @@ export async function runBandaiGeHttpPay(opts = {}) {
     steps,
     timeline,
     timing,
-    failedStep: orderOk || paymentStatus === "declined_or_auth_failed" ? null : "ge_issuer_http",
+    failedStep:
+      orderOk ||
+      paymentStatus === "declined_or_auth_failed" ||
+      paymentStatus === "pay_submitted_no_response"
+        ? null
+        : "ge_issuer_http",
     error:
-      orderOk || paymentStatus === "declined_or_auth_failed"
+      orderOk ||
+      paymentStatus === "declined_or_auth_failed" ||
+      paymentStatus === "pay_submitted_no_response"
         ? null
         : issuer?.error || issuer?.bodySnippet,
     paymentStatus,
     checkoutStage:
-      paymentStatus === "declined_or_auth_failed" ? "declined" : "tokenize",
+      paymentStatus === "declined_or_auth_failed"
+        ? "declined"
+        : paymentStatus === "pay_submitted_no_response"
+          ? "tokenize"
+          : "tokenize",
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
     chargeReqCount,
     undiciAttempts,
+    responseLost,
     browserIssuerBlocked: browserBlocked,
     framesNeutralized,
     isSameCartToken,
@@ -1983,11 +2120,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
     elapsedMs,
     note: paymentStatus === "declined_or_auth_failed"
       ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer?.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
-      : issuer?.ok
-        ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
-        : issuer?.reloadOnly
-          ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
-          : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
+      : paymentStatus === "pay_submitted_no_response"
+        ? `HTTP issuer POST in-flight/sent but response lost code=${issuer?.errorCode || "?"} timedOut=${Boolean(issuer?.timedOut)} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s — check bank`
+        : issuer?.ok
+          ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
+          : issuer?.reloadOnly
+            ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
+            : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
   };
 }
 

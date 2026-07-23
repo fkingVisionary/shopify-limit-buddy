@@ -91,6 +91,14 @@
               <option value="monitor">Monitor (search / PDP)</option>
               <option value="chance">Chance applyDraw</option>
             </select>
+            <div id="taskBandaiCheckoutModeWrap" hidden>
+              <label>Checkout pay path</label>
+              <select id="taskBandaiCheckoutMode">
+                <option value="fast">Fast — HTTP GE (full undici issuer)</option>
+                <option value="safe">Safe — Playwright GE after cart hold</option>
+              </select>
+              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Safe keeps the ~30 min window and pays via browser GEM.</p>
+            </div>
             <div id="taskBandaiAccountPassWrap" hidden>
               <label>Account password <span class="optional">(optional — agen)</span></label>
               <input id="taskBandaiAccountPassword" type="text" autocomplete="off" placeholder="Must pass Bandai rules (upper+lower+digit+symbol)" />

@@ -45,10 +45,29 @@ const cvv = String(process.env.BANDAI_CARD_CVV || "");
 const holder = process.env.BANDAI_CARD_HOLDER || "Cardholder";
 const sku = process.env.BANDAI_SKU || "A2849039001";
 const pdp = `https://p-bandai.com/au/item/${sku}`;
-const { proxy, tag, idx } = pickProxy();
+// Prefer known-live proxy file, else pool pick.
+const liveProxy = fs.existsSync("/tmp/bandai-proxy-live.txt")
+  ? fs.readFileSync("/tmp/bandai-proxy-live.txt", "utf8").trim()
+  : "";
+const picked = liveProxy
+  ? {
+      proxy: liveProxy,
+      tag: (liveProxy.match(/session-([^-]+)/) || [])[1] || "live",
+      idx: -1,
+    }
+  : pickProxy();
+const { proxy, tag, idx } = picked;
+const machineId =
+  process.env.BANDAI_GE_MACHINE_ID ||
+  (fs.existsSync("/tmp/bandai-ge-machineId.txt")
+    ? fs.readFileSync("/tmp/bandai-ge-machineId.txt", "utf8").trim()
+    : "");
+const noPage = process.env.BANDAI_GE_NO_PAGE !== "0";
 
 const aest = () => new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
-console.log(`[${aest()} AEST] HTTP_GE_LAB start session=${tag} proxy#${idx} sku=${sku}`);
+console.log(
+  `[${aest()} AEST] HTTP_GE_LAB start session=${tag} proxy#${idx} sku=${sku} noPage=${noPage} machineIdBytes=${machineId.length}`,
+);
 
 const res = await runCheckout({
   taskId: `bandai-http-ge-${tag}-${Date.now()}`,
@@ -61,6 +80,8 @@ const res = await runCheckout({
   forceUndici: true,
   bandaiMode: "checkout",
   bandaiGeHttpPay: true,
+  bandaiGeNoPage: noPage && machineId.length >= 40,
+  bandaiGeMachineId: machineId.length >= 40 ? machineId : undefined,
   bandaiGeStopBeforeIssuer: process.env.BANDAI_GE_STOP_BEFORE_ISSUER === "1",
   bandaiGeForceIssuer: process.env.BANDAI_GE_FORCE_ISSUER === "1",
   account: { email, password },
