@@ -462,18 +462,23 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       body: { authCode: smsCode.code, authSn: smsAuth.authSn },
       referer: `${base}/sms/auth`,
     });
+    // Storefront: setSmsAuth(validateResponse) — keep authSn/authResultCode exactly.
+    const raw = json && typeof json === "object" ? json : {};
+    const authSn = raw.authSn ?? raw.data?.authSn ?? smsAuth.authSn;
     const authResultCode =
-      json?.authResultCode ||
-      json?.smsAuthResult?.authResultCode ||
-      json?.data?.authResultCode ||
-      json?.resultCode ||
-      "OK";
-    const authSn = json?.authSn || smsAuth.authSn;
+      raw.authResultCode ??
+      raw.data?.authResultCode ??
+      raw.resultCode ??
+      raw.smsAuthResult?.authResultCode;
+    const smsAuthInfo = {
+      authSn: typeof authSn === "string" && /^\d+$/.test(authSn) ? Number(authSn) : authSn,
+      ...(authResultCode != null ? { authResultCode } : {}),
+    };
     return {
-      ok: status >= 200 && status < 300,
+      ok: status >= 200 && status < 300 && authSn != null,
       status,
-      note: `sms validated`,
-      smsAuthInfo: { authSn, authResultCode },
+      note: `sms validated authResultCode=${authResultCode ?? "∅"}`,
+      smsAuthInfo,
       json,
     };
   });
@@ -509,6 +514,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     address5: profile.province || "NSW",
   };
 
+  const emailAuthInfo = emailAuth.json || emailValidate.json || null;
   const signUpData = {
     memberId: email,
     memberPassword: password,
@@ -526,9 +532,10 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     gender: task.gender || "NotSelected",
     // UI selects bind strings
     dobYear: String(dob.dobYear),
-    dobMonth: String(dob.dobMonth),
-    dobDay: String(dob.dobDay),
+    dobMonth: String(Number(dob.dobMonth)),
+    dobDay: String(Number(dob.dobDay)),
     multiAuth: true,
+    agreeAgeTerms: true,
     marketingConsent: {
       marketingPreference1: false,
       marketingPreference2: false,
@@ -537,18 +544,47 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     termsAgreeList: terms.termsAgreeList,
     smsAuthInfo: smsValidate.smsAuthInfo,
   };
+  // Pinia keeps email authInfo on signUpData after setEmailAuth
+  if (emailAuthInfo && (emailAuthInfo.authSn != null || emailAuthInfo.authResultCode != null)) {
+    signUpData.authInfo = {
+      authSn:
+        typeof emailAuthInfo.authSn === "string" && /^\d+$/.test(emailAuthInfo.authSn)
+          ? Number(emailAuthInfo.authSn)
+          : emailAuthInfo.authSn,
+      authResultCode: emailAuthInfo.authResultCode ?? emailValidate.json?.authResultCode,
+    };
+  }
 
   const registered = await tStep("registerVerification", async () => {
     const { status, json } = await session.apiJson("POST", "/api/signUp/registerVerification", {
       body: signUpData,
       referer: `${base}/register/confirm`,
     });
+    try {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(
+        "/tmp/bandai-agen-register-debug.json",
+        JSON.stringify(
+          {
+            status,
+            request: { ...signUpData, memberPassword: "***" },
+            response: json,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch {
+      /* ignore */
+    }
     const err =
       json?.detail ||
       json?.title ||
+      json?.error ||
       json?.errorCode ||
       json?.message ||
-      (Array.isArray(json?.errors) ? JSON.stringify(json.errors).slice(0, 240) : null);
+      (json?.errors ? JSON.stringify(json.errors).slice(0, 240) : null) ||
+      (json?.invalidParams ? JSON.stringify(json.invalidParams).slice(0, 240) : null);
     return {
       ok: status >= 200 && status < 300,
       status,
