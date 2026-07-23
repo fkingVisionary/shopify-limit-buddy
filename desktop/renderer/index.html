@@ -87,7 +87,7 @@
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
               <option value="checkout">Autocheckout (login + ATC)</option>
-              <option value="account_gen">Account gen (IMAP + OnlineSim)</option>
+              <option value="account_gen">Account gen (IMAP + SMSPool)</option>
               <option value="monitor">Monitor (search / PDP)</option>
               <option value="chance">Chance applyDraw</option>
             </select>
@@ -269,14 +269,33 @@
         <input id="setCapsolver" placeholder="CapSolver key" autocomplete="off" />
         <p class="hint">Used only by Toymate. Kmart ignores this key.</p>
         <h3 style="margin-top:1.25rem">Account gen OTP (Bandai + future agen)</h3>
-        <p class="hint">Secrets stay on this computer. Used by Premium Bandai account gen (email IMAP + OnlineSim SMS). Never logged in full.</p>
-        <label>OnlineSim API key</label>
+        <p class="hint">Secrets stay on this computer. Bandai: email via IMAP + SMS via SMSPool (US/UK numbers). OnlineSim is optional fallback. Never logged in full.</p>
+        <label>SMSPool API key <span class="optional">(preferred)</span></label>
+        <input id="setSmspool" placeholder="SMSPool key (BYO)" autocomplete="off" />
+        <div class="grid2">
+          <div>
+            <label>SMS provider</label>
+            <select id="setSmsProvider">
+              <option value="auto">Auto (SMSPool → OnlineSim)</option>
+              <option value="smspool">SMSPool only</option>
+              <option value="onlinesim">OnlineSim only</option>
+            </select>
+          </div>
+          <div>
+            <label>SMSPool country</label>
+            <select id="setSmspoolCountry">
+              <option value="GB">UK (+44) — cheaper</option>
+              <option value="US">US (+1)</option>
+            </select>
+          </div>
+        </div>
+        <label>OnlineSim API key <span class="optional">(fallback)</span></label>
         <input id="setOnlinesim" placeholder="OnlineSim apikey" autocomplete="off" />
         <div class="grid2">
           <div>
             <label>OnlineSim mode</label>
             <select id="setOnlinesimMode">
-              <option value="rent">Rent (preferred for Bandai)</option>
+              <option value="rent">Rent (AU)</option>
               <option value="activation">Activation (service slug)</option>
             </select>
           </div>

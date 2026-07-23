@@ -356,6 +356,9 @@ function buildBandaiPayload({
 
   const s = settings || task._settings || {};
   const otp = {
+    smsProvider: String(s.smsProvider || "auto").trim().toLowerCase(),
+    smspoolApiKey: String(s.smspoolApiKey || "").trim(),
+    smspoolCountry: String(s.smspoolCountry || "GB").trim(),
     onlinesimApiKey: String(s.onlinesimApiKey || "").trim(),
     onlinesimMode: String(s.onlinesimMode || "rent"),
     onlinesimServiceSlug: String(s.onlinesimServiceSlug || "other"),
@@ -368,8 +371,9 @@ function buildBandaiPayload({
   };
 
   if (mode === "account_gen") {
-    if (!otp.onlinesimApiKey) {
-      return { ok: false, error: "OnlineSim API key missing in Settings" };
+    const hasSms = Boolean(otp.smspoolApiKey || otp.onlinesimApiKey);
+    if (!hasSms) {
+      return { ok: false, error: "SMSPool (preferred) or OnlineSim API key missing in Settings" };
     }
     if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
       return { ok: false, error: "IMAP host/user/app password required in Settings" };

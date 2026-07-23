@@ -264,10 +264,10 @@ export function normalizeAuMsisdn(raw) {
   return d;
 }
 
-/** Bandai phone1 shape. */
+/** Bandai phone1 shape — countryNo is ISO code (AU), matching storefront selects. */
 export function toBandaiPhone1(raw) {
   const phoneNo = normalizeAuMsisdn(raw);
-  return { countryNo: "+61", phoneNo, countryNoName: "Australia" };
+  return { countryNo: "AU", phoneNo, countryNoName: "Australia" };
 }
 
 function extractMessages(json) {
