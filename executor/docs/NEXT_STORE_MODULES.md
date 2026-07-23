@@ -1,6 +1,6 @@
 # Next Store Modules — Research & Plan
 
-_Date: 2026-07-21 (research day pass 5)_  
+_Date: 2026-07-22 (research day pass 6 — Topps multi-region)_  
 _Status: planning only (no adapters yet)_  
 _Baseline: Kmart AU known-good on `main` (post hard-reset); new modules on feature branches only._  
 _Ops plan:_ [`FUTURE_ROADMAP.md`](./FUTURE_ROADMAP.md)
@@ -9,6 +9,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 
 ### Yield / strategy note (owner input)
 - **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
+- **Topps (US + JP first, then EU/IN/BR)** — Fanatics Shopify fleet + Cloudflare; dig: `TOPPS_MODULE.md`. Phase 3-class (weak Hyper); one adapter × region config.
 - **Toymate** — agen restore track (parallel); CF + EQL — not undici-first.
 - **Pokémon Centre AU** — official exclusives; **Incapsula + DataDome + hCaptcha + Global-e**. Dig: `POKEMON_CENTRE_MODULE.md`. Hyper-strong on DD/Incapsula, weak on hCaptcha; crowded — Phase 2 after Bandai + antibot wiring.
 - **Australia Post Shop** — parked; `AUSPOST_SHOP_MODULE.md`.
@@ -43,16 +44,17 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 9 | Uniqlo AU | Contender (Akamai ✅) | Akamai BM | Uniqlo SPA | M — UT/collab drops |
 | 10 | Big W | Backlog | Akamai BM | SAP + AEM | M |
 | 11 | **JB Hi-Fi** | Backlog (yield high / Hyper ❌) | **CF + reCAPTCHA Enterprise** + Riskified | **Shopify Plus** custom | L — see `JB_HIFI_MODULE.md` |
-| 12 | Toymate | Agen restore / CF+EQL | Cloudflare + EQL | BigCommerce | M–L |
-| 13 | EB Games | Backlog | CF challenge | Custom .NET | L |
-| 14 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
-| 15 | Pop Mart AU | Watch (Labubu $) | Cloudflare | Custom / CF | L — Hyper ❌ |
-| 16 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
+| 12 | **Topps (US/JP+)** | Backlog (yield high / Hyper ❌) | **CF** (+ Turnstile/hCaptcha TBD) + Riskified US | **Shopify** per-region shops | L — see `TOPPS_MODULE.md` |
+| 13 | Toymate | Agen restore / CF+EQL | Cloudflare + EQL | BigCommerce | M–L |
+| 14 | EB Games | Backlog | CF challenge | Custom .NET | L |
+| 15 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| 16 | Pop Mart AU | Watch (Labubu $) | Cloudflare | Custom / CF | L — Hyper ❌ |
+| 17 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
 
 **Active track:** Bandai monitor ∥ **account gen** → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
 **Parallel:** Toymate agen restore (separate agent/branch).  
 **Later (Hyper-native):** AusPost DD · HN Incapsula · **Pokémon Centre** (DD+Incapsula+GE) · Costco Kasada · Target/Uniqlo Akamai · FL/Platypus.  
-**Avoid full ATC until CF/hCaptcha productized:** JB · EB · Toymate ATC · Pop Mart.
+**Avoid full ATC until CF/hCaptcha productized:** JB · **Topps** · EB · Toymate ATC · Pop Mart.
 
 ---
 
@@ -275,6 +277,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | Harvey Norman | Electronics / TCG ★★★ | Incapsula ✅ | Low–med | Strong next Hyper |
 | Foot Locker / Platypus | Sneakers ★★★★ | Kasada / DD ✅ | Low–med | After Kasada/DD wired |
 | JB Hi-Fi | Pokémon MSRP ★★★★★ | CF + reCAPTCHA ❌ | Low | Monitor / later browser |
+| **Topps US/JP** | NOW / Japan Edition ★★★★★ | CF ❌ (+ captcha TBD) | Guest OK; agen optional | Phase 3 — `TOPPS_MODULE.md` |
 | EB / Toymate / Pop Mart | TCG / Labubu ★★★★ | CF ❌ | Membership / EQL | Browser / agen |
 | Good Guys | Electronics ★★ | CF + Shopify ❌ | Low | Skip |
 | Officeworks / Myer | Low–med exclusives ★★ | Soft / unclear | Auth0 / account | Low priority |
@@ -291,9 +294,9 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | Kasada CT + CD | ✅ Hyper API · ❌ not wired → **Costco + Foot Locker** |
 | DataDome interstitial + slider | ✅ Hyper API · ❌ not wired → **AusPost + Platypus + Pokémon Centre** |
 | Incapsula Reese84 / UTMVC | ✅ Hyper API · ❌ not wired → **Harvey Norman / DJ / Smyths / Pokémon Centre** |
-| Cloudflare Turnstile / managed challenge | ❌ → JB / EB / Toymate / Pop Mart / Good Guys / Rebel |
+| Cloudflare Turnstile / managed challenge | ❌ → JB / **Topps** / EB / Toymate / Pop Mart / Good Guys / Rebel |
 | Google reCAPTCHA Enterprise | ❌ (not Hyper) → JB / Disney / many checkouts |
-| hCaptcha | ❌ (not Hyper) → **Pokémon Centre** drop/Imperva challenges |
+| hCaptcha | ❌ (not Hyper) → **Pokémon Centre** · **Topps EU** (competitor callout) |
 | F5 / Volterra / Shape | ❌ → Bandai HTML edge; JP `pokemoncenter-online.com` volt-adc |
 | Global‑e checkout | N/A vendor · custom work → Bandai / Disney / **Pokémon Centre AU** |
 | Auth0 MyPost / BNID / Costco membership | Custom session machines |
@@ -317,7 +320,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | **B3** | Chance entry pool (`applyDraw` from agen vault) |
 | **B4** | Global‑e checkout / pay |
 | *later* | Target Akamai · AusPost DD · Costco Kasada · HN Incapsula · FL Kasada · Platypus DD |
-| *browser/CF track* | JB monitor · EB · Pop Mart (only if CF path exists) |
+| *browser/CF track* | JB monitor · **Topps US/JP** (`TOPPS_MODULE.md`) · EB · Pop Mart (only if CF path exists) |
 
 ### Success criteria
 - **Bandai agen:** vault of SMS-cleared accounts with shipping addresses.
@@ -347,6 +350,32 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | thegoodguys.com.au | Shopify Oxygen/Hydrogen + CF |
 | popmart.com/au | CF `__cf_bm` |
 | disneystore.com.au | 200 SFCC + Akamai cookies + Global‑e + reCAPTCHA |
+| shop.topps.com / shop-jp.topps.com | CF 403 branded; UCP 200; `*.myshopify.com/meta.json` 200 — see `TOPPS_MODULE.md` |
+| 213d22-a1 / topps-jp.myshopify.com | Soft meta; products.json often 429 |
+
+---
+
+## Deep dive — Topps (US + JP + regions)
+
+**Full dig:** [`TOPPS_MODULE.md`](./TOPPS_MODULE.md)
+
+### Why it matters
+- Topps NOW + hobby drops + **Japan Edition / NPB / J.League** exclusives.
+- Fanatics migrated Magento → **Shopify** (separate shop per region). Crowded (NSB multi-region) but high $.
+
+### Stack (confirmed)
+| Layer | Detail |
+|---|---|
+| Edge | **Cloudflare** (DC hard 403 on branded HTML/cart) |
+| Commerce | **Shopify** — US `213d22-a1.myshopify.com` · JP `topps-jp.myshopify.com` · UK/DE/ES/FR/IT/IN/BR siblings |
+| Accounts | Shopify Customer Accounts OAuth (`account.topps.com`, `accounts-jp.topps.com`, …) |
+| Soft research | `/.well-known/ucp` on `shop-*` · `meta.json` on `*.myshopify.com` |
+| Fraud | Riskified (US shell) |
+
+### Build posture
+- **One adapter × region config**; guest ATC first; JP ship-to is APAC-only.
+- Same CF class as JB — monitor / browser until CF tooling exists.
+- Owner: sticky US + JP residential HARs to close captcha questions.
 
 ---
 
