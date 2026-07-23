@@ -177,7 +177,17 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     };
   });
 
-  const warm = await tStep("warm", async () => session.warm());
+  const warm = await tStep("warm", async () => {
+    try {
+      return await session.warm();
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || "warm_fetch_failed",
+      };
+    }
+  });
   if (!warm.ok) {
     return fail("warm", warm.note || "warm failed", steps);
   }
