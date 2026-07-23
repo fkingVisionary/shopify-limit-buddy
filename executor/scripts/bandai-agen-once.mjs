@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // ONE Premium Bandai AU account-gen attempt.
-// SMSPool (US/UK) + IMAP catchall. Does not loop.
+// SMSPool (US/UK) + IMAP (Hide My Email → primary inbox). Does not loop signups.
 //
 // Usage (secrets via env /tmp — never commit):
 //   SMSPOOL_API_KEY=... \
-//   IMAP_HOST=imap.gmail.com IMAP_USER=... IMAP_APP_PASSWORD=... \
-//   EMAIL='buyer@bullposted.com' \
+//   IMAP_HOST=imap.mail.me.com IMAP_USER=jimposted@icloud.com IMAP_APP_PASSWORD=... \
+//   EMAIL='alias@icloud.com' \
 //   node scripts/bandai-agen-once.mjs
 //
 // Optional: SMSPOOL_COUNTRY=GB|US  PROXY_LINE=host:port:user:pass
@@ -41,14 +41,24 @@ if (!process.env.SMSPOOL_API_KEY) {
   }
 }
 
-function firstProxy() {
-  if (process.env.PROXY_LINE) return process.env.PROXY_LINE.trim();
+function proxyLines() {
+  if (process.env.PROXY_LINE) return [process.env.PROXY_LINE.trim()];
+  const fromFile = [];
+  try {
+    const saved = fs.readFileSync("/tmp/bandai-agen-proxy.txt", "utf8").trim();
+    if (saved) fromFile.push(saved);
+  } catch {
+    /* ignore */
+  }
   const lines = fs
     .readFileSync(path.join(__dirname, "..", "resi.proxies"), "utf8")
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
-  return lines[0] || null;
+  // Prefer saved first, then rotate through pool (cap retries — do not spray)
+  const max = Number(process.env.PROXY_TRIES) || 6;
+  const merged = [...fromFile, ...lines.filter((l) => l !== fromFile[0])];
+  return merged.slice(0, max);
 }
 
 function toProxyUrl(raw) {
@@ -60,6 +70,20 @@ function toProxyUrl(raw) {
     return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass.join(":"))}@${host}:${port}`;
   }
   return raw;
+}
+
+function isProxyFailure(result) {
+  const step = String(result?.failedStep || "");
+  const err = String(result?.error || "");
+  if (!/^(warm|email_auth|throw)$/.test(step) && step) return false;
+  return /proxy|fetch failed|cancelled|ECONN|tunnel|403|TLS|socket|UND_ERR/i.test(
+    `${step} ${err}`,
+  );
+}
+
+function pastEmailAuth(result) {
+  const steps = result?.steps || [];
+  return steps.some((s) => s.step === "email_auth" && s.ok);
 }
 
 const smspoolKey = String(process.env.SMSPOOL_API_KEY || "").trim();
@@ -76,78 +100,94 @@ if (!imapHost || !imapUser || !imapPass) {
   process.exit(1);
 }
 
-const proxyRaw = toProxyUrl(firstProxy());
-// EMAIL = Bandai memberId (Hide My Email alias / catchall). IMAP_USER = inbox login.
 const email = String(process.env.EMAIL || imapUser).trim().toLowerCase();
 const uniquify =
   process.env.UNIQUIFY_EMAIL === "1" ||
   process.env.UNIQUIFY_EMAIL === "true" ||
   (/bullposted\.com$/i.test(email) && process.env.UNIQUIFY_EMAIL !== "0");
-const dispatcher = makeDispatcher(proxyRaw, { forceUndici: true });
-const jar = createJar();
-const ctx = { dispatcher, jar, steps: [] };
 
-const task = {
-  taskId: `bandai-agen-once-${Date.now().toString(36)}`,
-  storeUrl: "https://p-bandai.com/au/",
-  bandaiMode: "account_gen",
-  bandaiArea: "au",
-  proxy: proxyRaw,
-  dryRun: true,
-  placeOrder: false,
-  uniquifyEmail: uniquify,
-  signupEmail: email,
-  smsProvider: "smspool",
-  smspoolApiKey: smspoolKey,
-  smspoolCountry: process.env.SMSPOOL_COUNTRY || "GB",
-  otp: {
+const proxies = proxyLines();
+let result = null;
+let usedHost = null;
+
+for (let i = 0; i < proxies.length; i++) {
+  const proxyRaw = toProxyUrl(proxies[i]);
+  usedHost = String(proxies[i] || "").split(":")[0] || null;
+  const dispatcher = makeDispatcher(proxyRaw, { forceUndici: true });
+  const jar = createJar();
+  const ctx = { dispatcher, jar, steps: [] };
+  const task = {
+    taskId: `bandai-agen-once-${Date.now().toString(36)}`,
+    storeUrl: "https://p-bandai.com/au/",
+    bandaiMode: "account_gen",
+    bandaiArea: "au",
+    proxy: proxyRaw,
+    dryRun: true,
+    placeOrder: false,
+    uniquifyEmail: uniquify,
+    signupEmail: email,
     smsProvider: "smspool",
     smspoolApiKey: smspoolKey,
     smspoolCountry: process.env.SMSPOOL_COUNTRY || "GB",
-    imapHost,
-    imapPort: Number(process.env.IMAP_PORT) || 993,
-    imapUser,
-    imapAppPassword: imapPass,
-    imapMailbox: process.env.IMAP_MAILBOX || "INBOX",
-  },
-  profile: {
-    email,
-    first_name: "Alex",
-    last_name: "Buyer",
-    address1: "1 George Street",
-    city: "Sydney",
-    province: "NSW",
-    zip: "2000",
-    phone: null,
-  },
-};
+    otp: {
+      smsProvider: "smspool",
+      smspoolApiKey: smspoolKey,
+      smspoolCountry: process.env.SMSPOOL_COUNTRY || "GB",
+      imapHost,
+      imapPort: Number(process.env.IMAP_PORT) || 993,
+      imapUser,
+      imapAppPassword: imapPass,
+      imapMailbox: process.env.IMAP_MAILBOX || "INBOX",
+    },
+    profile: {
+      email,
+      first_name: "Alex",
+      last_name: "Buyer",
+      address1: "1 George Street",
+      city: "Sydney",
+      province: "NSW",
+      zip: "2000",
+      phone: null,
+    },
+  };
 
-console.log(
-  JSON.stringify(
-    {
+  console.log(
+    JSON.stringify({
+      phase: "try",
+      attempt: i + 1,
       taskId: task.taskId,
       email,
-      smspoolCountry: task.smspoolCountry,
-      proxy: proxyRaw ? "set" : null,
-      imapHost,
+      proxyHost: usedHost,
       imapUser,
-    },
-    null,
-    2,
-  ),
-);
+      note: "OTP matched by To: alias; proxy retries stop after email_auth",
+    }),
+  );
 
-let result;
-try {
-  result = await bandaiAdapter.run(task, ctx);
-} catch (e) {
-  result = {
-    ok: false,
-    failedStep: "throw",
-    error: e?.cause?.message || e?.message || String(e),
-    steps: ctx.steps,
-  };
+  try {
+    result = await bandaiAdapter.run(task, ctx);
+  } catch (e) {
+    result = {
+      ok: false,
+      failedStep: "throw",
+      error: e?.cause?.message || e?.message || String(e),
+      steps: ctx.steps,
+    };
+  }
+
+  if (result?.ok) break;
+  // Never rotate proxies after Bandai has emailed an OTP for this alias.
+  if (pastEmailAuth(result)) break;
+  if (!isProxyFailure(result)) break;
+  console.log(
+    JSON.stringify({
+      phase: "proxy_retry",
+      failedStep: result?.failedStep,
+      error: result?.error,
+      next: i + 1 < proxies.length,
+    }),
+  );
 }
+
 const outPath = process.env.OUT || "/tmp/bandai-agen-once-result.json";
 fs.writeFileSync(
   outPath,
@@ -157,6 +197,7 @@ fs.writeFileSync(
       failedStep: result?.failedStep,
       error: result?.error,
       note: result?.note,
+      proxyHost: usedHost,
       account: result?.account
         ? {
             email: result.account.email,
@@ -164,11 +205,10 @@ fs.writeFileSync(
             phoneCountry: result.account.phoneCountry,
             status: result.account.status,
             smsProvider: result.account.smsProvider,
-            // password omitted from console summary; kept in OUT file for vault
             password: result.account.password,
           }
         : null,
-      steps: result?.steps || ctx.steps,
+      steps: result?.steps || [],
     },
     null,
     2,
@@ -184,6 +224,7 @@ console.log(
       note: result?.note,
       accountEmail: result?.account?.email,
       phoneCountry: result?.account?.phoneCountry,
+      proxyHost: usedHost,
       steps: (result?.steps || []).map((s) => ({
         step: s.step,
         ok: s.ok,

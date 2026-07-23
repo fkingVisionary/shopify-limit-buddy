@@ -113,7 +113,19 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const profile = profileFromTask({ ...task, bandaiArea: area });
   const otp = otpConfigFromTask(task);
   const session = createBandaiSession(ctx, { area });
-  const tStep = opts.tStep || defaultStep(steps, ctx);
+  // Adapter makeStep rethrows fetch failures — wrap so agen can fail soft and keep going/retry.
+  const rawStep = opts.tStep || defaultStep(steps, ctx);
+  const tStep = async (name, fn) => {
+    try {
+      return await rawStep(name, fn);
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || String(e),
+      };
+    }
+  };
 
   const provider = resolveSmsProvider(otp);
   if (!provider) {
