@@ -476,6 +476,25 @@ export async function request(url, opts, ctx) {
     const attempts = safeRetry ? 3 : 1;
     let lastError;
     let undiciAttempts = 0;
+    const timeoutMs = Number(opts?.timeoutMs);
+    const headersTimeout =
+      Number(opts?.headersTimeout) > 0
+        ? Number(opts.headersTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const bodyTimeout =
+      Number(opts?.bodyTimeout) > 0
+        ? Number(opts.bodyTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const signal =
+      opts?.signal ||
+      (timeoutMs > 0 && typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined);
+
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
         undiciAttempts += 1;
@@ -485,6 +504,9 @@ export async function request(url, opts, ctx) {
           redirect: "manual",
           dispatcher: dispatcher.undiciDispatcher(),
           ...(opts?.body !== undefined ? { body: opts.body } : {}),
+          ...(signal ? { signal } : {}),
+          ...(headersTimeout != null ? { headersTimeout } : {}),
+          ...(bodyTimeout != null ? { bodyTimeout } : {}),
         });
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
         const wrapped = wrapFetchResponse(res, url);
@@ -495,6 +517,15 @@ export async function request(url, opts, ctx) {
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
           if (lastError && typeof lastError === "object") {
             lastError.undiciAttempts = undiciAttempts;
+            // Surface undici/node cause codes (timeout vs RST) for issuer scoring.
+            const cause = lastError.cause;
+            if (cause && typeof cause === "object") {
+              lastError.causeCode = cause.code || cause.name || null;
+              lastError.causeMessage = cause.message || null;
+            }
+            if (lastError.name === "TimeoutError" || lastError.code === "ABORT_ERR") {
+              lastError.timedOut = true;
+            }
           }
           throw e;
         }

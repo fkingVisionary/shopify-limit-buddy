@@ -416,11 +416,39 @@ function buildBandaiPayload({
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
-      // HTTP-first: F5 sensor bridge mints headers; full Playwright checkout opt-in only.
-      // GE card/3DS still needs browser when placeOrder is true.
-      bandaiBrowserCheckout:
-        task.bandaiBrowserCheckout === true ||
-        (mode === "checkout" && Boolean(placeOrder)),
+      // ATC always HTTP+F5. Pay path: fast=HTTP GE issuer, safe=Playwright GE.
+      bandaiCheckoutMode: (() => {
+        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
+        if (
+          m === "safe" ||
+          m === "browser" ||
+          m === "playwright" ||
+          task.bandaiBrowserCheckout === true
+        ) {
+          return "safe";
+        }
+        return "fast";
+      })(),
+      bandaiGeHttpPay: (() => {
+        if (mode !== "checkout" || !placeOrder) return false;
+        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
+        const safe =
+          m === "safe" ||
+          m === "browser" ||
+          m === "playwright" ||
+          task.bandaiBrowserCheckout === true;
+        return !safe && task.bandaiGeHttpPay !== false;
+      })(),
+      bandaiBrowserCheckout: (() => {
+        if (mode !== "checkout" || !placeOrder) return false;
+        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
+        return (
+          m === "safe" ||
+          m === "browser" ||
+          m === "playwright" ||
+          task.bandaiBrowserCheckout === true
+        );
+      })(),
       bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
       bandaiArea,

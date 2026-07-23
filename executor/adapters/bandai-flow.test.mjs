@@ -34,6 +34,7 @@ import {
   isBandaiGeRedirectDecline,
   decodeCcPaymentRedirectData,
 } from "./bandai-ge-http.js";
+import { resolveBandaiCheckoutPayPath } from "./bandai.js";
 
 // --- F5 gate matrix ---
 assert.equal(isBandaiF5Gated("POST", "/login"), true);
@@ -323,5 +324,14 @@ const authFailJwt =
 const authFailUrl = `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${authFailJwt}`;
 assert.equal(isBandaiGePaymentRedirectSignal(authFailUrl), true);
 assert.equal(isBandaiGeRedirectDecline(authFailUrl), true);
+
+// --- Fast vs Safe pay path (ATC always HTTP) ---
+assert.equal(resolveBandaiCheckoutPayPath({}).mode, "fast");
+assert.equal(resolveBandaiCheckoutPayPath({}).placeOrderGeHttp, true);
+assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).mode, "safe");
+assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).placeOrderGe, true);
+assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).placeOrderGeHttp, false);
+assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserCheckout: true }).mode, "safe");
+assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserFull: true }).mode, "full");
 
 console.log("bandai-flow.test.mjs ok");

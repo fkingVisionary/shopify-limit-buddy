@@ -12,11 +12,12 @@
 //   Default = undici HTTP. F5 Shape Defense headers (`p8komysnbc-*`) are minted
 //   by a narrow Playwright bridge that aborts probe XHRs — the real POSTs stay
 //   on HTTP.
-//   placeOrder + bandaiBrowserCheckout = HTTP→cart on that same bridge, then
-//   SPA Proceed + single GE Pay (drop-speed path). Full browser login/PDP is
-//   only `bandaiBrowserFull:true` (slow — do not use for drops).
-//   placeOrder + bandaiGeHttpPay = HTTP through checkoutSn + GEPI GetCartToken
-//   → Checkout/v2 hydrate → issuer (no Playwright GE UI).
+//
+// Checkout pay modes (task.bandaiCheckoutMode) — ATC/cart_hold is always HTTP+F5:
+//   fast (default) — bandaiGeHttpPay: GetCartToken → hydrate → issuer undici
+//   safe           — bandaiBrowserCheckout: same cart hold, then SPA Proceed +
+//                    Playwright GE Pay on the F5 bridge (~30 min pay window)
+//   Full browser login/PDP remains lab-only: bandaiBrowserFull:true.
 
 import { createBandaiAccount } from "./bandai-agen.js";
 import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
@@ -34,6 +35,47 @@ import {
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
+
+/**
+ * Resolve Fast vs Safe pay path after HTTP ATC / cart_hold.
+ * Explicit bandaiBrowserCheckout / bandaiBrowserFull still win for labs.
+ * @param {object} [task]
+ * @returns {{ mode: "fast"|"safe"|"full", placeOrderGeHttp: boolean, placeOrderGe: boolean, browserFull: boolean }}
+ */
+export function resolveBandaiCheckoutPayPath(task = {}) {
+  const raw = String(task.bandaiCheckoutMode || task.checkoutMode || "")
+    .toLowerCase()
+    .trim();
+  if (task.bandaiBrowserFull === true || raw === "full") {
+    return {
+      mode: "full",
+      placeOrderGeHttp: false,
+      placeOrderGe: false,
+      browserFull: true,
+    };
+  }
+  const safe =
+    task.bandaiBrowserCheckout === true ||
+    raw === "safe" ||
+    raw === "browser" ||
+    raw === "playwright" ||
+    raw === "http+ge";
+  if (safe) {
+    return {
+      mode: "safe",
+      placeOrderGeHttp: false,
+      placeOrderGe: true,
+      browserFull: false,
+    };
+  }
+  // fast default — opt out only with bandaiGeHttpPay:false
+  return {
+    mode: "fast",
+    placeOrderGeHttp: task.bandaiGeHttpPay !== false,
+    placeOrderGe: false,
+    browserFull: false,
+  };
+}
 
 function makeStep(steps, ctx) {
   return async (name, fn) => {
@@ -987,8 +1029,20 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
       });
     }
-    const geMachineId =
+    let geMachineId =
       task.bandaiGeMachineId || process.env.BANDAI_GE_MACHINE_ID || null;
+    // Lab / drop default: reuse last iovation blackbox (no Playwright on GE).
+    if (!geMachineId) {
+      try {
+        const p = "/tmp/bandai-ge-machineId.txt";
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, "utf8").trim();
+          if (raw.length >= 40) geMachineId = raw;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     // Prefer zero Playwright on GE when a blackbox is already available.
     // Faster (~10s iovation off the critical path). Revolut pairs persist
     // even with noPage (GE/PSP dual-rail) — still the product angle.
@@ -1216,8 +1270,15 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Preferred drop path: full GE over HTTP (no Playwright Pay UI).
-  if (placeOrder && task.bandaiGeHttpPay === true) {
+  // Pay path after shared HTTP ATC / cart_hold (see resolveBandaiCheckoutPayPath).
+  const payPath = resolveBandaiCheckoutPayPath(task);
+  steps.push({
+    step: "bandai_checkout_mode",
+    ok: true,
+    note: `pay=${payPath.mode} (ATC always HTTP+F5; safe=Playwright GE, fast=HTTP GE)`,
+  });
+
+  if (placeOrder && payPath.placeOrderGeHttp) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,
@@ -1227,8 +1288,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     });
   }
 
-  // Legacy drop path: HTTP + F5 mint through cart, then GE Pay on bridge page.
-  if (placeOrder && task.bandaiBrowserCheckout === true) {
+  // Safe: HTTP + F5 through cart, then GE Pay on the bridge page.
+  if (placeOrder && payPath.placeOrderGe) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,

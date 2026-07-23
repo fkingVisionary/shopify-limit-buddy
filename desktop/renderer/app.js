@@ -171,6 +171,8 @@ function syncTaskFormForStore() {
   if (bAssign) bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance");
   const bChance = $("taskBandaiChanceWrap");
   if (bChance) bChance.hidden = !bandai || mode !== "chance";
+  const bPayPath = $("taskBandaiCheckoutModeWrap");
+  if (bPayPath) bPayPath.hidden = !bandai || mode !== "checkout";
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) {
     placeWrap.hidden =
@@ -216,7 +218,11 @@ function renderTasks() {
         t.store === "toymate"
           ? `Toymate · ${t.toymateMode || "checkout"}`
           : t.store === "bandai"
-            ? `Bandai · ${t.bandaiMode || "checkout"}`
+            ? `Bandai · ${t.bandaiMode || "checkout"}${
+                String(t.bandaiMode || "checkout") === "checkout"
+                  ? ` · ${t.bandaiCheckoutMode || "fast"}`
+                  : ""
+              }`
             : t.store === "pokemoncentre"
               ? `Pokémon Centre · ${t.pcMode || "monitor"}`
             : "Kmart";
@@ -447,6 +453,8 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
     if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
+    if ($("taskBandaiCheckoutMode"))
+      $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
     if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
     if ($("taskBandaiAccountPassword"))
       $("taskBandaiAccountPassword").value = task.accountPassword || "";
@@ -551,6 +559,8 @@ function readTaskForm() {
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
     bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
+    bandaiCheckoutMode:
+      store === "bandai" ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
