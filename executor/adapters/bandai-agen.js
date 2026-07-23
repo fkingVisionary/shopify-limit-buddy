@@ -352,7 +352,8 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     });
     const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
     const termsCode = json?.termsCode || "termsofuse";
-    const areaCode = json?.areaCode || "au";
+    // Storefront setTermsAgree uses areaCode from terms payload (AU uppercase).
+    const areaCode = String(json?.areaCode || "AU").toUpperCase();
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -441,12 +442,20 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
 
   const dob = adultDob();
+  // AU homeAddress from /api/address/homeAddress: useState=false → area only (AU/AU), no state.
   const homeAddress = {
-    areaCode: area,
-    homeAddressArea: profile.province || "NSW",
-    homeAddressDetail: profile.city || "Sydney",
+    areaCode: "AU",
+    homeAddressArea: "AU",
   };
+  // Storefront signup does not collect postal address — leave empty like the Pinia default.
   const address = {
+    countryCode: "",
+    zipCode: "",
+    address1: "",
+    address2: "",
+  };
+  // Shipping vault later (login) still uses a real AU address.
+  const shippingAddress = {
     countryCode: "AU",
     zipCode: String(profile.zip || "2000").slice(0, 4),
     address1: profile.address1 || "1 George Street",
@@ -464,13 +473,17 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       name1: profile.first_name || "Alex",
       name2: profile.last_name || "Buyer",
     },
-    phone1,
+    phone1: {
+      countryNo: phone1.countryNo,
+      phoneNo: phone1.phoneNo,
+    },
     address,
     homeAddress,
     gender: task.gender || "NotSelected",
-    dobYear: dob.dobYear,
-    dobMonth: dob.dobMonth,
-    dobDay: dob.dobDay,
+    // UI selects bind strings
+    dobYear: String(dob.dobYear),
+    dobMonth: String(dob.dobMonth),
+    dobDay: String(dob.dobDay),
     multiAuth: true,
     marketingConsent: {
       marketingPreference1: false,
@@ -486,7 +499,12 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       body: signUpData,
       referer: `${base}/register/confirm`,
     });
-    const err = json?.detail || json?.errorCode || json?.message || null;
+    const err =
+      json?.detail ||
+      json?.title ||
+      json?.errorCode ||
+      json?.message ||
+      (Array.isArray(json?.errors) ? JSON.stringify(json.errors).slice(0, 240) : null);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -507,7 +525,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         email,
         password,
         phone: phone1.phoneNo,
-        status: "banned",
+        status: "register_failed",
       },
     };
   }
@@ -532,7 +550,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       const body = {
         name: { name1: profile.first_name || "Alex", name2: profile.last_name || "Buyer" },
         phone1,
-        address,
+        address: shippingAddress,
         areaCode: String(area || "au").toUpperCase(),
       };
       const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
@@ -547,7 +565,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         shipping: body,
       };
     });
-    shipping = ship.shipping || address;
+    shipping = ship.shipping || shippingAddress;
     if (!ship.ok) {
       // Still vault as ready if login cleared — shipping can be added later
       vaultStatus = vaultStatus === "ready" ? "ready" : vaultStatus;
@@ -558,10 +576,10 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     email,
     password,
     phone: phone1.phoneNo,
-    phoneCountry: phone1.countryNo || "+61",
+    phoneCountry: phone1.countryNo || "AU",
     smsProvider: provider,
     status: vaultStatus,
-    shipping: shipping || address,
+    shipping: shipping || shippingAddress,
     storeId: "bandai",
     createdAt: Date.now(),
   };

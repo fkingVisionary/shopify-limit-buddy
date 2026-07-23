@@ -23,12 +23,12 @@ assert(normalizeMsisdn("19087595244", "US") === "9087595244", "US strip 1");
 assert(normalizeMsisdn("9087595244", "US") === "9087595244", "US national");
 
 const uk = toBandaiPhone1("447700900123", "GB");
-assert(uk.countryNo === "+44", "phone1 UK cc");
+assert(uk.countryNo === "GB", "phone1 UK ISO");
 assert(uk.phoneNo === "7700900123", "phone1 UK national");
 assert(uk.countryNoName === "United Kingdom", "phone1 UK name");
 
 const us = toBandaiPhone1("19087595244", "US");
-assert(us.countryNo === "+1", "phone1 US cc");
+assert(us.countryNo === "US", "phone1 US ISO");
 assert(us.phoneNo === "9087595244", "phone1 US national");
 
 console.log("smspool.test.mjs OK");

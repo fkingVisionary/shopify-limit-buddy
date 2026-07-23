@@ -13,33 +13,39 @@ export const SMSPOOL_SERVICE_BANDAI = 1733;
 /** Fallback "Not Listed / Other / Any" when a store has no named service. */
 export const SMSPOOL_SERVICE_OTHER = 817;
 
+// Bandai phone1.countryNo is the ISO *code* (GB/US/AU), not "+44".
+// Dial display comes from /api/address/countryNumber.
 const COUNTRY_PRESETS = {
   US: {
     id: 1,
     short: "US",
     cc: "1",
-    countryNo: "+1",
+    countryNo: "US",
+    dial: "+1",
     countryNoName: "United States",
   },
   GB: {
     id: 2,
     short: "GB",
     cc: "44",
-    countryNo: "+44",
+    countryNo: "GB",
+    dial: "+44",
     countryNoName: "United Kingdom",
   },
   UK: {
     id: 2,
     short: "GB",
     cc: "44",
-    countryNo: "+44",
+    countryNo: "GB",
+    dial: "+44",
     countryNoName: "United Kingdom",
   },
   AU: {
     id: 159,
     short: "AU",
     cc: "61",
-    countryNo: "+61",
+    countryNo: "AU",
+    dial: "+61",
     countryNoName: "Australia",
   },
 };
