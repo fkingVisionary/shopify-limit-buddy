@@ -253,10 +253,15 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     const countryPick = countryQueue[attempt % countryQueue.length];
     phoneAcq = await tStep(attempt === 0 ? "sms_acquire" : `sms_acquire_retry_${attempt}`, async () => {
       if (provider === "smspool") {
+        // Default soft cap keeps cheap UK/US Bandai pools (~$0.04–$0.15); override via smspoolMaxPrice.
+        const maxPrice =
+          otp.smspoolMaxPrice != null && !Number.isNaN(otp.smspoolMaxPrice)
+            ? otp.smspoolMaxPrice
+            : 0.25;
         const got = await sms.acquireNumber({
           country: countryPick,
           service: otp.smspoolService,
-          maxPrice: otp.smspoolMaxPrice,
+          maxPrice,
         });
         if (!got.ok) {
           return { ok: false, status: null, note: got.error || "acquire_failed" };
