@@ -98,16 +98,18 @@ export async function waitForCode(opts = {}) {
         // Newest first
         list.sort((a, b) => Number(b) - Number(a));
 
-        for (const uid of list.slice(0, 40)) {
-          if (seenUids.has(uid)) continue;
-          seenUids.add(uid);
-
-          const msg = await client.fetchOne(
-            uid,
-            { envelope: true, source: true, uid: true },
-            { uid: true },
-          );
-          if (!msg) continue;
+        // Prefer fetch iterator — iCloud often returns empty bodies from fetchOne(+uid).
+        const batch = list.slice(0, 40);
+        for await (const msg of client.fetch(
+          batch,
+          { envelope: true, source: true },
+          { uid: true },
+        )) {
+          const uid = msg.uid;
+          if (uid != null) {
+            if (seenUids.has(uid)) continue;
+            seenUids.add(uid);
+          }
 
           const envelope = msg.envelope || {};
           const fromAddr = (envelope.from || [])
@@ -122,7 +124,11 @@ export async function waitForCode(opts = {}) {
               fromFilter instanceof RegExp
                 ? fromFilter
                 : new RegExp(String(fromFilter), "i");
-            if (!re.test(fromAddr)) continue;
+            // Hide My Email rewrites From to *@icloud.com but keeps "PREMIUM BANDAI" in the name
+            // and "p-bandai" in the local-part — also accept subject match alone for Bandai.
+            const fromOk = re.test(fromAddr);
+            const subjectBandai = /premium\s*bandai|p-?bandai|bandai/i.test(subject);
+            if (!fromOk && !subjectBandai) continue;
           }
           if (subjectFilter) {
             const re =
@@ -133,8 +139,11 @@ export async function waitForCode(opts = {}) {
           }
 
           const source = msg.source ? String(msg.source) : "";
+          if (!source) continue;
           const bodyText = decodeMailBody(source);
-          const code = extractCode(`${subject}\n${bodyText}`, regex);
+          const code =
+            extractCode(bodyText, /Authentication\s*Code\s*(\d{4,8})/i) ||
+            extractCode(`${subject}\n${bodyText}`, regex);
           if (code) {
             return {
               ok: true,
@@ -188,12 +197,18 @@ export async function waitForCode(opts = {}) {
 /** Best-effort decode of raw RFC822 source to searchable text. */
 function decodeMailBody(source) {
   const raw = String(source || "");
-  // Strip quoted-printable soft breaks
-  let s = raw.replace(/=\r?\n/g, "");
-  // Common QP hex
+  // Prefer body after headers when present
+  const splitAt = raw.search(/\r?\n\r?\n/);
+  let s = splitAt >= 0 ? raw.slice(splitAt) : raw;
+  // Strip quoted-printable soft breaks + hex
+  s = s.replace(/=\r?\n/g, "");
   s = s.replace(/=([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-  // Drop obvious MIME headers noise for matching
-  return s.replace(/Content-[^\n]+\n/gi, " ").slice(0, 50_000);
+  // Drop CSS / tags so "Authentication Code 123456" is contiguous
+  s = s.replace(/<style[\s\S]*?<\/style>/gi, " ");
+  s = s.replace(/<script[\s\S]*?<\/script>/gi, " ");
+  s = s.replace(/<[^>]+>/g, " ");
+  s = s.replace(/Content-[^\n]+\n/gi, " ");
+  return s.replace(/\s+/g, " ").slice(0, 50_000);
 }
 
 /**
