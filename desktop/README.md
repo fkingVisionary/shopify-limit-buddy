@@ -52,6 +52,23 @@ DESKTOP_HYPER_PROVISION=1
 HYPER_API_KEY=...   # on the control plane only
 ```
 
+## Bandai (Premium Bandai / p-bandai.com)
+
+Shipped in the same Electron → local `executor/` sidecar path as Kmart.
+
+| UI field | Payload | Behavior |
+|----------|---------|----------|
+| Mode **Autocheckout** | `bandaiMode=checkout` | Login → ATC → cart hold (HTTP + F5) |
+| Pay path **Fast** (default) | `bandaiCheckoutMode=fast` + `bandaiGeHttpPay` + `bandaiGeRiskHydrate` | Undici GE hydrate → issuer; fresh Forter/iovation mint |
+| Pay path **Safe** | `bandaiCheckoutMode=safe` + `bandaiBrowserCheckout` | Same cart hold, Playwright GEM Pay on F5 bridge |
+| Account gen / monitor / chance | `bandaiMode=…` | See executor Bandai bible |
+
+ATC is always HTTP+F5. Sticky AU ISP/resi proxy recommended. Place order needs a
+complete card on the profile. Score bank/Revolut + issuer JWT
+(`PossibleFraudDetected`, `TransactionStatusType`) — not client ok alone.
+
+Contract: `executor/docs/BANDAI_CHECKOUT_BIBLE.md`.
+
 ## Future stores
 
 Add an adapter under `desktop/adapters/` and extend `buildPayload` in
