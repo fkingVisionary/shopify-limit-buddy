@@ -18,6 +18,7 @@ import {
 } from "../otp/smspool.js";
 import { validateBandaiPassword, generateBandaiPassword } from "./bandai-password.js";
 import { createBandaiSession, profileFromTask, resolveBandaiArea, bandaiBaseFor } from "./bandai-session.js";
+import { createBandaiF5Bridge } from "./bandai-f5.js";
 
 const CATCHALL_DOMAINS = new Set(["bullposted.com"]);
 
@@ -610,16 +611,71 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     };
   }
 
-  // Auto-login (register success is enough to vault — login 501 SoftBlock is common on some exits)
+  // Auto-login via F5 sensor bridge (bare undici /login SoftBlocks 501 — same as checkout).
+  // registerVerification already created the account; login proves vault + shipping.
+  const wantF5Login = task.bandaiF5Bridge !== false && task.bandaiAgenSkipF5Login !== true;
+  let bridge = null;
   const login = await tStep("login", async () => {
     try {
-      return await session.loginPassword(email, password);
+      if (wantF5Login && (task.proxy || ctx.proxy)) {
+        bridge = await createBandaiF5Bridge({
+          proxy: task.proxy || ctx.proxy || null,
+          area,
+          timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+        });
+        await bridge.goto(`${base}/login`);
+        const csrf = await bridge.csrfToken();
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+        if (csrf) session.state.csrfToken = csrf;
+
+        const loginBody = new URLSearchParams({
+          grantType: "password",
+          memberId: email,
+          password,
+          saveLoginId: "false",
+          autoLogin: "false",
+        }).toString();
+        const mint = await bridge.mint("POST", "/login", {
+          body: loginBody,
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          csrf: session.state.csrfToken || csrf,
+        });
+        const sensors = mint.sensors || {};
+        const jarCookies = await bridge.cookies();
+        if (jarCookies && ctx.jar?.load) {
+          ctx.jar.load({ ...ctx.jar.dump?.(), ...jarCookies });
+        }
+        if (!mint.ok) {
+          return { ok: false, status: null, note: `sensor mint failed: ${mint.note}` };
+        }
+        const out = await session.loginPassword(email, password, { extraHeaders: sensors });
+        if (ctx.jar?.dump) await bridge.syncCookies(ctx.jar.dump());
+        return {
+          ...out,
+          note: out.ok
+            ? `login ok via=f5 sensors=${Object.keys(sensors).length}`
+            : out.note || `login ${out.status}`,
+        };
+      }
+      const out = await session.loginPassword(email, password);
+      return {
+        ...out,
+        note: out.ok ? "login ok via=http (no f5)" : out.note || `login ${out.status}`,
+      };
     } catch (e) {
       return {
         ok: false,
         status: null,
         note: e?.cause?.message || e?.message || "login_fetch_failed",
       };
+    } finally {
+      try {
+        await bridge?.close?.();
+      } catch {
+        /* ignore */
+      }
+      bridge = null;
     }
   });
   let vaultStatus = "ready";
@@ -629,7 +685,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     } else if (/Terms/i.test(String(login.restrictedType || ""))) {
       vaultStatus = "needs_terms";
     } else if (Number(login.status) === 501) {
-      vaultStatus = "created"; // account exists; login SoftBlocked on this IP
+      vaultStatus = "created"; // account exists; SoftBlock without usable F5 path
     } else {
       vaultStatus = "created";
     }
