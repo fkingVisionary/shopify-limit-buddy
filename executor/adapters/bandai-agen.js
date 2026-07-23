@@ -610,16 +610,28 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     };
   }
 
-  // Auto-login
-  const login = await tStep("login", async () => session.loginPassword(email, password));
+  // Auto-login (register success is enough to vault — login 501 SoftBlock is common on some exits)
+  const login = await tStep("login", async () => {
+    try {
+      return await session.loginPassword(email, password);
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || "login_fetch_failed",
+      };
+    }
+  });
   let vaultStatus = "ready";
   if (!login.ok) {
     if (/SMSVerification/i.test(String(login.restrictedType || ""))) {
       vaultStatus = "needs_sms";
     } else if (/Terms/i.test(String(login.restrictedType || ""))) {
-      vaultStatus = "needs_sms"; // treat terms as not-ready
+      vaultStatus = "needs_terms";
+    } else if (Number(login.status) === 501) {
+      vaultStatus = "created"; // account exists; login SoftBlocked on this IP
     } else {
-      vaultStatus = "needs_sms";
+      vaultStatus = "created";
     }
   }
 
@@ -665,7 +677,8 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   };
 
   return {
-    ok: vaultStatus === "ready",
+    // registerVerification is the agen win — login can SoftBlock (501) on some exits
+    ok: true,
     accountGen: true,
     account,
     steps,
@@ -676,7 +689,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     note:
       vaultStatus === "ready"
         ? `Vault ready: ${email}`
-        : `Account created but status=${vaultStatus} (${login.restrictedType || login.note})`,
+        : `Account created (${email}) status=${vaultStatus} — login: ${login.restrictedType || login.note || login.status}`,
   };
 }
 
