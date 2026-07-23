@@ -376,25 +376,38 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("phone_unique", "Could not acquire unique phone number", steps);
   }
 
-  // Terms
-  const terms = await tStep("terms", async () => {
-    const { status, json } = await session.apiJson("GET", "/api/terms/termsofuse", {
-      referer: `${base}/register/memberregistration`,
+  // Terms (retry — proxy flakes here waste an already-purchased SMS number)
+  let terms = null;
+  for (let ti = 0; ti < 3; ti++) {
+    terms = await tStep(ti === 0 ? "terms" : `terms_retry_${ti}`, async () => {
+      try {
+        const { status, json } = await session.apiJson("GET", "/api/terms/termsofuse", {
+          referer: `${base}/register/memberregistration`,
+        });
+        const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
+        const termsCode = json?.termsCode || "termsofuse";
+        // Storefront setTermsAgree uses areaCode from terms payload (AU uppercase).
+        const areaCode = String(json?.areaCode || "AU").toUpperCase();
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          note: `${termsCode} v${version}`,
+          termsAgreeList: [
+            { termsCode, version: String(version), areaCode, agree: true },
+          ],
+          json,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          status: null,
+          note: e?.cause?.message || e?.message || "terms_fetch_failed",
+        };
+      }
     });
-    const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
-    const termsCode = json?.termsCode || "termsofuse";
-    // Storefront setTermsAgree uses areaCode from terms payload (AU uppercase).
-    const areaCode = String(json?.areaCode || "AU").toUpperCase();
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      note: `${termsCode} v${version}`,
-      termsAgreeList: [
-        { termsCode, version: String(version), areaCode, agree: true },
-      ],
-      json,
-    };
-  });
+    if (terms.ok) break;
+    await new Promise((r) => setTimeout(r, 800 * (ti + 1)));
+  }
   if (!terms.ok) {
     await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("terms", terms.note, steps);
