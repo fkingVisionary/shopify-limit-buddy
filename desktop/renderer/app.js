@@ -378,6 +378,92 @@ function renderResults() {
     .join("");
 }
 
+const FLEX_STORAGE_KEY = "j1ms.flexCard.v1";
+
+function loadFlexDraft() {
+  try {
+    return JSON.parse(localStorage.getItem(FLEX_STORAGE_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+}
+
+function saveFlexDraft(patch) {
+  const next = { ...loadFlexDraft(), ...patch };
+  try {
+    localStorage.setItem(FLEX_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore quota */
+  }
+  return next;
+}
+
+function summarizeResultsForFlex(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  const total = list.length;
+  const secured = list.filter(
+    (r) => r?.ok && (r.orderNumber || r.checkoutStage === "complete" || r.consumerCode === "confirmed"),
+  );
+  // Soft success: ok runs that reached cart/checkout even without order number.
+  const softOk = list.filter((r) => r?.ok);
+  const items = secured.length || softOk.length;
+  const rateBase = softOk.length;
+  const rate = total ? Math.round((rateBase / total) * 100) : null;
+  return {
+    items: items || null,
+    rate: rate != null && total ? `${rate}%` : null,
+    total,
+  };
+}
+
+function paintFlexCard() {
+  const draft = loadFlexDraft();
+  const titleEl = $("flexTitle");
+  const amountEl = $("flexAmount");
+  const itemsEl = $("flexItems");
+  const rateEl = $("flexRate");
+  if (!titleEl || !amountEl) return;
+
+  if (titleEl.value !== (draft.title || "") && document.activeElement !== titleEl) {
+    titleEl.value = draft.title || "";
+  }
+  if (document.activeElement !== amountEl) amountEl.value = draft.amount || "";
+  if (document.activeElement !== itemsEl) itemsEl.value = draft.items || "";
+  if (document.activeElement !== rateEl) rateEl.value = draft.rate || "";
+
+  const slotTitle = $("flexSlotTitle");
+  const slotAmount = $("flexSlotAmount");
+  const slotItems = $("flexSlotItems");
+  const slotRate = $("flexSlotRate");
+  if (slotTitle) slotTitle.textContent = (titleEl.value || "").trim();
+  if (slotAmount) slotAmount.textContent = (amountEl.value || "").trim();
+  if (slotItems) slotItems.textContent = (itemsEl.value || "").trim();
+  if (slotRate) slotRate.textContent = (rateEl.value || "").trim();
+}
+
+function pullFlexFromResults() {
+  const stats = summarizeResultsForFlex(state?.results || []);
+  const patch = {};
+  if (stats.items != null) patch.items = String(stats.items);
+  if (stats.rate) patch.rate = stats.rate;
+  // Keep amount/title manual — engine does not track spend yet.
+  saveFlexDraft(patch);
+  paintFlexCard();
+  const msg = $("flexExportMsg");
+  if (msg) {
+    msg.textContent = stats.total
+      ? `Pulled from ${stats.total} result${stats.total === 1 ? "" : "s"} (amount stays manual).`
+      : "No results yet — slots left blank.";
+  }
+}
+
+function resetFlexBlank() {
+  saveFlexDraft({ title: "", amount: "", items: "", rate: "" });
+  paintFlexCard();
+  const msg = $("flexExportMsg");
+  if (msg) msg.textContent = "Blank flex card restored.";
+}
+
 function renderSettings() {
   const s = state.settings || {};
   $("setApiKey").value = s.apiKey || "";
@@ -413,6 +499,7 @@ function applyState(next) {
   renderProxies();
   renderResults();
   renderSettings();
+  paintFlexCard();
   engineUi();
 }
 
@@ -749,4 +836,52 @@ window.desktop.onEvent((evt) => {
   }
 });
 
+// Flex card studio (renderer-only; does not touch checkout adapters)
+for (const id of ["flexTitle", "flexAmount", "flexItems", "flexRate"]) {
+  const el = $(id);
+  if (!el) continue;
+  const field =
+    id === "flexTitle"
+      ? "title"
+      : id === "flexAmount"
+        ? "amount"
+        : id === "flexItems"
+          ? "items"
+          : "rate";
+  el.addEventListener("input", () => {
+    saveFlexDraft({ [field]: el.value });
+    paintFlexCard();
+  });
+}
+$("btnFlexFromResults")?.addEventListener("click", () => pullFlexFromResults());
+$("btnFlexBlank")?.addEventListener("click", () => resetFlexBlank());
+$("btnFlexExport")?.addEventListener("click", async () => {
+  const msg = $("flexExportMsg");
+  paintFlexCard();
+  const card = $("flexCard");
+  if (!card || !window.desktop?.exportFlexCard) {
+    if (msg) msg.textContent = "Export unavailable in this build.";
+    return;
+  }
+  card.scrollIntoView({ block: "center", behavior: "instant" });
+  // Let layout settle before capturePage.
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  if (msg) msg.textContent = "Exporting…";
+  try {
+    const res = await window.desktop.exportFlexCard();
+    if (res?.canceled) {
+      if (msg) msg.textContent = "Export canceled.";
+      return;
+    }
+    if (!res?.ok) {
+      if (msg) msg.textContent = res?.error || "Export failed.";
+      return;
+    }
+    if (msg) msg.textContent = res.filePath ? `Saved ${res.filePath}` : "Saved.";
+  } catch (e) {
+    if (msg) msg.textContent = e?.message || String(e);
+  }
+});
+
 refresh();
+paintFlexCard();
