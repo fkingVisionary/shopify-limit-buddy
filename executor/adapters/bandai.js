@@ -245,6 +245,23 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     bridge = null;
   };
 
+  // Drop win-con: wall→ATC. Cart holds ~30 min; pay can follow. Prefer tight
+  // F5 settle + skip optional cart peek (bandaiFastAtc, default on for checkout).
+  const fastAtc =
+    task.bandaiFastAtc !== false &&
+    String(process.env.BANDAI_FAST_ATC || "1") !== "0";
+  // common.js needs ~1.2–1.8s after goto before p8komysnbc-* mint works.
+  // 900ms broke ATC mint in lab; floor at 1200 for fast path.
+  const f5SettleMs = Math.max(
+    1_200,
+    Math.min(
+      3_000,
+      Number(task.bandaiF5SettleMs || process.env.BANDAI_F5_SETTLE_MS) ||
+        (fastAtc ? 1_400 : 1_800),
+    ),
+  );
+  const atcT0 = Date.now();
+
   if (wantBridge) {
     try {
       const s0 = Date.now();
@@ -253,7 +270,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         area: session.area,
         timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
       });
-      await bridge.goto(`${session.base}/login`);
+      await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
       const csrf = await bridge.csrfToken();
       const cookies = await bridge.cookies();
       if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
@@ -264,8 +281,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         status: null,
         ms: Date.now() - s0,
         note: csrf
-          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}…`
-          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")}`,
+          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}`
+          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms`,
       });
       ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
@@ -378,12 +395,33 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   }
 
   // ── Product ────────────────────────────────────────────────────────────
-  if (bridge) {
-    await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`);
+  // Lab 2026-07-23: p8komysnbc-* mint for addToCart works on /login and /cart
+  // but NOT on /item/* (avail=false PDP). Fast path skips item nudge and keeps
+  // the bridge on login for ATC mint (~3–4s saved + mint reliability).
+  if (bridge && !fastAtc) {
+    const pdpNavT0 = Date.now();
+    await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`, {
+      settleMs: f5SettleMs,
+    });
     const csrf = await bridge.csrfToken();
     if (csrf) session.state.csrfToken = csrf;
     const c = await bridge.cookies();
     if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+    steps.push({
+      step: "f5_pdp_nudge",
+      ok: true,
+      status: null,
+      ms: Date.now() - pdpNavT0,
+      note: `goto item/${productCode} settle=${f5SettleMs}ms`,
+    });
+  } else if (bridge && fastAtc) {
+    steps.push({
+      step: "f5_pdp_nudge",
+      ok: true,
+      status: null,
+      ms: 0,
+      note: "skipped item goto (fastAtc; mint ATC from login/cart context)",
+    });
   }
 
   const pdp = await resolveAreaItemNo(session, productCode, tStep);
@@ -403,11 +441,15 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   const atcBodyObj = [{ areaItemNo: pdp.areaItemNo, qty }];
   const atcBody = JSON.stringify(atcBodyObj);
 
-  // Prefer existing cart line (prior dry-runs / preallocation)
-  let cartBefore = await session.apiJson("GET", "/api/cart/detail", {
-    referer: `${session.base}/cart`,
-  });
-  let existing = findCartLine(cartBefore.json, pdp.areaItemNo);
+  // Pre-ATC cart peek costs a RTT; skip on fast path (drop race). Still OK to
+  // POST addToCart when a line already exists (soft business / qty paths).
+  let existing = null;
+  if (!fastAtc) {
+    const cartBefore = await session.apiJson("GET", "/api/cart/detail", {
+      referer: `${session.base}/cart`,
+    });
+    existing = findCartLine(cartBefore.json, pdp.areaItemNo);
+  }
 
   const atc = await tStep("addToCart", async () => {
     if (existing?.cartItemSn) {
@@ -420,11 +462,24 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     }
     let sensors = {};
     if (bridge) {
-      const mint = await bridge.mint("POST", "/api/cart/addToCart", {
+      let mint = await bridge.mint("POST", "/api/cart/addToCart", {
         body: atcBody,
         contentType: "application/json",
         csrf: session.state.csrfToken,
       });
+      // One settle bump if common.js was not hooked yet (fast settle race).
+      if (!mint.ok) {
+        try {
+          await bridge.page.waitForTimeout(800);
+        } catch {
+          /* ignore */
+        }
+        mint = await bridge.mint("POST", "/api/cart/addToCart", {
+          body: atcBody,
+          contentType: "application/json",
+          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+        });
+      }
       sensors = mint.sensors || {};
       const c = await bridge.cookies();
       if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
@@ -477,8 +532,19 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       title: pdp.title,
       cookies: ctx.jar?.dump?.() ?? {},
       via: "http",
+      atcWallMs: Date.now() - atcT0,
     };
   }
+
+  const atcWallMs = Date.now() - atcT0;
+  steps.push({
+    step: "cart_hold",
+    ok: true,
+    status: 200,
+    ms: atcWallMs,
+    note: `wall→ATC ${atcWallMs}ms fastAtc=${fastAtc} settle=${f5SettleMs}ms (pay window ~30min)`,
+  });
+  ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
 
   // ── Cart detail + qty normalize ────────────────────────────────────────
   let cart = await tStep("cart_detail", async () => {
@@ -561,6 +627,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     return {
       ok: true,
       steps,
+      atcWallMs,
       checkoutStage: "cart",
       dryRun: true,
       areaItemNo: pdp.areaItemNo,

@@ -10,6 +10,35 @@ Kmart style twin: [`KMART_WINNING_RECIPE.md`](./KMART_WINNING_RECIPE.md)
 
 ---
 
+## 0. Win-con (drop timing)
+
+**Cart first. Pay second.**
+
+Bandai keeps a held cart / checkout window for ~**30 minutes** after ATC.
+The race that matters on a drop is:
+
+1. **F5 bridge → login → ATC** as fast as possible  
+2. Then hydrate / Global-e pay **inside that window** (can be slower, separate)
+
+Payment dual-rail / Revolut pairs are a real follow-up, but they are **not** the
+drop win-con. Do not trade ATC speed for pay polish.
+
+| Priority | Metric |
+|----------|--------|
+| **P0** | Wall time to `addToCart` ok / cart line held |
+| P1 | `checkoutSn` + `merchantCartToken` ready to pay |
+| P2 | GE issuer / bank (within ~30 min of cart) |
+
+Flags: `bandaiStopAtCart` (hold after ATC), `bandaiFastAtc` (default on —
+skip pre-ATC cart peek + skip Playwright `/item/*` nudge; mint ATC sensors from
+`/login` or `/cart`). **Do not mint `addToCart` sensors on `/item/*`** — lab
+showed zero `p8komysnbc-*` there when PDP `avail=false`. Pay via
+`bandaiGeHttpPay` after the hold.
+
+Lab wall→ATC (`bandaiFastAtc`, sticky AU ISP): ~**24s** to `cart_hold`.
+
+---
+
 ## 1. The proof (not theory)
 
 | Field | Value |

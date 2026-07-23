@@ -29,16 +29,20 @@ _Status: operating plan (docs + process; no new adapters until Phase 0 green)_
 
 ## Phase 1 — Bandai AU (first new module)
 
-Docs: `BANDAI_AU_MODULE.md` · scoreboard: `NEXT_STORE_MODULES.md`
+Docs: `BANDAI_AU_MODULE.md` · bible: `BANDAI_CHECKOUT_BIBLE.md` · scoreboard: `NEXT_STORE_MODULES.md`
+
+**Drop win-con (2026-07-23):** cart holds ~**30 minutes**. Race is **ATC speed**
+(F5 → login → addToCart). Global-e pay is phase-2 inside that window — keep it
+fast, but never sacrifice ATC for pay experiments.
 
 | Step | Work |
 |---|---|
 | B0 | Logged-in **AU ISP HAR** (signup optional): login → ATC → Chance → Global-e |
 | B1 | Monitor (search/product poll + notify) |
 | B1b | **Account gen** — Desktop Settings: OnlineSim API key + IMAP app password → vault |
-| B2 | Login + ATC dry-run |
+| B2 | Login + ATC dry-run — **optimize wall→ATC** (`bandaiFastAtc`, settle knobs) |
 | B3 | Chance `applyDraw` pool |
-| B4 | Global-e checkout |
+| B4 | Global-e checkout (HTTP GE / no-page) **after** cart hold |
 
 Keep Bandai on a **feature branch**; do not pile experimental Akamai changes into Kmart while Bandai is WIP.
 
