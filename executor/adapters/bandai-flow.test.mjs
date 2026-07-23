@@ -30,6 +30,7 @@ import {
   htmlFormValue,
   parseCheckoutV2Form,
   buildHandleActionBodies,
+  buildCheckoutSaveBody,
   isBandaiGePaymentRedirectSignal,
   isBandaiGeRedirectDecline,
   decodeCcPaymentRedirectData,
@@ -275,6 +276,18 @@ assert.equal(bodies[1].ShippingMethodID, "99");
 assert.equal(bodies[2].Action, 2);
 assert.equal(bodies[3].Action, 3);
 assert.equal(bodies[1].MerchantId, 1925);
+
+const saveBody = buildCheckoutSaveBody(form, {
+  cartToken: "guid-1",
+  shippingMethodId: "99",
+  paymentMethodId: "1",
+  gatewayId: "2",
+  machineId: "blackbox-iovation-test-value-0123456789",
+  forterToken: "forter-test-token",
+});
+assert.match(saveBody, /ioBlackBox=blackbox-iovation/);
+assert.match(saveBody, /ForterToken=forter-test-token/);
+assert.match(saveBody, /SelectedTaxOption=3/);
 
 // ReloadBehaviour-only JWT must NOT score as bank
 const reloadJwt =

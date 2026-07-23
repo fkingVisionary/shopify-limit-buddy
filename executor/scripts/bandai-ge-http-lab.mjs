@@ -62,11 +62,13 @@ const machineId =
   (fs.existsSync("/tmp/bandai-ge-machineId.txt")
     ? fs.readFileSync("/tmp/bandai-ge-machineId.txt", "utf8").trim()
     : "");
-const noPage = process.env.BANDAI_GE_NO_PAGE !== "0";
+// Default Fast = riskHydrate (fresh mint + cookies). Pure noPage only if set.
+const noPage = process.env.BANDAI_GE_NO_PAGE === "1";
+const riskHydrate = !noPage && process.env.BANDAI_GE_RISK_HYDRATE !== "0";
 
 const aest = () => new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 console.log(
-  `[${aest()} AEST] HTTP_GE_LAB start session=${tag} proxy#${idx} sku=${sku} noPage=${noPage} machineIdBytes=${machineId.length}`,
+  `[${aest()} AEST] HTTP_GE_LAB start session=${tag} proxy#${idx} sku=${sku} noPage=${noPage} riskHydrate=${riskHydrate} machineIdBytes=${machineId.length}`,
 );
 
 const res = await runCheckout({
@@ -79,9 +81,11 @@ const res = await runCheckout({
   placeOrder: true,
   forceUndici: true,
   bandaiMode: "checkout",
+  bandaiCheckoutMode: "fast",
   bandaiGeHttpPay: true,
-  bandaiGeNoPage: noPage && machineId.length >= 40,
-  bandaiGeMachineId: machineId.length >= 40 ? machineId : undefined,
+  bandaiGeNoPage: noPage,
+  bandaiGeRiskHydrate: riskHydrate,
+  bandaiGeMachineId: noPage && machineId.length >= 40 ? machineId : undefined,
   bandaiGeStopBeforeIssuer: process.env.BANDAI_GE_STOP_BEFORE_ISSUER === "1",
   bandaiGeForceIssuer: process.env.BANDAI_GE_FORCE_ISSUER === "1",
   account: { email, password },
@@ -98,6 +102,8 @@ for (const e of res.timeline || []) {
 const summary = {
   via: res.via,
   paymentStatus: res.paymentStatus,
+  possibleFraudDetected: res.possibleFraudDetected,
+  forterTokenPresent: res.forterTokenPresent,
   checkoutSn: res.checkoutSn,
   cartToken: res.cartToken,
   blockers: res.blockers,

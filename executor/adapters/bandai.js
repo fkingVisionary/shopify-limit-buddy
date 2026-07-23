@@ -1029,10 +1029,14 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
       });
     }
+    // Fast anti-fraud default: riskHydrate (fresh snare/Forter mint + cookie
+    // merge, then undici pay). Stale noPage blackbox was scoring
+    // PossibleFraudDetected=True. Opt into pure noPage only explicitly.
+    const geNoPage =
+      task.bandaiGeNoPage === true || process.env.BANDAI_GE_NO_PAGE === "1";
     let geMachineId =
       task.bandaiGeMachineId || process.env.BANDAI_GE_MACHINE_ID || null;
-    // Lab / drop default: reuse last iovation blackbox (no Playwright on GE).
-    if (!geMachineId) {
+    if (geNoPage && !geMachineId) {
       try {
         const p = "/tmp/bandai-ge-machineId.txt";
         if (fs.existsSync(p)) {
@@ -1043,16 +1047,17 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         /* ignore */
       }
     }
-    // Prefer zero Playwright on GE when a blackbox is already available.
-    // Faster (~10s iovation off the critical path). Revolut pairs persist
-    // even with noPage (GE/PSP dual-rail) — still the product angle.
-    const geNoPage =
-      task.bandaiGeNoPage === true ||
-      (task.bandaiGeNoPage !== false && Boolean(geMachineId));
+    const riskHydrate =
+      !geNoPage &&
+      task.bandaiGeRiskHydrate !== false &&
+      process.env.BANDAI_GE_RISK_HYDRATE !== "0";
     const geOut = await runBandaiGeHttpPay({
       ctx,
       page: geNoPage ? null : bridge?.page || null,
-      machineId: geMachineId,
+      // Force fresh mint when risk-hydrating (ignore stale file/opts mid).
+      machineId: geNoPage ? geMachineId : riskHydrate ? null : geMachineId,
+      riskHydrate,
+      forceFreshMint: riskHydrate,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
       card: opts.card,
@@ -1065,7 +1070,12 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       keepPageAfterIovation: task.bandaiGeKeepPage === true,
       preferPageIssuer: task.bandaiGePreferPageIssuer === true,
       scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
-      mergeIovationCookies: task.bandaiGeMergeIovationCookies === true,
+      mergeIovationCookies:
+        riskHydrate || task.bandaiGeMergeIovationCookies === true,
+      iovationSettleMs:
+        Number(task.bandaiGeIovationSettleMs) ||
+        Number(process.env.BANDAI_GE_IOVATION_SETTLE_MS) ||
+        undefined,
       createTransaction:
         task.bandaiGeCreateTransaction === false
           ? false

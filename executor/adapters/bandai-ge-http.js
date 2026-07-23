@@ -429,6 +429,13 @@ export function buildCheckoutSaveBody(form, opts = {}) {
     opts.gatewayId || form.gatewayId || "2",
   );
   set("CheckoutData.ExternalData.CurrentGatewayId", opts.gatewayId || form.gatewayId || "2");
+  // Browser MainForm includes ioBlackBox + tax option; thin save was a fraud gap.
+  set("ioBlackBox", opts.machineId || opts.ioBlackBox || "");
+  set(
+    "CheckoutData.SelectedTaxOption",
+    opts.selectedTaxOption || form.selectedTaxOption || "3",
+  );
+  set("CheckoutData.ForterToken", opts.forterToken || "");
   set("CheckoutData.AddressVerified", "true");
   set("CheckoutData.TnCConsent", "true");
   set("CheckoutData.TnCConsent0", "true");
@@ -679,13 +686,19 @@ async function cookiesFromPage(page) {
   try {
     const arr = await page.context().cookies();
     const out = {};
+    let forterToken = null;
     for (const c of arr || []) {
       if (!c?.name) continue;
       const host = String(c.domain || "");
+      const name = String(c.name);
+      // First-party GE/Bandai cookies for undici jar.
       if (/global-e\.com|p-bandai\.com|bandai/i.test(host)) {
-        out[c.name] = c.value;
+        out[name] = c.value;
       }
+      // Forter often lands on cdn4.forter.com — keep token for save body / logging.
+      if (/^forterToken$/i.test(name) && c.value) forterToken = String(c.value);
     }
+    if (forterToken && !out.forterToken) out.forterToken = forterToken;
     return out;
   } catch {
     return {};
@@ -732,6 +745,8 @@ export async function mintIovationBlackbox(opts = {}) {
     await syncJarToPage(page, opts.jar);
   }
   const timeoutMs = Math.min(45_000, Math.max(5_000, Number(opts.timeoutMs) || 20_000));
+  // Extra settle so Forter / snare finish after ioBlackBox appears (fraud gap).
+  const settleMs = Math.min(15_000, Math.max(0, Number(opts.settleMs) || 4_000));
   const t0 = Date.now();
   try {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
@@ -747,10 +762,53 @@ export async function mintIovationBlackbox(opts = {}) {
       { timeout: timeoutMs },
     );
     const value = await machineId.jsonValue();
+    if (settleMs > 0) {
+      try {
+        await page.waitForTimeout(settleMs);
+      } catch {
+        /* ignore */
+      }
+    }
+    // Prefer waiting briefly for forterToken if scripts are still running.
+    try {
+      await page.waitForFunction(
+        () => {
+          const jar = document.cookie || "";
+          if (/forterToken=/i.test(jar)) return true;
+          const inputs = document.querySelectorAll(
+            'input[name*="forter" i], input[id*="forter" i]',
+          );
+          for (const el of inputs) {
+            if (String(el.value || "").length > 8) return true;
+          }
+          return false;
+        },
+        { timeout: Math.min(8_000, settleMs || 4_000) },
+      );
+    } catch {
+      /* forter optional — still proceed with iovation */
+    }
     const cookies = await cookiesFromPage(page);
+    let forterToken = cookies.forterToken || null;
+    if (!forterToken) {
+      try {
+        forterToken = await page.evaluate(() => {
+          const m = String(document.cookie || "").match(/forterToken=([^;]+)/i);
+          if (m) return decodeURIComponent(m[1]);
+          const el = document.querySelector(
+            'input[name="CheckoutData.ForterToken"], input[name*="ForterToken" i]',
+          );
+          return el ? String(el.value || "") : "";
+        });
+      } catch {
+        forterToken = null;
+      }
+    }
+    if (forterToken) cookies.forterToken = forterToken;
     return {
       ok: Boolean(value),
       machineId: value,
+      forterToken: forterToken || null,
       ms: Date.now() - t0,
       cookies,
     };
@@ -768,6 +826,7 @@ export async function mintIovationBlackbox(opts = {}) {
     return {
       ok: Boolean(fallback && fallback.length > 40),
       machineId: fallback || null,
+      forterToken: cookies.forterToken || null,
       ms: Date.now() - t0,
       error: e?.message || "iovation_mint_failed",
       cookies,
@@ -1384,13 +1443,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Iovation FIRST (before handleaction), then undici-only hydrate→pay.
   //
-  // 2026-07-23 Revolut (owner):
-  //   liveHtml+geMute @ 08:18 → PAIR (posts=1, one GE TransactionId)
-  //   noPage @ 08:39 → PAIR (browser_mutates=0)
-  // Doubles are GE/PSP dual-rail from one HandleCreditCard — not a second
-  // client POST. Still prefer no Playwright on GE: faster (~10s iovation +
-  // simpler) and keeps F5 bridge off the pay cart. Supply machineId via
-  // bandaiGeMachineId / BANDAI_GE_MACHINE_ID for the no-page path.
+  // Fraud labs (2026-07-23): stale noPage machineId + thin jar →
+  // PossibleFraudDetected=True / Refused. Fast default is riskHydrate:
+  // liveHtml+geMute mint + cookie merge, then drop page (undici still pays).
+  // Explicit noPage (BANDAI_GE_NO_PAGE=1) keeps pure undici + reused blackbox.
+  const riskHydrate =
+    opts.riskHydrate === true ||
+    opts.forceFreshMint === true ||
+    (opts.mergeIovationCookies === true && Boolean(opts.page));
   if (machineId && !opts.page) {
     push("ge_iovation_mint", {
       ok: true,
@@ -1400,6 +1460,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
   let issuerPage = null;
+  let forterToken = opts.forterToken || null;
   const browserReqLog = [];
   const logPageRequests = (page) => {
     try {
@@ -1437,10 +1498,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   };
 
-  if (!machineId && opts.page) {
+  const shouldMint = Boolean(opts.page) && (!machineId || riskHydrate);
+  if (shouldMint) {
     logPageRequests(opts.page);
-    // Fallback mint only: load Checkout/v2 for snare.js with GE POSTs muted,
-    // then drop the page before any undici handleaction/save/issuer.
+    // Risk hydrate: load Checkout/v2 for snare/Forter with GE POSTs muted,
+    // merge cookies into undici jar, then drop page before hydrate/issuer.
     const pctx = opts.page.context?.();
     const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
     const geMuteRoute = async (route) => {
@@ -1465,7 +1527,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
         page: opts.page,
         checkoutV2Url: v2Url,
         timeoutMs: opts.iovationTimeoutMs,
-        jar: opts.mergeIovationCookies === true ? ctx?.jar : null,
+        settleMs: opts.iovationSettleMs,
+        jar: ctx?.jar || null,
       });
     } finally {
       if (pctx?.unroute) {
@@ -1477,12 +1540,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
       }
     }
     const blockedMutates = browserReqLog.length;
+    const jarNames = mint.cookies ? Object.keys(mint.cookies) : [];
     push("ge_iovation_mint", {
       ok: mint.ok,
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(beforeHydrate) browserMutatesSeen=${blockedMutates} cookieMerge=${opts.mergeIovationCookies === true ? "on" : "off"}`
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(riskHydrate) forter=${Boolean(mint.forterToken || mint.cookies?.forterToken)} cookieKeys=${jarNames.length} browserMutatesSeen=${blockedMutates}`
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) {
@@ -1493,13 +1557,24 @@ export async function runBandaiGeHttpPay(opts = {}) {
         /* ignore */
       }
     }
-    if (opts.mergeIovationCookies === true && mint.cookies && ctx?.jar?.load) {
+    if (mint.forterToken) forterToken = mint.forterToken;
+    else if (mint.cookies?.forterToken) forterToken = mint.cookies.forterToken;
+    // Always merge mint cookies into undici jar on risk hydrate (GE + forterToken).
+    if (mint.cookies && ctx?.jar?.load) {
       try {
-        ctx.jar.load({ ...ctx.jar.dump(), ...mint.cookies });
+        const merged = { ...ctx.jar.dump(), ...mint.cookies };
+        // forterToken from cdn host: still attach so save/issuer jar has it.
+        if (forterToken) merged.forterToken = forterToken;
+        ctx.jar.load(merged);
       } catch {
         /* ignore */
       }
     }
+    mark("ge_risk_cookies", {
+      forterToken: Boolean(forterToken),
+      forterBytes: forterToken ? String(forterToken).length : 0,
+      cookieKeys: jarNames.slice(0, 40),
+    });
     const keepPage =
       opts.keepPageAfterIovation === true ||
       opts.preferPageIssuer === true ||
@@ -1521,6 +1596,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
         liveGuid: guid,
         geMuted: true,
         beforeHydrate: true,
+        riskHydrate: true,
         browserMutatesDuringMint: blockedMutates,
         issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
       });
@@ -1605,6 +1681,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     shippingMethodId,
     paymentMethodId,
     gatewayId,
+    machineId,
+    forterToken,
+    selectedTaxOption: form.selectedTaxOption || "3",
   });
   const saveRes = await httpText(
     `${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`,
@@ -2060,24 +2139,39 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ).slice(0, 280),
   });
 
-  const paymentStatus = declineOnRedirect || (bankHit && /Auth|Decline|Fail/i.test(txMap.TransactionStatusType || ""))
-    ? "declined_or_auth_failed"
-    : bankHit && issuer?.ok
-      ? "pay_submitted_http"
-      : bankHit && transactionId
-        ? "declined_or_auth_failed"
-        : responseLost
-          ? "pay_submitted_no_response"
-          : !issuer?.ok
-            ? issuer?.reloadOnly
-              ? "ge_reload_only_no_bank"
-              : "issuer_http_failed"
-            : "pay_submitted_http";
-  const orderOk = Boolean(issuer?.ok && !declineOnRedirect && paymentStatus === "pay_submitted_http");
+  const fraudDetected = /^(true|1)$/i.test(String(txMap.PossibleFraudDetected || ""));
+  const statusType = String(txMap.TransactionStatusType || "");
+  const paymentStatus = fraudDetected
+    ? "ge_fraud_refused"
+    : declineOnRedirect || (bankHit && /Auth|Decline|Fail|Refuse/i.test(statusType))
+      ? "declined_or_auth_failed"
+      : bankHit && issuer?.ok
+        ? "pay_submitted_http"
+        : bankHit && transactionId
+          ? "declined_or_auth_failed"
+          : responseLost
+            ? "pay_submitted_no_response"
+            : !issuer?.ok
+              ? issuer?.reloadOnly
+                ? "ge_reload_only_no_bank"
+                : "issuer_http_failed"
+              : "pay_submitted_http";
+  const orderOk = Boolean(
+    issuer?.ok &&
+      !declineOnRedirect &&
+      !fraudDetected &&
+      paymentStatus === "pay_submitted_http",
+  );
   const elapsedMs = Date.now() - t0;
   const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
   timing.gePathSec = timing.gePathMs != null ? Math.round(timing.gePathMs / 100) / 10 : null;
   mark("ge_timing", timing);
+  mark("ge_issuer_risk", {
+    possibleFraudDetected: fraudDetected,
+    transactionStatusType: statusType || null,
+    forterToken: Boolean(forterToken),
+    finalizeProcess: txMap.finalizeProcess || null,
+  });
 
   return {
     ok: orderOk,
@@ -2087,22 +2181,24 @@ export async function runBandaiGeHttpPay(opts = {}) {
     failedStep:
       orderOk ||
       paymentStatus === "declined_or_auth_failed" ||
+      paymentStatus === "ge_fraud_refused" ||
       paymentStatus === "pay_submitted_no_response"
         ? null
         : "ge_issuer_http",
     error:
       orderOk ||
       paymentStatus === "declined_or_auth_failed" ||
+      paymentStatus === "ge_fraud_refused" ||
       paymentStatus === "pay_submitted_no_response"
         ? null
         : issuer?.error || issuer?.bodySnippet,
     paymentStatus,
+    possibleFraudDetected: fraudDetected,
+    forterTokenPresent: Boolean(forterToken),
     checkoutStage:
-      paymentStatus === "declined_or_auth_failed"
+      paymentStatus === "declined_or_auth_failed" || paymentStatus === "ge_fraud_refused"
         ? "declined"
-        : paymentStatus === "pay_submitted_no_response"
-          ? "tokenize"
-          : "tokenize",
+        : "tokenize",
     checkoutSn: opts.checkoutSn || null,
     cartToken: guid,
     chargeReqCount,
@@ -2118,15 +2214,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
     transactionId,
     via: issuer?.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
     elapsedMs,
-    note: paymentStatus === "declined_or_auth_failed"
-      ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer?.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
-      : paymentStatus === "pay_submitted_no_response"
-        ? `HTTP issuer POST in-flight/sent but response lost code=${issuer?.errorCode || "?"} timedOut=${Boolean(issuer?.timedOut)} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s — check bank`
-        : issuer?.ok
-          ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
-          : issuer?.reloadOnly
-            ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
-            : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
+    note: paymentStatus === "ge_fraud_refused"
+      ? `HTTP issuer FRAUD_REFUSED tx=${transactionId || "?"} status=${statusType || "?"} forter=${Boolean(forterToken)} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
+      : paymentStatus === "declined_or_auth_failed"
+        ? `HTTP issuer AUTH_FAILED/DECLINE tx=${transactionId || "?"} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer?.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
+        : paymentStatus === "pay_submitted_no_response"
+          ? `HTTP issuer POST in-flight/sent but response lost code=${issuer?.errorCode || "?"} timedOut=${Boolean(issuer?.timedOut)} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s — check bank`
+          : issuer?.ok
+            ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} fraud=${fraudDetected} forter=${Boolean(forterToken)} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
+            : issuer?.reloadOnly
+              ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
+              : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
   };
 }
 
