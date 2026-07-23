@@ -4,7 +4,7 @@
 //
 // Modes (task.bandaiMode):
 //   checkout      — login → ATC → cart → checkoutSn (HTTP + F5 sensor bridge)
-//   account_gen   — bandai-agen (IMAP + OnlineSim → registerVerification → vault)
+//   account_gen   — bandai-agen (IMAP + SMSPool/OnlineSim → registerVerification → vault)
 //   monitor       — poll search/PDP for purchaseAvailable / Chance
 //   chance        — applyDraw for a campaign
 //

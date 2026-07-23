@@ -1,14 +1,25 @@
-// Premium Bandai AU — account generation (email IMAP OTP + OnlineSim SMS).
+// Premium Bandai AU — account generation (email IMAP OTP + SMSPool / OnlineSim SMS).
 // Does not touch Kmart / Toymate paths.
+//
+// SMS: prefer SMSPool (US/UK numbers work on AU Bandai — owner-validated).
+// OnlineSim remains a fallback when no SMSPool key is set.
 
 import { waitForCode } from "../otp/imapInbox.js";
 import {
   createOnlinesimClient,
-  toBandaiPhone1,
+  toBandaiPhone1 as toBandaiPhone1Au,
   normalizeAuMsisdn,
 } from "../otp/onlinesim.js";
+import {
+  createSmspoolClient,
+  toBandaiPhone1 as toBandaiPhone1Intl,
+  SMSPOOL_SERVICE_BANDAI,
+  resolveSmspoolCountry,
+} from "../otp/smspool.js";
 import { validateBandaiPassword, generateBandaiPassword } from "./bandai-password.js";
 import { createBandaiSession, profileFromTask, resolveBandaiArea, bandaiBaseFor } from "./bandai-session.js";
+
+const CATCHALL_DOMAINS = new Set(["bullposted.com"]);
 
 function uniquifyEmail(email) {
   const raw = String(email || "").trim().toLowerCase();
@@ -26,7 +37,31 @@ function uniquifyEmail(email) {
 
 function otpConfigFromTask(task) {
   const o = task?.otp || task?.bandaiOtp || {};
+  const smsProvider = String(
+    o.smsProvider || task?.smsProvider || process.env.BANDAI_SMS_PROVIDER || "auto",
+  )
+    .trim()
+    .toLowerCase();
   return {
+    smsProvider,
+    smspoolApiKey: String(
+      o.smspoolApiKey || task?.smspoolApiKey || process.env.SMSPOOL_API_KEY || "",
+    ).trim(),
+    smspoolCountry: String(
+      o.smspoolCountry || task?.smspoolCountry || process.env.SMSPOOL_COUNTRY || "GB",
+    ).trim(),
+    smspoolCountries: Array.isArray(o.smspoolCountries || task?.smspoolCountries)
+      ? o.smspoolCountries || task.smspoolCountries
+      : null,
+    smspoolService: Number(
+      o.smspoolService || task?.smspoolService || SMSPOOL_SERVICE_BANDAI,
+    ),
+    smspoolMaxPrice:
+      o.smspoolMaxPrice != null
+        ? Number(o.smspoolMaxPrice)
+        : task?.smspoolMaxPrice != null
+          ? Number(task.smspoolMaxPrice)
+          : null,
     onlinesimApiKey: String(o.onlinesimApiKey || task?.onlinesimApiKey || "").trim(),
     onlinesimMode: String(o.onlinesimMode || task?.onlinesimMode || "rent").toLowerCase(),
     onlinesimServiceSlug: String(o.onlinesimServiceSlug || task?.onlinesimServiceSlug || "other"),
@@ -42,6 +77,26 @@ function otpConfigFromTask(task) {
 function adultDob() {
   // Fixed ≥18 DOB
   return { dobYear: 1995, dobMonth: 6, dobDay: 15 };
+}
+
+function resolveSmsProvider(otp) {
+  const pref = otp.smsProvider || "auto";
+  if (pref === "smspool") return otp.smspoolApiKey ? "smspool" : null;
+  if (pref === "onlinesim") return otp.onlinesimApiKey ? "onlinesim" : null;
+  // auto
+  if (otp.smspoolApiKey) return "smspool";
+  if (otp.onlinesimApiKey) return "onlinesim";
+  return null;
+}
+
+function smspoolCountryQueue(otp) {
+  if (Array.isArray(otp.smspoolCountries) && otp.smspoolCountries.length) {
+    return otp.smspoolCountries.map((c) => resolveSmspoolCountry(c).short);
+  }
+  const primary = resolveSmspoolCountry(otp.smspoolCountry).short;
+  // Owner tip: US or UK work for AU Bandai — try configured first, then the other.
+  const fallback = primary === "US" ? "GB" : "US";
+  return [primary, fallback];
 }
 
 /**
@@ -60,18 +115,28 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const session = createBandaiSession(ctx, { area });
   const tStep = opts.tStep || defaultStep(steps, ctx);
 
-  if (!otp.onlinesimApiKey) {
-    return fail("otp_config", "OnlineSim API key missing — paste in Desktop Settings");
+  const provider = resolveSmsProvider(otp);
+  if (!provider) {
+    return fail(
+      "otp_config",
+      "SMS API key missing — paste SMSPool (preferred) or OnlineSim key in Desktop Settings",
+    );
   }
   if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
     return fail("otp_config", "IMAP settings incomplete — host/user/app password required");
   }
 
-  // Email for Bandai memberId: prefer IMAP mailbox (receives OTP), allow uniquify when pool.
-  const allowUniquify = task?.uniquifyEmail === true || task?.bandaiUniquifyEmail === true;
+  // Email for Bandai memberId: prefer IMAP mailbox (receives OTP), allow uniquify when pool/catchall.
+  const emailDomain = String(profile.email || otp.imapUser || "")
+    .split("@")[1]
+    ?.toLowerCase();
+  const allowUniquify =
+    task?.uniquifyEmail === true ||
+    task?.bandaiUniquifyEmail === true ||
+    (emailDomain && CATCHALL_DOMAINS.has(emailDomain));
   let email = String(otp.imapUser || profile.email || "").trim().toLowerCase();
-  if (allowUniquify && profile.email) {
-    email = uniquifyEmail(profile.email);
+  if (allowUniquify && (profile.email || otp.imapUser)) {
+    email = uniquifyEmail(profile.email || otp.imapUser);
   }
   if (!email || !email.includes("@")) {
     return fail("otp_config", "imapUser / email required for Bandai memberId");
@@ -85,14 +150,21 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("password_rules", `Password fails Bandai rules: ${pwCheck.errors.join(",")}`);
   }
 
-  const onlinesim = createOnlinesimClient({ apikey: otp.onlinesimApiKey });
+  const sms =
+    provider === "smspool"
+      ? createSmspoolClient({ apikey: otp.smspoolApiKey })
+      : createOnlinesimClient({ apikey: otp.onlinesimApiKey });
 
-  await tStep("onlinesim_balance", async () => {
-    const bal = await onlinesim.getBalance();
+  await tStep("sms_balance", async () => {
+    const bal = await sms.getBalance();
     if (!bal.ok) {
       return { ok: false, status: bal.status, note: bal.error || "balance_failed" };
     }
-    return { ok: true, status: bal.status, note: `balance ${bal.balance}` };
+    return {
+      ok: true,
+      status: bal.status,
+      note: `${provider} balance ${bal.balance}`,
+    };
   });
 
   const warm = await tStep("warm", async () => session.warm());
@@ -171,12 +243,37 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("email_validate", emailValidate.note, steps);
   }
 
-  // ── Phone (OnlineSim) ──────────────────────────────────────────────────
+  // ── Phone (SMSPool US/UK or OnlineSim AU) ───────────────────────────────
   let phoneAcq = null;
   let phone1 = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const countryQueue =
+    provider === "smspool" ? smspoolCountryQueue(otp) : [String(otp.onlinesimCountry || 61)];
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const countryPick = countryQueue[attempt % countryQueue.length];
     phoneAcq = await tStep(attempt === 0 ? "sms_acquire" : `sms_acquire_retry_${attempt}`, async () => {
-      const got = await onlinesim.acquireNumber({
+      if (provider === "smspool") {
+        const got = await sms.acquireNumber({
+          country: countryPick,
+          service: otp.smspoolService,
+          maxPrice: otp.smspoolMaxPrice,
+        });
+        if (!got.ok) {
+          return { ok: false, status: null, note: got.error || "acquire_failed" };
+        }
+        return {
+          ok: true,
+          status: null,
+          note: `smspool ${got.country} …${String(got.number).slice(-4)}`,
+          tzid: got.orderId,
+          orderId: got.orderId,
+          number: got.number,
+          mode: "smspool",
+          country: got.country,
+          phone1: got.phone1,
+        };
+      }
+      const got = await sms.acquireNumber({
         mode: otp.onlinesimMode,
         country: otp.onlinesimCountry,
         service: otp.onlinesimServiceSlug,
@@ -191,18 +288,23 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         tzid: got.tzid,
         number: got.number,
         mode: got.mode,
+        country: "AU",
+        phone1: toBandaiPhone1Au(got.number),
       };
     });
     if (!phoneAcq.ok) {
-      if (/LOW_BALANCE|WRONG_KEY/i.test(String(phoneAcq.note))) {
+      if (/LOW_BALANCE|WRONG_KEY|balance|invalid.?key/i.test(String(phoneAcq.note))) {
         return fail("sms_acquire", phoneAcq.note, steps);
       }
       continue;
     }
-    phone1 = toBandaiPhone1(phoneAcq.number);
+    phone1 =
+      phoneAcq.phone1 ||
+      (provider === "smspool"
+        ? toBandaiPhone1Intl(phoneAcq.number, phoneAcq.country || countryPick)
+        : toBandaiPhone1Au(phoneAcq.number));
 
     const exists = await tStep("phone_unique", async () => {
-      // Research path is `api/phoneNo` (sometimes without leading slash in JS)
       const { status, json } = await session.apiJson("POST", "/api/phoneNo", {
         body: phone1,
         referer: `${base}/register/memberregistration`,
@@ -219,13 +321,13 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
 
     if (exists.ok) break;
 
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     phoneAcq = null;
     phone1 = null;
   }
 
   if (!phoneAcq?.ok || !phone1) {
-    return fail("phone_unique", "Could not acquire unique AU phone", steps);
+    return fail("phone_unique", "Could not acquire unique phone number", steps);
   }
 
   // Terms
@@ -247,7 +349,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     };
   });
   if (!terms.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("terms", terms.note, steps);
   }
 
@@ -272,13 +374,14 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   });
 
   if (!smsAuth.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_auth", smsAuth.note, steps);
   }
 
   const smsCode = await tStep("sms_otp", async () => {
-    const got = await onlinesim.waitForSms({
-      tzid: phoneAcq.tzid,
+    const got = await sms.waitForSms({
+      tzid: phoneAcq.tzid || phoneAcq.orderId,
+      orderId: phoneAcq.orderId || phoneAcq.tzid,
       mode: phoneAcq.mode,
       timeoutMs: Number(task.smsOtpTimeoutMs) || 180_000,
       regex: /\b(\d{4,8})\b/,
@@ -290,7 +393,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   });
 
   if (!smsCode.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_otp", smsCode.note, steps);
   }
 
@@ -316,11 +419,11 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   });
 
   if (!smsValidate.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_validate", smsValidate.note, steps);
   }
 
-  await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+  await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
 
   const dob = adultDob();
   const homeAddress = {
@@ -440,7 +543,8 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     email,
     password,
     phone: phone1.phoneNo,
-    phoneCountry: "+61",
+    phoneCountry: phone1.countryNo || "+61",
+    smsProvider: provider,
     status: vaultStatus,
     shipping: shipping || address,
     storeId: "bandai",

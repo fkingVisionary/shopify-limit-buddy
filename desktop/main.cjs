@@ -83,6 +83,7 @@ function snapshot() {
       apiKey: state.settings.apiKey || "",
       hyperApiKey: state.settings.hyperApiKey || "",
       capsolverApiKey: state.settings.capsolverApiKey || "",
+      smspoolApiKey: state.settings.smspoolApiKey || "",
       onlinesimApiKey: state.settings.onlinesimApiKey || "",
       imapAppPassword: state.settings.imapAppPassword || "",
     },

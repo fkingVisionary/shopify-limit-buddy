@@ -385,6 +385,9 @@ function renderSettings() {
   $("setHyper").value = s.hyperApiKey || "";
   $("setPaydockPk").value = s.paydockPublicKey || "";
   if ($("setCapsolver")) $("setCapsolver").value = s.capsolverApiKey || "";
+  if ($("setSmspool")) $("setSmspool").value = s.smspoolApiKey || "";
+  if ($("setSmsProvider")) $("setSmsProvider").value = s.smsProvider || "auto";
+  if ($("setSmspoolCountry")) $("setSmspoolCountry").value = s.smspoolCountry || "GB";
   if ($("setOnlinesim")) $("setOnlinesim").value = s.onlinesimApiKey || "";
   if ($("setOnlinesimMode")) $("setOnlinesimMode").value = s.onlinesimMode || "rent";
   if ($("setOnlinesimSlug")) $("setOnlinesimSlug").value = s.onlinesimServiceSlug || "other";
@@ -669,6 +672,9 @@ $("btnSaveSettings").onclick = async () => {
       hyperApiKey: $("setHyper").value.trim(),
       paydockPublicKey: $("setPaydockPk").value.trim(),
       capsolverApiKey: $("setCapsolver")?.value?.trim() || "",
+      smspoolApiKey: $("setSmspool")?.value?.trim() || "",
+      smsProvider: $("setSmsProvider")?.value || "auto",
+      smspoolCountry: $("setSmspoolCountry")?.value || "GB",
       onlinesimApiKey: $("setOnlinesim")?.value?.trim() || "",
       onlinesimMode: $("setOnlinesimMode")?.value || "rent",
       onlinesimServiceSlug: $("setOnlinesimSlug")?.value?.trim() || "other",
