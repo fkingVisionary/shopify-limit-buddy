@@ -431,10 +431,9 @@ export function buildCheckoutSaveBody(form, opts = {}) {
   set("CheckoutData.ExternalData.CurrentGatewayId", opts.gatewayId || form.gatewayId || "2");
   // Browser MainForm includes ioBlackBox + tax option; thin save was a fraud gap.
   set("ioBlackBox", opts.machineId || opts.ioBlackBox || "");
-  set(
-    "CheckoutData.SelectedTaxOption",
-    opts.selectedTaxOption || form.selectedTaxOption || "3",
-  );
+  // HTML sometimes scrapes Angular placeholders like "{{:value}}" — never send those.
+  const taxRaw = String(opts.selectedTaxOption || form.selectedTaxOption || "").trim();
+  if (/^\d+$/.test(taxRaw)) set("CheckoutData.SelectedTaxOption", taxRaw);
   set("CheckoutData.ForterToken", opts.forterToken || "");
   set("CheckoutData.AddressVerified", "true");
   set("CheckoutData.TnCConsent", "true");
@@ -1683,7 +1682,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     gatewayId,
     machineId,
     forterToken,
-    selectedTaxOption: form.selectedTaxOption || "3",
+    selectedTaxOption: /^\d+$/.test(String(form.selectedTaxOption || ""))
+      ? form.selectedTaxOption
+      : "",
   });
   const saveRes = await httpText(
     `${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`,
