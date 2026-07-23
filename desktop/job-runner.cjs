@@ -17,6 +17,7 @@ const {
 } = require("./run-format.cjs");
 const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
+const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -416,39 +417,11 @@ function buildBandaiPayload({
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
-      // ATC always HTTP+F5. Pay path: fast=HTTP GE issuer, safe=Playwright GE.
-      bandaiCheckoutMode: (() => {
-        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
-        if (
-          m === "safe" ||
-          m === "browser" ||
-          m === "playwright" ||
-          task.bandaiBrowserCheckout === true
-        ) {
-          return "safe";
-        }
-        return "fast";
-      })(),
-      bandaiGeHttpPay: (() => {
-        if (mode !== "checkout" || !placeOrder) return false;
-        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
-        const safe =
-          m === "safe" ||
-          m === "browser" ||
-          m === "playwright" ||
-          task.bandaiBrowserCheckout === true;
-        return !safe && task.bandaiGeHttpPay !== false;
-      })(),
-      bandaiBrowserCheckout: (() => {
-        if (mode !== "checkout" || !placeOrder) return false;
-        const m = String(task.bandaiCheckoutMode || "fast").toLowerCase();
-        return (
-          m === "safe" ||
-          m === "browser" ||
-          m === "playwright" ||
-          task.bandaiBrowserCheckout === true
-        );
-      })(),
+      // ATC always HTTP+F5. Pay path: fast=HTTP GE+riskHydrate, safe=Playwright GE.
+      ...resolveDesktopBandaiPayPath(task, {
+        mode,
+        placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      }),
       bandaiF5Bridge: task.bandaiF5Bridge !== false,
       bandaiMode: mode,
       bandaiArea,

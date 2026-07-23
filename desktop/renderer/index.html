@@ -94,10 +94,10 @@
             <div id="taskBandaiCheckoutModeWrap" hidden>
               <label>Checkout pay path</label>
               <select id="taskBandaiCheckoutMode">
-                <option value="fast">Fast — HTTP GE (full undici issuer)</option>
+                <option value="fast">Fast — HTTP GE + risk-hydrate (default)</option>
                 <option value="safe">Safe — Playwright GE after cart hold</option>
               </select>
-              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Safe keeps the ~30 min window and pays via browser GEM.</p>
+              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast pays undici issuer with fresh Forter/iovation mint (clears GE PossibleFraudDetected). Safe keeps the ~30 min window and pays via browser GEM on the F5 bridge.</p>
             </div>
             <div id="taskBandaiAccountPassWrap" hidden>
               <label>Account password <span class="optional">(optional — agen)</span></label>
