@@ -137,7 +137,17 @@ console.log(
   ),
 );
 
-const result = await bandaiAdapter.run(task, ctx);
+let result;
+try {
+  result = await bandaiAdapter.run(task, ctx);
+} catch (e) {
+  result = {
+    ok: false,
+    failedStep: "throw",
+    error: e?.cause?.message || e?.message || String(e),
+    steps: ctx.steps,
+  };
+}
 const outPath = process.env.OUT || "/tmp/bandai-agen-once-result.json";
 fs.writeFileSync(
   outPath,
