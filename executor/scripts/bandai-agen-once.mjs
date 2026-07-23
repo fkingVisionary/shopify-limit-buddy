@@ -137,7 +137,7 @@ console.log(
   ),
 );
 
-const result = await bandaiAdapter(task, ctx);
+const result = await bandaiAdapter.run(task, ctx);
 const outPath = process.env.OUT || "/tmp/bandai-agen-once-result.json";
 fs.writeFileSync(
   outPath,
