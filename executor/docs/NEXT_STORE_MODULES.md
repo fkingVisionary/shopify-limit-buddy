@@ -1,19 +1,21 @@
 # Next Store Modules — Research & Plan
 
-_Date: 2026-07-22 (research day pass 6 — Topps multi-region)_  
+_Date: 2026-07-24 (research day pass 7 — BUTT competitor gap)_  
 _Status: planning only (no adapters yet)_  
-_Baseline: Kmart AU known-good on `main` (post hard-reset); new modules on feature branches only._  
-_Ops plan:_ [`FUTURE_ROADMAP.md`](./FUTURE_ROADMAP.md)
+_Baseline: **Kmart + Target benched** (owner); product musts from competitor gap; new modules on feature branches only._  
+_Ops plan:_ [`FUTURE_ROADMAP.md`](./FUTURE_ROADMAP.md) · **Competitor:** [`COMPETITOR_BUTT_GAP.md`](./COMPETITOR_BUTT_GAP.md)
 
 Findings combine live edge/API probes (Cursor cloud DC egress) with public platform signals. **Confirm on sticky AU ISP/residential + desktop before build** — several sites hard‑block or black‑hole DC IPs. Homepage ≠ PDP ≠ ATC protection.
 
 ### Yield / strategy note (owner input)
-- **Premium Bandai AU — BUILD FIRST.** English bots already cover AusPost; **no known Bandai AU support** → greenfield on One Piece / exclusives. Deep dive: `BANDAI_AU_MODULE.md`.
-- **Topps (US + JP first, then EU/IN/BR)** — Fanatics Shopify fleet + Cloudflare; dig: `TOPPS_MODULE.md`. Phase 3-class (weak Hyper); one adapter × region config.
-- **Toymate** — agen restore track (parallel); CF + EQL — not undici-first.
-- **Pokémon Centre AU** — official exclusives; **Incapsula + DataDome + hCaptcha + Global-e**. Dig: `POKEMON_CENTRE_MODULE.md`. Hyper-strong on DD/Incapsula, weak on hCaptcha; crowded — Phase 2 after Bandai + antibot wiring.
-- **Australia Post Shop** — parked; `AUSPOST_SHOP_MODULE.md`.
-- **Costco AU** — `COSTCO_AU_MODULE.md`. **JB Hi-Fi** — `JB_HIFI_MODULE.md` (CF, not Akamai).
+- **Product musts (vs BUTT):** Quick Task, in-bot monitors, watchdog, 3DS, PayPal vault, profile expressions, import/export, auto-updater — see gap doc. Ship these in parallel with stores.
+- **Kmart + Target — BENCHED.** Do not chase competitor wins there for now.
+- **Premium Bandai AU — BUILD FIRST (store).** Not on BUTT list → greenfield. Dig: `BANDAI_AU_MODULE.md`.
+- **Topps (US + JP first)** — dig: `TOPPS_MODULE.md`.
+- **Toymate** — agen restore (parallel); on BUTT list; CF + EQL.
+- **Pokémon Centre / Costco / AusPost / Big W** — on BUTT card list; prefer after Bandai + Hyper wiring.
+- **Shopify raffle pack** — Supply / UP THERE / Above The Clouds (BUTT raffle list).
+- **JB Hi-Fi** — `JB_HIFI_MODULE.md` (CF, not Akamai).
 
 ---
 
@@ -33,28 +35,29 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 
 | Rank | Store | Status | Antibot | Platform | Diff |
 |---|---|---|---|---|---|
-| **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ |
-| 2 | Target AU | Backlog (Akamai reuse) | Akamai BM | SAP Commerce | S–M |
-| 3 | AusPost Shop | **Parked** (competitors exist) | DataDome | Intershop + Auth0 | M — see `AUSPOST_SHOP_MODULE.md` |
-| 4 | **Pokémon Centre AU** | Backlog (Hyper DD+Incapsula ✅ / hCaptcha ❌) | Incapsula + DataDome + hCaptcha | Elastic Path Cortex + Global‑e | L — see `POKEMON_CENTRE_MODULE.md` |
-| 5 | **Costco AU** | Backlog (Hyper Akamai+Kasada ✅) | Akamai BM (+ Kasada claimed) + Queue-it | Spartacus + SAP `australia` | L — membership — see `COSTCO_AU_MODULE.md` |
-| 6 | Harvey Norman | Contender (Incapsula ✅) | Imperva/Incapsula + Forter | Custom / WCS-family | M — Hyper Reese84 |
-| 7 | Foot Locker AU | Contender (Kasada ✅) | Kasada | Custom React | M — sneakers |
-| 8 | Platypus | Contender (DataDome ✅) | DataDome + Forter + reCAPTCHA | Magento-class | M — sneakers |
-| 9 | Uniqlo AU | Contender (Akamai ✅) | Akamai BM | Uniqlo SPA | M — UT/collab drops |
-| 10 | Big W | Backlog | Akamai BM | SAP + AEM | M |
-| 11 | **JB Hi-Fi** | Backlog (yield high / Hyper ❌) | **CF + reCAPTCHA Enterprise** + Riskified | **Shopify Plus** custom | L — see `JB_HIFI_MODULE.md` |
-| 12 | **Topps (US/JP+)** | Backlog (yield high / Hyper ❌) | **CF** (+ Turnstile/hCaptcha TBD) + Riskified US | **Shopify** per-region shops | L — see `TOPPS_MODULE.md` |
-| 13 | Toymate | Agen restore / CF+EQL | Cloudflare + EQL | BigCommerce | M–L |
-| 14 | EB Games | Backlog | CF challenge | Custom .NET | L |
-| 15 | Disney Store | After Bandai GE | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
-| 16 | Pop Mart AU | Watch (Labubu $) | Cloudflare | Custom / CF | L — Hyper ❌ |
-| 17 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
+| **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ · **not on BUTT** |
+| 2 | **Pokémon Centre AU** | Backlog (on BUTT list) | Incapsula + DataDome + hCaptcha | Elastic Path + Global‑e | L — `POKEMON_CENTRE_MODULE.md` |
+| 3 | **Costco AU** | Backlog (on BUTT list) | Akamai (+ Kasada) + Queue-it | Spartacus `australia` | L — `COSTCO_AU_MODULE.md` |
+| 4 | AusPost Shop | Parked → un-park coin season (on BUTT) | DataDome | Intershop + Auth0 | M — `AUSPOST_SHOP_MODULE.md` |
+| 5 | Big W | Backlog (on BUTT list) | Akamai BM | SAP + AEM | M |
+| 6 | Shopify raffle pack | Contender (BUTT raffles) | CF + Shopify | Supply / UP THERE / ATC | M — gap doc |
+| 7 | Harvey Norman | Contender (Incapsula ✅) | Imperva/Incapsula + Forter | Custom / WCS-family | M |
+| 8 | Foot Locker / Platypus | Contender | Kasada / DataDome | Custom / Magento-class | M |
+| 9 | Uniqlo AU | Contender (Akamai ✅) | Akamai BM | Uniqlo SPA | M |
+| 10 | **JB Hi-Fi** | Backlog (Hyper ❌) | CF + reCAPTCHA Enterprise | Shopify Plus | L — `JB_HIFI_MODULE.md` |
+| 11 | **Topps (US/JP+)** | Backlog (Hyper ❌) | CF + captcha TBD | Shopify per-region | L — `TOPPS_MODULE.md` |
+| 12 | Toymate | Agen restore (on BUTT) | CF + EQL | BigCommerce | M–L |
+| 13 | EB Games | Backlog (on BUTT) | CF | Custom .NET | L |
+| 14 | Disney Store | After Bandai GE (on BUTT) | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| 15 | Best & Less | Watch (on BUTT; dig TBD) | Soft Express/CF | SAP Commerce claimed | M |
+| 16 | Pop Mart AU | Watch | Cloudflare | Custom / CF | L |
+| — | **Kmart** | **BENCHED** | Akamai | Existing adapter | — |
+| — | **Target AU** | **BENCHED** | Akamai | SAP Commerce | — |
 
-**Active track:** Bandai monitor ∥ **account gen** → login/ATC → Chance → Global‑e (`BANDAI_AU_MODULE.md`).  
-**Parallel:** Toymate agen restore (separate agent/branch).  
-**Later (Hyper-native):** AusPost DD · HN Incapsula · **Pokémon Centre** (DD+Incapsula+GE) · Costco Kasada · Target/Uniqlo Akamai · FL/Platypus.  
-**Avoid full ATC until CF/hCaptcha productized:** JB · **Topps** · EB · Toymate ATC · Pop Mart.
+**Active track:** **Product musts** (monitor/watchdog/QuickTask/…) ∥ **Bandai** agen → ATC → Chance → GE.  
+**Parallel:** Toymate agen restore.  
+**Next retail (BUTT overlap, Hyper-friendly):** Pokémon Centre · Costco · AusPost · Big W · Shopify raffle pack.  
+**Avoid full ATC until CF/hCaptcha productized:** JB · Topps · EB · Toymate ATC · Pop Mart.
 
 ---
 
