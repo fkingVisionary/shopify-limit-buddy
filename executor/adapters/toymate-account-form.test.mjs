@@ -12,6 +12,10 @@ const {
   accountCreatedOk,
   extractFormAction,
   parseFormFields,
+  csrfTokens,
+  buildLoginBody,
+  buildMultipart,
+  stencilHeaders,
 } = __test;
 
 const FIXTURE_CREATE_HTML = `
@@ -127,4 +131,62 @@ test("accountCreatedOk rejects password-policy false positive", () => {
     ),
     false,
   );
+});
+
+test("csrfTokens prefer jar cookies (HAR: XSRF + SF-CSRF)", () => {
+  const jar = {
+    dump: () => ({
+      "XSRF-TOKEN": "xsrf-abc",
+      "SF-CSRF-TOKEN": "sf-uuid-123",
+    }),
+  };
+  const t = csrfTokens(jar, '<input name="authenticity_token" value="html-tok" />');
+  assert.equal(t.authenticityToken, "xsrf-abc");
+  assert.equal(t.sfAuthenticityToken, "sf-uuid-123");
+});
+
+test("csrfTokens fall back to HTML hidden fields", () => {
+  const html = `
+    <input name="authenticity_token" value="html-xsrf" />
+    <input name="sf_authenticity_token" value="html-sf" />
+  `;
+  const t = csrfTokens({ dump: () => ({}) }, html);
+  assert.equal(t.authenticityToken, "html-xsrf");
+  assert.equal(t.sfAuthenticityToken, "html-sf");
+});
+
+test("buildLoginBody includes both authenticity tokens", () => {
+  const body = buildLoginBody("a@b.com", "Password1", {
+    authenticityToken: "xsrf",
+    sfAuthenticityToken: "sf",
+  });
+  assert.equal(body.get("login_email"), "a@b.com");
+  assert.equal(body.get("login_pass"), "Password1");
+  assert.equal(body.get("authenticity_token"), "xsrf");
+  assert.equal(body.get("sf_authenticity_token"), "sf");
+});
+
+test("buildMultipart encodes stencil ATC fields", () => {
+  const mp = buildMultipart({ action: "add", product_id: "53116", "qty[]": "1" });
+  assert.match(mp.contentType, /^multipart\/form-data; boundary=/);
+  assert.match(mp.body, /name="action"\r\n\r\nadd\r\n/);
+  assert.match(mp.body, /name="product_id"\r\n\r\n53116\r\n/);
+  assert.match(mp.body, /name="qty\[\]"\r\n\r\n1\r\n/);
+});
+
+test("stencilHeaders set stencil-utils + both CSRF headers", () => {
+  const h = stencilHeaders({
+    referer: "https://toymate.com.au/products.php?productId=53116",
+    origin: "https://toymate.com.au",
+    jar: {
+      dump: () => ({
+        "XSRF-TOKEN": "xsrf-tok",
+        "SF-CSRF-TOKEN": "sf-tok",
+      }),
+    },
+  });
+  assert.equal(h["x-requested-with"], "stencil-utils");
+  assert.equal(h["x-xsrf-token"], "xsrf-tok");
+  assert.equal(h["x-sf-csrf-token"], "sf-tok");
+  assert.equal(h.accept, "*/*");
 });

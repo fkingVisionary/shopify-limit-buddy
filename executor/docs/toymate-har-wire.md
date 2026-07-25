@@ -68,8 +68,8 @@ GET https://toymate.com.au/checkout
 
 Payment-methods (`GET /api/storefront/payments`) did **not** appear in this capture before close — checkout-js chunks were still loading. Prior API probe already locked Adyen `scheme` + `X-API-INTERNAL` for that call.
 
-## Adapter follow-ups (next)
+## Adapter status (built from this HAR)
 
-1. Prefer `/remote/v1/cart/add` (multipart + `stencil-utils`) as primary ATC; keep Storefront carts as fallback.
-2. Parse login page for both `authenticity_token` and `sf_authenticity_token`.
-3. Re-capture with longer checkout settle (or click into shipping) to land consignments / payments / billing POSTs in one HAR.
+1. **Done** — primary ATC is `POST /remote/v1/cart/add` (multipart + `stencil-utils`); Storefront carts is fallback (`cart_add` step).
+2. **Done** — login sends both tokens: `authenticity_token` ← jar `XSRF-TOKEN`, `sf_authenticity_token` ← jar `SF-CSRF-TOKEN` (HTML hidden fields as fallback). Stencil/API also send `x-sf-csrf-token`.
+3. **Open** — re-capture with longer checkout settle (or click into shipping) to land consignments / payments / billing POSTs in one HAR.

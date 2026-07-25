@@ -26,6 +26,13 @@ export function storefrontPaymentHeaders(jar, ua, extra = {}) {
       headers["x-xsrf-token"] = d["XSRF-TOKEN"];
     }
   }
+  if (d["SF-CSRF-TOKEN"]) {
+    try {
+      headers["x-sf-csrf-token"] = decodeURIComponent(d["SF-CSRF-TOKEN"]);
+    } catch {
+      headers["x-sf-csrf-token"] = d["SF-CSRF-TOKEN"];
+    }
+  }
   return headers;
 }
 

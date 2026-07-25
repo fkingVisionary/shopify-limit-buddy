@@ -16,7 +16,7 @@ _Status: adapter restored (isolated from Kmart)_
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.
-2. **`checkout`** — CF warm → optional login → PDP → Storefront cart/checkout → spam reCAPTCHA → **Adyen v3 `scheme`** place-order (Playwright hosted fields). Decline smokes are the safe live proof; a paid order is still bank-dependent.
+2. **`checkout`** — CF warm → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme`** place-order (Playwright hosted fields). Decline smokes are the safe live proof; a paid order is still bank-dependent.
 3. **`monitor`** — keyword search hit/miss.
 
 ### Payment notes
