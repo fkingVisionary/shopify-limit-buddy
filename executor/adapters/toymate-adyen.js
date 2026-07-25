@@ -8,6 +8,9 @@ import forge from "node-forge";
 export const BC_INTERNAL_HEADER =
   "This API endpoint is for internal use only and may change in the future";
 
+/** Matches checkout-sdk default request headers (spam/order/payments). */
+export const BC_CHECKOUT_SDK_VERSION = "1.793.0";
+
 export function storefrontPaymentHeaders(jar, ua, extra = {}) {
   const d = jar?.dump?.() || {};
   const headers = {
@@ -16,6 +19,7 @@ export function storefrontPaymentHeaders(jar, ua, extra = {}) {
     "content-type": "application/json",
     "x-requested-with": "XMLHttpRequest",
     "X-API-INTERNAL": BC_INTERNAL_HEADER,
+    "X-Checkout-SDK-Version": BC_CHECKOUT_SDK_VERSION,
     origin: "https://toymate.com.au",
     referer: "https://toymate.com.au/checkout",
     ...extra,
@@ -187,11 +191,7 @@ async function readCheckoutBootstrap(request, ctx, ua, apex) {
   return { status: res.status, html, sfToken, storeHash };
 }
 
-/**
- * GraphQL Storefront completeCheckout → orderEntityId + paymentAccessToken.
- * Docs: checkout { completeCheckout(...) { orderEntityId paymentAccessToken } }
- */
-async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, checkoutId }) {
+function storefrontGraphqlHeaders(jar, ua, apex, sfToken) {
   const headers = {
     "user-agent": ua,
     accept: "application/json",
@@ -204,6 +204,97 @@ async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, c
   const sf = jarCookie(jar, "SF-CSRF-TOKEN");
   if (xsrf) headers["x-xsrf-token"] = xsrf;
   if (sf) headers["x-sf-csrf-token"] = sf;
+  return headers;
+}
+
+/**
+ * checkout-sdk posts spam-protection with body `{ token }` (not nested spamProtection).
+ * GraphQL applyCheckoutSpamProtection is the alternate plane when REST 429s.
+ */
+export async function applySpamProtectionHttp(
+  request,
+  ctx,
+  { apex, ua, jar, checkoutId, captchaToken, sfToken = null, skipRest = false },
+) {
+  const logs = [];
+  let restStatus = null;
+  if (!skipRest) {
+    const restHeaders = storefrontPaymentHeaders(jar, ua);
+    const spam = await request(
+      `${apex}/api/storefront/checkouts/${checkoutId}/spam-protection`,
+      {
+        method: "POST",
+        headers: restHeaders,
+        body: JSON.stringify({ token: captchaToken }),
+      },
+      ctx,
+    );
+    const spamText = await spam.text().catch(() => "");
+    restStatus = spam.status;
+    logs.push({ step: "spam_rest", status: spam.status, body: spamText.slice(0, 160) });
+    if (spam.status >= 200 && spam.status < 300) {
+      return { ok: true, via: "rest", status: spam.status, logs };
+    }
+  }
+
+  if (sfToken) {
+    const gqlHeaders = storefrontGraphqlHeaders(jar, ua, apex, sfToken);
+    const query = `mutation applyCheckoutSpamProtection($input: ApplyCheckoutSpamProtectionInput!) {
+      checkout {
+        applyCheckoutSpamProtection(input: $input) {
+          checkout { entityId }
+        }
+      }
+    }`;
+    const gql = await request(
+      `${apex}/graphql`,
+      {
+        method: "POST",
+        headers: gqlHeaders,
+        body: JSON.stringify({
+          query,
+          variables: {
+            input: { checkoutEntityId: checkoutId, data: { token: captchaToken } },
+          },
+        }),
+      },
+      ctx,
+    );
+    const gqlText = await gql.text().catch(() => "");
+    let gqlJson = null;
+    try {
+      gqlJson = JSON.parse(gqlText);
+    } catch {
+      /* ignore */
+    }
+    const node = gqlJson?.data?.checkout?.applyCheckoutSpamProtection;
+    const err =
+      gqlJson?.errors?.map((e) => e.message).filter(Boolean).join("; ") || null;
+    logs.push({
+      step: "spam_gql",
+      status: gql.status,
+      body: (err || gqlText).slice(0, 160),
+    });
+    if (gql.status >= 200 && gql.status < 300 && node && !err) {
+      return { ok: true, via: "graphql", status: gql.status, logs };
+    }
+  }
+
+  return {
+    ok: false,
+    via: null,
+    status: restStatus,
+    logs,
+    note: restStatus != null ? `spam rest ${restStatus}` : "spam gql failed",
+  };
+}
+
+/**
+ * GraphQL Storefront completeCheckout → orderEntityId + paymentAccessToken.
+ * Docs: checkout { completeCheckout(...) { orderEntityId paymentAccessToken } }
+ */
+async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, checkoutId }) {
+  const headers = storefrontGraphqlHeaders(jar, ua, apex, sfToken);
 
   const attempts = [
     {
@@ -293,7 +384,7 @@ async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, c
 
 /**
  * HTTP place-order (module path — no Playwright):
- * 1) spam-protection (soft on 429)
+ * 1) spam-protection body `{ token }` (+ GraphQL applyCheckoutSpamProtection)
  * 2) GraphQL completeCheckout → PAT (preferred) or internalapi order
  * 3) BigPay POST /stores/{hash}/payments with card instrument
  */
@@ -305,6 +396,8 @@ export async function placeOrderViaHttp({
   card,
   captchaToken = null,
   profile = {},
+  spamAlreadyCleared = false,
+  spamRestAttempted = false,
 } = {}) {
   const apex = "https://toymate.com.au";
   const ua = userAgent || "Mozilla/5.0";
@@ -312,29 +405,26 @@ export async function placeOrderViaHttp({
   const headers = storefrontPaymentHeaders(jar, ua, { accept: "application/json" });
   const logs = [];
 
-  if (captchaToken) {
-    const spam = await request(
-      `${apex}/api/storefront/checkouts/${checkoutId}/spam-protection`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          spamProtection: { method: "recaptcha_v2", token: captchaToken },
-        }),
-      },
-      ctx,
-    );
-    const spamText = await spam.text().catch(() => "");
-    logs.push({ step: "spam", status: spam.status, body: spamText.slice(0, 160) });
-    // Soft-continue on 429 — BC has been rate-limiting spam while order/pay may still work.
-    if (!(spam.status >= 200 && spam.status < 300) && spam.status !== 429) {
-      return {
-        ok: false,
-        declined: false,
-        note: `http spam ${spam.status}`,
-        paymentLogs: logs,
-      };
-    }
+  const bootEarly = await readCheckoutBootstrap(request, ctx, ua, apex);
+  logs.push({
+    step: "checkout_boot",
+    status: bootEarly.status,
+    body: `sf=${Boolean(bootEarly.sfToken)} hash=${bootEarly.storeHash}`,
+  });
+
+  if (captchaToken && !spamAlreadyCleared) {
+    const spam = await applySpamProtectionHttp(request, ctx, {
+      apex,
+      ua,
+      jar,
+      checkoutId,
+      captchaToken,
+      sfToken: bootEarly.sfToken,
+      // Adapter already POSTed REST once — only GraphQL retry here.
+      skipRest: Boolean(spamRestAttempted),
+    });
+    logs.push(...spam.logs);
+    // Soft-continue: still probe completeCheckout/order for decline wire.
   }
 
   const methodsRes = await request(
@@ -353,13 +443,7 @@ export async function placeOrderViaHttp({
     return { ok: false, declined: false, note: "http: no Adyen scheme", paymentLogs: logs };
   }
 
-  const boot = await readCheckoutBootstrap(request, ctx, ua, apex);
-  logs.push({
-    step: "checkout_boot",
-    status: boot.status,
-    body: `sf=${Boolean(boot.sfToken)} hash=${boot.storeHash}`,
-  });
-
+  const boot = bootEarly;
   let orderId = null;
   let payToken = null;
   let orderVia = null;
@@ -384,39 +468,59 @@ export async function placeOrderViaHttp({
     }
   }
 
-  // Fallback: Optimized Checkout internal order create (returns token when not 429).
+  // Fallback: Optimized Checkout internal order create.
+  // checkout-sdk reads payment token from response header `token`.
   if (!payToken) {
-    const orderRes = await request(
-      `${apex}/internalapi/v1/checkout/order`,
-      {
-        method: "POST",
-        headers: {
-          ...headers,
-          accept: "application/json, text/plain, */*",
-          "x-requested-with": "XMLHttpRequest",
+    const orderBodies = [
+      { cartId: checkoutId },
+      { cartId: checkoutId, customerMessage: "", useStoreCredit: false },
+      {},
+    ];
+    for (const orderBody of orderBodies) {
+      const orderRes = await request(
+        `${apex}/internalapi/v1/checkout/order`,
+        {
+          method: "POST",
+          headers: {
+            ...headers,
+            accept: "application/json, text/plain, */*",
+            "x-requested-with": "XMLHttpRequest",
+          },
+          body: JSON.stringify(orderBody),
         },
-        body: JSON.stringify({}),
-      },
-      ctx,
-    );
-    const orderText = await orderRes.text().catch(() => "");
-    logs.push({ step: "order_create", status: orderRes.status, body: orderText.slice(0, 240) });
-    if (orderRes.status >= 200 && orderRes.status < 300) {
-      let orderJson = null;
-      try {
-        orderJson = JSON.parse(orderText);
-      } catch {
-        /* ignore */
-      }
-      orderId =
-        orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || orderId;
-      payToken =
-        orderJson?.data?.order?.token ||
-        orderJson?.data?.token ||
-        orderJson?.token ||
-        orderJson?.payment?.token ||
+        ctx,
+      );
+      const orderText = await orderRes.text().catch(() => "");
+      const headerToken =
+        orderRes.headers?.get?.("token") ||
+        orderRes.headers?.token ||
         null;
-      orderVia = "internalapi";
+      logs.push({
+        step: "order_create",
+        status: orderRes.status,
+        body: `${headerToken ? "hdrToken " : ""}${orderText}`.slice(0, 240),
+      });
+      if (orderRes.status >= 200 && orderRes.status < 300) {
+        let orderJson = null;
+        try {
+          orderJson = JSON.parse(orderText);
+        } catch {
+          /* ignore */
+        }
+        orderId =
+          orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || orderId;
+        payToken =
+          headerToken ||
+          orderJson?.data?.order?.token ||
+          orderJson?.data?.token ||
+          orderJson?.token ||
+          orderJson?.payment?.token ||
+          null;
+        orderVia = "internalapi";
+        if (payToken) break;
+      }
+      // Don't spray alternate bodies on hard rate-limit HTML.
+      if (orderRes.status === 429) break;
     }
   }
 

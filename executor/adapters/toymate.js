@@ -20,6 +20,7 @@ import {
   storefrontPaymentHeaders,
   pickAdyenCardMethod,
   placeOrderViaHttp,
+  applySpamProtectionHttp,
 } from "./toymate-adyen.js";
 
 const sleep = (ms, jitter = 0) =>
@@ -1013,15 +1014,16 @@ export const toymateAdapter = {
     });
 
     let captchaToken = task.captchaToken || null;
+    let spamCleared = false;
+    let spamRestAttempted = false;
     await tStep("checkout_spam", async () => {
       // Live place-order needs spam-protection when BC has it enabled.
-      // Storefront spam API has been 429ing from this exit — still mint a
-      // CapSolver token for Playwright injection even when API soft-fails.
+      // checkout-sdk body is `{ token }` (not nested spamProtection).
       if (!captchaToken && placeOrder && capsolverKey()) {
         const sitekey =
           task.recaptchaSitekey ||
           "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-        // Prefer proxy-bound token (matches Playwright exit IP); proxyless fallback.
+        // Prefer proxy-bound token (same exit IP as checkout); proxyless fallback.
         let solved = await solveRecaptchaV2({
           pageUrl: `${apex}/checkout`,
           sitekey,
@@ -1052,20 +1054,29 @@ export const toymateAdapter = {
             : "no captcha token — skip spam-protection",
         };
       }
-      // Single attempt — hammering this endpoint 429s the whole payment plane.
-      const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
-        method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-        body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
-      }, ctx);
-      if (res.status >= 200 && res.status < 300) {
-        return { ok: true, status: res.status, note: `spam ${res.status}` };
+      // Single REST+GQL attempt — hammering spam 429s the payment plane.
+      const spam = await applySpamProtectionHttp(request, ctx, {
+        apex: base,
+        ua: ctx.extraHeaders?.["user-agent"] || UA,
+        jar: ctx.jar,
+        checkoutId,
+        captchaToken,
+        sfToken: null,
+      });
+      spamRestAttempted = true;
+      spamCleared = Boolean(spam.ok);
+      if (spam.ok) {
+        return {
+          ok: true,
+          status: spam.status,
+          note: `spam ${spam.status} via ${spam.via}`,
+        };
       }
       return {
-        // Soft-ok when we still have a token for Playwright injection.
+        // Soft-ok: keep token for placeOrderViaHttp GraphQL spam retry.
         ok: Boolean(captchaToken),
-        status: res.status,
-        note: `spam ${res.status} — UI inject fallback`,
+        status: spam.status,
+        note: `spam ${spam.status} — continue HTTP (may still block completeCheckout)`,
       };
     });
 
@@ -1142,15 +1153,9 @@ export const toymateAdapter = {
       const pay = await tStep("place_order", async () => {
         // Module path is HTTP-only. Playwright is research-only
         // (executor/experiments/toymate-checkout-ui-research.mjs).
-        const spamCleared = steps.some(
-          (s) =>
-            s.step === "checkout_spam" &&
-            s.ok &&
-            Number(s.status) >= 200 &&
-            Number(s.status) < 300,
-        );
-        // Fresh CapSolver token if spam step did not clear (tokens expire ~2 min).
-        if (!spamCleared && capsolverKey()) {
+        // Reuse CapSolver token from checkout_spam — do not mint a second
+        // solve unless we somehow never got one (tokens expire ~2 min).
+        if (!spamCleared && !captchaToken && capsolverKey()) {
           const sitekey =
             task.recaptchaSitekey ||
             "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
@@ -1175,6 +1180,8 @@ export const toymateAdapter = {
           checkoutId,
           card,
           captchaToken: spamCleared ? null : captchaToken,
+          spamAlreadyCleared: spamCleared,
+          spamRestAttempted,
           profile,
         });
         orderNumber = http.orderNumber || null;
