@@ -412,6 +412,33 @@ function wrapFetchResponse(res, requestedUrl) {
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  // Optional GE mutate wire log (Bandai double-auth forensics).
+  if (process.env.BANDAI_GE_WIRE_TAP === "1") {
+    try {
+      const u = String(url || "");
+      if (/global-e\.com/i.test(u) && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        const fs = await import("node:fs");
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: u,
+          bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+          issuer: /HandleCreditCard/i.test(u),
+        };
+        let arr = [];
+        try {
+          arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-wire.json", "utf8"));
+        } catch {
+          /* ignore */
+        }
+        arr.push(row);
+        fs.writeFileSync("/tmp/bandai-ge-wire.json", JSON.stringify(arr, null, 2));
+        console.log("WIRE_TAP", method, u.slice(0, 160), "issuer=" + row.issuer);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
@@ -438,25 +465,70 @@ export async function request(url, opts, ctx) {
   }
 
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
-    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
-    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
+    // only — NEVER retry POST/PUT/PATCH/DELETE. A RST after GE/PSP already
+    // accepted HandleCreditCardRequestV2 produced paired Revolut auths
+    // (posts=1 in app code, two bank lines) on 2026-07-22 labs.
+    const safeRetry =
+      opts?.retry === true ||
+      (opts?.retry !== false &&
+        (method === "GET" || method === "HEAD" || method === "OPTIONS"));
+    const attempts = safeRetry ? 3 : 1;
     let lastError;
+    let undiciAttempts = 0;
+    const timeoutMs = Number(opts?.timeoutMs);
+    const headersTimeout =
+      Number(opts?.headersTimeout) > 0
+        ? Number(opts.headersTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const bodyTimeout =
+      Number(opts?.bodyTimeout) > 0
+        ? Number(opts.bodyTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const signal =
+      opts?.signal ||
+      (timeoutMs > 0 && typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined);
+
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
+        undiciAttempts += 1;
         const res = await undiciFetch(url, {
           method,
           headers,
           redirect: "manual",
           dispatcher: dispatcher.undiciDispatcher(),
           ...(opts?.body !== undefined ? { body: opts.body } : {}),
+          ...(signal ? { signal } : {}),
+          ...(headersTimeout != null ? { headersTimeout } : {}),
+          ...(bodyTimeout != null ? { bodyTimeout } : {}),
         });
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
-        return wrapFetchResponse(res, url);
+        const wrapped = wrapFetchResponse(res, url);
+        wrapped.undiciAttempts = undiciAttempts;
+        return wrapped;
       } catch (e) {
         lastError = e;
-        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
+        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
+          if (lastError && typeof lastError === "object") {
+            lastError.undiciAttempts = undiciAttempts;
+            // Surface undici/node cause codes (timeout vs RST) for issuer scoring.
+            const cause = lastError.cause;
+            if (cause && typeof cause === "object") {
+              lastError.causeCode = cause.code || cause.name || null;
+              lastError.causeMessage = cause.message || null;
+            }
+            if (lastError.name === "TimeoutError" || lastError.code === "ABORT_ERR") {
+              lastError.timedOut = true;
+            }
+          }
+          throw e;
+        }
         const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
         if (rebuildAgent) {
           try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }

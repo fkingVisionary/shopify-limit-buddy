@@ -49,6 +49,7 @@
             <option value="kmart">Kmart AU</option>
             <option value="toymate">Toymate AU</option>
             <option value="bandai">Premium Bandai AU</option>
+            <option value="pokemoncentre">Pokémon Centre AU</option>
           </select>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>
@@ -86,10 +87,18 @@
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
               <option value="checkout">Autocheckout (login + ATC)</option>
-              <option value="account_gen">Account gen (IMAP + OnlineSim)</option>
+              <option value="account_gen">Account gen (IMAP + SMSPool)</option>
               <option value="monitor">Monitor (search / PDP)</option>
               <option value="chance">Chance applyDraw</option>
             </select>
+            <div id="taskBandaiCheckoutModeWrap" hidden>
+              <label>Checkout pay path</label>
+              <select id="taskBandaiCheckoutMode">
+                <option value="fast">Fast — HTTP GE + risk-hydrate (default)</option>
+                <option value="safe">Safe — Playwright GE after cart hold</option>
+              </select>
+              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast pays undici issuer with fresh Forter/iovation mint (clears GE PossibleFraudDetected). Safe keeps the ~30 min window and pays via browser GEM on the F5 bridge.</p>
+            </div>
             <div id="taskBandaiAccountPassWrap" hidden>
               <label>Account password <span class="optional">(optional — agen)</span></label>
               <input id="taskBandaiAccountPassword" type="text" autocomplete="off" placeholder="Must pass Bandai rules (upper+lower+digit+symbol)" />
@@ -110,6 +119,16 @@
               <label>Campaign SN</label>
               <input id="taskBandaiCampaignSn" placeholder="campaignSn for applyDraw" />
             </div>
+          </div>
+          <div id="taskPcOpts" hidden>
+            <label>Pokémon Centre mode</label>
+            <select id="taskPcMode">
+              <option value="monitor">Monitor (edge + PDP stock)</option>
+              <option value="checkout">Checkout (Cortex ATC → Global-e)</option>
+              <option value="edge">Edge warm only (Incapsula + DD)</option>
+              <option value="har_probe">HAR probe (Cortex paths)</option>
+            </select>
+            <p class="field-hint">Needs sticky AU ISP/residential + Hyper (Incapsula/DD). CapSolver for hCaptcha drops. Cortex ATC bodies harden after HAR.</p>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
           <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
@@ -191,7 +210,7 @@
       <div class="split">
         <div>
           <h2>Accounts</h2>
-          <p class="hint">Generated retailer logins (Toymate today). Checkout tasks auto-assign by profile email; override per-task under Checkout account.</p>
+          <p class="hint">Generated retailer logins (Toymate + Bandai). Checkout auto-assigns by profile email base (<code>+tag</code> OK). No match → task <strong>Checkout account → Manual</strong>.</p>
           <div class="row" style="margin-bottom:12px">
             <button type="button" class="secondary" id="btnClearAccounts">Clear all</button>
           </div>
@@ -200,12 +219,14 @@
         <div class="form-card">
           <h3>How to generate</h3>
           <ol class="hint" style="padding-left:18px;line-height:1.6">
-            <li>Settings → CapSolver API key</li>
-            <li>Profiles → shipping/email base</li>
-            <li>Proxies → residential/ISP group</li>
-            <li>Tasks → Store <strong>Toymate</strong>, mode <strong>Account gen</strong>, Run</li>
+            <li>Profiles → shipping + email base (billing profile)</li>
+            <li>Proxies → sticky AU ISP/resi</li>
+            <li><strong>Bandai:</strong> Settings → SMSPool + IMAP → Tasks → Bandai → Account gen → Run</li>
+            <li><strong>Toymate:</strong> Settings → CapSolver → Tasks → Toymate → Account gen → Run</li>
+            <li>Checkout task on the same profile → Auto picks vault account by email</li>
           </ol>
-          <p class="hint">Password needs letters + numbers (e.g. <code>Password1</code>). Leave blank to randomise.</p>
+          <p class="hint">Bandai status: <code>ready</code> = checkout OK; <code>created</code> = registered but SoftBlock login; <code>needs_sms</code>/<code>needs_terms</code> = finish gate. Already-registered emails are not vaulted again.</p>
+          <p class="hint">Bandai password needs upper+lower+digit+symbol. Leave blank to randomise. Catchall <code>bullposted.com</code> uniquifies <code>+tag</code> automatically.</p>
         </div>
       </div>
     </section>
@@ -258,14 +279,33 @@
         <input id="setCapsolver" placeholder="CapSolver key" autocomplete="off" />
         <p class="hint">Used only by Toymate. Kmart ignores this key.</p>
         <h3 style="margin-top:1.25rem">Account gen OTP (Bandai + future agen)</h3>
-        <p class="hint">Secrets stay on this computer. Used by Premium Bandai account gen (email IMAP + OnlineSim SMS). Never logged in full.</p>
-        <label>OnlineSim API key</label>
+        <p class="hint">Secrets stay on this computer. Bandai: email via IMAP + SMS via SMSPool (US/UK numbers). OnlineSim is optional fallback. Never logged in full.</p>
+        <label>SMSPool API key <span class="optional">(preferred)</span></label>
+        <input id="setSmspool" placeholder="SMSPool key (BYO)" autocomplete="off" />
+        <div class="grid2">
+          <div>
+            <label>SMS provider</label>
+            <select id="setSmsProvider">
+              <option value="auto">Auto (SMSPool → OnlineSim)</option>
+              <option value="smspool">SMSPool only</option>
+              <option value="onlinesim">OnlineSim only</option>
+            </select>
+          </div>
+          <div>
+            <label>SMSPool country</label>
+            <select id="setSmspoolCountry">
+              <option value="GB">UK (+44) — cheaper</option>
+              <option value="US">US (+1)</option>
+            </select>
+          </div>
+        </div>
+        <label>OnlineSim API key <span class="optional">(fallback)</span></label>
         <input id="setOnlinesim" placeholder="OnlineSim apikey" autocomplete="off" />
         <div class="grid2">
           <div>
             <label>OnlineSim mode</label>
             <select id="setOnlinesimMode">
-              <option value="rent">Rent (preferred for Bandai)</option>
+              <option value="rent">Rent (AU)</option>
               <option value="activation">Activation (service slug)</option>
             </select>
           </div>

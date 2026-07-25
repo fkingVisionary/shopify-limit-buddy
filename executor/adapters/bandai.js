@@ -4,19 +4,28 @@
 //
 // Modes (task.bandaiMode):
 //   checkout      — login → ATC → cart → checkoutSn (HTTP + F5 sensor bridge)
-//   account_gen   — bandai-agen (IMAP + OnlineSim → registerVerification → vault)
+//   account_gen   — bandai-agen (IMAP + SMSPool/OnlineSim → registerVerification → vault)
 //   monitor       — poll search/PDP for purchaseAvailable / Chance
 //   chance        — applyDraw for a campaign
 //
 // Transport policy:
 //   Default = undici HTTP. F5 Shape Defense headers (`p8komysnbc-*`) are minted
 //   by a narrow Playwright bridge that aborts probe XHRs — the real POSTs stay
-//   on HTTP. Full browser checkout is opt-in only (`bandaiBrowserCheckout:true`).
+//   on HTTP.
+//
+// Checkout pay modes (task.bandaiCheckoutMode) — ATC/cart_hold is always HTTP+F5:
+//   fast (default) — bandaiGeHttpPay: GetCartToken → hydrate → issuer undici
+//   safe           — bandaiBrowserCheckout: same cart hold, then SPA Proceed +
+//                    Playwright GE Pay on the F5 bridge (~30 min pay window)
+//   Full browser login/PDP remains lab-only: bandaiBrowserFull:true.
 
 import { createBandaiAccount } from "./bandai-agen.js";
 import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
+import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
+import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
+import fs from "node:fs";
 import {
   createBandaiSession,
   parseAreaItemNo,
@@ -26,6 +35,47 @@ import {
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
+
+/**
+ * Resolve Fast vs Safe pay path after HTTP ATC / cart_hold.
+ * Explicit bandaiBrowserCheckout / bandaiBrowserFull still win for labs.
+ * @param {object} [task]
+ * @returns {{ mode: "fast"|"safe"|"full", placeOrderGeHttp: boolean, placeOrderGe: boolean, browserFull: boolean }}
+ */
+export function resolveBandaiCheckoutPayPath(task = {}) {
+  const raw = String(task.bandaiCheckoutMode || task.checkoutMode || "")
+    .toLowerCase()
+    .trim();
+  if (task.bandaiBrowserFull === true || raw === "full") {
+    return {
+      mode: "full",
+      placeOrderGeHttp: false,
+      placeOrderGe: false,
+      browserFull: true,
+    };
+  }
+  const safe =
+    task.bandaiBrowserCheckout === true ||
+    raw === "safe" ||
+    raw === "browser" ||
+    raw === "playwright" ||
+    raw === "http+ge";
+  if (safe) {
+    return {
+      mode: "safe",
+      placeOrderGeHttp: false,
+      placeOrderGe: true,
+      browserFull: false,
+    };
+  }
+  // fast default — opt out only with bandaiGeHttpPay:false
+  return {
+    mode: "fast",
+    placeOrderGeHttp: task.bandaiGeHttpPay !== false,
+    placeOrderGe: false,
+    browserFull: false,
+  };
+}
 
 function makeStep(steps, ctx) {
   return async (name, fn) => {
@@ -237,6 +287,23 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     bridge = null;
   };
 
+  // Drop win-con: wall→ATC. Cart holds ~30 min; pay can follow. Prefer tight
+  // F5 settle + skip optional cart peek (bandaiFastAtc, default on for checkout).
+  const fastAtc =
+    task.bandaiFastAtc !== false &&
+    String(process.env.BANDAI_FAST_ATC || "1") !== "0";
+  // common.js needs ~1.2–1.8s after goto before p8komysnbc-* mint works.
+  // 900ms broke ATC mint in lab; floor at 1200 for fast path.
+  const f5SettleMs = Math.max(
+    1_200,
+    Math.min(
+      3_000,
+      Number(task.bandaiF5SettleMs || process.env.BANDAI_F5_SETTLE_MS) ||
+        (fastAtc ? 1_400 : 1_800),
+    ),
+  );
+  const atcT0 = Date.now();
+
   if (wantBridge) {
     try {
       const s0 = Date.now();
@@ -245,7 +312,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         area: session.area,
         timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
       });
-      await bridge.goto(`${session.base}/login`);
+      await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
       const csrf = await bridge.csrfToken();
       const cookies = await bridge.cookies();
       if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
@@ -256,8 +323,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         status: null,
         ms: Date.now() - s0,
         note: csrf
-          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}…`
-          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")}`,
+          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}`
+          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms`,
       });
       ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
@@ -370,12 +437,33 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   }
 
   // ── Product ────────────────────────────────────────────────────────────
-  if (bridge) {
-    await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`);
+  // Lab 2026-07-23: p8komysnbc-* mint for addToCart works on /login and /cart
+  // but NOT on /item/* (avail=false PDP). Fast path skips item nudge and keeps
+  // the bridge on login for ATC mint (~3–4s saved + mint reliability).
+  if (bridge && !fastAtc) {
+    const pdpNavT0 = Date.now();
+    await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`, {
+      settleMs: f5SettleMs,
+    });
     const csrf = await bridge.csrfToken();
     if (csrf) session.state.csrfToken = csrf;
     const c = await bridge.cookies();
     if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+    steps.push({
+      step: "f5_pdp_nudge",
+      ok: true,
+      status: null,
+      ms: Date.now() - pdpNavT0,
+      note: `goto item/${productCode} settle=${f5SettleMs}ms`,
+    });
+  } else if (bridge && fastAtc) {
+    steps.push({
+      step: "f5_pdp_nudge",
+      ok: true,
+      status: null,
+      ms: 0,
+      note: "skipped item goto (fastAtc; mint ATC from login/cart context)",
+    });
   }
 
   const pdp = await resolveAreaItemNo(session, productCode, tStep);
@@ -395,11 +483,15 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   const atcBodyObj = [{ areaItemNo: pdp.areaItemNo, qty }];
   const atcBody = JSON.stringify(atcBodyObj);
 
-  // Prefer existing cart line (prior dry-runs / preallocation)
-  let cartBefore = await session.apiJson("GET", "/api/cart/detail", {
-    referer: `${session.base}/cart`,
-  });
-  let existing = findCartLine(cartBefore.json, pdp.areaItemNo);
+  // Pre-ATC cart peek costs a RTT; skip on fast path (drop race). Still OK to
+  // POST addToCart when a line already exists (soft business / qty paths).
+  let existing = null;
+  if (!fastAtc) {
+    const cartBefore = await session.apiJson("GET", "/api/cart/detail", {
+      referer: `${session.base}/cart`,
+    });
+    existing = findCartLine(cartBefore.json, pdp.areaItemNo);
+  }
 
   const atc = await tStep("addToCart", async () => {
     if (existing?.cartItemSn) {
@@ -412,11 +504,24 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     }
     let sensors = {};
     if (bridge) {
-      const mint = await bridge.mint("POST", "/api/cart/addToCart", {
+      let mint = await bridge.mint("POST", "/api/cart/addToCart", {
         body: atcBody,
         contentType: "application/json",
         csrf: session.state.csrfToken,
       });
+      // One settle bump if common.js was not hooked yet (fast settle race).
+      if (!mint.ok) {
+        try {
+          await bridge.page.waitForTimeout(800);
+        } catch {
+          /* ignore */
+        }
+        mint = await bridge.mint("POST", "/api/cart/addToCart", {
+          body: atcBody,
+          contentType: "application/json",
+          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+        });
+      }
       sensors = mint.sensors || {};
       const c = await bridge.cookies();
       if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
@@ -469,8 +574,19 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       title: pdp.title,
       cookies: ctx.jar?.dump?.() ?? {},
       via: "http",
+      atcWallMs: Date.now() - atcT0,
     };
   }
+
+  const atcWallMs = Date.now() - atcT0;
+  steps.push({
+    step: "cart_hold",
+    ok: true,
+    status: 200,
+    ms: atcWallMs,
+    note: `wall→ATC ${atcWallMs}ms fastAtc=${fastAtc} settle=${f5SettleMs}ms (pay window ~30min)`,
+  });
+  ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
 
   // ── Cart detail + qty normalize ────────────────────────────────────────
   let cart = await tStep("cart_detail", async () => {
@@ -545,11 +661,15 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   }
 
   // Optional early stop before checkout POST (default continues to checkoutSn).
-  if (task.bandaiStopAtCart === true) {
+  if (
+    task.bandaiStopAtCart === true &&
+    !(placeOrder && (opts.placeOrderGe || opts.placeOrderGeHttp))
+  ) {
     await closeBridge();
     return {
       ok: true,
       steps,
+      atcWallMs,
       checkoutStage: "cart",
       dryRun: true,
       areaItemNo: pdp.areaItemNo,
@@ -565,12 +685,241 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     };
   }
 
+  // ── Drop-speed placeOrder: SPA Proceed + GE on the SAME F5 bridge browser ─
+  // Avoids a second Chromium login/PDP/ATC (that path was ~5min to issuer).
+  // Skipped when bandaiGeHttpPay — that path uses HTTP cart_checkout + GEPI.
+  if (placeOrder && opts.placeOrderGe === true && !opts.placeOrderGeHttp) {
+    const card = opts.card;
+    if (!bridge) {
+      return {
+        ok: false,
+        steps,
+        failedStep: "f5_bridge",
+        error: "placeOrder GE requires F5 bridge (bandaiF5Bridge)",
+        checkoutStage: "cart",
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartItemSn,
+        via: "http",
+      };
+    }
+    try {
+      const jarDump = ctx.jar?.dump?.() || {};
+      await bridge.syncCookies(jarDump);
+      // Playwright needs Domain=.p-bandai.com — url-scoped sync alone can leave cart SPA logged out.
+      try {
+        await bridge.context.addCookies(
+          Object.entries(jarDump).map(([name, value]) => ({
+            name,
+            value: String(value),
+            domain: ".p-bandai.com",
+            path: "/",
+          })),
+        );
+      } catch {
+        /* ignore */
+      }
+
+      // HTTP already logged in — sync jar into Playwright and go straight to GE cart UI.
+      // Do NOT browser-POST /login again (burns F5, 501s, and violates "HTTP after warm").
+      // Opt-in escape: task.bandaiBridgeRelogin=true
+      if (task.bandaiBridgeRelogin) {
+        await bridge.goto(`${session.base}/login`, { settleMs: 900 });
+        const loginBodyGe = new URLSearchParams({
+          grantType: "password",
+          memberId: String(email || "").trim(),
+          password: String(password || ""),
+          saveLoginId: "false",
+          autoLogin: "false",
+        }).toString();
+        let pageLoginOk = false;
+        let pageLoginStatus = null;
+        let pageLoginNote = "";
+        for (let loginAttempt = 1; loginAttempt <= 2 && !pageLoginOk; loginAttempt++) {
+          try {
+            const mintGe = await bridge.mint("POST", "/login", {
+              body: loginBodyGe,
+              contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+              csrf: session.state.csrfToken || (await bridge.csrfToken()),
+            });
+            const pageLogin = await bridge.page.evaluate(
+              async ({ body, csrf, areaCode, sensors }) => {
+                const headers = {
+                  accept: "application/json, text/plain, */*",
+                  "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                  "x-g1-area-code": areaCode,
+                  "x-requested-with": "XMLHttpRequest",
+                  ...(csrf ? { "x-csrf-token": csrf } : {}),
+                  ...(sensors || {}),
+                };
+                const res = await fetch("/login", {
+                  method: "POST",
+                  headers,
+                  body,
+                  credentials: "include",
+                });
+                const next = res.headers.get("x-csrf-token");
+                if (next) {
+                  window.__bandaiCsrf = next;
+                  if (window.USER_DATA) window.USER_DATA.csrfToken = next;
+                }
+                return { status: res.status, restricted: res.headers.get("x-restricted-type") };
+              },
+              {
+                body: loginBodyGe,
+                csrf: session.state.csrfToken || (await bridge.csrfToken()),
+                areaCode: session.area,
+                sensors: mintGe.sensors || {},
+              },
+            );
+            pageLoginStatus = pageLogin.status;
+            pageLoginOk = pageLogin.status >= 200 && pageLogin.status < 300;
+            pageLoginNote = pageLoginOk
+              ? `bridge page login ok restricted=${pageLogin.restricted || "none"} attempt=${loginAttempt}`
+              : `bridge page login ${pageLogin.status} attempt=${loginAttempt}`;
+            if (!pageLoginOk && loginAttempt < 2) {
+              await bridge.goto(`${session.base}/login`, { settleMs: 1200 });
+            }
+          } catch (e) {
+            pageLoginNote = e?.message || "bridge_login_failed";
+          }
+        }
+        steps.push({
+          step: "bridge_login",
+          ok: pageLoginOk,
+          status: pageLoginStatus,
+          ms: 0,
+          note: pageLoginNote,
+        });
+      } else {
+        steps.push({
+          step: "bridge_cookie_sync",
+          ok: Object.keys(jarDump).length > 0,
+          status: null,
+          ms: 0,
+          note: `HTTP jar → Playwright cookies=${Object.keys(jarDump).length} (no browser re-login)`,
+        });
+      }
+
+      const geOut = await browserBandaiGeFromCart({
+        page: bridge.page,
+        context: bridge.context,
+        base: session.base,
+        card,
+        wait3dsMs: Number(task.wait3dsMs) || 45_000,
+        onProgress: (event, row) => {
+          try {
+            ctx.onProgress?.(event, row?.note || row?.paymentStatus || event, row);
+          } catch {
+            /* ignore */
+          }
+        },
+        meta: {
+          areaItemNo: pdp.areaItemNo,
+          cartSn,
+          cartId,
+          cartItemSn,
+          title: pdp.title,
+        },
+      });
+      if (Array.isArray(geOut.steps)) {
+        for (const s of geOut.steps) steps.push(s);
+      }
+      if (geOut.cookies && ctx.jar?.load) ctx.jar.load(geOut.cookies);
+      await closeBridge();
+      return {
+        ok: Boolean(geOut.ok),
+        steps,
+        timeline: geOut.timeline || [],
+        failedStep: geOut.failedStep || null,
+        error: geOut.ok ? null : geOut.error || geOut.note || null,
+        checkoutStage: geOut.checkoutStage || "tokenize",
+        dryRun: false,
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartId,
+        cartItemSn,
+        checkoutSn: geOut.checkoutSn || null,
+        title: pdp.title,
+        paymentStatus: geOut.paymentStatus,
+        declineSnippet: geOut.declineSnippet || null,
+        reached3ds: geOut.reached3ds ?? null,
+        threeDsUrl: geOut.threeDsUrl || null,
+        payClickCount: geOut.payClickCount,
+        sawAuthWire: geOut.sawAuthWire,
+        chargeReqCount: geOut.chargeReqCount ?? null,
+        blockedChargeReqCount: geOut.blockedChargeReqCount ?? null,
+        geNetTail: geOut.geNetTail ?? null,
+        finalUrl: geOut.finalUrl || `${session.base}/orderdetails`,
+        cookies: geOut.cookies || ctx.jar?.dump?.() || {},
+        note: geOut.note,
+        via: "http+ge",
+        globaleMid: GLOBALE_MID,
+        orderNumber: geOut.orderNumber ?? null,
+        elapsedMs: geOut.elapsedMs,
+      };
+    } catch (e) {
+      await closeBridge();
+      return {
+        ok: false,
+        steps,
+        failedStep: "ge_payment",
+        error: e?.message || String(e),
+        checkoutStage: "tokenize",
+        areaItemNo: pdp.areaItemNo,
+        cartSn,
+        cartItemSn,
+        via: "http+ge",
+      };
+    }
+  }
+
   // ── Cart checkout → checkoutSn (still HTTP; GE iframe separate) ────────
   let preloadSuffix = task.globaleMerchantCartTokenSuffix || null;
+  let preloadSource = preloadSuffix ? "task" : null;
   if (!preloadSuffix && bridge) {
     await bridge.goto(`${session.base}/cart`);
-    const html = await bridge.page.content();
-    preloadSuffix = extractPreloadSuffix(html);
+    try {
+      // SPA may paint before PRELOAD_DATA is hydrated — wait briefly.
+      await bridge.page.waitForFunction(
+        () => {
+          const p = window.PRELOAD_DATA || window.__PRELOAD_DATA__ || {};
+          return Boolean(
+            p.globaleMerchantCartTokenSuffix ||
+              window.globaleMerchantCartTokenSuffix ||
+              document.documentElement.innerHTML.includes("globaleMerchantCartTokenSuffix"),
+          );
+        },
+        { timeout: 12_000 },
+      );
+    } catch {
+      /* fall through to HTML scrape */
+    }
+    try {
+      preloadSuffix = await bridge.page.evaluate(() => {
+        const p = window.PRELOAD_DATA || window.__PRELOAD_DATA__ || {};
+        return (
+          p.globaleMerchantCartTokenSuffix ||
+          window.globaleMerchantCartTokenSuffix ||
+          null
+        );
+      });
+      if (preloadSuffix) preloadSource = "bridge_eval";
+    } catch {
+      /* ignore */
+    }
+    if (!preloadSuffix) {
+      const html = await bridge.page.content();
+      preloadSuffix = extractPreloadSuffix(html);
+      if (preloadSuffix) preloadSource = "bridge_html";
+      if (!preloadSuffix) {
+        try {
+          fs.writeFileSync("/tmp/bandai-cart-preload-miss.html", html.slice(0, 400_000));
+        } catch {
+          /* ignore */
+        }
+      }
+    }
   }
   if (!preloadSuffix) {
     // Guest cart HTML via undici
@@ -588,7 +937,25 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     );
     const html = await readText(nav);
     preloadSuffix = extractPreloadSuffix(html);
+    if (preloadSuffix) preloadSource = "undici_html";
+    if (!preloadSuffix) {
+      try {
+        fs.writeFileSync("/tmp/bandai-cart-preload-miss-undici.html", html.slice(0, 400_000));
+      } catch {
+        /* ignore */
+      }
+    }
   }
+
+  steps.push({
+    step: "cart_preload_suffix",
+    ok: Boolean(preloadSuffix),
+    status: null,
+    ms: 0,
+    note: preloadSuffix
+      ? `suffix ${String(preloadSuffix).slice(0, 24)}… via=${preloadSource}`
+      : `EMPTY via=${preloadSource || "none"} (see /tmp/bandai-cart-preload-miss*.html)`,
+  });
 
   const merchantCartToken = cartId && preloadSuffix
     ? `${cartId}_Checkout_${preloadSuffix}`
@@ -599,6 +966,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   const checkoutBody = {
     merchantCartToken,
     shippingAreaCode: task.shippingAreaCode || session.area,
+    defaultAreaCode: task.defaultAreaCode || session.area,
     items: [{ cartItemSn }],
   };
 
@@ -625,16 +993,145 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       extraHeaders: sensors,
     });
     const checkoutSn = json?.checkoutSn || json?.checkoutSN || null;
+    const errBits = [
+      json?.error,
+      json?.message,
+      json?.detail,
+      json?.errorCode,
+      json?.title,
+    ]
+      .filter(Boolean)
+      .map(String)
+      .join(" | ");
     return {
       ok: status >= 200 && status < 300 && Boolean(checkoutSn),
       status,
       note: checkoutSn
-        ? `checkoutSn ${checkoutSn}`
-        : json?.error || json?.message || `checkout ${status}`,
+        ? `checkoutSn ${checkoutSn} mct=${String(merchantCartToken || "").slice(0, 48)}`
+        : `${errBits || `checkout ${status}`} mctSuffix=${preloadSuffix ? "yes" : "EMPTY"}`.slice(0, 220),
       checkoutSn,
       json,
+      preloadSuffix,
     };
   });
+
+  // ── HTTP GE Pay (no Playwright Pay UI): GetCartToken → hydrate → issuer ─
+  // F5 bridge page kept only to mint iovation #ioBlackBox (snare.js) — not Pay.
+  // GetCartToken needs merchantCartToken (cartId_Checkout_*), not checkoutSn —
+  // continue even when Bandai cart_checkout 500s (stuck open checkout).
+  if (placeOrder && opts.placeOrderGeHttp === true && merchantCartToken) {
+    if (!chk.ok) {
+      steps.push({
+        step: "cart_checkout_soft",
+        ok: false,
+        status: chk.status,
+        ms: 0,
+        note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
+      });
+    }
+    // Fast anti-fraud default: riskHydrate (fresh snare/Forter mint + cookie
+    // merge, then undici pay). Stale noPage blackbox was scoring
+    // PossibleFraudDetected=True. Opt into pure noPage only explicitly.
+    const geNoPage =
+      task.bandaiGeNoPage === true || process.env.BANDAI_GE_NO_PAGE === "1";
+    let geMachineId =
+      task.bandaiGeMachineId || process.env.BANDAI_GE_MACHINE_ID || null;
+    if (geNoPage && !geMachineId) {
+      try {
+        const p = "/tmp/bandai-ge-machineId.txt";
+        if (fs.existsSync(p)) {
+          const raw = fs.readFileSync(p, "utf8").trim();
+          if (raw.length >= 40) geMachineId = raw;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    const riskHydrate =
+      !geNoPage &&
+      task.bandaiGeRiskHydrate !== false &&
+      process.env.BANDAI_GE_RISK_HYDRATE !== "0";
+    const geOut = await runBandaiGeHttpPay({
+      ctx,
+      page: geNoPage ? null : bridge?.page || null,
+      // Force fresh mint when risk-hydrating (ignore stale file/opts mid).
+      machineId: geNoPage ? geMachineId : riskHydrate ? null : geMachineId,
+      riskHydrate,
+      forceFreshMint: riskHydrate,
+      merchantCartToken,
+      checkoutSn: chk.checkoutSn,
+      card: opts.card,
+      area: session.area,
+      customerEmail: email,
+      userAgent: session.state.userAgent,
+      referer: `${session.base}/orderdetails`,
+      stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
+      forceIssuer: task.bandaiGeForceIssuer === true,
+      keepPageAfterIovation: task.bandaiGeKeepPage === true,
+      preferPageIssuer: task.bandaiGePreferPageIssuer === true,
+      scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
+      mergeIovationCookies:
+        riskHydrate || task.bandaiGeMergeIovationCookies === true,
+      iovationSettleMs:
+        Number(task.bandaiGeIovationSettleMs) ||
+        Number(process.env.BANDAI_GE_IOVATION_SETTLE_MS) ||
+        undefined,
+      createTransaction:
+        task.bandaiGeCreateTransaction === false
+          ? false
+          : task.bandaiGeCreateTransaction === true
+            ? true
+            : process.env.BANDAI_GE_CREATE_TRANSACTION === "0"
+              ? false
+              : undefined,
+      issuerMode: task.bandaiGeIssuerMode || process.env.BANDAI_GE_ISSUER_MODE || undefined,
+      onProgress: (event, row) => {
+        try {
+          ctx.onProgress?.(event, row?.note || event, row);
+        } catch {
+          /* ignore */
+        }
+      },
+    });
+    await closeBridge();
+    if (Array.isArray(geOut.steps)) {
+      for (const s of geOut.steps) steps.push(s);
+    }
+    return {
+      ok: Boolean(geOut.ok),
+      steps,
+      timeline: geOut.timeline || [],
+      failedStep: geOut.failedStep || null,
+      error: geOut.ok ? null : geOut.error || geOut.note || null,
+      checkoutStage: geOut.checkoutStage || "tokenize",
+      dryRun: false,
+      areaItemNo: pdp.areaItemNo,
+      cartSn,
+      cartId,
+      cartItemSn,
+      checkoutSn: chk.checkoutSn || null,
+      cartToken: geOut.cartToken || null,
+      title: pdp.title,
+      paymentStatus: geOut.paymentStatus,
+      blockers: geOut.blockers || [],
+      chargeReqCount: geOut.chargeReqCount ?? null,
+      undiciAttempts: geOut.undiciAttempts ?? null,
+      browserIssuerBlocked: geOut.browserIssuerBlocked ?? null,
+      framesNeutralized: geOut.framesNeutralized ?? null,
+      isSameCartToken: geOut.isSameCartToken ?? null,
+      sawAuthWire: geOut.sawAuthWire ?? null,
+      transactionId: geOut.transactionId ?? null,
+      timing: geOut.timing || null,
+      finalUrl: `${session.base}/orderdetails`,
+      cookies: ctx.jar?.dump?.() ?? {},
+      note: geOut.note || null,
+      via: geOut.via || "http-ge",
+      globaleMid: GLOBALE_MID,
+      merchantCartToken,
+      orderNumber: geOut.orderNumber ?? null,
+      elapsedMs: geOut.elapsedMs,
+    };
+  }
 
   await closeBridge();
 
@@ -694,43 +1191,44 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  // Opt-in full Playwright checkout — needed for Global-e card / 3DS UI.
-  if (task.bandaiBrowserCheckout === true) {
+  const taskCard = task.card || null;
+  const envCard =
+    process.env.BANDAI_CARD_NUMBER
+      ? {
+          number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
+          expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
+          expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
+          cvv: String(process.env.BANDAI_CARD_CVV || ""),
+          holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
+        }
+      : null;
+  const card =
+    placeOrder && taskCard?.number
+      ? {
+          number: String(taskCard.number).replace(/\s+/g, ""),
+          expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
+          expYear: String(taskCard.expYear || taskCard.exp_year || "")
+            .replace(/^20/, "")
+            .slice(-2),
+          cvv: String(taskCard.cvv || taskCard.cvc || ""),
+          holder: String(taskCard.holder || taskCard.name || "Cardholder"),
+        }
+      : placeOrder && envCard?.number
+        ? envCard
+        : placeOrder
+          ? {
+              // Lab fallback — issuer decline; never a real PAN in source.
+              number: "4000000000000002",
+              expMonth: "12",
+              expYear: "30",
+              cvv: "999",
+              holder: "DECLINE TEST",
+            }
+          : null;
+
+  // Slow path: full Playwright login→PDP→ATC→GE (labs only).
+  if (task.bandaiBrowserFull === true) {
     const s0 = Date.now();
-    const taskCard = task.card || null;
-    const envCard =
-      process.env.BANDAI_CARD_NUMBER
-        ? {
-            number: String(process.env.BANDAI_CARD_NUMBER).replace(/\s+/g, ""),
-            expMonth: String(process.env.BANDAI_CARD_EXP_MONTH || "").padStart(2, "0"),
-            expYear: String(process.env.BANDAI_CARD_EXP_YEAR || "").replace(/^20/, ""),
-            cvv: String(process.env.BANDAI_CARD_CVV || ""),
-            holder: String(process.env.BANDAI_CARD_HOLDER || "Cardholder"),
-          }
-        : null;
-    const card =
-      placeOrder && taskCard?.number
-        ? {
-            number: String(taskCard.number).replace(/\s+/g, ""),
-            expMonth: String(taskCard.expMonth || taskCard.exp_month || "").padStart(2, "0"),
-            expYear: String(taskCard.expYear || taskCard.exp_year || "")
-              .replace(/^20/, "")
-              .slice(-2),
-            cvv: String(taskCard.cvv || taskCard.cvc || ""),
-            holder: String(taskCard.holder || taskCard.name || "Cardholder"),
-          }
-        : placeOrder && envCard?.number
-          ? envCard
-          : placeOrder
-            ? {
-                // Lab fallback — issuer decline; never a real PAN in source.
-                number: "4000000000000002",
-                expMonth: "12",
-                expYear: "30",
-                cvv: "999",
-                holder: "DECLINE TEST",
-              }
-            : null;
     const out = await browserBandaiCheckout({
       email,
       password,
@@ -743,7 +1241,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-      wait3dsMs: Number(task.wait3dsMs) || 120_000,
+      wait3dsMs: Number(task.wait3dsMs) || 45_000,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -780,6 +1278,35 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       globaleMid: GLOBALE_MID,
       orderNumber: out.orderNumber ?? null,
     };
+  }
+
+  // Pay path after shared HTTP ATC / cart_hold (see resolveBandaiCheckoutPayPath).
+  const payPath = resolveBandaiCheckoutPayPath(task);
+  steps.push({
+    step: "bandai_checkout_mode",
+    ok: true,
+    note: `pay=${payPath.mode} (ATC always HTTP+F5; safe=Playwright GE, fast=HTTP GE)`,
+  });
+
+  if (placeOrder && payPath.placeOrderGeHttp) {
+    return runHttpCheckout(task, ctx, session, tStep, steps, {
+      email,
+      password,
+      productCode,
+      placeOrderGeHttp: true,
+      card,
+    });
+  }
+
+  // Safe: HTTP + F5 through cart, then GE Pay on the bridge page.
+  if (placeOrder && payPath.placeOrderGe) {
+    return runHttpCheckout(task, ctx, session, tStep, steps, {
+      email,
+      password,
+      productCode,
+      placeOrderGe: true,
+      card,
+    });
   }
 
   return runHttpCheckout(task, ctx, session, tStep, steps, {

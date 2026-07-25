@@ -30,6 +30,8 @@ export function isBandaiF5Gated(method, urlOrPath) {
   } catch {
     /* keep */
   }
+  // Strip query/hash so modifyCartItem?cartItemSn=… still matches the allowlist.
+  path = path.split(/[?#]/)[0] || path;
   const m = String(method || "GET").toUpperCase();
   return BANDAI_F5_GATED.some((g) => g.method === m && g.path.test(path));
 }
@@ -112,25 +114,44 @@ export async function createBandaiF5Bridge(opts = {}) {
     proxy: pwProxy || undefined,
     args: ["--disable-blink-features=AutomationControlled"],
   });
+  const recordHarPath =
+    opts.recordHarPath ||
+    process.env.BANDAI_F5_HAR_PATH ||
+    null;
   const context = await browser.newContext({
     locale,
     userAgent,
     viewport: { width: 1280, height: 800 },
+    // SW can bypass page.route and was a suspect for Revolut pairs when
+    // chargeReqCount stayed 1. context.route still helps; blocking SW closes the gap.
+    serviceWorkers: "block",
+    // Optional full HAR for GE dual-rail forensics (flushed on context.close).
+    ...(recordHarPath
+      ? {
+          recordHar: {
+            path: recordHarPath,
+            mode: "full",
+            content: "embed",
+          },
+        }
+      : {}),
   });
   const page = await context.newPage();
   page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
 
   let closed = false;
 
-  async function goto(pathOrUrl) {
+  async function goto(pathOrUrl, gotoOpts = {}) {
     const url = /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
       : pathOrUrl.startsWith(`/${area}/`) || pathOrUrl.startsWith("/_ui/") || pathOrUrl.startsWith("/api/") || pathOrUrl.startsWith("/login")
         ? `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`
         : `${BANDAI_BASE}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
     await page.goto(url, { waitUntil: "domcontentloaded" });
-    // Allow common.js?async to hook XHR/fetch
-    await page.waitForTimeout(2200);
+    // Allow common.js?async to hook XHR/fetch. Cart/GE nav can use a shorter settle.
+    const settle =
+      gotoOpts.settleMs != null ? Number(gotoOpts.settleMs) : 1800;
+    if (settle > 0) await page.waitForTimeout(settle);
     return { url: page.url() };
   }
 

@@ -1,0 +1,231 @@
+#!/usr/bin/env node
+// Single-sticky probe: edge (+ Reese remint) → auth → tags → ATC → cart/data.
+// Env: HYPER_API_KEY, PROXY=…, TRANSPORT=undici|tls-worker
+import fs from "node:fs";
+import { createJar, makeDispatcher, makeRemoteTlsDispatcher, UA } from "../http.js";
+import { resolveEgressIp } from "../ip-resolve.js";
+import { hyperConfigured } from "../antibot.js";
+import { createPcSession } from "../adapters/pokemoncentre-session.js";
+import {
+  warmPokemonCentre,
+  clearIncapsulaReese,
+  postDataDomeTags,
+  solveDatadomeCaptchaUrl,
+  PC_REESE_SCRIPT_PATH,
+} from "../adapters/pokemoncentre-edge.js";
+import {
+  getPublicToken,
+  attemptGuestAtc,
+  getGlobaleM2mToken,
+  cartGuidFromCartData,
+  cortexApiHeaders,
+  PC_API_BASE,
+  PC_CORTEX_SCOPE,
+  parsePdpAvailability,
+} from "../adapters/pokemoncentre-cortex.js";
+
+const OUT = process.env.PC_CAPTURE_DIR || `/tmp/pc-probe-${Date.now()}`;
+const PROXY = String(process.env.PROXY || "").trim();
+const TRANSPORT = String(process.env.TRANSPORT || "undici").toLowerCase();
+const PDP =
+  process.env.PC_PDP ||
+  "https://www.pokemoncenter.com/en-au/product/10-10320-101/pokemon-tcg-mewtwo-and-mew-dna-premium-zip-binder";
+fs.mkdirSync(OUT, { recursive: true });
+
+async function main() {
+  if (!hyperConfigured()) throw new Error("HYPER_API_KEY missing");
+  if (!PROXY) throw new Error("PROXY required");
+  const dispatcher =
+    TRANSPORT === "tls-worker"
+      ? await makeRemoteTlsDispatcher(PROXY)
+      : makeDispatcher(PROXY, { forceUndici: true });
+  const jar = createJar();
+  const ctx = { jar, dispatcher };
+  const session = createPcSession(ctx, { locale: "en-au", userAgent: UA });
+  const log = [];
+  const push = (step, extra = {}) => {
+    log.push({ step, ...extra });
+    console.log(JSON.stringify({ step, ...extra }));
+  };
+
+  try {
+    const ip = await resolveEgressIp(ctx);
+    push("egress", { ip, transport: TRANSPORT });
+
+    let edge = await warmPokemonCentre(session, ctx);
+    push("edge", { ok: edge.ok, note: edge.note, view: edge.datadome?.view });
+    if (!edge.ok && /view=captcha/i.test(edge.note || "") && TRANSPORT === "undici") {
+      push("hint", { note: "view=captcha on undici — retry this sticky with TRANSPORT=tls-worker" });
+    }
+    if (!edge.ok) {
+      fs.writeFileSync(`${OUT}/summary.json`, JSON.stringify({ ok: false, log }, null, 2));
+      return;
+    }
+
+    // Explicit Reese remint before BFF (belt + suspenders)
+    const reese = await clearIncapsulaReese(session, ctx, {
+      pageUrl: `${session.state.base}/`,
+      html: "",
+    });
+    push("reese_pre_auth", { ok: reese.ok, hasToken: reese.hasToken, note: reese.note });
+
+    let auth = await getPublicToken(session, ctx);
+    push("auth", { ok: auth.ok, status: auth.status, note: auth.note, incap: auth.incapBlock });
+    if (!auth.ok) {
+      fs.writeFileSync(`${OUT}/auth.txt`, auth.note || "");
+      fs.writeFileSync(`${OUT}/summary.json`, JSON.stringify({ ok: false, log }, null, 2));
+      return;
+    }
+
+    const tags = await postDataDomeTags(session, ctx, { pageUrl: `${session.state.base}/` });
+    push("tags", { ok: tags.ok, note: tags.note });
+
+    const pdpRes = await session.get(PDP, { headers: { referer: `${session.state.base}/` } });
+    const pdpHtml = await session.readText(pdpRes);
+    fs.writeFileSync(`${OUT}/pdp.html`, pdpHtml.slice(0, 800_000));
+    const avail = parsePdpAvailability(pdpHtml);
+    push("pdp", {
+      status: pdpRes.status,
+      epId: avail.epItemId,
+      availability: avail.product?.availability,
+    });
+
+    // Known wire-proven EP id for binder SKU when PDP is DD-blocked
+    const FALLBACK_EP = "qgqvhlbrgawtcmbtgiyc2mjqge=";
+    const product = avail.product || {
+      code: "10-10320-101",
+      epItemId: FALLBACK_EP,
+      addToCartForm: `/carts/items/pokemon-au/${FALLBACK_EP}/form`,
+    };
+    if (!product.epItemId) product.epItemId = FALLBACK_EP;
+
+    let atc = await attemptGuestAtc(session, {
+      sku: "10-10320-101",
+      qty: 1,
+      product,
+      pageUrl: PDP,
+    });
+    fs.writeFileSync(`${OUT}/atc.json`, JSON.stringify(atc.json || { note: atc.note }, null, 2));
+    push("atc", {
+      ok: atc.ok,
+      status: atc.status,
+      dd: atc.datadomeChallenge,
+      captchaT: atc.captchaUrl ? (atc.captchaUrl.match(/[?&]t=([^&]+)/) || [])[1] : null,
+      note: atc.note,
+    });
+
+    if (atc.datadomeChallenge && atc.captchaUrl && !/[?&]t=bv\b/i.test(atc.captchaUrl)) {
+      const solved = await solveDatadomeCaptchaUrl(session, ctx, atc.captchaUrl, { pageUrl: PDP });
+      push("atc_captcha", { ok: solved.ok, note: solved.note });
+      if (solved.ok) {
+        atc = await attemptGuestAtc(session, {
+          sku: "10-10320-101",
+          qty: 1,
+          product,
+          pageUrl: PDP,
+        });
+        push("atc_retry", { ok: atc.ok, status: atc.status, note: atc.note });
+      }
+    }
+
+    let cartGuid = null;
+    let ge = null;
+    let intlMeta = null;
+    if (atc.ok) {
+      const apiH = cortexApiHeaders({
+        accessToken: session.state.cortexAuth.accessToken,
+        referer: `${session.state.base}/`,
+        userAgent: UA,
+      });
+      const cartRes = await session.get(`${PC_API_BASE}/cart/data?type=full`, {
+        api: true,
+        headers: apiH,
+      });
+      const cartText = await session.readText(cartRes);
+      fs.writeFileSync(`${OUT}/cart-full.json`, cartText.slice(0, 400_000));
+      let cartJson = null;
+      try {
+        cartJson = JSON.parse(cartText);
+      } catch {
+        /* ignore */
+      }
+      cartGuid = cartGuidFromCartData(cartJson);
+      push("cart", {
+        status: cartRes.status,
+        cartGuid,
+        qty: cartJson?.["total-quantity"],
+        keys: cartJson ? Object.keys(cartJson).slice(0, 12) : null,
+      });
+
+      if (cartGuid) {
+        ge = await getGlobaleM2mToken(session, { cartGuid });
+        fs.writeFileSync(`${OUT}/ge-m2m.json`, JSON.stringify(ge.json || { note: ge.note }, null, 2));
+        push("ge_m2m", { ok: ge.ok, status: ge.status, keys: ge.json ? Object.keys(ge.json) : null, note: ge.note });
+
+        let intl = await session.get("https://www.pokemoncenter.com/en-au/intl-checkout", {
+          headers: { referer: `${session.state.base}/`, accept: "text/html,application/xhtml+xml" },
+        });
+        let intlHtml = await session.readText(intl);
+        if (intl.status >= 300 && intl.status < 400) {
+          const loc = intl.headers?.get?.("location");
+          if (loc) {
+            const abs = loc.startsWith("http") ? loc : `https://www.pokemoncenter.com${loc}`;
+            intl = await session.get(abs, { headers: { referer: `${session.state.base}/` } });
+            intlHtml = await session.readText(intl);
+            push("intl_redirect", { to: abs.slice(0, 160) });
+          }
+        }
+        fs.writeFileSync(`${OUT}/intl-checkout.html`, intlHtml.slice(0, 1_200_000));
+        intlMeta = {
+          status: intl.status,
+          bytes: intlHtml.length,
+          mid:
+            (intlHtml.match(/globaleMid["']?\s*[:=]\s*["']?(\d{3,6})/i) ||
+              intlHtml.match(/merchant\/clientsdk\/(\d{3,6})/i) ||
+              [])[1] || null,
+          gem: (intlHtml.match(/(gem-[a-z0-9-]+\.global-e\.com)/i) || [])[1] || null,
+          secure: (intlHtml.match(/(secure-[a-z0-9-]+\.global-e\.com)/i) || [])[1] || null,
+          checkoutV2: (intlHtml.match(/(https?:\/\/[^"'\\s]*Checkout\/v2[^"'\\s]*)/i) || [])[1]?.slice(0, 160) || null,
+          title: (intlHtml.match(/<title>([^<]+)/i) || [])[1] || null,
+        };
+        push("intl", intlMeta);
+      }
+    }
+
+    fs.writeFileSync(
+      `${OUT}/summary.json`,
+      JSON.stringify(
+        {
+          ok: Boolean(atc.ok && cartGuid),
+          transport: TRANSPORT,
+          reesePath: PC_REESE_SCRIPT_PATH,
+          scope: PC_CORTEX_SCOPE,
+          cartGuid,
+          geOk: ge?.ok || false,
+          intl: intlMeta,
+          cookies: Object.keys(jar.dump?.() || {}),
+          log,
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(
+      JSON.stringify({
+        out: OUT,
+        ok: Boolean(atc.ok && cartGuid),
+        ge: ge?.status,
+        mid: intlMeta?.mid,
+        gem: intlMeta?.gem,
+        stage: log.at(-1)?.step,
+      }),
+    );
+  } finally {
+    await dispatcher.close?.();
+  }
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

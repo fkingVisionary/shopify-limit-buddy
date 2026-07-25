@@ -44,6 +44,10 @@ const DEFAULT_SETTINGS = {
   /** Toymate Cloudflare + form captcha (CapSolver). Not used by Kmart. */
   capsolverApiKey: "",
   /** Shared agen OTP — Bandai first; future store agen reuses these. Never commit. */
+  /** SMSPool preferred for Bandai (US/UK numbers). Users paste their own key. */
+  smspoolApiKey: "",
+  smspoolCountry: "GB", // GB | US — AU Bandai accepts both
+  smsProvider: "auto", // auto | smspool | onlinesim
   onlinesimApiKey: "",
   onlinesimMode: "rent", // rent | activation
   onlinesimServiceSlug: "other",

@@ -1,14 +1,26 @@
-// Premium Bandai AU — account generation (email IMAP OTP + OnlineSim SMS).
+// Premium Bandai AU — account generation (email IMAP OTP + SMSPool / OnlineSim SMS).
 // Does not touch Kmart / Toymate paths.
+//
+// SMS: prefer SMSPool (US/UK numbers work on AU Bandai — owner-validated).
+// OnlineSim remains a fallback when no SMSPool key is set.
 
 import { waitForCode } from "../otp/imapInbox.js";
 import {
   createOnlinesimClient,
-  toBandaiPhone1,
+  toBandaiPhone1 as toBandaiPhone1Au,
   normalizeAuMsisdn,
 } from "../otp/onlinesim.js";
+import {
+  createSmspoolClient,
+  toBandaiPhone1 as toBandaiPhone1Intl,
+  SMSPOOL_SERVICE_BANDAI,
+  resolveSmspoolCountry,
+} from "../otp/smspool.js";
 import { validateBandaiPassword, generateBandaiPassword } from "./bandai-password.js";
 import { createBandaiSession, profileFromTask, resolveBandaiArea, bandaiBaseFor } from "./bandai-session.js";
+import { createBandaiF5Bridge } from "./bandai-f5.js";
+
+const CATCHALL_DOMAINS = new Set(["bullposted.com"]);
 
 function uniquifyEmail(email) {
   const raw = String(email || "").trim().toLowerCase();
@@ -24,9 +36,58 @@ function uniquifyEmail(email) {
   return `${local}+${stamp}@${domain}`;
 }
 
+/** Lowercased set of memberIds that must not be registered again. */
+function vaultEmailSet(task) {
+  const raw = task?.vaultEmails || task?.existingEmails || [];
+  const set = new Set();
+  if (Array.isArray(raw)) {
+    for (const e of raw) {
+      const s = String(e || "")
+        .trim()
+        .toLowerCase();
+      if (s) set.add(s);
+    }
+  }
+  return set;
+}
+
+/** Pick a uniquified address that is not already in the vault set. */
+function uniquifyEmailUnused(email, taken, maxTries = 8) {
+  const blocked = taken instanceof Set ? taken : new Set();
+  for (let i = 0; i < maxTries; i++) {
+    const next = uniquifyEmail(email);
+    if (!blocked.has(next)) return next;
+  }
+  return uniquifyEmail(email);
+}
+
 function otpConfigFromTask(task) {
   const o = task?.otp || task?.bandaiOtp || {};
+  const smsProvider = String(
+    o.smsProvider || task?.smsProvider || process.env.BANDAI_SMS_PROVIDER || "auto",
+  )
+    .trim()
+    .toLowerCase();
   return {
+    smsProvider,
+    smspoolApiKey: String(
+      o.smspoolApiKey || task?.smspoolApiKey || process.env.SMSPOOL_API_KEY || "",
+    ).trim(),
+    smspoolCountry: String(
+      o.smspoolCountry || task?.smspoolCountry || process.env.SMSPOOL_COUNTRY || "GB",
+    ).trim(),
+    smspoolCountries: Array.isArray(o.smspoolCountries || task?.smspoolCountries)
+      ? o.smspoolCountries || task.smspoolCountries
+      : null,
+    smspoolService: Number(
+      o.smspoolService || task?.smspoolService || SMSPOOL_SERVICE_BANDAI,
+    ),
+    smspoolMaxPrice:
+      o.smspoolMaxPrice != null
+        ? Number(o.smspoolMaxPrice)
+        : task?.smspoolMaxPrice != null
+          ? Number(task.smspoolMaxPrice)
+          : null,
     onlinesimApiKey: String(o.onlinesimApiKey || task?.onlinesimApiKey || "").trim(),
     onlinesimMode: String(o.onlinesimMode || task?.onlinesimMode || "rent").toLowerCase(),
     onlinesimServiceSlug: String(o.onlinesimServiceSlug || task?.onlinesimServiceSlug || "other"),
@@ -44,6 +105,26 @@ function adultDob() {
   return { dobYear: 1995, dobMonth: 6, dobDay: 15 };
 }
 
+function resolveSmsProvider(otp) {
+  const pref = otp.smsProvider || "auto";
+  if (pref === "smspool") return otp.smspoolApiKey ? "smspool" : null;
+  if (pref === "onlinesim") return otp.onlinesimApiKey ? "onlinesim" : null;
+  // auto
+  if (otp.smspoolApiKey) return "smspool";
+  if (otp.onlinesimApiKey) return "onlinesim";
+  return null;
+}
+
+function smspoolCountryQueue(otp) {
+  if (Array.isArray(otp.smspoolCountries) && otp.smspoolCountries.length) {
+    return otp.smspoolCountries.map((c) => resolveSmspoolCountry(c).short);
+  }
+  const primary = resolveSmspoolCountry(otp.smspoolCountry).short;
+  // Owner tip: US or UK work for AU Bandai — try configured first, then the other.
+  const fallback = primary === "US" ? "GB" : "US";
+  return [primary, fallback];
+}
+
 /**
  * Full AU signup → login → shipping → vault-ready account.
  *
@@ -58,23 +139,61 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   const profile = profileFromTask({ ...task, bandaiArea: area });
   const otp = otpConfigFromTask(task);
   const session = createBandaiSession(ctx, { area });
-  const tStep = opts.tStep || defaultStep(steps, ctx);
+  // Adapter makeStep rethrows fetch failures — wrap so agen can fail soft and keep going/retry.
+  const rawStep = opts.tStep || defaultStep(steps, ctx);
+  const tStep = async (name, fn) => {
+    try {
+      return await rawStep(name, fn);
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || String(e),
+      };
+    }
+  };
 
-  if (!otp.onlinesimApiKey) {
-    return fail("otp_config", "OnlineSim API key missing — paste in Desktop Settings");
+  const provider = resolveSmsProvider(otp);
+  if (!provider) {
+    return fail(
+      "otp_config",
+      "SMS API key missing — paste SMSPool (preferred) or OnlineSim key in Desktop Settings",
+    );
   }
   if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
     return fail("otp_config", "IMAP settings incomplete — host/user/app password required");
   }
 
-  // Email for Bandai memberId: prefer IMAP mailbox (receives OTP), allow uniquify when pool.
-  const allowUniquify = task?.uniquifyEmail === true || task?.bandaiUniquifyEmail === true;
-  let email = String(otp.imapUser || profile.email || "").trim().toLowerCase();
-  if (allowUniquify && profile.email) {
-    email = uniquifyEmail(profile.email);
+  // Bandai memberId email vs IMAP login:
+  // - Hide My Email / catchall: profile.email (or task.signupEmail) is the public address;
+  //   imapUser is the inbox that receives forwards (e.g. jimposted@icloud.com).
+  // - Simple case: memberId = imapUser when no separate signup email is set.
+  const signupEmail = String(
+    task?.signupEmail || profile.email || otp.imapUser || "",
+  )
+    .trim()
+    .toLowerCase();
+  const emailDomain = signupEmail.split("@")[1]?.toLowerCase();
+  const isHideMyEmail =
+    /@icloud\.com$/i.test(signupEmail) &&
+    signupEmail !== String(otp.imapUser || "").trim().toLowerCase();
+  const allowUniquify =
+    !isHideMyEmail &&
+    (task?.uniquifyEmail === true ||
+      task?.bandaiUniquifyEmail === true ||
+      (emailDomain && CATCHALL_DOMAINS.has(emailDomain)));
+  const takenEmails = vaultEmailSet(task);
+  let email = signupEmail;
+  if (allowUniquify && email) {
+    email = uniquifyEmailUnused(email, takenEmails);
+  } else if (email && takenEmails.has(email)) {
+    return fail(
+      "email_already_in_vault",
+      `Bandai account already registered/vaulted for ${email} — use checkout or enable uniquify (+tag) on a catchall domain`,
+    );
   }
   if (!email || !email.includes("@")) {
-    return fail("otp_config", "imapUser / email required for Bandai memberId");
+    return fail("otp_config", "signup email / imapUser required for Bandai memberId");
   }
 
   const password =
@@ -85,61 +204,95 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("password_rules", `Password fails Bandai rules: ${pwCheck.errors.join(",")}`);
   }
 
-  const onlinesim = createOnlinesimClient({ apikey: otp.onlinesimApiKey });
+  const sms =
+    provider === "smspool"
+      ? createSmspoolClient({ apikey: otp.smspoolApiKey })
+      : createOnlinesimClient({ apikey: otp.onlinesimApiKey });
 
-  await tStep("onlinesim_balance", async () => {
-    const bal = await onlinesim.getBalance();
+  await tStep("sms_balance", async () => {
+    const bal = await sms.getBalance();
     if (!bal.ok) {
       return { ok: false, status: bal.status, note: bal.error || "balance_failed" };
     }
-    return { ok: true, status: bal.status, note: `balance ${bal.balance}` };
+    return {
+      ok: true,
+      status: bal.status,
+      note: `${provider} balance ${bal.balance}`,
+    };
   });
 
-  const warm = await tStep("warm", async () => session.warm());
+  const warm = await tStep("warm", async () => {
+    try {
+      return await session.warm();
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || "warm_fetch_failed",
+      };
+    }
+  });
   if (!warm.ok) {
     return fail("warm", warm.note || "warm failed", steps);
   }
 
   // ── Email OTP ──────────────────────────────────────────────────────────
+  // If Bandai says already registered and uniquify is on, mint a fresh +tag and retry once.
   const emailSince = new Date();
-  const emailAuth = await tStep("email_auth", async () => {
-    const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/auth", {
-      body: { email, agreeAgeTerms: true },
-      referer: `${base}/register`,
-    });
-    const authSn = json?.authSn || json?.data?.authSn || null;
-    const detail = json?.detail || json?.message || json?.error || null;
-    if (/already|exist|registered|duplicat/i.test(String(detail || "")) || status === 409) {
-      return { ok: false, status, note: "email_already_registered", authSn, json };
+  let emailAuth = null;
+  for (let attempt = 0; attempt < (allowUniquify ? 3 : 1); attempt++) {
+    if (attempt > 0) {
+      takenEmails.add(email);
+      email = uniquifyEmailUnused(signupEmail, takenEmails);
     }
-    return {
-      ok: status >= 200 && status < 300 && Boolean(authSn),
-      status,
-      note: authSn ? `authSn ${String(authSn).slice(0, 8)}…` : String(detail || status),
-      authSn,
-      json,
-    };
-  });
+    emailAuth = await tStep(attempt === 0 ? "email_auth" : `email_auth_retry_${attempt}`, async () => {
+      const { res, json, status } = await session.apiJson("POST", "/api/signUp/email/auth", {
+        body: { email, agreeAgeTerms: true },
+        referer: `${base}/register`,
+      });
+      const authSn = json?.authSn || json?.data?.authSn || null;
+      const detail = json?.detail || json?.message || json?.error || null;
+      if (/already|exist|registered|duplicat/i.test(String(detail || "")) || status === 409) {
+        return { ok: false, status, note: "email_already_registered", authSn, json };
+      }
+      return {
+        ok: status >= 200 && status < 300 && Boolean(authSn),
+        status,
+        note: authSn ? `authSn ${String(authSn).slice(0, 8)}…` : String(detail || status),
+        authSn,
+        json,
+      };
+    });
+    if (emailAuth.ok) break;
+    if (emailAuth.note !== "email_already_registered" || !allowUniquify) break;
+  }
 
   if (!emailAuth.ok) {
     return {
       ok: false,
       accountGen: true,
       failedStep: "email_auth",
-      error: emailAuth.note || "email_auth_failed",
+      error:
+        emailAuth.note === "email_already_registered"
+          ? `email_already_registered (${email}) — already on Bandai; pick another alias or use vault checkout`
+          : emailAuth.note || "email_auth_failed",
       steps,
       checkoutStage: "agen",
+      // No password — desktop must not vault this as a login.
       account: { email, status: "burned" },
     };
   }
 
   const emailCode = await tStep("email_otp_imap", async () => {
+    // Shared inbox / Hide My Email: bind OTP to this task's signup alias (To:),
+    // not the newest Bandai mail for a different alias in the same mailbox.
     const got = await waitForCode({
       host: otp.imapHost,
       port: otp.imapPort,
       user: otp.imapUser,
       appPassword: otp.imapAppPassword,
       mailbox: otp.imapMailbox,
+      to: email,
       since: emailSince,
       timeoutMs: Number(task.emailOtpTimeoutMs) || 180_000,
       regex: /\b(\d{6})\b/,
@@ -147,7 +300,13 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     if (!got.ok) {
       return { ok: false, status: null, note: got.error || "imap_failed", detail: got.detail };
     }
-    return { ok: true, status: null, note: "code received", code: got.code };
+    return {
+      ok: true,
+      status: null,
+      note: `code for ${email}`,
+      code: got.code,
+      to: got.to || email,
+    };
   });
 
   if (!emailCode.ok) {
@@ -171,12 +330,42 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     return fail("email_validate", emailValidate.note, steps);
   }
 
-  // ── Phone (OnlineSim) ──────────────────────────────────────────────────
+  // ── Phone (SMSPool US/UK or OnlineSim AU) ───────────────────────────────
   let phoneAcq = null;
   let phone1 = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const countryQueue =
+    provider === "smspool" ? smspoolCountryQueue(otp) : [String(otp.onlinesimCountry || 61)];
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const countryPick = countryQueue[attempt % countryQueue.length];
     phoneAcq = await tStep(attempt === 0 ? "sms_acquire" : `sms_acquire_retry_${attempt}`, async () => {
-      const got = await onlinesim.acquireNumber({
+      if (provider === "smspool") {
+        // Default soft cap keeps cheap UK/US Bandai pools (~$0.04–$0.15); override via smspoolMaxPrice.
+        const maxPrice =
+          otp.smspoolMaxPrice != null && !Number.isNaN(otp.smspoolMaxPrice)
+            ? otp.smspoolMaxPrice
+            : 0.25;
+        const got = await sms.acquireNumber({
+          country: countryPick,
+          service: otp.smspoolService,
+          maxPrice,
+        });
+        if (!got.ok) {
+          return { ok: false, status: null, note: got.error || "acquire_failed" };
+        }
+        return {
+          ok: true,
+          status: null,
+          note: `smspool ${got.country} …${String(got.number).slice(-4)}`,
+          tzid: got.orderId,
+          orderId: got.orderId,
+          number: got.number,
+          mode: "smspool",
+          country: got.country,
+          phone1: got.phone1,
+        };
+      }
+      const got = await sms.acquireNumber({
         mode: otp.onlinesimMode,
         country: otp.onlinesimCountry,
         service: otp.onlinesimServiceSlug,
@@ -191,18 +380,23 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         tzid: got.tzid,
         number: got.number,
         mode: got.mode,
+        country: "AU",
+        phone1: toBandaiPhone1Au(got.number),
       };
     });
     if (!phoneAcq.ok) {
-      if (/LOW_BALANCE|WRONG_KEY/i.test(String(phoneAcq.note))) {
+      if (/LOW_BALANCE|WRONG_KEY|balance|invalid.?key/i.test(String(phoneAcq.note))) {
         return fail("sms_acquire", phoneAcq.note, steps);
       }
       continue;
     }
-    phone1 = toBandaiPhone1(phoneAcq.number);
+    phone1 =
+      phoneAcq.phone1 ||
+      (provider === "smspool"
+        ? toBandaiPhone1Intl(phoneAcq.number, phoneAcq.country || countryPick)
+        : toBandaiPhone1Au(phoneAcq.number));
 
     const exists = await tStep("phone_unique", async () => {
-      // Research path is `api/phoneNo` (sometimes without leading slash in JS)
       const { status, json } = await session.apiJson("POST", "/api/phoneNo", {
         body: phone1,
         referer: `${base}/register/memberregistration`,
@@ -219,35 +413,49 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
 
     if (exists.ok) break;
 
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     phoneAcq = null;
     phone1 = null;
   }
 
   if (!phoneAcq?.ok || !phone1) {
-    return fail("phone_unique", "Could not acquire unique AU phone", steps);
+    return fail("phone_unique", "Could not acquire unique phone number", steps);
   }
 
-  // Terms
-  const terms = await tStep("terms", async () => {
-    const { status, json } = await session.apiJson("GET", "/api/terms/termsofuse", {
-      referer: `${base}/register/memberregistration`,
+  // Terms (retry — proxy flakes here waste an already-purchased SMS number)
+  let terms = null;
+  for (let ti = 0; ti < 3; ti++) {
+    terms = await tStep(ti === 0 ? "terms" : `terms_retry_${ti}`, async () => {
+      try {
+        const { status, json } = await session.apiJson("GET", "/api/terms/termsofuse", {
+          referer: `${base}/register/memberregistration`,
+        });
+        const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
+        const termsCode = json?.termsCode || "termsofuse";
+        // Storefront setTermsAgree uses areaCode from terms payload (AU uppercase).
+        const areaCode = String(json?.areaCode || "AU").toUpperCase();
+        return {
+          ok: status >= 200 && status < 300,
+          status,
+          note: `${termsCode} v${version}`,
+          termsAgreeList: [
+            { termsCode, version: String(version), areaCode, agree: true },
+          ],
+          json,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          status: null,
+          note: e?.cause?.message || e?.message || "terms_fetch_failed",
+        };
+      }
     });
-    const version = json?.termsVersion || json?.version || json?.data?.termsVersion || "1.7";
-    const termsCode = json?.termsCode || "termsofuse";
-    const areaCode = json?.areaCode || "au";
-    return {
-      ok: status >= 200 && status < 300,
-      status,
-      note: `${termsCode} v${version}`,
-      termsAgreeList: [
-        { termsCode, version: String(version), areaCode, agree: true },
-      ],
-      json,
-    };
-  });
+    if (terms.ok) break;
+    await new Promise((r) => setTimeout(r, 800 * (ti + 1)));
+  }
   if (!terms.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("terms", terms.note, steps);
   }
 
@@ -272,13 +480,14 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   });
 
   if (!smsAuth.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_auth", smsAuth.note, steps);
   }
 
   const smsCode = await tStep("sms_otp", async () => {
-    const got = await onlinesim.waitForSms({
-      tzid: phoneAcq.tzid,
+    const got = await sms.waitForSms({
+      tzid: phoneAcq.tzid || phoneAcq.orderId,
+      orderId: phoneAcq.orderId || phoneAcq.tzid,
       mode: phoneAcq.mode,
       timeoutMs: Number(task.smsOtpTimeoutMs) || 180_000,
       regex: /\b(\d{4,8})\b/,
@@ -290,7 +499,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
   });
 
   if (!smsCode.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_otp", smsCode.note, steps);
   }
 
@@ -299,36 +508,49 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       body: { authCode: smsCode.code, authSn: smsAuth.authSn },
       referer: `${base}/sms/auth`,
     });
+    // Storefront: setSmsAuth(validateResponse) — keep authSn/authResultCode exactly.
+    const raw = json && typeof json === "object" ? json : {};
+    const authSn = raw.authSn ?? raw.data?.authSn ?? smsAuth.authSn;
     const authResultCode =
-      json?.authResultCode ||
-      json?.smsAuthResult?.authResultCode ||
-      json?.data?.authResultCode ||
-      json?.resultCode ||
-      "OK";
-    const authSn = json?.authSn || smsAuth.authSn;
+      raw.authResultCode ??
+      raw.data?.authResultCode ??
+      raw.resultCode ??
+      raw.smsAuthResult?.authResultCode;
+    const smsAuthInfo = {
+      authSn: typeof authSn === "string" && /^\d+$/.test(authSn) ? Number(authSn) : authSn,
+      ...(authResultCode != null ? { authResultCode } : {}),
+    };
     return {
-      ok: status >= 200 && status < 300,
+      ok: status >= 200 && status < 300 && authSn != null,
       status,
-      note: `sms validated`,
-      smsAuthInfo: { authSn, authResultCode },
+      note: `sms validated authResultCode=${authResultCode ?? "∅"}`,
+      smsAuthInfo,
       json,
     };
   });
 
   if (!smsValidate.ok) {
-    await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+    await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
     return fail("sms_validate", smsValidate.note, steps);
   }
 
-  await onlinesim.release(phoneAcq.tzid, { mode: phoneAcq.mode }).catch(() => {});
+  await sms.release(phoneAcq.tzid || phoneAcq.orderId, { mode: phoneAcq.mode }).catch(() => {});
 
   const dob = adultDob();
+  // AU homeAddress from /api/address/homeAddress: useState=false → area only (AU/AU), no state.
   const homeAddress = {
-    areaCode: area,
-    homeAddressArea: profile.province || "NSW",
-    homeAddressDetail: profile.city || "Sydney",
+    areaCode: "AU",
+    homeAddressArea: "AU",
   };
+  // Storefront signup does not collect postal address — leave empty like the Pinia default.
   const address = {
+    countryCode: "",
+    zipCode: "",
+    address1: "",
+    address2: "",
+  };
+  // Shipping vault later (login) still uses a real AU address.
+  const shippingAddress = {
     countryCode: "AU",
     zipCode: String(profile.zip || "2000").slice(0, 4),
     address1: profile.address1 || "1 George Street",
@@ -338,6 +560,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     address5: profile.province || "NSW",
   };
 
+  const emailAuthInfo = emailAuth.json || emailValidate.json || null;
   const signUpData = {
     memberId: email,
     memberPassword: password,
@@ -346,14 +569,19 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       name1: profile.first_name || "Alex",
       name2: profile.last_name || "Buyer",
     },
-    phone1,
+    phone1: {
+      countryNo: phone1.countryNo,
+      phoneNo: phone1.phoneNo,
+    },
     address,
     homeAddress,
     gender: task.gender || "NotSelected",
-    dobYear: dob.dobYear,
-    dobMonth: dob.dobMonth,
-    dobDay: dob.dobDay,
+    // UI selects bind strings
+    dobYear: String(dob.dobYear),
+    dobMonth: String(Number(dob.dobMonth)),
+    dobDay: String(Number(dob.dobDay)),
     multiAuth: true,
+    agreeAgeTerms: true,
     marketingConsent: {
       marketingPreference1: false,
       marketingPreference2: false,
@@ -362,13 +590,47 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     termsAgreeList: terms.termsAgreeList,
     smsAuthInfo: smsValidate.smsAuthInfo,
   };
+  // Pinia keeps email authInfo on signUpData after setEmailAuth
+  if (emailAuthInfo && (emailAuthInfo.authSn != null || emailAuthInfo.authResultCode != null)) {
+    signUpData.authInfo = {
+      authSn:
+        typeof emailAuthInfo.authSn === "string" && /^\d+$/.test(emailAuthInfo.authSn)
+          ? Number(emailAuthInfo.authSn)
+          : emailAuthInfo.authSn,
+      authResultCode: emailAuthInfo.authResultCode ?? emailValidate.json?.authResultCode,
+    };
+  }
 
   const registered = await tStep("registerVerification", async () => {
     const { status, json } = await session.apiJson("POST", "/api/signUp/registerVerification", {
       body: signUpData,
       referer: `${base}/register/confirm`,
     });
-    const err = json?.detail || json?.errorCode || json?.message || null;
+    try {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(
+        "/tmp/bandai-agen-register-debug.json",
+        JSON.stringify(
+          {
+            status,
+            request: { ...signUpData, memberPassword: "***" },
+            response: json,
+          },
+          null,
+          2,
+        ),
+      );
+    } catch {
+      /* ignore */
+    }
+    const err =
+      json?.detail ||
+      json?.title ||
+      json?.error ||
+      json?.errorCode ||
+      json?.message ||
+      (json?.errors ? JSON.stringify(json.errors).slice(0, 240) : null) ||
+      (json?.invalidParams ? JSON.stringify(json.invalidParams).slice(0, 240) : null);
     return {
       ok: status >= 200 && status < 300,
       status,
@@ -389,21 +651,88 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         email,
         password,
         phone: phone1.phoneNo,
-        status: "banned",
+        status: "register_failed",
       },
     };
   }
 
-  // Auto-login
-  const login = await tStep("login", async () => session.loginPassword(email, password));
+  // Auto-login via F5 sensor bridge (bare undici /login SoftBlocks 501 — same as checkout).
+  // registerVerification already created the account; login proves vault + shipping.
+  const wantF5Login = task.bandaiF5Bridge !== false && task.bandaiAgenSkipF5Login !== true;
+  let bridge = null;
+  const login = await tStep("login", async () => {
+    try {
+      if (wantF5Login && (task.proxy || ctx.proxy)) {
+        bridge = await createBandaiF5Bridge({
+          proxy: task.proxy || ctx.proxy || null,
+          area,
+          timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+        });
+        await bridge.goto(`${base}/login`);
+        const csrf = await bridge.csrfToken();
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+        if (csrf) session.state.csrfToken = csrf;
+
+        const loginBody = new URLSearchParams({
+          grantType: "password",
+          memberId: email,
+          password,
+          saveLoginId: "false",
+          autoLogin: "false",
+        }).toString();
+        const mint = await bridge.mint("POST", "/login", {
+          body: loginBody,
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          csrf: session.state.csrfToken || csrf,
+        });
+        const sensors = mint.sensors || {};
+        const jarCookies = await bridge.cookies();
+        if (jarCookies && ctx.jar?.load) {
+          ctx.jar.load({ ...ctx.jar.dump?.(), ...jarCookies });
+        }
+        if (!mint.ok) {
+          return { ok: false, status: null, note: `sensor mint failed: ${mint.note}` };
+        }
+        const out = await session.loginPassword(email, password, { extraHeaders: sensors });
+        if (ctx.jar?.dump) await bridge.syncCookies(ctx.jar.dump());
+        return {
+          ...out,
+          note: out.ok
+            ? `login ok via=f5 sensors=${Object.keys(sensors).length}`
+            : out.note || `login ${out.status}`,
+        };
+      }
+      const out = await session.loginPassword(email, password);
+      return {
+        ...out,
+        note: out.ok ? "login ok via=http (no f5)" : out.note || `login ${out.status}`,
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: e?.cause?.message || e?.message || "login_fetch_failed",
+      };
+    } finally {
+      try {
+        await bridge?.close?.();
+      } catch {
+        /* ignore */
+      }
+      bridge = null;
+    }
+  });
   let vaultStatus = "ready";
   if (!login.ok) {
     if (/SMSVerification/i.test(String(login.restrictedType || ""))) {
       vaultStatus = "needs_sms";
     } else if (/Terms/i.test(String(login.restrictedType || ""))) {
-      vaultStatus = "needs_sms"; // treat terms as not-ready
+      vaultStatus = "needs_terms";
+    } else if (Number(login.status) === 501) {
+      vaultStatus = "created"; // account exists; SoftBlock without usable F5 path
     } else {
-      vaultStatus = "needs_sms";
+      vaultStatus = "created";
     }
   }
 
@@ -414,7 +743,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
       const body = {
         name: { name1: profile.first_name || "Alex", name2: profile.last_name || "Buyer" },
         phone1,
-        address,
+        address: shippingAddress,
         areaCode: String(area || "au").toUpperCase(),
       };
       const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
@@ -429,7 +758,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
         shipping: body,
       };
     });
-    shipping = ship.shipping || address;
+    shipping = ship.shipping || shippingAddress;
     if (!ship.ok) {
       // Still vault as ready if login cleared — shipping can be added later
       vaultStatus = vaultStatus === "ready" ? "ready" : vaultStatus;
@@ -440,15 +769,17 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     email,
     password,
     phone: phone1.phoneNo,
-    phoneCountry: "+61",
+    phoneCountry: phone1.countryNo || "AU",
+    smsProvider: provider,
     status: vaultStatus,
-    shipping: shipping || address,
+    shipping: shipping || shippingAddress,
     storeId: "bandai",
     createdAt: Date.now(),
   };
 
   return {
-    ok: vaultStatus === "ready",
+    // registerVerification is the agen win — login can SoftBlock (501) on some exits
+    ok: true,
     accountGen: true,
     account,
     steps,
@@ -459,7 +790,7 @@ export async function createBandaiAccount(task, ctx, opts = {}) {
     note:
       vaultStatus === "ready"
         ? `Vault ready: ${email}`
-        : `Account created but status=${vaultStatus} (${login.restrictedType || login.note})`,
+        : `Account created (${email}) status=${vaultStatus} — login: ${login.restrictedType || login.note || login.status}`,
   };
 }
 
@@ -504,5 +835,5 @@ function fail(step, error, steps = []) {
   };
 }
 
-export { uniquifyEmail, otpConfigFromTask, normalizeAuMsisdn };
+export { uniquifyEmail, uniquifyEmailUnused, otpConfigFromTask, normalizeAuMsisdn };
 export default { createBandaiAccount };

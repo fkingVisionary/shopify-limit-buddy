@@ -1,8 +1,8 @@
 # Pokémon Centre (TPCI) — Module Research
 
-_Date: 2026-07-22 (GE lessons refresh after Bandai)_  
-_Status: research only — no adapter code yet_  
-_Priority: **high yield / high difficulty** — Hyper can cover **Incapsula + DataDome**, but **hCaptcha + Global-e + crowded bot scene** make this Phase-2+ after Bandai._  
+_Date: 2026-07-22 (adapter scaffold)_  
+_Status: **adapter scaffolded** — Incapsula/DD in `antibot.js` + `adapters/pokemoncentre*.js` + desktop store; Cortex ATC / GE mid still need AU ISP HAR_  
+_Priority: **high yield / high difficulty** — Hyper covers **Incapsula + DataDome**; **hCaptcha** via CapSolver; **Global-e** reuses Bandai playbook (merchant mid TBD)._  
 _GE update: Bandai AU (mid 1925) reached issuer wire proof 2026-07-22 — fold those patterns into P4 below._
 
 ### Canonical AU storefront
@@ -82,13 +82,47 @@ Challenge shape:
 <iframe id="main-iframe" src="/_Incapsula_Resource?SWUDNSAI=31&…"></iframe>
 ```
 
-### 3.2 Known layered checks (public + bot docs)
+### 3.2 ISP capture (2026-07-22) — static `45.42.47.34`
+
+Playwright HAR via sticky ISP (see `executor/har/pokemoncentre/`).
+
+| Signal | Observation |
+|---|---|
+| Egress | ✅ `45.42.47.34` |
+| Reese script | `/vice-come-Soldenyson-it-non-Banquoh-Chare-Hart-C` (confirmed) |
+| Reese POST | `POST …?d=www.pokemoncenter.com` `text/plain` → `{"token":"3:…"}` → cookie `reese84` **minted in browser** |
+| Incapsula site id | **2682446** (`visid_incap_2682446`, `incap_ses_*_2682446`) |
+| DataDome | Slider block with **`t:'bv'`** after Reese — `rt:'c'`, `hsh:'5B45875B653A484CC79E57036CE9FC'`, `s:9817`, `ct.captcha-delivery.com/c.js` ([Hyper: hard IP block on slider `t=bv`](https://docs.hypersolutions.co/datadome/getting-started.md)) |
+| Cortex / GE | Not reached on this exit |
+| CONNECT flakes | Seen after bursts — classify with §3.4; do not spray proxies or assume “burnt exit” from a single connection error |
+
+**Implication:** On that Chromium HAR, Reese worked and DataDome returned a Hyper-documented **slider hard block** (`t=bv`) — rotate sticky for *that* signal only. Reese alone is never enough. Prefer Hyper handlers / correct TLS+header order before churning exits. Artifacts: `har/pokemoncentre/README.md`.
+
+### 3.3 Known layered checks (public + bot docs)
 - Incapsula clear → browse
 - DataDome interstitial/slider on protected XHR / PDP under suspicion
 - hCaptcha when Imperva / drop protection escalates
 - Queue when traffic spikes (session tied to IP)
 
 **Module implication:** sticky residential/ISP per task; Hyper Reese84/UTMVC + DataDome slider/interstitial; **separate hCaptcha harvest** (browser/desktop) — Hyper does not solve hCaptcha.
+
+### 3.4 Failure triage (Hyper Solutions — do not over-blame proxies)
+
+Connection errors, 403s, and challenge loops are **easy to mislabel as proxy issues**. Classify against Hyper docs first:
+
+| Signal | Meaning (Hyper) | Action |
+|---|---|---|
+| Interstitial POST → `{ cookie, view: "redirect", url }` | **Solved** ([getting started](https://docs.hypersolutions.co/datadome/getting-started.md)) | Parse `datadome=VALUE` only; retry protected URL |
+| Interstitial → `view: "captcha"` (not `redirect`) | **Not solved** — usually TLS / header-order / cookie-jar mismatch, not automatic “dead proxy” | Fix client per [header order](https://docs.hypersolutions.co/request-based-basics/header-order.md) + [TLS fingerprinting](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md); prefer Hyper Playwright `DataDomeHandler` |
+| Slider block page with `t: "bv"` / SDK `isIpBanned` | **Hard IP block** — “solving the challenge will not have any effect” ([slider warning](https://docs.hypersolutions.co/datadome/getting-started.md)) | Rotate sticky session |
+| Escalated captcha URL containing `t=bv` | Treat as Hyper hard-block hint **after** confirming it is a slider/captcha path, not an interstitial parse bug | Rotate only if implementation already matches Hyper success shape |
+| Tags `ch` then `le` | Trust telemetry — not a block page ([tags](https://docs.hypersolutions.co/datadome/tags.md)) | POST `/js`, update `datadome` from JSON cookie |
+| CONNECT timeout / `net::ERR_*` / undici socket errors | Often handshake / TLS / proxy *path* flake | Retry once on same sticky; check TLS client profile — **do not** condemn the whole pool from one error |
+| Cookie field `datadome=VALUE; Max-Age=…` stored whole | Implementation bug (we hit this) | Strip to VALUE only (`parseDatadomeSetCookie`) |
+| Hyper Playwright `InvalidApiResponseError: invalid scriptUrl` on Reese POST | **SDK arg-order bug** in `hyper-sdk-playwright@1.0.0-beta.9` vs `hyper-sdk-js@2.12` (`Reese84Input` script/scriptUrl/pow swapped) | Patch handler call order (see `pokemoncentre-hyper-pw-capture.mjs`) — not a proxy issue |
+| Interstitial `view=captcha` after undici Reese success | Client TLS/header fingerprint vs browser | Prefer Hyper PW handlers (with Reese patch) / tls-client header order before rotating exits |
+
+**Rule of thumb:** bank-style proof for antibot is Hyper’s documented success shapes (`view: "redirect"`, slider check cookie). Proxy rotation is a last resort for documented `t=bv` hard blocks — not the default explanation for every failure.
 
 **Transport lesson (Bandai):** keep **catalog/cart HTTP-first** once edge cookies are solved. Do **not** default a full Playwright checkout ladder for Cortex ATC. Browser is for (a) edge solve assist if Hyper stalls, (b) hCaptcha, (c) Global-e pay UI.
 
@@ -137,30 +171,23 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 | Lesson | What happened on Bandai | PC plan implication |
 |---|---|---|
-| **HTTP through handoff, browser for Pay** | undici + F5 sensor bridge → `checkoutSn`; GE card/Pay stayed in Playwright | Cortex ATC + `/intl-checkout` handoff = HTTP once Incapsula/DD clear. **GE Pay UI = browser** (or later shared `ge-checkout` helper). |
-| **SPA boot > raw checkout id** | API `checkoutSn` alone often left orderdetails **without** payment iframe; UI **PROCEED TO CHECKOUT** booted GEM | Drive PC through the real **`/intl-checkout`** (or equivalent CTA), not only a Cortex order id. |
-| **Wait for Checkout/v2, not prefetcher** | Prefetcher iframe ≠ ready; need `webservices.global-e.com/Checkout/v2/…` and/or `CreditCardForm` | Gate Pay on Checkout/v2 + secure card form frame; fail closed if only prefetcher. |
-| **Cookie / CMP banners** | OneTrust overlay stalled GEM boot / empty page | Dismiss CMP (OneTrust / similar) before GE interactions. |
-| **Nested secure card iframe** | `#secureWindow` → `secure-bandai.global-e.com/payments/CreditCardForm/…` | Expect `secure-*.global-e.com` (merchant-specific subdomain). Fill **inside** that frame. |
-| **Field shape** | `cardNum` (tel), **SELECT** `cardExpiryMonth` / `cardExpiryYear`, `cvdNumber` (CVV); often **no** holder name | Use selects for expiry; don’t assume a single `MM/YY` input. |
-| **Mandatory T&Cs checkbox** | “I confirm no returns…” unchecked → Pay click does nothing useful | Explicitly tick GE purchase-agreement / terms before Pay. |
-| **Hidden fraud / captcha fields** | `PaymentData.recapchaToken` + `recapchaTime` (empty until solved); `CheckoutData.ForterToken` often empty at boot | Wait for token population / invisible captcha execute; Bandai JS also had cart-token captcha + FingerprintJS. PC CSP already lists hCaptcha + ThreatMetrix — expect **more** friction than Bandai. |
-| **“Pay clicked” ≠ bank hit** | Narrow network filters reported `payNet=0` while Revolut still got the auth | Treat **issuer / bank notification as ground truth**. Broaden GE traffic capture after Pay; scrape GE body for decline copy. |
-| **3DS is optional** | Low-balance soft-decline fired **without** ACS/3DS | Keep 3DS waiter as fallback; success/decline can be frictionless. Do not require `reached3ds` for “pay path green”. |
-| **Score order** | Bank ping → GE/Bandai order number / `preComplete` → not client `ok` alone | Same for PC: Revolut/bank → GE confirmation → Cortex/TPCI order id. Persist milestones so client timeouts don’t hide wins. |
-| **Lab cards** | Decline PAN for dry labs; disposable funded card for wire proof | Same. Never commit PANs. Stop before Pay on expensive SKUs unless owner opts in. |
-| **Merchant-specific GEM** | `gem-bandai` / `web-bandai` / mid **1925** | HAR must capture PC’s `gem-*` host + **merchant id** — do not hardcode Bandai mid. |
-| **Shared helper (future)** | Bandai logic lives in `bandai-browser-checkout.js` | When PC is built, extract a thin **`ge-pay.js`** (dismiss CMP → wait Checkout/v2 → fill CreditCardForm → tick T&Cs → Pay → wait 3DS/decline/order) parameterized by mid/hosts. |
+| **HTTP GE Fast is the product path** | Bandai Fast: GetCartToken → Checkout/v2 → **riskHydrate** → handleaction/save → **one** HandleCreditCardRequestV2 → JWT score (`BANDAI_CHECKOUT_BIBLE.md`) | **Same for PC** in `pokemoncentre-ge-http.js`. **No Playwright Pay / Safe cart-hold** — PC carts do not hold ~30 min. |
+| **riskHydrate clears fraud** | Stale noPage blackbox → `PossibleFraudDetected=True` / Refused. Live Checkout/v2 mint with GE POSTs muted → fresh `#ioBlackBox` + Forter → merge jar → drop page → undici issuer | Default `riskHydrate` on PC placeOrder (inline mint, same sticky session). Never defer browser Pay. |
+| **One issuer POST** | Revolut dual-rail even with `posts=1`; undici retry on RST double-charged | `retry:false`; score bank + JWT, not “two Revolut lines = two pays.” |
+| **Fraud-aware JWT scoring** | `PossibleFraudDetected` + `TransactionStatusType` (`AutherizationFailed` GE spelling) + `TransactionId` | Persist `ge_fraud_refused` vs `declined_or_auth_failed`. Bank is ground truth. |
+| **Merchant-specific hosts** | mid **1925**, `8urc`, `secure-bandai` | PC: mid **1634**, `8u22`, `secure.ges.global-e.com`, `gepi` GEM script. **Never** hardcode Bandai mid. |
+| **Handoff token** | `merchantCartToken = cartId_Checkout_${suffix}` | PC: Cortex **`cart-guid`** as MerchantCartToken (+ m2m access-token). Same continuous HTTP session as ATC. |
+| **Lab cards** | Decline / disposable for wire proof | Same. Never commit PANs. |
 
-### 5.2 Expected GE host pattern (confirm in PC HAR)
+### 5.2 GE host pattern (PC — wire-proven)
 
-| Role | Bandai example | PC (TBD in HAR) |
+| Role | Bandai | Pokémon Centre AU |
 |---|---|---|
-| GEM script CDN | `gem-bandai.global-e.com/includes/js/{mid}` | `gem-*.global-e.com` or shared `web.global-e.com/merchant/…` |
-| Checkout UI | `webservices.global-e.com/Checkout/v2/…` | same family |
-| Card form | `secure-bandai.global-e.com/payments/CreditCardForm/…` | `secure-*.global-e.com` |
-| Cart token | `gepi.global-e.com/Checkout/GetCartToken?…` | same family |
-| Merchant mid | **1925** | **unknown — capture** |
+| GEM script | `gem-bandai…/includes/js/1925` | `gepi.global-e.com/includes/js/1634` |
+| Checkout UI | `webservices…/Checkout/v2/8urc/{guid}` | `webservices…/Checkout/v2/8u22/{guid}` |
+| Card form | `secure-bandai…/CreditCardForm/…` | `secure.ges.global-e.com/payments/CreditCardForm/{guid}/2` |
+| Issuer | `…/HandleCreditCardRequestV2/8urc/{guid}` | `…/HandleCreditCardRequestV2/8u22/{guid}?mode=13534` |
+| Merchant mid | **1925** | **1634** |
 
 ---
 
@@ -177,14 +204,29 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 ## 7. Module plan (when unparked)
 
-| Phase | Work | Bandai-informed notes |
+| Phase | Work | Status / Bandai-informed notes |
 |---|---|---|
-| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | Capture: incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm fields, T&Cs checkbox, captcha/Forter/TMX, post-Pay network, any order/preComplete equivalent |
-| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` if not already from AusPost/HN | Hard gate before PC ATC reliability |
-| **P2** | Monitor: soft catalog if any (or residential poll); notify on PC ETB / exclusive SKUs | Keep HTTP; no Playwright in monitor |
-| **P3** | Cortex cart machine + account session (**HTTP-first**) | Mirror Bandai policy: browser only if edge/captcha forces it — not a full cart ladder |
-| **P4** | Global-e AU checkout / pay | Reuse Bandai GE checklist (§5.1). Prefer shared `ge-pay` helper. Score bank → confirmation. CMP dismiss + Checkout/v2 wait + nested iframe fill + T&Cs. |
-| **P5** | hCaptcha harvest path (desktop) for drop windows | Separate from GE captcha; both may appear |
+| **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | **Owner desk** — capture incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm, T&Cs, captcha/Forter/TMX, post-Pay |
+| **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
+| **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
+| **P3** | Cortex cart machine + account session (**HTTP-first**) | **Proven** — public token → ATC **201** → `GET /cart/data?type=full` → `cart-guid` (tls-worker + sticky AU, 2026-07-22) |
+| **P4** | Global-e AU checkout / pay | **HTTP Fast path** in `pokemoncentre-ge-http.js` (Bandai playbook). Product = HTTP only; browser = riskHydrate mint / HAR. Score JWT + bank. |
+| **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |
+
+### Adapter surface (2026-07-22)
+
+| File | Role |
+|---|---|
+| `adapters/pokemoncentre.js` | Main adapter (`pcMode`: monitor / checkout / edge / har_probe) |
+| `adapters/pokemoncentre-session.js` | Locale (`en-au`…) + headers |
+| `adapters/pokemoncentre-edge.js` | Reese84 + DataDome clear on sticky proxy |
+| `adapters/pokemoncentre-cortex.js` | BFF auth + guest ATC (`/cart/add-product/{id}`) + GE m2m stub |
+| `adapters/pokemoncentre-ge-http.js` | **Only product pay path** — GetCartToken → riskHydrate → handleaction/save → one issuer POST + JWT score |
+| `adapters/pokemoncentre-ge.js` | Browser HAR / wire dump only (`pcBrowserCheckout`, `placeOrder=false`) |
+| `adapters/pokemoncentre-hcaptcha.js` | CapSolver hCaptcha |
+| `antibot.js` | Shared Incapsula + DataDome Hyper wrappers (Akamai untouched) |
+
+Desktop: store **Pokémon Centre AU** → modes above. Sticky AU ISP + Hyper key + CapSolver (hCaptcha) in Settings.
 
 ### Feasibility
 
@@ -192,12 +234,12 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 |---|---|
 | Hyper antibot | **High** for Incapsula+DD; **gap** on hCaptcha |
 | API clarity | Medium — Cortex paths known; bodies unknown |
-| Global-e | **Improved** — Bandai proved issuer path; PC still needs mid/HAR |
-| Account friction | Medium — accounts helpful; address/fraud hard limits |
+| Global-e | **mid 1634**; HTTP Fast path ported from Bandai (`riskHydrate` + issuer JWT). No Safe/Playwright pay. |
+| Account friction | Medium — guest address bind + fraud tokens |
 | Competitive | Crowded |
-| Executor reuse | GE patterns from Bandai; DD from AusPost; Incapsula from HN |
+| Executor reuse | GE builders from `bandai-ge-http.js` (read-only); DD/Incapsula shared |
 
-**Verdict:** Still park behind shared DD/Incapsula plumbing. When unparked, **do not treat Global-e as greenfield** — copy Bandai’s HTTP-handoff + browser-Pay architecture and merchant-parameterize it.
+**Verdict:** Product GE Pay is **HTTP-only** on sticky AU + **tls-worker**. Next: prove issuer JWT (`TransactionId≠0`, fraud bit) with disposable card on continuous ATC→pay session.
 
 ---
 
@@ -231,3 +273,4 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 - Elite Fourum / webcompat reports (layered antibot)
 - Press: AU/NZ launch June 2024
 - **Bandai AU executor labs 2026-07-22** — HTTP `checkoutSn`, GE Checkout/v2 + CreditCardForm, Revolut issuer decline (A$317 Globale/Bandai Spirit); see `BANDAI_AU_MODULE.md` §7 + `adapters/bandai-browser-checkout.js` / `bandai-f5.js`
+- **Hyper Solutions** — [DataDome getting started](https://docs.hypersolutions.co/datadome/getting-started.md) (`view: "redirect"`, slider `t=bv`), [tags](https://docs.hypersolutions.co/datadome/tags.md), [header order](https://docs.hypersolutions.co/request-based-basics/header-order.md), [TLS fingerprinting](https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md), [Incapsula Reese84](https://docs.hypersolutions.co/incapsula/reese84.md)

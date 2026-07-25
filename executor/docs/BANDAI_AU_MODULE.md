@@ -5,6 +5,8 @@ _Status: adapter scaffolded (OTP + agen + login/ATC + GE stub) — harden with o
 _Why first: owner call — English bots already cover AusPost; **no known Bandai AU support** → greenfield edge on One Piece / exclusives._  
 _Build: storefront `CONFIG_DATA.buildVersion=2.20260716` (2026-07-16)_
 
+**Runtime contract (if checkout breaks):** [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md)
+
 Canonical storefront: **`https://p-bandai.com/au/`**  
 (Do not use `www.bandai.com.au` — cert mismatch.)
 
@@ -220,7 +222,9 @@ Agen does **not** ship with SMS/email credentials. The user pastes providers in 
 
 | Setting (planned) | Purpose |
 |---|---|
-| `onlinesimApiKey` | [OnlineSim](https://onlinesim.io) API key — buy AU numbers + poll SMS OTP |
+| `smspoolApiKey` | [SMSPool](https://www.smspool.net/) API key (preferred) — Bandai service `1733`; AU signup accepts **US/UK** numbers |
+| `smspoolCountry` | `GB` (default, cheaper) or `US` |
+| `onlinesimApiKey` | [OnlineSim](https://onlinesim.io) API key — optional AU fallback |
 | `imapHost` / `imapPort` | Mailbox for signup email OTP (e.g. `imap.gmail.com:993`) |
 | `imapUser` | Full email address used as Bandai `memberId` |
 | `imapAppPassword` | Provider **app password** (not the normal login password) |
@@ -241,38 +245,28 @@ Notes:
 - One mailbox can often create one Bandai account (`memberId` = email). For pools, either many IMAP accounts or a catch-all domain with unique local-parts **if** Bandai accepts them (confirm in HAR — open question).
 - Shared helper: `otp/imapInbox.js` → `waitForCode({ from?, subject?, regex, since, timeout })`.
 
-#### SMS OTP — OnlineSim API key
+#### SMS OTP — SMSPool (preferred) + OnlineSim fallback
 
-OnlineSim [API v1.1](https://onlinesim.io/openapi_docs/Onlinesim-API-UN/info): auth via `apikey` query param.
+**Preferred:** [SMSPool](https://www.smspool.net/article/how-to-use-the-smspool-api-0dd6eadf4c) — users paste their own API key in Desktop Settings.
 
-Typical single-activation loop:
-```
-GET /api/getNum.php?apikey=…&service=<slug>&country=61&number=true&lang=en
-  → { tzid, number, … }     # country 61 = Australia (listed & enabled)
-→ Bandai POST /api/phoneNo/auth { phoneNo: { countryNo:"+61", phoneNo:"4…" } }
-→ poll GET /api/getState.php?apikey=…&tzid=…   (or all active)
-  → read msg / code
-→ Bandai POST /api/phoneNo/validate { authCode, authSn }
-→ GET /api/setOperationOk.php?apikey=…&tzid=…   # close & settle
-```
+- Named service **Bandai = `1733`**
+- AU Bandai accepts **US (`country=1`)** and **UK (`country=2`)** numbers (owner-validated). Default country **GB** (cheaper pools).
+- Purchase `POST /purchase/sms` → poll `/request/active` (or `/sms/check`) → cancel unused via `/sms/cancel`
+- Helper: `otp/smspool.js` → `acquireNumber` / `waitForSms` / `release`
 
-**Bandai is not in OnlineSim’s named service list** (Facebook/Google/… only). Plan:
-1. Prefer **rent** (`getRentNum` / `getRentState`) for AU when single-service slug won’t receive Bandai SMS, **or**
-2. Use whatever OnlineSim “other / custom” slug works once validated with a live key, **or**
-3. Per-store config: `onlinesimServiceSlug` + `onlinesimCountry` (Bandai AU default `country=61`).
+**Fallback:** OnlineSim AU rent/activation (`otp/onlinesim.js`, country `61`) when no SMSPool key is set.
 
-Shared helper: `otp/onlinesim.js` → `acquireNumber({ country, service })`, `waitForSms({ tzid, regex, timeout })`, `release(tzid)`.
-
-**Risks to budget for:** virtual-number blocks by Bandai, AU stock gaps, `SmsRateLimitExceeded` / `WARNING_LOW_BALANCE`, 15‑minute activation windows, phone uniqueness forever on Bandai (`exists: true`).
+**Risks to budget for:** virtual-number blocks, pool stock gaps, `SmsRateLimitExceeded`, phone uniqueness forever on Bandai (`exists: true`). Do not blast signups — one careful test at a time.
 
 #### Reuse for future store modules
 
 ```
 executor/otp/
   imapInbox.js      # app-password IMAP OTP waiter
-  onlinesim.js      # number acquire + SMS poll + close
+  smspool.js        # SMSPool purchase + SMS poll + cancel (preferred)
+  onlinesim.js      # OnlineSim AU fallback
 adapters/<store>-agen.js   # store-specific signup; calls otp/*
-desktop Settings    # onlinesimApiKey + IMAP fields (one place for all agen)
+desktop Settings    # smspoolApiKey + IMAP fields (one place for all agen)
 ```
 
 Any future agen (AusPost MyPost, Target, etc.) plugs the same Settings + `otp/*` and only swaps the store’s request/validate endpoints / code regex.
@@ -281,7 +275,8 @@ Any future agen (AusPost MyPost, Target, etc.) plugs the same Settings + `otp/*`
 
 | Dependency | Why | Notes |
 |---|---|---|
-| **OnlineSim API key** (user) | AU SMS OTP | See §4.3; country `61` |
+| **SMSPool API key** (user) | SMS OTP (US/UK) | See §4.3; service `1733` |
+| **OnlineSim API key** (user, optional) | AU SMS fallback | country `61` |
 | **IMAP + app password** (user) | Email OTP | Same mailbox becomes `memberId` unless pool strategy differs |
 | **Sticky AU ISP/residential proxy** | Edge + geo consistency | Same class as checkout tasks |
 | **Identity data** | Name, DOB ≥18, AU home address | Synthesize; keep consistent with shipping |
