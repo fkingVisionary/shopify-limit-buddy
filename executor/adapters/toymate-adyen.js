@@ -65,7 +65,6 @@ function httpsJson(url) {
   });
 }
 
-/** Fetch Adyen CSE public key for a live/test clientKey. */
 export async function fetchAdyenPublicKey(clientKey) {
   const json = await httpsJson(
     `https://checkoutshopper-live.adyen.com/checkoutshopper/v1/clientKeys/${clientKey}`,
@@ -145,6 +144,7 @@ export function browserInfo() {
   };
 }
 
+/** Pick Adyen v3 scheme (card) method from Storefront payments list. */
 export function pickAdyenCardMethod(methods) {
   const list = Array.isArray(methods) ? methods : [];
   return (
@@ -155,8 +155,162 @@ export function pickAdyenCardMethod(methods) {
   );
 }
 
+async function dismissSpamModal(page) {
+  for (const sel of [
+    'button:has-text("Ok")',
+    'button:has-text("OK")',
+    '[role="dialog"] button',
+    ".modal button",
+  ]) {
+    const btn = page.locator(sel).first();
+    if (await btn.count()) {
+      try {
+        if (await btn.isVisible()) await btn.click({ timeout: 1500 });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+async function injectRecaptchaToken(page, token) {
+  if (!token) return;
+  await page.evaluate((tok) => {
+    const apply = () => {
+      for (const el of document.querySelectorAll(
+        'textarea[name="g-recaptcha-response"], #g-recaptcha-response, textarea[id*="g-recaptcha"]',
+      )) {
+        el.value = tok;
+        el.innerHTML = tok;
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+        el.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    };
+    apply();
+
+    const hook = () => {
+      if (!window.grecaptcha) return false;
+      try {
+        window.grecaptcha.getResponse = () => tok;
+        const prevExec = window.grecaptcha.execute?.bind(window.grecaptcha);
+        window.grecaptcha.execute = async (...args) => {
+          try {
+            if (prevExec) await prevExec(...args);
+          } catch {
+            /* ignore */
+          }
+          return tok;
+        };
+      } catch {
+        /* ignore */
+      }
+      try {
+        const cfg = window.___grecaptcha_cfg;
+        const clients = cfg?.clients ? Object.values(cfg.clients) : [];
+        const walk = (o, depth = 0) => {
+          if (!o || depth > 7) return;
+          if (typeof o.callback === "function") {
+            try {
+              o.callback(tok);
+            } catch {
+              /* ignore */
+            }
+          }
+          if (o && typeof o === "object") {
+            for (const k of Object.keys(o)) {
+              try {
+                walk(o[k], depth + 1);
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        };
+        for (const c of clients) walk(c);
+      } catch {
+        /* ignore */
+      }
+      return true;
+    };
+
+    if (!hook()) {
+      const iv = setInterval(() => {
+        apply();
+        if (hook()) clearInterval(iv);
+      }, 400);
+      setTimeout(() => clearInterval(iv), 20_000);
+    } else {
+      setInterval(apply, 1500);
+    }
+  }, token);
+}
+
+async function waitForAdyenFrames(page, timeoutMs = 75_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await dismissSpamModal(page);
+    // Expand / focus Payment step
+    for (const sel of [
+      'h2:has-text("Payment")',
+      '[data-test="payment-continue-button"]',
+      'legend:has-text("Payment")',
+      'button:has-text("Continue")',
+    ]) {
+      const el = page.locator(sel).first();
+      if (await el.count()) {
+        try {
+          if (await el.isVisible()) await el.click({ timeout: 800 });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    for (const sel of [
+      'label:has-text("Credit Card")',
+      'text=Credit Card',
+      '[data-test="payment-method-scheme"]',
+      'input[value="scheme"]',
+      "#radio-adyenv3",
+    ]) {
+      const el = page.locator(sel).first();
+      if (await el.count()) {
+        try {
+          if (await el.isVisible()) await el.click({ timeout: 1500 });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    const frames = page.frames();
+    const adyen = frames.filter((f) =>
+      /adyen|checkoutshopper|securedfields|card-field/i.test(f.url() + (f.name() || "")),
+    );
+    const titled = await page.locator("iframe").evaluateAll((els) =>
+      els.map((e) => ({
+        title: e.getAttribute("title") || "",
+        src: (e.getAttribute("src") || "").slice(0, 120),
+      })),
+    );
+    const hasCardIframe = titled.some((t) =>
+      /card number|secured card number|encryptedCardNumber|number/i.test(t.title + t.src),
+    );
+    if (adyen.length >= 1 || hasCardIframe) {
+      return { ok: true, titled, adyenCount: adyen.length };
+    }
+    await page.waitForTimeout(1200);
+  }
+  const titled = await page.locator("iframe").evaluateAll((els) =>
+    els.map((e) => ({
+      title: e.getAttribute("title") || "",
+      src: (e.getAttribute("src") || "").slice(0, 120),
+    })),
+  );
+  return { ok: false, titled, adyenCount: 0 };
+}
+
 /**
- * Playwright: open /checkout with jar cookies + same proxy, fill Adyen hosted fields, place order.
+ * Place order through BigCommerce checkout UI (Adyen secured fields).
  * Returns { ok, status, note, declined, orderNumber, body }.
  */
 export async function placeOrderViaCheckoutUi({
@@ -164,8 +318,10 @@ export async function placeOrderViaCheckoutUi({
   cookies,
   userAgent,
   card,
+  captchaToken = null,
   checkoutUrl = "https://toymate.com.au/checkout",
-  timeoutMs = 120_000,
+  timeoutMs = 150_000,
+  screenshotPath = null,
 } = {}) {
   const { chromium } = await import("playwright");
   let proxy = null;
@@ -212,39 +368,73 @@ export async function placeOrderViaCheckoutUi({
     const paymentLogs = [];
     page.on("response", async (res) => {
       const url = res.url();
-      if (/payments|order|adyen|checkout/i.test(url) && res.request().method() !== "GET") {
+      const method = res.request().method();
+      if (
+        (/spam-protection|payments|order|adyen|bigpay|checkoutshopper/i.test(url) && method !== "GET") ||
+        (/spam-protection/i.test(url) && method === "POST")
+      ) {
         let body = "";
         try {
           body = (await res.text()).slice(0, 500);
         } catch {
           /* ignore */
         }
-        paymentLogs.push({ url: url.slice(0, 160), status: res.status(), body });
+        paymentLogs.push({ url: url.slice(0, 160), status: res.status(), method, body });
       }
     });
 
-    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await page.waitForTimeout(2500);
+    if (captchaToken) {
+      await page.addInitScript((tok) => {
+        window.__toymateCaptcha = tok;
+      }, captchaToken);
+    }
 
-    // Prefer credit card / Adyen radio if present.
-    for (const sel of [
-      'label:has-text("Credit Card")',
-      'text=Credit Card',
-      '[data-test="payment-method-scheme"]',
-      "#radio-adyenv3",
-      'input[value="scheme"]',
-    ]) {
-      const el = page.locator(sel).first();
-      if (await el.count()) {
+    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForTimeout(2000);
+    await dismissSpamModal(page);
+    if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+    await page.waitForTimeout(1500);
+    await dismissSpamModal(page);
+
+    // If checkout-js already failed spam, dismiss and re-inject then soft reload payment.
+    const bodyEarly = await page.locator("body").innerText().catch(() => "");
+    if (/spam protection verification/i.test(bodyEarly)) {
+      await dismissSpamModal(page);
+      if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+      await page.waitForTimeout(1000);
+      // Trigger a payment-step refresh by editing/collapsing shipping then returning.
+      const edit = page.locator('[data-test="step-edit-button"]').first();
+      if (await edit.count()) {
         try {
-          await el.click({ timeout: 2000 });
-          break;
+          await edit.click({ timeout: 2000 });
+          await page.waitForTimeout(800);
+          const cont = page.locator("#checkout-shipping-continue, button:has-text('Continue')").first();
+          if (await cont.count()) await cont.click({ timeout: 3000 }).catch(() => {});
         } catch {
-          /* try next */
+          /* ignore */
         }
       }
     }
-    await page.waitForTimeout(1500);
+
+    const framesReady = await waitForAdyenFrames(page, 80_000);
+    if (!framesReady.ok) {
+      if (screenshotPath) {
+        try {
+          await page.screenshot({ path: screenshotPath, fullPage: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      const spamHit = paymentLogs.find((l) => /spam-protection/i.test(l.url));
+      return {
+        ok: false,
+        status: spamHit?.status ?? null,
+        note: `Adyen fields not found (iframes=${JSON.stringify(framesReady.titled).slice(0, 160)}; spamApi=${spamHit?.status || "none"})`,
+        declined: false,
+        paymentLogs,
+        finalUrl: page.url(),
+      };
+    }
 
     const number = String(card.number || "").replace(/\s+/g, "");
     const expMonth = String(card.expMonth || "").padStart(2, "0").slice(-2);
@@ -253,7 +443,6 @@ export async function placeOrderViaCheckoutUi({
     const cvv = String(card.cvv || "").trim();
     const holder = String(card.holder || "Cardholder").trim();
 
-    // Holder often outside iframe.
     for (const sel of [
       'input[name="cc-name"]',
       'input[autocomplete="cc-name"]',
@@ -278,12 +467,28 @@ export async function placeOrderViaCheckoutUi({
       await input.fill(value);
     }
 
-    // Adyen secured-field iframe titles vary slightly.
+    async function fillByUrl(re, value) {
+      const frames = page.frames().filter((f) => re.test(f.url()));
+      for (const f of frames) {
+        const input = f.locator("input").first();
+        if (await input.count()) {
+          await input.fill(value);
+          return true;
+        }
+      }
+      return false;
+    }
+
     const tries = [
       async () => {
         await fillFrame("card number", number);
         await fillFrame("expiry", `${expMonth}${expYear}`);
         await fillFrame("security", cvv);
+      },
+      async () => {
+        await fillFrame("secured card number", number);
+        await fillFrame("secured card expiry", `${expMonth}${expYear}`);
+        await fillFrame("secured card security", cvv);
       },
       async () => {
         await fillFrame("number", number);
@@ -294,6 +499,12 @@ export async function placeOrderViaCheckoutUi({
         await fillFrame("encryptedCardNumber", number);
         await fillFrame("encryptedExpiryDate", `${expMonth}${expYear}`);
         await fillFrame("encryptedSecurityCode", cvv);
+      },
+      async () => {
+        const okN = await fillByUrl(/encryptedCardNumber|cardnumber|card-number/i, number);
+        const okE = await fillByUrl(/expiry|expir/i, `${expMonth}${expYear}`);
+        const okC = await fillByUrl(/security|cvc|cvv/i, cvv);
+        if (!(okN && okE && okC)) throw new Error("url-frame fill incomplete");
       },
     ];
     let filled = false;
@@ -308,18 +519,28 @@ export async function placeOrderViaCheckoutUi({
       }
     }
     if (!filled) {
+      if (screenshotPath) {
+        try {
+          await page.screenshot({ path: screenshotPath, fullPage: true });
+        } catch {
+          /* ignore */
+        }
+      }
       return {
         ok: false,
         status: null,
-        note: `Adyen fields not found: ${fillErr?.message || fillErr}`,
+        note: `Adyen fields not fillable: ${fillErr?.message || fillErr}`,
         declined: false,
         paymentLogs,
+        finalUrl: page.url(),
       };
     }
 
-    // Place order
+    // Re-inject captcha right before place (token can expire ~2 min).
+    if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+
     for (const sel of [
-      '#checkout-payment-continue',
+      "#checkout-payment-continue",
       'button:has-text("Place Order")',
       'button:has-text("Pay")',
       'button[type="submit"]',
@@ -335,11 +556,15 @@ export async function placeOrderViaCheckoutUi({
       }
     }
 
+    const declineRe =
+      /declin|insufficient|not enough|do not honour|do not honor|payment failed|unable to process|card was declined|authentication failed|refused|invalid card|card number is invalid|not supported|transaction.*(fail|deny)|Authori[sz]ed.*false|resultCode["']?\s*:\s*["']Refused/i;
+
     const deadline = Date.now() + timeoutMs;
     let declined = false;
     let orderNumber = null;
     let note = "waiting for payment result";
     while (Date.now() < deadline) {
+      await dismissSpamModal(page);
       const url = page.url();
       const bodyText = await page.locator("body").innerText().catch(() => "");
       if (/order-confirmation|order confirmation|thank you for your order/i.test(url + bodyText)) {
@@ -356,15 +581,14 @@ export async function placeOrderViaCheckoutUi({
           finalUrl: url,
         };
       }
-      const declineRe =
-        /declin|insufficient|not enough|do not honour|do not honor|payment failed|unable to process|card was declined|authentication failed|refused|invalid card|card number is invalid|not supported|transaction.*(fail|deny)|Authori[sz]ed.*false|resultCode["']?\s*:\s*["']Refused/i;
       if (declineRe.test(bodyText)) {
         declined = true;
-        note = (bodyText.match(
-          /.{0,40}(declin|insufficient|not enough|honou?r|payment failed|unable to process|refused|invalid card|not supported).{0,60}/i,
-        ) || [null, bodyText.slice(0, 120)])[0] || "declined";
+        note =
+          (bodyText.match(
+            /.{0,40}(declin|insufficient|not enough|honou?r|payment failed|unable to process|refused|invalid card|not supported).{0,60}/i,
+          ) || [null, bodyText.slice(0, 120)])[0] || "declined";
         return {
-          ok: true, // reached gateway — decline/refuse is a successful smoke for this goal
+          ok: true,
           status: 402,
           note: String(note).replace(/\s+/g, " ").slice(0, 180),
           declined: true,
@@ -373,9 +597,14 @@ export async function placeOrderViaCheckoutUi({
           finalUrl: url,
         };
       }
-      // BigPay / Adyen error responses in logs
-      if (paymentLogs.some((l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body))) {
-        const hit = paymentLogs.find((l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body));
+      if (
+        paymentLogs.some(
+          (l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body),
+        )
+      ) {
+        const hit = paymentLogs.find(
+          (l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body),
+        );
         return {
           ok: true,
           status: hit.status,
@@ -386,6 +615,13 @@ export async function placeOrderViaCheckoutUi({
         };
       }
       await page.waitForTimeout(1000);
+    }
+    if (screenshotPath) {
+      try {
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+      } catch {
+        /* ignore */
+      }
     }
     return {
       ok: false,

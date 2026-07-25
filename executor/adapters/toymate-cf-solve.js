@@ -188,10 +188,11 @@ export async function solveCloudflareChallenge({
 
 /**
  * Solve reCAPTCHA v2 (form captcha on create-account / spam-protection).
+ * `proxyless: true` forces ReCaptchaV2TaskProxyLess (often better token accept rate for BC spam).
  */
-export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw } = {}) {
+export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw, proxyless = false } = {}) {
   if (!sitekey) return { ok: false, error: "reCAPTCHA sitekey missing" };
-  const proxy = proxyToCapsolverFormat(proxyRaw);
+  const proxy = proxyless ? null : proxyToCapsolverFormat(proxyRaw);
   const task = {
     type: proxy ? "ReCaptchaV2Task" : "ReCaptchaV2TaskProxyLess",
     websiteURL: pageUrl,
@@ -211,7 +212,12 @@ export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw } = {}) {
   if (!solved.ok) return solved;
   const token = solved.solution?.gRecaptchaResponse || solved.solution?.token;
   if (!token) return { ok: false, error: "CapSolver returned empty reCAPTCHA token" };
-  return { ok: true, token, elapsedMs: solved.elapsedMs };
+  return {
+    ok: true,
+    token,
+    elapsedMs: solved.elapsedMs,
+    via: proxy ? "proxy" : "proxyless",
+  };
 }
 
 export function extractRecaptchaSitekey(html) {

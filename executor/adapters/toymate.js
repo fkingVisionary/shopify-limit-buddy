@@ -1015,15 +1015,25 @@ export const toymateAdapter = {
     let captchaToken = task.captchaToken || null;
     await tStep("checkout_spam", async () => {
       // Live place-order needs spam-protection when BC has it enabled.
+      // Storefront spam API has been 429ing from this exit — still mint a
+      // CapSolver token for Playwright injection even when API soft-fails.
       if (!captchaToken && placeOrder && capsolverKey()) {
         const sitekey =
           task.recaptchaSitekey ||
           "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-        const solved = await solveRecaptchaV2({
+        // Proxyless often clears BC better than CapSolver-through-Noontide.
+        let solved = await solveRecaptchaV2({
           pageUrl: `${apex}/checkout`,
           sitekey,
-          proxyRaw,
+          proxyless: true,
         });
+        if (!solved.ok) {
+          solved = await solveRecaptchaV2({
+            pageUrl: `${apex}/checkout`,
+            sitekey,
+            proxyRaw,
+          });
+        }
         if (solved.ok) captchaToken = solved.token;
         else {
           return {
@@ -1042,15 +1052,40 @@ export const toymateAdapter = {
             : "no captcha token — skip spam-protection",
         };
       }
-      const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
-        method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-        body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
-      }, ctx);
+      let lastStatus = null;
+      let lastNote = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
+          method: "POST",
+          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
+          body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
+        }, ctx);
+        lastStatus = res.status;
+        if (res.status >= 200 && res.status < 300) {
+          return { ok: true, status: res.status, note: `spam ${res.status}` };
+        }
+        lastNote = `spam ${res.status}`;
+        // 429 = BC overload/rate-limit — back off; keep token for UI inject.
+        if (res.status !== 429) break;
+        await sleep(2500 * (attempt + 1), 500);
+        // Fresh token after rate-limit (old token may be burned).
+        if (capsolverKey()) {
+          const sitekey =
+            task.recaptchaSitekey ||
+            "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
+          const again = await solveRecaptchaV2({
+            pageUrl: `${apex}/checkout`,
+            sitekey,
+            proxyless: true,
+          });
+          if (again.ok) captchaToken = again.token;
+        }
+      }
       return {
-        ok: res.status >= 200 && res.status < 300,
-        status: res.status,
-        note: `spam ${res.status}`,
+        // Soft-ok when we still have a token for Playwright injection.
+        ok: Boolean(captchaToken),
+        status: lastStatus,
+        note: `${lastNote || "spam failed"} — UI inject fallback`,
       };
     });
 
@@ -1126,12 +1161,26 @@ export const toymateAdapter = {
 
       const pay = await tStep("place_order", async () => {
         // Live Adyen hosted fields — same path the storefront uses (decline-friendly).
+        // Fresh captcha if spam API soft-failed earlier (tokens expire ~2 min).
+        if (capsolverKey()) {
+          const sitekey =
+            task.recaptchaSitekey ||
+            "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
+          const again = await solveRecaptchaV2({
+            pageUrl: `${apex}/checkout`,
+            sitekey,
+            proxyless: true,
+          });
+          if (again.ok) captchaToken = again.token;
+        }
         const ui = await placeOrderViaCheckoutUi({
           proxyUrl: proxyRaw,
           cookies: ctx.jar?.dump?.() || {},
           userAgent: ctx.extraHeaders?.["user-agent"] || UA,
           card,
+          captchaToken,
           checkoutUrl: `${apex}/checkout`,
+          screenshotPath: "/opt/cursor/artifacts/toymate-place-order.png",
         });
         orderNumber = ui.orderNumber || null;
         paymentDeclined = Boolean(ui.declined);
@@ -1167,6 +1216,8 @@ export const toymateAdapter = {
         paymentDeclined,
         paymentMethod: "credit_card",
         cardGateway: methodsStep.adyen?.gateway || "adyenv3",
+        atcVia: cart.via || null,
+        cartId: checkoutId,
         finalUrl: orderNumber
           ? `${apex}/checkout/order-confirmation`
           : `${apex}/checkout`,
