@@ -1,8 +1,13 @@
-// Toymate Adyen v3 (scheme) helpers — CapSolver-free except caller-supplied captcha.
+// Toymate Adyen v3 (scheme) helpers.
 // Isolated from Kmart / Paydock.
 
 import https from "node:https";
 import forge from "node-forge";
+import {
+  solveTurnstileChallenge,
+  extractTurnstileSitekey,
+  capsolverKey,
+} from "./toymate-cf-solve.js";
 
 export const BC_INTERNAL_HEADER =
   "This API endpoint is for internal use only and may change in the future";
@@ -351,6 +356,110 @@ async function waitForAdyenFrames(page, { timeoutMs = 75_000, captchaToken = nul
  * Place order through BigCommerce checkout UI (Adyen secured fields).
  * Returns { ok, status, note, declined, orderNumber, body }.
  */
+async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent, cookies } = {}) {
+  const html = await page.content().catch(() => "");
+  const body = await page.locator("body").innerText().catch(() => "");
+  const turnstile =
+    /verify you are human|performing security verification|cf-turnstile|challenge-platform/i.test(
+      body + html,
+    );
+  if (!turnstile) return { ok: true, skipped: true };
+
+  let sitekey = extractTurnstileSitekey(html);
+  if (!sitekey) {
+    sitekey = await page
+      .locator("[data-sitekey]")
+      .first()
+      .getAttribute("data-sitekey")
+      .catch(() => null);
+  }
+  if (!sitekey || !capsolverKey()) {
+    return {
+      ok: false,
+      note: `Playwright CF Turnstile (sitekey=${sitekey || "missing"}; capsolver=${Boolean(capsolverKey())})`,
+    };
+  }
+
+  let solved = await solveTurnstileChallenge({
+    pageUrl: page.url(),
+    sitekey,
+    proxyRaw: proxyUrl,
+    userAgent,
+  });
+  if (!solved.ok) {
+    solved = await solveTurnstileChallenge({
+      pageUrl: page.url(),
+      sitekey,
+      proxyless: true,
+      userAgent,
+    });
+  }
+  if (!solved.ok) return { ok: false, note: solved.error || "Turnstile solve failed" };
+
+  if (solved.cookies && Object.keys(solved.cookies).length) {
+    const jarCookies = Object.entries(solved.cookies).map(([name, value]) => ({
+      name,
+      value: String(value),
+      domain: ".toymate.com.au",
+      path: "/",
+      httpOnly: false,
+      secure: true,
+      sameSite: "Lax",
+    }));
+    await context.addCookies(jarCookies);
+  }
+
+  if (solved.token) {
+    await page.evaluate((tok) => {
+      for (const el of document.querySelectorAll(
+        '[name="cf-turnstile-response"], input[name*="turnstile"], textarea[name*="turnstile"]',
+      )) {
+        el.value = tok;
+      }
+      try {
+        if (window.turnstile?.getResponse) {
+          window.turnstile.getResponse = () => tok;
+        }
+      } catch {
+        /* ignore */
+      }
+      try {
+        const cfg = window.turnstile;
+        if (cfg?.ready) {
+          /* best-effort */
+        }
+      } catch {
+        /* ignore */
+      }
+      // Common CF callback pattern
+      try {
+        const w = window;
+        for (const k of Object.keys(w)) {
+          if (/^ts?_?callback|turnstile/i.test(k) && typeof w[k] === "function") {
+            try {
+              w[k](tok);
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    }, solved.token);
+  }
+
+  await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }).catch(() => {});
+  await page.waitForTimeout(2500);
+  const body2 = await page.locator("body").innerText().catch(() => "");
+  const still = /performing security verification|verify you are human/i.test(body2);
+  return {
+    ok: !still,
+    note: still ? "Turnstile still present after CapSolver" : "Turnstile cleared",
+    sitekey,
+  };
+}
+
 export async function placeOrderViaCheckoutUi({
   proxyUrl,
   cookies,
@@ -429,6 +538,30 @@ export async function placeOrderViaCheckoutUi({
 
     await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await page.waitForTimeout(2000);
+
+    const cfClear = await clearPlaywrightTurnstile(page, context, {
+      proxyUrl,
+      userAgent,
+      cookies,
+    });
+    if (!cfClear.ok && !cfClear.skipped) {
+      if (screenshotPath) {
+        try {
+          await page.screenshot({ path: screenshotPath, fullPage: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      return {
+        ok: false,
+        status: null,
+        note: cfClear.note || "Playwright blocked by Cloudflare Turnstile",
+        declined: false,
+        paymentLogs,
+        finalUrl: page.url(),
+      };
+    }
+
     await dismissSpamModal(page);
     if (captchaToken) await injectRecaptchaToken(page, captchaToken);
     await page.waitForTimeout(1500);

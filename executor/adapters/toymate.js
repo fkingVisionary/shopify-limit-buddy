@@ -1021,17 +1021,17 @@ export const toymateAdapter = {
         const sitekey =
           task.recaptchaSitekey ||
           "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-        // Proxyless often clears BC better than CapSolver-through-Noontide.
+        // Prefer proxy-bound token (matches Playwright exit IP); proxyless fallback.
         let solved = await solveRecaptchaV2({
           pageUrl: `${apex}/checkout`,
           sitekey,
-          proxyless: true,
+          proxyRaw,
         });
         if (!solved.ok) {
           solved = await solveRecaptchaV2({
             pageUrl: `${apex}/checkout`,
             sitekey,
-            proxyRaw,
+            proxyless: true,
           });
         }
         if (solved.ok) captchaToken = solved.token;
@@ -1166,11 +1166,18 @@ export const toymateAdapter = {
           const sitekey =
             task.recaptchaSitekey ||
             "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-          const again = await solveRecaptchaV2({
+          let again = await solveRecaptchaV2({
             pageUrl: `${apex}/checkout`,
             sitekey,
-            proxyless: true,
+            proxyRaw,
           });
+          if (!again.ok) {
+            again = await solveRecaptchaV2({
+              pageUrl: `${apex}/checkout`,
+              sitekey,
+              proxyless: true,
+            });
+          }
           if (again.ok) captchaToken = again.token;
         }
         const ui = await placeOrderViaCheckoutUi({
