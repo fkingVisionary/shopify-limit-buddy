@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // ONE Toymate LIVE checkout attempt (placeOrder: true).
 // Goal: reach Adyen/gateway DECLINE (or refuse) — not a charge win.
-// CapSolver: CF warm + checkout spam reCAPTCHA. Adyen hosted fields via Playwright.
+// CapSolver: CF warm + checkout spam reCAPTCHA. Place-order is HTTP-only (no Playwright).
 //
 // Env:
 //   CAPSOLVER_API_KEY (required)

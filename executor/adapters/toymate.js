@@ -6,7 +6,7 @@
 //   account_gen  — create retailer account (proven path: CapSolver CF + form POST)
 //   monitor      — keyword search poll (lightweight)
 //
-// Live card: Adyen v3 `scheme` via checkout UI (Playwright hosted fields).
+// Live card: Adyen v3 `scheme` via HTTP (CSE + BigPay). No Playwright in module path.
 
 import { request, UA } from "../http.js";
 import {
@@ -19,7 +19,6 @@ import {
 import {
   storefrontPaymentHeaders,
   pickAdyenCardMethod,
-  placeOrderViaCheckoutUi,
   placeOrderViaHttp,
 } from "./toymate-adyen.js";
 
@@ -1109,7 +1108,7 @@ export const toymateAdapter = {
     await tStep("place_order_gate", async () => {
       if (!placeOrder) return { ok: true, status: null, note: "dry-run — skip charge" };
       if (!card?.ok) return { ok: false, status: null, note: "placeOrder requires card on profile" };
-      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via checkout UI" };
+      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via HTTP (no Playwright)" };
     });
 
     let orderNumber = null;
@@ -1141,55 +1140,17 @@ export const toymateAdapter = {
       });
 
       const pay = await tStep("place_order", async () => {
-        // Prefer HTTP (Adyen CSE + BigPay). Try even if spam API soft-failed —
-        // spam 429 has been store-side; order/pay may still accept a fresh token.
-        {
-          const spamCleared = steps.some(
-            (s) =>
-              s.step === "checkout_spam" &&
-              s.ok &&
-              Number(s.status) >= 200 &&
-              Number(s.status) < 300,
-          );
-          const http = await placeOrderViaHttp({
-            request,
-            ctx,
-            userAgent: ctx.extraHeaders?.["user-agent"] || UA,
-            checkoutId,
-            card,
-            // Re-post captcha only when spam step did not already clear.
-            captchaToken: spamCleared ? null : captchaToken,
-            profile,
-          });
-          if (http.ok || http.declined) {
-            orderNumber = http.orderNumber || null;
-            paymentDeclined = Boolean(http.declined);
-            paymentStatus = http.declined ? "declined" : orderNumber ? "submitted" : "submitted";
-            const logHint = (http.paymentLogs || [])
-              .slice(0, 4)
-              .map((l) => `${l.step}:${l.status}`)
-              .join(" | ");
-            return {
-              ok: true,
-              status: http.status,
-              note: `${http.note}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 240),
-              declined: http.declined,
-              paymentLogs: (http.paymentLogs || []).slice(0, 8),
-              via: "http",
-            };
-          }
-          // Keep HTTP failure visible in note trail before UI fallback.
-          steps.push({
-            step: "place_order_http",
-            ok: false,
-            status: http.status ?? null,
-            ms: 0,
-            note: String(http.note || "http place failed").slice(0, 200),
-          });
-        }
-
-        // Fresh captcha for UI inject only (tokens expire ~2 min).
-        if (capsolverKey()) {
+        // Module path is HTTP-only. Playwright is research-only
+        // (executor/experiments/toymate-checkout-ui-research.mjs).
+        const spamCleared = steps.some(
+          (s) =>
+            s.step === "checkout_spam" &&
+            s.ok &&
+            Number(s.status) >= 200 &&
+            Number(s.status) < 300,
+        );
+        // Fresh CapSolver token if spam step did not clear (tokens expire ~2 min).
+        if (!spamCleared && capsolverKey()) {
           const sitekey =
             task.recaptchaSitekey ||
             "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
@@ -1207,36 +1168,35 @@ export const toymateAdapter = {
           }
           if (again.ok) captchaToken = again.token;
         }
-        const ui = await placeOrderViaCheckoutUi({
-          proxyUrl: proxyRaw,
-          cookies: ctx.jar?.dump?.() || {},
+        const http = await placeOrderViaHttp({
+          request,
+          ctx,
           userAgent: ctx.extraHeaders?.["user-agent"] || UA,
+          checkoutId,
           card,
-          captchaToken,
-          checkoutUrl: `${apex}/checkout`,
-          screenshotPath: "/opt/cursor/artifacts/toymate-place-order.png",
+          captchaToken: spamCleared ? null : captchaToken,
+          profile,
         });
-        orderNumber = ui.orderNumber || null;
-        paymentDeclined = Boolean(ui.declined);
-        paymentStatus = ui.declined
+        orderNumber = http.orderNumber || null;
+        paymentDeclined = Boolean(http.declined);
+        paymentStatus = http.declined
           ? "declined"
           : orderNumber
             ? "submitted"
-            : ui.ok
+            : http.ok
               ? "submitted"
               : "failed";
-        const logHint = (ui.paymentLogs || [])
-          .slice(0, 3)
-          .map((l) => `${l.status} ${String(l.body || "").slice(0, 80)}`)
+        const logHint = (http.paymentLogs || [])
+          .slice(0, 4)
+          .map((l) => `${l.step}:${l.status}`)
           .join(" | ");
         return {
-          ok: Boolean(ui.ok || ui.declined),
-          status: ui.status,
-          note: logHint ? `${ui.note} :: ${logHint}`.slice(0, 240) : ui.note,
-          declined: ui.declined,
-          paymentLogs: (ui.paymentLogs || []).slice(0, 8),
-          finalUrl: ui.finalUrl || null,
-          via: "ui",
+          ok: Boolean(http.ok || http.declined),
+          status: http.status ?? null,
+          note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 240),
+          declined: http.declined,
+          paymentLogs: (http.paymentLogs || []).slice(0, 8),
+          via: "http",
         };
       });
 
@@ -1272,7 +1232,7 @@ export const toymateAdapter = {
       title: pdp.title,
       cartId: checkoutId,
       atcVia: cart.via || null,
-      note: "Dry-run reached checkout scaffold — HAR wire: remote ATC + Adyen scheme place-order",
+      note: "Dry-run reached checkout scaffold — HTTP Adyen CSE place-order when placeOrder=true",
     };
   },
 };

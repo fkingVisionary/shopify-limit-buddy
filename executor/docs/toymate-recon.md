@@ -16,7 +16,7 @@ _Status: adapter restored (isolated from Kmart)_
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.
-2. **`checkout`** — CF warm → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme`** place-order (Playwright hosted fields). Decline smokes are the safe live proof; a paid order is still bank-dependent.
+2. **`checkout`** — CF warm → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme` HTTP place-order** (CSE + BigPay). **No Playwright in the module path** — browser is research-only (`experiments/toymate-checkout-ui-research.mjs`, HAR capture scripts). Decline smokes are the safe live proof; a paid order is still bank-dependent.
 3. **`monitor`** — keyword search hit/miss.
 
 ### Payment notes
@@ -40,3 +40,4 @@ _Status: adapter restored (isolated from Kmart)_
 - Registry: `adapters/index.js` only adds `toymateAdapter` next to `kmartAdapter`.
 - Desktop: `buildToymatePayload` is a separate branch from `buildKmartPayload`.
 - Do not gate Kmart engine start on CapSolver; do not gate Toymate on Hyper inside the adapter.
+- **No Playwright (or any browser automation) inside adapter/module flows.** Browser is for HAR/recon scripts under `scripts/` + `experiments/` only.

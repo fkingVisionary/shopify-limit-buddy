@@ -72,4 +72,5 @@ Payment-methods (`GET /api/storefront/payments`) did **not** appear in this capt
 
 1. **Done** — primary ATC is `POST /remote/v1/cart/add` (multipart + `stencil-utils`); Storefront carts is fallback (`cart_add` step).
 2. **Done** — login sends both tokens: `authenticity_token` ← jar `XSRF-TOKEN`, `sf_authenticity_token` ← jar `SF-CSRF-TOKEN` (HTML hidden fields as fallback). Stencil/API also send `x-sf-csrf-token`.
-3. **Open** — re-capture with longer checkout settle (or click into shipping) to land consignments / payments / billing POSTs in one HAR.
+3. **Done (constraint)** — module place-order is **HTTP-only** (Adyen CSE + BigPay). Playwright must not run in adapter flows; UI helpers quarantined under `experiments/`.
+4. **Open** — re-capture with longer checkout settle (or click into shipping) to land consignments / payments / billing POSTs + BigPay pay wire in one HAR.
