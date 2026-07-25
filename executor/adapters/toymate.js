@@ -20,6 +20,7 @@ import {
   storefrontPaymentHeaders,
   pickAdyenCardMethod,
   placeOrderViaCheckoutUi,
+  placeOrderViaHttp,
 } from "./toymate-adyen.js";
 
 const sleep = (ms, jitter = 0) =>
@@ -1052,40 +1053,20 @@ export const toymateAdapter = {
             : "no captcha token — skip spam-protection",
         };
       }
-      let lastStatus = null;
-      let lastNote = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
-          method: "POST",
-          headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-          body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
-        }, ctx);
-        lastStatus = res.status;
-        if (res.status >= 200 && res.status < 300) {
-          return { ok: true, status: res.status, note: `spam ${res.status}` };
-        }
-        lastNote = `spam ${res.status}`;
-        // 429 = BC overload/rate-limit — back off; keep token for UI inject.
-        if (res.status !== 429) break;
-        await sleep(2500 * (attempt + 1), 500);
-        // Fresh token after rate-limit (old token may be burned).
-        if (capsolverKey()) {
-          const sitekey =
-            task.recaptchaSitekey ||
-            "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-          const again = await solveRecaptchaV2({
-            pageUrl: `${apex}/checkout`,
-            sitekey,
-            proxyless: true,
-          });
-          if (again.ok) captchaToken = again.token;
-        }
+      // Single attempt — hammering this endpoint 429s the whole payment plane.
+      const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
+        method: "POST",
+        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
+        body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
+      }, ctx);
+      if (res.status >= 200 && res.status < 300) {
+        return { ok: true, status: res.status, note: `spam ${res.status}` };
       }
       return {
         // Soft-ok when we still have a token for Playwright injection.
         ok: Boolean(captchaToken),
-        status: lastStatus,
-        note: `${lastNote || "spam failed"} — UI inject fallback`,
+        status: res.status,
+        note: `spam ${res.status} — UI inject fallback`,
       };
     });
 
@@ -1160,8 +1141,42 @@ export const toymateAdapter = {
       });
 
       const pay = await tStep("place_order", async () => {
-        // Live Adyen hosted fields — same path the storefront uses (decline-friendly).
-        // Fresh captcha if spam API soft-failed earlier (tokens expire ~2 min).
+        // Prefer HTTP (Adyen CSE + BigPay) when spam API cleared; else Playwright UI.
+        const spamOk = steps.some(
+          (s) => s.step === "checkout_spam" && s.ok && Number(s.status) >= 200 && Number(s.status) < 300,
+        );
+
+        if (spamOk && captchaToken) {
+          const http = await placeOrderViaHttp({
+            request,
+            ctx,
+            userAgent: ctx.extraHeaders?.["user-agent"] || UA,
+            checkoutId,
+            card,
+            captchaToken: null, // already posted in checkout_spam
+            profile,
+          });
+          if (http.ok || http.declined) {
+            orderNumber = http.orderNumber || null;
+            paymentDeclined = Boolean(http.declined);
+            paymentStatus = http.declined ? "declined" : orderNumber ? "submitted" : "submitted";
+            const logHint = (http.paymentLogs || [])
+              .slice(0, 3)
+              .map((l) => `${l.step}:${l.status}`)
+              .join(" | ");
+            return {
+              ok: true,
+              status: http.status,
+              note: `${http.note}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 240),
+              declined: http.declined,
+              paymentLogs: (http.paymentLogs || []).slice(0, 8),
+              via: "http",
+            };
+          }
+          // Fall through to UI if HTTP couldn't create/pay.
+        }
+
+        // Fresh captcha for UI inject only (tokens expire ~2 min).
         if (capsolverKey()) {
           const sitekey =
             task.recaptchaSitekey ||
@@ -1209,6 +1224,7 @@ export const toymateAdapter = {
           declined: ui.declined,
           paymentLogs: (ui.paymentLogs || []).slice(0, 8),
           finalUrl: ui.finalUrl || null,
+          via: "ui",
         };
       });
 
