@@ -195,7 +195,8 @@ export async function placeOrderViaHttp({
     );
     const spamText = await spam.text().catch(() => "");
     logs.push({ step: "spam", status: spam.status, body: spamText.slice(0, 160) });
-    if (!(spam.status >= 200 && spam.status < 300)) {
+    // Soft-continue on 429 — BC has been rate-limiting spam while order/pay may still work.
+    if (!(spam.status >= 200 && spam.status < 300) && spam.status !== 429) {
       return {
         ok: false,
         declined: false,
@@ -824,6 +825,11 @@ export async function placeOrderViaCheckoutUi({
     // Explicit human-verify click before waiting on Adyen (BC spam gate).
     await clickHumanVerify(page);
     if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+    // After verify click, checkout-js may need a second inject + small dwell
+    // for its spam-protection XHR to fire with the CapSolver token.
+    await page.waitForTimeout(2000);
+    if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+    await page.waitForTimeout(3000);
 
     const framesReady = await waitForAdyenFrames(page, {
       timeoutMs: 90_000,
