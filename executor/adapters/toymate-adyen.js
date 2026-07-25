@@ -565,8 +565,39 @@ async function clearPlaywrightTurnstile(page, context, { proxyUrl, userAgent } =
       body + html,
     );
   if (!challenged) return { ok: true, skipped: true };
+
+  // 0) Soft click Turnstile / checkbox — sometimes completes without CapSolver.
+  try {
+    const box = page.locator("text=/Verify you are human/i").first();
+    if (await box.count()) await box.click({ timeout: 2000 }).catch(() => {});
+    const frames = page.frames().filter((f) => /turnstile|challenges\.cloudflare/i.test(f.url()));
+    for (const f of frames) {
+      try {
+        await f.click("body", { timeout: 1500 });
+        await f.locator('input[type="checkbox"]').click({ timeout: 1500 }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    }
+    await page.waitForTimeout(4000);
+    const bodyClick = await page.locator("body").innerText().catch(() => "");
+    if (!/performing security verification|verify you are human/i.test(bodyClick)) {
+      return { ok: true, note: "CF cleared via Turnstile click", via: "click" };
+    }
+  } catch {
+    /* continue to CapSolver */
+  }
+
   if (!capsolverKey()) {
     return { ok: false, note: "Playwright CF challenge — CAPSOLVER_API_KEY missing" };
+  }
+
+  // Persist challenge HTML for debugging CapSolver "invalid html".
+  try {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync("/tmp/toymate-pw-cf-challenge.html", html.slice(0, 400_000));
+  } catch {
+    /* ignore */
   }
 
   // 1) Prefer AntiCloudflareTask on live challenge HTML (same path that clears undici).

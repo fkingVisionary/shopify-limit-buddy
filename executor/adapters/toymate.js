@@ -1141,19 +1141,24 @@ export const toymateAdapter = {
       });
 
       const pay = await tStep("place_order", async () => {
-        // Prefer HTTP (Adyen CSE + BigPay) when spam API cleared; else Playwright UI.
-        const spamOk = steps.some(
-          (s) => s.step === "checkout_spam" && s.ok && Number(s.status) >= 200 && Number(s.status) < 300,
-        );
-
-        if (spamOk && captchaToken) {
+        // Prefer HTTP (Adyen CSE + BigPay). Try even if spam API soft-failed —
+        // spam 429 has been store-side; order/pay may still accept a fresh token.
+        {
+          const spamCleared = steps.some(
+            (s) =>
+              s.step === "checkout_spam" &&
+              s.ok &&
+              Number(s.status) >= 200 &&
+              Number(s.status) < 300,
+          );
           const http = await placeOrderViaHttp({
             request,
             ctx,
             userAgent: ctx.extraHeaders?.["user-agent"] || UA,
             checkoutId,
             card,
-            captchaToken: null, // already posted in checkout_spam
+            // Re-post captcha only when spam step did not already clear.
+            captchaToken: spamCleared ? null : captchaToken,
             profile,
           });
           if (http.ok || http.declined) {
@@ -1161,7 +1166,7 @@ export const toymateAdapter = {
             paymentDeclined = Boolean(http.declined);
             paymentStatus = http.declined ? "declined" : orderNumber ? "submitted" : "submitted";
             const logHint = (http.paymentLogs || [])
-              .slice(0, 3)
+              .slice(0, 4)
               .map((l) => `${l.step}:${l.status}`)
               .join(" | ");
             return {
@@ -1173,7 +1178,14 @@ export const toymateAdapter = {
               via: "http",
             };
           }
-          // Fall through to UI if HTTP couldn't create/pay.
+          // Keep HTTP failure visible in note trail before UI fallback.
+          steps.push({
+            step: "place_order_http",
+            ok: false,
+            status: http.status ?? null,
+            ms: 0,
+            note: String(http.note || "http place failed").slice(0, 200),
+          });
         }
 
         // Fresh captcha for UI inject only (tokens expire ~2 min).
