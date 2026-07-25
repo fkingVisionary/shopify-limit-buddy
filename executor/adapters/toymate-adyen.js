@@ -156,9 +156,129 @@ export function pickAdyenCardMethod(methods) {
   );
 }
 
+function jarCookie(jar, name) {
+  const d = jar?.dump?.() || {};
+  const raw = d[name];
+  if (raw == null) return null;
+  try {
+    return decodeURIComponent(String(raw));
+  } catch {
+    return String(raw);
+  }
+}
+
+async function readCheckoutBootstrap(request, ctx, ua, apex) {
+  const res = await request(`${apex}/checkout`, {
+    headers: {
+      "user-agent": ua,
+      accept: "text/html,application/xhtml+xml",
+      referer: `${apex}/`,
+    },
+  }, ctx);
+  const html = await res.text().catch(() => "");
+  const sfToken =
+    html.match(/storefront_api\\":\{\\"token\\":\\"([^\\]+)\\"/)?.[1] ||
+    html.match(/"storefront_api"\s*:\s*\{\s*"token"\s*:\s*"([^"]+)"/)?.[1] ||
+    null;
+  const storeHash =
+    html.match(/"storeHash"\s*:\s*"([^"]+)"/)?.[1] ||
+    html.match(/storeHash\\":\\"([^\\]+)\\"/)?.[1] ||
+    "cf7jv97qb3";
+  return { status: res.status, html, sfToken, storeHash };
+}
+
 /**
- * HTTP place-order via BC internal order create + BigPay payments.
- * Prefer this over Playwright when spam-protection has cleared (no CF Turnstile).
+ * GraphQL Storefront completeCheckout → orderEntityId + paymentAccessToken.
+ * Docs: checkout { completeCheckout(...) { orderEntityId paymentAccessToken } }
+ */
+async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, checkoutId }) {
+  const headers = {
+    "user-agent": ua,
+    accept: "application/json",
+    "content-type": "application/json",
+    origin: apex,
+    referer: `${apex}/checkout`,
+    Authorization: `Bearer ${sfToken}`,
+  };
+  const xsrf = jarCookie(jar, "XSRF-TOKEN");
+  const sf = jarCookie(jar, "SF-CSRF-TOKEN");
+  if (xsrf) headers["x-xsrf-token"] = xsrf;
+  if (sf) headers["x-sf-csrf-token"] = sf;
+
+  const attempts = [
+    {
+      name: "gql_nested",
+      query: `mutation completeCheckout($completeCheckoutInput: CompleteCheckoutInput!) {
+        checkout {
+          completeCheckout(input: $completeCheckoutInput) {
+            orderEntityId
+            paymentAccessToken
+          }
+        }
+      }`,
+      variables: { completeCheckoutInput: { checkoutEntityId: checkoutId } },
+    },
+    {
+      name: "gql_value",
+      query: `mutation completeCheckout($completeCheckoutInput: CompleteCheckoutInput!) {
+        checkout {
+          completeCheckout(input: $completeCheckoutInput) {
+            orderEntityId
+            paymentAccessToken { value }
+          }
+        }
+      }`,
+      variables: { completeCheckoutInput: { checkoutEntityId: checkoutId } },
+    },
+  ];
+
+  for (const a of attempts) {
+    const res = await request(
+      `${apex}/graphql`,
+      { method: "POST", headers, body: JSON.stringify({ query: a.query, variables: a.variables }) },
+      ctx,
+    );
+    const text = await res.text().catch(() => "");
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
+    const node = json?.data?.checkout?.completeCheckout || json?.data?.completeCheckout;
+    const patRaw = node?.paymentAccessToken;
+    const pat = typeof patRaw === "string" ? patRaw : patRaw?.value || null;
+    const orderId = node?.orderEntityId || null;
+    if (res.status >= 200 && res.status < 300 && (pat || orderId) && !json?.errors?.length) {
+      return {
+        ok: true,
+        via: a.name,
+        status: res.status,
+        orderId,
+        payToken: pat,
+        body: text.slice(0, 240),
+      };
+    }
+    if (a === attempts[attempts.length - 1]) {
+      return {
+        ok: false,
+        via: a.name,
+        status: res.status,
+        orderId: null,
+        payToken: null,
+        body: text.slice(0, 240),
+        errors: json?.errors?.[0]?.message || null,
+      };
+    }
+  }
+  return { ok: false, via: null, status: null, orderId: null, payToken: null, body: "" };
+}
+
+/**
+ * HTTP place-order (module path — no Playwright):
+ * 1) spam-protection (soft on 429)
+ * 2) GraphQL completeCheckout → PAT (preferred) or internalapi order
+ * 3) BigPay POST /stores/{hash}/payments with card instrument
  */
 export async function placeOrderViaHttp({
   request,
@@ -215,94 +335,205 @@ export async function placeOrderViaHttp({
   if (!adyen) {
     return { ok: false, declined: false, note: "http: no Adyen scheme", paymentLogs: logs };
   }
-  const clientKey = adyen.initializationData?.clientKey || adyen.config?.clientKey;
-  if (!clientKey) {
-    return { ok: false, declined: false, note: "http: missing Adyen clientKey", paymentLogs: logs };
-  }
 
-  const encrypted = await encryptAdyenCard({
-    clientKey,
-    number: card.number,
-    expMonth: card.expMonth,
-    expYear: card.expYear,
-    cvv: card.cvv,
-    holder: card.holder || `${profile.first_name || "Test"} ${profile.last_name || "Buyer"}`,
+  const boot = await readCheckoutBootstrap(request, ctx, ua, apex);
+  logs.push({
+    step: "checkout_boot",
+    status: boot.status,
+    body: `sf=${Boolean(boot.sfToken)} hash=${boot.storeHash}`,
   });
 
-  // Create order (BC Optimized Checkout internal API).
-  const orderRes = await request(
-    `${apex}/internalapi/v1/checkout/order`,
-    {
-      method: "POST",
-      headers: {
-        ...headers,
-        accept: "application/json, text/plain, */*",
-        "x-requested-with": "XMLHttpRequest",
+  let orderId = null;
+  let payToken = null;
+  let orderVia = null;
+
+  if (boot.sfToken) {
+    const gql = await completeCheckoutGraphql(request, ctx, {
+      apex,
+      ua,
+      jar,
+      sfToken: boot.sfToken,
+      checkoutId,
+    });
+    logs.push({
+      step: "complete_checkout",
+      status: gql.status,
+      body: `${gql.via || ""} ${gql.errors || gql.body || ""}`.slice(0, 200),
+    });
+    if (gql.ok) {
+      orderId = gql.orderId;
+      payToken = gql.payToken;
+      orderVia = "graphql";
+    }
+  }
+
+  // Fallback: Optimized Checkout internal order create (returns token when not 429).
+  if (!payToken) {
+    const orderRes = await request(
+      `${apex}/internalapi/v1/checkout/order`,
+      {
+        method: "POST",
+        headers: {
+          ...headers,
+          accept: "application/json, text/plain, */*",
+          "x-requested-with": "XMLHttpRequest",
+        },
+        body: JSON.stringify({}),
       },
-      body: JSON.stringify({}),
-    },
-    ctx,
-  );
-  const orderText = await orderRes.text().catch(() => "");
-  logs.push({ step: "order_create", status: orderRes.status, body: orderText.slice(0, 240) });
-  if (!(orderRes.status >= 200 && orderRes.status < 300)) {
+      ctx,
+    );
+    const orderText = await orderRes.text().catch(() => "");
+    logs.push({ step: "order_create", status: orderRes.status, body: orderText.slice(0, 240) });
+    if (orderRes.status >= 200 && orderRes.status < 300) {
+      let orderJson = null;
+      try {
+        orderJson = JSON.parse(orderText);
+      } catch {
+        /* ignore */
+      }
+      orderId =
+        orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || orderId;
+      payToken =
+        orderJson?.data?.order?.token ||
+        orderJson?.data?.token ||
+        orderJson?.token ||
+        orderJson?.payment?.token ||
+        null;
+      orderVia = "internalapi";
+    }
+  }
+
+  if (!payToken) {
     return {
       ok: false,
       declined: false,
-      note: `http order_create ${orderRes.status}`,
+      note: `http no paymentAccessToken (gql/internal blocked — often spam/order 429)`,
       paymentLogs: logs,
+      orderId,
     };
   }
-  let orderJson = null;
-  try {
-    orderJson = JSON.parse(orderText);
-  } catch {
-    /* ignore */
-  }
-  const orderId = orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || null;
-  const payToken =
-    orderJson?.data?.order?.token ||
-    orderJson?.data?.token ||
-    orderJson?.token ||
-    orderJson?.payment?.token ||
-    null;
+
+  const number = String(card.number || "").replace(/\s+/g, "");
+  const expMonth = Number(String(card.expMonth || "").padStart(2, "0").slice(-2));
+  let expYear = Number(String(card.expYear || "").trim());
+  if (expYear > 0 && expYear < 100) expYear += 2000;
+  const holder =
+    card.holder || `${profile.first_name || "Test"} ${profile.last_name || "Buyer"}`;
+  const cvv = String(card.cvv || "").trim();
+
+  // Docs: Adyen V3 OAuth supports raw card on Payments API.
+  const paymentMethodIds = [
+    `${adyen.gateway}.card`,
+    `${adyen.gateway}.${adyen.id}`,
+    adyen.id === "scheme" ? "adyenv3.card" : null,
+  ].filter(Boolean);
 
   const payHeaders = {
     "user-agent": ua,
-    accept: "application/json",
+    accept: "application/vnd.bc.v1+json",
     "content-type": "application/json",
+    Authorization: `PAT ${payToken}`,
     origin: apex,
     referer: `${apex}/checkout`,
   };
-  // Prefer PAT-only for BigPay when we have a payment token.
-  if (payToken) payHeaders.Authorization = `PAT ${payToken}`;
 
-  const payBody = {
-    payment: {
-      payment_method_id: `${adyen.gateway}.${adyen.id}`,
-      methodId: adyen.id,
-      gatewayId: adyen.gateway,
-      ...(orderId ? { orderId: String(orderId) } : {}),
-      paymentData: JSON.stringify({
-        paymentMethod: encrypted,
-        browserInfo: browserInfo(),
-        clientStateDataIndicator: true,
-        origin: apex,
-      }),
-    },
-  };
+  let payRes = null;
+  let payText = "";
+  let usedMethod = null;
+  for (const paymentMethodId of paymentMethodIds) {
+    const payBody = {
+      payment: {
+        instrument: {
+          type: "card",
+          number,
+          cardholder_name: holder,
+          expiry_month: expMonth,
+          expiry_year: expYear,
+          verification_value: cvv,
+        },
+        payment_method_id: paymentMethodId,
+      },
+    };
+    payRes = await request(
+      `https://payments.bigcommerce.com/stores/${boot.storeHash}/payments`,
+      {
+        method: "POST",
+        headers: payHeaders,
+        body: JSON.stringify(payBody),
+      },
+      ctx,
+    );
+    payText = await payRes.text().catch(() => "");
+    usedMethod = paymentMethodId;
+    logs.push({
+      step: "bigpay",
+      status: payRes.status,
+      body: `${paymentMethodId} ${payText}`.slice(0, 300),
+    });
+    // Retry next method id only on clear method errors.
+    if (
+      payRes.status >= 200 &&
+      payRes.status < 300
+    ) {
+      break;
+    }
+    if (!/payment_method|not supported|invalid.*method/i.test(payText)) break;
+  }
 
-  const payRes = await request(
-    "https://payments.bigcommerce.com/api/public/v1/orders/payments",
-    {
-      method: "POST",
-      headers: payHeaders,
-      body: JSON.stringify(payBody),
-    },
-    ctx,
-  );
-  const payText = await payRes.text().catch(() => "");
-  logs.push({ step: "bigpay", status: payRes.status, body: payText.slice(0, 300) });
+  // Optional CSE fallback if raw card rejected (hosted-form stores).
+  if (payRes && !(payRes.status >= 200 && payRes.status < 300)) {
+    const clientKey = adyen.initializationData?.clientKey || adyen.config?.clientKey;
+    if (clientKey) {
+      try {
+        const encrypted = await encryptAdyenCard({
+          clientKey,
+          number,
+          expMonth: card.expMonth,
+          expYear: card.expYear,
+          cvv,
+          holder,
+        });
+        const encRes = await request(
+          "https://payments.bigcommerce.com/api/public/v1/orders/payments",
+          {
+            method: "POST",
+            headers: {
+              "user-agent": ua,
+              accept: "application/json",
+              "content-type": "application/json",
+              Authorization: `PAT ${payToken}`,
+              origin: apex,
+              referer: `${apex}/checkout`,
+            },
+            body: JSON.stringify({
+              payment: {
+                payment_method_id: usedMethod || `${adyen.gateway}.${adyen.id}`,
+                ...(orderId ? { orderId: String(orderId) } : {}),
+                paymentData: JSON.stringify({
+                  paymentMethod: encrypted,
+                  browserInfo: browserInfo(),
+                  clientStateDataIndicator: true,
+                  origin: apex,
+                }),
+              },
+            }),
+          },
+          ctx,
+        );
+        const encText = await encRes.text().catch(() => "");
+        logs.push({ step: "bigpay_cse", status: encRes.status, body: encText.slice(0, 300) });
+        if (encRes.status >= 200 && encRes.status < 300) {
+          payRes = encRes;
+          payText = encText;
+        } else if (/declin|refused|insufficient|invalid card/i.test(encText)) {
+          payRes = encRes;
+          payText = encText;
+        }
+      } catch (e) {
+        logs.push({ step: "bigpay_cse", status: null, body: e?.message || String(e) });
+      }
+    }
+  }
 
   const declined =
     /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
@@ -316,13 +547,14 @@ export async function placeOrderViaHttp({
     return {
       ok: true,
       declined: true,
-      status: payRes.status,
+      status: payRes?.status ?? null,
       note: payText.replace(/\s+/g, " ").slice(0, 180),
       orderNumber: null,
       paymentLogs: logs,
+      orderVia,
     };
   }
-  if (payRes.status >= 200 && payRes.status < 300) {
+  if (payRes && payRes.status >= 200 && payRes.status < 300) {
     return {
       ok: true,
       declined: false,
@@ -330,14 +562,16 @@ export async function placeOrderViaHttp({
       note: orderNumber ? `order ${orderNumber}` : `bigpay ${payRes.status}`,
       orderNumber,
       paymentLogs: logs,
+      orderVia,
     };
   }
   return {
     ok: false,
     declined: false,
-    status: payRes.status,
-    note: `http pay ${payRes.status}: ${payText.replace(/\s+/g, " ").slice(0, 140)}`,
+    status: payRes?.status ?? null,
+    note: `http pay ${payRes?.status}: ${payText.replace(/\s+/g, " ").slice(0, 140)}`,
     paymentLogs: logs,
+    orderVia,
   };
 }
 
