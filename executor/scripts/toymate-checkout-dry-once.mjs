@@ -39,12 +39,11 @@ function pickProxy() {
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l && !l.startsWith("#"));
-    // Prefer a fresh session mint from template of line 1.
-    const base = lines[0];
-    if (base) {
-      const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-      return base.replace(/session-[^-]+/, `session-${stamp}`);
-    }
+    // CapSolver is flaky on some Noontide exits — prefer as1 sticky when present.
+    const preferred =
+      lines.find((l) => /proxy-as1\./i.test(l)) ||
+      lines[0];
+    if (preferred) return preferred;
   }
   return null;
 }
@@ -179,7 +178,8 @@ try {
     status: s.status,
     note: String(s.note || "").slice(0, 180),
   }));
-  const cartOk = steps.some((s) => s.step === "cart_create" && s.ok);
+  const cartOk = steps.some((s) => (s.step === "cart_add" || s.step === "cart_create") && s.ok);
+  const remoteAtc = steps.find((s) => s.step === "cart_add" && /remote ATC/i.test(String(s.note || "")));
   const addrOk = steps.some((s) => s.step === "checkout_set_address" && s.ok);
   const loginOk = steps.some((s) => s.step === "account_login" && s.ok);
   console.log(
@@ -191,6 +191,8 @@ try {
       dryRun: out.dryRun !== false,
       loginOk,
       cartOk,
+      remoteAtc: Boolean(remoteAtc),
+      atcVia: out.atcVia || null,
       addrOk,
       error: out.error || null,
       failedStep: out.failedStep || null,
@@ -201,7 +203,20 @@ try {
   // Success for this smoke = logged in + cart created (address nice-to-have).
   process.exit(loginOk && cartOk ? 0 : 3);
 } catch (e) {
-  console.log(JSON.stringify({ phase: "throw", error: e?.message || String(e), ms: Date.now() - t0 }));
+  console.log(
+    JSON.stringify({
+      phase: "throw",
+      error: e?.message || String(e),
+      cause: e?.cause?.message || e?.cause?.code || null,
+      ms: Date.now() - t0,
+      steps: (ctx.steps || []).map((s) => ({
+        step: s.step,
+        ok: s.ok,
+        status: s.status,
+        note: String(s.note || "").slice(0, 160),
+      })),
+    }),
+  );
   process.exit(4);
 } finally {
   try {
