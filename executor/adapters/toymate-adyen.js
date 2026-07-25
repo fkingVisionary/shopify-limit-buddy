@@ -245,10 +245,48 @@ async function injectRecaptchaToken(page, token) {
   }, token);
 }
 
-async function waitForAdyenFrames(page, timeoutMs = 75_000) {
+async function clickHumanVerify(page) {
+  // BC Optimized Checkout: "Please click here to verify yourself as human…"
+  for (const sel of [
+    'text=/verify yourself as human/i',
+    'a:has-text("click here")',
+    'button:has-text("click here")',
+    'text=/click here to verify/i',
+    '[class*="spam"] a',
+    '[class*="recaptcha"] a',
+  ]) {
+    const el = page.locator(sel).first();
+    if (!(await el.count())) continue;
+    try {
+      if (await el.isVisible()) {
+        await el.click({ timeout: 2500 });
+        return true;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+  return false;
+}
+
+async function waitForAdyenFrames(page, { timeoutMs = 75_000, captchaToken = null } = {}) {
   const deadline = Date.now() + timeoutMs;
+  let clickedVerify = false;
   while (Date.now() < deadline) {
     await dismissSpamModal(page);
+    if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+
+    const body = await page.locator("body").innerText().catch(() => "");
+    if (/verify yourself as human|click here to verify/i.test(body) && !clickedVerify) {
+      clickedVerify = await clickHumanVerify(page);
+      if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+      await page.waitForTimeout(1500);
+    } else if (/verify yourself as human|click here to verify/i.test(body)) {
+      // Click again periodically — first click sometimes only opens widget.
+      await clickHumanVerify(page);
+      if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+    }
+
     // Expand / focus Payment step
     for (const sel of [
       'h2:has-text("Payment")',
@@ -296,7 +334,7 @@ async function waitForAdyenFrames(page, timeoutMs = 75_000) {
       /card number|secured card number|encryptedCardNumber|number/i.test(t.title + t.src),
     );
     if (adyen.length >= 1 || hasCardIframe) {
-      return { ok: true, titled, adyenCount: adyen.length };
+      return { ok: true, titled, adyenCount: adyen.length, clickedVerify };
     }
     await page.waitForTimeout(1200);
   }
@@ -306,7 +344,7 @@ async function waitForAdyenFrames(page, timeoutMs = 75_000) {
       src: (e.getAttribute("src") || "").slice(0, 120),
     })),
   );
-  return { ok: false, titled, adyenCount: 0 };
+  return { ok: false, titled, adyenCount: 0, clickedVerify };
 }
 
 /**
@@ -416,7 +454,14 @@ export async function placeOrderViaCheckoutUi({
       }
     }
 
-    const framesReady = await waitForAdyenFrames(page, 80_000);
+    // Explicit human-verify click before waiting on Adyen (BC spam gate).
+    await clickHumanVerify(page);
+    if (captchaToken) await injectRecaptchaToken(page, captchaToken);
+
+    const framesReady = await waitForAdyenFrames(page, {
+      timeoutMs: 90_000,
+      captchaToken,
+    });
     if (!framesReady.ok) {
       if (screenshotPath) {
         try {
@@ -426,10 +471,13 @@ export async function placeOrderViaCheckoutUi({
         }
       }
       const spamHit = paymentLogs.find((l) => /spam-protection/i.test(l.url));
+      const bodyHint = (await page.locator("body").innerText().catch(() => ""))
+        .replace(/\s+/g, " ")
+        .slice(0, 120);
       return {
         ok: false,
         status: spamHit?.status ?? null,
-        note: `Adyen fields not found (iframes=${JSON.stringify(framesReady.titled).slice(0, 160)}; spamApi=${spamHit?.status || "none"})`,
+        note: `Adyen fields not found (verifyClick=${framesReady.clickedVerify}; spamApi=${spamHit?.status || "none"}; body=${bodyHint})`,
         declined: false,
         paymentLogs,
         finalUrl: page.url(),
