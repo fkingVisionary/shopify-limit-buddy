@@ -1142,12 +1142,17 @@ export const toymateAdapter = {
             : ui.ok
               ? "submitted"
               : "failed";
+        const logHint = (ui.paymentLogs || [])
+          .slice(0, 3)
+          .map((l) => `${l.status} ${String(l.body || "").slice(0, 80)}`)
+          .join(" | ");
         return {
           ok: Boolean(ui.ok || ui.declined),
           status: ui.status,
-          note: ui.note,
+          note: logHint ? `${ui.note} :: ${logHint}`.slice(0, 240) : ui.note,
           declined: ui.declined,
           paymentLogs: (ui.paymentLogs || []).slice(0, 8),
+          finalUrl: ui.finalUrl || null,
         };
       });
 
