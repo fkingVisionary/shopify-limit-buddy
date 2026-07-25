@@ -542,10 +542,11 @@ export async function placeOrderViaHttp({
     card.holder || `${profile.first_name || "Test"} ${profile.last_name || "Buyer"}`;
   const cvv = String(card.cvv || "").trim();
 
-  // Docs: Adyen V3 OAuth supports raw card on Payments API.
+  // Prefer the live method id first (adyenv3.scheme). Extra ids only on
+  // clear method-shape errors — never spray after a bank decline.
   const paymentMethodIds = [
-    `${adyen.gateway}.card`,
     `${adyen.gateway}.${adyen.id}`,
+    `${adyen.gateway}.card`,
     adyen.id === "scheme" ? "adyenv3.card" : null,
   ].filter(Boolean);
 
@@ -557,6 +558,15 @@ export async function placeOrderViaHttp({
     origin: apex,
     referer: `${apex}/checkout`,
   };
+
+  const looksDeclined = (text) =>
+    /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
+      String(text || ""),
+    ) && !/unauthorized/i.test(String(text || ""));
+  const looksMethodError = (text) =>
+    /payment_method|not supported|invalid.*method|instrument.*not.*supported/i.test(
+      String(text || ""),
+    );
 
   let payRes = null;
   let payText = "";
@@ -591,18 +601,22 @@ export async function placeOrderViaHttp({
       status: payRes.status,
       body: `${paymentMethodId} ${payText}`.slice(0, 300),
     });
-    // Retry next method id only on clear method errors.
-    if (
-      payRes.status >= 200 &&
-      payRes.status < 300
-    ) {
-      break;
-    }
-    if (!/payment_method|not supported|invalid.*method/i.test(payText)) break;
+    if (payRes.status >= 200 && payRes.status < 300) break;
+    // Terminal bank/PSP outcome — do NOT try another method id or CSE.
+    if (looksDeclined(payText) || payRes.status === 422) break;
+    if (!looksMethodError(payText)) break;
   }
 
-  // Optional CSE fallback if raw card rejected (hosted-form stores).
-  if (payRes && !(payRes.status >= 200 && payRes.status < 300)) {
+  // CSE only when raw instrument shape was rejected — never after a decline.
+  // (Previously any non-2xx including 422 insufficient-funds fired a 2nd auth.)
+  const shouldTryCse =
+    payRes &&
+    !(payRes.status >= 200 && payRes.status < 300) &&
+    !looksDeclined(payText) &&
+    payRes.status !== 422 &&
+    looksMethodError(payText);
+
+  if (shouldTryCse) {
     const clientKey = adyen.initializationData?.clientKey || adyen.config?.clientKey;
     if (clientKey) {
       try {
@@ -646,7 +660,7 @@ export async function placeOrderViaHttp({
         if (encRes.status >= 200 && encRes.status < 300) {
           payRes = encRes;
           payText = encText;
-        } else if (/declin|refused|insufficient|invalid card/i.test(encText)) {
+        } else if (looksDeclined(encText)) {
           payRes = encRes;
           payText = encText;
         }
@@ -654,12 +668,17 @@ export async function placeOrderViaHttp({
         logs.push({ step: "bigpay_cse", status: null, body: e?.message || String(e) });
       }
     }
+  } else if (payRes && !(payRes.status >= 200 && payRes.status < 300)) {
+    logs.push({
+      step: "bigpay_cse",
+      status: null,
+      body: looksDeclined(payText) || payRes.status === 422
+        ? "skipped_cse_after_decline"
+        : "skipped_cse_non_method_error",
+    });
   }
 
-  const declined =
-    /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
-      payText,
-    ) && !/unauthorized/i.test(payText);
+  const declined = looksDeclined(payText);
   const orderNumber =
     payText.match(/order(?:_?(?:number|id))?["']?\s*:\s*["']?(\d{5,})/i)?.[1] ||
     (orderId ? String(orderId) : null);
