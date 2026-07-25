@@ -33,20 +33,21 @@ function loadKey() {
 }
 
 function pickProxy() {
-  if (process.env.PROXY_LINE) return process.env.PROXY_LINE.trim();
   const local = path.join(__dirname, "..", "noontide.proxies.local");
-  if (!fs.existsSync(local)) return null;
-  const lines = fs
-    .readFileSync(local, "utf8")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"));
-  if (!lines.length) return null;
-  // PROXY_INDEX=0..n-1 rotates sticky lines; default prefers as1 then first.
-  if (process.env.PROXY_INDEX != null && process.env.PROXY_INDEX !== "") {
+  const lines = fs.existsSync(local)
+    ? fs
+        .readFileSync(local, "utf8")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"))
+    : [];
+  // Explicit sticky line wins only when not rotating.
+  if (process.env.PROXY_INDEX != null && process.env.PROXY_INDEX !== "" && lines.length) {
     const i = Math.abs(Number(process.env.PROXY_INDEX)) % lines.length;
     return lines[i];
   }
+  if (process.env.PROXY_LINE) return process.env.PROXY_LINE.trim();
+  if (!lines.length) return null;
   return lines.find((l) => /proxy-as1\./i.test(l)) || lines[0] || null;
 }
 

@@ -29,6 +29,8 @@ function runOnce(index) {
       ...process.env,
       PROXY_INDEX: String(index),
     };
+    // Sticky PROXY_LINE from a parent shell must not pin every attempt to one exit.
+    delete env.PROXY_LINE;
     const child = spawn(
       process.execPath,
       [path.join(__dirname, "toymate-checkout-live-once.mjs")],
