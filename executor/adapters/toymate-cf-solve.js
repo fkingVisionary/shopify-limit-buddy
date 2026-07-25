@@ -188,10 +188,11 @@ export async function solveCloudflareChallenge({
 
 /**
  * Solve reCAPTCHA v2 (form captcha on create-account / spam-protection).
+ * `proxyless: true` forces ReCaptchaV2TaskProxyLess (often better token accept rate for BC spam).
  */
-export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw } = {}) {
+export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw, proxyless = false } = {}) {
   if (!sitekey) return { ok: false, error: "reCAPTCHA sitekey missing" };
-  const proxy = proxyToCapsolverFormat(proxyRaw);
+  const proxy = proxyless ? null : proxyToCapsolverFormat(proxyRaw);
   const task = {
     type: proxy ? "ReCaptchaV2Task" : "ReCaptchaV2TaskProxyLess",
     websiteURL: pageUrl,
@@ -211,7 +212,73 @@ export async function solveRecaptchaV2({ pageUrl, sitekey, proxyRaw } = {}) {
   if (!solved.ok) return solved;
   const token = solved.solution?.gRecaptchaResponse || solved.solution?.token;
   if (!token) return { ok: false, error: "CapSolver returned empty reCAPTCHA token" };
-  return { ok: true, token, elapsedMs: solved.elapsedMs };
+  return {
+    ok: true,
+    token,
+    elapsedMs: solved.elapsedMs,
+    via: proxy ? "proxy" : "proxyless",
+  };
+}
+
+/**
+ * Solve Cloudflare Turnstile (managed challenge / “Verify you are human”).
+ * Used when Playwright hits a Turnstile interstitial with an existing jar.
+ */
+export async function solveTurnstileChallenge({
+  pageUrl,
+  sitekey,
+  proxyRaw,
+  proxyless = false,
+  userAgent,
+} = {}) {
+  if (!sitekey) return { ok: false, error: "Turnstile sitekey missing" };
+  const proxy = proxyless ? null : proxyToCapsolverFormat(proxyRaw);
+  const task = {
+    type: proxy ? "AntiTurnstileTask" : "AntiTurnstileTaskProxyLess",
+    websiteURL: pageUrl,
+    websiteKey: sitekey,
+  };
+  if (userAgent) task.userAgent = userAgent;
+  if (proxy) {
+    // CapSolver accepts host:port:user:pass on AntiTurnstileTask via `proxy` field
+    // for some task types; also set structured fields when present.
+    task.proxy = proxy;
+    const [ip, port, user, ...passParts] = proxy.split(":");
+    task.proxyType = "http";
+    task.proxyAddress = ip;
+    task.proxyPort = Number(port);
+    if (user) {
+      task.proxyLogin = user;
+      task.proxyPassword = passParts.join(":");
+    }
+  }
+  const solved = await capsolverCreateAndPoll(task, { timeoutMs: 150_000 });
+  if (!solved.ok) return solved;
+  const sol = solved.solution || {};
+  const token = sol.token || sol.cf_clearance || null;
+  const cookies = {};
+  if (typeof sol.cookies === "object" && sol.cookies) {
+    for (const [k, v] of Object.entries(sol.cookies)) cookies[k] = String(v);
+  }
+  if (sol.cf_clearance) cookies.cf_clearance = String(sol.cf_clearance);
+  return {
+    ok: Boolean(token || cookies.cf_clearance),
+    token,
+    cookies,
+    userAgent: sol.userAgent || userAgent || null,
+    elapsedMs: solved.elapsedMs,
+    note: token ? "turnstile token" : "turnstile cookies",
+  };
+}
+
+export function extractTurnstileSitekey(html) {
+  const h = String(html || "");
+  return (
+    h.match(/data-sitekey=["'](0x[0-9A-Za-z_-]+)["']/i)?.[1] ||
+    h.match(/turnstile["']?\s*[:=]\s*\{\s*["']?sitekey["']?\s*:\s*["'](0x[^"']+)["']/i)?.[1] ||
+    h.match(/sitekey["']?\s*:\s*["'](0x[0-9A-Za-z_-]+)["']/i)?.[1] ||
+    null
+  );
 }
 
 export function extractRecaptchaSitekey(html) {

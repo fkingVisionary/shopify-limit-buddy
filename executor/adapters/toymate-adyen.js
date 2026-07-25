@@ -1,11 +1,15 @@
-// Toymate Adyen v3 (scheme) helpers — CapSolver-free except caller-supplied captcha.
+// Toymate Adyen v3 (scheme) helpers — HTTP only (no Playwright in module path).
 // Isolated from Kmart / Paydock.
+// Research UI tooling (Playwright) lives in experiments/ — never import it from adapters.
 
 import https from "node:https";
 import forge from "node-forge";
 
 export const BC_INTERNAL_HEADER =
   "This API endpoint is for internal use only and may change in the future";
+
+/** Matches checkout-sdk default request headers (spam/order/payments). */
+export const BC_CHECKOUT_SDK_VERSION = "1.793.0";
 
 export function storefrontPaymentHeaders(jar, ua, extra = {}) {
   const d = jar?.dump?.() || {};
@@ -15,6 +19,7 @@ export function storefrontPaymentHeaders(jar, ua, extra = {}) {
     "content-type": "application/json",
     "x-requested-with": "XMLHttpRequest",
     "X-API-INTERNAL": BC_INTERNAL_HEADER,
+    "X-Checkout-SDK-Version": BC_CHECKOUT_SDK_VERSION,
     origin: "https://toymate.com.au",
     referer: "https://toymate.com.au/checkout",
     ...extra,
@@ -24,6 +29,13 @@ export function storefrontPaymentHeaders(jar, ua, extra = {}) {
       headers["x-xsrf-token"] = decodeURIComponent(d["XSRF-TOKEN"]);
     } catch {
       headers["x-xsrf-token"] = d["XSRF-TOKEN"];
+    }
+  }
+  if (d["SF-CSRF-TOKEN"]) {
+    try {
+      headers["x-sf-csrf-token"] = decodeURIComponent(d["SF-CSRF-TOKEN"]);
+    } catch {
+      headers["x-sf-csrf-token"] = d["SF-CSRF-TOKEN"];
     }
   }
   return headers;
@@ -58,7 +70,6 @@ function httpsJson(url) {
   });
 }
 
-/** Fetch Adyen CSE public key for a live/test clientKey. */
 export async function fetchAdyenPublicKey(clientKey) {
   const json = await httpsJson(
     `https://checkoutshopper-live.adyen.com/checkoutshopper/v1/clientKeys/${clientKey}`,
@@ -138,6 +149,7 @@ export function browserInfo() {
   };
 }
 
+/** Pick Adyen v3 scheme (card) method from Storefront payments list. */
 export function pickAdyenCardMethod(methods) {
   const list = Array.isArray(methods) ? methods : [];
   return (
@@ -148,254 +160,558 @@ export function pickAdyenCardMethod(methods) {
   );
 }
 
+function jarCookie(jar, name) {
+  const d = jar?.dump?.() || {};
+  const raw = d[name];
+  if (raw == null) return null;
+  try {
+    return decodeURIComponent(String(raw));
+  } catch {
+    return String(raw);
+  }
+}
+
+async function readCheckoutBootstrap(request, ctx, ua, apex) {
+  const res = await request(`${apex}/checkout`, {
+    headers: {
+      "user-agent": ua,
+      accept: "text/html,application/xhtml+xml",
+      referer: `${apex}/`,
+    },
+  }, ctx);
+  const html = await res.text().catch(() => "");
+  const sfToken =
+    html.match(/storefront_api\\":\{\\"token\\":\\"([^\\]+)\\"/)?.[1] ||
+    html.match(/"storefront_api"\s*:\s*\{\s*"token"\s*:\s*"([^"]+)"/)?.[1] ||
+    null;
+  const storeHash =
+    html.match(/"storeHash"\s*:\s*"([^"]+)"/)?.[1] ||
+    html.match(/storeHash\\":\\"([^\\]+)\\"/)?.[1] ||
+    "cf7jv97qb3";
+  return { status: res.status, html, sfToken, storeHash };
+}
+
+function storefrontGraphqlHeaders(jar, ua, apex, sfToken) {
+  const headers = {
+    "user-agent": ua,
+    accept: "application/json",
+    "content-type": "application/json",
+    origin: apex,
+    referer: `${apex}/checkout`,
+    Authorization: `Bearer ${sfToken}`,
+  };
+  const xsrf = jarCookie(jar, "XSRF-TOKEN");
+  const sf = jarCookie(jar, "SF-CSRF-TOKEN");
+  if (xsrf) headers["x-xsrf-token"] = xsrf;
+  if (sf) headers["x-sf-csrf-token"] = sf;
+  return headers;
+}
+
 /**
- * Playwright: open /checkout with jar cookies + same proxy, fill Adyen hosted fields, place order.
- * Returns { ok, status, note, declined, orderNumber, body }.
+ * checkout-sdk posts spam-protection with body `{ token }` (not nested spamProtection).
+ * GraphQL applyCheckoutSpamProtection is the alternate plane when REST 429s.
  */
-export async function placeOrderViaCheckoutUi({
-  proxyUrl,
-  cookies,
-  userAgent,
-  card,
-  checkoutUrl = "https://toymate.com.au/checkout",
-  timeoutMs = 120_000,
-} = {}) {
-  const { chromium } = await import("playwright");
-  let proxy = null;
-  if (proxyUrl) {
-    try {
-      const u = new URL(proxyUrl);
-      proxy = {
-        server: `${u.protocol}//${u.hostname}:${u.port || (u.protocol === "https:" ? "443" : "80")}`,
-        username: u.username ? decodeURIComponent(u.username) : undefined,
-        password: u.password ? decodeURIComponent(u.password) : undefined,
-      };
-    } catch {
-      proxy = null;
+export async function applySpamProtectionHttp(
+  request,
+  ctx,
+  { apex, ua, jar, checkoutId, captchaToken, sfToken = null, skipRest = false },
+) {
+  const logs = [];
+  let restStatus = null;
+  if (!skipRest) {
+    const restHeaders = storefrontPaymentHeaders(jar, ua);
+    const spam = await request(
+      `${apex}/api/storefront/checkouts/${checkoutId}/spam-protection`,
+      {
+        method: "POST",
+        headers: restHeaders,
+        body: JSON.stringify({ token: captchaToken }),
+      },
+      ctx,
+    );
+    const spamText = await spam.text().catch(() => "");
+    restStatus = spam.status;
+    logs.push({ step: "spam_rest", status: spam.status, body: spamText.slice(0, 160) });
+    if (spam.status >= 200 && spam.status < 300) {
+      return { ok: true, via: "rest", status: spam.status, logs };
     }
   }
 
-  const browser = await chromium.launch({
-    headless: true,
-    proxy: proxy || undefined,
-  });
-  try {
-    const context = await browser.newContext({
-      userAgent:
-        userAgent ||
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      locale: "en-AU",
-      viewport: { width: 1280, height: 900 },
-    });
-    const jarCookies = [];
-    for (const [name, value] of Object.entries(cookies || {})) {
-      jarCookies.push({
-        name,
-        value: String(value),
-        domain: ".toymate.com.au",
-        path: "/",
-        httpOnly: false,
-        secure: true,
-        sameSite: "Lax",
-      });
-    }
-    if (jarCookies.length) await context.addCookies(jarCookies);
-
-    const page = await context.newPage();
-    const paymentLogs = [];
-    page.on("response", async (res) => {
-      const url = res.url();
-      if (/payments|order|adyen|checkout/i.test(url) && res.request().method() !== "GET") {
-        let body = "";
-        try {
-          body = (await res.text()).slice(0, 500);
-        } catch {
-          /* ignore */
-        }
-        paymentLogs.push({ url: url.slice(0, 160), status: res.status(), body });
-      }
-    });
-
-    await page.goto(checkoutUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-    await page.waitForTimeout(2500);
-
-    // Prefer credit card / Adyen radio if present.
-    for (const sel of [
-      'label:has-text("Credit Card")',
-      'text=Credit Card',
-      '[data-test="payment-method-scheme"]',
-      "#radio-adyenv3",
-      'input[value="scheme"]',
-    ]) {
-      const el = page.locator(sel).first();
-      if (await el.count()) {
-        try {
-          await el.click({ timeout: 2000 });
-          break;
-        } catch {
-          /* try next */
+  if (sfToken) {
+    const gqlHeaders = storefrontGraphqlHeaders(jar, ua, apex, sfToken);
+    const query = `mutation applyCheckoutSpamProtection($input: ApplyCheckoutSpamProtectionInput!) {
+      checkout {
+        applyCheckoutSpamProtection(input: $input) {
+          checkout { entityId }
         }
       }
-    }
-    await page.waitForTimeout(1500);
-
-    const number = String(card.number || "").replace(/\s+/g, "");
-    const expMonth = String(card.expMonth || "").padStart(2, "0").slice(-2);
-    let expYear = String(card.expYear || "").trim();
-    if (expYear.length === 4) expYear = expYear.slice(-2);
-    const cvv = String(card.cvv || "").trim();
-    const holder = String(card.holder || "Cardholder").trim();
-
-    // Holder often outside iframe.
-    for (const sel of [
-      'input[name="cc-name"]',
-      'input[autocomplete="cc-name"]',
-      'input[id*="cardholder" i]',
-      'input[name*="holder" i]',
-    ]) {
-      const el = page.locator(sel).first();
-      if (await el.count()) {
-        try {
-          await el.fill(holder);
-          break;
-        } catch {
-          /* ignore */
-        }
-      }
-    }
-
-    async function fillFrame(titleRe, value) {
-      const frame = page.frameLocator(`iframe[title*="${titleRe}" i]`).first();
-      const input = frame.locator("input").first();
-      await input.waitFor({ timeout: 20_000 });
-      await input.fill(value);
-    }
-
-    // Adyen secured-field iframe titles vary slightly.
-    const tries = [
-      async () => {
-        await fillFrame("card number", number);
-        await fillFrame("expiry", `${expMonth}${expYear}`);
-        await fillFrame("security", cvv);
+    }`;
+    const gql = await request(
+      `${apex}/graphql`,
+      {
+        method: "POST",
+        headers: gqlHeaders,
+        body: JSON.stringify({
+          query,
+          variables: {
+            input: { checkoutEntityId: checkoutId, data: { token: captchaToken } },
+          },
+        }),
       },
-      async () => {
-        await fillFrame("number", number);
-        await fillFrame("expir", `${expMonth} / ${expYear}`);
-        await fillFrame("cvc", cvv);
-      },
-      async () => {
-        await fillFrame("encryptedCardNumber", number);
-        await fillFrame("encryptedExpiryDate", `${expMonth}${expYear}`);
-        await fillFrame("encryptedSecurityCode", cvv);
-      },
-    ];
-    let filled = false;
-    let fillErr = null;
-    for (const fn of tries) {
-      try {
-        await fn();
-        filled = true;
-        break;
-      } catch (e) {
-        fillErr = e;
-      }
-    }
-    if (!filled) {
-      return {
-        ok: false,
-        status: null,
-        note: `Adyen fields not found: ${fillErr?.message || fillErr}`,
-        declined: false,
-        paymentLogs,
-      };
-    }
-
-    // Place order
-    for (const sel of [
-      '#checkout-payment-continue',
-      'button:has-text("Place Order")',
-      'button:has-text("Pay")',
-      'button[type="submit"]',
-    ]) {
-      const btn = page.locator(sel).first();
-      if (await btn.count()) {
-        try {
-          await btn.click({ timeout: 5000 });
-          break;
-        } catch {
-          /* next */
-        }
-      }
-    }
-
-    const deadline = Date.now() + timeoutMs;
-    let declined = false;
-    let orderNumber = null;
-    let note = "waiting for payment result";
-    while (Date.now() < deadline) {
-      const url = page.url();
-      const bodyText = await page.locator("body").innerText().catch(() => "");
-      if (/order-confirmation|order confirmation|thank you for your order/i.test(url + bodyText)) {
-        orderNumber =
-          bodyText.match(/order\s*(?:number|#)?\s*[:#]?\s*(\d{5,})/i)?.[1] || null;
-        note = orderNumber ? `order ${orderNumber}` : "confirmation page";
-        return {
-          ok: true,
-          status: 200,
-          note,
-          declined: false,
-          orderNumber,
-          paymentLogs,
-          finalUrl: url,
-        };
-      }
-      if (
-        /declin|insufficient|not enough|do not honour|do not honor|payment failed|unable to process|card was declined|authentication failed/i.test(
-          bodyText,
-        )
-      ) {
-        declined = true;
-        note = (bodyText.match(/.{0,40}(declin|insufficient|not enough|honou?r|payment failed|unable to process).{0,60}/i) || [
-          null,
-          bodyText.slice(0, 120),
-        ])[0] || "declined";
-        return {
-          ok: true, // reached gateway — decline is a successful smoke for this goal
-          status: 402,
-          note: String(note).replace(/\s+/g, " ").slice(0, 180),
-          declined: true,
-          orderNumber: null,
-          paymentLogs,
-          finalUrl: url,
-        };
-      }
-      // BigPay error responses in logs
-      if (paymentLogs.some((l) => /declin|insufficient|402|payment_failed/i.test(l.body))) {
-        const hit = paymentLogs.find((l) => /declin|insufficient|402|payment_failed/i.test(l.body));
-        return {
-          ok: true,
-          status: hit.status,
-          note: hit.body.slice(0, 180),
-          declined: true,
-          paymentLogs,
-          finalUrl: url,
-        };
-      }
-      await page.waitForTimeout(1000);
-    }
-    return {
-      ok: false,
-      status: null,
-      note: `timeout after place — ${note}`,
-      declined,
-      paymentLogs,
-      finalUrl: page.url(),
-    };
-  } finally {
+      ctx,
+    );
+    const gqlText = await gql.text().catch(() => "");
+    let gqlJson = null;
     try {
-      await browser.close();
+      gqlJson = JSON.parse(gqlText);
     } catch {
       /* ignore */
     }
+    const node = gqlJson?.data?.checkout?.applyCheckoutSpamProtection;
+    const err =
+      gqlJson?.errors?.map((e) => e.message).filter(Boolean).join("; ") || null;
+    logs.push({
+      step: "spam_gql",
+      status: gql.status,
+      body: (err || gqlText).slice(0, 160),
+    });
+    if (gql.status >= 200 && gql.status < 300 && node && !err) {
+      return { ok: true, via: "graphql", status: gql.status, logs };
+    }
   }
+
+  return {
+    ok: false,
+    via: null,
+    status: restStatus,
+    logs,
+    note: restStatus != null ? `spam rest ${restStatus}` : "spam gql failed",
+  };
 }
+
+/**
+ * GraphQL Storefront completeCheckout → orderEntityId + paymentAccessToken.
+ * Docs: checkout { completeCheckout(...) { orderEntityId paymentAccessToken } }
+ */
+async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, checkoutId }) {
+  const headers = storefrontGraphqlHeaders(jar, ua, apex, sfToken);
+
+  const attempts = [
+    {
+      name: "gql_nested",
+      query: `mutation completeCheckout($completeCheckoutInput: CompleteCheckoutInput!) {
+        checkout {
+          completeCheckout(input: $completeCheckoutInput) {
+            orderEntityId
+            paymentAccessToken
+          }
+        }
+      }`,
+      variables: { completeCheckoutInput: { checkoutEntityId: checkoutId } },
+    },
+    {
+      name: "gql_value",
+      query: `mutation completeCheckout($completeCheckoutInput: CompleteCheckoutInput!) {
+        checkout {
+          completeCheckout(input: $completeCheckoutInput) {
+            orderEntityId
+            paymentAccessToken { value }
+          }
+        }
+      }`,
+      variables: { completeCheckoutInput: { checkoutEntityId: checkoutId } },
+    },
+  ];
+
+  for (const a of attempts) {
+    const res = await request(
+      `${apex}/graphql`,
+      { method: "POST", headers, body: JSON.stringify({ query: a.query, variables: a.variables }) },
+      ctx,
+    );
+    const text = await res.text().catch(() => "");
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      /* ignore */
+    }
+    const node = json?.data?.checkout?.completeCheckout || json?.data?.completeCheckout;
+    const patRaw = node?.paymentAccessToken;
+    const pat = typeof patRaw === "string" ? patRaw : patRaw?.value || null;
+    const orderId = node?.orderEntityId || null;
+    if (res.status >= 200 && res.status < 300 && (pat || orderId) && !json?.errors?.length) {
+      return {
+        ok: true,
+        via: a.name,
+        status: res.status,
+        orderId,
+        payToken: pat,
+        body: text.slice(0, 240),
+      };
+    }
+    // Keep last error; try next mutation shape before giving up.
+    if (a === attempts[attempts.length - 1] || json?.errors?.length) {
+      const errMsg =
+        json?.errors?.map((e) => e.message).filter(Boolean).join("; ") || null;
+      // If GraphQL returned a structured error, don't bother with alt shapes that share the same root cause (spam).
+      if (errMsg && /spam|internal server error|not complete|forbidden/i.test(errMsg)) {
+        return {
+          ok: false,
+          via: a.name,
+          status: res.status,
+          orderId: null,
+          payToken: null,
+          body: text.slice(0, 240),
+          errors: errMsg,
+        };
+      }
+      if (a === attempts[attempts.length - 1]) {
+        return {
+          ok: false,
+          via: a.name,
+          status: res.status,
+          orderId: null,
+          payToken: null,
+          body: text.slice(0, 240),
+          errors: errMsg,
+        };
+      }
+    }
+  }
+  return { ok: false, via: null, status: null, orderId: null, payToken: null, body: "" };
+}
+
+/**
+ * HTTP place-order (module path — no Playwright):
+ * 1) spam-protection body `{ token }` (+ GraphQL applyCheckoutSpamProtection)
+ * 2) GraphQL completeCheckout → PAT (preferred) or internalapi order
+ * 3) BigPay POST /stores/{hash}/payments with card instrument
+ */
+export async function placeOrderViaHttp({
+  request,
+  ctx,
+  userAgent,
+  checkoutId,
+  card,
+  captchaToken = null,
+  profile = {},
+  spamAlreadyCleared = false,
+  spamRestAttempted = false,
+} = {}) {
+  const apex = "https://toymate.com.au";
+  const ua = userAgent || "Mozilla/5.0";
+  const jar = ctx?.jar;
+  const headers = storefrontPaymentHeaders(jar, ua, { accept: "application/json" });
+  const logs = [];
+
+  const bootEarly = await readCheckoutBootstrap(request, ctx, ua, apex);
+  logs.push({
+    step: "checkout_boot",
+    status: bootEarly.status,
+    body: `sf=${Boolean(bootEarly.sfToken)} hash=${bootEarly.storeHash}`,
+  });
+
+  if (captchaToken && !spamAlreadyCleared) {
+    const spam = await applySpamProtectionHttp(request, ctx, {
+      apex,
+      ua,
+      jar,
+      checkoutId,
+      captchaToken,
+      sfToken: bootEarly.sfToken,
+      // Adapter already POSTed REST once — only GraphQL retry here.
+      skipRest: Boolean(spamRestAttempted),
+    });
+    logs.push(...spam.logs);
+    // Soft-continue: still probe completeCheckout/order for decline wire.
+  }
+
+  const methodsRes = await request(
+    `${apex}/api/storefront/payments?cartId=${checkoutId}`,
+    { headers: storefrontPaymentHeaders(jar, ua) },
+    ctx,
+  );
+  const methods = await methodsRes.json().catch(() => null);
+  const adyen = pickAdyenCardMethod(methods);
+  logs.push({
+    step: "methods",
+    status: methodsRes.status,
+    body: adyen ? `${adyen.gateway}/${adyen.id}` : "none",
+  });
+  if (!adyen) {
+    return { ok: false, declined: false, note: "http: no Adyen scheme", paymentLogs: logs };
+  }
+
+  const boot = bootEarly;
+  let orderId = null;
+  let payToken = null;
+  let orderVia = null;
+
+  if (boot.sfToken) {
+    const gql = await completeCheckoutGraphql(request, ctx, {
+      apex,
+      ua,
+      jar,
+      sfToken: boot.sfToken,
+      checkoutId,
+    });
+    logs.push({
+      step: "complete_checkout",
+      status: gql.status,
+      body: `${gql.via || ""} ${gql.errors || gql.body || ""}`.slice(0, 200),
+    });
+    if (gql.ok) {
+      orderId = gql.orderId;
+      payToken = gql.payToken;
+      orderVia = "graphql";
+    }
+  }
+
+  // Fallback: Optimized Checkout internal order create.
+  // checkout-sdk reads payment token from response header `token`.
+  if (!payToken) {
+    const orderBodies = [
+      { cartId: checkoutId },
+      { cartId: checkoutId, customerMessage: "", useStoreCredit: false },
+      {},
+    ];
+    for (const orderBody of orderBodies) {
+      const orderRes = await request(
+        `${apex}/internalapi/v1/checkout/order`,
+        {
+          method: "POST",
+          headers: {
+            ...headers,
+            accept: "application/json, text/plain, */*",
+            "x-requested-with": "XMLHttpRequest",
+          },
+          body: JSON.stringify(orderBody),
+        },
+        ctx,
+      );
+      const orderText = await orderRes.text().catch(() => "");
+      const headerToken =
+        orderRes.headers?.get?.("token") ||
+        orderRes.headers?.token ||
+        null;
+      logs.push({
+        step: "order_create",
+        status: orderRes.status,
+        body: `${headerToken ? "hdrToken " : ""}${orderText}`.slice(0, 240),
+      });
+      if (orderRes.status >= 200 && orderRes.status < 300) {
+        let orderJson = null;
+        try {
+          orderJson = JSON.parse(orderText);
+        } catch {
+          /* ignore */
+        }
+        orderId =
+          orderJson?.data?.order?.orderId || orderJson?.orderId || orderJson?.id || orderId;
+        payToken =
+          headerToken ||
+          orderJson?.data?.order?.token ||
+          orderJson?.data?.token ||
+          orderJson?.token ||
+          orderJson?.payment?.token ||
+          null;
+        orderVia = "internalapi";
+        if (payToken) break;
+      }
+      // Don't spray alternate bodies on hard rate-limit HTML.
+      if (orderRes.status === 429) break;
+    }
+  }
+
+  if (!payToken) {
+    return {
+      ok: false,
+      declined: false,
+      note: `http no paymentAccessToken (gql/internal blocked — often spam/order 429)`,
+      paymentLogs: logs,
+      orderId,
+    };
+  }
+
+  const number = String(card.number || "").replace(/\s+/g, "");
+  const expMonth = Number(String(card.expMonth || "").padStart(2, "0").slice(-2));
+  let expYear = Number(String(card.expYear || "").trim());
+  if (expYear > 0 && expYear < 100) expYear += 2000;
+  const holder =
+    card.holder || `${profile.first_name || "Test"} ${profile.last_name || "Buyer"}`;
+  const cvv = String(card.cvv || "").trim();
+
+  // Prefer the live method id first (adyenv3.scheme). Extra ids only on
+  // clear method-shape errors — never spray after a bank decline.
+  const paymentMethodIds = [
+    `${adyen.gateway}.${adyen.id}`,
+    `${adyen.gateway}.card`,
+    adyen.id === "scheme" ? "adyenv3.card" : null,
+  ].filter(Boolean);
+
+  const payHeaders = {
+    "user-agent": ua,
+    accept: "application/vnd.bc.v1+json",
+    "content-type": "application/json",
+    Authorization: `PAT ${payToken}`,
+    origin: apex,
+    referer: `${apex}/checkout`,
+  };
+
+  const looksDeclined = (text) =>
+    /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
+      String(text || ""),
+    ) && !/unauthorized/i.test(String(text || ""));
+  const looksMethodError = (text) =>
+    /payment_method|not supported|invalid.*method|instrument.*not.*supported/i.test(
+      String(text || ""),
+    );
+
+  let payRes = null;
+  let payText = "";
+  let usedMethod = null;
+  for (const paymentMethodId of paymentMethodIds) {
+    const payBody = {
+      payment: {
+        instrument: {
+          type: "card",
+          number,
+          cardholder_name: holder,
+          expiry_month: expMonth,
+          expiry_year: expYear,
+          verification_value: cvv,
+        },
+        payment_method_id: paymentMethodId,
+      },
+    };
+    payRes = await request(
+      `https://payments.bigcommerce.com/stores/${boot.storeHash}/payments`,
+      {
+        method: "POST",
+        headers: payHeaders,
+        body: JSON.stringify(payBody),
+      },
+      ctx,
+    );
+    payText = await payRes.text().catch(() => "");
+    usedMethod = paymentMethodId;
+    logs.push({
+      step: "bigpay",
+      status: payRes.status,
+      body: `${paymentMethodId} ${payText}`.slice(0, 300),
+    });
+    if (payRes.status >= 200 && payRes.status < 300) break;
+    // Terminal bank/PSP outcome — do NOT try another method id or CSE.
+    if (looksDeclined(payText) || payRes.status === 422) break;
+    if (!looksMethodError(payText)) break;
+  }
+
+  // CSE only when raw instrument shape was rejected — never after a decline.
+  // (Previously any non-2xx including 422 insufficient-funds fired a 2nd auth.)
+  const shouldTryCse =
+    payRes &&
+    !(payRes.status >= 200 && payRes.status < 300) &&
+    !looksDeclined(payText) &&
+    payRes.status !== 422 &&
+    looksMethodError(payText);
+
+  if (shouldTryCse) {
+    const clientKey = adyen.initializationData?.clientKey || adyen.config?.clientKey;
+    if (clientKey) {
+      try {
+        const encrypted = await encryptAdyenCard({
+          clientKey,
+          number,
+          expMonth: card.expMonth,
+          expYear: card.expYear,
+          cvv,
+          holder,
+        });
+        const encRes = await request(
+          "https://payments.bigcommerce.com/api/public/v1/orders/payments",
+          {
+            method: "POST",
+            headers: {
+              "user-agent": ua,
+              accept: "application/json",
+              "content-type": "application/json",
+              Authorization: `PAT ${payToken}`,
+              origin: apex,
+              referer: `${apex}/checkout`,
+            },
+            body: JSON.stringify({
+              payment: {
+                payment_method_id: usedMethod || `${adyen.gateway}.${adyen.id}`,
+                ...(orderId ? { orderId: String(orderId) } : {}),
+                paymentData: JSON.stringify({
+                  paymentMethod: encrypted,
+                  browserInfo: browserInfo(),
+                  clientStateDataIndicator: true,
+                  origin: apex,
+                }),
+              },
+            }),
+          },
+          ctx,
+        );
+        const encText = await encRes.text().catch(() => "");
+        logs.push({ step: "bigpay_cse", status: encRes.status, body: encText.slice(0, 300) });
+        if (encRes.status >= 200 && encRes.status < 300) {
+          payRes = encRes;
+          payText = encText;
+        } else if (looksDeclined(encText)) {
+          payRes = encRes;
+          payText = encText;
+        }
+      } catch (e) {
+        logs.push({ step: "bigpay_cse", status: null, body: e?.message || String(e) });
+      }
+    }
+  } else if (payRes && !(payRes.status >= 200 && payRes.status < 300)) {
+    logs.push({
+      step: "bigpay_cse",
+      status: null,
+      body: looksDeclined(payText) || payRes.status === 422
+        ? "skipped_cse_after_decline"
+        : "skipped_cse_non_method_error",
+    });
+  }
+
+  const declined = looksDeclined(payText);
+  const orderNumber =
+    payText.match(/order(?:_?(?:number|id))?["']?\s*:\s*["']?(\d{5,})/i)?.[1] ||
+    (orderId ? String(orderId) : null);
+
+  if (declined) {
+    return {
+      ok: true,
+      declined: true,
+      status: payRes?.status ?? null,
+      note: payText.replace(/\s+/g, " ").slice(0, 180),
+      orderNumber: null,
+      paymentLogs: logs,
+      orderVia,
+    };
+  }
+  if (payRes && payRes.status >= 200 && payRes.status < 300) {
+    return {
+      ok: true,
+      declined: false,
+      status: payRes.status,
+      note: orderNumber ? `order ${orderNumber}` : `bigpay ${payRes.status}`,
+      orderNumber,
+      paymentLogs: logs,
+      orderVia,
+    };
+  }
+  return {
+    ok: false,
+    declined: false,
+    status: payRes?.status ?? null,
+    note: `http pay ${payRes?.status}: ${payText.replace(/\s+/g, " ").slice(0, 140)}`,
+    paymentLogs: logs,
+    orderVia,
+  };
+}
+

@@ -6,7 +6,7 @@
 //   account_gen  — create retailer account (proven path: CapSolver CF + form POST)
 //   monitor      — keyword search poll (lightweight)
 //
-// Live card: Adyen v3 `scheme` via checkout UI (Playwright hosted fields).
+// Live card: Adyen v3 `scheme` via HTTP (CSE + BigPay). No Playwright in module path.
 
 import { request, UA } from "../http.js";
 import {
@@ -19,7 +19,8 @@ import {
 import {
   storefrontPaymentHeaders,
   pickAdyenCardMethod,
-  placeOrderViaCheckoutUi,
+  placeOrderViaHttp,
+  applySpamProtectionHttp,
 } from "./toymate-adyen.js";
 
 const sleep = (ms, jitter = 0) =>
@@ -45,6 +46,76 @@ function navHeaders({ referer, origin, userAgent } = {}) {
   };
 }
 
+function jarCookie(jar, name) {
+  const dump = jar?.dump?.() || {};
+  const raw = dump[name] ?? dump[String(name).toLowerCase()];
+  if (raw == null || raw === "") return null;
+  try {
+    return decodeURIComponent(String(raw));
+  } catch {
+    return String(raw);
+  }
+}
+
+/** HAR: authenticity_token ← XSRF-TOKEN; sf_authenticity_token ← SF-CSRF-TOKEN. */
+function csrfTokens(jar, html = "") {
+  const h = String(html || "");
+  const fromHtml = (name) =>
+    h.match(new RegExp(`name=["']${name}["']\\s+value=["']([^"']+)["']`, "i"))?.[1] || null;
+  return {
+    authenticityToken:
+      jarCookie(jar, "XSRF-TOKEN") || fromHtml("authenticity_token") || null,
+    sfAuthenticityToken:
+      jarCookie(jar, "SF-CSRF-TOKEN") || fromHtml("sf_authenticity_token") || null,
+  };
+}
+
+function buildLoginBody(email, password, tokens = {}) {
+  const body = new URLSearchParams({
+    login_email: email,
+    login_pass: password,
+  });
+  if (tokens.authenticityToken) body.set("authenticity_token", tokens.authenticityToken);
+  if (tokens.sfAuthenticityToken) body.set("sf_authenticity_token", tokens.sfAuthenticityToken);
+  return body;
+}
+
+/** Stencil theme ATC/cart calls (HAR: x-requested-with: stencil-utils). */
+function stencilHeaders({ referer, origin, userAgent, jar } = {}) {
+  const headers = {
+    "user-agent": userAgent || UA,
+    accept: "*/*",
+    "accept-language": "en-AU,en;q=0.9",
+    "sec-ch-ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": `"macOS"`,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-origin",
+    "x-requested-with": "stencil-utils",
+    ...(referer ? { referer } : {}),
+    ...(origin ? { origin } : {}),
+  };
+  const xsrf = jarCookie(jar, "XSRF-TOKEN");
+  const sf = jarCookie(jar, "SF-CSRF-TOKEN");
+  if (xsrf) headers["x-xsrf-token"] = xsrf;
+  if (sf) headers["x-sf-csrf-token"] = sf;
+  return headers;
+}
+
+function buildMultipart(fields) {
+  const boundary = `----WebKitFormBoundary${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  let body = "";
+  for (const [name, value] of Object.entries(fields)) {
+    body +=
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
+      `${value}\r\n`;
+  }
+  body += `--${boundary}--\r\n`;
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
 function apiHeaders({ referer, origin, userAgent, jar } = {}) {
   const headers = {
     "user-agent": userAgent || UA,
@@ -62,15 +133,10 @@ function apiHeaders({ referer, origin, userAgent, jar } = {}) {
     ...(origin ? { origin } : {}),
   };
   // BigCommerce Storefront API returns 403 without the jar's XSRF-TOKEN.
-  const dump = jar?.dump?.() || {};
-  const xsrf = dump["XSRF-TOKEN"] || dump["xsrf-token"];
-  if (xsrf) {
-    try {
-      headers["x-xsrf-token"] = decodeURIComponent(String(xsrf));
-    } catch {
-      headers["x-xsrf-token"] = String(xsrf);
-    }
-  }
+  const xsrf = jarCookie(jar, "XSRF-TOKEN");
+  const sf = jarCookie(jar, "SF-CSRF-TOKEN");
+  if (xsrf) headers["x-xsrf-token"] = xsrf;
+  if (sf) headers["x-sf-csrf-token"] = sf;
   return headers;
 }
 
@@ -447,6 +513,10 @@ export const __test = {
   extractFormAction,
   parseFormFields,
   extractProductIds,
+  csrfTokens,
+  buildLoginBody,
+  buildMultipart,
+  stencilHeaders,
 };
 
 export const toymateAdapter = {
@@ -623,12 +693,8 @@ export const toymateAdapter = {
             headers: navHeaders({ referer: `${apex}/`, userAgent: ua }),
           }, ctx);
           const loginHtml = await readText(loginPage);
-          const tokenM = loginHtml.match(/name=["']authenticity_token["']\s+value=["']([^"']+)["']/i);
-          const loginBody = new URLSearchParams({
-            login_email: email,
-            login_pass: password,
-            ...(tokenM?.[1] ? { authenticity_token: tokenM[1] } : {}),
-          });
+          const tokens = csrfTokens(ctx.jar, loginHtml);
+          const loginBody = buildLoginBody(email, password, tokens);
           const res = await request(`${apex}/login.php?action=check_login`, {
             method: "POST",
             headers: {
@@ -707,12 +773,8 @@ export const toymateAdapter = {
           headers: navHeaders({ referer: `${base}/` }),
         }, ctx);
         const html = await readText(loginPage);
-        const tokenM = html.match(/name=["']authenticity_token["']\s+value=["']([^"']+)["']/i);
-        const body = new URLSearchParams({
-          login_email: account.email,
-          login_pass: account.password,
-          ...(tokenM?.[1] ? { authenticity_token: tokenM[1] } : {}),
-        });
+        const tokens = csrfTokens(ctx.jar, html);
+        const body = buildLoginBody(account.email, account.password, tokens);
         const res = await request(`${apex}/login.php?action=check_login`, {
           method: "POST",
           headers: {
@@ -723,8 +785,17 @@ export const toymateAdapter = {
           body: body.toString(),
         }, ctx);
         const loginText = await readText(res);
-        const ok = res.status >= 200 && res.status < 400 && !/invalid|incorrect/i.test(loginText);
-        return { ok, status: res.status, note: ok ? `logged in ${account.email}` : "login may have failed" };
+        const loc = res.headers?.get?.("location") || "";
+        const ok =
+          (res.status >= 200 && res.status < 400 && !/invalid|incorrect/i.test(loginText)) ||
+          /account\.php/i.test(loc);
+        return {
+          ok,
+          status: res.status,
+          note: ok
+            ? `logged in ${account.email}${tokens.sfAuthenticityToken ? " (+sf csrf)" : ""}`
+            : "login may have failed",
+        };
       });
     }
 
@@ -788,8 +859,39 @@ export const toymateAdapter = {
       };
     }
 
-    const cart = await tStep("cart_create", async () => {
-      const line = { quantity: qty, productId: productId || variantId };
+    // HAR-primary ATC: POST /remote/v1/cart/add (stencil-utils multipart).
+    // Storefront POST /api/storefront/carts kept as fallback.
+    const cart = await tStep("cart_add", async () => {
+      const pid = productId || variantId;
+      const mp = buildMultipart({
+        action: "add",
+        product_id: String(pid),
+        "qty[]": String(qty),
+      });
+      const remoteRes = await request(`${apex}/remote/v1/cart/add`, {
+        method: "POST",
+        headers: {
+          ...stencilHeaders({ referer: productUrl, origin, jar: ctx.jar }),
+          "content-type": mp.contentType,
+        },
+        body: mp.body,
+      }, ctx);
+      const remoteJson = await readJson(remoteRes);
+      const remoteCartId = remoteJson?.data?.cart_id || null;
+      const remoteItemId = remoteJson?.data?.cart_item?.id || null;
+      if (remoteCartId && remoteRes.status >= 200 && remoteRes.status < 300) {
+        return {
+          ok: true,
+          status: remoteRes.status,
+          note: `remote ATC cart ${remoteCartId}`,
+          cartId: remoteCartId,
+          itemId: remoteItemId,
+          json: remoteJson,
+          via: "remote",
+        };
+      }
+
+      const line = { quantity: qty, productId: pid };
       if (productId && variantId && productId !== variantId) line.variantId = variantId;
       const res = await request(`${base}/api/storefront/carts`, {
         method: "POST",
@@ -798,15 +900,18 @@ export const toymateAdapter = {
       }, ctx);
       const json = await readJson(res);
       const cartId = json?.id || json?.cartId || null;
-      const detail = json?.detail || json?.title || "";
+      const itemId = json?.lineItems?.physicalItems?.[0]?.id || null;
+      const detail = json?.detail || json?.title || remoteJson?.title || "";
       return {
         ok: Boolean(cartId) && res.status >= 200 && res.status < 300,
         status: res.status,
         note: cartId
-          ? `cart ${cartId}`
-          : `cart ${res.status}${detail ? `: ${String(detail).slice(0, 120)}` : ""}`,
+          ? `storefront cart ${cartId} (remote ATC ${remoteRes.status})`
+          : `cart fail remote=${remoteRes.status} storefront=${res.status}${detail ? `: ${String(detail).slice(0, 100)}` : ""}`,
         cartId,
+        itemId,
         json,
+        via: cartId ? "storefront" : null,
       };
     });
 
@@ -814,8 +919,8 @@ export const toymateAdapter = {
       return {
         ok: false,
         steps,
-        error: "Storefront cart create failed",
-        failedStep: "cart_create",
+        error: "ATC failed (remote + storefront)",
+        failedStep: "cart_add",
         checkoutStage: "cart",
         dryRun: !placeOrder,
         cookies: ctx.jar?.dump?.() ?? {},
@@ -824,20 +929,22 @@ export const toymateAdapter = {
 
     const checkoutId = cart.cartId;
 
+    let checkoutJson = null;
     await tStep("checkout_get", async () => {
       const res = await request(
         `${base}/api/storefront/checkouts/${checkoutId}?include=cart.lineItems.physicalItems.options,customer,payments,promotions.banners`,
-        { headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }) },
+        { headers: apiHeaders({ referer: `${base}/cart.php`, origin, jar: ctx.jar }) },
         ctx,
       );
       const json = await readJson(res);
+      checkoutJson = json;
       return { ok: res.status >= 200 && res.status < 300, status: res.status, note: `checkout ${res.status}`, json };
     });
 
     const ship = {
       firstName: profile.first_name || "Test",
       lastName: profile.last_name || "Buyer",
-      email: profile.email || "buyer@example.com",
+      email: profile.email || account?.email || "buyer@example.com",
       phone: profile.phone || "0400000000",
       address1: profile.address1 || "1 Test Street",
       city: profile.city || "Sydney",
@@ -847,13 +954,17 @@ export const toymateAdapter = {
     };
 
     await tStep("checkout_set_address", async () => {
+      const itemId =
+        checkoutJson?.cart?.lineItems?.physicalItems?.[0]?.id ||
+        cart.itemId ||
+        cart.json?.lineItems?.physicalItems?.[0]?.id ||
+        null;
       const consignmentBody = [
         {
           shippingAddress: ship,
-          lineItems: [{ itemId: cart.json?.lineItems?.physicalItems?.[0]?.id, quantity: qty }],
+          lineItems: itemId ? [{ itemId, quantity: qty }] : [],
         },
       ];
-      // Prefer item id from checkout if present later — best-effort.
       const res = await request(
         `${base}/api/storefront/checkouts/${checkoutId}/consignments?include=consignments.availableShippingOptions`,
         {
@@ -903,17 +1014,28 @@ export const toymateAdapter = {
     });
 
     let captchaToken = task.captchaToken || null;
+    let spamCleared = false;
+    let spamRestAttempted = false;
     await tStep("checkout_spam", async () => {
       // Live place-order needs spam-protection when BC has it enabled.
+      // checkout-sdk body is `{ token }` (not nested spamProtection).
       if (!captchaToken && placeOrder && capsolverKey()) {
         const sitekey =
           task.recaptchaSitekey ||
           "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
-        const solved = await solveRecaptchaV2({
+        // Prefer proxy-bound token (same exit IP as checkout); proxyless fallback.
+        let solved = await solveRecaptchaV2({
           pageUrl: `${apex}/checkout`,
           sitekey,
           proxyRaw,
         });
+        if (!solved.ok) {
+          solved = await solveRecaptchaV2({
+            pageUrl: `${apex}/checkout`,
+            sitekey,
+            proxyless: true,
+          });
+        }
         if (solved.ok) captchaToken = solved.token;
         else {
           return {
@@ -932,15 +1054,29 @@ export const toymateAdapter = {
             : "no captcha token — skip spam-protection",
         };
       }
-      const res = await request(`${base}/api/storefront/checkouts/${checkoutId}/spam-protection`, {
-        method: "POST",
-        headers: apiHeaders({ referer: `${base}/checkout`, origin, jar: ctx.jar }),
-        body: JSON.stringify({ spamProtection: { method: "recaptcha_v2", token: captchaToken } }),
-      }, ctx);
+      // Single REST+GQL attempt — hammering spam 429s the payment plane.
+      const spam = await applySpamProtectionHttp(request, ctx, {
+        apex: base,
+        ua: ctx.extraHeaders?.["user-agent"] || UA,
+        jar: ctx.jar,
+        checkoutId,
+        captchaToken,
+        sfToken: null,
+      });
+      spamRestAttempted = true;
+      spamCleared = Boolean(spam.ok);
+      if (spam.ok) {
+        return {
+          ok: true,
+          status: spam.status,
+          note: `spam ${spam.status} via ${spam.via}`,
+        };
+      }
       return {
-        ok: res.status >= 200 && res.status < 300,
-        status: res.status,
-        note: `spam ${res.status}`,
+        // Soft-ok: keep token for placeOrderViaHttp GraphQL spam retry.
+        ok: Boolean(captchaToken),
+        status: spam.status,
+        note: `spam ${spam.status} — continue HTTP (may still block completeCheckout)`,
       };
     });
 
@@ -983,7 +1119,7 @@ export const toymateAdapter = {
     await tStep("place_order_gate", async () => {
       if (!placeOrder) return { ok: true, status: null, note: "dry-run — skip charge" };
       if (!card?.ok) return { ok: false, status: null, note: "placeOrder requires card on profile" };
-      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via checkout UI" };
+      return { ok: true, status: null, note: "placeOrder armed — Adyen scheme via HTTP (no Playwright)" };
     });
 
     let orderNumber = null;
@@ -1015,29 +1151,59 @@ export const toymateAdapter = {
       });
 
       const pay = await tStep("place_order", async () => {
-        // Live Adyen hosted fields — same path the storefront uses (decline-friendly).
-        const ui = await placeOrderViaCheckoutUi({
-          proxyUrl: proxyRaw,
-          cookies: ctx.jar?.dump?.() || {},
+        // Module path is HTTP-only. Playwright is research-only
+        // (executor/experiments/toymate-checkout-ui-research.mjs).
+        // Reuse CapSolver token from checkout_spam — do not mint a second
+        // solve unless we somehow never got one (tokens expire ~2 min).
+        if (!spamCleared && !captchaToken && capsolverKey()) {
+          const sitekey =
+            task.recaptchaSitekey ||
+            "6LcjX0sbAAAAACp92-MNpx66FT4pbIWh-FTDmkkz";
+          let again = await solveRecaptchaV2({
+            pageUrl: `${apex}/checkout`,
+            sitekey,
+            proxyRaw,
+          });
+          if (!again.ok) {
+            again = await solveRecaptchaV2({
+              pageUrl: `${apex}/checkout`,
+              sitekey,
+              proxyless: true,
+            });
+          }
+          if (again.ok) captchaToken = again.token;
+        }
+        const http = await placeOrderViaHttp({
+          request,
+          ctx,
           userAgent: ctx.extraHeaders?.["user-agent"] || UA,
+          checkoutId,
           card,
-          checkoutUrl: `${apex}/checkout`,
+          captchaToken: spamCleared ? null : captchaToken,
+          spamAlreadyCleared: spamCleared,
+          spamRestAttempted,
+          profile,
         });
-        orderNumber = ui.orderNumber || null;
-        paymentDeclined = Boolean(ui.declined);
-        paymentStatus = ui.declined
+        orderNumber = http.orderNumber || null;
+        paymentDeclined = Boolean(http.declined);
+        paymentStatus = http.declined
           ? "declined"
           : orderNumber
             ? "submitted"
-            : ui.ok
+            : http.ok
               ? "submitted"
               : "failed";
+        const logHint = (http.paymentLogs || [])
+          .slice(0, 4)
+          .map((l) => `${l.step}:${l.status}`)
+          .join(" | ");
         return {
-          ok: Boolean(ui.ok || ui.declined),
-          status: ui.status,
-          note: ui.note,
-          declined: ui.declined,
-          paymentLogs: (ui.paymentLogs || []).slice(0, 8),
+          ok: Boolean(http.ok || http.declined),
+          status: http.status ?? null,
+          note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 240),
+          declined: http.declined,
+          paymentLogs: (http.paymentLogs || []).slice(0, 8),
+          via: "http",
         };
       });
 
@@ -1052,6 +1218,8 @@ export const toymateAdapter = {
         paymentDeclined,
         paymentMethod: "credit_card",
         cardGateway: methodsStep.adyen?.gateway || "adyenv3",
+        atcVia: cart.via || null,
+        cartId: checkoutId,
         finalUrl: orderNumber
           ? `${apex}/checkout/order-confirmation`
           : `${apex}/checkout`,
@@ -1070,7 +1238,8 @@ export const toymateAdapter = {
       cookies: ctx.jar?.dump?.() ?? {},
       title: pdp.title,
       cartId: checkoutId,
-      note: "Dry-run reached checkout scaffold — supply HAR to lock live card tokenize",
+      atcVia: cart.via || null,
+      note: "Dry-run reached checkout scaffold — HTTP Adyen CSE place-order when placeOrder=true",
     };
   },
 };
