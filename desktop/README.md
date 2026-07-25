@@ -79,6 +79,16 @@ Contract: `executor/docs/BANDAI_CHECKOUT_BIBLE.md`.
 Add an adapter under `desktop/adapters/` and extend `buildPayload` in
 `job-runner.cjs`. Same profiles/proxies/tasks UI.
 
+### Bandai monitor (opt-in)
+
+Task mode **Bandai — Monitor** with source:
+
+- **Global** — filter shared executor monitor events by SKU/keywords (does not expand the global poll)
+- **Task-local** — poll with this task’s proxy group + interval/delay
+
+Same `executor/monitor/*` code whether Desktop sidecar or Fly later.
+
+
 ## Debugging a failed run
 
 Logs are **oldest → newest** (scroll to bottom for latest).

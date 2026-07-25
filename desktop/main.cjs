@@ -327,6 +327,28 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
           ? String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
         : undefined,
+    bandaiMonitorMode:
+      storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
+        ? ["global", "local"].includes(String(task.bandaiMonitorMode || "").toLowerCase())
+          ? String(task.bandaiMonitorMode).toLowerCase()
+          : "local"
+        : undefined,
+    bandaiWatchSku:
+      storeId === "bandai" && typeof task.bandaiWatchSku === "string"
+        ? task.bandaiWatchSku.trim()
+        : undefined,
+    bandaiWatchKeywords:
+      storeId === "bandai" && typeof task.bandaiWatchKeywords === "string"
+        ? task.bandaiWatchKeywords.trim()
+        : undefined,
+    bandaiMonitorIntervalMs:
+      storeId === "bandai" && task.bandaiMode === "monitor"
+        ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
+        : undefined,
+    bandaiMonitorDelayMs:
+      storeId === "bandai" && task.bandaiMode === "monitor"
+        ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0)
+        : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     // Pokémon Centre-only fields (ignored by other stores).

@@ -62,6 +62,31 @@ BANDAI_MONITOR_MAX_POLLS=3 BANDAI_MONITOR_INTERVAL_MS=10000 \
 First poll builds a **baseline** (no events). Later polls emit `stock_changed` on
 restock (`false→true`) or newly seen in-stock cards.
 
+## Task wiring (Desktop)
+
+Bandai mode **Monitor** (optional — not forced on checkout tasks):
+
+| Monitor source | Behavior |
+|----------------|----------|
+| **Global** | Subscribe/filter only. Task SKU or keywords match against shared `stock_changed` events. Does **not** add keywords to the global poll. |
+| **Task-local** | Sidecar/in-process poller using the task’s proxy group + interval/delay. |
+
+Fields: `bandaiMonitorMode`, `bandaiWatchSku`, `bandaiWatchKeywords`, `bandaiMonitorIntervalMs`, `bandaiMonitorDelayMs`.
+
+## Modes lab
+
+```bash
+BANDAI_MONITOR_ISP_FILE=/tmp/bandai-proxy-pool.txt \
+BANDAI_MONITOR_MAX_POLLS=2 \
+  node scripts/bandai-monitor-modes-lab.mjs
+```
+
+## Fly vs local
+
+Same `executor/monitor/*` modules. Desktop runs them in-process via the job runner
+(dynamic import). Fly can host the same hub later behind `/run` or a monitor
+route — no separate checkout fork.
+
 ## Next (not V1)
 
 - Desktop global monitor toggle + live event feed
