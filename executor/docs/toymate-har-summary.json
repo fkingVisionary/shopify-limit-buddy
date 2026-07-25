@@ -1,0 +1,165 @@
+{
+  "capturedAt": "2026-07-25T00:26:34.242Z",
+  "harBytes": 28852530,
+  "entryCount": 1589,
+  "steps": [
+    {
+      "step": "home",
+      "ok": true,
+      "ms": 9896,
+      "note": "200 Toymate | Australia's Biggest Toy Stores"
+    },
+    {
+      "step": "login_page",
+      "ok": true,
+      "ms": 5344,
+      "note": "status=200"
+    },
+    {
+      "step": "login_submit",
+      "ok": true,
+      "ms": 5258,
+      "note": "https://toymate.com.au/account.php?action=order_status"
+    },
+    {
+      "step": "pdp",
+      "ok": true,
+      "ms": 6831,
+      "note": "status=200 url=https://toymate.com.au/products.php?productId=53116"
+    },
+    {
+      "step": "atc",
+      "ok": true,
+      "ms": 2667,
+      "note": "clicked ATC url=https://toymate.com.au/products.php?productId=53116"
+    },
+    {
+      "step": "cart_page",
+      "ok": true,
+      "ms": 4307,
+      "note": "status=200 empty=false bytes=1027"
+    },
+    {
+      "step": "checkout",
+      "ok": true,
+      "ms": 13241,
+      "note": "status=200 title=Checkout - Toymate paymentHints=0 addressHints=0"
+    }
+  ],
+  "milestones": {
+    "loginPost": {
+      "method": "POST",
+      "status": 302,
+      "path": "/login.php?action=check_login",
+      "i": 490
+    },
+    "cartApi": null,
+    "cartPhp": null,
+    "checkoutGet": {
+      "method": "GET",
+      "status": 200,
+      "path": "/checkout",
+      "i": 1274
+    },
+    "paymentsGet": null,
+    "consignments": null,
+    "billing": null,
+    "cartRemoteAdd": {
+      "method": "POST",
+      "status": 200,
+      "path": "/remote/v1/cart/add",
+      "i": 1066
+    },
+    "checkoutApi": {
+      "method": "GET",
+      "status": 200,
+      "path": "/api/storefront/checkouts/6073147f-6de0-45d3-8f45-1171e11a15dd",
+      "i": 1238
+    }
+  },
+  "wire": [
+    {
+      "i": 490,
+      "method": "POST",
+      "status": 302,
+      "url": "https://toymate.com.au/login.php",
+      "query": "action=check_login",
+      "headers": {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "content-type": "application/x-www-form-urlencoded",
+        "origin": "https://toymate.com.au",
+        "referer": "https://toymate.com.au/login.php",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin"
+      },
+      "post": "login_email=***&login_pass=***&authenticity_token=7a6e701b8c0bcf84341c8c4ceb47af6f0f5f1b6cb93401890ccded414a34aefa&sf_authenticity_token=1284dc2e-d165-48b4-8723-90d918c1faf2",
+      "responsePreview": null
+    },
+    {
+      "i": 1066,
+      "method": "POST",
+      "status": 200,
+      "url": "https://toymate.com.au/remote/v1/cart/add",
+      "query": "",
+      "headers": {
+        "accept": "*/*",
+        "content-type": "multipart/form-data; boundary=----WebKitFormBoundarysBewmLKdhEE97JYh",
+        "origin": "https://toymate.com.au",
+        "referer": "https://toymate.com.au/products.php?productId=53116",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-requested-with": "stencil-utils",
+        "x-xsrf-token": "7a6e701b8c0bcf84341c8c4ceb47af6f0f5f1b6cb93401890ccded414a34aefa"
+      },
+      "post": "------WebKitFormBoundarysBewmLKdhEE97JYh\r\nContent-Disposition: form-data; name=\"action\"\r\n\r\nadd\r\n------WebKitFormBoundarysBewmLKdhEE97JYh\r\nContent-Disposition: form-data; name=\"product_id\"\r\n\r\n53116\r\n------WebKitFormBoundarysBewmLKdhEE97JYh\r\nContent-Disposition: form-data; name=\"qty[]\"\r\n\r\n1\r\n------WebKitFormBoundarysBewmLKdhEE97JYh--\r\n",
+      "responsePreview": "{\"data\":{\"cart_id\":\"6073147f-6de0-45d3-8f45-1171e11a15dd\",\"cart_item\":{\"id\":\"869b1e7b-76d3-4153-adf3-89eb28e176bd\",\"hash\":\"6fc43db741acdf0d0d1a9ad0d047d969\",\"product_id\":53116,\"thumbnail\":\"https://cdn11.bigcommerce.com/s-cf7jv97qb3/products/53116/images/294138/60500_boxprod_v39_en-gb__89868.1769243795.220.290.jpg?c=2\",\"url\":\"https://toymate.com.au/lego-city-the-lego-van-60500/\"}}}"
+    },
+    {
+      "i": 1238,
+      "method": "GET",
+      "status": 200,
+      "url": "https://toymate.com.au/api/storefront/checkouts/6073147f-6de0-45d3-8f45-1171e11a15dd",
+      "query": "",
+      "headers": {
+        "accept": "*/*",
+        "referer": "https://toymate.com.au/cart.php",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-xsrf-token": "7a6e701b8c0bcf84341c8c4ceb47af6f0f5f1b6cb93401890ccded414a34aefa"
+      },
+      "post": null,
+      "responsePreview": null
+    },
+    {
+      "i": 1274,
+      "method": "GET",
+      "status": 200,
+      "url": "https://toymate.com.au/checkout",
+      "query": "",
+      "headers": {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "none"
+      },
+      "post": null,
+      "responsePreview": "<!DOCTYPE html>\r\n<html>\r\n  <head>\r\n    <title>Checkout - Toymate</title>\r\n    <meta name=\"description\" content=\"We have the biggest range and best deals for toys, sporting, bikes, scooters, trading cards and collectables. New sale items every week. Shop online or in store.\"><meta name='platform' content='bigcommerce.stencil' />\r\n    \r\n\r\n    <link href=\"https://cdn11.bigcommerce.com/s-cf7jv97qb3/pr"
+    },
+    {
+      "i": 1505,
+      "method": "GET",
+      "status": 200,
+      "url": "https://toymate.com.au/api/storefront/checkouts/6073147f-6de0-45d3-8f45-1171e11a15dd",
+      "query": "",
+      "headers": {
+        "accept": "*/*",
+        "referer": "https://toymate.com.au/checkout",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "x-xsrf-token": "7a6e701b8c0bcf84341c8c4ceb47af6f0f5f1b6cb93401890ccded414a34aefa"
+      },
+      "post": null,
+      "responsePreview": "{\"id\":\"6073147f-6de0-45d3-8f45-1171e11a15dd\",\"cart\":{\"id\":\"6073147f-6de0-45d3-8f45-1171e11a15dd\",\"customerId\":264738,\"email\":\"proof3+mrv40gx11rzw@bullposted.com\",\"currency\":{\"name\":\"Australian Dollars\",\"code\":\"AUD\",\"symbol\":\"$\",\"decimalPlaces\":2},\"isTaxIncluded\":true,\"baseAmount\":44.99,\"discountAmount\":0,\"cartAmount\":44.99,\"coupons\":[],\"discounts\":[{\"id\":\"869b1e7b-76d3-4153-adf3-89eb28e176bd\",\"dis"
+    }
+  ],
+  "note": "Redacted. Full HAR stays local at /tmp/toymate-login-atc-checkout.har"
+}
