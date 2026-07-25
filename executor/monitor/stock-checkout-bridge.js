@@ -4,8 +4,8 @@
 
 /**
  * @param {object} opts
- * @param {import('./bandai-stock-monitor.js').createBandaiStockMonitor extends Function ? any : any} opts.monitor
- * @param {ReturnType<import('./task-state-machine.js').createTaskStateMachine>} [opts.stateMachine]
+ * @param {{ on: Function, off: Function }} opts.monitor
+ * @param {ReturnType<typeof import('./task-state-machine.js').createTaskStateMachine>} [opts.stateMachine]
  * @param {(taskId: string, ev: object) => void|Promise<void>} [opts.runCheckout]
  * @param {(line: string) => void} [opts.log]
  */
