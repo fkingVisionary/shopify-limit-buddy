@@ -123,6 +123,9 @@ function summarizeHar(har) {
     cartApi: interesting.find(
       (x) => /\/api\/storefront\/carts/i.test(x.path) && x.method === "POST",
     ),
+    cartRemoteAdd: interesting.find(
+      (x) => /\/remote\/v1\/cart\/add/i.test(x.path) && x.method === "POST",
+    ),
     cartPhp: interesting.find((x) => /\/cart\.php/i.test(x.path) && x.method === "POST"),
     checkoutGet: interesting.find(
       (x) => x.method === "GET" && /\/checkout\/?$/i.test(x.path.split("?")[0]),

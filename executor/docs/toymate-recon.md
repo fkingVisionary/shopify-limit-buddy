@@ -24,6 +24,11 @@ _Status: adapter restored (isolated from Kmart)_
 - Card gateway on Toymate tip: Adyen v3 `scheme` (not raw Storefront PAN POST).
 - CLI live decline: `scripts/toymate-checkout-live-once.mjs` (CapSolver + `TOYMATE_CARD_*` env; do not commit card).
 
+### HAR capture
+- `scripts/toymate-capture-har.mjs` — login → ATC → checkout (no charge).
+- Wire notes: `docs/toymate-har-wire.md` · redacted index: `docs/toymate-har-summary.json`.
+- Native ATC is `POST /remote/v1/cart/add` (`x-requested-with: stencil-utils`), not Storefront carts.
+
 ## Desktop
 
 - Task store option: **Toymate AU**
