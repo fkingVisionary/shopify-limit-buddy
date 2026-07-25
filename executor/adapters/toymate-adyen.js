@@ -356,18 +356,15 @@ export async function placeOrderViaCheckoutUi({
           finalUrl: url,
         };
       }
-      if (
-        /declin|insufficient|not enough|do not honour|do not honor|payment failed|unable to process|card was declined|authentication failed/i.test(
-          bodyText,
-        )
-      ) {
+      const declineRe =
+        /declin|insufficient|not enough|do not honour|do not honor|payment failed|unable to process|card was declined|authentication failed|refused|invalid card|card number is invalid|not supported|transaction.*(fail|deny)|Authori[sz]ed.*false|resultCode["']?\s*:\s*["']Refused/i;
+      if (declineRe.test(bodyText)) {
         declined = true;
-        note = (bodyText.match(/.{0,40}(declin|insufficient|not enough|honou?r|payment failed|unable to process).{0,60}/i) || [
-          null,
-          bodyText.slice(0, 120),
-        ])[0] || "declined";
+        note = (bodyText.match(
+          /.{0,40}(declin|insufficient|not enough|honou?r|payment failed|unable to process|refused|invalid card|not supported).{0,60}/i,
+        ) || [null, bodyText.slice(0, 120)])[0] || "declined";
         return {
-          ok: true, // reached gateway — decline is a successful smoke for this goal
+          ok: true, // reached gateway — decline/refuse is a successful smoke for this goal
           status: 402,
           note: String(note).replace(/\s+/g, " ").slice(0, 180),
           declined: true,
@@ -376,9 +373,9 @@ export async function placeOrderViaCheckoutUi({
           finalUrl: url,
         };
       }
-      // BigPay error responses in logs
-      if (paymentLogs.some((l) => /declin|insufficient|402|payment_failed/i.test(l.body))) {
-        const hit = paymentLogs.find((l) => /declin|insufficient|402|payment_failed/i.test(l.body));
+      // BigPay / Adyen error responses in logs
+      if (paymentLogs.some((l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body))) {
+        const hit = paymentLogs.find((l) => declineRe.test(l.body) || /"status"\s*:\s*"error"|payment_failed|402/i.test(l.body));
         return {
           ok: true,
           status: hit.status,
