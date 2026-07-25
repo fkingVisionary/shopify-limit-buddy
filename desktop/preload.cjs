@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  exportFlexCard: () => ipcRenderer.invoke("desktop:export-flex-card"),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);
