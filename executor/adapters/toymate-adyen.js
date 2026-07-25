@@ -259,16 +259,33 @@ async function completeCheckoutGraphql(request, ctx, { apex, ua, jar, sfToken, c
         body: text.slice(0, 240),
       };
     }
-    if (a === attempts[attempts.length - 1]) {
-      return {
-        ok: false,
-        via: a.name,
-        status: res.status,
-        orderId: null,
-        payToken: null,
-        body: text.slice(0, 240),
-        errors: json?.errors?.[0]?.message || null,
-      };
+    // Keep last error; try next mutation shape before giving up.
+    if (a === attempts[attempts.length - 1] || json?.errors?.length) {
+      const errMsg =
+        json?.errors?.map((e) => e.message).filter(Boolean).join("; ") || null;
+      // If GraphQL returned a structured error, don't bother with alt shapes that share the same root cause (spam).
+      if (errMsg && /spam|internal server error|not complete|forbidden/i.test(errMsg)) {
+        return {
+          ok: false,
+          via: a.name,
+          status: res.status,
+          orderId: null,
+          payToken: null,
+          body: text.slice(0, 240),
+          errors: errMsg,
+        };
+      }
+      if (a === attempts[attempts.length - 1]) {
+        return {
+          ok: false,
+          via: a.name,
+          status: res.status,
+          orderId: null,
+          payToken: null,
+          body: text.slice(0, 240),
+          errors: errMsg,
+        };
+      }
     }
   }
   return { ok: false, via: null, status: null, orderId: null, payToken: null, body: "" };

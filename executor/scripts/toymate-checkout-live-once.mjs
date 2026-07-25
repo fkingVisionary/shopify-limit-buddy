@@ -41,7 +41,12 @@ function pickProxy() {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#"));
-  // CapSolver is flaky on some Noontide exits — prefer sticky as1.
+  if (!lines.length) return null;
+  // PROXY_INDEX=0..n-1 rotates sticky lines; default prefers as1 then first.
+  if (process.env.PROXY_INDEX != null && process.env.PROXY_INDEX !== "") {
+    const i = Math.abs(Number(process.env.PROXY_INDEX)) % lines.length;
+    return lines[i];
+  }
   return lines.find((l) => /proxy-as1\./i.test(l)) || lines[0] || null;
 }
 
