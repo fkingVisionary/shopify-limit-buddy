@@ -15,6 +15,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 - **Toymate** — agen restore (parallel); on BUTT list; CF + EQL.
 - **Pokémon Centre / Costco / AusPost / Big W** — on BUTT card list; prefer after Bandai + Hyper wiring.
 - **Shopify raffle pack** — Supply / UP THERE / Above The Clouds (BUTT raffle list).
+- **Disney Store AU** — dig + handoff: `DISNEY_STORE_MODULE.md` / `DISNEY_BUILD_HANDOFF.md` (SFCC + GE **1696** + OneID; on BUTT list).
 - **JB Hi-Fi** — `JB_HIFI_MODULE.md` (CF, not Akamai).
 
 ---
@@ -304,7 +305,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | Google reCAPTCHA Enterprise | ❌ (not Hyper) → JB / Disney / many checkouts |
 | hCaptcha | ❌ (not Hyper) → **Pokémon Centre** · **Topps EU** (competitor callout) |
 | F5 / Volterra / Shape | ❌ → Bandai HTML edge; JP `pokemoncenter-online.com` volt-adc |
-| Global‑e checkout | N/A vendor · custom work → Bandai / Disney / **Pokémon Centre AU** |
+| Global‑e checkout | N/A vendor · custom work → Bandai **1925** / **Disney 1696** / Pokémon Centre AU |
 | Auth0 MyPost / BNID / Costco membership | Custom session machines |
 
 ---
