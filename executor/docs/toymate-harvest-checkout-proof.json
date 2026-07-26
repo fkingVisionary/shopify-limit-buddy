@@ -185,7 +185,7 @@
         "ok": true,
         "status": null,
         "ms": 1,
-        "note": "placeOrder armed — Adyen scheme via HTTP (no Playwright)"
+        "note": "placeOrder armed \u2014 Adyen scheme via HTTP (no Playwright)"
       },
       {
         "step": "payment_methods",
@@ -373,7 +373,7 @@
         "ok": true,
         "status": null,
         "ms": 0,
-        "note": "placeOrder armed — Adyen scheme via HTTP (no Playwright)"
+        "note": "placeOrder armed \u2014 Adyen scheme via HTTP (no Playwright)"
       },
       {
         "step": "payment_methods",
@@ -406,6 +406,10 @@
     "harvestThenCheckoutMs": 90025,
     "harvestedPaymentDeclined": true,
     "baselinePaymentDeclined": true,
-    "speedup": 4
+    "speedup": 4,
+    "cardSynthetic": true,
+    "cardLast4": "0002",
+    "note": "Synthetic Visa \u2192 BigPay 30102 is wiring-only; no Revolut/issuer ping expected. Set TOYMATE_CARD_* for bank proof (historically 30106).",
+    "bankProof": false
   }
 }

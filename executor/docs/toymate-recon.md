@@ -29,10 +29,12 @@ Script: `scripts/toymate-harvest-checkout-proof.mjs` · artifact: `docs/toymate-
 | Path | Wall | CF | Spam critical | Result |
 |------|------|----|---------------|--------|
 | Harvest (pre-warm) | **54s** | minted | spam via proxy ~13s | bank ready |
-| Checkout **with** harvest | **36s** | **0ms** (`harvested cf_clearance`) | apply REST **1.3s** | BigPay **30102** declined |
-| Checkout **without** (baseline) | **144s** | **44s** CapSolver | **69s** CapSolver | BigPay **30102** declined |
+| Checkout **with** harvest | **36s** | **0ms** (`harvested cf_clearance`) | apply REST **1.3s** | BigPay **30102** (synthetic Visa) |
+| Checkout **without** (baseline) | **144s** | **44s** CapSolver | **69s** CapSolver | BigPay **30102** (synthetic Visa) |
 
 Checkout wall **~4× faster** with a pre-warmed bank (~108s saved on the critical path). Harvest cost sits off-drop when the bank is filled ahead of time.
+
+**Not a Revolut/bank ping.** These runs used synthetic Visa `…0002` (no `TOYMATE_CARD_*` in env) → BigPay **30102** gateway refuse. Issuer auth / Revolut only shows on a real disposable (historically **30106** insufficient funds). Score bank separately from harvest timing.
 
 ## Modes (`task.toymateMode`)
 

@@ -147,6 +147,15 @@ function summarizeCheckout(label, out, wallMs, harvested) {
   const spam = steps.find((s) => s.step === "checkout_spam");
   const pay = steps.find((s) => s.step === "place_order");
   const captchaCriticalMs = (byName.cf_warm || 0) + (byName.checkout_spam || 0);
+  const bigpayCode = (() => {
+    const m = String(pay?.note || "").match(/"code"\s*:\s*(\d+)/);
+    return m ? Number(m[1]) : null;
+  })();
+  // 30102 on synthetic Visa = gateway refuse (no issuer / Revolut).
+  // Real disposable historically returns 30106 insufficient funds (bank ping).
+  const issuerLikely =
+    bigpayCode === 30106 ||
+    /insufficient|fund|3ds|authentication/i.test(String(pay?.note || ""));
   return {
     label,
     harvested: Boolean(harvested),
@@ -157,6 +166,8 @@ function summarizeCheckout(label, out, wallMs, harvested) {
     error: out.error || null,
     failedStep: out.failedStep || null,
     placeNote: pay?.note || null,
+    bigpayCode,
+    bankProofLikely: Boolean(out.orderNumber) || (Boolean(out.paymentDeclined) && issuerLikely),
     cfNote: cf?.note || null,
     cfMs: byName.cf_warm ?? null,
     spamNote: spam?.note || null,
@@ -320,6 +331,15 @@ const compare = {
   harvestThenCheckoutMs: harvestMs + harvestedWall,
   harvestedPaymentDeclined: harvestedRun.paymentDeclined,
   baselinePaymentDeclined: baselineRun?.paymentDeclined ?? null,
+  cardSynthetic: Boolean(card.synthetic),
+  cardLast4: String(card.number).replace(/\s+/g, "").slice(-4),
+  harvestedBigpayCode: harvestedRun.bigpayCode,
+  harvestedBankProofLikely: harvestedRun.bankProofLikely,
+  baselineBigpayCode: baselineRun?.bigpayCode ?? null,
+  baselineBankProofLikely: baselineRun?.bankProofLikely ?? null,
+  note: card.synthetic
+    ? "Synthetic Visa → BigPay 30102 is wiring-only; no Revolut/issuer ping expected. Set TOYMATE_CARD_* for bank proof (historically 30106)."
+    : "Live card used — score Revolut / bank for issuer proof.",
   speedup:
     baselineWall && harvestedWall
       ? Number((baselineWall / Math.max(1, harvestedWall)).toFixed(2))
@@ -364,4 +384,14 @@ console.log(JSON.stringify({ phase: "wrote", path: outPath }));
 const harvestedPass =
   Boolean(harvestedRun.paymentDeclined || harvestedRun.orderNumber) &&
   /harvested cf_clearance/i.test(String(harvestedRun.cfNote || ""));
+if (card.synthetic) {
+  console.log(
+    JSON.stringify({
+      phase: "bank_proof",
+      ok: false,
+      reason: "synthetic card — BigPay 30102 does not ping Revolut; set TOYMATE_CARD_* for issuer proof",
+      bigpayCode: harvestedRun.bigpayCode,
+    }),
+  );
+}
 process.exit(harvestedPass ? 0 : 4);
