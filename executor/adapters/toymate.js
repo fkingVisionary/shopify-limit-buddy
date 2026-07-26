@@ -1194,18 +1194,24 @@ export const toymateAdapter = {
               ? "submitted"
               : "failed";
         const logHint = (http.paymentLogs || [])
-          .slice(0, 4)
-          .map((l) => `${l.step}:${l.status}`)
+          .map((l) => `${l.step}:${l.status ?? l.body?.slice?.(0, 24) ?? "?"}`)
           .join(" | ");
         return {
           ok: Boolean(http.ok || http.declined),
           status: http.status ?? null,
-          note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 240),
+          note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 320),
           declined: http.declined,
-          paymentLogs: (http.paymentLogs || []).slice(0, 8),
+          paymentLogs: (http.paymentLogs || []).slice(0, 12),
           via: "http",
         };
       });
+
+      const bigpayPosts = (pay.paymentLogs || []).filter(
+        (l) => l.step === "bigpay" || l.step === "bigpay_cse",
+      );
+      const authPosts = bigpayPosts.filter(
+        (l) => typeof l.status === "number" && l.status > 0,
+      ).length;
 
       return {
         ok: Boolean(orderNumber) || paymentDeclined || pay.ok,
@@ -1220,6 +1226,9 @@ export const toymateAdapter = {
         cardGateway: methodsStep.adyen?.gateway || "adyenv3",
         atcVia: cart.via || null,
         cartId: checkoutId,
+        paymentLogs: pay.paymentLogs || [],
+        bigpayAuthPosts: authPosts,
+        elapsedMs: Date.now() - t0,
         finalUrl: orderNumber
           ? `${apex}/checkout/order-confirmation`
           : `${apex}/checkout`,
