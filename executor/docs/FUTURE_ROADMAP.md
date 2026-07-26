@@ -1,33 +1,33 @@
 # Future roadmap — after Kmart hard rollback
 
-_Date: 2026-07-18_  
-_Status: operating plan (docs + process; no new adapters until Phase 0 green)_
+_Date: 2026-07-24 (BUTT competitor pass)_  
+_Status: operating plan (docs + process)_  
+_Competitor gap:_ [`COMPETITOR_BUTT_GAP.md`](./COMPETITOR_BUTT_GAP.md)
 
 ---
 
-## Phase 0 — Stabilize Kmart on known-good tip (**NOW**)
+## Phase 0 — Product musts + Kmart/Target bench (**NOW**)
 
-**Action taken:** `main` was **force-reset** to **`a1d9f9c` (“Electron Update”)** — the last tip with confirmed successful transactions. Soft restores of `kmart.js` alone were insufficient because desktop sidecar / post-tip commits still drifted.
+**Owner update (2026-07-24):** **Kmart and Target are benched** after ongoing trouble. Do **not** prioritize Kmart/Target engineering until explicitly un-benched.
 
-| Check | Detail |
+**Competitor lesson (BUTT):** their sweep is driven by **ops features** (Quick Task, in-bot monitors, watchdog, 3DS, PayPal vault, profile expressions, import/export, auto-updater) as much as site count. Those upgrades are **must-haves** — see gap doc.
+
+| Must (product) | Notes |
 |---|---|
-| Tip | `git rev-parse origin/main` → `a1d9f9c957965fb96b4f271aef4792dfa756248e` |
-| Do **not** | Merge PR #32-era undici rollbacks, Playwright recovery ladders, or “restore” PRs that re-land those commits |
-| Prove on | **Desktop + sticky AU ISP/residential proxy** (not cloud DC) |
-| After pull | `cd desktop && npm run setup && npm start` → **Start engine** |
+| Import / Export | Profiles, proxies, tasks |
+| In-bot monitors | Stock/release inside desktop (+ web) |
+| Watchdog | Monitor hit → auto-start tasks |
+| Quick Task | One-click drop setup; **web ↔ desktop sync** |
+| 3DS helper | Hands-off, multi-store |
+| PayPal account manager | Multi-account + auto-relogin |
+| Profile Expressions | Generate N profiles from templates |
+| Auto-updater | Desktop builds |
 
-### Local verify checklist
-1. Fresh clone / hard reset: `git fetch && git reset --hard origin/main` (must be `a1d9f9c`)
-2. `cd executor && npm install && npm run dev` (or desktop sidecar only)
-3. Desktop: Start engine → one Kmart job with sticky ISP proxy
-4. Confirm: Akamai warm → PDP → ATC → checkout path completes (or fails for non-antibot reasons only)
-5. Only after a green transaction: allow new commits on `main`
-
-**If still broken on this tip:** the regression is env (proxy sticky/IP, Hyper key/allowlist, desktop install), not git history. Debug that before any code change.
+Historical Kmart tip note (only if un-benched later): known-good was `a1d9f9c` (“Electron Update”); prove on desktop + sticky AU ISP — do not roll to PR #32.
 
 ---
 
-## Phase 1 — Bandai AU (first new module)
+## Phase 1 — Bandai AU (first new module; differentiation)
 
 Docs: `BANDAI_AU_MODULE.md` · bible: `BANDAI_CHECKOUT_BIBLE.md` · scoreboard: `NEXT_STORE_MODULES.md`
 
@@ -48,18 +48,21 @@ Keep Bandai on a **feature branch**; do not pile experimental Akamai changes int
 
 ---
 
-## Phase 2 — Hyper-native expansions (after Bandai ships)
+## Phase 2 — Sites on competitor list we can win (Kmart/Target skipped)
 
-Wire missing solvers in `antibot.js` once, then store adapters:
+Wire missing solvers in `antibot.js` once, then adapters. Prefer Hyper-native + digs we already have:
 
-| Order | Store | Antibot | Doc |
+| Order | Store | Antibot | Doc / note |
 |---|---|---|---|
-| 2a | AusPost Shop (un-park for coin season) | DataDome | `AUSPOST_SHOP_MODULE.md` |
-| 2b | Harvey Norman | Incapsula | scoreboard |
-| 2c | **Pokémon Centre AU** | Incapsula + DataDome (+ CapSolver hCaptcha); GE reuse Bandai playbook — **adapter scaffolded** | `POKEMON_CENTRE_MODULE.md` |
-| 2d | Costco AU | Akamai (reuse) + Kasada (wire) | `COSTCO_AU_MODULE.md` |
-| 2e | Target / Uniqlo / Big W | Akamai reuse | `NEXT_STORE_MODULES.md` |
-| 2f | Foot Locker / Platypus | Kasada / DataDome | scoreboard |
+| 2a | **Pokémon Centre AU** | Incapsula + DataDome (+ CapSolver hCaptcha); GE reuse Bandai — **adapter scaffolded on main** | `POKEMON_CENTRE_MODULE.md` — on BUTT list |
+| 2b | **Costco AU** | Akamai + Kasada | `COSTCO_AU_MODULE.md` — on BUTT list |
+| 2c | AusPost Shop (coin season) | DataDome | `AUSPOST_SHOP_MODULE.md` — on BUTT list |
+| 2d | Big W / Uniqlo | Akamai | scoreboard — on BUTT list (Big W) |
+| 2e | Shopify raffle pack | CF + Shopify | Supply / UP THERE / Above The Clouds — see gap doc |
+| 2f | Harvey Norman / FL / Platypus | Incapsula / Kasada / DD | scoreboard |
+| — | **Kmart / Target** | — | **BENCHED** |
+| later | Best & Less dig | SAP/Express suspected | Not yet researched |
+| later | **Disney Store AU** | SFCC + Akamai + GE **1696** + OneID | `DISNEY_STORE_MODULE.md` · handoff `DISNEY_BUILD_HANDOFF.md` |
 
 ---
 
@@ -68,18 +71,20 @@ Wire missing solvers in `antibot.js` once, then store adapters:
 | Store | Notes | Doc |
 |---|---|---|
 | JB Hi-Fi | Shopify + **CF** + reCAPTCHA Enterprise — not Akamai | `JB_HIFI_MODULE.md` |
-| EB / Toymate / Pop Mart | CF / EQL / membership | scoreboard |
+| **Topps (US+JP first)** | Per-region Shopify + **CF**; guest-first; EU hCaptcha likely | `TOPPS_MODULE.md` |
+| EB / Toymate / Pop Mart | CF / EQL / membership — on BUTT list | scoreboard |
 
-Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outside Hyper.
+Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outside Hyper.  
+Topps: one adapter × region table (`shop.topps.com` / `shop-jp.topps.com` / EU `shop-*`); Magento paths are dead.
 
 ---
 
-## Branching rules (protect Kmart)
+## Branching rules
 
-1. **`main` = known-good Kmart** until Phase 0 is green on your machine.
-2. New store work → `cursor/<store>-…-709b` off current `main`.
-3. Never “fix” Kmart by rolling to PR #32 (`600b40f`) — that undoes Electron Update.
-4. Research-only docs can land ahead of adapters (this PR); **no executor behavior change** without Phase 0 green + explicit go.
+1. **Kmart/Target benched** — no adapter churn there unless owner un-benches.
+2. New store / product work → `cursor/<name>-…-709b` off current `main`.
+3. If Kmart is ever un-benched: do **not** “fix” by rolling to PR #32 (`600b40f`).
+4. Research-only docs can land ahead of adapters; product musts (monitor/watchdog/QuickTask) may ship without new stores.
 
 ---
 
@@ -94,4 +99,8 @@ Monitor feeds OK; full undici ATC only if a CF/captcha path is productized outsi
 | `JB_HIFI_MODULE.md` | JB dig (CF correction) |
 | `hyper-solutions-brief.md` | Hyper vendor API notes |
 | `POKEMON_CENTRE_MODULE.md` | Pokémon Centre AU dig (Incapsula+DD+GE) |
+| `TOPPS_MODULE.md` | Topps multi-region (US/JP + EU/IN/BR Shopify fleet) |
+| `DISNEY_STORE_MODULE.md` | Disney Store AU dig (SFCC + GE 1696 + OneID) |
+| `DISNEY_BUILD_HANDOFF.md` | Disney build handoff + pasteable agent prompt |
+| `COMPETITOR_BUTT_GAP.md` | BUTT feature + site gap vs us (Kmart/Target benched) |
 | `FUTURE_ROADMAP.md` | This plan |
