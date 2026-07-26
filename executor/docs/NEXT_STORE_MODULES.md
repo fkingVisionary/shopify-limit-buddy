@@ -10,10 +10,11 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 ### Yield / strategy note (owner input)
 - **Product musts (vs BUTT):** Quick Task, in-bot monitors, watchdog, 3DS, PayPal vault, profile expressions, import/export, auto-updater — see gap doc. Ship these in parallel with stores.
 - **Kmart + Target — BENCHED.** Do not chase competitor wins there for now.
-- **Premium Bandai AU — BUILD FIRST (store).** Not on BUTT list → greenfield. Dig: `BANDAI_AU_MODULE.md`.
+- **Premium Bandai AU — LIVE on main** (ATC/GE). Dig: `BANDAI_AU_MODULE.md` · bible: `BANDAI_CHECKOUT_BIBLE.md`.
+- **Pokémon Centre AU — scaffolded on main**; dig: `POKEMON_CENTRE_MODULE.md`.
 - **Topps (US + JP first)** — dig: `TOPPS_MODULE.md`.
 - **Toymate** — agen restore (parallel); on BUTT list; CF + EQL.
-- **Pokémon Centre / Costco / AusPost / Big W** — on BUTT card list; prefer after Bandai + Hyper wiring.
+- **Costco / AusPost / Big W** — on BUTT card list; next retail after Bandai/PC.
 - **Shopify raffle pack** — Supply / UP THERE / Above The Clouds (BUTT raffle list).
 - **Disney Store AU** — dig + handoff: `DISNEY_STORE_MODULE.md` / `DISNEY_BUILD_HANDOFF.md` (SFCC + GE **1696** + OneID; on BUTT list).
 - **JB Hi-Fi** — `JB_HIFI_MODULE.md` (CF, not Akamai).
