@@ -19,6 +19,10 @@ const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
+const {
+  shouldCheckoutOnMonitorHit,
+  taskForMonitorCheckout,
+} = require("./bandai-monitor-checkout.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -26,6 +30,8 @@ let running = false;
 let maxConcurrent = 5;
 let emit = () => {};
 let onFinished = null;
+/** @type {null | (() => object|null)} */
+let takeBandaiHarvestFn = null;
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -35,8 +41,12 @@ function setFinishedHandler(fn) {
   onFinished = typeof fn === "function" ? fn : null;
 }
 
-function configure({ maxConcurrent: n } = {}) {
+function configure(opts = {}) {
+  const n = opts.maxConcurrent;
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
+  if (Object.prototype.hasOwnProperty.call(opts, "takeBandaiHarvest")) {
+    takeBandaiHarvestFn = typeof opts.takeBandaiHarvest === "function" ? opts.takeBandaiHarvest : null;
+  }
 }
 
 function state() {
@@ -830,14 +840,52 @@ function shouldStickyResiRetry(result) {
   return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
 }
 
-async function runBandaiMonitorInProcess(job, payload) {
+async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
   const path = require("path");
+  const { eventMatchesWatch, parseTaskWatch } = await import(
+    pathToFileUrl(path.join(__dirname, "..", "executor", "monitor", "event-filter.js"))
+  );
   const monitorDir = path.join(__dirname, "..", "executor", "monitor");
   const mode = String(payload.bandaiMonitorMode || "local").toLowerCase();
-  const maxPolls = Math.max(1, Number(job.task?.monitorMaxPolls || process.env.BANDAI_MONITOR_MAX_POLLS) || 3);
+  // Dry monitor (no checkout): small poll budget for labs.
+  // Checkout-on-hit: keep polling until match (optional safety cap via env/task).
+  const configuredMax = Number(job.task?.monitorMaxPolls || process.env.BANDAI_MONITOR_MAX_POLLS);
+  const maxPolls = checkoutOnHit
+    ? configuredMax > 0
+      ? Math.max(1, configuredMax)
+      : Number.POSITIVE_INFINITY
+    : Math.max(1, configuredMax || 3);
+  const maxWaitMs = Math.max(
+    0,
+    Number(job.task?.monitorMaxWaitMs || process.env.BANDAI_MONITOR_MAX_WAIT_MS) || 0,
+  );
   const hits = [];
+  const watch = parseTaskWatch({
+    productId: payload.productId || payload.bandaiWatchSku,
+    keywords: payload.keywords || payload.bandaiWatchKeywords,
+    pdpUrl: payload.pdpUrl,
+    bandaiWatchSku: payload.bandaiWatchSku,
+    bandaiWatchKeywords: payload.bandaiWatchKeywords,
+  });
 
-  emitLog(job.runId, job.task?.id, "info", `Bandai monitor mode=${mode}`);
+  emitLog(
+    job.runId,
+    job.task?.id,
+    "info",
+    `Bandai monitor mode=${mode} checkoutOnHit=${checkoutOnHit} maxPolls=${Number.isFinite(maxPolls) ? maxPolls : "∞"}`,
+  );
+
+  const injectHit =
+    /^(1|true|yes)$/i.test(String(process.env.BANDAI_MONITOR_INJECT_HIT || "")) ||
+    job.task?.monitorInjectHit === true;
+
+  function injectProductId(fallbackWatch) {
+    return (
+      (fallbackWatch?.productIds && fallbackWatch.productIds[0]) ||
+      payload.bandaiWatchSku ||
+      "N2542159011"
+    );
+  }
 
   if (mode === "global") {
     const { createGlobalMonitorHub } = await import(
@@ -847,7 +895,6 @@ async function runBandaiMonitorInProcess(job, payload) {
       attachBridge: false,
       monitorOpts: {
         intervalMs: Number(payload.bandaiMonitorIntervalMs) || 10000,
-        // Global poll keywords stay owner/env — task only filters.
       },
       log: (line) => emitLog(job.runId, job.task?.id, "info", line),
     });
@@ -861,6 +908,7 @@ async function runBandaiMonitorInProcess(job, payload) {
       },
       {
         onHit: (ev) => {
+          if (!ev?.inStock) return;
           hits.push(ev);
           emitLog(
             job.runId,
@@ -887,7 +935,12 @@ async function runBandaiMonitorInProcess(job, payload) {
     );
 
     let polls = 0;
+    const waitStarted = Date.now();
     await new Promise((resolve) => {
+      const done = () => {
+        hub.monitor.off("poll", onPoll);
+        resolve();
+      };
       const onPoll = (s) => {
         polls += 1;
         emitLog(
@@ -896,10 +949,19 @@ async function runBandaiMonitorInProcess(job, payload) {
           "info",
           `global poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
         );
-        if (hits.length || polls >= maxPolls) {
-          hub.monitor.off("poll", onPoll);
-          resolve();
+        if (injectHit && polls >= 1 && !hits.length) {
+          const pid = injectProductId(sub.watch);
+          hub._injectStockChanged({
+            productId: String(pid),
+            title: "inject-hit",
+            inStock: true,
+            reason: "inject",
+            timestamp: Date.now(),
+          });
         }
+        if (hits.length) return done();
+        if (polls >= maxPolls) return done();
+        if (maxWaitMs > 0 && Date.now() - waitStarted >= maxWaitMs) return done();
       };
       hub.monitor.on("poll", onPoll);
       hub.monitor.on("error", (e) =>
@@ -909,6 +971,18 @@ async function runBandaiMonitorInProcess(job, payload) {
     });
     await hub.stop();
     hub.detach();
+
+    if (checkoutOnHit && hits.length) {
+      return {
+        ok: true,
+        monitor: true,
+        checkout: true,
+        bandaiMonitorMode: "global",
+        hit: hits[0],
+        hits,
+        note: `matched ${hits[0].productId} — starting checkout`,
+      };
+    }
     return {
       ok: true,
       monitor: true,
@@ -946,7 +1020,9 @@ async function runBandaiMonitorInProcess(job, payload) {
   }
 
   let polls = 0;
+  const waitStarted = Date.now();
   await new Promise((resolve) => {
+    const done = () => resolve();
     local.on("poll", (s) => {
       polls += 1;
       emitLog(
@@ -955,11 +1031,25 @@ async function runBandaiMonitorInProcess(job, payload) {
         "info",
         `local poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
       );
-      if (hits.length || polls >= maxPolls) resolve();
+      if (injectHit && polls >= 1 && !hits.length) {
+        const pid = injectProductId(local.watch);
+        local.emit("stock_changed", {
+          productId: String(pid),
+          title: "inject-hit",
+          inStock: true,
+          reason: "inject",
+          timestamp: Date.now(),
+        });
+      }
+      if (hits.length) return done();
+      if (polls >= maxPolls) return done();
+      if (maxWaitMs > 0 && Date.now() - waitStarted >= maxWaitMs) return done();
     });
     local.on("stock_changed", (ev) => {
+      if (!eventMatchesWatch(ev, local.watch || watch)) return;
       hits.push(ev);
       emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      if (checkoutOnHit) done();
     });
     local.on("error", (e) =>
       emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
@@ -967,6 +1057,18 @@ async function runBandaiMonitorInProcess(job, payload) {
     local.start();
   });
   await local.stop();
+
+  if (checkoutOnHit && hits.length) {
+    return {
+      ok: true,
+      monitor: true,
+      checkout: true,
+      bandaiMonitorMode: "local",
+      hit: hits[0],
+      hits,
+      note: `matched ${hits[0].productId} — starting checkout`,
+    };
+  }
   return {
     ok: true,
     monitor: true,
@@ -1006,16 +1108,91 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
 
-  // Bandai monitor (global filter / task-local) runs in-process against executor/
-  // monitor modules — same code Fly would use; no checkout adapter import.
+  // Bandai monitor (global filter / task-local). Optionally hand off to checkout
+  // on the first matching in-stock hit (claims F5 harvest when armed).
   if (
     job.task?.store === "bandai" &&
     String(job.task?.bandaiMode || payload.bandaiMode || "") === "monitor"
   ) {
-    emitLog(job.runId, job.task?.id, "info", "Starting Bandai monitor");
+    const checkoutOnHit = shouldCheckoutOnMonitorHit(job.task, job.placeOrder !== false);
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      checkoutOnHit ? "Starting Bandai monitor → checkout on hit" : "Starting Bandai monitor",
+    );
     try {
-      const mon = await runBandaiMonitorInProcess(job, payload);
-      return finishResult(job, mon, summary);
+      const mon = await runBandaiMonitorInProcess(job, payload, { checkoutOnHit });
+      if (!mon.checkout || !mon.hit) {
+        return finishResult(job, mon, summary);
+      }
+
+      const switched = taskForMonitorCheckout(job.task, mon.hit, payload.bandaiArea || "au");
+      if (!switched.ok) {
+        return finishResult(
+          job,
+          { ok: false, error: switched.error, monitor: true, hits: mon.hits },
+          summary,
+        );
+      }
+
+      // Claim warm F5 bridge at trigger time (not enqueue) so Harvest stays useful
+      // while the monitor was armed.
+      const harvestSession = takeBandaiHarvestFn?.() || null;
+      if (harvestSession?.id) {
+        switched.task.harvestedBridgeId = harvestSession.id;
+        switched.task.harvestedProxy = harvestSession.proxy;
+        switched.task.proxyOverride = harvestSession.proxy;
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"} age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
+        );
+      } else {
+        emitLog(job.runId, job.task?.id, "info", "No harvested F5 bridge — cold checkout");
+      }
+
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "ok",
+        `Restock ${switched.target.productId} — Autocheckout${job.placeOrder !== false ? " (live)" : " (dry)"}`,
+      );
+
+      const checkoutJob = {
+        ...job,
+        task: switched.task,
+        proxyRaw: harvestSession?.proxy || job.proxyRaw,
+        proxyEntries: harvestSession?.proxy
+          ? [harvestSession.proxy]
+          : job.proxyEntries,
+        placeOrder: job.placeOrder !== false,
+      };
+      const builtCheckout = buildPayload({ ...checkoutJob, rotateSession: false });
+      if (!builtCheckout.ok) {
+        return finishResult(
+          job,
+          {
+            ok: false,
+            error: builtCheckout.error,
+            monitor: true,
+            monitorHit: switched.target,
+            hits: mon.hits,
+          },
+          summary,
+        );
+      }
+      const checkoutPayload = builtCheckout.data;
+      checkoutPayload.taskId = `${job.runId}-checkout`;
+      const checkoutSummary = summarizePayload(checkoutPayload);
+
+      // Fall through to sidecar checkout (same progress polling as normal runs).
+      return await runSidecarCheckout(checkoutJob, checkoutPayload, checkoutSummary, {
+        attemptLabel: attemptLabel === "run" ? "monitor-checkout" : `${attemptLabel}-checkout`,
+        monitorHit: switched.target,
+        monitorHits: mon.hits,
+      });
     } catch (e) {
       return finishResult(
         job,
@@ -1029,6 +1206,11 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
+  return await runSidecarCheckout(job, payload, summary, { attemptLabel });
+}
+
+async function runSidecarCheckout(job, payload, summary, extra = {}) {
+  const attemptLabel = extra.attemptLabel || "run";
   console.log(
     "[desktop:run]",
     JSON.stringify({
@@ -1040,6 +1222,7 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       kmartMode: summary.kmartMode,
       placeOrder: summary.placeOrder,
       pdp: summary.storeUrl,
+      monitorHit: extra.monitorHit?.productId || null,
     }),
   );
   emitLog(job.runId, job.task?.id, "info", "Starting");
@@ -1081,7 +1264,13 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
   try {
     const res = await sidecar.runTask(payload);
-    return finishResult(job, res, summary);
+    const finished = finishResult(job, res, summary);
+    if (extra.monitorHit) {
+      finished.monitorHit = extra.monitorHit;
+      finished.monitorTriggered = true;
+      finished.harvestedBridge = Boolean(payload.harvestedBridgeId);
+    }
+    return finished;
   } finally {
     clearInterval(progressTimer);
   }
@@ -1106,8 +1295,10 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
-    // Harvested CF clearance is IP-bound — do not rotate off that exit.
-    const harvestLocked = Boolean(job.task?.harvestedSession?.cookies);
+    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit.
+    const harvestLocked = Boolean(
+      job.task?.harvestedSession?.cookies || job.task?.harvestedBridgeId || job.task?.harvestedProxy,
+    );
 
     // Sticky: use the listed session- token first (user-provided exits).
     // Always minting a random session on attempt 1 ignored the proxy list and
