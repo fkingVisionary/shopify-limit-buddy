@@ -274,6 +274,9 @@ export async function runCheckout(task) {
         stoppedBeforePay: out.stoppedBeforePay ?? null,
         decline: out.decline ?? null,
         fakeCard: out.fakeCard ?? null,
+        fraudFlags: out.fraudFlags ?? null,
+        possibleFraudDetected: out.possibleFraudDetected ?? null,
+        isSameCartToken: out.isSameCartToken ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.

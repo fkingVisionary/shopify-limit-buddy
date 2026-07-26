@@ -863,6 +863,27 @@ export async function runDisneyGeHttpPay(opts = {}) {
                           ? "pay_submitted_http"
                           : "issuer_http_failed";
 
+            const isSameCartToken = /^(true|1)$/i.test(String(txMap.IsTheSameCartToken || ""));
+            const willCaptcha = /^(true|1)$/i.test(
+              String(txMap.WillCaptchaBeRequiredOnNextFailedPaymentAttempt || ""),
+            );
+            const fraudFlags = {
+              possibleFraudDetected: fraudDetected,
+              isSameCartToken,
+              // GE often returns IsTheSameCartToken=False on HTTP issuer even when bank moved;
+              // treat False as a soft risk signal (Bandai: silent Revolut / DataCorruption gap).
+              sameCartMismatch: !isSameCartToken && Boolean(transactionId || bankHit),
+              willCaptchaOnNextFail: willCaptcha,
+              transactionStatusType: statusType || null,
+              success: /^(true|1)$/i.test(String(txMap.Success || "")),
+              paymentErrorBody: txMap.PaymentErrorBody
+                ? String(txMap.PaymentErrorBody).slice(0, 240)
+                : null,
+              machineIdPresent: Boolean(machineId),
+              forterTokenPresent: Boolean(forterToken),
+              jwtPresent: Boolean(urlStructureToken),
+            };
+
             return {
               ...r,
               ok: Boolean(
@@ -878,11 +899,13 @@ export async function runDisneyGeHttpPay(opts = {}) {
               transactionStatusType: statusType || null,
               transactionId,
               txMap,
+              fraudFlags,
+              isSameCartToken,
               note: (
                 paymentStatus === "declined_or_auth_failed" || paymentStatus === "ge_fraud_refused"
-                  ? `DECLINE/AUTH wire status=${r.status} payStatus=${paymentStatus} tx=${transactionId || "-"} fraud=${fraudDetected} type=${statusType || "-"} via=${via}`
-                  : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} via=${via} ${String(r.bodySnippet || r.error || "").slice(0, 120)}`
-              ).slice(0, 300),
+                  ? `DECLINE/AUTH wire status=${r.status} payStatus=${paymentStatus} tx=${transactionId || "-"} fraud=${fraudDetected} sameCart=${txMap.IsTheSameCartToken || "?"} type=${statusType || "-"} via=${via}`
+                  : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} fraud=${fraudDetected} sameCart=${txMap.IsTheSameCartToken || "?"} via=${via} ${String(r.bodySnippet || r.error || "").slice(0, 100)}`
+              ).slice(0, 320),
             };
           });
           if (
@@ -912,6 +935,20 @@ export async function runDisneyGeHttpPay(opts = {}) {
 
     const decline = /decline|auth_failed|fraud_refused/i.test(String(issuer?.paymentStatus || ""));
     const wireOk = Boolean(issuer?.ok && (decline || issuer?.paymentStatus === "pay_submitted_http" || issuer?.paymentStatus === "pay_submitted_no_response"));
+    const fraudFlags = issuer?.fraudFlags || {
+      possibleFraudDetected: issuer?.possibleFraudDetected ?? null,
+      isSameCartToken: issuer?.isSameCartToken ?? null,
+      sameCartMismatch: null,
+      willCaptchaOnNextFail: null,
+      transactionStatusType: issuer?.transactionStatusType || null,
+      success: null,
+      paymentErrorBody: issuer?.txMap?.PaymentErrorBody
+        ? String(issuer.txMap.PaymentErrorBody).slice(0, 240)
+        : null,
+      machineIdPresent: Boolean(machineId),
+      forterTokenPresent: Boolean(forterToken),
+      jwtPresent: Boolean(urlStructureToken),
+    };
     return {
       ok: wireOk,
       steps,
@@ -921,14 +958,16 @@ export async function runDisneyGeHttpPay(opts = {}) {
       checkoutGuid: guid,
       cartToken: guid,
       paymentStatus: issuer?.paymentStatus || "issuer_http_failed",
-      possibleFraudDetected: issuer?.possibleFraudDetected ?? null,
+      possibleFraudDetected: fraudFlags.possibleFraudDetected,
+      isSameCartToken: fraudFlags.isSameCartToken,
+      fraudFlags,
       transactionStatusType: issuer?.transactionStatusType || null,
       transactionId: issuer?.transactionId || null,
       decline,
       issuer,
       checkoutV2Url: v2Url,
       creditCardFormUrl: ccUrl,
-      issuerAction: issuer?.issuerUrl || DISNEY_GE_ISSUER_ACTION,
+      issuerAction: issuer?.issuerUrl || formIssuerAction || DISNEY_GE_ISSUER_ACTION,
       machineIdPresent: Boolean(machineId),
       jwtPresent: Boolean(urlStructureToken),
       hydrateShippingOk: hydrateShippingOk || Boolean(shippingMethodId),
@@ -938,7 +977,11 @@ export async function runDisneyGeHttpPay(opts = {}) {
       stoppedBeforePay: false,
       checkoutStage: decline ? "order" : wireOk ? "tokenize" : "tokenize",
       note: issuer?.note || "issuer failed",
-      failedStep: decline ? null : issuer?.paymentStatus || "ge_issuer",
+      failedStep: decline
+        ? null
+        : fraudFlags.possibleFraudDetected
+          ? "ge_fraud_refused"
+          : issuer?.paymentStatus || "ge_issuer",
     };
   } finally {
     await closeOwned();
