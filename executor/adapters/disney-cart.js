@@ -27,16 +27,20 @@ function formBody(fields) {
 }
 
 export function buildAddToCartFields({ pid, quantity = 1, csrf, personalization = "", extra = {} } = {}) {
+  // Live HAR (2026-07-26 headed Chrome): browser posts pid + quantity + csrf_token only.
+  // Keep optional SFCC fields when explicitly provided (bundles / personalization).
   const fields = {
     pid: String(pid || ""),
-    pidsObj: extra.pidsObj != null ? extra.pidsObj : "",
-    childProducts: extra.childProducts != null ? extra.childProducts : "",
     quantity: String(quantity || 1),
-    personalization: personalization || "",
-    ...extra,
   };
-  // Don't let empty overrides wipe pid/qty
-  delete fields.csrf;
+  if (extra.pidsObj != null && extra.pidsObj !== "") fields.pidsObj = extra.pidsObj;
+  if (extra.childProducts != null && extra.childProducts !== "") fields.childProducts = extra.childProducts;
+  if (personalization) fields.personalization = personalization;
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (k === "csrf" || k === "pidsObj" || k === "childProducts") continue;
+    if (v == null || v === "") continue;
+    fields[k] = v;
+  }
   if (csrf?.tokenName && csrf?.token) {
     fields[csrf.tokenName] = csrf.token;
   }

@@ -1,0 +1,38 @@
+[
+  {
+    "step": "home",
+    "ok": true,
+    "ms": 5708,
+    "note": "status=200 title=Disney Store | Official Site for Disney Merchandise"
+  },
+  {
+    "step": "pdp",
+    "ok": true,
+    "ms": 5959,
+    "note": "status=200 btn=true pid=050368983992 sitekey=6LfTl6ApAA…"
+  },
+  {
+    "step": "akamai_dwell",
+    "ok": true,
+    "ms": 82204,
+    "note": "abck ~0~ after 29 dwell loops len=878"
+  },
+  {
+    "step": "atc_click",
+    "ok": false,
+    "ms": 23423,
+    "note": "Cart-AddProduct 403 denied=true bytes=482"
+  },
+  {
+    "step": "bag",
+    "ok": true,
+    "ms": 5669,
+    "note": "status=200 empty=true hasLine=true"
+  },
+  {
+    "step": "ge_checkout_click",
+    "ok": false,
+    "ms": 397,
+    "note": "no checkout CTA visible; clicked=false; probe={\"status\":500,\"bytes\":16401,\"head\":\"{\\n  \\\"action\\\": \\\"Globale-GetCartToken\\\",\\n  \\\"queryString\\\": \\\"\\\",\\n  \\\"locale\\\": \\\"en_AU\\\",\\n  \\\"tracking_consent\\\": null,\\n  \\\"error\\\": {},\\"
+  }
+]

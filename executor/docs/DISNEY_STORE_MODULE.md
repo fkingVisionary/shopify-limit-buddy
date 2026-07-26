@@ -133,15 +133,16 @@ PDP embeds:
   value="/on/demandware.store/Sites-DisneyStoreAUNZ-Site/en_AU/Cart-AddProduct" />
 ```
 
-### ATC wire (AU ISP + `main.js`, 2026-07-26)
+### ATC wire (AU ISP + `main.js` + headed HAR, 2026-07-26)
 
 | Step | Detail |
 |---|---|
-| CSRF | `POST CSRF-Generate` → `{ csrf: { tokenName, token } }` then `addCsrfToFormData` |
-| Primary ATC body | `pid`, `pidsObj`, `childProducts`, `quantity`, `personalization`, + CSRF field |
-| reCAPTCHA | **Enterprise on ATC** — `grecaptcha.enterprise.execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }` → then `Cart-AddProduct` |
+| CSRF | `POST CSRF-Generate` → `{ csrf: { tokenName: "csrf_token", token } }` ✅ HAR |
+| Primary ATC body | Live browser: `pid` + `quantity` + `csrf_token` (optional `pidsObj` / bundles) |
+| reCAPTCHA | **Enterprise on ATC** — `grecaptcha.enterprise.execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }` → then `Cart-AddProduct` (CapSolver wired; key via `CAPSOLVER_API_KEY`) |
 | Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
-| Akamai | Home/PDP **200** on sticky AU ISP with seeded `_abck`; `POST Cart-AddProduct` **403** without sensor warm |
+| Akamai | Headed Chrome GET ✅; sensor POST 201 ✅; `_abck ~0~` after dwell ✅; **`Cart-AddProduct` still AkamaiGHost 403** on Playwright — Hyper allowlist required. Headless = home 403. |
+| HAR | `experiments/disney-isp-capture.mjs` → `har/disney/` (full HAR in `/tmp/disney-capture-*`) |
 
 **Module assumption:** **Hyper Akamai warm → sticky AU ISP → CSRF → reCAPTCHA Enterprise → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout mid 1696**.
 

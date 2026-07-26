@@ -27,6 +27,10 @@ import {
   addDisneyToCart,
 } from "./disney-cart.js";
 import { runDisneyGeHandoff, fetchDisneyGeScriptLoader } from "./disney-ge.js";
+import {
+  capsolverKey,
+  solveDisneyRecaptchaEnterprise,
+} from "./disney-recaptcha.js";
 import { hyperConfigured } from "../antibot.js";
 
 function makeStep(steps, ctx) {
@@ -177,14 +181,39 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
+  const sitekey =
+    task.recaptchaSitekey || pdp.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY;
+  let recaptchaToken = task.recaptchaToken || task.captchaToken || null;
+  let recaptchaMeta = null;
+  if (!recaptchaToken && task.skipRecaptcha !== true && capsolverKey()) {
+    recaptchaMeta = await tStep("recaptcha_capsolver", async () => {
+      const solved = await solveDisneyRecaptchaEnterprise({
+        pageUrl: pdpUrl,
+        sitekey,
+        action: "AddToCart",
+        proxyRaw: task.proxy || null,
+        proxyless: task.capsolverProxyless === true,
+      });
+      return {
+        ok: solved.ok,
+        note: solved.ok
+          ? `CapSolver ${solved.via} ${solved.elapsedMs}ms`
+          : solved.error,
+        token: solved.token || null,
+        via: solved.via || null,
+      };
+    });
+    if (recaptchaMeta.ok) recaptchaToken = recaptchaMeta.token;
+  }
+
   const atc = await addDisneyToCart(session, ctx, {
     tStep,
     pid,
     quantity: Number(task.quantity || task.qty || 1),
     pdpUrl,
     addToCartUrl: pdp.addToCartUrl,
-    recaptchaSitekey: task.recaptchaSitekey || pdp.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
-    recaptchaToken: task.recaptchaToken || task.captchaToken || null,
+    recaptchaSitekey: sitekey,
+    recaptchaToken,
     recaptchaEnterpriseUrl: pdp.recaptchaEnterpriseUrl,
     skipRecaptcha: task.skipRecaptcha === true,
     skipRecaptchaVerify: task.skipRecaptchaVerify === true,
@@ -225,9 +254,11 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
     pdp,
     atc,
     ge,
+    recaptcha: recaptchaMeta,
     merchantId: DISNEY_GE_MID,
     needsRecaptcha: atc.needsRecaptcha || false,
     recaptchaSitekey: atc.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
+    capsolverConfigured: Boolean(capsolverKey()),
     stoppedBeforePay: true,
     failedStep: ok
       ? null
