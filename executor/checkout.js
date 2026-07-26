@@ -5,10 +5,11 @@
 // to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
 // checkout page) so existing Shopify recon flows keep working.
 
-import { makeDispatcher, createJar, request } from "./http.js";
+import { makeDispatcher, makeRemoteTlsDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
+import { noteLiveMilestone, recordRunMilestone } from "./run-milestones.js";
 
 const now = () => Date.now();
 
@@ -16,24 +17,49 @@ function step(steps, name, ok, status, ms, note) {
   steps.push({ step: name, ok, status, ms, note });
 }
 
-function wireProgress(ctx, taskId) {
+function wireProgress(ctx, taskId, meta = {}) {
   let lastRank = -1;
+  let lastMilestoneRank = -1;
   ctx.onProgress = (stageOrStep, detail = null) => {
     const known = WORKFLOW_STAGE_IDS.has(stageOrStep) ? stageOrStep : stageForStep(stageOrStep);
     if (!known) return;
     const rank = stageRank(known);
     if (rank < lastRank) return;
     lastRank = rank;
-    const meta = stageMeta(known);
+    const stageInfo = stageMeta(known);
+    const stepName = typeof stageOrStep === "string" && stageOrStep !== known ? stageOrStep : null;
     setTaskProgress(taskId, {
       stage: known,
-      label: meta.label,
-      hint: meta.hint,
+      label: stageInfo.label,
+      hint: stageInfo.hint,
       detail: detail || null,
-      step: typeof stageOrStep === "string" && stageOrStep !== known ? stageOrStep : null,
+      step: stepName,
       running: true,
       done: false,
     });
+    // Persist cart+ / 3DS as soon as we hit them — not only when /run returns.
+    // Skip cart until a cart_* step actually succeeded (avoid logging GraphQL 403 as a win).
+    if (rank >= stageRank("cart") && rank > lastMilestoneRank) {
+      if (known === "cart") {
+        const lastCart = [...(ctx.steps || [])]
+          .reverse()
+          .find((s) => /^cart_/.test(String(s?.step || "")));
+        if (!lastCart?.ok || (lastCart.status != null && lastCart.status >= 400)) {
+          return;
+        }
+      }
+      lastMilestoneRank = rank;
+      try {
+        noteLiveMilestone(taskId, known, {
+          proxy: meta.proxy,
+          transport: meta.transport,
+          dryRun: meta.dryRun,
+          step: stepName,
+        });
+      } catch {
+        /* never break checkout for logging */
+      }
+    }
   };
   setTaskProgress(taskId, {
     stage: "warm",
@@ -59,15 +85,56 @@ export async function runCheckout(task) {
   const t0 = now();
   const jar = createJar();
   const store = task.storeUrl.replace(/\/$/, "");
-  // Keep the native TLS client opt-in. It is useful for Akamai experiments, but
-  // a native failure can terminate the process and surface as an empty 502.
+  const host = (() => {
+    try {
+      return new URL(store).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
+  const isKmart = host === "kmart.com.au" || host.endsWith(".kmart.com.au");
+
+  // Transport selection.
+  // Empirical green (place_order / 3DS on Fly direct 89.187.186.9) used undici.
+  // Defaulting Kmart to tls-worker solved _abck but 403'd category/PDP on the
+  // same IP — looks like nav/session handling, not SoftBlock. Keep tls-worker
+  // opt-in until document GETs match the undici-green path.
+  // - default / forceUndici / transport=undici → undici
+  // - transport=tls-worker | tlsWorker:true | KMART_TLS_WORKER=1 → child chrome_131
+  // - forceTls / transport=tls → in-process chrome_131 (can empty-502)
+  // - Playwright stays opt-in only (kmartMode=playwright)
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  // TLS is opt-in only. Auto-forcing TLS for Kmart+proxy caused empty HTTP 502s
-  // (node-tls-client native crash) whenever the UI sent transport=tls with a
-  // proxy. Undici is what cleared WWW Akamai through cart_create on recent runs.
   const forceTls = task.forceTls === true || requestedTransport === "tls";
-  const dispatcher = makeDispatcher(task.proxy, { forceTls, forceUndici });
+  const wantTlsWorker =
+    !forceUndici &&
+    !forceTls &&
+    (task.tlsWorker === true ||
+      requestedTransport === "tls-worker" ||
+      process.env.KMART_TLS_WORKER === "1" ||
+      process.env.KMART_TLS_WORKER === "true");
+
+  let dispatcher = null;
+  let transportSelectNote = null;
+
+  if (forceTls) {
+    dispatcher = makeDispatcher(task.proxy, { forceTls: true });
+    transportSelectNote = "tls in-process chrome_131 (forced — not crash-isolated)";
+  } else if (wantTlsWorker) {
+    try {
+      dispatcher = await makeRemoteTlsDispatcher(task.proxy);
+      transportSelectNote = "tls-worker chrome_131 (opt-in)";
+    } catch (e) {
+      dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
+      transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 400);
+    }
+  } else {
+    dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
+    transportSelectNote = forceUndici
+      ? "undici (forced)"
+      : "undici (default — matches direct-green place_order path)";
+  }
+
   const ctx = { dispatcher, jar };
 
   if (dispatcher.proxyParseFailed) {
@@ -86,21 +153,35 @@ export async function runCheckout(task) {
   }
 
   const closeDispatcher = async () => {
-    // Adapter may swap ctx.dispatcher (tls→undici fallback); close the active one.
+    // Adapter may swap dispatchers: sensor tls-worker ↔ nav undici ↔ api tls-worker.
     try { await ctx.dispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._wwwDispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._navDispatcher?.close?.(); } catch { /* ignore */ }
+    try { await ctx._sensorTlsDispatcher?.close?.(); } catch { /* ignore */ }
   };
 
   // Playwright fallback lane: opt-in per-task via kmartMode="playwright".
   // Overrides hostname-based adapter picking. Runs real Chromium + Hyper's
   // Playwright handlers instead of the raw-HTTP kmart adapter.
   const wantPlaywright =
-    task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(new URL(store).hostname.toLowerCase());
+    task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(host);
   const adapter = wantPlaywright ? kmartPlaywrightAdapter : pickAdapter(store);
   if (adapter) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.
     ctx.steps = [];
-    wireProgress(ctx, task.taskId);
+    if (transportSelectNote) {
+      ctx.steps.push({
+        step: "transport_select",
+        ok: !/failed → undici/i.test(transportSelectNote),
+        note: transportSelectNote,
+      });
+    }
+    wireProgress(ctx, task.taskId, {
+      proxy: Boolean(dispatcher.proxy),
+      transport: dispatcher.transport,
+      dryRun: task.placeOrder !== true,
+    });
     try {
       const out = await adapter.run(task, ctx);
       markTaskDone(task.taskId, {
@@ -108,12 +189,14 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         detail: out.checkoutStage ?? null,
       });
-      return {
+      const activeTransport = ctx.dispatcher?.transport ?? dispatcher.transport;
+      const result = {
         ok: out.ok,
         taskId: task.taskId,
         adapter: adapter.id,
         elapsedMs: now() - t0,
-        transport: dispatcher.transport,
+        transport: activeTransport,
+        gitSha: process.env.EXECUTOR_GIT_SHA || null,
         steps: out.steps ?? ctx.steps,
         trace: out.trace,
         finalUrl: out.finalUrl,
@@ -129,21 +212,75 @@ export async function runCheckout(task) {
         orderNumber: out.orderNumber ?? null,
         orderId: out.orderId ?? null,
         paymentStatus: out.paymentStatus ?? null,
+        // Store-specific passthrough (Toymate account gen / PayPal manual, etc.).
+        // Kmart ignores these fields.
+        account: out.account ?? null,
+        accountGen: out.accountGen ?? null,
+        paypalApproveUrl: out.paypalApproveUrl ?? null,
+        paymentMethod: out.paymentMethod ?? null,
+        // Bandai HTTP path passthrough
+        via: out.via ?? null,
+        note: out.note ?? null,
+        areaItemNo: out.areaItemNo ?? null,
+        cartSn: out.cartSn ?? null,
+        cartId: out.cartId ?? null,
+        cartItemSn: out.cartItemSn ?? null,
+        checkoutSn: out.checkoutSn ?? null,
+        title: out.title ?? null,
+        globaleMid: out.globaleMid ?? null,
+        merchantCartToken: out.merchantCartToken ?? null,
+        reached3ds: out.reached3ds ?? null,
+        threeDsUrl: out.threeDsUrl ?? null,
+        // Bandai GE drop-path diagnostics
+        timeline: out.timeline ?? null,
+        declineSnippet: out.declineSnippet ?? null,
+        payClickCount: out.payClickCount ?? null,
+        sawAuthWire: out.sawAuthWire ?? null,
+        chargeReqCount: out.chargeReqCount ?? null,
+        blockedChargeReqCount: out.blockedChargeReqCount ?? null,
+        browserIssuerBlocked: out.browserIssuerBlocked ?? null,
+        framesNeutralized: out.framesNeutralized ?? null,
+        undiciAttempts: out.undiciAttempts ?? null,
+        isSameCartToken: out.isSameCartToken ?? null,
+        transactionId: out.transactionId ?? null,
+        cartToken: out.cartToken ?? null,
+        blockers: out.blockers ?? null,
+        timing: out.timing ?? null,
+        elapsedMs: out.elapsedMs ?? null,
+        geNetTail: out.geNetTail ?? null,
       };
+      // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
+      // leave a trail on the machine + in Fly logs.
+      result.milestone = recordRunMilestone(task.taskId, result, {
+        proxy: Boolean(ctx.dispatcher?.proxy ?? dispatcher.proxy),
+        transport: activeTransport,
+      });
+      return result;
     } catch (e) {
       markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
-      return {
+      const activeTransport = ctx.dispatcher?.transport ?? dispatcher.transport;
+      const partial = {
         ok: false,
         taskId: task.taskId,
         adapter: adapter.id,
         error: e?.message ?? String(e),
         failedStep: e?.code ?? "adapter_error",
         elapsedMs: now() - t0,
-        transport: dispatcher.transport,
+        transport: activeTransport,
         steps: ctx.steps,
         trace: ctx.requestTrace,
         cookies: ctx.jar?.dump?.() ?? {},
+        checkoutStage: e?.checkoutStage ?? null,
+        paymentSummary: e?.paymentSummary ?? null,
+        paymentStatus: e?.paymentStatus ?? null,
+        orderNumber: e?.orderNumber ?? null,
       };
+      // Still record if we cleared cart_get / 3DS before the throw.
+      partial.milestone = recordRunMilestone(task.taskId, partial, {
+        proxy: Boolean(ctx.dispatcher?.proxy ?? dispatcher.proxy),
+        transport: activeTransport,
+      });
+      return partial;
     } finally {
       await closeDispatcher();
     }

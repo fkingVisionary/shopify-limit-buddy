@@ -24,6 +24,7 @@ let token = null;
 let port = null;
 let hyperKeyInUse = null;
 let paydockKeyInUse = null;
+let capsolverKeyInUse = null;
 
 function loadDotEnv(filePath) {
   const out = {};
@@ -104,15 +105,24 @@ function waitHealth(p, timeoutMs = 45_000) {
   });
 }
 
-async function startSidecar({ hyperApiKey, paydockPublicKey, maxConcurrent = 5 } = {}) {
+async function startSidecar({
+  hyperApiKey,
+  paydockPublicKey,
+  capsolverApiKey,
+  maxConcurrent = 5,
+} = {}) {
   const nextPaydock =
     String(paydockPublicKey || "").trim() ||
     String(process.env.PAYDOCK_PUBLIC_KEY || "").trim() ||
     KMART_PAYDOCK_PUBLIC_KEY_DEFAULT;
+  const nextCap =
+    String(capsolverApiKey || "").trim() ||
+    String(process.env.CAPSOLVER_API_KEY || "").trim();
   if (child && !child.killed) {
     const hyperChanged = hyperApiKey && hyperApiKey !== hyperKeyInUse;
     const paydockChanged = nextPaydock && nextPaydock !== paydockKeyInUse;
-    if (hyperChanged || paydockChanged) {
+    const capChanged = nextCap !== (capsolverKeyInUse || "");
+    if (hyperChanged || paydockChanged || capChanged) {
       await stopSidecar();
     } else {
       return { ok: true, ...status() };
@@ -146,6 +156,14 @@ async function startSidecar({ hyperApiKey, paydockPublicKey, maxConcurrent = 5 }
   paydockKeyInUse = paydockPk || null;
   if (paydockPk) env.PAYDOCK_PUBLIC_KEY = paydockPk;
   else delete env.PAYDOCK_PUBLIC_KEY;
+
+  // Toymate-only: CapSolver. Prefer Settings over empty .env overwrite.
+  const capKey =
+    String(capsolverApiKey || "").trim() ||
+    String(envFromFile.CAPSOLVER_API_KEY || process.env.CAPSOLVER_API_KEY || "").trim();
+  capsolverKeyInUse = capKey || null;
+  if (capKey) env.CAPSOLVER_API_KEY = capKey;
+  else delete env.CAPSOLVER_API_KEY;
 
   let stderr = "";
   child = spawn("node", ["server.js"], {
@@ -181,6 +199,7 @@ async function stopSidecar() {
     port = null;
     token = null;
     hyperKeyInUse = null;
+    capsolverKeyInUse = null;
     return;
   }
   const c = child;
@@ -199,6 +218,7 @@ async function stopSidecar() {
   port = null;
   token = null;
   hyperKeyInUse = null;
+  capsolverKeyInUse = null;
 }
 
 function status() {
@@ -207,6 +227,7 @@ function status() {
     port,
     hasToken: Boolean(token),
     hyperConfigured: Boolean(hyperKeyInUse),
+    capsolverConfigured: Boolean(capsolverKeyInUse),
   };
 }
 
@@ -260,6 +281,42 @@ async function runTask(task) {
   return json || { ok: false, error: `HTTP ${httpStatus}` };
 }
 
+async function harvestToymate(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/toymate/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "local executor at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
+async function harvestBandai(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/bandai/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "harvest bank full / at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
+async function bandaiHarvestStatus() {
+  const { json } = await requestJson("GET", "/bandai/harvest", null, 15_000);
+  return json || { ok: false, error: "no response" };
+}
+
+async function clearBandaiHarvest() {
+  const { json } = await requestJson("POST", "/bandai/harvest/clear", {}, 60_000);
+  return json || { ok: false, error: "no response" };
+}
+
 async function progress(taskId) {
   const { json } = await requestJson("GET", `/progress/${encodeURIComponent(taskId)}`, null, 10_000);
   return json;
@@ -270,5 +327,9 @@ module.exports = {
   stopSidecar,
   status,
   runTask,
+  harvestToymate,
+  harvestBandai,
+  bandaiHarvestStatus,
+  clearBandaiHarvest,
   progress,
 };

@@ -1,3 +1,38 @@
+# Fly one-shot probe
+
+**Do not loop SoftBlocked hours.** One intentional `/run`:
+
+```bash
+EXECUTOR_TOKEN=... ./executor/scripts/fly-probe-once.sh
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh   # ISP + apiTls handoff
+
+# Capture a real Chromium HAR via ISP (no Hyper) for diffs vs public/kmart-slim.har
+npx playwright install chromium   # once
+OUT=/tmp/kmart-browser.har node executor/scripts/capture-kmart-har.mjs
+# See executor/docs/HYPER_HAR_ALIGNMENT.md
+API_TLS=0 SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh  # undici api.*
+```
+
+# Fly ladder smoke (optional Actions helper)
+
+One-tap from GitHub: **Actions → Smoke executor → Run workflow**.
+
+Or locally (needs `EXECUTOR_TOKEN`):
+
+```bash
+EXECUTOR_URL=https://j1ms-bot-executor.fly.dev \
+EXECUTOR_TOKEN=... \
+./executor/scripts/fly-smoke.sh
+
+SMOKE_USE_PROXY=1 ./executor/scripts/fly-smoke.sh   # ISP pool
+```
+
+Writes `*.json` + `*.summary.json` + `*.milestones.json` under `SMOKE_OUT_DIR`
+(default `/tmp/fly-smoke`). Scores furthest stage / milestones — not only
+`failedStep` after a client timeout.
+
+---
+
 # HAR diff machine
 
 Compare a real browser HAR against the executor's current implementation to
@@ -34,7 +69,7 @@ Golden checklist (from `www.kmart.com.au.har_1.json`, 971 entries):
 | seed                  | #25       | POST /shopping-agent/v1/get-token — API-host BM seed   |
 | cart_get              | #114      | getMyActiveCart guest probe                            |
 | cart_create           | #343      | createMyBag with postcodeSelector JSON                 |
-| cart_atc              | #368      | updateMyBag addLineItem sku                            |
+| cart_atc              | #368      | updateMyCart addLineItem sku                            |
 | addr_shipping         | #599/677  | setShippingAddress (streetName full "<num> <street>")  |
 | addr_billing          | #690      | setShippingAddress + setBillingAddress                 |
 | paydock_tokenize      | #764      | PAN → oneTimeToken (origin=widget.paydock.com!)        |

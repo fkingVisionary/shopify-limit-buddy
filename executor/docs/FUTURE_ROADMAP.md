@@ -29,16 +29,20 @@ Historical Kmart tip note (only if un-benched later): known-good was `a1d9f9c` (
 
 ## Phase 1 — Bandai AU (first new module; differentiation)
 
-Docs: `BANDAI_AU_MODULE.md` · scoreboard: `NEXT_STORE_MODULES.md`
+Docs: `BANDAI_AU_MODULE.md` · bible: `BANDAI_CHECKOUT_BIBLE.md` · scoreboard: `NEXT_STORE_MODULES.md`
+
+**Drop win-con (2026-07-23):** cart holds ~**30 minutes**. Race is **ATC speed**
+(F5 → login → addToCart). Global-e pay is phase-2 inside that window — keep it
+fast, but never sacrifice ATC for pay experiments.
 
 | Step | Work |
 |---|---|
 | B0 | Logged-in **AU ISP HAR** (signup optional): login → ATC → Chance → Global-e |
 | B1 | Monitor (search/product poll + notify) |
 | B1b | **Account gen** — Desktop Settings: OnlineSim API key + IMAP app password → vault |
-| B2 | Login + ATC dry-run |
+| B2 | Login + ATC dry-run — **optimize wall→ATC** (`bandaiFastAtc`, settle knobs) |
 | B3 | Chance `applyDraw` pool |
-| B4 | Global-e checkout |
+| B4 | Global-e checkout (HTTP GE / no-page) **after** cart hold |
 
 Keep Bandai on a **feature branch**; do not pile experimental Akamai changes into Kmart while Bandai is WIP.
 
@@ -50,10 +54,10 @@ Wire missing solvers in `antibot.js` once, then adapters. Prefer Hyper-native + 
 
 | Order | Store | Antibot | Doc / note |
 |---|---|---|---|
-| 2a | **Pokémon Centre AU** | Incapsula + DataDome (+ hCaptcha gap) | `POKEMON_CENTRE_MODULE.md` — on BUTT list |
+| 2a | **Pokémon Centre AU** | Incapsula + DataDome (+ CapSolver hCaptcha); GE reuse Bandai — **adapter scaffolded on main** | `POKEMON_CENTRE_MODULE.md` — on BUTT list |
 | 2b | **Costco AU** | Akamai + Kasada | `COSTCO_AU_MODULE.md` — on BUTT list |
 | 2c | AusPost Shop (coin season) | DataDome | `AUSPOST_SHOP_MODULE.md` — on BUTT list |
-| 2d | Big W | Akamai | scoreboard — on BUTT list |
+| 2d | Big W / Uniqlo | Akamai | scoreboard — on BUTT list (Big W) |
 | 2e | Shopify raffle pack | CF + Shopify | Supply / UP THERE / Above The Clouds — see gap doc |
 | 2f | Harvey Norman / FL / Platypus | Incapsula / Kasada / DD | scoreboard |
 | — | **Kmart / Target** | — | **BENCHED** |

@@ -1,0 +1,3 @@
+# Baked at Docker build time (see Dockerfile). Keep the directory in git.
+*
+!.gitignore

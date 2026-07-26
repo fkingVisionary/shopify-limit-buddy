@@ -17,14 +17,14 @@ export type WorkflowStage = {
 };
 
 export const WORKFLOW_STAGES: WorkflowStage[] = [
-  { id: "warm", label: "Warming session", hint: "Clearing antibot / opening store" },
-  { id: "product", label: "Loading product", hint: "Fetching PDP + SKU" },
-  { id: "cart", label: "Adding to cart", hint: "Create cart + add item" },
-  { id: "details", label: "Checkout details", hint: "Shipping address + billing" },
-  { id: "tokenize", label: "Card tokenize", hint: "Paydock vault token" },
-  { id: "threeds", label: "3DS / bank auth", hint: "Approve in Revolut if prompted" },
-  { id: "order", label: "Placing order", hint: "Submitting charge" },
-  { id: "done", label: "Done", hint: "Finished" },
+  { id: "warm", label: "Starting", hint: "" },
+  { id: "product", label: "Loading product", hint: "" },
+  { id: "cart", label: "Adding to cart", hint: "" },
+  { id: "details", label: "Proceeding to checkout", hint: "" },
+  { id: "tokenize", label: "Processing payment", hint: "" },
+  { id: "threeds", label: "Waiting for bank approval", hint: "" },
+  { id: "order", label: "Placing order", hint: "" },
+  { id: "done", label: "Done", hint: "" },
 ];
 
 const STAGE_INDEX: Record<string, number> = Object.fromEntries(

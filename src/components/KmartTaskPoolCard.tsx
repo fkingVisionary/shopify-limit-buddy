@@ -85,7 +85,7 @@ export function KmartTaskPoolCard({
         const row = seeded[i];
         setTasks((prev) =>
           prev.map((t, idx) =>
-            idx === i ? { ...t, status: "running", currentStep: "Warming session", stage: "warm" } : t,
+            idx === i ? { ...t, status: "running", currentStep: "Starting", stage: "warm" } : t,
           ),
         );
 

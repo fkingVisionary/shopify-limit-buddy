@@ -1,0 +1,22 @@
+{
+  "at": "2026-07-26T00:44:42.922Z",
+  "cardLast4": "1806",
+  "cardSynthetic": false,
+  "exitIp": "49.191.129.18",
+  "proxyHost": "proxy-as1.noontideproxy.com",
+  "harvestMs": 78576,
+  "harvestHasCf": true,
+  "harvestHasSpam": true,
+  "checkoutWallMs": 37401,
+  "cfMs": 0,
+  "cfNote": "harvested cf_clearance age=0s host=proxy-as1.noontideproxy.com",
+  "spamApplyMs": 1309,
+  "captchaCriticalMs": 1309,
+  "placeMs": 15879,
+  "bigpayCode": 30106,
+  "paymentDeclined": true,
+  "bankProofLikely": true,
+  "declineTitle": "insufficient funds",
+  "vsSyntheticBaselineCheckoutMs": 143603,
+  "vsSyntheticHarvestedCheckoutMs": 35945
+}

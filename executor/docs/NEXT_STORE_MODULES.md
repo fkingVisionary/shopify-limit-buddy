@@ -36,8 +36,8 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 
 | Rank | Store | Status | Antibot | Platform | Diff |
 |---|---|---|---|---|---|
-| **1** | **Premium Bandai** | **ACTIVE — build next** | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ · **not on BUTT** |
-| 2 | **Pokémon Centre AU** | Backlog (on BUTT list) | Incapsula + DataDome + hCaptcha | Elastic Path + Global‑e | L — `POKEMON_CENTRE_MODULE.md` |
+| **1** | **Premium Bandai** | **ACTIVE** (GE/ATC on main) | Volterra/F5 edge; API path open | Vue SPA + BNID + Global‑e **1925** | L / high $ · **not on BUTT** |
+| 2 | **Pokémon Centre AU** | **Scaffolded** on main (edge/monitor/GE stub; Cortex HAR next) | Incapsula + DataDome + hCaptcha | Elastic Path Cortex + Global‑e | L — `POKEMON_CENTRE_MODULE.md` |
 | 3 | **Costco AU** | Backlog (on BUTT list) | Akamai (+ Kasada) + Queue-it | Spartacus `australia` | L — `COSTCO_AU_MODULE.md` |
 | 4 | AusPost Shop | Parked → un-park coin season (on BUTT) | DataDome | Intershop + Auth0 | M — `AUSPOST_SHOP_MODULE.md` |
 | 5 | Big W | Backlog (on BUTT list) | Akamai BM | SAP + AEM | M |
@@ -52,6 +52,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 14 | **Disney Store AU** | Dig done — build after GE reuse (on BUTT) | Akamai ✅ + CF + reCAPTCHA ❌ | SFCC + Global‑e **1696** + OneID | L — `DISNEY_STORE_MODULE.md` |
 | 15 | Best & Less | Watch (on BUTT; dig TBD) | Soft Express/CF | SAP Commerce claimed | M |
 | 16 | Pop Mart AU | Watch | Cloudflare | Custom / CF | L |
+| 17 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
 | — | **Kmart** | **BENCHED** | Akamai | Existing adapter | — |
 | — | **Target AU** | **BENCHED** | Akamai | SAP Commerce | — |
 
@@ -184,6 +185,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - **Incapsula + DataDome + hCaptcha**; Elastic Path **Cortex**; AU **Global-e**.
 - DC: Incapsula iframe on all app paths; `robots.txt` soft (Cortex Disallow list).
 - Hyper ✅ on Incapsula/DD; ❌ hCaptcha. Crowded English bots. Phase 2 after Bandai + DD/Incapsula wiring.
+- **GE (2026-07-22):** Bandai proved issuer-path GE (Checkout/v2 + nested CreditCardForm + bank ground truth). PC P4 should reuse that playbook with PC merchant mid/hosts from HAR — see dig §5.1.
 - JP `pokemoncenter-online.com` = SFCC + volt-adc — separate / skip for AU.
 
 ### JB Hi-Fi — `jbhifi.com.au` — **full dig:** [`JB_HIFI_MODULE.md`](./JB_HIFI_MODULE.md)

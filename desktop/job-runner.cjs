@@ -1,8 +1,8 @@
 // Bounded local job queue. Stability first: cap concurrent /run calls so
-// Chromium 3DS tails don't OOM the machine. Future store adapters plug in
-// via buildPayload(store) — Kmart is the only v1 adapter.
+// Chromium 3DS tails don't OOM the machine. Store adapters plug in via
+// buildPayload(store) — Kmart + Toymate + Bandai + Pokémon Centre (isolated).
 //
-// Payload shape intentionally mirrors src/lib/kmart-task.ts
+// Kmart payload shape intentionally mirrors src/lib/kmart-task.ts
 // buildKmartExecutorPayload so behaviour matches the web → Fly path.
 // Single undici attempt — no TLS/Playwright auto-retry ladder (not scalable).
 
@@ -14,8 +14,11 @@ const {
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
   summarizePayload,
-  stageLogLine,
 } = require("./run-format.cjs");
+const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
+const { resolveAccountForTask } = require("./account-assign.cjs");
+const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
+const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -51,22 +54,31 @@ function normalizeProxy(raw) {
   return r.ok ? r.proxy : null;
 }
 
-/** Sticky residential session marker (Noontide / similar). ISP has none. */
+/** Sticky markers — keep in sync with executor/http.js isStickyProxyUrl. */
 function isStickyProxy(proxyUrl) {
-  return /session-[A-Za-z0-9]+|sessid=/i.test(String(proxyUrl || ""));
+  const s = String(proxyUrl || "");
+  if (/session-[A-Za-z0-9]+|sessid=|sessionid=|-sid-[A-Za-z0-9]+/i.test(s)) return true;
+  try {
+    const u = new URL(/^https?:\/\//i.test(s) ? s : `http://${s}`);
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(u.hostname) && u.username) return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 /**
- * Mint a fresh sticky-session token. ISP URLs are unchanged (no session-).
- * Burned Noontide exits keep the old token forever — each job needs a new one.
+ * Mint a fresh sticky-session token (Noontide session- / IP Fist -sid-).
+ * Bare-IP ISP URLs are unchanged.
  */
 function rotateStickyProxySession(proxyUrl, { force = false } = {}) {
   if (!proxyUrl) return proxyUrl;
   if (!force && process.env.DESKTOP_ROTATE_PROXY_SESSION !== "1") return proxyUrl;
-  // Noontide-style: ...-session-TOKEN-sessTime-N — only replace TOKEN.
-  if (!/session-[A-Za-z0-9]+/i.test(proxyUrl)) return proxyUrl;
   const stamp = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-  return String(proxyUrl).replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+  const s = String(proxyUrl);
+  if (/-sid-[A-Za-z0-9]+/i.test(s)) return s.replace(/-sid-[A-Za-z0-9]+/i, `-sid-${stamp}`);
+  if (/session-[A-Za-z0-9]+/i.test(s)) return s.replace(/session-[A-Za-z0-9]+/i, `session-${stamp}`);
+  return proxyUrl;
 }
 
 function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession }) {
@@ -137,10 +149,505 @@ function buildKmartPayload({ task, profile, proxyRaw, placeOrder, rotateSession 
   };
 }
 
+function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSession, accounts, excludeAccountIds }) {
+  const mode = String(task.toymateMode || "checkout").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  if (mode !== "account_gen" && !/^https:\/\/(www\.)?toymate\.com\.au\//i.test(input)) {
+    return { ok: false, error: "Toymate product URL required (or use Account gen mode)" };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw); // same URL normalisation; store-agnostic parser
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+  const cvv = String(profile?.card_cvv || "").trim();
+  const mm = String(profile?.card_exp_month || "").trim();
+  const yy = String(profile?.card_exp_year || "").trim();
+  const holder =
+    String(profile?.card_name || "").trim() ||
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim() ||
+    "Cardholder";
+
+  const wantsPlace = mode === "checkout" && placeOrder;
+  if (wantsPlace && (pan.length < 12 || cvv.length < 3 || !mm || yy.length < 2)) {
+    return { ok: false, error: "Place order needs complete card on the profile" };
+  }
+
+  const card =
+    pan.length >= 12 && cvv.length >= 3
+      ? {
+          number: pan,
+          cvv,
+          expMonth: mm.padStart(2, "0").slice(-2),
+          expYear: yy.slice(-2),
+          holder,
+        }
+      : null;
+
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
+
+  const storeUrl =
+    mode === "account_gen"
+      ? "https://www.toymate.com.au"
+      : input || "https://www.toymate.com.au";
+
+  // Checkout: vault login — prefer pre-resolved task.account from main enqueue.
+  let resolvedAccount = null;
+  let accountAssignSource = null;
+  if (mode === "checkout") {
+    const assign = String(task.accountAssign || "auto").toLowerCase();
+    if (assign === "guest" || assign === "none" || task.accountAssignSource === "guest") {
+      resolvedAccount = null;
+      accountAssignSource = "guest";
+    } else if (task.account?.email && task.account?.password) {
+      resolvedAccount = {
+        email: task.account.email,
+        password: task.account.password,
+        id: task.account.id || null,
+      };
+      accountAssignSource = task.accountAssignSource || "pre";
+    } else {
+      const resolved = resolveAccountForTask({
+        task,
+        profile,
+        accounts: accounts || task._accounts || [],
+        excludeIds: excludeAccountIds || task._excludeAccountIds || [],
+      });
+      if (resolved.error) {
+        return { ok: false, error: resolved.error };
+      }
+      resolvedAccount = resolved.account
+        ? {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          }
+        : null;
+      accountAssignSource = resolved.source;
+    }
+  }
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "account_gen" ? storeUrl : input,
+      variantId: Number(task.variantId) || 1,
+      qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      // Force undici — Toymate CF path was proven without tls-worker.
+      forceUndici: true,
+      forceTls: false,
+      toymateMode: mode,
+      paymentMethod: task.paymentMethod || "credit_card",
+      captchaToken: task.captchaToken || null,
+      accountPassword:
+        typeof task.accountPassword === "string" && task.accountPassword.trim()
+          ? task.accountPassword.trim()
+          : null,
+      account: resolvedAccount,
+      accountAssignSource,
+      harvestedSession:
+        task.harvestedSession && typeof task.harvestedSession === "object"
+          ? {
+              id: task.harvestedSession.id || null,
+              proxy: task.harvestedSession.proxy || null,
+              proxyHost: task.harvestedSession.proxyHost || null,
+              userAgent: task.harvestedSession.userAgent || null,
+              cookies: task.harvestedSession.cookies || {},
+              captchaToken: task.harvestedSession.captchaToken || null,
+              harvestedAt: task.harvestedSession.harvestedAt || null,
+              cfExpiresAt: task.harvestedSession.cfExpiresAt || null,
+              spamExpiresAt: task.harvestedSession.spamExpiresAt || null,
+            }
+          : null,
+      captchaToken:
+        task.captchaToken ||
+        task.harvestedSession?.captchaToken ||
+        null,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+      card: mode === "checkout" ? card : null,
+    },
+  };
+}
+
+function buildBandaiPayload({
+  task,
+  profile,
+  proxyRaw,
+  placeOrder,
+  rotateSession,
+  accounts,
+  excludeAccountIds,
+  settings,
+}) {
+  const mode = String(task.bandaiMode || "checkout").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const REGION_RE = /^(au|us|nz|sg|hk|tw|fr)$/i;
+  const areaFromUrl = (input.match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i) || [])[1];
+  const bandaiArea = String(task.bandaiArea || task.areaCode || areaFromUrl || "au")
+    .trim()
+    .toLowerCase();
+  if (!REGION_RE.test(bandaiArea)) {
+    return {
+      ok: false,
+      error: `Unsupported Bandai region "${bandaiArea}" (use au/us/nz/sg/hk/tw/fr — not jp)`,
+    };
+  }
+  if (
+    mode !== "account_gen" &&
+    mode !== "monitor" &&
+    mode !== "chance" &&
+    input &&
+    !/^https:\/\/(www\.)?p-bandai\.com\//i.test(input) &&
+    !/^[A-Za-z0-9_-]+$/.test(input)
+  ) {
+    return {
+      ok: false,
+      error: "Bandai product URL (p-bandai.com/{au|us|…}/item/…) or product code required",
+    };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw);
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  // Harvested F5 bridges are IP-bound — never rotate sticky session on claim.
+  const harvestedProxy =
+    typeof task.harvestedProxy === "string" && task.harvestedProxy.trim()
+      ? task.harvestedProxy.trim()
+      : typeof task.proxyOverride === "string" && task.proxyOverride.trim()
+        ? task.proxyOverride.trim()
+        : null;
+  const harvestedBridgeId =
+    typeof task.harvestedBridgeId === "string" && task.harvestedBridgeId.trim()
+      ? task.harvestedBridgeId.trim()
+      : null;
+
+  const proxy = harvestedProxy
+    ? harvestedProxy
+    : rotateStickyProxySession(proxyNorm.proxy, {
+        force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+      });
+
+  const storeUrl =
+    mode === "account_gen" || mode === "monitor" || !input
+      ? `https://p-bandai.com/${bandaiArea}/`
+      : /^https?:\/\//i.test(input)
+        ? input
+        : `https://p-bandai.com/${bandaiArea}/item/${input}`;
+
+  let resolvedAccount = null;
+  let accountAssignSource = null;
+  if (mode === "checkout" || mode === "chance") {
+    if (task.account?.email && task.account?.password) {
+      resolvedAccount = {
+        email: task.account.email,
+        password: task.account.password,
+        id: task.account.id || null,
+      };
+      accountAssignSource = task.accountAssignSource || "pre";
+    } else {
+      const resolved = resolveAccountForTask({
+        task,
+        profile,
+        accounts: accounts || task._accounts || [],
+        excludeIds: excludeAccountIds || task._excludeAccountIds || [],
+      });
+      if (resolved.error) {
+        return { ok: false, error: resolved.error };
+      }
+      resolvedAccount = resolved.account
+        ? {
+            email: resolved.account.email,
+            password: resolved.account.password,
+            id: resolved.account.id,
+          }
+        : null;
+      accountAssignSource = resolved.source;
+    }
+    if (!resolvedAccount?.email || !resolvedAccount?.password) {
+      return {
+        ok: false,
+        error: "Bandai login required — generate an account or assign one from the vault",
+      };
+    }
+  }
+
+  const s = settings || task._settings || {};
+  const otp = {
+    smsProvider: String(s.smsProvider || "auto").trim().toLowerCase(),
+    smspoolApiKey: String(s.smspoolApiKey || "").trim(),
+    smspoolCountry: String(s.smspoolCountry || "GB").trim(),
+    onlinesimApiKey: String(s.onlinesimApiKey || "").trim(),
+    onlinesimMode: String(s.onlinesimMode || "rent"),
+    onlinesimServiceSlug: String(s.onlinesimServiceSlug || "other"),
+    onlinesimCountry: 61,
+    imapHost: String(s.imapHost || "").trim(),
+    imapPort: Number(s.imapPort) || 993,
+    imapUser: String(s.imapUser || "").trim(),
+    imapAppPassword: String(s.imapAppPassword || "").trim(),
+    imapMailbox: String(s.imapMailbox || "INBOX"),
+  };
+
+  const vaultEmails = vaultRegisteredEmails(accounts || task._accounts || [], "bandai");
+
+  if (mode === "account_gen") {
+    const hasSms = Boolean(otp.smspoolApiKey || otp.onlinesimApiKey);
+    if (!hasSms) {
+      return { ok: false, error: "SMSPool (preferred) or OnlineSim API key missing in Settings" };
+    }
+    if (!otp.imapHost || !otp.imapUser || !otp.imapAppPassword) {
+      return { ok: false, error: "IMAP host/user/app password required in Settings" };
+    }
+    // Without uniquify, refuse if this exact signup email is already vault-registered.
+    const signupGuess = String(
+      task.signupEmail || profile?.email || otp.imapUser || "",
+    )
+      .trim()
+      .toLowerCase();
+    const domain = signupGuess.split("@")[1] || "";
+    const catchallUniquify = domain === "bullposted.com";
+    const forceUniquify = task.uniquifyEmail === true || task.bandaiUniquifyEmail === true;
+    const willUniquify = forceUniquify || catchallUniquify;
+    if (signupGuess && !willUniquify) {
+      const hit = findRegisteredAccount({
+        accounts: accounts || task._accounts || [],
+        storeId: "bandai",
+        email: signupGuess,
+        matchBase: false,
+      });
+      if (hit) {
+        return {
+          ok: false,
+          error: `Bandai account already in vault for ${hit.email} (${hit.status}) — use checkout or delete the vault row before re-registering`,
+        };
+      }
+    }
+  }
+
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "account_gen" ? storeUrl : input || storeUrl,
+      variantId: Number(task.variantId) || 1,
+      qty: Math.max(1, Math.min(5, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      forceUndici: true,
+      forceTls: false,
+      // ATC always HTTP+F5. Pay path: fast=HTTP GE+riskHydrate, safe=Playwright GE.
+      ...resolveDesktopBandaiPayPath(task, {
+        mode,
+        placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      }),
+      bandaiF5Bridge: task.bandaiF5Bridge !== false,
+      bandaiMode: mode,
+      bandaiArea,
+      shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      harvestedBridgeId: harvestedBridgeId || undefined,
+      bandaiMonitorMode: mode === "monitor" ? task.bandaiMonitorMode || "local" : undefined,
+      bandaiWatchSku: task.bandaiWatchSku || null,
+      bandaiWatchKeywords: task.bandaiWatchKeywords || null,
+      bandaiMonitorIntervalMs:
+        mode === "monitor"
+          ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
+          : undefined,
+      bandaiMonitorDelayMs:
+        mode === "monitor" ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0) : undefined,
+      keywords:
+        mode === "monitor"
+          ? task.bandaiWatchKeywords || task.keywords || input || null
+          : undefined,
+      productId: mode === "monitor" ? task.bandaiWatchSku || null : undefined,
+      card,
+      campaignSn: task.campaignSn || null,
+      accountPassword:
+        typeof task.accountPassword === "string" && task.accountPassword.trim()
+          ? task.accountPassword.trim()
+          : null,
+      account: resolvedAccount,
+      accountAssignSource,
+      otp: mode === "account_gen" ? otp : undefined,
+      // Exact Bandai memberIds already vault-registered — agen must not re-register.
+      vaultEmails: mode === "account_gen" ? vaultEmails : undefined,
+      uniquifyEmail:
+        mode === "account_gen"
+          ? task.uniquifyEmail === true || task.bandaiUniquifyEmail === true || undefined
+          : undefined,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+    },
+  };
+}
+
+function buildPokemonCentrePayload({
+  task,
+  profile,
+  proxyRaw,
+  placeOrder,
+  rotateSession,
+}) {
+  const mode = String(task.pcMode || task.pokemoncentreMode || "monitor").toLowerCase();
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const localeRaw = String(task.pcLocale || task.locale || "").trim().toLowerCase();
+  const localeFromUrl = (input.match(/pokemoncenter\.com\/(en-[a-z]{2})(?:\/|$)/i) || [])[1];
+  let pcLocale = localeRaw || localeFromUrl || "en-au";
+  if (/^(au|enau)$/i.test(pcLocale)) pcLocale = "en-au";
+  if (/^(nz|ennz)$/i.test(pcLocale)) pcLocale = "en-nz";
+  if (!/^en-(au|nz|ca|gb|us)$/i.test(pcLocale)) {
+    return {
+      ok: false,
+      error: `Unsupported Pokémon Centre locale "${pcLocale}" (use en-au/en-nz/en-ca/en-gb/en-us — not JP online)`,
+    };
+  }
+
+  if (
+    mode !== "edge" &&
+    mode !== "monitor" &&
+    mode !== "har_probe" &&
+    input &&
+    !/^https:\/\/(www\.)?pokemoncenter\.com\//i.test(input) &&
+    !/^[A-Za-z0-9._-]+$/.test(input)
+  ) {
+    return {
+      ok: false,
+      error: "Pokémon Centre PDP URL (pokemoncenter.com/en-au/product/…) or SKU required",
+    };
+  }
+
+  const proxyNorm = normalizeKmartProxy(proxyRaw);
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
+    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+  });
+
+  const storeUrl =
+    mode === "edge" || mode === "monitor" || mode === "har_probe" || !input
+      ? `https://www.pokemoncenter.com/${pcLocale}/`
+      : /^https?:\/\//i.test(input)
+        ? input
+        : `https://www.pokemoncenter.com/${pcLocale}/product/${input}`;
+
+  let card = null;
+  if (mode === "checkout" && placeOrder) {
+    const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+    const cvv = String(profile?.card_cvv || "").trim();
+    const mm = String(profile?.card_exp_month || "").trim();
+    const yy = String(profile?.card_exp_year || "").trim();
+    const holder =
+      String(profile?.card_name || "").trim() ||
+      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+      "Cardholder";
+    if (!pan || !cvv || !mm || !yy) {
+      return { ok: false, error: "Place order needs complete card on the profile" };
+    }
+    card = {
+      number: pan,
+      expMonth: mm.padStart(2, "0"),
+      expYear: yy.replace(/^20/, "").slice(-2),
+      cvv,
+      holder,
+    };
+  }
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl,
+      pdpUrl: mode === "edge" ? storeUrl : input || storeUrl,
+      variantId: Number(task.variantId) || 1,
+      sku: task.sku || (!/^https?:/i.test(input) ? input : undefined) || undefined,
+      qty: Math.max(1, Math.min(5, Number(task.qty) || 1)),
+      proxy,
+      dryRun: mode !== "checkout" ? true : !placeOrder,
+      placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
+      debugTrace: true,
+      forceUndici: true,
+      forceTls: false,
+      pcMode: mode,
+      pcLocale,
+      pcBrowserCheckout:
+        task.pcBrowserCheckout === true || (mode === "checkout" && Boolean(placeOrder)),
+      globaleMid: task.globaleMid || task.geMerchantId || undefined,
+      card,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+    },
+  };
+}
+
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
     return buildKmartPayload(job);
+  }
+  if (store === "toymate") {
+    return buildToymatePayload(job);
+  }
+  if (store === "bandai") {
+    return buildBandaiPayload(job);
+  }
+  if (store === "pokemoncentre" || store === "pokemon" || store === "pokemoncenter") {
+    return buildPokemonCentrePayload(job);
   }
   return { ok: false, error: `Store adapter not installed yet: ${store}` };
 }
@@ -197,7 +704,8 @@ function emitLog(runId, taskId, level, message, extra) {
 }
 
 function finishResult(job, res, summary) {
-  const errorText = res?.ok ? null : formatExecutorFailure(res);
+  const debugError = res?.ok ? null : formatExecutorFailure(res);
+  const outcome = consumerOutcome(res);
   const lastSteps = Array.isArray(res?.lastSteps)
     ? res.lastSteps
     : Array.isArray(res?.steps)
@@ -212,9 +720,11 @@ function finishResult(job, res, summary) {
     JSON.stringify({
       runId: job.runId,
       ok: res?.ok,
+      consumer: outcome.label,
+      consumerCode: outcome.code,
       checkoutStage: res?.checkoutStage,
       failedStep,
-      error: errorText,
+      error: debugError,
       lastSteps: lastSteps?.slice?.(-8) ?? lastSteps,
       elapsedMs: res?.elapsedMs,
       proxy: summary.proxy,
@@ -227,7 +737,17 @@ function finishResult(job, res, summary) {
     taskId: job.task?.id,
     runId: job.runId,
     orderNumber: res?.orderNumber ?? null,
-    error: errorText,
+    // Consumer-facing label (UI). Analytical detail stays in debugError / console.
+    error: res?.ok ? null : outcome.label,
+    consumerLabel:
+      res?.ok && res?.accountGen && res?.account?.email
+        ? `Account ${res.account.email}`
+        : outcome.label,
+    consumerCode: outcome.code,
+    stockStatus: outcome.stockStatus,
+    proxyAttempts: Array.isArray(res?.proxyAttempts) ? res.proxyAttempts : null,
+    proxyRotated: Boolean(res?.proxyRotated),
+    debugError,
     checkoutStage: res?.checkoutStage ?? null,
     failedStep,
     elapsedMs: res?.elapsedMs ?? null,
@@ -235,6 +755,9 @@ function finishResult(job, res, summary) {
     lastSteps,
     steps: Array.isArray(res?.steps) ? res.steps : null,
     paymentTail: Array.isArray(res?.paymentTail) ? res.paymentTail : null,
+    account: res?.account ?? null,
+    accountGen: Boolean(res?.accountGen),
+    paypalApproveUrl: res?.paypalApproveUrl ?? null,
     attempt: "undici",
     raw: {
       ok: res?.ok,
@@ -243,6 +766,7 @@ function finishResult(job, res, summary) {
       failedStep,
       adapter: res?.adapter,
       transport: res?.transport,
+      accountGen: Boolean(res?.accountGen),
     },
   };
 }
@@ -253,17 +777,18 @@ function logResultTail(job, result) {
       job.runId,
       job.task?.id,
       "ok",
-      `done OK${result.orderNumber ? ` order=${result.orderNumber}` : ""} stage=${result.checkoutStage || "?"} ${result.elapsedMs ?? "?"}ms`,
+      result.consumerLabel || "Order confirmed",
     );
     return;
   }
-  emitLog(job.runId, job.task?.id, "err", `done FAIL — ${result.error}`);
+  emitLog(job.runId, job.task?.id, "err", result.consumerLabel || result.error || "Something went wrong");
+  // Keep analytical step tail in the main-process console only — not the consumer log.
+  if (result.debugError) {
+    console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
+  }
   for (const s of (result.lastSteps || []).slice(-8)) {
-    emitLog(
-      job.runId,
-      job.task?.id,
-      s.ok ? "info" : "err",
-      `  step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
+    console.log(
+      `[desktop:run:debug] ${job.runId} step ${s.ok ? "OK" : "FAIL"} ${s.step}${s.status != null ? ` [${s.status}]` : ""} — ${String(s.note || "").slice(0, 200)}`,
     );
   }
 }
@@ -271,8 +796,9 @@ function logResultTail(job, result) {
 /** Sticky-only: Akamai / soft-API denial worth a fresh exit. */
 function isResidentialAkamaiBlock(result) {
   if (!result || result.ok) return false;
+  if (result.consumerCode === "akamai") return true;
   const blob = [
-    result.error,
+    result.debugError,
     result.failedStep,
     result.checkoutStage,
     ...(result.lastSteps || []).map((s) => `${s.step} ${s.note}`),
@@ -289,7 +815,7 @@ function isStickyTunnelDead(result) {
   if (!result || result.ok) return false;
   if (isProxyEgressFailed(result)) return false;
   const blob = [
-    result.error,
+    result.debugError,
     result.failedStep,
     ...(result.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note}`),
   ]
@@ -304,6 +830,161 @@ function shouldStickyResiRetry(result) {
   return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
 }
 
+async function runBandaiMonitorInProcess(job, payload) {
+  const path = require("path");
+  const monitorDir = path.join(__dirname, "..", "executor", "monitor");
+  const mode = String(payload.bandaiMonitorMode || "local").toLowerCase();
+  const maxPolls = Math.max(1, Number(job.task?.monitorMaxPolls || process.env.BANDAI_MONITOR_MAX_POLLS) || 3);
+  const hits = [];
+
+  emitLog(job.runId, job.task?.id, "info", `Bandai monitor mode=${mode}`);
+
+  if (mode === "global") {
+    const { createGlobalMonitorHub } = await import(
+      pathToFileUrl(path.join(monitorDir, "global-monitor-hub.js"))
+    );
+    const hub = createGlobalMonitorHub({
+      attachBridge: false,
+      monitorOpts: {
+        intervalMs: Number(payload.bandaiMonitorIntervalMs) || 10000,
+        // Global poll keywords stay owner/env — task only filters.
+      },
+      log: (line) => emitLog(job.runId, job.task?.id, "info", line),
+    });
+    const sub = hub.subscribeTask(
+      {
+        taskId: payload.taskId,
+        bandaiMonitorMode: "global",
+        productId: payload.productId || payload.bandaiWatchSku,
+        keywords: payload.keywords || payload.bandaiWatchKeywords,
+        pdpUrl: payload.pdpUrl,
+      },
+      {
+        onHit: (ev) => {
+          hits.push(ev);
+          emitLog(
+            job.runId,
+            job.task?.id,
+            "ok",
+            `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
+          );
+        },
+      },
+    );
+    if (!sub.ok) {
+      return {
+        ok: false,
+        error: sub.error || "subscribe failed",
+        monitor: true,
+        bandaiMonitorMode: "global",
+      };
+    }
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Subscribed watch sku=${(sub.watch.productIds || []).join(",") || "-"} kw=${(sub.watch.keywords || []).join(",") || "-"}`,
+    );
+
+    let polls = 0;
+    await new Promise((resolve) => {
+      const onPoll = (s) => {
+        polls += 1;
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `global poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+        );
+        if (hits.length || polls >= maxPolls) {
+          hub.monitor.off("poll", onPoll);
+          resolve();
+        }
+      };
+      hub.monitor.on("poll", onPoll);
+      hub.monitor.on("error", (e) =>
+        emitLog(job.runId, job.task?.id, "err", e.error || "monitor error"),
+      );
+      hub.start();
+    });
+    await hub.stop();
+    hub.detach();
+    return {
+      ok: true,
+      monitor: true,
+      bandaiMonitorMode: "global",
+      hits,
+      note: hits.length ? `matched ${hits.length}` : `no match in ${polls} polls (baseline/filter)`,
+      dryRun: true,
+    };
+  }
+
+  // local — task proxies
+  const { createTaskLocalMonitor } = await import(
+    pathToFileUrl(path.join(monitorDir, "task-local-monitor.js"))
+  );
+  const entries = Array.isArray(job.proxyEntries)
+    ? job.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean)
+    : [];
+  const proxies = entries.length ? entries : job.proxyRaw ? [job.proxyRaw] : [];
+  if (!proxies.length) {
+    return { ok: false, error: "Task-local monitor needs a proxy group", monitor: true };
+  }
+  let local;
+  try {
+    local = createTaskLocalMonitor({
+      bandaiArea: payload.bandaiArea || "au",
+      productId: payload.productId || payload.bandaiWatchSku,
+      keywords: payload.keywords || payload.bandaiWatchKeywords,
+      pdpUrl: payload.pdpUrl,
+      proxies,
+      monitorIntervalMs: payload.bandaiMonitorIntervalMs,
+      monitorDelayMs: payload.bandaiMonitorDelayMs,
+    });
+  } catch (e) {
+    return { ok: false, error: e.message || String(e), monitor: true };
+  }
+
+  let polls = 0;
+  await new Promise((resolve) => {
+    local.on("poll", (s) => {
+      polls += 1;
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `local poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+      );
+      if (hits.length || polls >= maxPolls) resolve();
+    });
+    local.on("stock_changed", (ev) => {
+      hits.push(ev);
+      emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+    });
+    local.on("error", (e) =>
+      emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
+    );
+    local.start();
+  });
+  await local.stop();
+  return {
+    ok: true,
+    monitor: true,
+    bandaiMonitorMode: "local",
+    hits,
+    note: hits.length ? `matched ${hits.length}` : `no change in ${polls} polls`,
+    dryRun: true,
+  };
+}
+
+function pathToFileUrl(p) {
+  const path = require("path");
+  const u = path.resolve(p);
+  return process.platform === "win32"
+    ? `file:///${u.replace(/\\/g, "/")}`
+    : `file://${u}`;
+}
+
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
@@ -311,7 +992,11 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       ok: false,
       taskId: job.task?.id,
       runId: job.runId,
-      error: built.error,
+      error: "Something went wrong",
+      consumerLabel: "Something went wrong",
+      consumerCode: "error",
+      stockStatus: "unknown",
+      debugError: built.error,
       at: Date.now(),
       attempt: attemptLabel,
     };
@@ -321,21 +1006,61 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
 
-  emitLog(
-    job.runId,
-    job.task?.id,
-    "info",
-    `→ executor (${attemptLabel}) | proxy=${summary.proxy} | transport=${summary.transport} | mode=${summary.kmartMode} | placeOrder=${summary.placeOrder}`,
+  // Bandai monitor (global filter / task-local) runs in-process against executor/
+  // monitor modules — same code Fly would use; no checkout adapter import.
+  if (
+    job.task?.store === "bandai" &&
+    String(job.task?.bandaiMode || payload.bandaiMode || "") === "monitor"
+  ) {
+    emitLog(job.runId, job.task?.id, "info", "Starting Bandai monitor");
+    try {
+      const mon = await runBandaiMonitorInProcess(job, payload);
+      return finishResult(job, mon, summary);
+    } catch (e) {
+      return finishResult(
+        job,
+        {
+          ok: false,
+          error: e?.message || String(e),
+          monitor: true,
+        },
+        summary,
+      );
+    }
+  }
+
+  console.log(
+    "[desktop:run]",
+    JSON.stringify({
+      runId: job.runId,
+      phase: "start-executor",
+      attempt: attemptLabel,
+      proxy: summary.proxy,
+      transport: summary.transport,
+      kmartMode: summary.kmartMode,
+      placeOrder: summary.placeOrder,
+      pdp: summary.storeUrl,
+    }),
   );
-  emitLog(job.runId, job.task?.id, "info", `pdp=${summary.storeUrl}`);
+  emitLog(job.runId, job.task?.id, "info", "Starting");
+  if (payload.account?.email) {
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Account ${payload.accountAssignSource || "assigned"}: ${payload.account.email}`,
+    );
+  } else if (job.task?.store === "toymate" && String(job.task?.toymateMode || "checkout") === "checkout") {
+    emitLog(job.runId, job.task?.id, "info", "Guest checkout (no vault login)");
+  }
 
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
     try {
       const p = await sidecar.progress(payload.taskId);
       if (p?.found && p.progress) {
-        const line = stageLogLine(p.progress);
-        const key = `${p.progress.stage}|${p.progress.step || ""}|${p.progress.detail || ""}`;
+        const line = consumerProgressMessage(p.progress);
+        const key = `${p.progress.stage}|${line}`;
         if (key !== lastStageKey) {
           lastStageKey = key;
           emit({
@@ -344,12 +1069,13 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
             taskId: job.task?.id,
             runId: job.runId,
             progress: p.progress,
-            message: `[${attemptLabel}] ${line}`,
+            message: line,
+            consumerLabel: line,
           });
         }
       }
     } catch (e) {
-      emitLog(job.runId, job.task?.id, "warn", `progress poll: ${e.message || e}`);
+      console.warn(`[desktop:run] progress poll: ${e.message || e}`);
     }
   }, 1500);
 
@@ -380,30 +1106,39 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
+    // Harvested CF clearance is IP-bound — do not rotate off that exit.
+    const harvestLocked = Boolean(job.task?.harvestedSession?.cookies);
 
     // Sticky: use the listed session- token first (user-provided exits).
     // Always minting a random session on attempt 1 ignored the proxy list and
-    // often landed on worse Noontide exits. ISP has no session- → unchanged.
+    // often landed on worse Noontide exits. ISP advances host:port lines only.
     let result = await executeOnce(job, {
       rotateSession: false,
       attemptLabel: sticky ? "resi" : "run",
     });
     logResultTail(job, result);
 
-    // Sticky only: advance through group entries, then mint a fresh session-
-    // on the last entry. ISP never enters this loop.
-    const maxStickyRetries = Math.min(4, Math.max(2, entries.length || 2));
-    let stickyRetries = 0;
+    // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
+    // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
+    // Skip entirely when a harvested Toymate CF session is locked to this proxy.
+    const maxProxyRetries = harvestLocked
+      ? 0
+      : sticky
+        ? Math.min(4, Math.max(2, entries.length || 2))
+        : entries.length > 1
+          ? Math.min(3, entries.length - 1)
+          : 0;
+    let proxyRetries = 0;
     while (
       !result.ok &&
-      sticky &&
       shouldStickyResiRetry(result) &&
-      stickyRetries < maxStickyRetries
+      proxyRetries < maxProxyRetries &&
+      (entries.length > 1 || sticky)
     ) {
-      stickyRetries += 1;
+      proxyRetries += 1;
       const why = isStickyTunnelDead(result)
         ? "tunnel/TLS failure"
-        : /akamai_unsolved/i.test(`${result.failedStep} ${result.error}`)
+        : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
           ? "unsolved _abck"
           : "Akamai denial";
 
@@ -411,27 +1146,31 @@ async function runOne(job) {
       if (entries.length > 1) {
         job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
         job.proxyRaw = entries[job.proxyIndex];
-        // After one full pass of listed exits, mint a fresh session- token.
-        rotateSession = stickyRetries >= entries.length;
-        emitLog(
-          job.runId,
-          job.task?.id,
-          "warn",
-          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} entry ${job.proxyIndex + 1}/${entries.length}${rotateSession ? " (fresh session)" : ""} (ISP unchanged)`,
-        );
+        rotateSession = sticky && proxyRetries >= entries.length;
       } else {
-        rotateSession = true;
-        emitLog(
-          job.runId,
-          job.task?.id,
-          "warn",
-          `Sticky residential ${why} — retry ${stickyRetries}/${maxStickyRetries} with a fresh session exit (ISP unchanged)`,
-        );
+        rotateSession = sticky;
       }
+      console.warn(
+        `[desktop:run] proxy rotate ${proxyRetries}/${maxProxyRetries} (${why}) entry ${
+          entries.length ? `${(job.proxyIndex || 0) + 1}/${entries.length}` : "session"
+        }${rotateSession ? " fresh session" : ""}`,
+      );
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "warn",
+        `Switching proxy (${proxyRetries}/${maxProxyRetries})`,
+      );
 
       result = await executeOnce(job, {
         rotateSession,
-        attemptLabel: stickyRetries === 1 ? "resi-retry" : `resi-retry#${stickyRetries}`,
+        attemptLabel: sticky
+          ? proxyRetries === 1
+            ? "resi-retry"
+            : `resi-retry#${proxyRetries}`
+          : proxyRetries === 1
+            ? "isp-retry"
+            : `isp-retry#${proxyRetries}`,
       });
       logResultTail(job, result);
     }
@@ -439,14 +1178,20 @@ async function runOne(job) {
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   } catch (e) {
+    const debugError = e.message || String(e);
+    console.error(`[desktop:run] executor threw: ${debugError}`);
     const result = {
       ok: false,
       taskId: job.task?.id,
       runId: job.runId,
-      error: e.message || String(e),
+      error: "Something went wrong",
+      consumerLabel: "Something went wrong",
+      consumerCode: "error",
+      stockStatus: "unknown",
+      debugError,
       at: Date.now(),
     };
-    emitLog(job.runId, job.task?.id, "err", `executor threw: ${result.error}`);
+    emitLog(job.runId, job.task?.id, "err", result.consumerLabel);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   }

@@ -1,19 +1,53 @@
-// Proxy-aware HTTP client. Default transport is undici because it is stable and
-// returns adapter timelines instead of crashing the executor. The native
-// node-tls-client path is still available behind EXECUTOR_HTTP_TRANSPORT=tls or
-// per-task transport=tls for controlled TLS experiments, but it is not the
-// default after repeated empty 502s from native crashes.
+// Proxy-aware HTTP client.
+//
+// Transports:
+//   undici        — Node TLS; stable, but Hyper docs flag it as detectable for Akamai
+//   tls           — in-process node-tls-client chrome_131 (opt-in; can empty-502 Fastify)
+//   tls-worker    — same chrome_131 in a child process (crash-isolated; Kmart default via checkout.js)
 //
 // Module surface:
-//   makeDispatcher(proxyUrl) → opaque per-task dispatcher (carries the Session)
+//   makeDispatcher(proxyUrl) → opaque per-task dispatcher (undici or in-process tls)
+//   makeRemoteTlsDispatcher  → child-process chrome_131 dispatcher
 //   createJar()              → name-keyed cookie jar (same shape as before)
 //   request(url, opts, ctx)  → fetch-Response-like wrapper
 //   UA                       → Chrome / macOS user-agent string
 
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { ensureTlsNativeLib } from "./ensure-tls-native.js";
+import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+/** Child-process chrome_131 dispatcher (crash-isolated). Accepts raw proxy strings. */
+export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
+  const url = rawProxy ? parseProxy(rawProxy) : null;
+  const rawProxyLen = rawProxy ? String(rawProxy).length : 0;
+  if (rawProxy && !url) {
+    return {
+      proxy: null,
+      useTls: true,
+      remoteTls: null,
+      transport: "tls-worker",
+      sticky: false,
+      rawProxyLen,
+      proxyParseFailed: true,
+      undiciDispatcher() {
+        return undefined;
+      },
+      async tlsSession() {
+        return null;
+      },
+      async resetUndici() {},
+      async close() {},
+    };
+  }
+  const dispatcher = await makeRemoteTlsDispatcherInner(url, opts);
+  dispatcher.rawProxyLen = rawProxyLen;
+  dispatcher.proxyParseFailed = false;
+  dispatcher.sticky = isStickyProxyUrl(url);
+  return dispatcher;
+}
 
 // Lazy global TLS init. node-tls-client spawns a piscina worker pool that
 // hosts the Go shared library; initTLS must be awaited once before the first
@@ -25,6 +59,7 @@ async function loadTlsClient() {
   return tlsClientModulePromise;
 }
 async function ensureTls() {
+  ensureTlsNativeLib();
   const { initTLS } = await loadTlsClient();
   if (!tlsInitPromise) tlsInitPromise = initTLS();
   return tlsInitPromise;
@@ -59,9 +94,11 @@ function isRetryableNetworkError(error) {
 // Chrome 124 request header order. The exact ordering matters — Akamai
 // inspects it as part of the bot score. This matches a real Chrome 124
 // navigation/CORS request (cookie always last).
+// Chrome-ish CORS/navigation order for node-tls-client. Omit `connection`
+// (HTTP/1.1 tell; Chrome H2 does not send it). Include `content-type` so
+// sensor POSTs are not appended after cookie.
 const CHROME_HEADER_ORDER = [
   "host",
-  "connection",
   "cache-control",
   "sec-ch-ua",
   "sec-ch-ua-arch",
@@ -75,6 +112,7 @@ const CHROME_HEADER_ORDER = [
   "upgrade-insecure-requests",
   "user-agent",
   "accept",
+  "content-type",
   "origin",
   "sec-fetch-site",
   "sec-fetch-mode",
@@ -145,7 +183,7 @@ export function parseProxy(raw) {
 // Per-task dispatcher. Holds the proxy URL and a lazily-constructed Session.
 // `close()` should be called from the task entry-point in a finally block
 // (see checkout.js / server.js recon handler).
-/** Sticky residential usernames (session-… / sessid=…) — keep one ProxyAgent. */
+/** Optional hint for undici ProxyAgent reuse only — never a run gate. */
 function isStickyProxyUrl(proxyUrl) {
   return /session-[A-Za-z0-9]+|sessid=|sessionid=/i.test(String(proxyUrl || ""));
 }
@@ -234,11 +272,27 @@ export function makeDispatcher(rawProxy, opts = {}) {
   return dispatcher;
 }
 
+function abckMarkerIndex(value) {
+  const m = String(value ?? "").match(/~(-?\d+)~/);
+  return m ? Number(m[1]) : null;
+}
+
 // Tiny cookie jar — name-keyed (not domain-keyed) on purpose so the
 // www.kmart.com.au → api.kmart.com.au _abck handoff in kmart.js still works
 // the way it did under undici.
 export function createJar() {
   const store = new Map(); // name -> value
+  // SoftBlock Access Denied pages Set-Cookie a fresh `_abck` with ind=-1.
+  // Because the jar is name-keyed (no Domain), that clobber wipes a Hyper-
+  // solved ~0~ cookie and every later WWW/API call looks unsolved. Refuse
+  // demotions once we hold a solved cookie (explicit set/load still wins).
+  // Lesson from 203950c / PR #36 — keep this even when rolling tip to a1d9.
+  const shouldKeepExistingAbck = (incoming) => {
+    const prev = store.get("_abck");
+    const prevIdx = abckMarkerIndex(prev);
+    const nextIdx = abckMarkerIndex(incoming);
+    return prevIdx === 0 && nextIdx !== 0;
+  };
   const ingestSetCookie = (arr) => {
     if (!arr) return;
     const list = Array.isArray(arr) ? arr : [arr];
@@ -249,6 +303,7 @@ export function createJar() {
       if (eq > 0) {
         const name = pair.slice(0, eq).trim();
         const value = pair.slice(eq + 1).trim();
+        if (name === "_abck" && shouldKeepExistingAbck(value)) continue;
         store.set(name, value);
       }
     }
@@ -357,6 +412,33 @@ function wrapFetchResponse(res, requestedUrl) {
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  // Optional GE mutate wire log (Bandai double-auth forensics).
+  if (process.env.BANDAI_GE_WIRE_TAP === "1") {
+    try {
+      const u = String(url || "");
+      if (/global-e\.com/i.test(u) && method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        const fs = await import("node:fs");
+        const row = {
+          t: new Date().toISOString(),
+          method,
+          url: u,
+          bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+          issuer: /HandleCreditCard/i.test(u),
+        };
+        let arr = [];
+        try {
+          arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-wire.json", "utf8"));
+        } catch {
+          /* ignore */
+        }
+        arr.push(row);
+        fs.writeFileSync("/tmp/bandai-ge-wire.json", JSON.stringify(arr, null, 2));
+        console.log("WIRE_TAP", method, u.slice(0, 160), "issuer=" + row.issuer);
+      }
+    } catch {
+      /* ignore */
+    }
+  }
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
@@ -370,26 +452,83 @@ export async function request(url, opts, ctx) {
     ...(opts?.headers ?? {}),
   };
 
+  // Crash-isolated chrome_131 (Hyper TLS-first). Prefer over in-process useTls
+  // — native faults stay in the worker and cannot empty-502 Fastify.
+  if (dispatcher?.remoteTls) {
+    const res = await dispatcher.remoteTls.request(url, {
+      method,
+      headers,
+      body: opts?.body,
+    });
+    jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
+    return res;
+  }
+
   if (!dispatcher.useTls) {
-    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry with
-    // the SAME ProxyAgent for sticky exits (session- pinned); only rebuild
-    // the agent on the last retry or for non-sticky ISP/datacenter proxies.
-    const attempts = 3;
+    // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
+    // only — NEVER retry POST/PUT/PATCH/DELETE. A RST after GE/PSP already
+    // accepted HandleCreditCardRequestV2 produced paired Revolut auths
+    // (posts=1 in app code, two bank lines) on 2026-07-22 labs.
+    const safeRetry =
+      opts?.retry === true ||
+      (opts?.retry !== false &&
+        (method === "GET" || method === "HEAD" || method === "OPTIONS"));
+    const attempts = safeRetry ? 3 : 1;
     let lastError;
+    let undiciAttempts = 0;
+    const timeoutMs = Number(opts?.timeoutMs);
+    const headersTimeout =
+      Number(opts?.headersTimeout) > 0
+        ? Number(opts.headersTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const bodyTimeout =
+      Number(opts?.bodyTimeout) > 0
+        ? Number(opts.bodyTimeout)
+        : timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+    const signal =
+      opts?.signal ||
+      (timeoutMs > 0 && typeof AbortSignal !== "undefined" && AbortSignal.timeout
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined);
+
     for (let attempt = 0; attempt < attempts; attempt++) {
       try {
+        undiciAttempts += 1;
         const res = await undiciFetch(url, {
           method,
           headers,
           redirect: "manual",
           dispatcher: dispatcher.undiciDispatcher(),
           ...(opts?.body !== undefined ? { body: opts.body } : {}),
+          ...(signal ? { signal } : {}),
+          ...(headersTimeout != null ? { headersTimeout } : {}),
+          ...(bodyTimeout != null ? { bodyTimeout } : {}),
         });
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
-        return wrapFetchResponse(res, url);
+        const wrapped = wrapFetchResponse(res, url);
+        wrapped.undiciAttempts = undiciAttempts;
+        return wrapped;
       } catch (e) {
         lastError = e;
-        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) throw e;
+        if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
+          if (lastError && typeof lastError === "object") {
+            lastError.undiciAttempts = undiciAttempts;
+            // Surface undici/node cause codes (timeout vs RST) for issuer scoring.
+            const cause = lastError.cause;
+            if (cause && typeof cause === "object") {
+              lastError.causeCode = cause.code || cause.name || null;
+              lastError.causeMessage = cause.message || null;
+            }
+            if (lastError.name === "TimeoutError" || lastError.code === "ABORT_ERR") {
+              lastError.timedOut = true;
+            }
+          }
+          throw e;
+        }
         const rebuildAgent = !dispatcher.sticky || attempt >= attempts - 2;
         if (rebuildAgent) {
           try { await dispatcher.resetUndici?.(); } catch { /* ignore */ }

@@ -11,6 +11,7 @@ import { Switch } from "@/components/ui/switch";
 import { ArrowLeft, Loader2, Play, Save, Trash2, Copy, FlaskConical, Download, GitCompareArrows, HeartPulse } from "lucide-react";
 import { diagnoseExecutor, pingExecutor, pollExecutorProgress, runAkamaiLab, runOnExecutor } from "@/lib/executor.functions";
 import { classifyProxy } from "@/lib/proxy-format";
+import { consumerOutcome } from "@/lib/consumer-status";
 import {
   WORKFLOW_STAGES,
   furthestStageFromSteps,
@@ -250,7 +251,8 @@ function WorkflowPanel({
     live?.hint ||
     WORKFLOW_STAGES.find((s) => s.id === activeStage)?.hint ||
     "";
-  const detail = live?.detail || live?.step || null;
+  // Keep analytical step/detail out of the consumer-facing headline strip.
+  const detail = null;
 
   return (
     <Card className="mb-4 border-border/60 p-4">
@@ -416,7 +418,7 @@ function KmartPage() {
   const handleRun = async () => {
     setRunning(true);
     setResult(null);
-    setLiveProgress({ stage: "warm", label: "Warming session", hint: "Starting executor…", running: true, done: false });
+    setLiveProgress({ stage: "warm", label: "Starting", hint: "", running: true, done: false });
     let pollTimer: ReturnType<typeof setInterval> | null = null;
     try {
       const taskId = `kmart-${Date.now().toString(36)}`;
@@ -1253,7 +1255,20 @@ function KmartPage() {
         {result && (
           <Card className="mb-4 p-4">
             <div className="mb-2 flex items-center justify-between">
-              <div className="text-sm font-medium">Result</div>
+              <div className="text-sm font-medium">
+                {consumerOutcome({
+                  ok: Boolean(result.result?.ok),
+                  error: result.result?.error || result.error,
+                  failedStep: result.result?.failedStep,
+                  checkoutStage: result.result?.checkoutStage,
+                  orderNumber: result.result?.orderNumber,
+                  steps: result.result?.steps,
+                  lastSteps: result.result?.lastSteps,
+                  paymentTail: result.result?.paymentTail,
+                  paymentSummary: result.result?.paymentSummary,
+                  paymentStatus: result.result?.paymentStatus,
+                }).label}
+              </div>
               <div className="flex flex-wrap gap-2">
                 <Badge variant={result.result?.ok ? "default" : "destructive"} className="text-[10px]">
                   {result.result?.ok ? "ok" : "failed"} · {result.result?.dryRun ? "dry-run" : "real"}
@@ -1317,15 +1332,13 @@ function KmartPage() {
                 </pre>
               </details>
             )}
-            {result.error && (
-              <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                Transport error: {result.error}
-              </div>
-            )}
-            {result.result?.error && (
-              <div className="mb-2 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs text-destructive">
-                Failed at <code>{result.result.failedStep ?? "—"}</code>: {result.result.error}
-              </div>
+            {(result.error || result.result?.error) && (
+              <details className="mb-2 rounded border border-border/60 bg-muted/30 p-2 text-[11px]">
+                <summary className="cursor-pointer text-muted-foreground">Technical details</summary>
+                <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">
+                  {[result.error, result.result?.failedStep, result.result?.error].filter(Boolean).join("\n")}
+                </pre>
+              </details>
             )}
             {/* Raw body dump when no steps came back (helps debug executor issues) */}
             {(!steps || steps.length === 0) && result.result && (

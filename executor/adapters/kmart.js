@@ -9,7 +9,7 @@
 // no SBSD as of writing). Their frontend is a custom SPA, not Shopify, so
 // none of the generic Shopify cart endpoints apply.
 
-import { request, UA, makeDispatcher, isStickyProxyUrl } from "../http.js";
+import { request, UA, makeDispatcher, makeRemoteTlsDispatcher, isStickyProxyUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
 import { createHash } from "node:crypto";
@@ -156,22 +156,32 @@ function navHeaders({ referer, site }) {
 }
 
 function akamaiSensorHeaders({ requestOrigin, referer }) {
+  // Align with real Chrome Akamai sensor POSTs (text/plain + low-entropy CH + AE).
+  // Full CHROME_CH + application/json is a latent mismatch; worse under SoftBlock.
   return {
     "user-agent": UA,
-    "content-type": "application/json",
+    "content-type": "text/plain;charset=UTF-8",
     accept: "*/*",
     "accept-language": ACCEPT_LANG,
+    "accept-encoding": "gzip, deflate, br, zstd",
     origin: requestOrigin,
     referer,
-    ...CHROME_CH,
+    ...CHROME_CH_XHR,
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "cors",
     "sec-fetch-dest": "empty",
+    priority: "u=1, i",
   };
 }
 
 function akamaiSensorBody(payload) {
   return JSON.stringify({ sensor_data: payload });
+}
+
+/** Byte length from marker() output like `795b ind=-1`. */
+function abckLenFromMarker(m) {
+  const match = /^(\d+)b\b/.exec(String(m || ""));
+  return match ? Number(match[1]) : -1;
 }
 
 function marker(value) {
@@ -547,26 +557,20 @@ export const kmartAdapter = {
     // 1. Resolve egress IP for Hyper fingerprinting. Proxy comes from the
     //    task payload only — never a hard-coded / env default in this adapter.
     //    Some residential pools block ipify; resolveEgressIp tries several hosts.
+    // stickyProxy is only a light undici reuse hint — never gate the run on it
+    // (WealthProxies/IPFist are dead; do not spend time classifying stickiness).
     const stickyProxy = isStickyProxyUrl(task.proxy);
     let egressIp = null;
-    // Parallel IP race (ip-resolve.js) — one pass is enough for sticky; ISP
-    // gets a second pass with agent reset if the first echo host flaked.
-    const ipAttempts = stickyProxy ? 1 : 2;
-    for (let attempt = 0; attempt < ipAttempts && !egressIp; attempt++) {
-      if (attempt > 0) {
-        try { await ctx.dispatcher?.resetUndici?.(); } catch { /* ignore */ }
-        await sleep(400, 900);
-      }
-      await tStep(attempt === 0 ? "resolve_ip" : `resolve_ip#${attempt + 1}`, async () => {
-        const v = await resolveEgressIp(ctx, { force: true });
-        egressIp = v;
-        const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
-        return {
-          note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}${stickyProxy ? " sticky=1" : ""}`,
-          ok: Boolean(v),
-        };
-      });
-    }
+    // One IP echo pass for speed. Missing IP is soft (Hyper quality hit only).
+    await tStep("resolve_ip", async () => {
+      const v = await resolveEgressIp(ctx, { force: true });
+      egressIp = v;
+      const errs = Array.isArray(ctx._ipResolveErrors) ? ctx._ipResolveErrors.join("; ") : "";
+      return {
+        note: v ?? `(no ip)${errs ? ` tries=${errs.slice(0, 180)}` : ""}`,
+        ok: Boolean(v),
+      };
+    });
     // Soft: missing IP is a Hyper quality hit, not a hard stop. Residential
     // tunnels often block IP-echo hosts while Kmart still works (ISP proved
     // the rest of the path). Abort only when proxied IP equals direct IP.
@@ -634,6 +638,73 @@ export const kmartAdapter = {
         note: "skipped WWW warm/sensor/PDP; continuing api GraphQL checkout with seeded cookies",
       });
     } else {
+
+    // Lovable/Fly green path (#40 / resi-dry-1): ONE undici client for
+    // warm→sensors→PDP→get-token→GraphQL. Tip spiral #74–#78 split JA3
+    // (tls BM → undici PDP → parked tls api) and Ghost-denied every cart_get
+    // while get-token still 200. Live 2026-07-20: sensorTls:false + apiTls:false
+    // on ISP → cart_get JSON 200 ×4. Opt in only: sensorTls:true / KMART_SENSOR_TLS=1.
+    const wantSensorTls =
+      task.sensorTls === true || process.env.KMART_SENSOR_TLS === "1";
+    const sensorAlreadyTls =
+      Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+    if (wantSensorTls && !sensorAlreadyTls) {
+      await tStep("sensor_tls_handoff", async () => {
+        const prev = ctx.dispatcher;
+        try {
+          const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
+          ctx._navDispatcher = prev;
+          ctx.dispatcher = tlsD;
+          return {
+            ok: true,
+            note: `tls-worker chrome_131 BEFORE warm_home (same JA3 for seed+sensors) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            note: `sensor tls-worker failed — warm/sensors stay on ${prev?.transport ?? "undici"}: ${e?.message ?? String(e)}`.slice(0, 400),
+          };
+        }
+      });
+    }
+    // After sensors: always put document nav back on undici (PDP#2 HTML is
+    // proven there; tip 5dc0cee keep-on-tls Ghost-denied every PDP).
+    // When proxied chrome_131 solved _abck, PARK that tls-worker for api.*
+    // reuse — closing it and spawning a fresh worker (#74/#75) was a new
+    // TCP/JA3 session that got get-token but Ghost-denied GraphQL.
+    const restoreNavTransport = async (reason, { parkForApi = false } = {}) => {
+      if (!ctx._navDispatcher || ctx.dispatcher === ctx._navDispatcher) return;
+      const sensorD = ctx.dispatcher;
+      ctx.dispatcher = ctx._navDispatcher;
+      ctx._navDispatcher = null;
+      const isTls =
+        Boolean(sensorD?.useTls) || sensorD?.transport === "tls-worker";
+      const shouldPark =
+        parkForApi &&
+        isTls &&
+        Boolean(task.proxy) &&
+        task.sensorTlsPark !== false &&
+        process.env.KMART_SENSOR_TLS_PARK !== "0";
+      if (shouldPark) {
+        ctx._sensorTlsDispatcher = sensorD;
+        steps.push({
+          step: "sensor_tls_park",
+          ok: true,
+          note: `undici for PDP (${reason}); parked tls-worker for api.* (same chrome session as _abck solve)`,
+        });
+        return;
+      }
+      steps.push({
+        step: "sensor_tls_restore",
+        ok: true,
+        note: `back to ${ctx.dispatcher?.transport ?? "undici"} for document nav (${reason}); closed sensor ${sensorD?.transport ?? "?"}`,
+      });
+      try {
+        await sensorD?.close?.();
+      } catch {
+        /* ignore */
+      }
+    };
 
     // 2. Warm homepage → ingests _abck/bm_sz seeds + lets us discover the
     //    Akamai script path.
@@ -765,7 +836,7 @@ export const kmartAdapter = {
       steps.push({ step: "akamai_script_missing", ok: false, note: "no /akam/ path on homepage; recon needed" });
       return { ok: false, steps, finalUrl: origin, cookies: ctx.jar.dump() };
     }
-    const scriptUrl = scriptPath ? origin + scriptPath : null;
+    let scriptUrl = scriptPath ? origin + scriptPath : null;
 
     // 2b. PROACTIVE SBSD SOLVE. Kmart runs passive SBSD on the whole site.
     //     Real Chrome fetches + solves the SBSD script on the homepage
@@ -1009,9 +1080,11 @@ export const kmartAdapter = {
     });
 
 
-    // 4. Sensor loop. Akamai rotates `_abck` on response; we need a Hyper-
-    //    valid cookie before the bot wall. ISP usually clears in ≤3 rounds;
-    //    sticky residential often needs a couple more on quieter exits.
+    // 4. Sensor loop. Success path (Revolut / cart_get) grows `_abck`
+    //    735→811→819→838 then ind=0. Failure plateaus ~795b with
+    //    bodySuccess=true — more rounds on the same Hyper context + script
+    //    never recover. Harden = detect plateau → re-fetch script → clear
+    //    context (so Hyper gets script again) → continue. Not proxy spray.
     //
     // Seed a sentinel `_abck` if the jar is missing one. Hyper's /v2/sensor
     // endpoint rejects empty abck with `{"error":"missing abck"}`. The
@@ -1025,21 +1098,75 @@ export const kmartAdapter = {
         note: "jar had no _abck after warm_home; seeded sentinel for first sensor",
       });
     }
-    const sensorRounds = stickyProxy ? 5 : 3;
-    steps.push({
-      step: "akamai_sensor:pre",
-      ok: ctx.jar.has("_abck"),
-      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : ""}`,
-    });
-    for (let i = 0; i < sensorRounds; i++) {
-      const { payload, postUrl, context } = await tStep(`akamai_sensor#${i + 1}`, async () => {
+
+    // Re-GET homepage, parse fresh Akamai script path, fetch script body,
+    // clear Hyper context so the next sensor round includes `script` again.
+    const rebindWwwSensorScript = async (label) => {
+      const beforePath = scriptPath;
+      await tStep(`${label}:home`, async () => {
+        const res = await request(
+          origin + "/",
+          { method: "GET", headers: navHeaders({ referer: undefined, site: "none" }) },
+          ctx,
+        );
+        html = await res.text();
+        const nextPath = findAkamaiScriptPath(html);
+        return {
+          status: res.status,
+          ok: res.status < 400 && Boolean(nextPath),
+          note: `path=${nextPath || "(none)"} prev=${beforePath || "(none)"} html=${html.length}b`,
+        };
+      });
+      const nextPath = findAkamaiScriptPath(html);
+      if (!nextPath) {
+        steps.push({ step: `${label}:no_script`, ok: false, note: "homepage HTML had no Akamai sensor path after rebind" });
+        return false;
+      }
+      scriptPath = nextPath;
+      scriptUrl = origin + scriptPath;
+      await tStep(`${label}:script_fetch`, async () => {
+        const res = await request(
+          scriptUrl,
+          {
+            method: "GET",
+            headers: {
+              "user-agent": UA,
+              accept: "*/*",
+              "accept-language": ACCEPT_LANG,
+              "accept-encoding": "gzip, deflate, br, zstd",
+              referer: origin + "/",
+              ...CHROME_CH,
+              "sec-fetch-dest": "script",
+              "sec-fetch-mode": "no-cors",
+              "sec-fetch-site": "same-origin",
+            },
+          },
+          ctx,
+        );
+        scriptBody = await res.text();
+        return {
+          status: res.status,
+          ok: res.status < 400 && scriptBody.length > 1000,
+          note: `${scriptBody.length}b path=${scriptPath} changed=${beforePath !== scriptPath}`,
+        };
+      });
+      prevContext = null;
+      steps.push({
+        step: `${label}:context_reset`,
+        ok: true,
+        note: `prevContext cleared; next sensor includes script body path=${scriptPath}`,
+      });
+      return Boolean(scriptBody && scriptBody.length > 1000);
+    };
+
+    const runSensorRound = async (stepName, roundHint) => {
+      const { context } = await tStep(stepName, async () => {
         const beforeAbck = marker(ctx.jar.get("_abck"));
         const beforeBmsz = marker(ctx.jar.get("bm_sz"));
         const beforeCookies = cookieTrustSnapshot(ctx.jar);
         const r = await solveAkamaiSensor({
           jar: ctx.jar,
           pageUrl: origin + "/",
-
           userAgent: UA,
           ip: egressIp,
           acceptLanguage: ACCEPT_LANG,
@@ -1048,8 +1175,6 @@ export const kmartAdapter = {
           prevContext,
           version: "3",
         });
-        // Post the sensor payload back to the script URL — Akamai answers
-        // with refreshed `_abck`/`bm_sz` cookies via Set-Cookie.
         const res = await request(
           r.postUrl,
           {
@@ -1061,9 +1186,9 @@ export const kmartAdapter = {
         );
         const body = await res.text().catch(() => "");
         const setCookieNames = cookieNamesFromResponse(res);
-        recordTraceEvent(`akamai_sensor#${i + 1}`, {
+        recordTraceEvent(stepName, {
           type: "akamai_sensor_round",
-          round: i + 1,
+          round: roundHint,
           pageUrl: origin + "/",
           scriptUrl,
           input: {
@@ -1081,75 +1206,100 @@ export const kmartAdapter = {
         return {
           status: res.status,
           ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} body=${body.replace(/\s+/g, " ").slice(0, 180)}`,
+          note: `transport=${ctx.dispatcher?.transport ?? "unknown"} hyperPayload=${String(r.payload ?? "").slice(0, 2)} bodySuccess=${sensorBodySuccess(body)} setCookies=[${setCookieNames.join(",") || "none"}] beforeAbck=${beforeAbck} afterAbck=${marker(ctx.jar.get("_abck"))} beforeBmsz=${beforeBmsz} afterBmsz=${marker(ctx.jar.get("bm_sz"))} ctxIn=${prevContext?.length ?? 0} ctxOut=${r.context?.length ?? 0} path=${scriptPath} body=${body.replace(/\s+/g, " ").slice(0, 120)}`,
           _ctx: r.context,
         };
-      }).then((s) => ({ payload: null, postUrl: null, context: s._ctx }));
+      }).then((s) => ({ context: s._ctx }));
       prevContext = context;
-      if (abckSolved(ctx.jar, i + 1)) {
+      return abckSolved(ctx.jar, roundHint);
+    };
+
+    // Hyper: max 3 sensor posts; more rounds without TLS/IP fix only burn quota.
+    // Plateau break still fires early if _abck length stalls before round 3.
+    const sensorRounds = 3;
+    steps.push({
+      step: "akamai_sensor:pre",
+      ok: ctx.jar.has("_abck"),
+      note: `transport=${ctx.dispatcher?.transport ?? "unknown"} ip=${egressIp ?? "?"} abck=${marker(ctx.jar.get("_abck"))} bmsz=${marker(ctx.jar.get("bm_sz"))} scriptBytes=${scriptBody?.length ?? 0} rounds=${sensorRounds}${stickyProxy ? " sticky=1" : " direct=1"}`,
+    });
+    let plateauStreak = 0;
+    let lastAbckLen = abckLenFromMarker(marker(ctx.jar.get("_abck")));
+    let hitPlateau = false;
+    for (let i = 0; i < sensorRounds; i++) {
+      const solved = await runSensorRound(`akamai_sensor#${i + 1}`, i + 1);
+      if (solved) {
         steps.push({ step: "akamai_solved", ok: true, note: `rounds=${i + 1}` });
         steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
         steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
         break;
       }
-      // Sensors are JS-scheduled; back-to-back posts with zero gap are a tell.
+      const afterLen = abckLenFromMarker(marker(ctx.jar.get("_abck")));
+      if (i >= 1 && afterLen > 0 && afterLen === lastAbckLen) plateauStreak += 1;
+      else plateauStreak = 0;
+      lastAbckLen = afterLen;
+      // Two flat rounds (e.g. 795→795) = stuck; more posts without rebind are waste.
+      if (plateauStreak >= 2) {
+        hitPlateau = true;
+        steps.push({
+          step: "akamai_sensor:plateau",
+          ok: true,
+          note: `_abck stuck at ${afterLen}b ind=-1 after round ${i + 1} — rebind script + clear Hyper context`,
+        });
+        break;
+      }
       await sleep(200, 400);
     }
 
     if (!abckSolved(ctx.jar, sensorRounds)) {
-      // Sticky: try homepage SBSD then 2 more sensor rounds before giving up.
-      // ISP keeps the hard fail — it clears in ≤3 on a healthy exit.
-      if (stickyProxy) {
+      // Recovery A: re-fetch script + clear context (fixes post-SBSD bug where
+      // we kept posting with prevContext and no script after BM state changed).
+      steps.push({
+        step: "akamai_unsolved:rebind",
+        ok: true,
+        note: `${hitPlateau ? "plateau" : "unsolved"} after initial rounds (${marker(ctx.jar.get("_abck"))}) — rebind WWW script${stickyProxy ? " sticky=1" : " direct=1"}`,
+      });
+      const rebound = await rebindWwwSensorScript("akamai_rebind");
+      if (rebound) {
+        for (let i = 0; i < 3; i++) {
+          const solved = await runSensorRound(`akamai_sensor:rebind#${i + 1}`, sensorRounds + i + 1);
+          if (solved) {
+            steps.push({ step: "akamai_solved", ok: true, note: `rounds=rebind#${i + 1}` });
+            steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+            steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
+            break;
+          }
+          await sleep(250, 450);
+        }
+      }
+
+      // Recovery B: SBSD then rebind again (bm_sv mint must not reuse dead context).
+      if (!abckSolved(ctx.jar, sensorRounds + 3)) {
         steps.push({
           step: "akamai_unsolved:retry_sbsd",
           ok: true,
-          note: `_abck still unsolved after ${sensorRounds} rounds (${marker(ctx.jar.get("_abck"))}) — SBSD then 2 more sensors`,
+          note: `_abck still unsolved (${marker(ctx.jar.get("_abck"))}) — SBSD then rebind + 2 sensors${stickyProxy ? " sticky=1" : " direct=1"}`,
         });
         await runSbsd(html, origin + "/", "sbsd_home_presolve");
+        await rebindWwwSensorScript("akamai_rebind_post_sbsd");
         for (let i = 0; i < 2; i++) {
-          await tStep(`akamai_sensor:post_sbsd#${i + 1}`, async () => {
-            const beforeAbck = marker(ctx.jar.get("_abck"));
-            const r = await solveAkamaiSensor({
-              jar: ctx.jar,
-              pageUrl: origin + "/",
-              userAgent: UA,
-              ip: egressIp,
-              acceptLanguage: ACCEPT_LANG,
-              scriptUrl,
-              scriptBody,
-              prevContext,
-              version: "3",
-            });
-            prevContext = r.context;
-            const res = await request(
-              r.postUrl,
-              {
-                method: "POST",
-                headers: akamaiSensorHeaders({ requestOrigin: origin, referer: origin + "/" }),
-                body: akamaiSensorBody(r.payload),
-              },
-              ctx,
-            );
-            const body = await res.text().catch(() => "");
-            return {
-              status: res.status,
-              ok: res.status < 400 && sensorBodySuccess(body) !== "false",
-              note: `bodySuccess=${sensorBodySuccess(body)} before=${beforeAbck} after=${marker(ctx.jar.get("_abck"))}`,
-            };
-          });
-          if (abckSolved(ctx.jar, sensorRounds + i + 1)) {
+          const solved = await runSensorRound(`akamai_sensor:post_sbsd#${i + 1}`, sensorRounds + 3 + i + 1);
+          if (solved) {
             steps.push({ step: "akamai_solved", ok: true, note: `rounds=post_sbsd#${i + 1}` });
+            steps.push({ step: "abck_raw", ok: true, note: ctx.jar.get("_abck") ?? "(empty)" });
+            steps.push({ step: "bmsz_raw", ok: true, note: ctx.jar.get("bm_sz") ?? "(empty)" });
             break;
           }
           await sleep(250, 500);
         }
       }
-      if (!abckSolved(ctx.jar, sensorRounds + 2)) {
+
+      if (!abckSolved(ctx.jar, sensorRounds + 5)) {
         steps.push({
           step: "akamai_unsolved",
           ok: false,
-          note: `_abck never solved after ${stickyProxy ? sensorRounds + 2 : sensorRounds} rounds (${marker(ctx.jar.get("_abck"))})${stickyProxy ? " sticky=1" : ""}`,
+          note: `_abck never solved after rebind+SBSD ladder (${marker(ctx.jar.get("_abck"))}) path=${scriptPath} transport=${ctx.dispatcher?.transport ?? "?"}${stickyProxy ? " sticky=1" : " direct=1"}`,
         });
+        await restoreNavTransport("akamai_unsolved");
         return { ok: false, steps, failedStep: "akamai_unsolved", checkoutStage: "pre_cart", finalUrl: origin, cookies: ctx.jar.dump() };
       }
     }
@@ -1169,6 +1319,10 @@ export const kmartAdapter = {
         });
       }
     }
+
+    // undici PDP (proven) + park sensor tls for api reuse (see restoreNavTransport).
+    // tip 5dc0cee sensor_tls_keep Ghost-denied PDP#1–#3 — do not keep tls for WWW.
+    await restoreNavTransport("post_sensor_sbsd", { parkForApi: true });
 
     // Recon helper: dump exact request headers + cookie-jar snapshot at the
     // moment of a request. Used to compare against a real browser when
@@ -1201,32 +1355,9 @@ export const kmartAdapter = {
     // (step 6 below) still runs when the PDP actually embeds a pixel.
 
 
-    // Verify egress IP held. Soft-warn on sticky resi (echo hosts flake /
-    // brief drift). Hard-fail only for non-sticky (ISP) when IP clearly changed.
-    let verifyIpAbort = false;
-    await tStep("verify_ip", async () => {
-      if (!egressIp) {
-        return { ok: true, note: "start=? skipped (no initial ip)" };
-      }
-      const ipNow = await resolveEgressIp(ctx, { force: true });
-      const same = Boolean(ipNow && egressIp && ipNow === egressIp);
-      const hardDrift = Boolean(task.proxy && !same && !stickyProxy && ipNow);
-      if (hardDrift) verifyIpAbort = true;
-      return {
-        ok: !hardDrift,
-        note: `start=${egressIp ?? "?"} now=${ipNow ?? "?"} same=${same}${stickyProxy ? " sticky=1" : ""}${hardDrift ? " abort=1" : ""}`,
-      };
-    });
-    if (verifyIpAbort) {
-      return {
-        ok: false,
-        steps,
-        failedStep: "verify_ip",
-        checkoutStage: "pre_cart",
-        finalUrl: origin,
-        cookies: ctx.jar.dump(),
-      };
-    }
+    // No mid-run IP re-check / sticky drift gate — costs a round-trip and aborts
+    // good sensor solves. Egress is whatever resolve_ip got (or empty).
+    steps.push({ step: "verify_ip", ok: true, note: "skipped (no sticky/drift gate)" });
 
     // 4c. Intermediate category browse is OPTIONAL. On some residential exits
     //     /category/* is hard-blocked even with bm_sv, while PDP with a home
@@ -1237,9 +1368,19 @@ export const kmartAdapter = {
     let categoryStatus = 0;
     let categoryHtml = "";
     let categoryOk = false;
-    const skipCategory = task.skipCategory === true || process.env.KMART_SKIP_CATEGORY === "1";
+    // Default home→PDP. Category 403 (tls-worker and some exits) is easy to
+    // misread as "burnt proxy" when the same direct IP still solves sensors.
+    // Opt back in with skipCategory:false or KMART_SKIP_CATEGORY=0.
+    const skipCategory =
+      task.skipCategory === true ||
+      process.env.KMART_SKIP_CATEGORY === "1" ||
+      (task.skipCategory !== false && process.env.KMART_SKIP_CATEGORY !== "0");
     if (skipCategory) {
-      steps.push({ step: "category_browse", ok: true, note: "skipped (home→PDP)" });
+      steps.push({
+        step: "category_browse",
+        ok: true,
+        note: "skipped (home→PDP; default)",
+      });
     } else {
     await sleep(700, 1400); // brief glance at homepage before the click
     try {
@@ -1287,7 +1428,15 @@ export const kmartAdapter = {
     // there and retry the category before moving on. A real browser cannot click
     // from a 403 category page into the PDP, so keeping that failed hop in the
     // journey makes the next request look impossible.
-    if (!categoryOk && categoryHtml) {
+    // Hard AkamaiGHost Access Denied pages are not SBSD challenges — retrying
+    // them burns the sticky exit before PDP.
+    if (!categoryOk && categoryHtml && /Access Denied|AkamaiGHost/i.test(categoryHtml)) {
+      steps.push({
+        step: "category_browse:hard_deny_skip_sbsd",
+        ok: true,
+        note: "Access Denied on category — skip SBSD retry; continue home→PDP",
+      });
+    } else if (!categoryOk && categoryHtml) {
       try {
         const solvedCategorySbsd = await runSbsd(categoryHtml, catUrl, "sbsd_category");
         if (solvedCategorySbsd) {
@@ -1762,10 +1911,54 @@ export const kmartAdapter = {
         globalThis.crypto.getRandomValues(bytes);
         return Buffer.from(bytes).toString("base64url");
       })();
+      // Default OFF — same undici client as WWW (green #40 / Lovable→Fly).
+      // Opt in only: apiTls:true (parked sensor tls reuse when sensorTls was on).
+      const alreadyTls =
+        Boolean(ctx.dispatcher?.useTls) || ctx.dispatcher?.transport === "tls-worker";
+      const wantApiTls = task.apiTls === true;
+      if (wantApiTls && !alreadyTls) {
+        await tStep("api_tls_handoff", async () => {
+          const prev = ctx.dispatcher;
+          const parked = ctx._sensorTlsDispatcher;
+          if (
+            parked &&
+            (Boolean(parked.useTls) || parked.transport === "tls-worker")
+          ) {
+            ctx._wwwDispatcher = prev;
+            ctx.dispatcher = parked;
+            ctx._sensorTlsDispatcher = null;
+            return {
+              ok: true,
+              note: `reuse parked sensor tls-worker for api.* (same chrome session as _abck) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+            };
+          }
+          try {
+            const tlsD = await makeRemoteTlsDispatcher(task.proxy ?? null);
+            ctx._wwwDispatcher = prev;
+            ctx.dispatcher = tlsD;
+            return {
+              ok: true,
+              note: `fresh tls-worker chrome_131 for api.* (no park) proxy=${task.proxy ? 1 : 0} prev=${prev?.transport ?? "?"}`,
+            };
+          } catch (e) {
+            return {
+              ok: false,
+              note: `tls-worker handoff failed — staying undici for api.*: ${e?.message ?? String(e)}`.slice(0, 400),
+            };
+          }
+        });
+      }
+
       // Sticky: drop mid-run CONNECT/TCP state before api.* so GraphQL does
       // not reuse a WWW tunnel Akamai already scored. Same session- exit IP.
-      // ISP keeps the warm agent (proven path).
-      if (stickyProxy) {
+      // ISP keeps the warm agent (proven path). Skip once api_tls_handoff left undici.
+      // Opt out: apiTunnelRefresh:false.
+      if (
+        stickyProxy &&
+        !ctx.dispatcher?.useTls &&
+        ctx.dispatcher?.transport !== "tls-worker" &&
+        task.apiTunnelRefresh !== false
+      ) {
         try {
           await ctx.dispatcher?.resetUndici?.();
         } catch {

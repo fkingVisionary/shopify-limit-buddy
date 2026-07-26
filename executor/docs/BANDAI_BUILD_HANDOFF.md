@@ -12,12 +12,14 @@ _HAR status: **not available yet** — build from JS-derived research; owner can
 | Doc | Why |
 |---|---|
 | **This file** | Build scope, phases, constraints, acceptance |
+| [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md) | **Charge-path contract** — F5 + HTTP + GE invariants, failure matrix, restore rule |
 | [`BANDAI_AU_MODULE.md`](./BANDAI_AU_MODULE.md) | Full API map, signup DTO, ATC/Chance/GE payloads |
 | [`NEXT_STORE_MODULES.md`](./NEXT_STORE_MODULES.md) | Priority context (Bandai-first) |
 | [`AGENTS.md`](../../AGENTS.md) | Repo layout; **do not break Kmart** |
 
-Canonical storefront: **`https://p-bandai.com/au/`**  
-Do **not** use `www.bandai.com.au` (cert mismatch).
+Canonical storefront: **`https://p-bandai.com/{area}/`** where `area` ∈ `au|us|nz|sg|hk|tw|fr`  
+(Do **not** use `www.bandai.com.au` — cert mismatch. **JP is a different site** — out of scope.)  
+Region is taken from the product URL path or `task.bandaiArea` (default `au`).
 
 ---
 
@@ -25,8 +27,14 @@ Do **not** use `www.bandai.com.au` (cert mismatch).
 
 1. **Branch off current `main`.** New work only: `cursor/bandai-au-module-<suffix>` (or repo’s required `cursor/…-709b` pattern if still enforced).
 2. **Do not modify `adapters/kmart.js` or Kmart desktop checkout path** unless fixing an accidental break. Kmart is production-green.
-3. **No Playwright recovery ladder for Bandai catalog/cart** unless Global-e Phase 4 needs a narrow browser handoff — prefer undici/HTTP like Kmart’s current mode.
-4. Hyper is **not** required for Bandai edge (F5/Volterra). Good TLS + cookie jar + sticky AU proxy.
+3. **HTTP-first ATC; Fast/Safe pay.** Default path is undici + F5 sensor bridge
+   (`adapters/bandai-f5.js`): Playwright mints `p8komysnbc-*` (probe aborted);
+   real `/login`, ATC, cart checkout stay on HTTP. After cart hold:
+   **`bandaiCheckoutMode=fast`** (default) = HTTP GE + **riskHydrate**;
+   **`safe`** = Playwright GE on the F5 bridge. See
+   [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md) §0.1. Do not default
+   stale `bandaiGeNoPage`.
+4. Hyper is **not** required for Bandai edge (F5/Volterra). Good TLS + cookie jar + sticky AU proxy + F5 sensors.
 5. Secrets (**OnlineSim key, IMAP app password, test accounts**) come from owner / Desktop Settings — never commit them.
 
 ---
@@ -220,35 +228,36 @@ Mirror Kmart’s adapter registration / job-runner patterns; **copy structure, d
 ## 8. Build phases (execute in order)
 
 ### Phase A — Scaffold (1 PR)
-- [ ] Branch from `main`
-- [ ] `executor/otp/imapInbox.js` + unit/smoke (login IMAP, search recent mail)
-- [ ] `executor/otp/onlinesim.js` + smoke (`getBalance` / getNum with owner key)
-- [ ] Desktop Settings fields (persist locally, never log secrets)
-- [ ] Stub `adapters/bandai.js` `warm()` → CSRF + cookies on sticky proxy
-- [ ] Docs: link this handoff from PR body
+- [x] Branch from `main`
+- [x] `executor/otp/imapInbox.js` + unit/smoke (login IMAP, search recent mail)
+- [x] `executor/otp/onlinesim.js` + smoke (`getBalance` / getNum with owner key)
+- [x] Desktop Settings fields (persist locally, never log secrets)
+- [x] Stub `adapters/bandai.js` `warm()` → CSRF + cookies on sticky proxy
+- [x] Docs: link this handoff from PR body
 
-**Exit:** OTP helpers proven with owner credentials; warm returns CSRF.
+**Exit:** OTP helpers proven with owner credentials; warm returns CSRF.  
+_Code landed; live IMAP/OnlineSim proof still needs owner keys._
 
 ### Phase B — Account gen
-- [ ] Implement `bandai-agen` full flow (§5)
-- [ ] Password rule validator (§4.2 in research doc)
-- [ ] Vault schema: email, password, phone, proxyId, status, createdAt, lastLoginAt, shipping
-- [ ] Low concurrency (1–2); sticky proxy per attempt
+- [x] Implement `bandai-agen` full flow (§5)
+- [x] Password rule validator (§4.2 in research doc)
+- [x] Vault schema: email, password, phone, proxyId, status, createdAt, lastLoginAt, shipping
+- [x] Low concurrency (1–2); sticky proxy per attempt
 - [ ] Dry-run with owner IMAP + OnlineSim until **one `ready` account**
 
 **Exit:** ≥1 vault-ready account without manual OTP typing.
 
 ### Phase C — Login + ATC
-- [ ] Password login + restriction gate handling
-- [ ] `addToCart` + `cart/detail` with test or agen account
-- [ ] Stop before GE (`placeOrder:false` / no checkout POST) for first green ATC
+- [x] Password login + restriction gate handling
+- [x] `addToCart` + `cart/detail` with test or agen account
+- [x] Stop before GE (`placeOrder:false` / no checkout POST) for first green ATC
 - [ ] If ATC still 501 on ISP: pause and request HAR from owner (logged-in ATC)
 
 **Exit:** Logged-in ATC returns JSON success (or clear next HAR ask).
 
 ### Phase D — Global-e checkout
-- [ ] Resolve `merchantCartToken` suffix
-- [ ] `POST …/checkout` → `checkoutSn`
+- [x] Resolve `merchantCartToken` suffix _(best-effort from cart HTML PRELOAD)_
+- [x] `POST …/checkout` → `checkoutSn` _(scaffold; stops before GE widget)_
 - [ ] GE client path: prefer minimal browser/WebView for captcha+fp if HTTP fails
 - [ ] `preComplete` → order number
 - [ ] Document 3DS / PayPal outcomes
@@ -256,8 +265,8 @@ Mirror Kmart’s adapter registration / job-runner patterns; **copy structure, d
 **Exit:** One successful test order (or intentional dry cancel) on owner account.
 
 ### Phase E — Chance + monitor (parallelizable)
-- [ ] `applyDraw` across vault
-- [ ] Monitor poll `/api/search` + `/api/products/{code}` for availability / campaign flips
+- [x] `applyDraw` across vault _(single-account mode)_
+- [x] Monitor poll `/api/search` + `/api/products/{code}` for availability / campaign flips
 - [ ] Notify (desktop / webhook as existing product does)
 
 ---

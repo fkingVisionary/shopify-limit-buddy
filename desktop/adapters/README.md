@@ -6,6 +6,7 @@ Each adapter module should export:
   validateTask(task) -> { ok, error? }
   buildRunPayload({ task, profile, proxyRaw, placeOrder }) -> { ok, data?, error? }
 
-v1 ships Kmart only (see ../job-runner.cjs buildKmartPayload).
-The local executor sidecar still runs the proven executor/adapters/kmart.js chain.
+v1 ships Kmart + Bandai (+ Toymate / Pokémon Centre) via ../job-runner.cjs
+(`buildKmartPayload`, `buildBandaiPayload`, …). The local executor sidecar runs
+the matching executor/adapters/*.js chain (Bandai: Fast HTTP GE / Safe Playwright GE).
 */

@@ -6,12 +6,26 @@
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
+import { harvestToymateSession } from "./adapters/toymate-harvest-session.js";
 import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT } from "./http.js";
 import { runDeepHealth } from "./health.js";
 import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
 import { runJbhifiRecon } from "./experiments/jbhifi-recon.js";
 import { runJbhifiProbe } from "./experiments/jbhifi-probe.js";
-import { getTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { getTaskProgress, setTaskProgress, WORKFLOW_STAGES } from "./progress.js";
+import { listRunMilestones } from "./run-milestones.js";
+import { resolveRunProxy, resiPoolSize } from "./proxy-pool.js";
+import {
+  isGraphqlAkamaiWall,
+  pickUnusedResiProxy,
+  proxyHostFromUrl,
+} from "./proxy-rotate.js";
+import {
+  mintHarvestSlot,
+  clearHarvestSlots,
+  releaseHarvestSlot,
+  harvestSnapshot,
+} from "./adapters/bandai-harvest-pool.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -31,6 +45,9 @@ const app = Fastify({ logger: true, bodyLimit: 1_000_000 });
 
 // Browser-friendly landing. This service is an API — visiting `/` in a browser
 // used to look "blank" (Fastify 404). Keep /health as the probe endpoint.
+const GIT_SHA = String(process.env.EXECUTOR_GIT_SHA || process.env.GIT_SHA || "unknown").slice(0, 40);
+const MONITOR_ENABLE = /^(1|true|yes)$/i.test(String(process.env.MONITOR_ENABLE || ""));
+
 app.get("/", async () => ({
   ok: true,
   service: "j1ms-bot-executor",
@@ -38,9 +55,14 @@ app.get("/", async () => ({
   diagnose: "POST /health/diagnose (Bearer auth)",
   run: "POST /run (Bearer auth)",
   progress: "GET /progress/:taskId (Bearer auth)",
+  milestones: "GET /milestones (Bearer auth)",
+  bandaiHarvest: "POST|GET /bandai/harvest (Bearer auth)",
+  toymateHarvest: "POST /toymate/harvest (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  gitSha: GIT_SHA,
+  monitorEnabled: MONITOR_ENABLE,
   ts: Date.now(),
 }));
 
@@ -52,7 +74,10 @@ app.get("/health", async () => ({
   transport: HTTP_TRANSPORT,
   proxyTransport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
-  proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
+  proxyConfigured: Boolean(process.env.PROXY_URL_RESI) || resiPoolSize() > 0,
+  proxyPoolSize: resiPoolSize(),
+  gitSha: GIT_SHA,
+  monitorEnabled: MONITOR_ENABLE,
 }));
 
 // Authenticated deep health: TLS fingerprint + proxy CONNECT + direct target.
@@ -161,6 +186,109 @@ app.get("/progress/:taskId", async (req, reply) => {
   return { ok: true, found: true, taskId, progress, stages: WORKFLOW_STAGES };
 });
 
+// Recent checkout wins (cart_get+ / 3DS / place_order). Survives client timeouts.
+app.get("/milestones", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const q = req.query ?? {};
+  const limit = Math.min(80, Math.max(1, Number(q.limit ?? 40) || 40));
+  const minStage = typeof q.minStage === "string" && q.minStage ? q.minStage : "cart_get";
+  const taskId = typeof q.taskId === "string" && q.taskId ? q.taskId : null;
+  const rows = listRunMilestones({ limit, minStage, taskId });
+  return {
+    ok: true,
+    count: rows.length,
+    minStage,
+    taskId,
+    gitSha: GIT_SHA,
+    milestones: rows,
+  };
+});
+
+// Bandai F5 harvest — warm Playwright /{area}/login bridges off the drop path.
+// Live bridges stay in-process; desktop claims by id via task.harvestedBridgeId.
+app.get("/bandai/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return { ok: true, ...harvestSnapshot() };
+});
+
+app.post("/bandai/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  const out = await mintHarvestSlot({
+    proxy,
+    area: typeof body.area === "string" ? body.area : "au",
+    settleMs: body.settleMs,
+    ttlMs: body.ttlMs,
+    timeoutMs: body.timeoutMs,
+  });
+  if (!out.ok) {
+    reply.code(out.atCapacity ? 429 : 502);
+    return { ok: false, error: out.error || "harvest failed", ms: out.ms, snapshot: harvestSnapshot() };
+  }
+  return { ok: true, session: out.session, ms: out.ms, snapshot: harvestSnapshot() };
+});
+
+app.post("/bandai/harvest/release", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const out = await releaseHarvestSlot(id);
+  if (!out.ok) {
+    reply.code(404);
+    return { ok: false, error: out.error || "not found", snapshot: harvestSnapshot() };
+  }
+  return { ok: true, id: out.id, snapshot: harvestSnapshot() };
+});
+
+app.post("/bandai/harvest/clear", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return clearHarvestSlots();
+});
+
+// Toymate CF + spam harvest (desktop Harvest tab). Soft capacity: counts as inflight.
+app.post("/toymate/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
+  }
+  inflight++;
+  try {
+    const out = await harvestToymateSession({
+      proxyRaw: proxy,
+      solveSpam: body.solveSpam !== false,
+      spamSitekey:
+        typeof body.spamSitekey === "string" && body.spamSitekey.trim()
+          ? body.spamSitekey.trim()
+          : undefined,
+    });
+    if (!out.ok) {
+      reply.code(502);
+      return { ok: false, error: out.error || "harvest failed", ms: out.ms };
+    }
+    return { ok: true, session: out.session, ms: out.ms };
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    inflight--;
+  }
+});
+
 app.post("/run", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const task = req.body;
@@ -203,31 +331,156 @@ app.post("/run", async (req, reply) => {
       };
     }
   }
+  // Proxy rotate budget when GraphQL cart_get is Akamai-denied after a good
+  // warm/token. Default 3 attempts (initial + 2 rotates). Cap at 6.
+  const maxProxyAttempts = Math.min(
+    6,
+    Math.max(1, Number(task.proxyRetries ?? process.env.KMART_PROXY_RETRIES ?? 3) || 3),
+  );
+  const listRaw =
+    (Array.isArray(task.proxies) && task.proxies.length ? task.proxies : null) ||
+    (Array.isArray(task.proxyEntries) && task.proxyEntries.length ? task.proxyEntries : null);
+  const canRotatePool = task.useProxy === true || Boolean(listRaw?.length);
+
   inflight++;
   try {
-    const result = await runCheckout({
-      taskId: String(task.taskId),
-      storeUrl: String(task.storeUrl),
-      variantId: Number(task.variantId),
-      qty: Number(task.qty ?? 1),
-      profile: task.profile ?? null,
-      card,
-      proxy: task.proxy ?? null,
-      dryRun: task.dryRun !== false,
-      placeOrder: task.placeOrder === true,
-      placeOrderMutation,
-      debugTrace: task.debugTrace === true,
-      kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
-      transport: typeof task.transport === "string" ? task.transport : undefined,
-      forceTls: task.forceTls === true,
-      forceUndici: task.forceUndici === true,
-      resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
-      seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
-      httpHandoff: task.httpHandoff !== false,
-      skipAtc: task.skipAtc === true,
-      apiSensor: task.apiSensor === true,
-      skipCategory: task.skipCategory === true,
+    const triedHosts = new Set();
+    const proxyAttempts = [];
+    let resolved = resolveRunProxy({
+      proxy: task.proxy,
+      proxies: task.proxies,
+      proxyEntries: task.proxyEntries,
+      useProxy: task.useProxy === true,
     });
+    let result = null;
+
+    for (let attempt = 1; attempt <= maxProxyAttempts; attempt++) {
+      if (!resolved?.proxy && attempt > 1) break;
+
+      const host = proxyHostFromUrl(resolved?.proxy);
+      if (host) triedHosts.add(host);
+
+      req.log.info(
+        {
+          attempt,
+          maxProxyAttempts,
+          proxySource: resolved?.source,
+          proxyPoolSize: resolved?.poolSize,
+          proxyIndex: resolved?.index,
+          proxyHost: host || null,
+          hasProxy: Boolean(resolved?.proxy),
+        },
+        "run proxy resolved",
+      );
+
+      if (attempt === 1) {
+        setTaskProgress(String(task.taskId), {
+          stage: "warm",
+          label: "Starting",
+          detail: host ? `proxy ${host}` : null,
+          running: true,
+          done: false,
+        });
+      } else {
+        setTaskProgress(String(task.taskId), {
+          stage: "warm",
+          label: "Switching proxy",
+          detail: `attempt ${attempt}/${maxProxyAttempts}${host ? ` · ${host}` : ""}`,
+          running: true,
+          done: false,
+        });
+      }
+
+      result = await runCheckout({
+        taskId: String(task.taskId),
+        storeUrl: String(task.storeUrl),
+        variantId: Number(task.variantId),
+        qty: Number(task.qty ?? 1),
+        profile: task.profile ?? null,
+        card,
+        proxy: resolved?.proxy ?? null,
+        dryRun: task.dryRun !== false,
+        placeOrder: task.placeOrder === true,
+        placeOrderMutation,
+        debugTrace: task.debugTrace === true,
+        kmartMode: typeof task.kmartMode === "string" ? task.kmartMode : undefined,
+        transport: typeof task.transport === "string" ? task.transport : undefined,
+        forceTls: task.forceTls === true,
+        forceUndici: task.forceUndici === true,
+        // api.* tls-worker — opt-in only (default undici with WWW). true forces.
+        ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
+        // Hyper sensor tls-worker — opt-in only (default undici one-client path).
+        ...(task.sensorTls === true || task.sensorTls === false ? { sensorTls: task.sensorTls } : {}),
+        // Park sensor tls for api reuse after undici PDP (default ON when parked).
+        ...(task.sensorTlsPark === true || task.sensorTlsPark === false
+          ? { sensorTlsPark: task.sensorTlsPark }
+          : {}),
+        ...(task.apiTunnelRefresh === false ? { apiTunnelRefresh: false } : {}),
+        resumeFrom: typeof task.resumeFrom === "string" ? task.resumeFrom : undefined,
+        seedCookies: task.seedCookies && typeof task.seedCookies === "object" ? task.seedCookies : undefined,
+        httpHandoff: task.httpHandoff !== false,
+        skipAtc: task.skipAtc === true,
+        apiSensor: task.apiSensor === true,
+        // undefined = let adapter default (skip category when proxied)
+        skipCategory:
+          task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
+        // ── Non-Kmart adapters (Toymate / Bandai / PKC) — pass through ──
+        toymateMode: typeof task.toymateMode === "string" ? task.toymateMode : undefined,
+        pdpUrl: typeof task.pdpUrl === "string" ? task.pdpUrl : undefined,
+        paymentMethod: typeof task.paymentMethod === "string" ? task.paymentMethod : undefined,
+        captchaToken: typeof task.captchaToken === "string" ? task.captchaToken : undefined,
+        account: task.account && typeof task.account === "object" ? task.account : undefined,
+        accountPassword:
+          typeof task.accountPassword === "string" ? task.accountPassword : undefined,
+        accountAssignSource:
+          typeof task.accountAssignSource === "string" ? task.accountAssignSource : undefined,
+        harvestedSession:
+          task.harvestedSession && typeof task.harvestedSession === "object"
+            ? task.harvestedSession
+            : undefined,
+        bandaiMode: typeof task.bandaiMode === "string" ? task.bandaiMode : undefined,
+        bandaiCheckoutMode:
+          typeof task.bandaiCheckoutMode === "string" ? task.bandaiCheckoutMode : undefined,
+        campaignSn: typeof task.campaignSn === "string" ? task.campaignSn : undefined,
+        pcMode: typeof task.pcMode === "string" ? task.pcMode : undefined,
+        pcLocale: typeof task.pcLocale === "string" ? task.pcLocale : undefined,
+        keywords: typeof task.keywords === "string" ? task.keywords : undefined,
+        input: typeof task.input === "string" ? task.input : undefined,
+      });
+
+      proxyAttempts.push({
+        attempt,
+        host: host || null,
+        source: resolved?.source ?? null,
+        index: resolved?.index ?? -1,
+        ok: Boolean(result?.ok),
+        checkoutStage: result?.checkoutStage ?? null,
+        graphqlWall: isGraphqlAkamaiWall(result),
+      });
+
+      if (result?.ok || !isGraphqlAkamaiWall(result) || !canRotatePool) break;
+      if (attempt >= maxProxyAttempts) break;
+
+      // Next unused exit from request list or baked resi.proxies.
+      const next = pickUnusedResiProxy(triedHosts, listRaw);
+      if (!next.proxy) {
+        req.log.warn({ triedHosts: [...triedHosts], attempt }, "proxy rotate exhausted");
+        break;
+      }
+      resolved = next;
+      req.log.warn(
+        { from: host, to: proxyHostFromUrl(next.proxy), attempt: attempt + 1, maxProxyAttempts },
+        "GraphQL Akamai wall — switching proxy",
+      );
+    }
+
+    if (result && typeof result === "object") {
+      result.proxySource = resolved?.source ?? null;
+      result.proxyPoolSize = resolved?.poolSize ?? resiPoolSize();
+      result.proxyAttempts = proxyAttempts;
+      result.proxyRotated = proxyAttempts.length > 1;
+      result.gitSha = GIT_SHA;
+    }
     return result;
   } catch (e) {
     reply.code(500);
