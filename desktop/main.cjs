@@ -720,6 +720,12 @@ app.on("window-all-closed", async () => {
 });
 
 app.on("before-quit", async () => {
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
 });
