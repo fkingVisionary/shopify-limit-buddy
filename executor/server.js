@@ -26,6 +26,14 @@ import {
   releaseHarvestSlot,
   harvestSnapshot,
 } from "./adapters/bandai-harvest-pool.js";
+import {
+  mintDisneyHarvestSlot,
+  clearDisneyHarvestSlots,
+  releaseDisneyHarvestSlot,
+  takeDisneyHarvestSlot,
+  disneyHarvestSnapshot,
+} from "./adapters/disney-harvest-pool.js";
+import { harvestDisneySession } from "./adapters/disney-harvest-session.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -58,6 +66,7 @@ app.get("/", async () => ({
   milestones: "GET /milestones (Bearer auth)",
   bandaiHarvest: "POST|GET /bandai/harvest (Bearer auth)",
   toymateHarvest: "POST /toymate/harvest (Bearer auth)",
+  disneyHarvest: "POST|GET /disney/harvest (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
@@ -251,6 +260,109 @@ app.post("/bandai/harvest/release", async (req, reply) => {
 app.post("/bandai/harvest/clear", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   return clearHarvestSlots();
+});
+
+// Disney Akamai + CapSolver harvest (Toymate-shaped serializable sessions).
+app.get("/disney/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return { ok: true, ...disneyHarvestSnapshot() };
+});
+
+app.post("/disney/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
+  }
+  inflight++;
+  try {
+    // bank=false → return full session blob (desktop/local); default banks in-process.
+    if (body.bank === false) {
+      const out = await harvestDisneySession({
+        proxyRaw: proxy,
+        solveCaptcha: body.solveCaptcha !== false,
+        pdpUrl: typeof body.pdpUrl === "string" ? body.pdpUrl : undefined,
+      });
+      if (!out.ok) {
+        reply.code(502);
+        return { ok: false, error: out.error || "harvest failed", ms: out.ms };
+      }
+      return { ok: true, session: out.session, ms: out.ms };
+    }
+    const out = await mintDisneyHarvestSlot({
+      proxy,
+      solveCaptcha: body.solveCaptcha !== false,
+      pdpUrl: typeof body.pdpUrl === "string" ? body.pdpUrl : undefined,
+      ttlMs: body.ttlMs,
+    });
+    if (!out.ok) {
+      reply.code(out.atCapacity ? 429 : 502);
+      return {
+        ok: false,
+        error: out.error || "harvest failed",
+        ms: out.ms,
+        snapshot: disneyHarvestSnapshot(),
+      };
+    }
+    return {
+      ok: true,
+      session: out.session,
+      fullSession: out.fullSession,
+      ms: out.ms,
+      snapshot: out.snapshot,
+    };
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    inflight--;
+  }
+});
+
+app.post("/disney/harvest/claim", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const claimed = takeDisneyHarvestSlot(id);
+  if (!claimed?.session) {
+    reply.code(404);
+    return { ok: false, error: "not found or expired", snapshot: disneyHarvestSnapshot() };
+  }
+  return {
+    ok: true,
+    session: claimed.session,
+    meta: claimed.meta,
+    snapshot: disneyHarvestSnapshot(),
+  };
+});
+
+app.post("/disney/harvest/release", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const out = releaseDisneyHarvestSlot(id);
+  if (!out.ok) {
+    reply.code(404);
+    return { ok: false, error: out.error || "not found", snapshot: disneyHarvestSnapshot() };
+  }
+  return { ok: true, id: out.id, snapshot: disneyHarvestSnapshot() };
+});
+
+app.post("/disney/harvest/clear", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return clearDisneyHarvestSlots();
 });
 
 // Toymate CF + spam harvest (desktop Harvest tab). Soft capacity: counts as inflight.

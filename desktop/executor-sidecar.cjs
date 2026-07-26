@@ -307,6 +307,19 @@ async function harvestBandai(body) {
   return json || { ok: false, error: `HTTP ${httpStatus}` };
 }
 
+async function harvestDisney(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/disney/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "disney harvest at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
 async function bandaiHarvestStatus() {
   const { json } = await requestJson("GET", "/bandai/harvest", null, 15_000);
   return json || { ok: false, error: "no response" };
@@ -329,6 +342,7 @@ module.exports = {
   runTask,
   harvestToymate,
   harvestBandai,
+  harvestDisney,
   bandaiHarvestStatus,
   clearBandaiHarvest,
   progress,

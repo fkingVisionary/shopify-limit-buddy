@@ -3,6 +3,7 @@
 //
 // Checkout path: kmart (raw HTTP) + toymate (BigCommerce/CF) + bandai (p-bandai)
 // + pokemoncentre (TPCI Incapsula/DD/Cortex/GE)
+// + disney (SFCC AUNZ + Akamai + GE 1696)
 // + kmart-playwright (opt-in via kmartMode="playwright" in checkout.js).
 // Lab/recon modules live under ../experiments/ and are mounted as separate HTTP endpoints.
 //
@@ -12,8 +13,15 @@ import { kmartAdapter } from "./kmart.js";
 import { toymateAdapter } from "./toymate.js";
 import { bandaiAdapter } from "./bandai.js";
 import { pokemoncentreAdapter } from "./pokemoncentre.js";
+import { disneyAdapter } from "./disney.js";
 
-const ADAPTERS = [kmartAdapter, toymateAdapter, bandaiAdapter, pokemoncentreAdapter];
+const ADAPTERS = [
+  kmartAdapter,
+  toymateAdapter,
+  bandaiAdapter,
+  pokemoncentreAdapter,
+  disneyAdapter,
+];
 
 export function pickAdapter(storeUrl) {
   let host;

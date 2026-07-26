@@ -16,6 +16,7 @@ const {
   findRegisteredAccount,
 } = require("./account-vault.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
+const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -30,6 +31,11 @@ const bandaiHarvest = createBandaiHarvestPool({
   emit: (evt) => send(evt),
 });
 
+const disneyHarvest = createDisneyHarvestPool({
+  sidecar,
+  emit: (evt) => send(evt),
+});
+
 function harvestEntries() {
   const gid = harvest.snapshot().config.proxyGroupId;
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
@@ -38,6 +44,12 @@ function harvestEntries() {
 
 function bandaiHarvestEntries() {
   const gid = bandaiHarvest.snapshot().config.proxyGroupId;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  return group?.entries || [];
+}
+
+function disneyHarvestEntries() {
+  const gid = disneyHarvest.snapshot().config.proxyGroupId;
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
   return group?.entries || [];
 }
@@ -58,6 +70,7 @@ function storeDisplayName(sid) {
   if (sid === "toymate") return "Toymate AU";
   if (sid === "bandai") return "Premium Bandai";
   if (sid === "kmart") return "Kmart AU";
+  if (sid === "disney") return "Disney Store AU";
   return sid;
 }
 
@@ -121,6 +134,7 @@ function snapshot() {
     engine: sidecar.status(),
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
+    disneyHarvest: disneyHarvest.snapshot(),
   };
 }
 
@@ -279,8 +293,14 @@ ipcMain.handle("desktop:start-engine", async () => {
 ipcMain.handle("desktop:stop-engine", async () => {
   harvest.stop();
   bandaiHarvest.stop();
+  disneyHarvest.stop();
   try {
     await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    disneyHarvest.clear();
   } catch {
     /* ignore */
   }
@@ -288,6 +308,77 @@ ipcMain.handle("desktop:stop-engine", async () => {
   await sidecar.stopSidecar();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot() };
+});
+
+// ── Disney Akamai + CapSolver Harvest tab ─────────────────────────────
+ipcMain.handle("desktop:disney-harvest-status", () => disneyHarvest.snapshot());
+
+ipcMain.handle("desktop:disney-harvest-configure", (_e, patch) => {
+  return disneyHarvest.configure(patch || {});
+});
+
+ipcMain.handle("desktop:disney-harvest-start", async (_e, opts = {}) => {
+  const hyper = String(state.settings.hyperApiKey || "").trim();
+  const capsolver = String(state.settings.capsolverApiKey || "").trim();
+  if (!hyper) {
+    return { ok: false, error: "Set Hyper API key in Settings first", snapshot: snapshot() };
+  }
+  if (!capsolver) {
+    return { ok: false, error: "Set CapSolver API key in Settings first", snapshot: snapshot() };
+  }
+  if (!sidecar.status().running) {
+    return {
+      ok: false,
+      error: "Start the engine first",
+      harvest: disneyHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
+  const gid = opts.proxyGroupId || disneyHarvest.snapshot().config.proxyGroupId;
+  if (gid) disneyHarvest.configure({ proxyGroupId: gid });
+  if (opts.desired != null) disneyHarvest.configure({ desired: opts.desired });
+  if (opts.solveCaptcha != null) disneyHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  if (!group?.entries?.length) {
+    return {
+      ok: false,
+      error: "Select a Proxies group with sticky AU ISP/residential lines",
+      harvest: disneyHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
+  const snap = disneyHarvest.start({
+    proxyGroupId: gid,
+    desired: opts.desired,
+    solveCaptcha: opts.solveCaptcha,
+    getEntries: disneyHarvestEntries,
+  });
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:disney-harvest-stop", () => {
+  const snap = disneyHarvest.stop();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:disney-harvest-clear", () => {
+  const snap = disneyHarvest.clear();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:disney-harvest-once", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", harvest: disneyHarvest.snapshot() };
+  }
+  if (opts.proxyGroupId) disneyHarvest.configure({ proxyGroupId: opts.proxyGroupId });
+  if (opts.desired != null) disneyHarvest.configure({ desired: opts.desired });
+  if (opts.solveCaptcha != null) disneyHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  const out = await disneyHarvest.harvestOne(disneyHarvestEntries());
+  send({ type: "snapshot", data: snapshot() });
+  return { ...out, harvest: disneyHarvest.snapshot(), snapshot: snapshot() };
 });
 
 // ── Bandai F5 Harvest tab ──────────────────────────────────────────────
@@ -522,6 +613,15 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
         : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
+    // Disney Store AU fields (ignored by other stores).
+    disneyMode:
+      storeId === "disney"
+        ? ["pay", "checkout", "atc", "warm", "monitor", "ge"].includes(
+            String(task.disneyMode || "").toLowerCase(),
+          )
+          ? String(task.disneyMode).toLowerCase()
+          : "pay"
+        : undefined,
     // Pokémon Centre-only fields (ignored by other stores).
     pcMode:
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
@@ -693,6 +793,32 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
             taskId: tid,
             level: "info",
             message: `Using harvested F5 bridge (${session.proxyHost || "proxy"} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
+          });
+        }
+      }
+      // Disney checkout/pay: claim Akamai+CapSolver session when Harvest is armed.
+      // Empty bank → cold path (warm + CapSolver on critical path) — unchanged.
+      if (
+        task.store === "disney" &&
+        ["pay", "checkout", "atc", "ge"].includes(
+          String(task.disneyMode || "pay").toLowerCase(),
+        )
+      ) {
+        const session = disneyHarvest.take({ preferCaptcha: true });
+        if (session?.cookies) {
+          taskCopy.harvestedSession = session;
+          taskCopy.recaptchaToken = session.captchaToken || taskCopy.recaptchaToken || null;
+          if (session.proxy) {
+            jobProxyRaw = session.proxy;
+            jobProxyEntries = [session.proxy];
+            proxyIndex = 0;
+          }
+          send({
+            type: "job",
+            phase: "log",
+            taskId: tid,
+            level: "info",
+            message: `Using harvested Disney session (${session.proxyHost || "proxy"}${session.captchaToken ? " + captcha" : ""} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
           });
         }
       }
