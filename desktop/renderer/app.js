@@ -258,7 +258,11 @@ function renderTasks() {
                   : ""
               }`
             : t.store === "disney"
-              ? `Disney · ${t.disneyMode || "pay"}`
+              ? `Disney · ${t.disneyMode || "pay"}${
+                  String(t.disneyMode || "") === "monitor"
+                    ? ` · ${t.disneyMonitorMode || "local"}`
+                    : ""
+                }`
             : t.store === "pokemoncentre"
               ? `Pokémon Centre · ${t.pcMode || "monitor"}`
             : "Kmart";
