@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld("desktop", {
   bandaiHarvestStop: () => ipcRenderer.invoke("desktop:bandai-harvest-stop"),
   bandaiHarvestClear: () => ipcRenderer.invoke("desktop:bandai-harvest-clear"),
   bandaiHarvestOnce: (opts) => ipcRenderer.invoke("desktop:bandai-harvest-once", opts),
+  // Disney Akamai + CapSolver harvest
+  disneyHarvestStatus: () => ipcRenderer.invoke("desktop:disney-harvest-status"),
+  disneyHarvestConfigure: (patch) => ipcRenderer.invoke("desktop:disney-harvest-configure", patch),
+  disneyHarvestStart: (opts) => ipcRenderer.invoke("desktop:disney-harvest-start", opts),
+  disneyHarvestStop: () => ipcRenderer.invoke("desktop:disney-harvest-stop"),
+  disneyHarvestClear: () => ipcRenderer.invoke("desktop:disney-harvest-clear"),
+  disneyHarvestOnce: (opts) => ipcRenderer.invoke("desktop:disney-harvest-once", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

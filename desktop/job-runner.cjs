@@ -635,6 +635,136 @@ function buildPokemonCentrePayload({
   };
 }
 
+function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
+  const mode = String(task.disneyMode || "pay").toLowerCase();
+  const DEFAULT_PDP =
+    "https://www.disneystore.com.au/disney-lorcana-trading-card-game-by-ravensburger-gateway-050368983992.html";
+  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim() || DEFAULT_PDP;
+  if (
+    input &&
+    !/^https:\/\/(www\.)?(disneystore|shopdisney)\.com\.au\//i.test(input) &&
+    !/^\d{6,}$/.test(input)
+  ) {
+    return {
+      ok: false,
+      error: "Disney PDP URL (disneystore.com.au/…html) or pid required",
+    };
+  }
+
+  const harvested =
+    task.harvestedSession && typeof task.harvestedSession === "object"
+      ? task.harvestedSession
+      : null;
+
+  const proxyNorm = normalizeKmartProxy(harvested?.proxy || proxyRaw);
+  if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
+
+  // Harvested Akamai jars are exit-bound — never rotate sticky session on claim.
+  const proxy = harvested?.proxy
+    ? String(harvested.proxy).trim()
+    : rotateStickyProxySession(proxyNorm.proxy, {
+        force: process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+      });
+
+  const pdpUrl = /^https?:\/\//i.test(input)
+    ? input
+    : /^\d{6,}$/.test(input)
+      ? DEFAULT_PDP.replace(/\d{6,}(?=\.html)/, input)
+      : DEFAULT_PDP;
+
+  const pan = String(profile?.card_number || "").replace(/\s+/g, "");
+  const cvv = String(profile?.card_cvv || "").trim();
+  const mm = String(profile?.card_exp_month || "").trim();
+  const yy = String(profile?.card_exp_year || "").trim();
+  const holder =
+    String(profile?.card_name || "").trim() ||
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim() ||
+    "Cardholder";
+
+  const wantsPay = mode === "pay" || mode === "checkout" || mode === "ge";
+  if (placeOrder && wantsPay && (pan.length < 12 || cvv.length < 3 || !mm || yy.length < 2)) {
+    return { ok: false, error: "Place order needs complete card on the profile" };
+  }
+
+  const card =
+    pan.length >= 12 && cvv.length >= 3
+      ? {
+          number: pan,
+          cvv,
+          expMonth: mm.padStart(2, "0").slice(-2),
+          expYear: yy.length === 2 ? `20${yy}` : yy,
+          name: holder,
+          holder,
+        }
+      : null;
+
+  const disneyMode = ["warm", "monitor", "atc", "ge", "pay", "checkout"].includes(mode)
+    ? mode === "checkout"
+      ? "pay"
+      : mode
+    : "pay";
+
+  return {
+    ok: true,
+    data: {
+      taskId: task.runId || task.id || id("run"),
+      storeUrl: "https://www.disneystore.com.au",
+      pdpUrl,
+      disneyMode,
+      disneyGePay: disneyMode === "pay" || disneyMode === "ge",
+      quantity: Math.max(1, Math.min(20, Number(task.qty) || 1)),
+      proxy,
+      dryRun: !placeOrder,
+      placeOrder: Boolean(placeOrder) && wantsPay,
+      fakeDecline: !placeOrder && wantsPay,
+      debugTrace: true,
+      // Empty harvest → cold path; claim sets harvestedSession + same sticky proxy.
+      harvestedSession: harvested
+        ? {
+            id: harvested.id || null,
+            proxy: harvested.proxy || null,
+            proxyHost: harvested.proxyHost || null,
+            userAgent: harvested.userAgent || null,
+            cookies: harvested.cookies || {},
+            captchaToken: harvested.captchaToken || null,
+            harvestedAt: harvested.harvestedAt || null,
+            abckExpiresAt: harvested.abckExpiresAt || null,
+            captchaExpiresAt: harvested.captchaExpiresAt || null,
+            egressIp: harvested.egressIp || null,
+            captchaSitekey: harvested.captchaSitekey || null,
+            captchaAction: harvested.captchaAction || "AddToCart",
+            pdpUrl: harvested.pdpUrl || pdpUrl,
+            origin: harvested.origin || "https://www.disneystore.com.au",
+            abckValid: true,
+          }
+        : null,
+      recaptchaToken: task.recaptchaToken || harvested?.captchaToken || null,
+      preferLastGoodProxy: !harvested,
+      profile: {
+        email: profile?.email || null,
+        first_name: profile?.first_name || null,
+        last_name: profile?.last_name || null,
+        address1: profile?.address1 || null,
+        city: profile?.city || null,
+        province: profile?.province || null,
+        zip: profile?.zip || null,
+        phone: profile?.phone || null,
+      },
+      guest: {
+        email: profile?.email || "disney.checkout@example.com",
+        firstName: profile?.first_name || "Test",
+        lastName: profile?.last_name || "User",
+        address1: profile?.address1 || "1 George Street",
+        city: profile?.city || "Sydney",
+        zip: profile?.zip || "2000",
+        phone: profile?.phone || "0412345678",
+        stateId: "49179",
+      },
+      card: wantsPay ? card : null,
+    },
+  };
+}
+
 function buildPayload(job) {
   const store = job.task?.store || "kmart";
   if (store === "kmart") {
@@ -645,6 +775,9 @@ function buildPayload(job) {
   }
   if (store === "bandai") {
     return buildBandaiPayload(job);
+  }
+  if (store === "disney") {
+    return buildDisneyPayload(job);
   }
   if (store === "pokemoncentre" || store === "pokemon" || store === "pokemoncenter") {
     return buildPokemonCentrePayload(job);

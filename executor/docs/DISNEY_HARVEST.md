@@ -45,6 +45,17 @@ POST /disney/harvest/clear
 
 Checkout consumes via `task.harvestedSession` (blob) or `task.harvestedSessionId` (pool claim) on `POST /run`.
 
+## Desktop Harvest tab
+
+Desktop owns the bank (`desktop/disney-harvest.cjs`), same shape as Toymate:
+
+1. **Settings** → Hyper + CapSolver → start engine.
+2. **Harvest** → **Disney Store Harvest** → pick sticky AU ISP/resi proxy group → Start harvest (or Harvest one now).
+3. **Tasks** → Disney Store AU → Autocheckout/pay → Run — main process `take()`s one session when ready and passes `harvestedSession` on `/run`.
+4. **Empty bank / Stop / Clear** → no claim; payload sends `harvestedSession: null` → executor cold path (warm + CapSolver). Still works.
+
+Sessions are single-use and exit-bound. Do not rotate sticky session after claim.
+
 ## Lab
 
 ```bash
