@@ -65,9 +65,36 @@ export function isDisneyGeIssuerPaymentUrl(url) {
   const u = String(url || "");
   return (
     /secure\.ges\.global-e\.com\/payments\/handlecreditcardrequestV2/i.test(u) ||
+    /secure\.ges\.global-e\.com\/payments\/HandleCreditCardRequestV2/i.test(u) ||
     /secure\.ges\.global-e\.com\/\d+\/Payments\/HandleCreditCard/i.test(u) ||
     /secure\.ges\.global-e\.com\/[^?\s]*\/Payments\/HandleCreditCard/i.test(u)
   );
+}
+
+/** Disney / GE shipping option id from HandleAction=1 JSON (several shapes). */
+export function pickDisneyShippingMethodId(shippingJson) {
+  const direct = pickShippingMethodId(shippingJson);
+  if (direct) return direct;
+  const nested =
+    shippingJson?.Data ||
+    shippingJson?.Result ||
+    shippingJson?.result ||
+    shippingJson?.ShippingOptionsResult ||
+    shippingJson;
+  const again = pickShippingMethodId(nested);
+  if (again) return again;
+  const options =
+    nested?.shippingOptions ||
+    nested?.ShippingOptions ||
+    nested?.Options ||
+    nested?.DeliveryOptions ||
+    [];
+  if (!Array.isArray(options)) return "";
+  for (const o of options) {
+    const id = o?.ID ?? o?.Id ?? o?.id ?? o?.OptionId ?? o?.ShippingMethodID;
+    if (id != null && String(id) !== "" && String(id) !== "0") return String(id);
+  }
+  return "";
 }
 
 function pickAuStateIdFromHtml(html, prefer = /New South Wales|NSW/i) {
@@ -117,11 +144,7 @@ function applyGuestAddress(form, guest = {}, v2Html = "") {
   return form;
 }
 
-async function httpText(url, opts = {}) {
-  const ctx = opts.ctx;
-  if (!ctx?.jar || !ctx?.dispatcher) {
-    throw new Error("httpText requires ctx.jar + ctx.dispatcher");
-  }
+async function httpTextOnce(url, opts, ctx) {
   const method = opts.method || "GET";
   const headers = {
     "user-agent": opts.userAgent || DEFAULT_UA,
@@ -157,17 +180,67 @@ async function httpText(url, opts = {}) {
     url,
     headers: res.headers,
     undiciAttempts: Number(res.undiciAttempts || 1),
+    via: opts._via || "session",
   };
+}
+
+/**
+ * GE webservices / secure.ges often CF-429 or CONNECT-fail on sticky ISP after
+ * TLS ATC. Prefer proxy undici, then fall back to direct undici (same jar).
+ */
+async function httpText(url, opts = {}) {
+  const ctx = opts.ctx;
+  if (!ctx?.jar) throw new Error("httpText requires ctx.jar");
+  const allowDirect = opts.allowDirect !== false;
+  const attempts = [];
+  const dispatchers = [];
+  if (ctx.dispatcher) dispatchers.push({ label: "session", dispatcher: ctx.dispatcher });
+  let ownedDirect = null;
+  if (allowDirect) {
+    ownedDirect = makeDispatcher(null, { forceUndici: true });
+    dispatchers.push({ label: "direct-undici", dispatcher: ownedDirect });
+  }
+  try {
+    let lastErr = null;
+    for (const { label, dispatcher } of dispatchers) {
+      try {
+        const out = await httpTextOnce(url, { ...opts, _via: label }, { jar: ctx.jar, dispatcher });
+        attempts.push({ via: label, status: out.status, ok: out.ok, ms: out.ms });
+        // Soft-fail empty / 5xx → try next dispatcher
+        if (out.ok || (out.status > 0 && out.status < 500 && (out.text || "").length > 0)) {
+          return { ...out, attempts };
+        }
+        lastErr = out;
+      } catch (e) {
+        attempts.push({ via: label, ok: false, err: e?.message || String(e) });
+        lastErr = {
+          ok: false,
+          status: 0,
+          ms: 0,
+          text: "",
+          url,
+          error: e?.message || String(e),
+          via: label,
+        };
+      }
+    }
+    return { ...(lastErr || { ok: false, status: 0, text: "", url }), attempts };
+  } finally {
+    await ownedDirect?.close?.();
+  }
 }
 
 function makeGeCtx(baseCtx, opts = {}) {
   // Prefer undici for webservices / secure.ges — tls-client often CF-429s after ATC.
-  if (opts.forceSessionTransport) return { ctx: baseCtx, owned: null };
+  if (opts.forceSessionTransport) return { ctx: baseCtx, owned: [] };
   const proxy =
     baseCtx.dispatcher?.proxy ||
     (typeof opts.proxyRaw === "string" ? opts.proxyRaw : null);
-  const owned = makeDispatcher(proxy, { forceUndici: true });
-  return { ctx: { jar: baseCtx.jar, dispatcher: owned, egressIp: baseCtx.egressIp }, owned };
+  const ownedProxy = makeDispatcher(proxy, { forceUndici: true });
+  return {
+    ctx: { jar: baseCtx.jar, dispatcher: ownedProxy, egressIp: baseCtx.egressIp },
+    owned: [ownedProxy],
+  };
 }
 
 export async function postDisneyGeIssuerHttp(opts = {}) {
@@ -308,7 +381,16 @@ export async function runDisneyGeHttpPay(opts = {}) {
   const card = { ...DISNEY_FAKE_DECLINE_CARD, ...(opts.card || {}) };
   const refererBag = opts.referer || "https://www.disneystore.com.au/bag";
 
-  const { ctx: geCtx, owned: ownedGeDisp } = makeGeCtx(opts.ctx, opts);
+  const { ctx: geCtx, owned: ownedGeList } = makeGeCtx(opts.ctx, opts);
+  const closeOwned = async () => {
+    for (const d of ownedGeList || []) {
+      try {
+        await d?.close?.();
+      } catch {
+        /* ignore */
+      }
+    }
+  };
   try {
     // 1) Checkout/v2
     const v2 = await fetchDisneyCheckoutV2(geCtx, {
@@ -431,59 +513,122 @@ export async function runDisneyGeHttpPay(opts = {}) {
       });
     }
 
-    // 3) handleaction 1/2/3
+    // 3) handleaction 1/2/3 — action 1 must yield a shipping method id for save.
     let hydrateShippingOk = false;
     for (const actionId of [1, 2, 3]) {
-      const bodies = buildHandleActionBodies(form, {
-        cartToken: guid,
-        merchantId: mid,
-        shippingMethodId,
-        paymentMethodId: form.selectedPaymentMethodId || "1",
-      });
       const haUrl = `${DISNEY_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
+      const maxTries = actionId === 1 ? 3 : 1;
       await tStep(`ge_handleaction_${actionId}`, async () => {
-        const ha = await httpText(haUrl, {
-          ctx: geCtx,
-          method: "POST",
-          userAgent: ua,
-          accept: "application/json, text/plain, */*",
-          headers: {
-            origin: DISNEY_GE_WEBSERVICES,
-            referer: v2Url,
-            "content-type": "application/json",
-            "x-requested-with": "XMLHttpRequest",
-            "X-merchantId": String(mid),
-          },
-          body: JSON.stringify(bodies[actionId]),
+        let last = null;
+        for (let tryN = 0; tryN < maxTries; tryN++) {
+          const bodies = buildHandleActionBodies(form, {
+            cartToken: guid,
+            merchantId: mid,
+            shippingMethodId,
+            paymentMethodId: form.selectedPaymentMethodId || "1",
+          });
+          const ha = await httpText(haUrl, {
+            ctx: geCtx,
+            method: "POST",
+            userAgent: ua,
+            accept: "application/json, text/plain, */*",
+            allowDirect: opts.allowDirectCheckout !== false,
+            headers: {
+              origin: DISNEY_GE_WEBSERVICES,
+              referer: v2Url,
+              "content-type": "application/json",
+              "x-requested-with": "XMLHttpRequest",
+              "X-merchantId": String(mid),
+            },
+            body: JSON.stringify(bodies[actionId]),
+          });
+          last = ha;
+          let haJson = null;
+          try {
+            haJson = JSON.parse(String(ha.text || ""));
+          } catch {
+            haJson = null;
+          }
+          if (actionId === 1) {
+            const picked = pickDisneyShippingMethodId(haJson);
+            if (picked) shippingMethodId = picked;
+            hydrateShippingOk = Boolean(ha.ok && shippingMethodId);
+            if (hydrateShippingOk) break;
+            // Keep last JSON snippet for note even when id missing
+            if (ha.error || !ha.ok) continue; // retry on transport flake
+            // 200 but no options yet — retry once more (address bind lag)
+            continue;
+          } else {
+            break;
+          }
+        }
+        let haJson = null;
+        try {
+          haJson = JSON.parse(String(last?.text || ""));
+        } catch {
+          haJson = null;
+        }
+        if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(last?.text);
+        return {
+          ok:
+            Boolean(last?.ok) &&
+            (actionId !== 1 || hydrateShippingOk || Boolean(shippingMethodId)),
+          status: last?.status,
+          ms: last?.ms,
+          note: (
+            actionId === 1
+              ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} via=${last?.via || "?"} ${String(last?.text || last?.error || "").replace(/\s+/g, " ")}`
+              : `via=${last?.via || "?"} ${String(last?.text || last?.error || "").replace(/\s+/g, " ")}`
+          ).slice(0, 220),
+        };
+      });
+    }
+
+    // If action1 still flaked, one more dedicated shipping probe on direct.
+    if (!shippingMethodId) {
+      await tStep("ge_handleaction_1_retry", async () => {
+        const bodies = buildHandleActionBodies(form, {
+          cartToken: guid,
+          merchantId: mid,
+          shippingMethodId: "",
+          paymentMethodId: form.selectedPaymentMethodId || "1",
         });
+        const ha = await httpText(
+          `${DISNEY_GE_WEBSERVICES}/checkoutv2/handleaction/1/${guid}/${encodedMerchant}`,
+          {
+            ctx: geCtx,
+            method: "POST",
+            userAgent: ua,
+            accept: "application/json, text/plain, */*",
+            allowDirect: true,
+            headers: {
+              origin: DISNEY_GE_WEBSERVICES,
+              referer: v2Url,
+              "content-type": "application/json",
+              "x-requested-with": "XMLHttpRequest",
+              "X-merchantId": String(mid),
+            },
+            body: JSON.stringify(bodies[1]),
+          },
+        );
         let haJson = null;
         try {
           haJson = JSON.parse(String(ha.text || ""));
         } catch {
           haJson = null;
         }
-        if (actionId === 1) {
-          const picked = pickShippingMethodId(haJson);
-          if (picked) shippingMethodId = picked;
-          hydrateShippingOk = Boolean(
-            ha.ok &&
-              (haJson?.success === true ||
-                haJson?.Success === true ||
-                haJson?.exists === true ||
-                (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0) ||
-                picked),
-          );
+        const picked = pickDisneyShippingMethodId(haJson);
+        if (picked) {
+          shippingMethodId = picked;
+          hydrateShippingOk = true;
         }
-        if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
         return {
-          ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
+          ok: Boolean(shippingMethodId),
           status: ha.status,
-          ms: ha.ms,
-          note: (
-            actionId === 1
-              ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
-              : String(ha.text || "").replace(/\s+/g, " ")
-          ).slice(0, 200),
+          note: `retry ship method=${shippingMethodId || "none"} via=${ha.via || "?"} ${String(ha.text || ha.error || "").replace(/\s+/g, " ")}`.slice(
+            0,
+            220,
+          ),
         };
       });
     }
@@ -513,6 +658,7 @@ export async function runDisneyGeHttpPay(opts = {}) {
           method: "POST",
           userAgent: ua,
           accept: "application/json, text/plain, */*",
+          allowDirect: opts.allowDirectCheckout !== false,
           headers: {
             origin: DISNEY_GE_WEBSERVICES,
             referer: v2Url,
@@ -557,6 +703,7 @@ export async function runDisneyGeHttpPay(opts = {}) {
           ctx: geCtx,
           userAgent: ua,
           accept: "text/html,application/xhtml+xml,*/*",
+          allowDirect: opts.allowDirectCheckout !== false,
           headers: { referer: v2Url },
         }).catch((e) => ({ ok: false, status: 0, text: "", error: e?.message }));
         last = cc;
@@ -629,62 +776,92 @@ export async function runDisneyGeHttpPay(opts = {}) {
 
     let issuer = null;
     for (const issuerUrl of issuerCandidates) {
-      issuer = await tStep("ge_issuer_http", async () => {
-        const r = await postDisneyGeIssuerHttp({
-          url: issuerUrl,
-          body,
-          ctx: geCtx,
-          userAgent: ua,
-          referer: ccUrl,
-          timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
+      // Try proxy jar ctx first, then bare direct undici (same cookies).
+      const issuerContexts = [geCtx];
+      let ownedIssuerDirect = null;
+      if (opts.allowDirectCheckout !== false) {
+        ownedIssuerDirect = makeDispatcher(null, { forceUndici: true });
+        issuerContexts.push({
+          jar: geCtx.jar,
+          dispatcher: ownedIssuerDirect,
+          egressIp: geCtx.egressIp,
         });
-        const txMap = mapCcPaymentRedirect(r.redirectPayload || r.redirectUrlFull || "");
-        const fraudDetected = /^(true|1)$/i.test(String(txMap.PossibleFraudDetected || ""));
-        const statusType = String(txMap.TransactionStatusType || "");
-        const transactionId =
-          txMap.TransactionId && txMap.TransactionId !== "0"
-            ? txMap.TransactionId
-            : txMap.MerchantReference && txMap.MerchantReference !== "0"
-              ? txMap.MerchantReference
-              : null;
-        const bankHit = Boolean(
-          r.sawAuthWire || r.declineOnRedirect || r.bankSignal || transactionId,
-        );
-        const paymentStatus = fraudDetected
-          ? "ge_fraud_refused"
-          : r.declineOnRedirect || (bankHit && /Auth|Decline|Fail|Refuse/i.test(statusType))
-            ? "declined_or_auth_failed"
-            : bankHit && transactionId
-              ? "declined_or_auth_failed"
-              : r.responseLost
-                ? "pay_submitted_no_response"
-                : /DataCorruption/i.test(String(txMap.RedirectErrorType || r.bodySnippet || ""))
-                  ? "ge_data_corruption"
-                  : r.ok
-                    ? "pay_submitted_http"
-                    : "issuer_http_failed";
+      }
+      try {
+        for (const ictx of issuerContexts) {
+          const via = ictx.dispatcher?.proxy ? "proxy-undici" : "direct-undici";
+          issuer = await tStep("ge_issuer_http", async () => {
+            const r = await postDisneyGeIssuerHttp({
+              url: issuerUrl,
+              body,
+              ctx: ictx,
+              userAgent: ua,
+              referer: ccUrl,
+              timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
+            });
+            const txMap = mapCcPaymentRedirect(r.redirectPayload || r.redirectUrlFull || "");
+            const fraudDetected = /^(true|1)$/i.test(String(txMap.PossibleFraudDetected || ""));
+            const statusType = String(txMap.TransactionStatusType || "");
+            const transactionId =
+              txMap.TransactionId && txMap.TransactionId !== "0"
+                ? txMap.TransactionId
+                : txMap.MerchantReference && txMap.MerchantReference !== "0"
+                  ? txMap.MerchantReference
+                  : null;
+            const bankHit = Boolean(
+              r.sawAuthWire || r.declineOnRedirect || r.bankSignal || transactionId,
+            );
+            // Instant CONNECT/fetch fail (<2s) is transport, not "bank may have moved".
+            const slowLost =
+              Boolean(r.responseLost) && Number(r.ms || 0) >= 5_000;
+            const paymentStatus = fraudDetected
+              ? "ge_fraud_refused"
+              : r.declineOnRedirect || (bankHit && /Auth|Decline|Fail|Refuse/i.test(statusType))
+                ? "declined_or_auth_failed"
+                : bankHit && transactionId
+                  ? "declined_or_auth_failed"
+                  : slowLost
+                    ? "pay_submitted_no_response"
+                    : /DataCorruption/i.test(String(txMap.RedirectErrorType || r.bodySnippet || ""))
+                      ? "ge_data_corruption"
+                      : r.ok
+                        ? "pay_submitted_http"
+                        : "issuer_http_failed";
 
-        return {
-          ...r,
-          ok: Boolean(
-            paymentStatus === "declined_or_auth_failed" ||
-              paymentStatus === "ge_fraud_refused" ||
-              paymentStatus === "pay_submitted_http" ||
-              paymentStatus === "pay_submitted_no_response",
-          ),
-          issuerUrl: issuerUrl.replace(guid, "{guid}"),
-          paymentStatus,
-          possibleFraudDetected: fraudDetected,
-          transactionStatusType: statusType || null,
-          transactionId,
-          txMap,
-          note: (
-            paymentStatus === "declined_or_auth_failed" || paymentStatus === "ge_fraud_refused"
-              ? `DECLINE/AUTH wire status=${r.status} payStatus=${paymentStatus} tx=${transactionId || "-"} fraud=${fraudDetected} type=${statusType || "-"}`
-              : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} ${String(r.bodySnippet || r.error || "").slice(0, 120)}`
-          ).slice(0, 300),
-        };
-      });
+            return {
+              ...r,
+              ok: Boolean(
+                paymentStatus === "declined_or_auth_failed" ||
+                  paymentStatus === "ge_fraud_refused" ||
+                  paymentStatus === "pay_submitted_http" ||
+                  paymentStatus === "pay_submitted_no_response",
+              ),
+              issuerUrl: issuerUrl.replace(guid, "{guid}"),
+              via,
+              paymentStatus,
+              possibleFraudDetected: fraudDetected,
+              transactionStatusType: statusType || null,
+              transactionId,
+              txMap,
+              note: (
+                paymentStatus === "declined_or_auth_failed" || paymentStatus === "ge_fraud_refused"
+                  ? `DECLINE/AUTH wire status=${r.status} payStatus=${paymentStatus} tx=${transactionId || "-"} fraud=${fraudDetected} type=${statusType || "-"} via=${via}`
+                  : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} via=${via} ${String(r.bodySnippet || r.error || "").slice(0, 120)}`
+              ).slice(0, 300),
+            };
+          });
+          if (
+            issuer?.paymentStatus === "declined_or_auth_failed" ||
+            issuer?.paymentStatus === "ge_fraud_refused" ||
+            issuer?.paymentStatus === "pay_submitted_http" ||
+            issuer?.paymentStatus === "pay_submitted_no_response"
+          ) {
+            break;
+          }
+        }
+      } finally {
+        await ownedIssuerDirect?.close?.();
+      }
 
       if (
         issuer?.paymentStatus === "declined_or_auth_failed" ||
@@ -696,7 +873,8 @@ export async function runDisneyGeHttpPay(opts = {}) {
       // Try next URL shape on DataCorruption / hard fail
     }
 
-    const wireOk = Boolean(issuer?.ok);
+    const decline = /decline|auth_failed|fraud_refused/i.test(String(issuer?.paymentStatus || ""));
+    const wireOk = Boolean(issuer?.ok && (decline || issuer?.paymentStatus === "pay_submitted_http" || issuer?.paymentStatus === "pay_submitted_no_response"));
     return {
       ok: wireOk,
       steps,
@@ -709,23 +887,24 @@ export async function runDisneyGeHttpPay(opts = {}) {
       possibleFraudDetected: issuer?.possibleFraudDetected ?? null,
       transactionStatusType: issuer?.transactionStatusType || null,
       transactionId: issuer?.transactionId || null,
-      decline: /decline|auth_failed|fraud_refused/i.test(String(issuer?.paymentStatus || "")),
+      decline,
       issuer,
       checkoutV2Url: v2Url,
       creditCardFormUrl: ccUrl,
       issuerAction: issuer?.issuerUrl || DISNEY_GE_ISSUER_ACTION,
       machineIdPresent: Boolean(machineId),
       jwtPresent: Boolean(urlStructureToken),
-      hydrateShippingOk,
+      hydrateShippingOk: hydrateShippingOk || Boolean(shippingMethodId),
+      shippingMethodId: shippingMethodId || null,
       cardLast4: String(card.number || "").replace(/\s+/g, "").slice(-4),
       fakeCard: String(card.number || "").replace(/\s+/g, "") === DISNEY_FAKE_DECLINE_CARD.number,
       stoppedBeforePay: false,
-      checkoutStage: wireOk ? "order" : "tokenize",
+      checkoutStage: decline ? "order" : wireOk ? "tokenize" : "tokenize",
       note: issuer?.note || "issuer failed",
-      failedStep: wireOk ? null : issuer?.paymentStatus || "ge_issuer",
+      failedStep: decline ? null : issuer?.paymentStatus || "ge_issuer",
     };
   } finally {
-    await ownedGeDisp?.close?.();
+    await closeOwned();
   }
 }
 
