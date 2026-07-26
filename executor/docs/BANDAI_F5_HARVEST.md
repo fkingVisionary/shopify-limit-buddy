@@ -41,10 +41,23 @@ Checkout consumes via `task.harvestedBridgeId` on `POST /run`.
 ```bash
 PROXY='host:port:user:pass' node executor/scripts/bandai-harvest-lab.mjs
 PROXY=… BANDAI_HARVEST_CLAIM=1 node executor/scripts/bandai-harvest-lab.mjs
-node --test executor/adapters/bandai-harvest-pool.test.mjs
-# or:
 node executor/adapters/bandai-harvest-pool.test.mjs
+
+# Cold vs harvested Fast placeOrder (disposable card via BANDAI_CARD_*)
+BANDAI_AB_ONLY=both node executor/scripts/bandai-harvest-ab-lab.mjs
 ```
+
+### Live A/B (2026-07-26, last4 `1806`, empty disposable → AUTH_FAILED)
+
+| | Cold | Harvested |
+|--|------|-----------|
+| `f5_bridge` | **9710ms** | **4ms** |
+| wall→ATC | **21651ms** | **8246ms** |
+| Full wall (to issuer) | **95.5s** | **70.4s** |
+| Harvest mint (off-path) | — | 8.0s |
+| Issuer | tx `171257206` decline | tx `171258063` decline |
+
+Critical-path save ≈ **25s** wall / **~10s** pure F5 launch (rest is proxy/GE variance). Mint stays off-path when armed ahead of drop.
 
 ## Cost
 
