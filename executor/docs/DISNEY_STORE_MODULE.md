@@ -141,11 +141,12 @@ PDP embeds:
 | Primary ATC body | Live browser: `pid` + `quantity` + `csrf_token` (optional `pidsObj` / bundles) |
 | reCAPTCHA | **Enterprise on ATC** — `execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }`. CapSolver ProxyLess mints OK; SFCC currently returns `result:false` for CapSolver **and** native browser tokens (open). |
 | Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
-| Akamai | **Hyper allowlisted (2026-07-26)** — undici sensor POST **201 `{success:true}`**, `isAkamaiCookieValid` / `~0~` ✅. Headed Chrome GET ✅; headless home 403. |
-| ATC | Still **AkamaiGHost 403** on `Cart-AddProduct` even with Hyper-valid `_abck` (reproduced on multiple SKUs). Next: SBSD / header-order / TLS parity dig — see `experiments/disney-hyper-atc-once.mjs`. |
+| Akamai | **Hyper allowlisted (2026-07-26)** — sensor POST **201 `{success:true}`**, `~0~` ✅ (plateau → script rebind). Home HTML: **no SBSD / no bazade pixel** (sensor script only). |
+| ATC | **Root cause = TLS/JA3, not missing SBSD.** Undici + valid `_abck` + CSRF 200 → `Cart-AddProduct` **AkamaiGHost 403**. Same jar on **node-tls-client `chrome_131`** → **ATC 200** `Product added to cart` + minibag line (Lorcana `050368983992`, 2026-07-26). Checkout defaults Disney to TLS (`DISNEY_TLS=0` / `transport=undici` to override). Exit-IP sensitive — some sticky lines still 403 after solve. |
+| GE token | **`POST` `Globale-GetCartToken`** (empty body) → `{ cartToken, success:true }` after ATC. **GET** returns SFCC 500 even with bag lines. |
 | HAR | `experiments/disney-isp-capture.mjs` + hyper labs → `har/disney/` (full HAR in `/tmp/disney-*`) |
 
-**Module assumption:** **Hyper Akamai warm → sticky AU ISP → CSRF → reCAPTCHA Enterprise → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout mid 1696**.
+**Module assumption:** **TLS chrome_131 + Hyper Akamai warm → sticky AU ISP → CSRF → Cart-AddProduct → bag → POST Globale-GetCartToken → GEM GetCartToken mid 1696 → Checkout/v2 (stop before pay)**. CapSolver optional (SFCC verify still `result:false`).
 
 ---
 

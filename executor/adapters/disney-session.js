@@ -113,6 +113,26 @@ export function resolveDisneyPdpUrl(task = {}) {
   return `${DISNEY_ORIGIN}${DISNEY_DEFAULT_PDP_PATH}`;
 }
 
+/**
+ * Chrome 131 macOS client hints (low + high entropy).
+ * Undici alone is not enough for Disney ATC — BM scores JA3; still send CH
+ * so TLS chrome_131 + headers stay aligned.
+ */
+export function disneyChromeCh() {
+  return {
+    "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="131", "Chromium";v="131"',
+    "sec-ch-ua-arch": '"x86"',
+    "sec-ch-ua-bitness": '"64"',
+    "sec-ch-ua-full-version": '"131.0.6778.265"',
+    "sec-ch-ua-full-version-list":
+      '"Not(A:Brand";v="99.0.0.0", "Google Chrome";v="131.0.6778.265", "Chromium";v="131.0.6778.265"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-model": '""',
+    "sec-ch-ua-platform": '"macOS"',
+    "sec-ch-ua-platform-version": '"14.6.1"',
+  };
+}
+
 export function disneyNavHeaders({ referer, userAgent } = {}) {
   return {
     "user-agent": userAgent || DEFAULT_UA,
@@ -120,6 +140,7 @@ export function disneyNavHeaders({ referer, userAgent } = {}) {
     "accept-language": "en-AU,en;q=0.9",
     "accept-encoding": "gzip, deflate, br",
     "upgrade-insecure-requests": "1",
+    ...disneyChromeCh(),
     "sec-fetch-dest": "document",
     "sec-fetch-mode": "navigate",
     "sec-fetch-site": referer ? "same-origin" : "none",
@@ -135,6 +156,7 @@ export function disneyXhrHeaders({ referer, userAgent, contentType } = {}) {
     "accept-language": "en-AU,en;q=0.9",
     "accept-encoding": "gzip, deflate, br",
     "x-requested-with": "XMLHttpRequest",
+    ...disneyChromeCh(),
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
@@ -330,6 +352,7 @@ export default {
   DISNEY_ORIGIN,
   DISNEY_GE_MID,
   disneyUrls,
+  disneyChromeCh,
   parseDisneyProductUrl,
   resolveDisneyPid,
   resolveDisneyPdpUrl,

@@ -1,8 +1,10 @@
 /**
- * Disney Store AU — Hyper Akamai warm (sensor + optional SBSD/pixel).
+ * Disney Store AU — Hyper Akamai warm (sensor + plateau rebind + optional SBSD/pixel).
  *
- * Pattern mirrors Kmart's undici + Hyper path, scoped to disneystore.com.au.
- * Do not import kmart.js — keep Disney self-contained.
+ * Wire fact (2026-07-26): valid Hyper `_abck` on undici still AkamaiGHost-403s
+ * `Cart-AddProduct`. Same jar on node-tls-client chrome_131 → ATC 200
+ * "Product added to cart". Prefer TLS transport for the whole Disney session
+ * (see checkout.js disney default). Do not import kmart.js.
  */
 
 import { parseAkamaiPath, isAkamaiCookieValid } from "hyper-sdk-js";
@@ -16,6 +18,7 @@ import { request } from "../http.js";
 import {
   DISNEY_ORIGIN,
   disneyNavHeaders,
+  disneyChromeCh,
   looksLikeAkamaiDenied,
   extractAkamaiScriptPath as heuristicAkamaiPath,
 } from "./disney-session.js";
@@ -45,6 +48,10 @@ function abckSolved(jar, roundCount) {
   }
 }
 
+function abckLen(jar) {
+  return String(jar?.get?.("_abck") || "").length;
+}
+
 function akamaiSensorHeaders({ requestOrigin, referer, userAgent }) {
   return {
     "user-agent": userAgent,
@@ -53,25 +60,26 @@ function akamaiSensorHeaders({ requestOrigin, referer, userAgent }) {
     "content-type": "text/plain;charset=UTF-8",
     origin: requestOrigin,
     referer: referer || `${requestOrigin}/`,
+    ...disneyChromeCh(),
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
   };
 }
 
-function extractSbsdChallenge(html) {
-  const h = String(html || "");
-  const m =
-    h.match(/\/([0-9a-zA-Z_-]+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i) ||
-    h.match(/sbsd[^"']*["']([^"']+)["']/i);
+/** Kmart-shaped SBSD script tag: /path?v=<uuid>[&t=...] — not *.js sensor. */
+function parseSbsd(html) {
+  const m = /src=["']((?:\/[a-z\d\-_.]+)+)\?v=([^"'&]*)(?:&[^"']*?t=([^"'&]+))?["']/i.exec(
+    String(html || ""),
+  );
   if (!m) return null;
-  // Soft heuristic — only treat as SBSD when page mentions sbsd.
-  if (!/sbsd/i.test(h)) return null;
-  return { uuid: m[2] || m[1], raw: m[0] };
+  if (/\.js$/i.test(m[1])) return null;
+  return { path: m[1], uuid: m[2], t: m[3] || "" };
 }
 
 /**
  * Warm homepage cookies + Hyper sensor until `_abck` valid (or rounds exhausted).
+ * Plateau (flat `_abck` length while ind=-1) → re-fetch script + clear Hyper context.
  */
 async function runSensorRounds(session, ctx, opts = {}) {
   const tStep = opts.tStep || (async (_n, fn) => fn());
@@ -79,13 +87,58 @@ async function runSensorRounds(session, ctx, opts = {}) {
   const ua = session.state.userAgent;
   const jar = ctx.jar;
   const pageUrl = opts.pageUrl || `${origin}/`;
-  const scriptUrl = opts.scriptUrl;
-  const scriptBody = opts.scriptBody || "";
-  const maxRounds = Number(opts.maxRounds || 3);
+  let scriptUrl = opts.scriptUrl;
+  let scriptBody = opts.scriptBody || "";
+  const maxRounds = Number(opts.maxRounds || 5);
   const label = opts.label || "akamai_sensor";
   let localContext = opts.prevContext || null;
   let solved = false;
   let rounds = 0;
+  let plateauStreak = 0;
+  let lastLen = abckLen(jar);
+
+  const rebind = async (rebindLabel) => {
+    const homeRes = await request(
+      `${origin}/`,
+      {
+        method: "GET",
+        headers: {
+          ...disneyNavHeaders({ userAgent: ua }),
+          ...disneyChromeCh(),
+          "accept-encoding": "gzip, deflate",
+        },
+      },
+      ctx,
+    );
+    const html = await homeRes.text().catch(() => "");
+    const path = findAkamaiScriptPath(html);
+    if (!path) return false;
+    scriptUrl = path.startsWith("http") ? path : `${origin}${path}`;
+    const scriptRes = await request(
+      scriptUrl,
+      {
+        method: "GET",
+        headers: {
+          "user-agent": ua,
+          accept: "*/*",
+          "accept-language": ACCEPT_LANG,
+          referer: `${origin}/`,
+          ...disneyChromeCh(),
+          "sec-fetch-dest": "script",
+          "sec-fetch-mode": "no-cors",
+          "sec-fetch-site": "same-origin",
+        },
+      },
+      ctx,
+    );
+    scriptBody = await scriptRes.text().catch(() => "");
+    localContext = null;
+    await tStep(rebindLabel, async () => ({
+      ok: scriptBody.length > 1000,
+      note: `rebind script ${scriptRes.status} bytes=${scriptBody.length} ctx cleared`,
+    }));
+    return scriptBody.length > 1000;
+  };
 
   for (let i = 0; i < maxRounds; i++) {
     rounds = i + 1;
@@ -124,7 +177,7 @@ async function runSensorRounds(session, ctx, opts = {}) {
           return {
             ok: res.status < 400,
             status: res.status,
-            note: `sensor ${res.status} abckValid=${valid} softOk=${softOk} attempt=${attempt} page=${pageUrl.split("/").pop() || "home"} body=${body.replace(/\s+/g, " ").slice(0, 60)}`,
+            note: `sensor ${res.status} abckValid=${valid} softOk=${softOk} len=${abckLen(jar)} attempt=${attempt} transport=${ctx.dispatcher?.transport || "?"} body=${body.replace(/\s+/g, " ").slice(0, 60)}`,
             valid,
           };
         } catch (e) {
@@ -138,17 +191,35 @@ async function runSensorRounds(session, ctx, opts = {}) {
         valid: false,
       };
     });
+
     if (row.valid) {
       solved = true;
       break;
     }
+
+    const len = abckLen(jar);
+    if (i >= 1 && len > 0 && len === lastLen) plateauStreak += 1;
+    else plateauStreak = 0;
+    lastLen = len;
+
+    if (plateauStreak >= 2 || (i > 0 && i % 3 === 2 && !abckSolved(jar, rounds))) {
+      await tStep(`${label}:plateau`, async () => ({
+        ok: true,
+        note: `_abck plateau len=${len} after round ${rounds} — rebind + clear Hyper context`,
+      }));
+      await rebind(`${label}:rebind`);
+      plateauStreak = 0;
+      lastLen = abckLen(jar);
+    }
+
     await sleep(200 + Math.floor(Math.random() * 200));
   }
+
   session.state.abckValid = solved || abckSolved(jar, rounds);
   session.state._sensorContext = localContext;
   session.state._sensorScriptUrl = scriptUrl;
   session.state._sensorScriptBody = scriptBody;
-  return { ok: session.state.abckValid, solved, rounds, context: localContext };
+  return { ok: session.state.abckValid, solved, rounds, context: localContext, scriptUrl, scriptBody };
 }
 
 export async function warmDisneyAkamai(session, ctx, opts = {}) {
@@ -156,7 +227,7 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
   const origin = session.state.origin || DISNEY_ORIGIN;
   const ua = session.state.userAgent;
   const jar = ctx.jar;
-  const maxRounds = Number(opts.maxRounds || 5);
+  const maxRounds = Number(opts.maxRounds || 8);
 
   if (!hyperConfigured()) {
     const home = await tStep("warm_home_no_hyper", async () => {
@@ -187,19 +258,31 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
       try {
         const headers = {
           ...disneyNavHeaders({ userAgent: ua }),
+          ...disneyChromeCh(),
           // ISP tunnels flake less with identity than br on first CONNECT.
           "accept-encoding": "gzip, deflate",
         };
         const res = await request(`${origin}/`, { method: "GET", headers }, ctx);
         const html = await res.text().catch(() => "");
         const denied = looksLikeAkamaiDenied(html, res.status);
-        session.state.warmed = res.status < 400 && !denied;
+        // node-tls-client surfaces CONNECT failures as status 0 + error text body.
+        // Do NOT match bare "CONNECT" — Disney home HTML can contain that word.
+        const tunnelFail =
+          !res.status ||
+          res.status < 100 ||
+          /Proxy responded with non 200|failed to do request|Proxy response \(\d+\) !== 200 when HTTP Tunneling/i.test(
+            html,
+          );
+        const ok = res.status >= 200 && res.status < 400 && !denied && !tunnelFail && html.length > 2000;
+        session.state.warmed = ok;
         return {
-          ok: res.status < 400 && !denied,
+          ok,
           status: res.status,
-          note: denied
-            ? `Akamai denied home status=${res.status}`
-            : `home ${res.status} bytes=${html.length} abck=${Boolean(jar?.get?.("_abck"))} attempt=${attempt}`,
+          note: tunnelFail
+            ? `proxy/tunnel fail status=${res.status} body=${html.replace(/\s+/g, " ").slice(0, 120)}`
+            : denied
+              ? `Akamai denied home status=${res.status}`
+              : `home ${res.status} bytes=${html.length} abck=${Boolean(jar?.get?.("_abck"))} transport=${ctx.dispatcher?.transport || "?"} attempt=${attempt}`,
           html,
           denied,
         };
@@ -243,6 +326,15 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
     };
   }
 
+  // Hyper rejects empty abck — seed sentinel if homepage did not Set-Cookie one.
+  if (!jar.has("_abck")) {
+    jar.ingest({ "set-cookie": ["_abck=-1~-1~-1~-1~-1~-1~-1; Path=/"] });
+    await tStep("akamai_abck_seed", async () => ({
+      ok: true,
+      note: "jar had no _abck after warm_home; seeded sentinel",
+    }));
+  }
+
   const scriptUrl = scriptPath.startsWith("http") ? scriptPath : `${origin}${scriptPath}`;
   const scriptBody = await tStep("akamai_script", async () => {
     const res = await request(
@@ -252,7 +344,12 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
         headers: {
           "user-agent": ua,
           accept: "*/*",
+          "accept-language": ACCEPT_LANG,
           referer: `${origin}/`,
+          ...disneyChromeCh(),
+          "sec-fetch-dest": "script",
+          "sec-fetch-mode": "no-cors",
+          "sec-fetch-site": "same-origin",
         },
       },
       ctx,
@@ -277,8 +374,8 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
     };
   }
 
-  // Optional SBSD if challenge shell present.
-  const sbsd = extractSbsdChallenge(html);
+  // Optional SBSD if challenge shell present (home HTML usually has none).
+  const sbsd = parseSbsd(html);
   if (sbsd?.uuid) {
     await tStep("sbsd_home", async () => {
       try {
@@ -292,7 +389,7 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
           ip: ctx.egressIp || opts.egressIp || "",
           acceptLanguage: ACCEPT_LANG,
         });
-        const postUrl = `${origin}/_sec/cp_challenge/verify`;
+        const postUrl = `${origin}${sbsd.path}${sbsd.t ? `?t=${sbsd.t}` : ""}`;
         const res = await request(
           postUrl,
           {
@@ -302,7 +399,11 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
           },
           ctx,
         );
-        return { ok: res.status < 400, status: res.status, note: `sbsd ${res.status}` };
+        return {
+          ok: res.status < 400,
+          status: res.status,
+          note: `sbsd ${res.status} bm_sv=${jar.has("bm_sv")}`,
+        };
       } catch (e) {
         return { ok: false, note: `sbsd skip: ${e?.message || e}` };
       }
@@ -319,7 +420,7 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
     label: "akamai_sensor",
   });
 
-  // Pixel (optional — ignore failures).
+  // Pixel (optional — Disney home HTML has no classic bazade pixel as of 2026-07-26).
   try {
     const pixel = await solveAkamaiPixel({
       jar,
@@ -356,12 +457,12 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
   return {
     ok: sensor.ok,
     note: sensor.ok
-      ? `Akamai warm ok rounds=${sensor.rounds}`
-      : `_abck not valid after ${sensor.rounds} sensor rounds`,
+      ? `Akamai warm ok rounds=${sensor.rounds} transport=${ctx.dispatcher?.transport || "?"}`
+      : `_abck not valid after ${sensor.rounds} sensor rounds (transport=${ctx.dispatcher?.transport || "?"})`,
     hyperConfigured: true,
     abckValid: sensor.ok,
     rounds: sensor.rounds,
-    scriptUrl,
+    scriptUrl: sensor.scriptUrl || scriptUrl,
     home,
   };
 }
@@ -381,7 +482,14 @@ export async function refreshDisneyAkamai(session, ctx, opts = {}) {
     scriptUrl = path.startsWith("http") ? path : `${origin}${path}`;
     const scriptRes = await request(
       scriptUrl,
-      { method: "GET", headers: { "user-agent": session.state.userAgent, referer: pageUrl } },
+      {
+        method: "GET",
+        headers: {
+          "user-agent": session.state.userAgent,
+          referer: pageUrl,
+          ...disneyChromeCh(),
+        },
+      },
       ctx,
     );
     scriptBody = await scriptRes.text();

@@ -93,19 +93,32 @@ export async function runCheckout(task) {
     }
   })();
   const isKmart = host === "kmart.com.au" || host.endsWith(".kmart.com.au");
+  const isDisney =
+    host === "disneystore.com.au" ||
+    host === "shopdisney.com.au" ||
+    host.endsWith(".disneystore.com.au") ||
+    host.endsWith(".shopdisney.com.au");
 
   // Transport selection.
   // Empirical green (place_order / 3DS on Fly direct 89.187.186.9) used undici.
   // Defaulting Kmart to tls-worker solved _abck but 403'd category/PDP on the
   // same IP — looks like nav/session handling, not SoftBlock. Keep tls-worker
   // opt-in until document GETs match the undici-green path.
+  // Disney AU (2026-07-26): Hyper `_abck` ~0~ on undici still AkamaiGHost-403s
+  // Cart-AddProduct; same session on in-process chrome_131 → ATC 200. Default
+  // Disney to TLS (override with transport=undici / forceUndici / DISNEY_TLS=0).
   // - default / forceUndici / transport=undici → undici
   // - transport=tls-worker | tlsWorker:true | KMART_TLS_WORKER=1 → child chrome_131
   // - forceTls / transport=tls → in-process chrome_131 (can empty-502)
   // - Playwright stays opt-in only (kmartMode=playwright)
   const requestedTransport = typeof task.transport === "string" ? task.transport.toLowerCase() : null;
   const forceUndici = task.forceUndici === true || requestedTransport === "undici";
-  const forceTls = task.forceTls === true || requestedTransport === "tls";
+  const disneyTlsEnvOff =
+    process.env.DISNEY_TLS === "0" || process.env.DISNEY_TLS === "false";
+  const disneyWantsTls =
+    isDisney && !forceUndici && task.disneyTls !== false && !disneyTlsEnvOff;
+  const forceTls =
+    task.forceTls === true || requestedTransport === "tls" || disneyWantsTls;
   const wantTlsWorker =
     !forceUndici &&
     !forceTls &&
@@ -119,7 +132,10 @@ export async function runCheckout(task) {
 
   if (forceTls) {
     dispatcher = makeDispatcher(task.proxy, { forceTls: true });
-    transportSelectNote = "tls in-process chrome_131 (forced — not crash-isolated)";
+    transportSelectNote =
+      disneyWantsTls && task.forceTls !== true && requestedTransport !== "tls"
+        ? "tls in-process chrome_131 (Disney default — Cart-AddProduct needs JA3)"
+        : "tls in-process chrome_131 (forced — not crash-isolated)";
   } else if (wantTlsWorker) {
     try {
       dispatcher = await makeRemoteTlsDispatcher(task.proxy);

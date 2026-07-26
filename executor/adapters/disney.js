@@ -73,14 +73,38 @@ function normalizeMode(task) {
   return raw;
 }
 
-async function runWarm(task, ctx, session, tStep, steps) {
-  if (!ctx.egressIp) {
-    await tStep("resolve_ip", async () => {
-      const ip = await resolveEgressIp(ctx);
-      ctx.egressIp = ip;
-      return { ok: Boolean(ip), note: ip ? `egress=${ip}` : "egress unresolved" };
-    });
+/** Sticky ISP lines in resi.proxies use exit IP as host — prefer that over a
+ * pre-warm ipify CONNECT (tls-client often 403s the next Disney CONNECT). */
+function guessEgressFromProxy(proxy) {
+  const host = String(proxy || "")
+    .replace(/^https?:\/\//i, "")
+    .split("@")
+    .pop()
+    ?.split(":")[0];
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host || "") ? host : null;
+}
+
+async function ensureDisneyEgressIp(task, ctx, tStep) {
+  if (ctx.egressIp) return ctx.egressIp;
+  const guessed = guessEgressFromProxy(task.proxy);
+  if (guessed) {
+    ctx.egressIp = guessed;
+    await tStep("resolve_ip", async () => ({
+      ok: true,
+      note: `egress=${guessed} (proxy host — skip ipify preflight for TLS)`,
+    }));
+    return guessed;
   }
+  await tStep("resolve_ip", async () => {
+    const ip = await resolveEgressIp(ctx);
+    ctx.egressIp = ip;
+    return { ok: Boolean(ip), note: ip ? `egress=${ip}` : "egress unresolved" };
+  });
+  return ctx.egressIp;
+}
+
+async function runWarm(task, ctx, session, tStep, steps) {
+  await ensureDisneyEgressIp(task, ctx, tStep);
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
   let mini = null;
   if (warm.ok || task.forceMiniCart) {
@@ -107,13 +131,7 @@ async function runWarm(task, ctx, session, tStep, steps) {
 }
 
 async function runMonitor(task, ctx, session, tStep, steps) {
-  if (!ctx.egressIp) {
-    await tStep("resolve_ip", async () => {
-      const ip = await resolveEgressIp(ctx);
-      ctx.egressIp = ip;
-      return { ok: Boolean(ip), note: ip ? `egress=${ip}` : "egress unresolved" };
-    });
-  }
+  await ensureDisneyEgressIp(task, ctx, tStep);
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
   const pdpUrl = resolveDisneyPdpUrl({ ...task, useDefaultPdp: true });
   const pid = resolveDisneyPid(task) || null;
@@ -163,13 +181,7 @@ async function runMonitor(task, ctx, session, tStep, steps) {
 
 async function runAtcCheckout(task, ctx, session, tStep, steps) {
   const dryRun = task.placeOrder !== true;
-  if (!ctx.egressIp) {
-    await tStep("resolve_ip", async () => {
-      const ip = await resolveEgressIp(ctx);
-      ctx.egressIp = ip;
-      return { ok: Boolean(ip), note: ip ? `egress=${ip}` : "egress unresolved" };
-    });
-  }
+  await ensureDisneyEgressIp(task, ctx, tStep);
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
   if (!warm.ok && task.allowUnwarmed !== true) {
     return {
@@ -194,14 +206,17 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
   }
   const pid = resolveDisneyPid(task) || pdp.pid || "050368983992";
 
-  // Refresh sensors on PDP URL so POST ATC rides a page-matched _abck.
-  const refresh = await refreshDisneyAkamai(session, ctx, {
-    tStep,
-    pageUrl: pdpUrl,
-    maxRounds: 3,
-    egressIp: ctx.egressIp,
-    label: "akamai_pdp",
-  });
+  // Light PDP sensor refresh (1 round). Extra rounds on a solved cookie burn
+  // proxy CONNECTs and have not been required for TLS ATC wins.
+  if (task.disneyPdpRefresh !== false) {
+    await refreshDisneyAkamai(session, ctx, {
+      tStep,
+      pageUrl: pdpUrl,
+      maxRounds: Number(task.disneyPdpSensorRounds ?? 1),
+      egressIp: ctx.egressIp,
+      label: "akamai_pdp",
+    });
+  }
 
   const sitekey =
     task.recaptchaSitekey || pdp.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY;
@@ -295,13 +310,7 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
 }
 
 async function runGeOnly(task, ctx, session, tStep, steps) {
-  if (!ctx.egressIp) {
-    await tStep("resolve_ip", async () => {
-      const ip = await resolveEgressIp(ctx);
-      ctx.egressIp = ip;
-      return { ok: Boolean(ip), note: ip ? `egress=${ip}` : "egress unresolved" };
-    });
-  }
+  await ensureDisneyEgressIp(task, ctx, tStep);
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
   const ge = await runDisneyGeHandoff(session, ctx, {
     tStep,
@@ -350,7 +359,7 @@ export const disneyAdapter = {
     steps.push({
       step: "disney_region",
       ok: true,
-      note: `site=DisneyStoreAUNZ locale=en_AU geMid=${DISNEY_GE_MID} mode=${mode}`,
+      note: `site=DisneyStoreAUNZ locale=en_AU geMid=${DISNEY_GE_MID} mode=${mode} transport=${ctx.dispatcher?.transport || "?"}`,
     });
 
     if (mode === "warm") {

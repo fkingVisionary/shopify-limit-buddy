@@ -7,6 +7,9 @@
  *   CAPSOLVER_API_KEY      (optional but recommended for AddToCart)
  *   PROXY=host:port:user:pass  (or first line of resi.proxies)
  *
+ * Transport: defaults to TLS chrome_131 (Cart-AddProduct needs JA3). Override
+ * with FORCE_UNDICI=1 to reproduce the undici AkamaiGHost 403.
+ *
  * Usage:
  *   HYPER_API_KEY=... CAPSOLVER_API_KEY=... \
  *     PROXY='…' node experiments/disney-hyper-atc-once.mjs
@@ -83,8 +86,12 @@ if (!hyperConfigured()) {
 
 const pdpUrl = process.env.DISNEY_PDP || `${DISNEY_ORIGIN}${DISNEY_DEFAULT_PDP_PATH}`;
 const placeOrder = process.env.PLACE_ORDER === "1";
+const forceUndici = process.env.FORCE_UNDICI === "1";
 const jar = createJar();
-const dispatcher = makeDispatcher(proxyUrl);
+const dispatcher = makeDispatcher(proxyUrl, {
+  forceTls: !forceUndici,
+  forceUndici,
+});
 const ctx = { jar, dispatcher, steps: [] };
 
 const task = {
@@ -105,6 +112,7 @@ console.log(
       outDir,
       hyper: true,
       capsolver: Boolean(capsolverKey()),
+      transport: dispatcher.transport,
       proxyHost: proxyRaw.split(":")[0],
       pdpUrl,
       geMid: DISNEY_GE_MID,

@@ -41,14 +41,18 @@ So CapSolver is ready for when Hyper clears BM; SFCC verify `result:false` needs
 | `_abck` validity | ✅ `abckValid=true` / `~0~` after 3–5 rounds on sticky AU ISP |
 | CSRF | ✅ `csrf_token` |
 | CapSolver mint | ✅ ProxyLess Enterprise V3 |
-| `Cart-AddProduct` | ❌ still **Akamai Access Denied** with valid `_abck` (Lorcana + Stitch SKUs) |
-| Proxy flake | Frequent undici `Proxy response (403) !== 200 when HTTP Tunneling` mid-run — rotate sticky exit |
+| `Cart-AddProduct` (undici) | ❌ **AkamaiGHost 403** even with valid `_abck` + CSRF 200 |
+| `Cart-AddProduct` (TLS chrome_131) | ✅ **200** `Product added to cart` + minibag line (Lorcana `050368983992`) |
+| Home HTML SBSD / pixel | ❌ none (sensor script only; `bm_sv` not required for ATC win) |
+| `Globale-GetCartToken` GET | ❌ SFCC 500 (even with bag) |
+| `Globale-GetCartToken` POST | ✅ `{ cartToken, success: true }` |
+| Proxy flake | tls-client CONNECT 403 after ipify preflight / spray — use proxy-host IP, rotate sticky exit |
 
 Labs:
-- `experiments/disney-hyper-atc-once.mjs` — HTTP Hyper → CapSolver → ATC
+- `experiments/disney-hyper-atc-once.mjs` — TLS (default) Hyper → CapSolver → ATC
 - `experiments/disney-hyper-browser-atc.mjs` — Hyper cookie inject → headed Chrome ATC
 
-**Next dig:** SBSD on ATC path, Chrome header-order / JA3 parity, or Hyper support on whether Disney BM needs pixel/SBSD beyond sensor for `Cart-AddProduct`.
+**Lock:** Disney ATC needs **JA3 parity** (`node-tls-client` chrome_131 / checkout Disney TLS default). Not SBSD/pixel. GE SFCC token is **POST**.
 
 ## Confirmed wire
 

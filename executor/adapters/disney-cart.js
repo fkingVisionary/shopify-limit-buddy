@@ -9,11 +9,13 @@
  *     POST Google-reCaptchaEnterprise { token } before the cart POST.
  */
 
+import { request } from "../http.js";
 import {
   parseCsrfGenerateJson,
   parseDisneyPdp,
   parseMiniCartHtml,
   looksLikeAkamaiDenied,
+  disneyXhrHeaders,
   DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
 } from "./disney-session.js";
 
@@ -223,38 +225,54 @@ export async function addDisneyToCart(session, ctx, opts = {}) {
   });
 
   const atc = await tStep("cart_add_product", async () => {
-    const res = await session.post(addUrl, formBody(fields), {
-      referer: pdpUrl,
-      contentType: "application/x-www-form-urlencoded; charset=UTF-8",
-      headers: {
-        accept: "*/*",
-        "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
+    // TLS dig win (2026-07-26): post via http.request with explicit CH + accept:*/*
+    // — session.post xhr accept/q-values alone still saw intermittent AkamaiGHost 403.
+    const origin = session.state.origin;
+    const ua = session.state.userAgent;
+    const httpRes = await request(
+      addUrl,
+      {
+        method: "POST",
+        headers: {
+          ...disneyXhrHeaders({
+            userAgent: ua,
+            referer: pdpUrl,
+            contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+          }),
+          origin,
+          accept: "*/*",
+        },
+        body: formBody(fields),
       },
-    });
-    if (looksLikeAkamaiDenied(res.text, res.status)) {
+      ctx,
+    );
+    const text = await httpRes.text().catch(() => "");
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    const status = httpRes.status;
+    if (looksLikeAkamaiDenied(text, status)) {
       const abck = ctx.jar?.get?.("_abck") || "";
       return {
         ok: false,
-        status: res.status,
-        note: `Cart-AddProduct Akamai Access Denied abckValidMarker=${/~0~/.test(abck)} abckLen=${abck.length}`,
+        status,
+        note: `Cart-AddProduct Akamai Access Denied abckValidMarker=${/~0~/.test(abck)} abckLen=${abck.length} transport=${ctx.dispatcher?.transport || "?"}`,
         denied: true,
       };
     }
-    const err = Boolean(res.json?.error) || /error/i.test(String(res.json?.message || ""));
-    const ok = res.ok && !err;
+    const err = Boolean(json?.error) || /error/i.test(String(json?.message || ""));
+    const ok = status >= 200 && status < 300 && !err;
     return {
       ok,
-      status: res.status,
+      status,
       note: ok
         ? `ATC ok pid=${pid} qty=${quantity}`
-        : `ATC fail status=${res.status} msg=${String(res.json?.message || res.text).slice(0, 160)}`,
-      raw: res.json,
-      textBytes: res.text?.length || 0,
+        : `ATC fail status=${status} msg=${String(json?.message || text).slice(0, 160)}`,
+      raw: json,
+      textBytes: text.length || 0,
     };
   });
 

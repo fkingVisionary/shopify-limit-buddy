@@ -58,13 +58,18 @@ export async function fetchDisneySfccCartToken(session, opts = {}) {
   const tStep = opts.tStep || (async (_n, fn) => fn());
   return tStep("ge_sfcc_cart_token", async () => {
     const url = session.urls.geCartToken;
-    // Prefer GET (controller often tokenizes from basket session); POST if body provided.
-    const res = opts.body
-      ? await session.post(url, opts.body, {
-          referer: opts.referer || `${session.state.origin}/bag`,
-          contentType: opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
-        })
-      : await session.get(url, { xhr: true, referer: opts.referer || `${session.state.origin}/bag` });
+    // Wire (2026-07-26 TLS + filled bag): POST → 200 { cartToken, success:true }.
+    // GET returns SFCC 500 error shell even with line items (quantityTotal:0).
+    const preferPost = opts.method !== "GET";
+    let res;
+    if (preferPost) {
+      res = await session.post(url, opts.body ?? "", {
+        referer: opts.referer || `${session.state.origin}/bag`,
+        contentType: opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+      });
+    } else {
+      res = await session.get(url, { xhr: true, referer: opts.referer || `${session.state.origin}/bag` });
+    }
 
     if (looksLikeAkamaiDenied(res.text, res.status)) {
       return { ok: false, status: res.status, note: "Globale-GetCartToken Akamai denied", denied: true };
@@ -72,21 +77,21 @@ export async function fetchDisneySfccCartToken(session, opts = {}) {
 
     const j = res.json || safeJson(res.text) || {};
     const token =
-      j.MerchantCartToken ||
-      j.merchantCartToken ||
       j.cartToken ||
       j.CartToken ||
+      j.MerchantCartToken ||
+      j.merchantCartToken ||
       j.token ||
       j?.globale?.MerchantCartToken ||
       extractGeCheckoutGuid(res.text) ||
       null;
 
     return {
-      ok: res.ok && Boolean(token),
+      ok: (res.ok || j.success === true) && Boolean(token),
       status: res.status,
       note: token
-        ? `SFCC GE cart token ${String(token).slice(0, 12)}…`
-        : `Globale-GetCartToken status=${res.status} (no token yet — empty bag or shape needs HAR)`,
+        ? `SFCC GE cartToken ${String(token).slice(0, 12)}… via=${preferPost ? "POST" : "GET"}`
+        : `Globale-GetCartToken status=${res.status} via=${preferPost ? "POST" : "GET"} (no token — ${String(j.message || "").slice(0, 80)})`,
       merchantCartToken: token,
       raw: j,
       textBytes: res.text?.length || 0,
