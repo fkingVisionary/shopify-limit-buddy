@@ -277,7 +277,8 @@ export async function addDisneyToCart(session, ctx, opts = {}) {
   });
 
   let mini = null;
-  if (atc.ok || opts.alwaysCheckMini !== false) {
+  // alwaysCheckMini:false skips the minibag RTT (pay path speed). Default keeps prior behaviour.
+  if (opts.alwaysCheckMini !== false) {
     mini = await fetchDisneyMiniCart(session, { tStep, referer: pdpUrl });
   }
 

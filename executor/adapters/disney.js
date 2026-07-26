@@ -212,6 +212,24 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
   const wantPay = wantsDisneyGePay(task, mode);
   const dryRun = task.placeOrder !== true;
   await ensureDisneyEgressIp(task, ctx, tStep);
+
+  const pdpUrl = resolveDisneyPdpUrl(task);
+  const sitekeyEarly = task.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY;
+  // Overlap CapSolver with Akamai warm + PDP — biggest free speed win (~8s).
+  const captchaPromise =
+    !task.recaptchaToken &&
+    !task.captchaToken &&
+    task.skipRecaptcha !== true &&
+    capsolverKey()
+      ? solveDisneyRecaptchaEnterprise({
+          pageUrl: pdpUrl,
+          sitekey: sitekeyEarly,
+          action: "AddToCart",
+          proxyRaw: task.proxy || null,
+          proxyless: task.capsolverProxyless !== false,
+        })
+      : null;
+
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
   if (!warm.ok && task.allowUnwarmed !== true) {
     return {
@@ -228,7 +246,6 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     };
   }
 
-  const pdpUrl = resolveDisneyPdpUrl(task);
   let pdp = await fetchDisneyPdp(session, pdpUrl, { tStep });
   if (!pdp.ok) {
     // Proxy flake after sensor — one more try before giving up on parse.
@@ -236,9 +253,11 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
   }
   const pid = resolveDisneyPid(task) || pdp.pid || "050368983992";
 
-  // Light PDP sensor refresh (1 round). Extra rounds on a solved cookie burn
-  // proxy CONNECTs and have not been required for TLS ATC wins.
-  if (task.disneyPdpRefresh !== false) {
+  // PDP sensor refresh: skip when warm already solved (default). Opt-in via disneyPdpRefresh:true.
+  const wantPdpRefresh =
+    task.disneyPdpRefresh === true ||
+    (task.disneyPdpRefresh !== false && warm.abckValid !== true);
+  if (wantPdpRefresh) {
     await refreshDisneyAkamai(session, ctx, {
       tStep,
       pageUrl: pdpUrl,
@@ -246,26 +265,25 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
       egressIp: ctx.egressIp,
       label: "akamai_pdp",
     });
+  } else {
+    steps.push({
+      step: "akamai_pdp",
+      ok: true,
+      note: "skipped — _abck already valid after warm (speed)",
+    });
   }
 
   const sitekey =
     task.recaptchaSitekey || pdp.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY;
   let recaptchaToken = task.recaptchaToken || task.captchaToken || null;
   let recaptchaMeta = null;
-  if (!recaptchaToken && task.skipRecaptcha !== true && capsolverKey()) {
+  if (captchaPromise) {
     recaptchaMeta = await tStep("recaptcha_capsolver", async () => {
-      const solved = await solveDisneyRecaptchaEnterprise({
-        pageUrl: pdpUrl,
-        sitekey,
-        action: "AddToCart",
-        proxyRaw: task.proxy || null,
-        // Default ProxyLess (proven); set capsolverProxyless:false to force proxy task.
-        proxyless: task.capsolverProxyless !== false,
-      });
+      const solved = await captchaPromise;
       return {
         ok: solved.ok,
         note: solved.ok
-          ? `CapSolver ${solved.via} ${solved.elapsedMs}ms`
+          ? `CapSolver ${solved.via} ${solved.elapsedMs}ms (overlapped warm/pdp)`
           : solved.error,
         token: solved.token || null,
         via: solved.via || null,
@@ -274,7 +292,7 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     if (recaptchaMeta.ok) recaptchaToken = recaptchaMeta.token;
   }
 
-  const atc = await addDisneyToCart(session, ctx, {
+  const atcOpts = {
     tStep,
     pid,
     quantity: Number(task.quantity || task.qty || 1),
@@ -287,8 +305,32 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     // SFCC currently returns result:false even for native tokens — don't hard-gate.
     skipRecaptchaVerify: task.skipRecaptchaVerify !== false,
     requireRecaptchaVerify: task.requireRecaptchaVerify === true,
-    acceptAtcWithoutMini: task.acceptAtcWithoutMini === true,
-  });
+    // Pay path: trust ATC HTTP + skip mini RTT unless caller wants bag proof.
+    acceptAtcWithoutMini: task.acceptAtcWithoutMini === true || wantPay,
+    alwaysCheckMini: task.alwaysCheckMini === true ? true : wantPay ? false : undefined,
+  };
+
+  let atc = await addDisneyToCart(session, ctx, atcOpts);
+
+  // Fail-path only: one sensor refresh + ATC retry on Akamai deny (keeps win path fast).
+  if (!atc.ok && atc.atc?.denied && task.atcRetry !== false) {
+    await refreshDisneyAkamai(session, ctx, {
+      tStep,
+      pageUrl: pdpUrl,
+      maxRounds: 1,
+      egressIp: ctx.egressIp,
+      label: "akamai_atc_retry",
+    });
+    atc = await addDisneyToCart(session, ctx, {
+      ...atcOpts,
+      csrf: atc.csrf || undefined,
+    });
+    steps.push({
+      step: "atc_retry",
+      ok: Boolean(atc.ok),
+      note: atc.ok ? "ATC ok after sensor refresh retry" : `ATC retry still fail: ${atc.note}`,
+    });
+  }
 
   let ge = null;
   const wantGe =
@@ -306,13 +348,22 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
       referer: `${session.state.origin}/bag`,
       customerEmail: task.email || task.profile?.email,
       placeOrder: false, // pay is a separate HTTP issuer step
-      includeHtml: wantPay,
+      // Pay: skip loader + Checkout/v2 here — single v2 fetch inside GE pay.
+      skipLoader: wantPay && task.disneyGeLoader !== true,
+      skipCheckoutV2: wantPay,
+      includeHtml: false,
     });
   }
 
   let pay = null;
   if (wantPay && ge?.checkoutGuid) {
     const card = resolveDisneyPayCard(task);
+    // iovation is slow — opt-in via riskHydrate:true, or auto for live placeOrder.
+    const riskHydrate =
+      task.noPage === true || process.env.DISNEY_NO_PAGE === "1"
+        ? false
+        : task.riskHydrate === true ||
+          (task.placeOrder === true && task.riskHydrate !== false);
     pay = await runDisneyGeHttpPay({
       ctx,
       tStep,
@@ -327,8 +378,8 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
       referer: `${session.state.origin}/bag`,
       userAgent: session.state.userAgent,
       allowDirectCheckout: task.allowDirectCheckout !== false,
-      riskHydrate: task.riskHydrate !== false && task.noPage !== true,
-      noPage: task.noPage === true || process.env.DISNEY_NO_PAGE === "1",
+      riskHydrate,
+      noPage: !riskHydrate,
       forceIssuer: task.forceIssuer !== false,
       stopBeforeIssuer: task.stopBeforeIssuer === true,
       createTransaction: task.createTransaction !== false,

@@ -355,7 +355,7 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
  * @param {string} opts.checkoutGuid — SFCC Globale-GetCartToken GUID
  * @param {object} [opts.card] — defaults to DISNEY_FAKE_DECLINE_CARD
  * @param {boolean} [opts.forceIssuer=true] — post issuer even if soft blockers
- * @param {boolean} [opts.riskHydrate=true] — Playwright iovation mint when available
+ * @param {boolean} [opts.riskHydrate=false] — Playwright iovation (slow; opt-in / live pay)
  */
 export async function runDisneyGeHttpPay(opts = {}) {
   const steps = opts.steps || [];
@@ -430,8 +430,9 @@ export async function runDisneyGeHttpPay(opts = {}) {
     let machineId = opts.machineId || extractMachineId(v2.html) || null;
     let forterToken = opts.forterToken || null;
 
-    // 2) Optional iovation risk hydrate (Playwright) — improves bank reach rate.
-    if (opts.riskHydrate !== false && opts.noPage !== true && !machineId) {
+    // 2) Optional iovation risk hydrate (Playwright) — opt-in; costs 10–40s.
+    // Fake-card declines already clear without it; enable for live placeOrder.
+    if (opts.riskHydrate === true && opts.noPage !== true && !machineId) {
       await tStep("ge_iovation_mint", async () => {
         try {
           const { chromium } = await import("playwright");

@@ -317,11 +317,26 @@ export async function fetchDisneyCheckoutV2(ctx, opts = {}) {
 }
 
 /**
- * Phase C handoff: SFCC GUID → Checkout/v2 boot. Stops before issuer pay.
+ * Phase C handoff: SFCC GUID → optional Checkout/v2 boot. Stops before issuer pay.
+ *
+ * Speed: pay path should set skipCheckoutV2 (and usually skipLoader) so Checkout/v2
+ * is fetched once inside runDisneyGeHttpPay — the double fetch cost ~3–8s.
  */
 export async function runDisneyGeHandoff(session, ctx, opts = {}) {
   const tStep = opts.tStep || (async (_n, fn) => fn());
-  const loader = await fetchDisneyGeScriptLoader(session, { tStep, referer: opts.referer });
+  let loader = null;
+  if (opts.skipLoader === true) {
+    loader = {
+      ok: true,
+      merchantId: DISNEY_GLOBALE_MID,
+      culture: "en-GB",
+      note: "GE loader skipped (mid known)",
+    };
+    await tStep("ge_script_loader", async () => loader);
+  } else {
+    loader = await fetchDisneyGeScriptLoader(session, { tStep, referer: opts.referer });
+  }
+
   const sfcc = await fetchDisneySfccCartToken(session, {
     tStep,
     referer: opts.referer || `${session.state.origin}/bag`,
@@ -359,6 +374,32 @@ export async function runDisneyGeHandoff(session, ctx, opts = {}) {
 
   const checkoutGuid = gem?.cartToken || guid;
   const urls = buildCheckoutV2Urls(checkoutGuid, DISNEY_GE_ENCODED_MERCHANT);
+
+  // Pay path defers Checkout/v2 to the issuer hydrate (single fetch).
+  if (opts.skipCheckoutV2 === true) {
+    return {
+      ok: true,
+      dryRun: true,
+      placeOrder: false,
+      checkoutStage: "ge_guid",
+      note: `GE cartToken ready mid=${DISNEY_GLOBALE_MID} (Checkout/v2 deferred for pay)`,
+      loader,
+      sfcc,
+      gem,
+      checkout: null,
+      checkoutGuid,
+      checkoutV2Url: urls.primary,
+      checkoutV2UrlWithMerchant: urls.withMerchant,
+      creditCardFormUrl: `${DISNEY_GE_CREDIT_CARD_FORM}/${checkoutGuid}`,
+      issuerAction: DISNEY_GE_ISSUER_ACTION,
+      merchantId: DISNEY_GLOBALE_MID,
+      merchantHashed: DISNEY_GE_MERCHANT_HASHED,
+      encodedMerchantId: DISNEY_GE_ENCODED_MERCHANT,
+      secureHost: DISNEY_GE_SECURE,
+      stoppedBeforePay: true,
+      deferredCheckoutV2: true,
+    };
+  }
 
   const v2 = await fetchDisneyCheckoutV2(ctx, {
     tStep,
