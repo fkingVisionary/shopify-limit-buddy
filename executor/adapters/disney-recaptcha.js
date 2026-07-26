@@ -114,7 +114,8 @@ export async function solveDisneyRecaptchaEnterprise({
   sitekey = DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
   action = "AddToCart",
   proxyRaw = null,
-  proxyless = false,
+  // Wire-proven 2026-07-26: ProxyLess Enterprise V3 succeeds for Disney ATC sitekey.
+  proxyless = true,
   minScore = 0.7,
 } = {}) {
   if (!sitekey) return { ok: false, error: "sitekey missing" };

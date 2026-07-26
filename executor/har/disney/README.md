@@ -19,7 +19,19 @@ _Hyper: allowlist for `disneystore.com.au` **pending** — browser sensors only_
 | GE clientsdk **1696** | ✅ `web.global-e.com/merchant/clientsdk/1696` |
 | GE issuer / encoded merchant | ❌ not reached |
 
-**Ground truth:** guest browse + CSRF wire are locked from our HAR. **POST ATC is still Akamai-hard** on Playwright even after cookie `~0~` — treat Hyper allowlist + Hyper sensor mint as required for HTTP/Playwright ATC, same class as Kmart. CapSolver covers Enterprise `AddToCart` once ATC clears BM.
+**Ground truth:** guest browse + CSRF wire are locked from our HAR. **POST ATC is still Akamai-hard** on Playwright even after cookie `~0~` — treat Hyper allowlist + Hyper sensor mint as required for HTTP/Playwright ATC, same class as Kmart.
+
+### CapSolver (2026-07-26)
+
+| Check | Result |
+|---|---|
+| Balance / key | ✅ works (`CAPSOLVER_API_KEY` in gitignored `.env.local`) |
+| Mint token | ✅ `ReCaptchaV3EnterpriseTaskProxyLess` ~6–7s, action `AddToCart`, sitekey `6LfTl6Ap…` |
+| CapSolver + ISP proxy task | ❌ `ERROR_PROXY_CONNECT_REFUSED` (provider cannot CONNECT our ISP) |
+| SFCC `Google-reCaptchaEnterprise` | ⚠ returns `{ result: false }` for **both** CapSolver tokens **and** native `grecaptcha.enterprise.execute` in headed Chrome |
+| ATC | still AkamaiGHost **403** (Hyper pending) — captcha not the current hard gate |
+
+So CapSolver is ready for when Hyper clears BM; SFCC verify `result:false` needs a successful browser ATC HAR (or server-side assessment dig) to interpret.
 
 ## Confirmed wire
 

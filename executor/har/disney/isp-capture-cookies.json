@@ -3,14 +3,14 @@
     "name": "dwac_f05a0f99defdc47fdddcda1647",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "UfobDdV8S7Ws",
+    "valuePrefix": "gFaCZbC5n91m",
     "valueLen": 85
   },
   {
     "name": "cqcid",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "bcjsuAZstxIU",
+    "valuePrefix": "abXHYJDoijSg",
     "valueLen": 26
   },
   {
@@ -24,14 +24,14 @@
     "name": "sid",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "UfobDdV8S7Ws",
+    "valuePrefix": "gFaCZbC5n91m",
     "valueLen": 35
   },
   {
     "name": "dwanonymous_40364d569417e6f7eb63f51dd6014c13",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "bcjsuAZstxIU",
+    "valuePrefix": "abXHYJDoijSg",
     "valueLen": 26
   },
   {
@@ -59,29 +59,29 @@
     "name": "dwsid",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "5Ke1Dvfr4nXF",
+    "valuePrefix": "Lzr94hg4pDya",
     "valueLen": 88
   },
   {
     "name": "ak_bmsc",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "F7E3EEC25A2D",
-    "valueLen": 476
+    "valuePrefix": "215C52A4C50C",
+    "valueLen": 480
   },
   {
     "name": "ctoLegacyVisitorId",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "178504183052",
-    "valueLen": 28
+    "valuePrefix": "178504297093",
+    "valueLen": 27
   },
   {
     "name": "ctoLegacySessionId",
     "domain": "www.disneystore.com.au",
     "path": "/",
-    "valuePrefix": "178504183052",
-    "valueLen": 28
+    "valuePrefix": "178504297093",
+    "valueLen": 27
   },
   {
     "name": "uvtddl",
@@ -98,73 +98,52 @@
     "valueLen": 4
   },
   {
-    "name": "_cs_mk",
-    "domain": ".disneystore.com.au",
+    "name": "uuid",
+    "domain": ".cquotient.com",
     "path": "/",
-    "valuePrefix": "0.5534349866",
-    "valueLen": 32
+    "valuePrefix": "abXHYJDoijSg",
+    "valueLen": 26
   },
   {
-    "name": "AMCVS_CC0A3704532E6FD70A490D44%40AdobeOrg",
+    "name": "__cq_uuid",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "1",
-    "valueLen": 1
+    "valuePrefix": "abXHYJDoijSg",
+    "valueLen": 26
   },
   {
-    "name": "demdex",
-    "domain": ".demdex.net",
-    "path": "/",
-    "valuePrefix": "773559815682",
-    "valueLen": 38
-  },
-  {
-    "name": "AMCV_CC0A3704532E6FD70A490D44%40AdobeOrg",
+    "name": "__cq_bc",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "-408604571%7",
-    "valueLen": 203
+    "valuePrefix": "%7B%22bgsx-D",
+    "valueLen": 76
+  },
+  {
+    "name": "__cq_seg",
+    "domain": ".disneystore.com.au",
+    "path": "/",
+    "valuePrefix": "0~-0.01!1~-0",
+    "valueLen": 74
   },
   {
     "name": "bm_sz",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "5BA5C7C40F1F",
-    "valueLen": 501
-  },
-  {
-    "name": "__cf_bm",
-    "domain": ".fonts.net",
-    "path": "/",
-    "valuePrefix": "ghC6OOIrEKNO",
-    "valueLen": 198
-  },
-  {
-    "name": "utag_main",
-    "domain": ".disneystore.com.au",
-    "path": "/",
-    "valuePrefix": "v_id:019f9cc",
-    "valueLen": 212
+    "valuePrefix": "569ED27460C5",
+    "valueLen": 505
   },
   {
     "name": "_abck",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "EAE53F096F47",
-    "valueLen": 1490
-  },
-  {
-    "name": "_gcl_au",
-    "domain": ".disneystore.com.au",
-    "path": "/",
-    "valuePrefix": "1.1.12997105",
-    "valueLen": 72
+    "valuePrefix": "ED2DC760A256",
+    "valueLen": 1305
   },
   {
     "name": "bm_sv",
     "domain": ".disneystore.com.au",
     "path": "/",
-    "valuePrefix": "01D012E7B692",
+    "valuePrefix": "D6C6963AFDB2",
     "valueLen": 303
   }
 ]

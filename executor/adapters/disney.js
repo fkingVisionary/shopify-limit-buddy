@@ -192,7 +192,8 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
         sitekey,
         action: "AddToCart",
         proxyRaw: task.proxy || null,
-        proxyless: task.capsolverProxyless === true,
+        // Default ProxyLess (proven); set capsolverProxyless:false to force proxy task.
+        proxyless: task.capsolverProxyless !== false,
       });
       return {
         ok: solved.ok,

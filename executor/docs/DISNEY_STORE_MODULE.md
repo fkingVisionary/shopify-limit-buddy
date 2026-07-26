@@ -139,7 +139,7 @@ PDP embeds:
 |---|---|
 | CSRF | `POST CSRF-Generate` → `{ csrf: { tokenName: "csrf_token", token } }` ✅ HAR |
 | Primary ATC body | Live browser: `pid` + `quantity` + `csrf_token` (optional `pidsObj` / bundles) |
-| reCAPTCHA | **Enterprise on ATC** — `grecaptcha.enterprise.execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }` → then `Cart-AddProduct` (CapSolver wired; key via `CAPSOLVER_API_KEY`) |
+| reCAPTCHA | **Enterprise on ATC** — `execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }`. CapSolver ProxyLess mints OK; SFCC currently returns `result:false` for CapSolver **and** native browser tokens (open). |
 | Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
 | Akamai | Headed Chrome GET ✅; sensor POST 201 ✅; `_abck ~0~` after dwell ✅; **`Cart-AddProduct` still AkamaiGHost 403** on Playwright — Hyper allowlist required. Headless = home 403. |
 | HAR | `experiments/disney-isp-capture.mjs` → `har/disney/` (full HAR in `/tmp/disney-capture-*`) |

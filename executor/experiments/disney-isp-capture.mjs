@@ -353,7 +353,7 @@ async function main() {
     };
   });
 
-  // Optional CapSolver pre-solve + inject (helps headless when score fails).
+  // CapSolver pre-solve + inject (Enterprise AddToCart). Also stub verify to pass.
   if (capsolverKey()) {
     await step(steps, "capsolver_enterprise", async () => {
       const solved = await solveDisneyRecaptchaEnterprise({
@@ -361,35 +361,74 @@ async function main() {
         sitekey: DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
         action: "AddToCart",
         proxyRaw,
+        proxyless: process.env.CAPSOLVER_PROXY !== "1",
       });
       if (!solved.ok) return { ok: false, note: solved.error };
-      // Inject token into verify path by stubbing enterprise.execute
       await page.evaluate(
-        ({ token, sitekey }) => {
+        ({ token, sitekey, verifyUrl }) => {
           window.__DISNEY_CAP_TOKEN = token;
-          const patch = () => {
+          const patchExecute = () => {
             if (!window.grecaptcha?.enterprise?.execute) return false;
-            window.grecaptcha.enterprise.execute = async (key, opts) => {
-              console.log("grecaptcha.enterprise.execute patched", key, opts);
-              return token;
-            };
+            window.grecaptcha.enterprise.execute = async () => token;
             return true;
           };
-          if (!patch()) {
+          if (!patchExecute()) {
             const iv = setInterval(() => {
-              if (patch()) clearInterval(iv);
+              if (patchExecute()) clearInterval(iv);
             }, 200);
-            setTimeout(() => clearInterval(iv), 15000);
+            setTimeout(() => clearInterval(iv), 20000);
           }
-          // Also set hidden fields if present
-          document.querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response').forEach((el) => {
-            el.value = token;
-          });
+          // Intercept SFCC enterprise verify XHR so storefront proceeds to ATC.
+          const origOpen = XMLHttpRequest.prototype.open;
+          const origSend = XMLHttpRequest.prototype.send;
+          XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+            this.__disneyUrl = String(url || "");
+            return origOpen.call(this, method, url, ...rest);
+          };
+          XMLHttpRequest.prototype.send = function (body) {
+            if (/Google-reCaptchaEnterprise/i.test(this.__disneyUrl || "")) {
+              Object.defineProperty(this, "status", { get: () => 200 });
+              Object.defineProperty(this, "responseText", {
+                get: () => JSON.stringify({ result: true, success: true }),
+              });
+              Object.defineProperty(this, "readyState", { get: () => 4 });
+              setTimeout(() => {
+                this.onload?.();
+                this.onreadystatechange?.();
+              }, 10);
+              return;
+            }
+            return origSend.call(this, body);
+          };
+          // jQuery ajax path used by verifyTokenCallback
+          if (window.$?.ajax) {
+            const prev = window.$.ajax;
+            window.$.ajax = function (opts) {
+              const url = opts?.url || "";
+              if (/Google-reCaptchaEnterprise/i.test(url)) {
+                const d = window.$.Deferred();
+                setTimeout(() => d.resolve({ result: true, success: true }), 5);
+                return d.promise();
+              }
+              return prev.apply(this, arguments);
+            };
+          }
+          document
+            .querySelectorAll('textarea[name="g-recaptcha-response"], #g-recaptcha-response')
+            .forEach((el) => {
+              el.value = token;
+            });
           void sitekey;
+          void verifyUrl;
         },
-        { token: solved.token, sitekey: DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY },
+        {
+          token: solved.token,
+          sitekey: DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
+          verifyUrl:
+            "https://www.disneystore.com.au/on/demandware.store/Sites-DisneyStoreAUNZ-Site/en_AU/Google-reCaptchaEnterprise",
+        },
       );
-      return { ok: true, note: `token via ${solved.via} ${solved.elapsedMs}ms` };
+      return { ok: true, note: `token via ${solved.via} ${solved.elapsedMs}ms len=${solved.token.length}` };
     });
   }
 

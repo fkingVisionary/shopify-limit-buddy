@@ -2,37 +2,43 @@
   {
     "step": "home",
     "ok": true,
-    "ms": 5708,
+    "ms": 6145,
     "note": "status=200 title=Disney Store | Official Site for Disney Merchandise"
   },
   {
     "step": "pdp",
     "ok": true,
-    "ms": 5959,
+    "ms": 6650,
     "note": "status=200 btn=true pid=050368983992 sitekey=6LfTl6ApAA…"
   },
   {
     "step": "akamai_dwell",
+    "ok": false,
+    "ms": 77397,
+    "note": "abck still unsolved after 27 loops has_-1=true len=789 (Hyper allowlist likely required for POST ATC)"
+  },
+  {
+    "step": "capsolver_enterprise",
     "ok": true,
-    "ms": 82204,
-    "note": "abck ~0~ after 29 dwell loops len=878"
+    "ms": 6147,
+    "note": "token via ReCaptchaV3EnterpriseTaskProxyLess 6142ms len=2489"
   },
   {
     "step": "atc_click",
     "ok": false,
-    "ms": 23423,
-    "note": "Cart-AddProduct 403 denied=true bytes=482"
+    "ms": 3705,
+    "note": "Cart-AddProduct 403 denied=true bytes=484"
   },
   {
     "step": "bag",
     "ok": true,
-    "ms": 5669,
+    "ms": 8303,
     "note": "status=200 empty=true hasLine=true"
   },
   {
     "step": "ge_checkout_click",
     "ok": false,
-    "ms": 397,
-    "note": "no checkout CTA visible; clicked=false; probe={\"status\":500,\"bytes\":16401,\"head\":\"{\\n  \\\"action\\\": \\\"Globale-GetCartToken\\\",\\n  \\\"queryString\\\": \\\"\\\",\\n  \\\"locale\\\": \\\"en_AU\\\",\\n  \\\"tracking_consent\\\": null,\\n  \\\"error\\\": {},\\"
+    "ms": 313,
+    "note": "no checkout CTA visible; clicked=false; probe={\"status\":500,\"bytes\":16385,\"head\":\"{\\n  \\\"action\\\": \\\"Globale-GetCartToken\\\",\\n  \\\"queryString\\\": \\\"\\\",\\n  \\\"locale\\\": \\\"en_AU\\\",\\n  \\\"tracking_consent\\\": null,\\n  \\\"error\\\": {},\\"
   }
 ]
