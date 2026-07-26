@@ -420,6 +420,103 @@ function renderSettings() {
     : `License: ${s.licenseStatus || "unknown"}`;
 }
 
+let harvestState = null;
+
+function fillHarvestProxySelect() {
+  const sel = $("hvProxyGroup");
+  if (!sel || !state) return;
+  const cur = sel.value || harvestState?.config?.proxyGroupId || "";
+  sel.innerHTML =
+    `<option value="">Select sticky proxy group…</option>` +
+    (state.proxyGroups || [])
+      .map(
+        (g) =>
+          `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`,
+      )
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function renderHarvest(snap) {
+  if (snap) harvestState = snap;
+  else if (state?.harvest) harvestState = state.harvest;
+  if (!harvestState) return;
+
+  fillHarvestProxySelect();
+
+  const cfg = harvestState.config || {};
+  if ($("hvDesired") && document.activeElement !== $("hvDesired")) {
+    $("hvDesired").value = cfg.desired ?? 2;
+  }
+  if ($("hvSolveSpam") && document.activeElement !== $("hvSolveSpam")) {
+    $("hvSolveSpam").checked = cfg.solveSpam !== false;
+  }
+
+  if ($("hvReady")) $("hvReady").textContent = String(harvestState.ready ?? 0);
+  if ($("hvSpam")) $("hvSpam").textContent = String(harvestState.readyWithSpam ?? 0);
+  if ($("hvSolved")) $("hvSolved").textContent = String(harvestState.solvedCount ?? 0);
+  if ($("hvFailed")) $("hvFailed").textContent = String(harvestState.failedCount ?? 0);
+
+  const status = $("harvestStatusLine");
+  if (status) {
+    if (harvestState.busy) status.textContent = "Harvesting… CapSolver in progress";
+    else if (harvestState.running)
+      status.textContent = `Harvest running — keeping ${cfg.desired ?? 0} CF session(s) ready`;
+    else status.textContent = "Harvest stopped";
+  }
+
+  const err = $("harvestError");
+  if (err) {
+    if (harvestState.lastError) {
+      err.hidden = false;
+      err.textContent = harvestState.lastError;
+    } else {
+      err.hidden = true;
+      err.textContent = "";
+    }
+  }
+
+  const list = $("harvestSessionList");
+  if (list) {
+    const rows = harvestState.sessions || [];
+    if (!rows.length) {
+      list.innerHTML = `<div class="item"><div><strong>Bank empty</strong><div class="meta">Start harvest or click Harvest one now. Checkout falls back to on-demand CapSolver when empty.</div></div></div>`;
+    } else {
+      list.innerHTML = rows
+        .map(
+          (s) => `<div class="item">
+          <div>
+            <strong>${esc(s.proxyHost || "proxy")}</strong>
+            <div class="meta">CF TTL ${s.cfTtlSec ?? "?"}s · age ${s.ageSec ?? "?"}s${
+              s.hasSpam
+                ? ` · spam TTL ${s.spamTtlSec ?? "?"}s`
+                : " · CF only (spam on demand)"
+            }</div>
+            <div class="meta">${esc(s.cfNote || "")}${s.spamNote ? ` · ${esc(s.spamNote)}` : ""}</div>
+          </div>
+          <div class="actions">
+            <span class="badge ${s.hasSpam ? "spam" : "hv"}">${s.hasSpam ? "CF+spam" : "CF"}</span>
+          </div>
+        </div>`,
+        )
+        .join("");
+    }
+  }
+
+  const startBtn = $("hvStart");
+  const stopBtn = $("hvStop");
+  if (startBtn) startBtn.disabled = Boolean(harvestState.running);
+  if (stopBtn) stopBtn.disabled = !harvestState.running;
+}
+
+function harvestOptsFromForm() {
+  return {
+    proxyGroupId: $("hvProxyGroup")?.value || null,
+    desired: Number($("hvDesired")?.value) || 0,
+    solveSpam: $("hvSolveSpam")?.checked !== false,
+  };
+}
+
 function applyState(next) {
   state = next;
   fillSelects();
@@ -430,6 +527,7 @@ function applyState(next) {
   renderProxies();
   renderResults();
   renderSettings();
+  renderHarvest(next.harvest || null);
   engineUi();
 }
 
@@ -738,8 +836,81 @@ $("btnRunAll").onclick = async () => {
   if (res.snapshot) applyState(res.snapshot);
 };
 
+$("hvStart").onclick = async () => {
+  const opts = harvestOptsFromForm();
+  if (!opts.proxyGroupId) {
+    appendLog("Pick a proxy group on the Harvest tab", "err");
+    return;
+  }
+  const res = await window.desktop.harvestStart(opts);
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog(res.ok ? "Harvest started" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+};
+
+$("hvStop").onclick = async () => {
+  const res = await window.desktop.harvestStop();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog("Harvest stopped", "muted");
+};
+
+$("hvClear").onclick = async () => {
+  const res = await window.desktop.harvestClear();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog("Harvest bank cleared", "muted");
+};
+
+$("hvOnce").onclick = async () => {
+  const opts = harvestOptsFromForm();
+  if (!opts.proxyGroupId) {
+    appendLog("Pick a proxy group on the Harvest tab", "err");
+    return;
+  }
+  appendLog("Harvesting one CF session…", "muted");
+  const res = await window.desktop.harvestOnce(opts);
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog(
+    res.ok
+      ? `Harvested session${res.ms != null ? ` in ${Math.round(res.ms / 1000)}s` : ""}`
+      : esc(res.error || "Harvest one failed"),
+    res.ok ? "ok" : "err",
+  );
+};
+
+if ($("hvProxyGroup")) {
+  $("hvProxyGroup").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      proxyGroupId: $("hvProxyGroup").value || null,
+    });
+    renderHarvest(snap);
+  };
+}
+if ($("hvDesired")) {
+  $("hvDesired").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      desired: Number($("hvDesired").value) || 0,
+    });
+    renderHarvest(snap);
+  };
+}
+if ($("hvSolveSpam")) {
+  $("hvSolveSpam").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      solveSpam: $("hvSolveSpam").checked,
+    });
+    renderHarvest(snap);
+  };
+}
+
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
+  if (evt.type === "harvest" && evt.data) {
+    if (state) state.harvest = evt.data;
+    renderHarvest(evt.data);
+  }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {
       state.runner = {

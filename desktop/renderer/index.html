@@ -23,6 +23,7 @@
 
   <nav class="tabs">
     <button type="button" data-tab="tasks" class="active">Tasks</button>
+    <button type="button" data-tab="harvest">Harvest</button>
     <button type="button" data-tab="profiles">Profiles</button>
     <button type="button" data-tab="accounts">Accounts</button>
     <button type="button" data-tab="proxies">Proxies</button>
@@ -155,6 +156,66 @@
             <button type="button" id="taskRunOne">Run this</button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <!-- HARVEST (Toymate CF + spam) -->
+    <section id="tab-harvest" class="panel">
+      <div class="split">
+        <div>
+          <h2>Toymate Harvest</h2>
+          <p class="hint">
+            Pre-warm <strong>Cloudflare clearance</strong> and checkout <strong>reCAPTCHA</strong> on sticky proxies
+            so Autocheckout skips ~75s of CapSolver on the critical path. Sessions are single-use and IP-bound —
+            the same proxy that harvested must run the checkout.
+          </p>
+
+          <div class="howto form-card">
+            <h3>How to use</h3>
+            <ol class="howto-list">
+              <li><strong>Settings</strong> → paste your CapSolver API key → save.</li>
+              <li><strong>Proxies</strong> → create a group of sticky AU ISP/residential lines (session- style).</li>
+              <li>Pick that group below, set how many CF sessions to keep ready (2–4 is a good start).</li>
+              <li>Leave <em>Solve spam reCAPTCHA</em> on so each session also banks a checkout spam token (~2 min TTL).</li>
+              <li>Click <strong>Start harvest</strong> before a drop (engine starts with CapSolver if needed).</li>
+              <li>When the bank shows ready sessions, run <strong>Toymate → Autocheckout</strong> tasks — each run auto-claims one session and stays on that sticky proxy.</li>
+              <li>Point the task at the <em>same</em> proxy group you harvested with (or leave it; claim overrides to the harvested exit).</li>
+            </ol>
+            <p class="field-hint">
+              CF clearance lasts ~25 min · spam tokens ~100s. Empty bank = checkout falls back to on-demand CapSolver (slower, still works).
+              CapSolver spend scales with desired count × refill — start small. Stop harvest when you are done so CapSolver does not keep spending.
+            </p>
+          </div>
+
+          <div id="harvestSessionList" class="list"></div>
+        </div>
+
+        <div class="form-card">
+          <h3>Bank controls</h3>
+          <div class="harvest-stats" id="harvestStats">
+            <div><span class="muted">Ready</span><strong id="hvReady">0</strong></div>
+            <div><span class="muted">With spam</span><strong id="hvSpam">0</strong></div>
+            <div><span class="muted">Solved</span><strong id="hvSolved">0</strong></div>
+            <div><span class="muted">Failed</span><strong id="hvFailed">0</strong></div>
+          </div>
+          <p id="harvestStatusLine" class="field-hint">Harvest stopped</p>
+          <p id="harvestError" class="err-line" hidden></p>
+
+          <label>Proxy group</label>
+          <select id="hvProxyGroup"></select>
+          <label>Desired CF sessions</label>
+          <input id="hvDesired" type="number" min="0" max="12" value="2" />
+          <label class="check"><input id="hvSolveSpam" type="checkbox" checked /> Solve spam reCAPTCHA with each CF session</label>
+
+          <div class="row-actions">
+            <button type="button" id="hvStart">Start harvest</button>
+            <button type="button" class="secondary" id="hvStop">Stop</button>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="secondary" id="hvOnce">Harvest one now</button>
+            <button type="button" class="secondary" id="hvClear">Clear bank</button>
+          </div>
+        </div>
       </div>
     </section>
 

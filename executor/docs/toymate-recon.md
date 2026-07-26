@@ -13,10 +13,19 @@ _Status: adapter restored (isolated from Kmart)_
 
 **Hyper / Akamai / Paydock are not used.** Kmart paths stay untouched.
 
+## Harvest (desktop)
+
+Pre-warm CapSolver off the critical path via the desktop **Harvest** tab:
+
+- `POST /toymate/harvest` → `toymate-harvest-session.js` mints `cf_clearance` (+ optional spam token) on a sticky proxy.
+- Desktop pool (`desktop/toymate-harvest.cjs`) keeps N sessions; Autocheckout `take()`s one and passes `harvestedSession` on `/run`.
+- Adapter: fresh harvest skips `cf_warm` CapSolver and prefers harvested spam token before on-demand solve.
+- Sessions are single-use + IP-bound (same sticky exit). Empty bank = on-demand CapSolver fallback.
+
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.
-2. **`checkout`** — CF warm → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme` HTTP place-order** (BigPay). **No Playwright in the module path** — browser is research-only (`experiments/toymate-checkout-ui-research.mjs`, HAR capture scripts). **Decline proven** on synthetic card (BigPay 422 / 30102); real paid order still needs a live card + bank monitor.
+2. **`checkout`** — CF warm (or harvested session) → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme` HTTP place-order** (BigPay). **No Playwright in the module path** — browser is research-only (`experiments/toymate-checkout-ui-research.mjs`, HAR capture scripts). **Decline proven** on synthetic card (BigPay 422 / 30102); real paid order still needs a live card + bank monitor.
 3. **`monitor`** — keyword search hit/miss.
 
 ### Payment notes
@@ -35,6 +44,7 @@ _Status: adapter restored (isolated from Kmart)_
 
 - Task store option: **Toymate AU**
 - Settings: **CapSolver API key** (passed to sidecar as `CAPSOLVER_API_KEY`)
+- **Harvest** tab: CF + spam bank with howto; Autocheckout auto-claims
 - **Accounts** tab stores generated logins (`storeId` + email)
 
 ## Isolation rules

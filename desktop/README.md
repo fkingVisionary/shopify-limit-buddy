@@ -52,6 +52,23 @@ DESKTOP_HYPER_PROVISION=1
 HYPER_API_KEY=...   # on the control plane only
 ```
 
+## Toymate harvest (CF + spam)
+
+Desktop is the product surface for Toymate. Use the **Harvest** tab to pre-warm
+Cloudflare `cf_clearance` (+ optional checkout reCAPTCHA) on sticky AU ISP/resi
+proxies so Autocheckout skips ~45s CF + ~30s spam CapSolver on the critical path.
+
+1. **Settings** → CapSolver API key → save.
+2. **Proxies** → sticky AU group (session-style lines).
+3. **Harvest** → pick that group → desired sessions (2–4) → leave Solve spam on → **Start harvest**.
+4. When Ready / With spam look good, run **Toymate → Autocheckout** tasks as usual.
+
+Sessions are single-use and IP-bound. Checkout auto-claims a session, forces the
+harvested proxy, and skips proxy rotate on that run. Empty bank falls back to
+on-demand CapSolver (slower, still works). CF ~25 min TTL · spam ~100s.
+
+Executor: `POST /toymate/harvest` · adapter skips warm when `harvestedSession` is fresh.
+
 ## Bandai (Premium Bandai / p-bandai.com)
 
 Shipped in the same Electron → local `executor/` sidecar path as Kmart.

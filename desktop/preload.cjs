@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  harvestStatus: () => ipcRenderer.invoke("desktop:harvest-status"),
+  harvestConfigure: (patch) => ipcRenderer.invoke("desktop:harvest-configure", patch),
+  harvestStart: (opts) => ipcRenderer.invoke("desktop:harvest-start", opts),
+  harvestStop: () => ipcRenderer.invoke("desktop:harvest-stop"),
+  harvestClear: () => ipcRenderer.invoke("desktop:harvest-clear"),
+  harvestOnce: (opts) => ipcRenderer.invoke("desktop:harvest-once", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

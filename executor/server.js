@@ -6,6 +6,7 @@
 
 import Fastify from "fastify";
 import { runCheckout } from "./checkout.js";
+import { harvestToymateSession } from "./adapters/toymate-harvest-session.js";
 import { makeDispatcher, createJar, request, UA, HTTP_TRANSPORT } from "./http.js";
 import { runDeepHealth } from "./health.js";
 import { runKmartAkamaiLab } from "./experiments/kmart-akamai-lab.js";
@@ -195,6 +196,42 @@ app.get("/milestones", async (req, reply) => {
   };
 });
 
+// Toymate CF + spam harvest (desktop Harvest tab). Soft capacity: counts as inflight.
+app.post("/toymate/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
+  }
+  inflight++;
+  try {
+    const out = await harvestToymateSession({
+      proxyRaw: proxy,
+      solveSpam: body.solveSpam !== false,
+      spamSitekey:
+        typeof body.spamSitekey === "string" && body.spamSitekey.trim()
+          ? body.spamSitekey.trim()
+          : undefined,
+    });
+    if (!out.ok) {
+      reply.code(502);
+      return { ok: false, error: out.error || "harvest failed", ms: out.ms };
+    }
+    return { ok: true, session: out.session, ms: out.ms };
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    inflight--;
+  }
+});
+
 app.post("/run", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   const task = req.body;
@@ -330,6 +367,28 @@ app.post("/run", async (req, reply) => {
         // undefined = let adapter default (skip category when proxied)
         skipCategory:
           task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
+        // ── Non-Kmart adapters (Toymate / Bandai / PKC) — pass through ──
+        toymateMode: typeof task.toymateMode === "string" ? task.toymateMode : undefined,
+        pdpUrl: typeof task.pdpUrl === "string" ? task.pdpUrl : undefined,
+        paymentMethod: typeof task.paymentMethod === "string" ? task.paymentMethod : undefined,
+        captchaToken: typeof task.captchaToken === "string" ? task.captchaToken : undefined,
+        account: task.account && typeof task.account === "object" ? task.account : undefined,
+        accountPassword:
+          typeof task.accountPassword === "string" ? task.accountPassword : undefined,
+        accountAssignSource:
+          typeof task.accountAssignSource === "string" ? task.accountAssignSource : undefined,
+        harvestedSession:
+          task.harvestedSession && typeof task.harvestedSession === "object"
+            ? task.harvestedSession
+            : undefined,
+        bandaiMode: typeof task.bandaiMode === "string" ? task.bandaiMode : undefined,
+        bandaiCheckoutMode:
+          typeof task.bandaiCheckoutMode === "string" ? task.bandaiCheckoutMode : undefined,
+        campaignSn: typeof task.campaignSn === "string" ? task.campaignSn : undefined,
+        pcMode: typeof task.pcMode === "string" ? task.pcMode : undefined,
+        pcLocale: typeof task.pcLocale === "string" ? task.pcLocale : undefined,
+        keywords: typeof task.keywords === "string" ? task.keywords : undefined,
+        input: typeof task.input === "string" ? task.input : undefined,
       });
 
       proxyAttempts.push({
