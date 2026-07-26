@@ -39,6 +39,8 @@ import {
 import { hyperConfigured } from "../antibot.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { createJar, makeDispatcher } from "../http.js";
+import { isDisneyHarvestFresh } from "./disney-harvest-session.js";
+import { takeDisneyHarvestSlot } from "./disney-harvest-pool.js";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -101,6 +103,32 @@ function preferDisneyProxy(task) {
   const hit = pool.find((l) => disneyProxyHost(l) === disneyProxyHost(last)) || last;
   if (task.proxy && disneyProxyHost(task.proxy) === disneyProxyHost(hit)) return task.proxy;
   return hit;
+}
+
+function applyDisneyCookiesToJar(jar, cookies) {
+  if (!jar || !cookies || typeof cookies !== "object") return;
+  if (typeof jar.load === "function") {
+    jar.load(cookies);
+    return;
+  }
+  for (const [name, value] of Object.entries(cookies)) {
+    if (!name || value == null || value === "") continue;
+    jar.set?.(String(name), String(value));
+  }
+}
+
+function resolveDisneyHarvestedSession(task) {
+  if (task.harvestedSession && typeof task.harvestedSession === "object") {
+    return { session: task.harvestedSession, via: "task" };
+  }
+  const id =
+    typeof task.harvestedSessionId === "string" && task.harvestedSessionId.trim()
+      ? task.harvestedSessionId.trim()
+      : null;
+  if (!id) return null;
+  const claimed = takeDisneyHarvestSlot(id);
+  if (!claimed?.session) return { session: null, via: "pool_miss", id };
+  return { session: claimed.session, via: "pool", id };
 }
 
 function makeStep(steps, ctx) {
@@ -276,28 +304,83 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
   const wantPay = wantsDisneyGePay(task, mode);
   const dryRun = task.placeOrder !== true;
 
-  // Sticky prefer: start on last ATC-winning exit when pool contains it.
-  const preferred = preferDisneyProxy(task);
-  if (preferred && preferred !== task.proxy) {
-    const proxyUrl = disneyProxyToUrl(preferred);
+  // Opt-in harvest claim (Toymate-shaped): seed jar + sticky proxy, skip warm/captcha.
+  let skipWarm = false;
+  let harvestMeta = null;
+  const harvestClaim = resolveDisneyHarvestedSession(task);
+  if (harvestClaim?.session && isDisneyHarvestFresh(harvestClaim.session)) {
+    const hv = harvestClaim.session;
+    const proxyUrl = disneyProxyToUrl(hv.proxy || task.proxy);
     if (proxyUrl) {
       try {
         await ctx.dispatcher?.close?.();
       } catch {
         /* ignore */
       }
-      ctx.dispatcher = makeDispatcher(proxyUrl, {
-        forceTls: ctx.dispatcher?.transport === "tls" || task.forceTls !== false,
-      });
+      ctx.dispatcher = makeDispatcher(proxyUrl, { forceTls: true });
       ctx.jar = createJar();
-      ctx.egressIp = null;
-      task.proxy = preferred;
+      ctx.egressIp = hv.egressIp || null;
+      task.proxy = hv.proxy || task.proxy;
       session = createDisneySession(ctx, {});
-      steps.push({
-        step: "proxy_prefer",
-        ok: true,
-        note: `start on last-good exit ${disneyProxyHost(preferred)}`,
-      });
+    }
+    applyDisneyCookiesToJar(ctx.jar, hv.cookies);
+    skipWarm = /~0~/.test(String(hv.cookies?._abck || ""));
+    const captchaFresh =
+      hv.captchaToken &&
+      (hv.captchaExpiresAt == null || Number(hv.captchaExpiresAt) > Date.now());
+    if (captchaFresh) {
+      task.recaptchaToken = hv.captchaToken;
+    }
+    const ageSec = hv.harvestedAt
+      ? Math.round((Date.now() - Number(hv.harvestedAt)) / 1000)
+      : null;
+    harvestMeta = {
+      id: hv.id,
+      via: harvestClaim.via,
+      ageSec,
+      skipWarm,
+      hasCaptcha: Boolean(captchaFresh),
+      proxyHost: hv.proxyHost || disneyProxyHost(hv.proxy),
+    };
+    steps.push({
+      step: "harvest_claim",
+      ok: true,
+      note: `harvested via=${harvestClaim.via} skipWarm=${skipWarm} captcha=${Boolean(captchaFresh)} age=${ageSec ?? "?"}s host=${harvestMeta.proxyHost || "?"}`,
+    });
+  } else if (harvestClaim) {
+    steps.push({
+      step: "harvest_claim",
+      ok: false,
+      note: harvestClaim.session
+        ? "harvest stale/invalid → cold path"
+        : `harvest miss id=${harvestClaim.id || "?"} → cold path`,
+    });
+  }
+
+  // Sticky prefer only when not bound to a harvested exit.
+  if (!skipWarm) {
+    const preferred = preferDisneyProxy(task);
+    if (preferred && preferred !== task.proxy) {
+      const proxyUrl = disneyProxyToUrl(preferred);
+      if (proxyUrl) {
+        try {
+          await ctx.dispatcher?.close?.();
+        } catch {
+          /* ignore */
+        }
+        ctx.dispatcher = makeDispatcher(proxyUrl, {
+          forceTls: ctx.dispatcher?.transport === "tls" || task.forceTls !== false,
+        });
+        ctx.jar = createJar();
+        ctx.egressIp = null;
+        task.proxy = preferred;
+        session = createDisneySession(ctx, {});
+        steps.push({
+          step: "proxy_prefer",
+          ok: true,
+          note: `start on last-good exit ${disneyProxyHost(preferred)}`,
+        });
+      }
     }
   }
 
@@ -305,7 +388,7 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
 
   const pdpUrl = resolveDisneyPdpUrl(task);
   const sitekeyEarly = task.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY;
-  // Overlap CapSolver with Akamai warm + PDP — biggest free speed win (~8s).
+  // Overlap CapSolver with Akamai warm + PDP — skip when harvest already banked a token.
   const captchaPromise =
     !task.recaptchaToken &&
     !task.captchaToken &&
@@ -320,7 +403,23 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
         })
       : null;
 
-  let warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
+  let warm;
+  if (skipWarm) {
+    warm = {
+      ok: true,
+      abckValid: true,
+      note: `harvested _abck reused age=${harvestMeta?.ageSec ?? "?"}s (warm skipped)`,
+      hyperConfigured: hyperConfigured(),
+      harvested: true,
+    };
+    steps.push({
+      step: "akamai_warm",
+      ok: true,
+      note: warm.note,
+    });
+  } else {
+    warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
+  }
   // Fail-path: warm/_abck fail is usually burnt sticky — rotate before giving up.
   if (!warm.ok && task.allowUnwarmed !== true && task.proxyRotate !== false) {
     const pool = loadDisneyProxyPool();
@@ -633,6 +732,7 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     fraudFlags: pay?.fraudFlags || null,
     possibleFraudDetected: pay?.possibleFraudDetected ?? null,
     isSameCartToken: pay?.isSameCartToken ?? null,
+    harvest: harvestMeta,
     recaptcha: recaptchaMeta,
     merchantId: DISNEY_GE_MID,
     encodedMerchantId: pay?.encodedMerchantId || ge?.encodedMerchantId || null,
