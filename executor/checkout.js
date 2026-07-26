@@ -267,10 +267,13 @@ export async function runCheckout(task) {
         // Disney Store AU passthrough (GE mid 1696 / encoded 8u87)
         ge: out.ge ?? null,
         atc: out.atc ?? null,
+        pay: out.pay ?? null,
         pid: out.pid ?? null,
         merchantId: out.merchantId ?? null,
         encodedMerchantId: out.encodedMerchantId ?? null,
         stoppedBeforePay: out.stoppedBeforePay ?? null,
+        decline: out.decline ?? null,
+        fakeCard: out.fakeCard ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.

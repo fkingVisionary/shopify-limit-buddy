@@ -6,9 +6,10 @@
  *   monitor         — sitemap / PDP availability
  *   atc | checkout  — warm → CSRF → ATC (needs recaptchaToken) → minibag → optional GE
  *   ge              — warm → GE handoff only (expects existing bag)
+ *   pay | fake_decline — ATC → GE Checkout/v2 → issuer with fake PAN (decline lab)
  *
  * Constraints: do not touch kmart.js. GE mid 1696 parameterized (not Bandai 1925).
- * HAR still needed for issuer encoded-merchant + empty-bag GetCartToken edge cases.
+ * Fake-card decline is the pay pass signal — never default a live PAN.
  */
 
 import {
@@ -27,6 +28,10 @@ import {
   addDisneyToCart,
 } from "./disney-cart.js";
 import { runDisneyGeHandoff, fetchDisneyGeScriptLoader } from "./disney-ge.js";
+import {
+  DISNEY_FAKE_DECLINE_CARD,
+  runDisneyGeHttpPay,
+} from "./disney-ge-http.js";
 import {
   capsolverKey,
   solveDisneyRecaptchaEnterprise,
@@ -70,7 +75,31 @@ function normalizeMode(task) {
   if (raw === "warm" || raw === "edge" || raw === "edge_only") return "warm";
   if (raw === "atc" || raw === "cart") return "atc";
   if (raw === "ge" || raw === "globale" || raw === "ge_handoff") return "ge";
+  if (raw === "pay" || raw === "ge_pay" || raw === "fake_decline") return "pay";
   return raw;
+}
+
+function wantsDisneyGePay(task, mode) {
+  return (
+    mode === "pay" ||
+    task.disneyGePay === true ||
+    task.fakeDecline === true ||
+    (task.placeOrder === true && task.disneySkipPay !== true)
+  );
+}
+
+function resolveDisneyPayCard(task) {
+  const provided = task.card || task.paymentCard || null;
+  const pan = String(provided?.number || "").replace(/\s+/g, "");
+  // Live PAN only when placeOrder=true and a number was supplied.
+  if (task.placeOrder === true && pan.length >= 12) return provided;
+  return {
+    ...DISNEY_FAKE_DECLINE_CARD,
+    expMonth: provided?.expMonth || DISNEY_FAKE_DECLINE_CARD.expMonth,
+    expYear: provided?.expYear || DISNEY_FAKE_DECLINE_CARD.expYear,
+    cvv: provided?.cvv || DISNEY_FAKE_DECLINE_CARD.cvv,
+    name: provided?.name || DISNEY_FAKE_DECLINE_CARD.name,
+  };
 }
 
 /** Sticky ISP lines in resi.proxies use exit IP as host — prefer that over a
@@ -179,7 +208,8 @@ async function runMonitor(task, ctx, session, tStep, steps) {
   };
 }
 
-async function runAtcCheckout(task, ctx, session, tStep, steps) {
+async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout") {
+  const wantPay = wantsDisneyGePay(task, mode);
   const dryRun = task.placeOrder !== true;
   await ensureDisneyEgressIp(task, ctx, tStep);
   const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
@@ -263,9 +293,11 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
   let ge = null;
   const wantGe =
     atc.ok &&
-    (task.disneyGe === true ||
+    (wantPay ||
+      task.disneyGe === true ||
       task.geHandoff === true ||
       task.disneyMode === "checkout" ||
+      mode === "checkout" ||
       (!task.disneyMode && task.mode !== "atc"));
 
   if (wantGe) {
@@ -273,37 +305,78 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
       tStep,
       referer: `${session.state.origin}/bag`,
       customerEmail: task.email || task.profile?.email,
-      placeOrder: task.placeOrder === true,
+      placeOrder: false, // pay is a separate HTTP issuer step
+      includeHtml: wantPay,
     });
   }
 
-  const ok = Boolean(atc.ok && (!wantGe || ge?.ok || task.acceptAtcWithoutGe === true));
+  let pay = null;
+  if (wantPay && ge?.checkoutGuid) {
+    const card = resolveDisneyPayCard(task);
+    pay = await runDisneyGeHttpPay({
+      ctx,
+      tStep,
+      steps,
+      checkoutGuid: ge.checkoutGuid,
+      cartToken: ge.checkoutGuid,
+      card,
+      guest: task.guest || task.profile || {
+        email: task.email || "disney.decline.test@example.com",
+      },
+      proxyRaw: task.proxy,
+      referer: `${session.state.origin}/bag`,
+      userAgent: session.state.userAgent,
+      allowDirectCheckout: task.allowDirectCheckout !== false,
+      riskHydrate: task.riskHydrate !== false && task.noPage !== true,
+      noPage: task.noPage === true || process.env.DISNEY_NO_PAGE === "1",
+      forceIssuer: task.forceIssuer !== false,
+      stopBeforeIssuer: task.stopBeforeIssuer === true,
+      createTransaction: task.createTransaction !== false,
+      issuerTimeoutMs: Number(task.issuerTimeoutMs) || 180_000,
+    });
+  }
+
+  const declineOk = Boolean(pay?.decline || /decline|fraud_refused/i.test(String(pay?.paymentStatus || "")));
+  const ok = wantPay
+    ? Boolean(atc.ok && ge?.ok && pay?.ok && (declineOk || task.placeOrder === true))
+    : Boolean(atc.ok && (!wantGe || ge?.ok || task.acceptAtcWithoutGe === true));
+
   return {
     ok,
     steps,
     dryRun,
     placeOrder: task.placeOrder === true,
-    checkoutStage: ge?.ok ? "ge_checkout" : atc.ok ? "cart" : "pre_cart",
-    finalUrl: ge?.checkoutV2Url || pdpUrl,
+    checkoutStage: pay?.checkoutStage || (ge?.ok ? "ge_checkout" : atc.ok ? "cart" : "pre_cart"),
+    finalUrl: pay?.checkoutV2Url || ge?.checkoutV2Url || pdpUrl,
     cookies: ctx.jar?.dump?.() ?? {},
     pid,
     title: pdp.title || null,
-    note: ge?.note || atc.note,
+    note: pay?.note || ge?.note || atc.note,
     warm,
     pdp,
     atc,
     ge,
+    pay,
+    paymentStatus: pay?.paymentStatus || null,
+    decline: declineOk,
+    transactionId: pay?.transactionId || null,
+    cartToken: pay?.cartToken || ge?.checkoutGuid || null,
+    fakeCard: pay?.fakeCard ?? null,
     recaptcha: recaptchaMeta,
     merchantId: DISNEY_GE_MID,
-    encodedMerchantId: ge?.encodedMerchantId || null,
+    encodedMerchantId: pay?.encodedMerchantId || ge?.encodedMerchantId || null,
     needsRecaptcha: atc.needsRecaptcha || false,
     recaptchaSitekey: atc.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
     capsolverConfigured: Boolean(capsolverKey()),
-    stoppedBeforePay: true,
+    stoppedBeforePay: !wantPay || Boolean(pay?.stoppedBeforePay),
     failedStep: atc.ok
-      ? wantGe && !ge?.ok
+      ? !ge?.ok && wantGe
         ? "ge_handoff"
-        : null
+        : wantPay && !pay?.ok
+          ? pay?.failedStep || "ge_issuer"
+          : wantPay && pay?.ok && !declineOk && task.placeOrder !== true
+            ? "awaiting_decline_signal"
+            : null
       : atc.needsRecaptcha
         ? "recaptcha_enterprise"
         : atc.atc?.denied
@@ -374,8 +447,8 @@ export const disneyAdapter = {
     if (mode === "ge") {
       return runGeOnly(task, ctx, session, tStep, steps);
     }
-    // atc + checkout (+ default)
-    return runAtcCheckout(task, ctx, session, tStep, steps);
+    // atc + checkout + pay/fake_decline (+ default)
+    return runAtcCheckout(task, ctx, session, tStep, steps, mode);
   },
 };
 
