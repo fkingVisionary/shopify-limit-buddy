@@ -1,7 +1,7 @@
 # Disney Store AU/NZ — Module Research
 
-_Date: 2026-07-26 (scope dig)_  
-_Status: research only — no adapter code yet_  
+_Date: 2026-07-26 (scope dig + build scaffold)_  
+_Status: **adapter scaffolded** (`adapters/disney*.js`) — ATC/GE need sticky AU ISP + Hyper + reCAPTCHA token; issuer encoded-merchant TBD_  
 _Priority: **after Bandai Global-e reuse** — on BUTT card list; SFCC + Akamai (Hyper ✅) + reCAPTCHA Enterprise (Hyper ❌) + Global-e mid **1696**._  
 _Handoff:_ [`DISNEY_BUILD_HANDOFF.md`](./DISNEY_BUILD_HANDOFF.md)
 
@@ -133,9 +133,17 @@ PDP embeds:
   value="/on/demandware.store/Sites-DisneyStoreAUNZ-Site/en_AU/Cart-AddProduct" />
 ```
 
-Typical payload (confirm HAR): `pid`, `quantity`, CSRF token from `CSRF-Generate` (endpoint listed; JSON shape needs residential/browser — DC returned error HTML/gzip noise).
+### ATC wire (AU ISP + `main.js`, 2026-07-26)
 
-**Module assumption:** same as Kmart — **Hyper Akamai warm → sticky AU ISP → CSRF → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout**.
+| Step | Detail |
+|---|---|
+| CSRF | `POST CSRF-Generate` → `{ csrf: { tokenName, token } }` then `addCsrfToFormData` |
+| Primary ATC body | `pid`, `pidsObj`, `childProducts`, `quantity`, `personalization`, + CSRF field |
+| reCAPTCHA | **Enterprise on ATC** — `grecaptcha.enterprise.execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }` → then `Cart-AddProduct` |
+| Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
+| Akamai | Home/PDP **200** on sticky AU ISP with seeded `_abck`; `POST Cart-AddProduct` **403** without sensor warm |
+
+**Module assumption:** **Hyper Akamai warm → sticky AU ISP → CSRF → reCAPTCHA Enterprise → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout mid 1696**.
 
 ---
 
@@ -197,11 +205,13 @@ US `disneystore.com` showed `x-queueit-connector: akamai` — do not assume AU h
 ## 10. Open questions
 
 1. Guest vs OneID-required before GE  
-2. Where reCAPTCHA Enterprise fires (login vs ATC vs GE)  
-3. Exact `CSRF-Generate` JSON + `Cart-AddProduct` form fields  
+2. ~~Where reCAPTCHA Enterprise fires~~ → **ATC** (action `AddToCart`) + gift-card balance; login path still TBD  
+3. ~~Exact CSRF + ATC fields~~ → closed from `main.js` (see §5); live CSRF still 500 until `_abck` solved  
 4. Variant / size products (costume SKUs) vs simple `standard` pid  
 5. NZ shipping profile vs AU bag on same session  
 6. Per-customer / drop limits  
+7. **GE issuer encoded merchant** (Bandai `8urc` / PC `8u22` analogue) + secure host for mid **1696**  
+8. CapSolver / external solver for reCAPTCHA Enterprise `AddToCart`
 
 ---
 

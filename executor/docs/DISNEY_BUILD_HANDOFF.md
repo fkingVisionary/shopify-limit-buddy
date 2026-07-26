@@ -118,12 +118,23 @@ PDP example:
 
 ## 6. Acceptance checklist
 
-- [ ] Feature branch only; no Kmart regression  
-- [ ] ATC succeeds on sticky AU after Akamai warm  
-- [ ] GE mid 1696 session starts from bag  
-- [ ] GE merchantId not hard-coded to Bandai 1925  
-- [ ] Monitor can see a known Lorcana/test SKU  
-- [ ] Secrets out of git  
+- [x] Feature branch only; no Kmart regression — `adapters/disney*.js` + registry  
+- [x] GE merchantId not hard-coded to Bandai 1925 — mid **1696** / builders parameterized  
+- [x] Monitor can see a known Lorcana/test SKU — `disneyMode=monitor` + sitemap/PDP parse  
+- [x] Secrets out of git  
+- [ ] ATC succeeds on sticky AU after Akamai warm (+ reCAPTCHA Enterprise token)  
+- [ ] GE mid 1696 session starts from bag (SFCC `Globale-GetCartToken` shape via HAR)  
+- [ ] Pay / issuer encoded-merchant confirmed  
+
+### Scaffold entrypoints
+
+| File | Role |
+|---|---|
+| `adapters/disney.js` | Modes: `warm` / `monitor` / `atc`/`checkout` / `ge` |
+| `adapters/disney-session.js` | SFCC URLs, PDP/pid parse, headers |
+| `adapters/disney-akamai.js` | Hyper sensor warm |
+| `adapters/disney-cart.js` | CSRF + ATC + minibag |
+| `adapters/disney-ge.js` | GE 1696 handoff (stop before pay) |
 
 ---
 
