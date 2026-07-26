@@ -226,12 +226,22 @@ export async function addDisneyToCart(session, ctx, opts = {}) {
     const res = await session.post(addUrl, formBody(fields), {
       referer: pdpUrl,
       contentType: "application/x-www-form-urlencoded; charset=UTF-8",
+      headers: {
+        accept: "*/*",
+        "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24", "Google Chrome";v="131"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+      },
     });
     if (looksLikeAkamaiDenied(res.text, res.status)) {
+      const abck = ctx.jar?.get?.("_abck") || "";
       return {
         ok: false,
         status: res.status,
-        note: "Cart-AddProduct Akamai Access Denied — sensor warm incomplete",
+        note: `Cart-AddProduct Akamai Access Denied abckValidMarker=${/~0~/.test(abck)} abckLen=${abck.length}`,
         denied: true,
       };
     }

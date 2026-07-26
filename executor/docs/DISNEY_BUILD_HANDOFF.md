@@ -122,7 +122,9 @@ PDP example:
 - [x] GE merchantId not hard-coded to Bandai 1925 — mid **1696** / builders parameterized  
 - [x] Monitor can see a known Lorcana/test SKU — `disneyMode=monitor` + sitemap/PDP parse  
 - [x] Secrets out of git  
-- [ ] ATC succeeds on sticky AU after **Hyper** sensor warm (+ CapSolver Enterprise token) — browser HAR still 403 on `Cart-AddProduct` after `_abck ~0~`  
+- [~] Hyper sensor warm works (201 success + valid `_abck`) — **ATC still Akamai 403** with valid cookie (post-allowlist)  
+- [ ] ATC succeeds on sticky AU after Hyper (+ CapSolver) — next SBSD/TLS/header dig  
+
 - [ ] GE mid 1696 session starts from bag (SFCC `Globale-GetCartToken` shape via HAR)  
 - [ ] Pay / issuer encoded-merchant confirmed  
 - [x] Own HAR captured (headed ISP): CSRF + sensor + ATC attempt — see `har/disney/`

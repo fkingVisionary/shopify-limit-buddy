@@ -73,6 +73,84 @@ function extractSbsdChallenge(html) {
 /**
  * Warm homepage cookies + Hyper sensor until `_abck` valid (or rounds exhausted).
  */
+async function runSensorRounds(session, ctx, opts = {}) {
+  const tStep = opts.tStep || (async (_n, fn) => fn());
+  const origin = session.state.origin || DISNEY_ORIGIN;
+  const ua = session.state.userAgent;
+  const jar = ctx.jar;
+  const pageUrl = opts.pageUrl || `${origin}/`;
+  const scriptUrl = opts.scriptUrl;
+  const scriptBody = opts.scriptBody || "";
+  const maxRounds = Number(opts.maxRounds || 3);
+  const label = opts.label || "akamai_sensor";
+  let localContext = opts.prevContext || null;
+  let solved = false;
+  let rounds = 0;
+
+  for (let i = 0; i < maxRounds; i++) {
+    rounds = i + 1;
+    const row = await tStep(`${label}#${rounds}`, async () => {
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const r = await solveAkamaiSensor({
+            jar,
+            pageUrl,
+            userAgent: ua,
+            ip: ctx.egressIp || opts.egressIp || "",
+            acceptLanguage: ACCEPT_LANG,
+            scriptUrl,
+            scriptBody,
+            prevContext: localContext,
+            version: "3",
+          });
+          localContext = r.context;
+          const res = await request(
+            r.postUrl || scriptUrl,
+            {
+              method: "POST",
+              headers: akamaiSensorHeaders({
+                requestOrigin: origin,
+                referer: pageUrl,
+                userAgent: ua,
+              }),
+              body: JSON.stringify({ sensor_data: r.payload }),
+            },
+            ctx,
+          );
+          const body = await res.text().catch(() => "");
+          const valid = abckSolved(jar, rounds + Number(opts.baseRound || 0));
+          const softOk = res.status < 400 && /"success"\s*:\s*true/i.test(body);
+          return {
+            ok: res.status < 400,
+            status: res.status,
+            note: `sensor ${res.status} abckValid=${valid} softOk=${softOk} attempt=${attempt} page=${pageUrl.split("/").pop() || "home"} body=${body.replace(/\s+/g, " ").slice(0, 60)}`,
+            valid,
+          };
+        } catch (e) {
+          lastErr = e;
+          await sleep(350 * attempt);
+        }
+      }
+      return {
+        ok: false,
+        note: `sensor post failed: ${lastErr?.message || lastErr}`,
+        valid: false,
+      };
+    });
+    if (row.valid) {
+      solved = true;
+      break;
+    }
+    await sleep(200 + Math.floor(Math.random() * 200));
+  }
+  session.state.abckValid = solved || abckSolved(jar, rounds);
+  session.state._sensorContext = localContext;
+  session.state._sensorScriptUrl = scriptUrl;
+  session.state._sensorScriptBody = scriptBody;
+  return { ok: session.state.abckValid, solved, rounds, context: localContext };
+}
+
 export async function warmDisneyAkamai(session, ctx, opts = {}) {
   const tStep = opts.tStep || (async (_n, fn) => fn());
   const origin = session.state.origin || DISNEY_ORIGIN;
@@ -104,22 +182,38 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
   }
 
   const home = await tStep("warm_home", async () => {
-    const res = await request(
-      `${origin}/`,
-      { method: "GET", headers: disneyNavHeaders({ userAgent: ua }) },
-      ctx,
-    );
-    const html = await res.text().catch(() => "");
-    const denied = looksLikeAkamaiDenied(html, res.status);
-    session.state.warmed = res.status < 400 && !denied;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const headers = {
+          ...disneyNavHeaders({ userAgent: ua }),
+          // ISP tunnels flake less with identity than br on first CONNECT.
+          "accept-encoding": "gzip, deflate",
+        };
+        const res = await request(`${origin}/`, { method: "GET", headers }, ctx);
+        const html = await res.text().catch(() => "");
+        const denied = looksLikeAkamaiDenied(html, res.status);
+        session.state.warmed = res.status < 400 && !denied;
+        return {
+          ok: res.status < 400 && !denied,
+          status: res.status,
+          note: denied
+            ? `Akamai denied home status=${res.status}`
+            : `home ${res.status} bytes=${html.length} abck=${Boolean(jar?.get?.("_abck"))} attempt=${attempt}`,
+          html,
+          denied,
+        };
+      } catch (e) {
+        lastErr = e;
+        await sleep(400 * attempt);
+      }
+    }
+    const cause = lastErr?.cause?.message || lastErr?.causeCode || "";
     return {
-      ok: res.status < 400 && !denied,
-      status: res.status,
-      note: denied
-        ? `Akamai denied home status=${res.status}`
-        : `home ${res.status} bytes=${html.length} abck=${Boolean(jar?.get?.("_abck"))}`,
-      html,
-      denied,
+      ok: false,
+      status: null,
+      note: `warm_home failed: ${lastErr?.message || lastErr}${cause ? ` cause=${cause}` : ""}`,
+      denied: false,
     };
   });
 
@@ -215,52 +309,15 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
     });
   }
 
-  let localContext = null;
-  let solved = false;
-  let rounds = 0;
-  for (let i = 0; i < maxRounds; i++) {
-    rounds = i + 1;
-    const row = await tStep(`akamai_sensor#${rounds}`, async () => {
-      const r = await solveAkamaiSensor({
-        jar,
-        pageUrl: `${origin}/`,
-        userAgent: ua,
-        ip: ctx.egressIp || opts.egressIp || "",
-        acceptLanguage: ACCEPT_LANG,
-        scriptUrl,
-        scriptBody: scriptBody.body,
-        prevContext: localContext,
-        version: "3",
-      });
-      localContext = r.context;
-      const res = await request(
-        r.postUrl || scriptUrl,
-        {
-          method: "POST",
-          headers: akamaiSensorHeaders({
-            requestOrigin: origin,
-            referer: `${origin}/`,
-            userAgent: ua,
-          }),
-          body: JSON.stringify({ sensor_data: r.payload }),
-        },
-        ctx,
-      );
-      const body = await res.text().catch(() => "");
-      const valid = abckSolved(jar, rounds);
-      return {
-        ok: res.status < 400,
-        status: res.status,
-        note: `sensor ${res.status} abckValid=${valid} body=${body.replace(/\s+/g, " ").slice(0, 80)}`,
-        valid,
-      };
-    });
-    if (row.valid) {
-      solved = true;
-      break;
-    }
-    await sleep(200 + Math.floor(Math.random() * 200));
-  }
+  const sensor = await runSensorRounds(session, ctx, {
+    tStep,
+    pageUrl: `${origin}/`,
+    scriptUrl,
+    scriptBody: scriptBody.body,
+    maxRounds,
+    egressIp: opts.egressIp,
+    label: "akamai_sensor",
+  });
 
   // Pixel (optional — ignore failures).
   try {
@@ -295,19 +352,51 @@ export async function warmDisneyAkamai(session, ctx, opts = {}) {
     /* pixel optional */
   }
 
-  session.state.abckValid = solved || abckSolved(jar, rounds);
   session.state.warmed = true;
   return {
-    ok: session.state.abckValid,
-    note: session.state.abckValid
-      ? `Akamai warm ok rounds=${rounds}`
-      : `_abck not valid after ${rounds} sensor rounds`,
+    ok: sensor.ok,
+    note: sensor.ok
+      ? `Akamai warm ok rounds=${sensor.rounds}`
+      : `_abck not valid after ${sensor.rounds} sensor rounds`,
     hyperConfigured: true,
-    abckValid: session.state.abckValid,
-    rounds,
+    abckValid: sensor.ok,
+    rounds: sensor.rounds,
     scriptUrl,
     home,
   };
 }
 
-export default { warmDisneyAkamai };
+/** Extra sensor rounds on PDP (or any page) using cached script when possible. */
+export async function refreshDisneyAkamai(session, ctx, opts = {}) {
+  const origin = session.state.origin || DISNEY_ORIGIN;
+  const pageUrl = opts.pageUrl || `${origin}/`;
+  let scriptUrl = session.state._sensorScriptUrl;
+  let scriptBody = session.state._sensorScriptBody;
+  const tStep = opts.tStep || (async (_n, fn) => fn());
+
+  if (!scriptUrl || !scriptBody) {
+    const got = await session.get(pageUrl, { referer: `${origin}/` });
+    const path = findAkamaiScriptPath(got.text || "");
+    if (!path) return { ok: false, note: "no sensor script on refresh page" };
+    scriptUrl = path.startsWith("http") ? path : `${origin}${path}`;
+    const scriptRes = await request(
+      scriptUrl,
+      { method: "GET", headers: { "user-agent": session.state.userAgent, referer: pageUrl } },
+      ctx,
+    );
+    scriptBody = await scriptRes.text();
+  }
+
+  return runSensorRounds(session, ctx, {
+    tStep,
+    pageUrl,
+    scriptUrl,
+    scriptBody,
+    maxRounds: Number(opts.maxRounds || 3),
+    egressIp: opts.egressIp || ctx.egressIp,
+    prevContext: session.state._sensorContext || null,
+    label: opts.label || "akamai_refresh",
+  });
+}
+
+export default { warmDisneyAkamai, refreshDisneyAkamai };

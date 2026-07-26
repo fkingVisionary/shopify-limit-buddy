@@ -33,6 +33,23 @@ _Hyper: allowlist for `disneystore.com.au` **pending** — browser sensors only_
 
 So CapSolver is ready for when Hyper clears BM; SFCC verify `result:false` needs a successful browser ATC HAR (or server-side assessment dig) to interpret.
 
+## Hyper allowlist (2026-07-26 — approved)
+
+| Check | Result |
+|---|---|
+| `HYPER_API_KEY` + Disney domain | ✅ sensor POST → **201** `{"success": true}` |
+| `_abck` validity | ✅ `abckValid=true` / `~0~` after 3–5 rounds on sticky AU ISP |
+| CSRF | ✅ `csrf_token` |
+| CapSolver mint | ✅ ProxyLess Enterprise V3 |
+| `Cart-AddProduct` | ❌ still **Akamai Access Denied** with valid `_abck` (Lorcana + Stitch SKUs) |
+| Proxy flake | Frequent undici `Proxy response (403) !== 200 when HTTP Tunneling` mid-run — rotate sticky exit |
+
+Labs:
+- `experiments/disney-hyper-atc-once.mjs` — HTTP Hyper → CapSolver → ATC
+- `experiments/disney-hyper-browser-atc.mjs` — Hyper cookie inject → headed Chrome ATC
+
+**Next dig:** SBSD on ATC path, Chrome header-order / JA3 parity, or Hyper support on whether Disney BM needs pixel/SBSD beyond sensor for `Cart-AddProduct`.
+
 ## Confirmed wire
 
 ```

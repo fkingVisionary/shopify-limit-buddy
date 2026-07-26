@@ -141,8 +141,9 @@ PDP embeds:
 | Primary ATC body | Live browser: `pid` + `quantity` + `csrf_token` (optional `pidsObj` / bundles) |
 | reCAPTCHA | **Enterprise on ATC** — `execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }`. CapSolver ProxyLess mints OK; SFCC currently returns `result:false` for CapSolver **and** native browser tokens (open). |
 | Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
-| Akamai | Headed Chrome GET ✅; sensor POST 201 ✅; `_abck ~0~` after dwell ✅; **`Cart-AddProduct` still AkamaiGHost 403** on Playwright — Hyper allowlist required. Headless = home 403. |
-| HAR | `experiments/disney-isp-capture.mjs` → `har/disney/` (full HAR in `/tmp/disney-capture-*`) |
+| Akamai | **Hyper allowlisted (2026-07-26)** — undici sensor POST **201 `{success:true}`**, `isAkamaiCookieValid` / `~0~` ✅. Headed Chrome GET ✅; headless home 403. |
+| ATC | Still **AkamaiGHost 403** on `Cart-AddProduct` even with Hyper-valid `_abck` (reproduced on multiple SKUs). Next: SBSD / header-order / TLS parity dig — see `experiments/disney-hyper-atc-once.mjs`. |
+| HAR | `experiments/disney-isp-capture.mjs` + hyper labs → `har/disney/` (full HAR in `/tmp/disney-*`) |
 
 **Module assumption:** **Hyper Akamai warm → sticky AU ISP → CSRF → reCAPTCHA Enterprise → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout mid 1696**.
 
