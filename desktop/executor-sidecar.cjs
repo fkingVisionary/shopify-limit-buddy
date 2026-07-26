@@ -281,6 +281,19 @@ async function runTask(task) {
   return json || { ok: false, error: `HTTP ${httpStatus}` };
 }
 
+async function harvestToymate(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/toymate/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "local executor at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
 async function harvestBandai(body) {
   const { status: httpStatus, json } = await requestJson(
     "POST",
@@ -314,6 +327,7 @@ module.exports = {
   stopSidecar,
   status,
   runTask,
+  harvestToymate,
   harvestBandai,
   bandaiHarvestStatus,
   clearBandaiHarvest,

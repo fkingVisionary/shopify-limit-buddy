@@ -253,6 +253,24 @@ function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSessio
           : null,
       account: resolvedAccount,
       accountAssignSource,
+      harvestedSession:
+        task.harvestedSession && typeof task.harvestedSession === "object"
+          ? {
+              id: task.harvestedSession.id || null,
+              proxy: task.harvestedSession.proxy || null,
+              proxyHost: task.harvestedSession.proxyHost || null,
+              userAgent: task.harvestedSession.userAgent || null,
+              cookies: task.harvestedSession.cookies || {},
+              captchaToken: task.harvestedSession.captchaToken || null,
+              harvestedAt: task.harvestedSession.harvestedAt || null,
+              cfExpiresAt: task.harvestedSession.cfExpiresAt || null,
+              spamExpiresAt: task.harvestedSession.spamExpiresAt || null,
+            }
+          : null,
+      captchaToken:
+        task.captchaToken ||
+        task.harvestedSession?.captchaToken ||
+        null,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -468,6 +486,20 @@ function buildBandaiPayload({
       bandaiArea,
       shippingAreaCode: task.shippingAreaCode || bandaiArea,
       harvestedBridgeId: harvestedBridgeId || undefined,
+      bandaiMonitorMode: mode === "monitor" ? task.bandaiMonitorMode || "local" : undefined,
+      bandaiWatchSku: task.bandaiWatchSku || null,
+      bandaiWatchKeywords: task.bandaiWatchKeywords || null,
+      bandaiMonitorIntervalMs:
+        mode === "monitor"
+          ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
+          : undefined,
+      bandaiMonitorDelayMs:
+        mode === "monitor" ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0) : undefined,
+      keywords:
+        mode === "monitor"
+          ? task.bandaiWatchKeywords || task.keywords || input || null
+          : undefined,
+      productId: mode === "monitor" ? task.bandaiWatchSku || null : undefined,
       card,
       campaignSn: task.campaignSn || null,
       accountPassword:
@@ -798,6 +830,161 @@ function shouldStickyResiRetry(result) {
   return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
 }
 
+async function runBandaiMonitorInProcess(job, payload) {
+  const path = require("path");
+  const monitorDir = path.join(__dirname, "..", "executor", "monitor");
+  const mode = String(payload.bandaiMonitorMode || "local").toLowerCase();
+  const maxPolls = Math.max(1, Number(job.task?.monitorMaxPolls || process.env.BANDAI_MONITOR_MAX_POLLS) || 3);
+  const hits = [];
+
+  emitLog(job.runId, job.task?.id, "info", `Bandai monitor mode=${mode}`);
+
+  if (mode === "global") {
+    const { createGlobalMonitorHub } = await import(
+      pathToFileUrl(path.join(monitorDir, "global-monitor-hub.js"))
+    );
+    const hub = createGlobalMonitorHub({
+      attachBridge: false,
+      monitorOpts: {
+        intervalMs: Number(payload.bandaiMonitorIntervalMs) || 10000,
+        // Global poll keywords stay owner/env — task only filters.
+      },
+      log: (line) => emitLog(job.runId, job.task?.id, "info", line),
+    });
+    const sub = hub.subscribeTask(
+      {
+        taskId: payload.taskId,
+        bandaiMonitorMode: "global",
+        productId: payload.productId || payload.bandaiWatchSku,
+        keywords: payload.keywords || payload.bandaiWatchKeywords,
+        pdpUrl: payload.pdpUrl,
+      },
+      {
+        onHit: (ev) => {
+          hits.push(ev);
+          emitLog(
+            job.runId,
+            job.task?.id,
+            "ok",
+            `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
+          );
+        },
+      },
+    );
+    if (!sub.ok) {
+      return {
+        ok: false,
+        error: sub.error || "subscribe failed",
+        monitor: true,
+        bandaiMonitorMode: "global",
+      };
+    }
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Subscribed watch sku=${(sub.watch.productIds || []).join(",") || "-"} kw=${(sub.watch.keywords || []).join(",") || "-"}`,
+    );
+
+    let polls = 0;
+    await new Promise((resolve) => {
+      const onPoll = (s) => {
+        polls += 1;
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `global poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+        );
+        if (hits.length || polls >= maxPolls) {
+          hub.monitor.off("poll", onPoll);
+          resolve();
+        }
+      };
+      hub.monitor.on("poll", onPoll);
+      hub.monitor.on("error", (e) =>
+        emitLog(job.runId, job.task?.id, "err", e.error || "monitor error"),
+      );
+      hub.start();
+    });
+    await hub.stop();
+    hub.detach();
+    return {
+      ok: true,
+      monitor: true,
+      bandaiMonitorMode: "global",
+      hits,
+      note: hits.length ? `matched ${hits.length}` : `no match in ${polls} polls (baseline/filter)`,
+      dryRun: true,
+    };
+  }
+
+  // local — task proxies
+  const { createTaskLocalMonitor } = await import(
+    pathToFileUrl(path.join(monitorDir, "task-local-monitor.js"))
+  );
+  const entries = Array.isArray(job.proxyEntries)
+    ? job.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean)
+    : [];
+  const proxies = entries.length ? entries : job.proxyRaw ? [job.proxyRaw] : [];
+  if (!proxies.length) {
+    return { ok: false, error: "Task-local monitor needs a proxy group", monitor: true };
+  }
+  let local;
+  try {
+    local = createTaskLocalMonitor({
+      bandaiArea: payload.bandaiArea || "au",
+      productId: payload.productId || payload.bandaiWatchSku,
+      keywords: payload.keywords || payload.bandaiWatchKeywords,
+      pdpUrl: payload.pdpUrl,
+      proxies,
+      monitorIntervalMs: payload.bandaiMonitorIntervalMs,
+      monitorDelayMs: payload.bandaiMonitorDelayMs,
+    });
+  } catch (e) {
+    return { ok: false, error: e.message || String(e), monitor: true };
+  }
+
+  let polls = 0;
+  await new Promise((resolve) => {
+    local.on("poll", (s) => {
+      polls += 1;
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `local poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+      );
+      if (hits.length || polls >= maxPolls) resolve();
+    });
+    local.on("stock_changed", (ev) => {
+      hits.push(ev);
+      emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+    });
+    local.on("error", (e) =>
+      emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
+    );
+    local.start();
+  });
+  await local.stop();
+  return {
+    ok: true,
+    monitor: true,
+    bandaiMonitorMode: "local",
+    hits,
+    note: hits.length ? `matched ${hits.length}` : `no change in ${polls} polls`,
+    dryRun: true,
+  };
+}
+
+function pathToFileUrl(p) {
+  const path = require("path");
+  const u = path.resolve(p);
+  return process.platform === "win32"
+    ? `file:///${u.replace(/\\/g, "/")}`
+    : `file://${u}`;
+}
+
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
@@ -818,6 +1005,29 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   const payload = built.data;
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
+
+  // Bandai monitor (global filter / task-local) runs in-process against executor/
+  // monitor modules — same code Fly would use; no checkout adapter import.
+  if (
+    job.task?.store === "bandai" &&
+    String(job.task?.bandaiMode || payload.bandaiMode || "") === "monitor"
+  ) {
+    emitLog(job.runId, job.task?.id, "info", "Starting Bandai monitor");
+    try {
+      const mon = await runBandaiMonitorInProcess(job, payload);
+      return finishResult(job, mon, summary);
+    } catch (e) {
+      return finishResult(
+        job,
+        {
+          ok: false,
+          error: e?.message || String(e),
+          monitor: true,
+        },
+        summary,
+      );
+    }
+  }
 
   console.log(
     "[desktop:run]",
@@ -896,6 +1106,8 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
+    // Harvested CF clearance is IP-bound — do not rotate off that exit.
+    const harvestLocked = Boolean(job.task?.harvestedSession?.cookies);
 
     // Sticky: use the listed session- token first (user-provided exits).
     // Always minting a random session on attempt 1 ignored the proxy list and
@@ -908,11 +1120,14 @@ async function runOne(job) {
 
     // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
     // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
-    const maxProxyRetries = sticky
-      ? Math.min(4, Math.max(2, entries.length || 2))
-      : entries.length > 1
-        ? Math.min(3, entries.length - 1)
-        : 0;
+    // Skip entirely when a harvested Toymate CF session is locked to this proxy.
+    const maxProxyRetries = harvestLocked
+      ? 0
+      : sticky
+        ? Math.min(4, Math.max(2, entries.length || 2))
+        : entries.length > 1
+          ? Math.min(3, entries.length - 1)
+          : 0;
     let proxyRetries = 0;
     while (
       !result.ok &&

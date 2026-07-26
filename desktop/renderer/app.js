@@ -173,6 +173,13 @@ function syncTaskFormForStore() {
   if (bChance) bChance.hidden = !bandai || mode !== "chance";
   const bPayPath = $("taskBandaiCheckoutModeWrap");
   if (bPayPath) bPayPath.hidden = !bandai || mode !== "checkout";
+  const bMon = $("taskBandaiMonitorWrap");
+  if (bMon) bMon.hidden = !bandai || mode !== "monitor";
+  const bMonLocal = $("taskBandaiMonitorLocalOpts");
+  if (bMonLocal) {
+    const src = $("taskBandaiMonitorMode")?.value || "local";
+    bMonLocal.hidden = !bandai || mode !== "monitor" || src !== "local";
+  }
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) {
     placeWrap.hidden =
@@ -420,6 +427,103 @@ function renderSettings() {
     : `License: ${s.licenseStatus || "unknown"}`;
 }
 
+let harvestState = null;
+
+function fillHarvestProxySelect() {
+  const sel = $("hvProxyGroup");
+  if (!sel || !state) return;
+  const cur = sel.value || harvestState?.config?.proxyGroupId || "";
+  sel.innerHTML =
+    `<option value="">Select sticky proxy group…</option>` +
+    (state.proxyGroups || [])
+      .map(
+        (g) =>
+          `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`,
+      )
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function renderHarvest(snap) {
+  if (snap) harvestState = snap;
+  else if (state?.harvest) harvestState = state.harvest;
+  if (!harvestState) return;
+
+  fillHarvestProxySelect();
+
+  const cfg = harvestState.config || {};
+  if ($("hvDesired") && document.activeElement !== $("hvDesired")) {
+    $("hvDesired").value = cfg.desired ?? 2;
+  }
+  if ($("hvSolveSpam") && document.activeElement !== $("hvSolveSpam")) {
+    $("hvSolveSpam").checked = cfg.solveSpam !== false;
+  }
+
+  if ($("hvReady")) $("hvReady").textContent = String(harvestState.ready ?? 0);
+  if ($("hvSpam")) $("hvSpam").textContent = String(harvestState.readyWithSpam ?? 0);
+  if ($("hvSolved")) $("hvSolved").textContent = String(harvestState.solvedCount ?? 0);
+  if ($("hvFailed")) $("hvFailed").textContent = String(harvestState.failedCount ?? 0);
+
+  const status = $("harvestStatusLine");
+  if (status) {
+    if (harvestState.busy) status.textContent = "Harvesting… CapSolver in progress";
+    else if (harvestState.running)
+      status.textContent = `Harvest running — keeping ${cfg.desired ?? 0} CF session(s) ready`;
+    else status.textContent = "Harvest stopped";
+  }
+
+  const err = $("harvestError");
+  if (err) {
+    if (harvestState.lastError) {
+      err.hidden = false;
+      err.textContent = harvestState.lastError;
+    } else {
+      err.hidden = true;
+      err.textContent = "";
+    }
+  }
+
+  const list = $("harvestSessionList");
+  if (list) {
+    const rows = harvestState.sessions || [];
+    if (!rows.length) {
+      list.innerHTML = `<div class="item"><div><strong>Bank empty</strong><div class="meta">Start harvest or click Harvest one now. Checkout falls back to on-demand CapSolver when empty.</div></div></div>`;
+    } else {
+      list.innerHTML = rows
+        .map(
+          (s) => `<div class="item">
+          <div>
+            <strong>${esc(s.proxyHost || "proxy")}</strong>
+            <div class="meta">CF TTL ${s.cfTtlSec ?? "?"}s · age ${s.ageSec ?? "?"}s${
+              s.hasSpam
+                ? ` · spam TTL ${s.spamTtlSec ?? "?"}s`
+                : " · CF only (spam on demand)"
+            }</div>
+            <div class="meta">${esc(s.cfNote || "")}${s.spamNote ? ` · ${esc(s.spamNote)}` : ""}</div>
+          </div>
+          <div class="actions">
+            <span class="badge ${s.hasSpam ? "spam" : "hv"}">${s.hasSpam ? "CF+spam" : "CF"}</span>
+          </div>
+        </div>`,
+        )
+        .join("");
+    }
+  }
+
+  const startBtn = $("hvStart");
+  const stopBtn = $("hvStop");
+  if (startBtn) startBtn.disabled = Boolean(harvestState.running);
+  if (stopBtn) stopBtn.disabled = !harvestState.running;
+}
+
+function harvestOptsFromForm() {
+  return {
+    proxyGroupId: $("hvProxyGroup")?.value || null,
+    desired: Number($("hvDesired")?.value) || 0,
+    solveSpam: $("hvSolveSpam")?.checked !== false,
+  };
+}
+
 function applyState(next) {
   state = next;
   fillSelects();
@@ -430,6 +534,7 @@ function applyState(next) {
   renderProxies();
   renderResults();
   renderSettings();
+  renderHarvest(next.harvest || null);
   renderBandaiHarvest();
   engineUi();
 }
@@ -538,6 +643,15 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
     if ($("taskBandaiCheckoutMode"))
       $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
+    if ($("taskBandaiMonitorMode"))
+      $("taskBandaiMonitorMode").value = task.bandaiMonitorMode || "local";
+    if ($("taskBandaiWatchSku")) $("taskBandaiWatchSku").value = task.bandaiWatchSku || "";
+    if ($("taskBandaiWatchKeywords"))
+      $("taskBandaiWatchKeywords").value = task.bandaiWatchKeywords || "";
+    if ($("taskBandaiMonitorIntervalMs"))
+      $("taskBandaiMonitorIntervalMs").value = task.bandaiMonitorIntervalMs || 10000;
+    if ($("taskBandaiMonitorDelayMs"))
+      $("taskBandaiMonitorDelayMs").value = task.bandaiMonitorDelayMs || 0;
     if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
     if ($("taskBandaiAccountPassword"))
       $("taskBandaiAccountPassword").value = task.accountPassword || "";
@@ -644,6 +758,20 @@ function readTaskForm() {
     bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
     bandaiCheckoutMode:
       store === "bandai" ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
+    bandaiMonitorMode:
+      store === "bandai" && $("taskBandaiMode")?.value === "monitor"
+        ? $("taskBandaiMonitorMode")?.value || "local"
+        : undefined,
+    bandaiWatchSku:
+      store === "bandai" ? $("taskBandaiWatchSku")?.value?.trim() || "" : undefined,
+    bandaiWatchKeywords:
+      store === "bandai" ? $("taskBandaiWatchKeywords")?.value?.trim() || "" : undefined,
+    bandaiMonitorIntervalMs:
+      store === "bandai"
+        ? Number($("taskBandaiMonitorIntervalMs")?.value) || 10000
+        : undefined,
+    bandaiMonitorDelayMs:
+      store === "bandai" ? Number($("taskBandaiMonitorDelayMs")?.value) || 0 : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
@@ -667,6 +795,8 @@ function readTaskForm() {
 $("taskStore").onchange = () => syncTaskFormForStore();
 $("taskToymateMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForStore();
+if ($("taskBandaiMonitorMode"))
+  $("taskBandaiMonitorMode").onchange = () => syncTaskFormForStore();
 if ($("taskPcMode")) $("taskPcMode").onchange = () => syncTaskFormForStore();
 if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
 if ($("taskBandaiAccountAssign"))
@@ -854,8 +984,109 @@ $("bhOnce").onclick = async () => {
   );
 };
 
+$("hvStart").onclick = async () => {
+  const opts = harvestOptsFromForm();
+  if (!opts.proxyGroupId) {
+    appendLog("Pick a proxy group on the Harvest tab", "err");
+    return;
+  }
+  const res = await window.desktop.harvestStart(opts);
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog(res.ok ? "Toymate harvest started" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+};
+
+$("hvStop").onclick = async () => {
+  const res = await window.desktop.harvestStop();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog("Toymate harvest stopped", "muted");
+};
+
+$("hvClear").onclick = async () => {
+  const res = await window.desktop.harvestClear();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog("Toymate harvest bank cleared", "muted");
+};
+
+$("hvOnce").onclick = async () => {
+  const opts = harvestOptsFromForm();
+  if (!opts.proxyGroupId) {
+    appendLog("Pick a proxy group on the Harvest tab", "err");
+    return;
+  }
+  appendLog("Harvesting one CF session…", "muted");
+  const res = await window.desktop.harvestOnce(opts);
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest) renderHarvest(res.harvest);
+  appendLog(
+    res.ok
+      ? `Harvested session${res.ms != null ? ` in ${Math.round(res.ms / 1000)}s` : ""}`
+      : esc(res.error || "Harvest one failed"),
+    res.ok ? "ok" : "err",
+  );
+};
+
+if ($("hvProxyGroup")) {
+  $("hvProxyGroup").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      proxyGroupId: $("hvProxyGroup").value || null,
+    });
+    renderHarvest(snap);
+  };
+}
+if ($("hvDesired")) {
+  $("hvDesired").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      desired: Number($("hvDesired").value) || 0,
+    });
+    renderHarvest(snap);
+  };
+}
+if ($("hvSolveSpam")) {
+  $("hvSolveSpam").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      solveSpam: $("hvSolveSpam").checked,
+    });
+    renderHarvest(snap);
+  };
+}
+
+if ($("bhProxyGroup")) {
+  $("bhProxyGroup").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      proxyGroupId: $("bhProxyGroup").value || null,
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+if ($("bhDesired")) {
+  $("bhDesired").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      desired: Number($("bhDesired").value) || 0,
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+if ($("bhArea")) {
+  $("bhArea").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      area: $("bhArea").value || "au",
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
+  if (evt.type === "harvest" && evt.data) {
+    if (state) state.harvest = evt.data;
+    renderHarvest(evt.data);
+  }
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();

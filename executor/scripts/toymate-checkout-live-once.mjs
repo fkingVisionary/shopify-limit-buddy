@@ -148,17 +148,36 @@ try {
     step: s.step,
     ok: s.ok,
     status: s.status,
-    note: String(s.note || "").slice(0, 200),
+    ms: s.ms ?? null,
+    note: String(s.note || "").slice(0, 220),
   }));
   const loginOk = steps.some((s) => s.step === "account_login" && s.ok);
   const cartOk = steps.some((s) => (s.step === "cart_add" || s.step === "cart_create") && s.ok);
   const payStep = steps.find((s) => s.step === "place_order");
   const methodsStep = steps.find((s) => s.step === "payment_methods");
+  const totalMs = Date.now() - t0;
+  const stepMs = steps
+    .filter((s) => typeof s.ms === "number")
+    .map((s) => ({ step: s.step, ms: s.ms, ok: s.ok, status: s.status }));
+  const ranked = [...stepMs].sort((a, b) => b.ms - a.ms).slice(0, 6);
+  const paymentLogs = (out.paymentLogs || []).map((l) => ({
+    step: l.step,
+    status: l.status ?? null,
+    body: String(l.body || "").slice(0, 120),
+  }));
+  const bigpayAuthPosts =
+    out.bigpayAuthPosts ??
+    paymentLogs.filter(
+      (l) =>
+        (l.step === "bigpay" || l.step === "bigpay_cse") &&
+        typeof l.status === "number" &&
+        l.status > 0,
+    ).length;
   console.log(
     JSON.stringify({
       phase: "done",
       ok: Boolean(out.ok),
-      ms: Date.now() - t0,
+      ms: totalMs,
       checkoutStage: out.checkoutStage || null,
       dryRun: out.dryRun === true,
       loginOk,
@@ -171,6 +190,14 @@ try {
       failedStep: out.failedStep || null,
       methodsNote: methodsStep?.note || null,
       placeNote: payStep?.note || null,
+      bigpayAuthPosts,
+      singleAuth: bigpayAuthPosts === 1,
+      paymentLogs,
+      timing: {
+        totalMs,
+        steps: stepMs,
+        slowest: ranked,
+      },
       steps,
     }),
   );
@@ -188,6 +215,7 @@ try {
         step: s.step,
         ok: s.ok,
         status: s.status,
+        ms: s.ms ?? null,
         note: String(s.note || "").slice(0, 180),
       })),
     }),

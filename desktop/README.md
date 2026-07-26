@@ -59,6 +59,25 @@ DESKTOP_HYPER_PROVISION=1
 HYPER_API_KEY=...   # on the control plane only
 ```
 
+## Toymate harvest (CF + spam)
+
+Desktop is the product surface for Toymate. Use the **Harvest** tab to pre-warm
+Cloudflare `cf_clearance` (+ optional checkout reCAPTCHA) on sticky AU ISP/resi
+proxies so Autocheckout skips ~45s CF + ~30s spam CapSolver on the critical path.
+
+1. **Settings** → CapSolver API key → save.
+2. **Proxies** → sticky AU group (session-style lines).
+3. **Harvest** → pick that group → desired sessions (2–4) → leave Solve spam on → **Start harvest**.
+4. When Ready / With spam look good, run **Toymate → Autocheckout** tasks as usual.
+
+Sessions are single-use and IP-bound. Checkout auto-claims a session, forces the
+harvested proxy, and skips proxy rotate on that run. Empty bank falls back to
+on-demand CapSolver (slower, still works). CF ~25 min TTL · spam ~100s.
+
+Executor: `POST /toymate/harvest` · adapter skips warm when `harvestedSession` is fresh.
+
+**Proof (2026-07-26):** harvested checkout **36s** → BigPay decline vs baseline **144s** on-demand CapSolver (~4×). See `executor/docs/toymate-harvest-checkout-proof.json`.
+
 ## Bandai (Premium Bandai / p-bandai.com)
 
 Shipped in the same Electron → local `executor/` sidecar path as Kmart.
@@ -85,6 +104,16 @@ Contract: `executor/docs/BANDAI_CHECKOUT_BIBLE.md`.
 
 Add an adapter under `desktop/adapters/` and extend `buildPayload` in
 `job-runner.cjs`. Same profiles/proxies/tasks UI.
+
+### Bandai monitor (opt-in)
+
+Task mode **Bandai — Monitor** with source:
+
+- **Global** — filter shared executor monitor events by SKU/keywords (does not expand the global poll)
+- **Task-local** — poll with this task’s proxy group + interval/delay
+
+Same `executor/monitor/*` code whether Desktop sidecar or Fly later.
+
 
 ## Debugging a failed run
 

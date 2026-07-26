@@ -8,6 +8,7 @@ const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
+const { createHarvestPool } = require("./toymate-harvest.cjs");
 const { resolveAccountForTask, emailBase } = require("./account-assign.cjs");
 const {
   normalizeVaultStatus,
@@ -19,10 +20,21 @@ const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 let win = null;
 let state = store.loadAll();
 
+const harvest = createHarvestPool({
+  sidecar,
+  emit: (evt) => send(evt),
+});
+
 const bandaiHarvest = createBandaiHarvestPool({
   sidecar,
   emit: (evt) => send(evt),
 });
+
+function harvestEntries() {
+  const gid = harvest.snapshot().config.proxyGroupId;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  return group?.entries || [];
+}
 
 function bandaiHarvestEntries() {
   const gid = bandaiHarvest.snapshot().config.proxyGroupId;
@@ -107,6 +119,7 @@ function snapshot() {
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
+    harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
   };
 }
@@ -237,19 +250,20 @@ ipcMain.handle("desktop:start-engine", async () => {
     });
     if (prov.ok) hyper = prov.hyperApiKey;
   }
-  if (!hyper) {
+  const capsolver = String(state.settings.capsolverApiKey || "").trim();
+  if (!hyper && !capsolver) {
     return {
       ok: false,
       error:
-        "Hyper API key required — paste yours in Settings (BYO), or configure control-plane hyper-provision",
+        "Need Hyper (Kmart) and/or CapSolver (Toymate) in Settings before starting the engine",
       snapshot: snapshot(),
     };
   }
 
   const started = await sidecar.startSidecar({
-    hyperApiKey: hyper,
+    hyperApiKey: hyper || undefined,
     paydockPublicKey: state.settings.paydockPublicKey,
-    capsolverApiKey: state.settings.capsolverApiKey,
+    capsolverApiKey: capsolver || state.settings.capsolverApiKey,
     maxConcurrent: state.settings.maxConcurrent,
   });
   if (!started.ok) return { ...started, snapshot: snapshot() };
@@ -259,10 +273,11 @@ ipcMain.handle("desktop:start-engine", async () => {
   });
   runner.start();
   send({ type: "snapshot", data: snapshot() });
-  return { ok: true, snapshot: snapshot() };
+  return { ok: true, snapshot: snapshot(), hyperConfigured: Boolean(hyper), capsolverConfigured: Boolean(capsolver) };
 });
 
 ipcMain.handle("desktop:stop-engine", async () => {
+  harvest.stop();
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
@@ -295,22 +310,34 @@ ipcMain.handle("desktop:bandai-harvest-start", async (_e, opts = {}) => {
   if (gid) bandaiHarvest.configure({ proxyGroupId: gid });
   if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
   if (opts.area) bandaiHarvest.configure({ area: opts.area });
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  if (!group?.entries?.length) {
+    return {
+      ok: false,
+      error: "Select a Proxies group with sticky AU ISP/residential lines",
+      harvest: bandaiHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
   const snap = bandaiHarvest.start({
     proxyGroupId: gid,
     desired: opts.desired,
     area: opts.area,
     getEntries: bandaiHarvestEntries,
   });
+  send({ type: "snapshot", data: snapshot() });
   return { ok: true, harvest: snap, snapshot: snapshot() };
 });
 
 ipcMain.handle("desktop:bandai-harvest-stop", () => {
   const snap = bandaiHarvest.stop();
+  send({ type: "snapshot", data: snapshot() });
   return { ok: true, harvest: snap, snapshot: snapshot() };
 });
 
 ipcMain.handle("desktop:bandai-harvest-clear", async () => {
   const snap = await bandaiHarvest.clear();
+  send({ type: "snapshot", data: snapshot() });
   return { ok: true, harvest: snap, snapshot: snapshot() };
 });
 
@@ -322,7 +349,82 @@ ipcMain.handle("desktop:bandai-harvest-once", async (_e, opts = {}) => {
   if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
   if (opts.area) bandaiHarvest.configure({ area: opts.area });
   const out = await bandaiHarvest.harvestOne(bandaiHarvestEntries());
+  send({ type: "snapshot", data: snapshot() });
   return { ...out, harvest: bandaiHarvest.snapshot(), snapshot: snapshot() };
+});
+
+// ── Toymate Harvest tab ──────────────────────────────────────────────
+ipcMain.handle("desktop:harvest-status", () => harvest.snapshot());
+
+ipcMain.handle("desktop:harvest-configure", (_e, patch) => {
+  return harvest.configure(patch || {});
+});
+
+ipcMain.handle("desktop:harvest-start", async (_e, opts = {}) => {
+  const capsolver = String(state.settings.capsolverApiKey || "").trim();
+  if (!capsolver) {
+    return { ok: false, error: "Set CapSolver API key in Settings first", snapshot: snapshot() };
+  }
+  if (!sidecar.status().running) {
+    const started = await sidecar.startSidecar({
+      hyperApiKey: state.settings.hyperApiKey || undefined,
+      paydockPublicKey: state.settings.paydockPublicKey,
+      capsolverApiKey: capsolver,
+      maxConcurrent: state.settings.maxConcurrent,
+    });
+    if (!started.ok) return { ...started, snapshot: snapshot() };
+  }
+  const gid = opts.proxyGroupId || harvest.snapshot().config.proxyGroupId;
+  const group = state.db.proxyGroups.find((g) => g.id === gid);
+  if (!group?.entries?.length) {
+    return {
+      ok: false,
+      error: "Select a Proxies group with sticky AU ISP/residential lines",
+      snapshot: snapshot(),
+    };
+  }
+  const snap = harvest.start({
+    proxyGroupId: gid,
+    desired: opts.desired,
+    solveSpam: opts.solveSpam,
+    getEntries: harvestEntries,
+  });
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:harvest-stop", () => {
+  const snap = harvest.stop();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:harvest-clear", () => {
+  const snap = harvest.clear();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:harvest-once", async (_e, opts = {}) => {
+  const capsolver = String(state.settings.capsolverApiKey || "").trim();
+  if (!capsolver) {
+    return { ok: false, error: "Set CapSolver API key in Settings first" };
+  }
+  if (!sidecar.status().running) {
+    const started = await sidecar.startSidecar({
+      hyperApiKey: state.settings.hyperApiKey || undefined,
+      paydockPublicKey: state.settings.paydockPublicKey,
+      capsolverApiKey: capsolver,
+      maxConcurrent: state.settings.maxConcurrent,
+    });
+    if (!started.ok) return started;
+  }
+  if (opts.proxyGroupId) harvest.configure({ proxyGroupId: opts.proxyGroupId });
+  if (opts.desired != null) harvest.configure({ desired: opts.desired });
+  if (opts.solveSpam != null) harvest.configure({ solveSpam: opts.solveSpam });
+  const out = await harvest.harvestOne(harvestEntries());
+  send({ type: "snapshot", data: snapshot() });
+  return { ...out, harvest: harvest.snapshot(), snapshot: snapshot() };
 });
 
 // Profiles
@@ -395,6 +497,28 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
         ? ["fast", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
           ? String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
+        : undefined,
+    bandaiMonitorMode:
+      storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
+        ? ["global", "local"].includes(String(task.bandaiMonitorMode || "").toLowerCase())
+          ? String(task.bandaiMonitorMode).toLowerCase()
+          : "local"
+        : undefined,
+    bandaiWatchSku:
+      storeId === "bandai" && typeof task.bandaiWatchSku === "string"
+        ? task.bandaiWatchSku.trim()
+        : undefined,
+    bandaiWatchKeywords:
+      storeId === "bandai" && typeof task.bandaiWatchKeywords === "string"
+        ? task.bandaiWatchKeywords.trim()
+        : undefined,
+    bandaiMonitorIntervalMs:
+      storeId === "bandai" && task.bandaiMode === "monitor"
+        ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
+        : undefined,
+    bandaiMonitorDelayMs:
+      storeId === "bandai" && task.bandaiMode === "monitor"
+        ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0)
         : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
@@ -523,6 +647,31 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
           taskCopy.accountAssignSource = "guest";
         }
       }
+      let jobProxyRaw = proxyRaw;
+      let jobProxyEntries = entries.filter(Boolean);
+      // Toymate checkout: claim a harvested CF (+ spam) session when available.
+      if (
+        task.store === "toymate" &&
+        String(task.toymateMode || "checkout") === "checkout"
+      ) {
+        const session = harvest.take({ preferSpam: true });
+        if (session) {
+          taskCopy.harvestedSession = session;
+          taskCopy.captchaToken = session.captchaToken || taskCopy.captchaToken || null;
+          if (session.proxy) {
+            jobProxyRaw = session.proxy;
+            jobProxyEntries = [session.proxy];
+            proxyIndex = 0;
+          }
+          send({
+            type: "job",
+            phase: "log",
+            taskId: tid,
+            level: "info",
+            message: `Using harvested CF session (${session.proxyHost || "proxy"}${session.captchaToken ? " + spam" : ""})`,
+          });
+        }
+      }
       // Bandai checkout: claim a pre-warmed F5 bridge when Harvest is armed.
       if (
         task.store === "bandai" &&
@@ -533,6 +682,11 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
           taskCopy.harvestedBridgeId = session.id;
           taskCopy.harvestedProxy = session.proxy;
           taskCopy.proxyOverride = session.proxy;
+          if (session.proxy) {
+            jobProxyRaw = session.proxy;
+            jobProxyEntries = [session.proxy];
+            proxyIndex = 0;
+          }
           send({
             type: "job",
             phase: "log",
@@ -545,8 +699,8 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
       jobs.push({
         task: taskCopy,
         profile,
-        proxyRaw: taskCopy.proxyOverride || proxyRaw,
-        proxyEntries: entries.filter(Boolean),
+        proxyRaw: jobProxyRaw,
+        proxyEntries: jobProxyEntries,
         proxyIndex,
         placeOrder: task.placeOrder !== false,
         accounts: state.db.accounts || [],
@@ -714,12 +868,20 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", async () => {
+  harvest.stop();
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", async () => {
+  harvest.stop();
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
