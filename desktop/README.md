@@ -21,6 +21,13 @@ npm start
 3. Add a **profile**, optional **proxy group** (`127.0.0.1:PORT` OK), **Kmart task**.
 4. **Run** — watch stages in Results. Close the app → nothing runs.
 
+## Bandai F5 Harvest (opt-in)
+
+Before a Bandai drop: **Harvest** tab → sticky proxy group → desired 1–2 →
+**Start harvest**. Autocheckout claims a warm F5 login bridge (skips Chromium
+launch). Empty bank = normal cold checkout. Stop harvest after the drop to free
+CPU. See `executor/docs/BANDAI_F5_HARVEST.md`.
+
 ## Architecture
 
 ```

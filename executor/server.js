@@ -19,6 +19,12 @@ import {
   pickUnusedResiProxy,
   proxyHostFromUrl,
 } from "./proxy-rotate.js";
+import {
+  mintHarvestSlot,
+  clearHarvestSlots,
+  releaseHarvestSlot,
+  harvestSnapshot,
+} from "./adapters/bandai-harvest-pool.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -49,6 +55,7 @@ app.get("/", async () => ({
   run: "POST /run (Bearer auth)",
   progress: "GET /progress/:taskId (Bearer auth)",
   milestones: "GET /milestones (Bearer auth)",
+  bandaiHarvest: "POST|GET /bandai/harvest (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
@@ -193,6 +200,55 @@ app.get("/milestones", async (req, reply) => {
     gitSha: GIT_SHA,
     milestones: rows,
   };
+});
+
+// Bandai F5 harvest — warm Playwright /{area}/login bridges off the drop path.
+// Live bridges stay in-process; desktop claims by id via task.harvestedBridgeId.
+app.get("/bandai/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return { ok: true, ...harvestSnapshot() };
+});
+
+app.post("/bandai/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  const out = await mintHarvestSlot({
+    proxy,
+    area: typeof body.area === "string" ? body.area : "au",
+    settleMs: body.settleMs,
+    ttlMs: body.ttlMs,
+    timeoutMs: body.timeoutMs,
+  });
+  if (!out.ok) {
+    reply.code(out.atCapacity ? 429 : 502);
+    return { ok: false, error: out.error || "harvest failed", ms: out.ms, snapshot: harvestSnapshot() };
+  }
+  return { ok: true, session: out.session, ms: out.ms, snapshot: harvestSnapshot() };
+});
+
+app.post("/bandai/harvest/release", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const out = await releaseHarvestSlot(id);
+  if (!out.ok) {
+    reply.code(404);
+    return { ok: false, error: out.error || "not found", snapshot: harvestSnapshot() };
+  }
+  return { ok: true, id: out.id, snapshot: harvestSnapshot() };
+});
+
+app.post("/bandai/harvest/clear", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return clearHarvestSlots();
 });
 
 app.post("/run", async (req, reply) => {

@@ -24,6 +24,7 @@ import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
+import { takeHarvestSlot } from "./bandai-harvest-pool.js";
 import { findCartLine, listCartLines } from "./bandai-cart.js";
 import fs from "node:fs";
 import {
@@ -307,25 +308,76 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   if (wantBridge) {
     try {
       const s0 = Date.now();
-      bridge = await createBandaiF5Bridge({
-        proxy: task.proxy || null,
-        area: session.area,
-        timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-      });
-      await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
-      const csrf = await bridge.csrfToken();
-      const cookies = await bridge.cookies();
-      if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
-      if (csrf) session.state.csrfToken = csrf;
-      steps.push({
-        step: "f5_bridge",
-        ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
-        status: null,
-        ms: Date.now() - s0,
-        note: csrf
-          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}`
-          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms`,
-      });
+      // Opt-in harvest: claim a pre-warmed F5 bridge (same sticky proxy). Miss /
+      // dead page → cold createBandaiF5Bridge — checkout must never depend on harvest.
+      const harvestId =
+        typeof task.harvestedBridgeId === "string" && task.harvestedBridgeId.trim()
+          ? task.harvestedBridgeId.trim()
+          : null;
+      let harvestedMeta = null;
+      if (harvestId) {
+        const claimed = takeHarvestSlot(harvestId);
+        if (claimed?.bridge) {
+          try {
+            const csrfCheck = await claimed.bridge.csrfToken();
+            const cookiesCheck = (await claimed.bridge.cookies()) || {};
+            const alive =
+              Boolean(csrfCheck) ||
+              Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
+            if (alive) {
+              bridge = claimed.bridge;
+              harvestedMeta = claimed.meta;
+              if (csrfCheck) session.state.csrfToken = csrfCheck;
+              if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+            } else {
+              await claimed.bridge.close?.();
+            }
+          } catch {
+            try {
+              await claimed.bridge.close?.();
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+
+      if (!bridge) {
+        bridge = await createBandaiF5Bridge({
+          proxy: task.proxy || null,
+          area: session.area,
+          timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+        });
+        await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
+        const csrf = await bridge.csrfToken();
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+        if (csrf) session.state.csrfToken = csrf;
+        steps.push({
+          step: "f5_bridge",
+          ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
+          status: null,
+          ms: Date.now() - s0,
+          note: csrf
+            ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${harvestId ? " (harvest miss→cold)" : ""}`
+            : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${harvestId ? " (harvest miss→cold)" : ""}`,
+        });
+      } else {
+        const csrf = session.state.csrfToken || (await bridge.csrfToken());
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+        if (csrf) session.state.csrfToken = csrf;
+        const ageSec = harvestedMeta?.ageSec;
+        steps.push({
+          step: "f5_bridge",
+          ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
+          status: null,
+          ms: Date.now() - s0,
+          note: csrf
+            ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${harvestId}`
+            : `harvested bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} age=${ageSec ?? "?"}s`,
+        });
+      }
       ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
       steps.push({

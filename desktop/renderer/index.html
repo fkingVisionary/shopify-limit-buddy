@@ -23,6 +23,7 @@
 
   <nav class="tabs">
     <button type="button" data-tab="tasks" class="active">Tasks</button>
+    <button type="button" data-tab="harvest">Harvest</button>
     <button type="button" data-tab="profiles">Profiles</button>
     <button type="button" data-tab="accounts">Accounts</button>
     <button type="button" data-tab="proxies">Proxies</button>
@@ -155,6 +156,74 @@
             <button type="button" id="taskRunOne">Run this</button>
           </div>
         </form>
+      </div>
+    </section>
+
+    <!-- HARVEST (Bandai F5) -->
+    <section id="tab-harvest" class="panel">
+      <div class="split">
+        <div>
+          <h2>Bandai F5 Harvest</h2>
+          <p class="hint">
+            Pre-warm Playwright <strong>F5 login bridges</strong> on sticky AU ISP/resi proxies so
+            Bandai Autocheckout skips Chromium launch on the drop path (~7–15s). Bridges are
+            single-use and IP-bound — the same exit that harvested must run checkout.
+          </p>
+
+          <div class="howto form-card">
+            <h3>How to use</h3>
+            <ol class="howto-list">
+              <li>Start the engine.</li>
+              <li>Pick the same sticky proxy group your Bandai tasks will use.</li>
+              <li>Set desired slots (start with 1–2 — each holds a Chromium).</li>
+              <li>Click <strong>Start harvest</strong> a few minutes before the drop.</li>
+              <li>Run <strong>Bandai → Autocheckout</strong> — each run auto-claims one bridge when ready.</li>
+              <li><strong>Stop</strong> harvest after the drop so Chromium stops burning CPU.</li>
+            </ol>
+            <p class="field-hint">
+              Idle TTL ~6 min (executor refreshes while armed). Empty bank = normal cold checkout
+              (unchanged). Sensors and GE risk tokens are never banked — only the warm login page.
+              Uses local CPU only (no CapSolver bill).
+            </p>
+          </div>
+
+          <div id="bandaiHarvestSessionList" class="list"></div>
+        </div>
+
+        <div class="form-card">
+          <h3>Bank controls</h3>
+          <div class="harvest-stats" id="bandaiHarvestStats">
+            <div><span class="muted">Ready</span><strong id="bhReady">0</strong></div>
+            <div><span class="muted">Minted</span><strong id="bhSolved">0</strong></div>
+            <div><span class="muted">Failed</span><strong id="bhFailed">0</strong></div>
+            <div><span class="muted">Desired</span><strong id="bhDesiredLabel">2</strong></div>
+          </div>
+          <p id="bandaiHarvestStatusLine" class="field-hint">Harvest stopped</p>
+          <p id="bandaiHarvestError" class="err-line" hidden></p>
+
+          <label>Proxy group</label>
+          <select id="bhProxyGroup"></select>
+          <label>Desired warm bridges</label>
+          <input id="bhDesired" type="number" min="0" max="6" value="2" />
+          <label>Region</label>
+          <select id="bhArea">
+            <option value="au" selected>AU</option>
+            <option value="nz">NZ</option>
+            <option value="us">US</option>
+            <option value="sg">SG</option>
+            <option value="hk">HK</option>
+            <option value="tw">TW</option>
+            <option value="fr">FR</option>
+          </select>
+          <div class="row-actions">
+            <button type="button" id="bhStart">Start harvest</button>
+            <button type="button" class="secondary" id="bhStop">Stop</button>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="secondary" id="bhOnce">Harvest one now</button>
+            <button type="button" class="secondary" id="bhClear">Clear bank</button>
+          </div>
+        </div>
       </div>
     </section>
 

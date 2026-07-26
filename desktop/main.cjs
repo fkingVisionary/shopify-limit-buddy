@@ -14,9 +14,21 @@ const {
   shouldPersistGeneratedAccount,
   findRegisteredAccount,
 } = require("./account-vault.cjs");
+const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 
 let win = null;
 let state = store.loadAll();
+
+const bandaiHarvest = createBandaiHarvestPool({
+  sidecar,
+  emit: (evt) => send(evt),
+});
+
+function bandaiHarvestEntries() {
+  const gid = bandaiHarvest.snapshot().config.proxyGroupId;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  return group?.entries || [];
+}
 
 function send(evt) {
   win?.webContents.send("desktop:event", evt);
@@ -95,6 +107,7 @@ function snapshot() {
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
+    bandaiHarvest: bandaiHarvest.snapshot(),
   };
 }
 
@@ -250,10 +263,66 @@ ipcMain.handle("desktop:start-engine", async () => {
 });
 
 ipcMain.handle("desktop:stop-engine", async () => {
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot() };
+});
+
+// ── Bandai F5 Harvest tab ──────────────────────────────────────────────
+ipcMain.handle("desktop:bandai-harvest-status", () => bandaiHarvest.snapshot());
+
+ipcMain.handle("desktop:bandai-harvest-configure", (_e, patch) => {
+  return bandaiHarvest.configure(patch || {});
+});
+
+ipcMain.handle("desktop:bandai-harvest-start", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return {
+      ok: false,
+      error: "Start the engine first",
+      harvest: bandaiHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
+  const gid = opts.proxyGroupId || bandaiHarvest.snapshot().config.proxyGroupId;
+  if (gid) bandaiHarvest.configure({ proxyGroupId: gid });
+  if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
+  if (opts.area) bandaiHarvest.configure({ area: opts.area });
+  const snap = bandaiHarvest.start({
+    proxyGroupId: gid,
+    desired: opts.desired,
+    area: opts.area,
+    getEntries: bandaiHarvestEntries,
+  });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-stop", () => {
+  const snap = bandaiHarvest.stop();
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-clear", async () => {
+  const snap = await bandaiHarvest.clear();
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-once", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", harvest: bandaiHarvest.snapshot() };
+  }
+  if (opts.proxyGroupId) bandaiHarvest.configure({ proxyGroupId: opts.proxyGroupId });
+  if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
+  if (opts.area) bandaiHarvest.configure({ area: opts.area });
+  const out = await bandaiHarvest.harvestOne(bandaiHarvestEntries());
+  return { ...out, harvest: bandaiHarvest.snapshot(), snapshot: snapshot() };
 });
 
 // Profiles
@@ -454,10 +523,29 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
           taskCopy.accountAssignSource = "guest";
         }
       }
+      // Bandai checkout: claim a pre-warmed F5 bridge when Harvest is armed.
+      if (
+        task.store === "bandai" &&
+        ["checkout", "chance"].includes(String(task.bandaiMode || "checkout"))
+      ) {
+        const session = bandaiHarvest.take();
+        if (session?.id) {
+          taskCopy.harvestedBridgeId = session.id;
+          taskCopy.harvestedProxy = session.proxy;
+          taskCopy.proxyOverride = session.proxy;
+          send({
+            type: "job",
+            phase: "log",
+            taskId: tid,
+            level: "info",
+            message: `Using harvested F5 bridge (${session.proxyHost || "proxy"} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
+          });
+        }
+      }
       jobs.push({
         task: taskCopy,
         profile,
-        proxyRaw,
+        proxyRaw: taskCopy.proxyOverride || proxyRaw,
         proxyEntries: entries.filter(Boolean),
         proxyIndex,
         placeOrder: task.placeOrder !== false,

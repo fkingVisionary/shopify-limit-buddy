@@ -15,6 +15,12 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  bandaiHarvestStatus: () => ipcRenderer.invoke("desktop:bandai-harvest-status"),
+  bandaiHarvestConfigure: (patch) => ipcRenderer.invoke("desktop:bandai-harvest-configure", patch),
+  bandaiHarvestStart: (opts) => ipcRenderer.invoke("desktop:bandai-harvest-start", opts),
+  bandaiHarvestStop: () => ipcRenderer.invoke("desktop:bandai-harvest-stop"),
+  bandaiHarvestClear: () => ipcRenderer.invoke("desktop:bandai-harvest-clear"),
+  bandaiHarvestOnce: (opts) => ipcRenderer.invoke("desktop:bandai-harvest-once", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

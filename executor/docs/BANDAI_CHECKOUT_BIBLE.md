@@ -130,6 +130,7 @@ do not “fix” by posting twice.
 |------|-------|
 | Fast riskHydrate | Fresh Forter (~60b) + ioBlackBox; GE wall often ~40–55s after cart |
 | Stale noPage | Faster iovation (0s) but **fraud=True** — do not ship as default |
+| **F5 harvest (opt-in)** | Pre-warm Playwright `/{area}/login` off-path; claim skips Chromium launch (~7–15s). Empty bank = cold path. See `BANDAI_F5_HARVEST.md` |
 | Safe Playwright GE | Slower; browser risk surface |
 
 Full paid order + `preComplete` → `orderNo` is **not** closed yet. Funded
