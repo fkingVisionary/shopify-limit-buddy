@@ -290,10 +290,17 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
     const locHeader =
       (typeof res.headers?.get === "function" &&
         (res.headers.get("location") || res.headers.get("Location"))) ||
+      res.headers?.location ||
+      res.headers?.Location ||
       "";
-    const locHtml = (String(text || "").match(
-      /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
-    ) || [])[1];
+    const locHtml =
+      (String(text || "").match(
+        /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
+      ) || [])[1] ||
+      (String(text || "").match(
+        /Object moved to <a href=["']([^"']+)["']/i,
+      ) || [])[1] ||
+      "";
     const redirectUrl = locHeader || locHtml || null;
     const redirectUrlFull = redirectUrl ? String(redirectUrl) : null;
     const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
@@ -569,6 +576,15 @@ export async function runDisneyGeHttpPay(opts = {}) {
           haJson = null;
         }
         if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(last?.text);
+        let keysNote = "";
+        if (actionId === 1 && !shippingMethodId && last?.text) {
+          try {
+            const j = JSON.parse(String(last.text));
+            keysNote = ` keys=${Object.keys(j).slice(0, 12).join(",")}`;
+          } catch {
+            /* ignore */
+          }
+        }
         return {
           ok:
             Boolean(last?.ok) &&
@@ -577,9 +593,9 @@ export async function runDisneyGeHttpPay(opts = {}) {
           ms: last?.ms,
           note: (
             actionId === 1
-              ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} via=${last?.via || "?"} ${String(last?.text || last?.error || "").replace(/\s+/g, " ")}`
+              ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} via=${last?.via || "?"}${keysNote} ${String(last?.text || last?.error || "").replace(/\s+/g, " ")}`
               : `via=${last?.via || "?"} ${String(last?.text || last?.error || "").replace(/\s+/g, " ")}`
-          ).slice(0, 220),
+          ).slice(0, 240),
         };
       });
     }
@@ -688,14 +704,15 @@ export async function runDisneyGeHttpPay(opts = {}) {
       };
     });
 
-    // 5) CreditCardForm — mint JWT / machineId
+    // 5) CreditCardForm — mint JWT / machineId + real form action
     const ccUrls = [
-      `${DISNEY_GE_CREDIT_CARD_FORM}/${guid}`,
       `${DISNEY_GE_CREDIT_CARD_FORM}/${guid}/${gatewayId}`,
+      `${DISNEY_GE_CREDIT_CARD_FORM}/${guid}`,
       `${DISNEY_GE_SECURE}/payments/CreditCardForm/${guid}/${gatewayId}`,
     ];
     let ccText = "";
     let ccUrl = ccUrls[0];
+    let formIssuerAction = null;
     await tStep("ge_credit_card_form", async () => {
       let last = null;
       for (const u of ccUrls) {
@@ -716,10 +733,20 @@ export async function runDisneyGeHttpPay(opts = {}) {
       urlStructureToken = extractUrlStructureToken(ccText) || urlStructureToken;
       const formMachineId = extractMachineId(ccText);
       if (formMachineId) machineId = formMachineId;
+      const actionPath = (String(ccText).match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1];
+      if (actionPath) {
+        try {
+          formIssuerAction = new URL(actionPath, DISNEY_GE_SECURE).href;
+        } catch {
+          formIssuerAction = actionPath.startsWith("http")
+            ? actionPath
+            : `${DISNEY_GE_SECURE}${actionPath.startsWith("/") ? "" : "/"}${actionPath}`;
+        }
+      }
       return {
         ok: Boolean(ccText),
         status: last?.status,
-        note: `CreditCardForm ${last?.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} url=${ccUrl.replace(guid, "{guid}")}`,
+        note: `CreditCardForm ${last?.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} action=${(formIssuerAction || "").replace(guid, "{guid}") || "none"}`,
       };
     });
 
@@ -756,13 +783,17 @@ export async function runDisneyGeHttpPay(opts = {}) {
       };
     }
 
-    // 6) Issuer — try Disney form action first, then PKC-shaped path
+    // 6) Issuer — CreditCardForm action is authoritative:
+    //    /1/Payments/HandleCreditCardRequestV2/{encoded}/{guid}?mode=13534
+    // Bare /payments/handlecreditcardrequestV2 returns empty 200 — do not stop on that.
+    const issuerMode = opts.issuerMode || "13534";
     const issuerCandidates = [
       opts.issuerUrl,
+      formIssuerAction,
+      `${DISNEY_GE_SECURE}/1/Payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${issuerMode}`,
+      `${DISNEY_GE_SECURE}/payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${issuerMode}`,
       DISNEY_GE_ISSUER_ACTION,
-      `${DISNEY_GE_SECURE}/1/Payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${opts.issuerMode || "13534"}`,
-      `${DISNEY_GE_SECURE}/payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${opts.issuerMode || "13534"}`,
-    ].filter(Boolean);
+    ].filter((u, i, arr) => u && arr.indexOf(u) === i);
 
     const body = buildIssuerFormBody({
       card,
@@ -811,22 +842,26 @@ export async function runDisneyGeHttpPay(opts = {}) {
             const bankHit = Boolean(
               r.sawAuthWire || r.declineOnRedirect || r.bankSignal || transactionId,
             );
-            // Instant CONNECT/fetch fail (<2s) is transport, not "bank may have moved".
+            const emptyOk = Boolean(r.ok && Number(r.textBytes || 0) === 0 && !bankHit && !r.redirectUrl);
+            // Instant CONNECT/fetch fail is transport, not "bank may have moved".
             const slowLost =
               Boolean(r.responseLost) && Number(r.ms || 0) >= 5_000;
+            const authFailed = /Auth|Decline|Fail|Refuse/i.test(statusType);
             const paymentStatus = fraudDetected
               ? "ge_fraud_refused"
-              : r.declineOnRedirect || (bankHit && /Auth|Decline|Fail|Refuse/i.test(statusType))
+              : r.declineOnRedirect || (bankHit && authFailed)
                 ? "declined_or_auth_failed"
                 : bankHit && transactionId
                   ? "declined_or_auth_failed"
-                  : slowLost
-                    ? "pay_submitted_no_response"
-                    : /DataCorruption/i.test(String(txMap.RedirectErrorType || r.bodySnippet || ""))
-                      ? "ge_data_corruption"
-                      : r.ok
-                        ? "pay_submitted_http"
-                        : "issuer_http_failed";
+                  : emptyOk
+                    ? "issuer_empty_response"
+                    : slowLost
+                      ? "pay_submitted_no_response"
+                      : /DataCorruption/i.test(String(txMap.RedirectErrorType || r.bodySnippet || ""))
+                        ? "ge_data_corruption"
+                        : r.ok && (bankHit || Number(r.textBytes || 0) > 0 || r.redirectUrl)
+                          ? "pay_submitted_http"
+                          : "issuer_http_failed";
 
             return {
               ...r,
@@ -853,9 +888,12 @@ export async function runDisneyGeHttpPay(opts = {}) {
           if (
             issuer?.paymentStatus === "declined_or_auth_failed" ||
             issuer?.paymentStatus === "ge_fraud_refused" ||
-            issuer?.paymentStatus === "pay_submitted_http" ||
             issuer?.paymentStatus === "pay_submitted_no_response"
           ) {
+            break;
+          }
+          // Empty 200 / wrong path → try next dispatcher or URL shape
+          if (issuer?.paymentStatus === "pay_submitted_http" && issuer?.bankSignal) {
             break;
           }
         }
@@ -865,12 +903,11 @@ export async function runDisneyGeHttpPay(opts = {}) {
 
       if (
         issuer?.paymentStatus === "declined_or_auth_failed" ||
-        issuer?.paymentStatus === "ge_fraud_refused" ||
-        issuer?.paymentStatus === "pay_submitted_http"
+        issuer?.paymentStatus === "ge_fraud_refused"
       ) {
         break;
       }
-      // Try next URL shape on DataCorruption / hard fail
+      // Try next URL shape on empty / DataCorruption / hard fail
     }
 
     const decline = /decline|auth_failed|fraud_refused/i.test(String(issuer?.paymentStatus || ""));
