@@ -143,10 +143,12 @@ PDP embeds:
 | Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
 | Akamai | **Hyper allowlisted (2026-07-26)** — sensor POST **201 `{success:true}`**, `~0~` ✅ (plateau → script rebind). Home HTML: **no SBSD / no bazade pixel** (sensor script only). |
 | ATC | **Root cause = TLS/JA3, not missing SBSD.** Undici + valid `_abck` + CSRF 200 → `Cart-AddProduct` **AkamaiGHost 403**. Same jar on **node-tls-client `chrome_131`** → **ATC 200** `Product added to cart` + minibag line (Lorcana `050368983992`, 2026-07-26). Checkout defaults Disney to TLS (`DISNEY_TLS=0` / `transport=undici` to override). Exit-IP sensitive — some sticky lines still 403 after solve. |
-| GE token | **`POST` `Globale-GetCartToken`** (empty body) → `{ cartToken, success:true }` after ATC. **GET** returns SFCC 500 even with bag lines. |
+| GE token | **`POST` `Globale-GetCartToken`** → `{ cartToken: <GUID>, success:true }` (= Checkout/v2 GUID; no GEM hop required). GET=500. |
+| Checkout/v2 | `https://webservices.global-e.com/Checkout/v2/{guid}` → 200 Checkout HTML. `encodedMerchantId: **8u87**`. |
+| Issuer | `secure.ges.global-e.com` (PKC family, not Bandai `secure-bandai`) · form `…/payments/handlecreditcardrequestV2` · iframe `…/CreditCardForm/{guid}` |
 | HAR | `experiments/disney-isp-capture.mjs` + hyper labs → `har/disney/` (full HAR in `/tmp/disney-*`) |
 
-**Module assumption:** **TLS chrome_131 + Hyper Akamai warm → sticky AU ISP → CSRF → Cart-AddProduct → bag → POST Globale-GetCartToken → GEM GetCartToken mid 1696 → Checkout/v2 (stop before pay)**. CapSolver optional (SFCC verify still `result:false`).
+**Module assumption:** **TLS chrome_131 + Hyper → sticky AU ISP → CSRF → Cart-AddProduct → POST Globale-GetCartToken → Checkout/v2 (8u87 / secure.ges) → stop before issuer pay**. CapSolver optional.
 
 ---
 

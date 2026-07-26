@@ -277,14 +277,14 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
     });
   }
 
-  const ok = Boolean(atc.ok);
+  const ok = Boolean(atc.ok && (!wantGe || ge?.ok || task.acceptAtcWithoutGe === true));
   return {
     ok,
     steps,
     dryRun,
     placeOrder: task.placeOrder === true,
-    checkoutStage: ge?.cartToken || ge?.gem?.cartToken ? "ge_checkout" : atc.ok ? "cart" : "pre_cart",
-    finalUrl: pdpUrl,
+    checkoutStage: ge?.ok ? "ge_checkout" : atc.ok ? "cart" : "pre_cart",
+    finalUrl: ge?.checkoutV2Url || pdpUrl,
     cookies: ctx.jar?.dump?.() ?? {},
     pid,
     title: pdp.title || null,
@@ -295,12 +295,15 @@ async function runAtcCheckout(task, ctx, session, tStep, steps) {
     ge,
     recaptcha: recaptchaMeta,
     merchantId: DISNEY_GE_MID,
+    encodedMerchantId: ge?.encodedMerchantId || null,
     needsRecaptcha: atc.needsRecaptcha || false,
     recaptchaSitekey: atc.recaptchaSitekey || DISNEY_RECAPTCHA_ENTERPRISE_SITEKEY,
     capsolverConfigured: Boolean(capsolverKey()),
     stoppedBeforePay: true,
-    failedStep: ok
-      ? null
+    failedStep: atc.ok
+      ? wantGe && !ge?.ok
+        ? "ge_handoff"
+        : null
       : atc.needsRecaptcha
         ? "recaptcha_enterprise"
         : atc.atc?.denied

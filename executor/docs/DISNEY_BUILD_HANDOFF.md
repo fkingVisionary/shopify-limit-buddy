@@ -125,8 +125,10 @@ PDP example:
 - [x] Hyper sensor warm works (201 success + valid `_abck`; plateau rebind)  
 - [x] ATC on sticky AU via **TLS chrome_131** (undici alone AkamaiGHost-403s even with `~0~`) — CapSolver optional; SFCC verify still `result:false`  
 - [x] Minibag confirms line after ATC (`pids=050368983992`)  
-- [x] SFCC GE token: **POST** `Globale-GetCartToken` → `cartToken` UUID (GET=500)  
-- [ ] GEM `GetCartToken` mid 1696 → Checkout/v2 URL — discover issuer encoded merchant  
+- [x] SFCC GE token: **POST** `Globale-GetCartToken` → Checkout GUID (GET=500)  
+- [x] Checkout/v2 boots at `webservices…/Checkout/v2/{guid}`; **encodedMerchantId=`8u87`**; issuer host **`secure.ges.global-e.com`** (PKC-class)  
+- [ ] Address/shipping handleaction + risk hydrate + issuer POST (stop until owner OK) — reuse Bandai/PKC GE HTTP patterns in Disney-only code  
+
 
 
 

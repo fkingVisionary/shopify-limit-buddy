@@ -16,13 +16,26 @@ import {
 } from "./disney-session.js";
 import { buildAddToCartFields } from "./disney-cart.js";
 import { buildGetCartTokenParams } from "./bandai-ge-http.js";
-import { DISNEY_GLOBALE_MID, DISNEY_GE_MERCHANT_HASHED } from "./disney-ge.js";
+import {
+  DISNEY_GLOBALE_MID,
+  DISNEY_GE_MERCHANT_HASHED,
+  DISNEY_GE_ENCODED_MERCHANT,
+  DISNEY_GE_SECURE,
+  DISNEY_GE_WEBSERVICES,
+  DISNEY_GE_ISSUER_ACTION,
+} from "./disney-ge.js";
 import { disneyAdapter } from "./disney.js";
 
 assert.equal(DISNEY_GE_MID, "1696");
 assert.equal(DISNEY_GLOBALE_MID, "1696");
 assert.equal(DISNEY_GE_MERCHANT_HASHED, "mZ25");
+assert.equal(DISNEY_GE_ENCODED_MERCHANT, "8u87");
+assert.equal(DISNEY_GE_SECURE, "https://secure.ges.global-e.com");
+assert.equal(DISNEY_GE_WEBSERVICES, "https://webservices.global-e.com");
+assert.match(DISNEY_GE_ISSUER_ACTION, /handlecreditcardrequestV2/i);
 assert.notEqual(DISNEY_GE_MID, "1925");
+assert.notEqual(DISNEY_GE_ENCODED_MERCHANT, "8urc");
+assert.notEqual(DISNEY_GE_ENCODED_MERCHANT, "8u22");
 
 assert.equal(
   disneyController("Cart-AddProduct"),

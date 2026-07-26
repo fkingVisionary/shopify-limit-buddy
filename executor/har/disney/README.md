@@ -45,14 +45,16 @@ So CapSolver is ready for when Hyper clears BM; SFCC verify `result:false` needs
 | `Cart-AddProduct` (TLS chrome_131) | ✅ **200** `Product added to cart` + minibag line (Lorcana `050368983992`) |
 | Home HTML SBSD / pixel | ❌ none (sensor script only; `bm_sv` not required for ATC win) |
 | `Globale-GetCartToken` GET | ❌ SFCC 500 (even with bag) |
-| `Globale-GetCartToken` POST | ✅ `{ cartToken, success: true }` |
-| Proxy flake | tls-client CONNECT 403 after ipify preflight / spray — use proxy-host IP, rotate sticky exit |
+| `Globale-GetCartToken` POST | ✅ `{ cartToken: <Checkout GUID>, success: true }` |
+| Checkout/v2 | ✅ `webservices.global-e.com/Checkout/v2/{guid}` → `encodedMerchantId: 8u87` |
+| Issuer host | `secure.ges.global-e.com` (same family as PKC `8u22`; not Bandai `8urc` / secure-bandai) |
+| Proxy flake | tls-client CONNECT 403 after ipify preflight / spray — use proxy-host IP; Checkout/v2 may need direct undici if CF 429s ISP |
 
 Labs:
 - `experiments/disney-hyper-atc-once.mjs` — TLS (default) Hyper → CapSolver → ATC
 - `experiments/disney-hyper-browser-atc.mjs` — Hyper cookie inject → headed Chrome ATC
 
-**Lock:** Disney ATC needs **JA3 parity** (`node-tls-client` chrome_131 / checkout Disney TLS default). Not SBSD/pixel. GE SFCC token is **POST**.
+**Lock:** ATC = JA3 (`chrome_131`). GE SFCC token = POST GUID. Encoded merchant = **`8u87`**.
 
 ## Confirmed wire
 
