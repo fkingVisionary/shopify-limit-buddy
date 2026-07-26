@@ -23,10 +23,13 @@ npm start
 
 ## Bandai F5 Harvest (opt-in)
 
-Before a Bandai drop: **Harvest** tab → sticky proxy group → desired 1–2 →
-**Start harvest**. Autocheckout claims a warm F5 login bridge (skips Chromium
-launch). Empty bank = normal cold checkout. Stop harvest after the drop to free
-CPU. See `executor/docs/BANDAI_F5_HARVEST.md`.
+Before a Bandai drop: **Harvest** tab (Bandai bank section) → sticky proxy group →
+desired 1–2 → **Start harvest**. Autocheckout claims a warm F5 login bridge (skips
+Chromium launch). Empty bank = normal cold checkout. Stop harvest after the drop to
+free CPU. See `executor/docs/BANDAI_F5_HARVEST.md`.
+
+The same **Harvest** tab also has the **Toymate** CF + spam bank (CapSolver) above
+the Bandai section — arm each independently.
 
 ## Architecture
 
