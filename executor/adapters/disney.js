@@ -320,7 +320,45 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
         })
       : null;
 
-  const warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
+  let warm = await warmDisneyAkamai(session, ctx, { tStep, egressIp: ctx.egressIp });
+  // Fail-path: warm/_abck fail is usually burnt sticky — rotate before giving up.
+  if (!warm.ok && task.allowUnwarmed !== true && task.proxyRotate !== false) {
+    const pool = loadDisneyProxyPool();
+    const curHost = disneyProxyHost(task.proxy);
+    const maxRot = Math.max(0, Math.min(5, Number(task.proxyRotateMax ?? 3) | 0));
+    const candidates = pool
+      .filter((l) => disneyProxyHost(l) !== curHost)
+      .slice(0, maxRot);
+    for (const line of candidates) {
+      const proxyUrl = disneyProxyToUrl(line);
+      if (!proxyUrl) continue;
+      const tRot = Date.now();
+      try {
+        await ctx.dispatcher?.close?.();
+      } catch {
+        /* ignore */
+      }
+      ctx.dispatcher = makeDispatcher(proxyUrl, { forceTls: true });
+      ctx.jar = createJar();
+      ctx.egressIp = null;
+      task.proxy = line;
+      session = createDisneySession(ctx, {});
+      await ensureDisneyEgressIp(task, ctx, tStep);
+      warm = await warmDisneyAkamai(session, ctx, {
+        tStep,
+        egressIp: ctx.egressIp,
+      });
+      steps.push({
+        step: "proxy_rotate_warm",
+        ok: Boolean(warm.ok),
+        ms: Date.now() - tRot,
+        note: warm.ok
+          ? `warm ok after rotate → ${disneyProxyHost(line)}`
+          : `rotate warm fail ${disneyProxyHost(line)}: ${warm.note}`,
+      });
+      if (warm.ok) break;
+    }
+  }
   if (!warm.ok && task.allowUnwarmed !== true) {
     return {
       ok: false,
