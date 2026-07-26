@@ -73,6 +73,36 @@ function disneyProxyHost(raw) {
     ?.split(":")[0] || "";
 }
 
+const LAST_GOOD_PROXY_FILE = "/tmp/disney-last-good-proxy.txt";
+
+function readLastGoodProxy() {
+  try {
+    const line = fs.readFileSync(LAST_GOOD_PROXY_FILE, "utf8").trim();
+    return line && /^\d/.test(line) ? line : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastGoodProxy(raw) {
+  try {
+    if (raw) fs.writeFileSync(LAST_GOOD_PROXY_FILE, `${String(raw).trim()}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Prefer last-good sticky exit first (speed + consistency); fall back to task.proxy. */
+function preferDisneyProxy(task) {
+  if (task.preferLastGoodProxy === false) return task.proxy || null;
+  const last = readLastGoodProxy();
+  if (!last) return task.proxy || null;
+  const pool = loadDisneyProxyPool();
+  const hit = pool.find((l) => disneyProxyHost(l) === disneyProxyHost(last)) || last;
+  if (task.proxy && disneyProxyHost(task.proxy) === disneyProxyHost(hit)) return task.proxy;
+  return hit;
+}
+
 function makeStep(steps, ctx) {
   return async (name, fn) => {
     const s0 = Date.now();
@@ -245,6 +275,32 @@ async function runMonitor(task, ctx, session, tStep, steps) {
 async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout") {
   const wantPay = wantsDisneyGePay(task, mode);
   const dryRun = task.placeOrder !== true;
+
+  // Sticky prefer: start on last ATC-winning exit when pool contains it.
+  const preferred = preferDisneyProxy(task);
+  if (preferred && preferred !== task.proxy) {
+    const proxyUrl = disneyProxyToUrl(preferred);
+    if (proxyUrl) {
+      try {
+        await ctx.dispatcher?.close?.();
+      } catch {
+        /* ignore */
+      }
+      ctx.dispatcher = makeDispatcher(proxyUrl, {
+        forceTls: ctx.dispatcher?.transport === "tls" || task.forceTls !== false,
+      });
+      ctx.jar = createJar();
+      ctx.egressIp = null;
+      task.proxy = preferred;
+      session = createDisneySession(ctx, {});
+      steps.push({
+        step: "proxy_prefer",
+        ok: true,
+        note: `start on last-good exit ${disneyProxyHost(preferred)}`,
+      });
+    }
+  }
+
   await ensureDisneyEgressIp(task, ctx, tStep);
 
   const pdpUrl = resolveDisneyPdpUrl(task);
@@ -346,8 +402,11 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
 
   let atc = await addDisneyToCart(session, ctx, atcOpts);
 
-  // Fail-path only: one sensor refresh + ATC retry on Akamai deny (keeps win path fast).
-  if (!atc.ok && atc.atc?.denied && task.atcRetry !== false) {
+  // Fail-path only: sensor refresh retry when _abck looks unsolved. If marker is
+  // already ~0~, deny is almost always exit-burn — skip straight to rotate.
+  const abck = String(ctx.jar?.get?.("_abck") || "");
+  const abckValid = /~0~/.test(abck);
+  if (!atc.ok && atc.atc?.denied && task.atcRetry !== false && !abckValid) {
     await refreshDisneyAkamai(session, ctx, {
       tStep,
       pageUrl: pdpUrl,
@@ -364,14 +423,28 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
       ok: Boolean(atc.ok),
       note: atc.ok ? "ATC ok after sensor refresh retry" : `ATC retry still fail: ${atc.note}`,
     });
+  } else if (!atc.ok && atc.atc?.denied && abckValid) {
+    steps.push({
+      step: "atc_retry",
+      ok: true,
+      note: "skipped sensor retry — _abck ~0~ already; treat as exit burn → proxy rotate",
+    });
   }
 
-  // Fail-path only: sticky exit often burns ATC despite ~0~ — rotate resi.proxies once.
+  // Fail-path only: sticky exit often burns ATC despite ~0~ — rotate resi.proxies.
   if (!atc.ok && atc.atc?.denied && task.proxyRotate !== false) {
     const pool = loadDisneyProxyPool();
     const curHost = disneyProxyHost(task.proxy);
-    const maxRot = Math.max(0, Math.min(3, Number(task.proxyRotateMax ?? 2) | 0));
-    const candidates = pool.filter((l) => disneyProxyHost(l) !== curHost).slice(0, maxRot);
+    const maxRot = Math.max(0, Math.min(5, Number(task.proxyRotateMax ?? 3) | 0));
+    // Prefer last-good, then remaining pool (skip current).
+    const lastHost = disneyProxyHost(readLastGoodProxy() || "");
+    const rest = pool.filter((l) => disneyProxyHost(l) !== curHost);
+    rest.sort((a, b) => {
+      const ah = disneyProxyHost(a) === lastHost ? 0 : 1;
+      const bh = disneyProxyHost(b) === lastHost ? 0 : 1;
+      return ah - bh;
+    });
+    const candidates = rest.slice(0, maxRot);
     for (const line of candidates) {
       const proxyUrl = disneyProxyToUrl(line);
       if (!proxyUrl) continue;
@@ -430,10 +503,13 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
       if (atc.ok) {
         recaptchaToken = rotateToken;
         warm.note = `${warm.note || ""} | rotated→${disneyProxyHost(line)}`;
+        writeLastGoodProxy(line);
         break;
       }
     }
   }
+
+  if (atc.ok && task.proxy) writeLastGoodProxy(task.proxy);
 
   let ge = null;
   const wantGe =
