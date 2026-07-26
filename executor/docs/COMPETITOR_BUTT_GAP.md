@@ -60,7 +60,7 @@ Do **not** wait on new stores to ship 1–2 and 6 — those raise win-rate on ev
 | **Toymate** | Listed | Agen restore track (CF+EQL) | **Keep parallel** — agen + monitor; ATC when CF ready |
 | **Costco** | Listed | Dig done (`COSTCO_AU_MODULE.md`) | Strong Hyper fit (Akamai+Kasada) — **Phase 2 after Bandai** |
 | **Best & Less** | Listed | **Not on scoreboard** | Soft probe: Express + CloudFront; agency claims **SAP Commerce**. Fashion FCFS — **research dig next** if yield justifies |
-| **Disney Store** | Listed | Scoreboard L (SFCC + Akamai/CF + reCAPTCHA + Global‑e) | After Bandai GE experience (GE reuse) |
+| **Disney Store** | Listed | Dig + handoff done | SFCC + Akamai + GE **1696** + OneID — `DISNEY_STORE_MODULE.md` / `DISNEY_BUILD_HANDOFF.md` |
 | **Pokémon Center** | Listed | Dig done (`POKEMON_CENTRE_MODULE.md`) | **High priority Phase 2** — Incapsula+DD (Hyper ✅) + hCaptcha gap |
 
 ### Coins

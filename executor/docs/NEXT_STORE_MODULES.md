@@ -48,7 +48,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 11 | **Topps (US/JP+)** | Backlog (Hyper ❌) | CF + captcha TBD | Shopify per-region | L — `TOPPS_MODULE.md` |
 | 12 | Toymate | Agen restore (on BUTT) | CF + EQL | BigCommerce | M–L |
 | 13 | EB Games | Backlog (on BUTT) | CF | Custom .NET | L |
-| 14 | Disney Store | After Bandai GE (on BUTT) | Akamai+CF+reCAPTCHA | SFCC + Global‑e | L |
+| 14 | **Disney Store AU** | Dig done — build after GE reuse (on BUTT) | Akamai ✅ + CF + reCAPTCHA ❌ | SFCC + Global‑e **1696** + OneID | L — `DISNEY_STORE_MODULE.md` |
 | 15 | Best & Less | Watch (on BUTT; dig TBD) | Soft Express/CF | SAP Commerce claimed | M |
 | 16 | Pop Mart AU | Watch | Cloudflare | Custom / CF | L |
 | — | **Kmart** | **BENCHED** | Akamai | Existing adapter | — |
@@ -258,9 +258,13 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 - **Membership required** online (card → register + reCAPTCHA). No free agen — membership vault.
 - Pay: Visa / Mastercard / Apple Pay. Best Hyper reuse after Target once Kasada wired.
 
-### Disney Store AU — `disneystore.com.au`
-- SFCC `Sites-DisneyStoreAUNZ` + `_abck`/`bm_sz` + CF + reCAPTCHA Enterprise + Global‑e.
-- Same Global‑e class as Bandai; lower OP‑style urgency.
+### Disney Store AU — `disneystore.com.au` — **full dig:** [`DISNEY_STORE_MODULE.md`](./DISNEY_STORE_MODULE.md) · handoff [`DISNEY_BUILD_HANDOFF.md`](./DISNEY_BUILD_HANDOFF.md)
+- **SFCC** `Sites-DisneyStoreAUNZ-Site` / `en_AU` / realm `BGSX` + **Akamai** + CF.
+- Auth: **Disney OneID** → `/ocapi/cc/login`; CSRF `CSRF-Generate`.
+- ATC: `POST …/Cart-AddProduct` — DC **403** Akamai without warm; bag `/bag` soft.
+- Pay: **Global-e mid 1696** (vs Bandai 1925); reCAPTCHA Enterprise `6LfTl6Ap…`.
+- Catalog soft: suggest + sitemap (~2.3k); Lorcana-heavy. NZ under `/nz/`.
+- Build after Bandai GE reuse; on BUTT list.
 
 ### Niche TCG (Drop Store / Grailborne / GengStore)
 - Mostly **Shopify + CF**; membership gates common. Crowded small-bot space — low priority vs Bandai/JB MSRP.
@@ -351,7 +355,7 @@ Without `X-G1-Area-Code`, most endpoints return **500**. With it: full JSON.
 | uniqlo.com/au | 200 + Akamai `_abck`/`bm_sz` |
 | thegoodguys.com.au | Shopify Oxygen/Hydrogen + CF |
 | popmart.com/au | CF `__cf_bm` |
-| disneystore.com.au | 200 SFCC + Akamai cookies + Global‑e + reCAPTCHA |
+| disneystore.com.au | 200 SFCC AUNZ; Akamai+CF; GE mid **1696**; OneID; ATC POST 403 DC; see `DISNEY_STORE_MODULE.md` |
 | shop.topps.com / shop-jp.topps.com | CF 403 branded; UCP 200; `*.myshopify.com/meta.json` 200 — see `TOPPS_MODULE.md` |
 | 213d22-a1 / topps-jp.myshopify.com | Soft meta; products.json often 429 |
 

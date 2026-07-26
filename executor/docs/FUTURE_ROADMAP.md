@@ -58,7 +58,7 @@ Wire missing solvers in `antibot.js` once, then adapters. Prefer Hyper-native + 
 | 2f | Harvey Norman / FL / Platypus | Incapsula / Kasada / DD | scoreboard |
 | — | **Kmart / Target** | — | **BENCHED** |
 | later | Best & Less dig | SAP/Express suspected | Not yet researched |
-| later | Disney Store | SFCC + GE | After Bandai GE |
+| later | **Disney Store AU** | SFCC + Akamai + GE **1696** + OneID | `DISNEY_STORE_MODULE.md` · handoff `DISNEY_BUILD_HANDOFF.md` |
 
 ---
 
@@ -96,5 +96,7 @@ Topps: one adapter × region table (`shop.topps.com` / `shop-jp.topps.com` / EU 
 | `hyper-solutions-brief.md` | Hyper vendor API notes |
 | `POKEMON_CENTRE_MODULE.md` | Pokémon Centre AU dig (Incapsula+DD+GE) |
 | `TOPPS_MODULE.md` | Topps multi-region (US/JP + EU/IN/BR Shopify fleet) |
+| `DISNEY_STORE_MODULE.md` | Disney Store AU dig (SFCC + GE 1696 + OneID) |
+| `DISNEY_BUILD_HANDOFF.md` | Disney build handoff + pasteable agent prompt |
 | `COMPETITOR_BUTT_GAP.md` | BUTT feature + site gap vs us (Kmart/Target benched) |
 | `FUTURE_ROADMAP.md` | This plan |
