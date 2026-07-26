@@ -622,6 +622,28 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
           ? String(task.disneyMode).toLowerCase()
           : "pay"
         : undefined,
+    disneyMonitorMode:
+      storeId === "disney" && String(task.disneyMode || "") === "monitor"
+        ? ["global", "local"].includes(String(task.disneyMonitorMode || "").toLowerCase())
+          ? String(task.disneyMonitorMode).toLowerCase()
+          : "local"
+        : undefined,
+    disneyWatchSku:
+      storeId === "disney" && typeof task.disneyWatchSku === "string"
+        ? task.disneyWatchSku.trim()
+        : undefined,
+    disneyWatchKeywords:
+      storeId === "disney" && typeof task.disneyWatchKeywords === "string"
+        ? task.disneyWatchKeywords.trim()
+        : undefined,
+    disneyMonitorIntervalMs:
+      storeId === "disney" && task.disneyMode === "monitor"
+        ? Math.max(2000, Number(task.disneyMonitorIntervalMs) || 10000)
+        : undefined,
+    disneyMonitorDelayMs:
+      storeId === "disney" && task.disneyMode === "monitor"
+        ? Math.max(0, Number(task.disneyMonitorDelayMs) || 0)
+        : undefined,
     // Pokémon Centre-only fields (ignored by other stores).
     pcMode:
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"

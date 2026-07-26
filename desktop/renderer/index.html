@@ -59,12 +59,34 @@
               <option value="pay" selected>Autocheckout (ATC → GE pay)</option>
               <option value="atc">ATC only</option>
               <option value="warm">Akamai warm only</option>
-              <option value="monitor">PDP monitor</option>
+              <option value="monitor">Disney — Monitor</option>
             </select>
             <p class="field-hint">
               Autocheckout uses a harvested Akamai+CapSolver session when the Harvest tab bank has one;
               empty bank = cold path (still works, slower). Same sticky proxy group as harvest recommended.
             </p>
+            <div id="taskDisneyMonitorWrap" hidden>
+              <label>Monitor source</label>
+              <select id="taskDisneyMonitorMode">
+                <option value="local">Task-local — my proxies + interval</option>
+                <option value="global">Global — filter shared monitor events</option>
+              </select>
+              <p class="field-hint">
+                Global does <strong>not</strong> add your keywords to the shared poll — it only matches
+                SKU/keywords against what the global Disney monitor already captured. Local uses this
+                task’s proxy group and interval (SFCC search PLP).
+              </p>
+              <label>Watch SKU / pid <span class="optional">(optional)</span></label>
+              <input id="taskDisneyWatchSku" placeholder="050368983992" autocomplete="off" />
+              <label>Watch keywords <span class="optional">(optional if SKU set)</span></label>
+              <input id="taskDisneyWatchKeywords" placeholder="lorcana, stitch" autocomplete="off" />
+              <div id="taskDisneyMonitorLocalOpts">
+                <label>Poll interval (ms)</label>
+                <input id="taskDisneyMonitorIntervalMs" type="number" min="2000" step="1000" value="10000" />
+                <label>Start delay (ms)</label>
+                <input id="taskDisneyMonitorDelayMs" type="number" min="0" step="500" value="0" />
+              </div>
+            </div>
           </div>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>

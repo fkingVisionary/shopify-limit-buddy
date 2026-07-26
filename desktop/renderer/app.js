@@ -128,7 +128,11 @@ function syncTaskFormForStore() {
         mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
     } else if (disney) {
       label.textContent =
-        mode === "warm" ? "Store (auto)" : mode === "monitor" ? "PDP URL (optional)" : "Product URL (PDP)";
+        mode === "warm"
+          ? "Store (auto)"
+          : mode === "monitor"
+            ? "PDP URL / pid (optional — or use Watch fields)"
+            : "Product URL (PDP)";
     } else if (pc) {
       label.textContent =
         mode === "edge"
@@ -158,6 +162,13 @@ function syncTaskFormForStore() {
           : mode === "monitor"
             ? "+pokemon -tin"
             : "https://www.toymate.com.au/…";
+    } else if (disney) {
+      input.placeholder =
+        mode === "warm"
+          ? "https://www.disneystore.com.au/"
+          : mode === "monitor"
+            ? "optional PDP / pid — prefer Watch SKU + keywords below"
+            : "https://www.disneystore.com.au/…-050368983992.html";
     } else if (pc) {
       input.placeholder =
         mode === "edge"
@@ -188,11 +199,19 @@ function syncTaskFormForStore() {
     const src = $("taskBandaiMonitorMode")?.value || "local";
     bMonLocal.hidden = !bandai || mode !== "monitor" || src !== "local";
   }
+  const dMon = $("taskDisneyMonitorWrap");
+  if (dMon) dMon.hidden = !disney || mode !== "monitor";
+  const dMonLocal = $("taskDisneyMonitorLocalOpts");
+  if (dMonLocal) {
+    const src = $("taskDisneyMonitorMode")?.value || "local";
+    dMonLocal.hidden = !disney || mode !== "monitor" || src !== "local";
+  }
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) {
     placeWrap.hidden =
       (toy && mode !== "checkout") ||
       (bandai && mode !== "checkout") ||
+      (disney && mode !== "pay" && mode !== "checkout" && mode !== "ge") ||
       (pc && mode !== "checkout");
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
@@ -748,6 +767,15 @@ document.body.addEventListener("click", async (e) => {
       $("taskBandaiWatchKeywords").value = task.bandaiWatchKeywords || "";
     if ($("taskBandaiMonitorIntervalMs"))
       $("taskBandaiMonitorIntervalMs").value = task.bandaiMonitorIntervalMs || 10000;
+    if ($("taskDisneyMonitorMode"))
+      $("taskDisneyMonitorMode").value = task.disneyMonitorMode || "local";
+    if ($("taskDisneyWatchSku")) $("taskDisneyWatchSku").value = task.disneyWatchSku || "";
+    if ($("taskDisneyWatchKeywords"))
+      $("taskDisneyWatchKeywords").value = task.disneyWatchKeywords || "";
+    if ($("taskDisneyMonitorIntervalMs"))
+      $("taskDisneyMonitorIntervalMs").value = task.disneyMonitorIntervalMs || 10000;
+    if ($("taskDisneyMonitorDelayMs"))
+      $("taskDisneyMonitorDelayMs").value = task.disneyMonitorDelayMs || 0;
     if ($("taskBandaiMonitorDelayMs"))
       $("taskBandaiMonitorDelayMs").value = task.bandaiMonitorDelayMs || 0;
     if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
@@ -871,6 +899,20 @@ function readTaskForm() {
         : undefined,
     bandaiMonitorDelayMs:
       store === "bandai" ? Number($("taskBandaiMonitorDelayMs")?.value) || 0 : undefined,
+    disneyMonitorMode:
+      store === "disney" && $("taskDisneyMode")?.value === "monitor"
+        ? $("taskDisneyMonitorMode")?.value || "local"
+        : undefined,
+    disneyWatchSku:
+      store === "disney" ? $("taskDisneyWatchSku")?.value?.trim() || "" : undefined,
+    disneyWatchKeywords:
+      store === "disney" ? $("taskDisneyWatchKeywords")?.value?.trim() || "" : undefined,
+    disneyMonitorIntervalMs:
+      store === "disney"
+        ? Number($("taskDisneyMonitorIntervalMs")?.value) || 10000
+        : undefined,
+    disneyMonitorDelayMs:
+      store === "disney" ? Number($("taskDisneyMonitorDelayMs")?.value) || 0 : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
@@ -897,6 +939,8 @@ if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForSto
 if ($("taskDisneyMode")) $("taskDisneyMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMonitorMode"))
   $("taskBandaiMonitorMode").onchange = () => syncTaskFormForStore();
+if ($("taskDisneyMonitorMode"))
+  $("taskDisneyMonitorMode").onchange = () => syncTaskFormForStore();
 if ($("taskPcMode")) $("taskPcMode").onchange = () => syncTaskFormForStore();
 if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
 if ($("taskBandaiAccountAssign"))

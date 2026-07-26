@@ -15,6 +15,7 @@ export function parseTaskWatch(task = {}) {
       task.sku ||
       task.watchSku ||
       task.bandaiWatchSku ||
+      task.disneyWatchSku ||
       "",
   ).trim();
   if (skuRaw) {
@@ -24,18 +25,27 @@ export function parseTaskWatch(task = {}) {
     }
   }
 
-  // PDP URL → product code segment when it looks like /item/CODE
+  // PDP URL → product code segment when it looks like /item/CODE (Bandai)
   const url = String(task.pdpUrl || task.input || "").trim();
   const m = url.match(/\/item\/([A-Za-z0-9_-]+)/i);
   if (m?.[1]) productIds.add(m[1].toUpperCase());
 
-  // Bare product code in input (Bandai N… / A… style or NAI…)
+  // Disney Store AU PDP → trailing pid before .html
+  const disneyPid = url.match(/-(\d{6,})\.html(?:[?#]|$)/i);
+  if (disneyPid?.[1]) productIds.add(disneyPid[1].toUpperCase());
+
+  // Bare product code in input (Bandai N… / A… style or Disney numeric pid)
   if (url && !/^https?:\/\//i.test(url) && /^[A-Za-z0-9_-]+$/.test(url)) {
     productIds.add(url.toUpperCase());
   }
 
   const kwRaw = String(
-    task.keywords || task.watchKeywords || task.bandaiWatchKeywords || task.keyword || "",
+    task.keywords ||
+      task.watchKeywords ||
+      task.bandaiWatchKeywords ||
+      task.disneyWatchKeywords ||
+      task.keyword ||
+      "",
   ).trim();
   if (kwRaw) {
     for (const part of kwRaw.split(/[,|]/)) {
@@ -76,11 +86,16 @@ export function eventMatchesWatch(ev, watch) {
 
 /**
  * True if this task should use the global hub vs local polling.
+ * Store-agnostic: Bandai + Disney (and generic monitorMode).
  * @param {object} task
  */
-export function resolveBandaiMonitorMode(task = {}) {
+export function resolveMonitorMode(task = {}) {
   const raw = String(
-    task.bandaiMonitorMode || task.monitorMode || task.monitorSource || "",
+    task.disneyMonitorMode ||
+      task.bandaiMonitorMode ||
+      task.monitorMode ||
+      task.monitorSource ||
+      "",
   )
     .toLowerCase()
     .trim();
@@ -88,8 +103,18 @@ export function resolveBandaiMonitorMode(task = {}) {
   if (raw === "local" || raw === "task" || raw === "sidecar") return "local";
   if (raw === "off" || raw === "none" || raw === "disabled") return "off";
 
-  // Legacy: bandaiMode=monitor without explicit source → local (own proxies).
-  const mode = String(task.bandaiMode || "").toLowerCase();
+  // Legacy: *Mode=monitor without explicit source → local (own proxies).
+  const mode = String(task.disneyMode || task.bandaiMode || task.mode || "").toLowerCase();
   if (mode === "monitor") return "local";
   return "off";
+}
+
+/** @deprecated use resolveMonitorMode — kept for Bandai call sites / tests */
+export function resolveBandaiMonitorMode(task = {}) {
+  return resolveMonitorMode(task);
+}
+
+/** Alias for Disney call sites */
+export function resolveDisneyMonitorMode(task = {}) {
+  return resolveMonitorMode(task);
 }

@@ -4,7 +4,7 @@
 import { createBandaiStockMonitor } from "./bandai-stock-monitor.js";
 import { createTaskStateMachine } from "./task-state-machine.js";
 import { attachStockCheckoutBridge } from "./stock-checkout-bridge.js";
-import { eventMatchesWatch, parseTaskWatch, resolveBandaiMonitorMode } from "./event-filter.js";
+import { eventMatchesWatch, parseTaskWatch, resolveMonitorMode } from "./event-filter.js";
 
 /**
  * @param {object} [opts]
@@ -44,7 +44,7 @@ export function createGlobalMonitorHub(opts = {}) {
   }
 
   function subscribeTask(task, { onHit } = {}) {
-    const mode = resolveBandaiMonitorMode(task);
+    const mode = resolveMonitorMode(task);
     if (mode !== "global") {
       return { ok: false, error: `not_global_mode:${mode}` };
     }

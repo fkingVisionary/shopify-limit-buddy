@@ -1,8 +1,10 @@
-// Task-local Bandai monitor — uses the task's own proxies + interval.
+// Task-local stock monitor — uses the task's own proxies + interval.
 // Does not touch the global poll keyword set.
+// Supports Bandai (default) and Disney Store AU.
 
 import { EventEmitter } from "node:events";
 import { createBandaiStockMonitor } from "./bandai-stock-monitor.js";
+import { createDisneyStockMonitor } from "./disney-stock-monitor.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { parseTaskWatch } from "./event-filter.js";
 
@@ -12,6 +14,9 @@ import { parseTaskWatch } from "./event-filter.js";
  * @param {object} [opts]
  */
 export function createTaskLocalMonitor(task, opts = {}) {
+  const store = String(task.store || task.monitorStore || opts.store || "bandai").toLowerCase();
+  const isDisney = store === "disney" || store === "disneystore";
+
   const watch = parseTaskWatch(task);
   const keywords =
     watch.keywords.length > 0
@@ -23,19 +28,30 @@ export function createTaskLocalMonitor(task, opts = {}) {
     throw new Error("local monitor needs keywords or productId/SKU");
   }
 
+  const intervalEnv = isDisney
+    ? process.env.DISNEY_TASK_MONITOR_INTERVAL_MS
+    : process.env.BANDAI_TASK_MONITOR_INTERVAL_MS;
+
   const intervalMs = Math.max(
     2_000,
     Number(
       task.monitorIntervalMs ||
+        task.disneyMonitorIntervalMs ||
         task.bandaiMonitorIntervalMs ||
         task.intervalMs ||
         opts.intervalMs ||
-        process.env.BANDAI_TASK_MONITOR_INTERVAL_MS,
+        intervalEnv,
     ) || 10_000,
   );
   const delayMs = Math.max(
     0,
-    Number(task.monitorDelayMs || task.bandaiMonitorDelayMs || task.delayMs || opts.delayMs) || 0,
+    Number(
+      task.monitorDelayMs ||
+        task.disneyMonitorDelayMs ||
+        task.bandaiMonitorDelayMs ||
+        task.delayMs ||
+        opts.delayMs,
+    ) || 0,
   );
 
   const proxyLines = normalizeProxyLines(
@@ -59,14 +75,21 @@ export function createTaskLocalMonitor(task, opts = {}) {
     cooldownMs: Number(task.monitorCooldownMs) || 5 * 60_000,
   });
 
-  const monitor = createBandaiStockMonitor({
-    area: task.bandaiArea || task.area || "au",
-    intervalMs,
-    keywords,
-    searchLimit: Number(task.monitorSearchLimit) || 40,
-    stickyPolls: Number(task.monitorStickyPolls) || 3,
-    proxyPool,
-  });
+  const monitor = isDisney
+    ? createDisneyStockMonitor({
+        intervalMs,
+        keywords,
+        stickyPolls: Number(task.monitorStickyPolls) || 3,
+        proxyPool,
+      })
+    : createBandaiStockMonitor({
+        area: task.bandaiArea || task.area || "au",
+        intervalMs,
+        keywords,
+        searchLimit: Number(task.monitorSearchLimit) || 40,
+        stickyPolls: Number(task.monitorStickyPolls) || 3,
+        proxyPool,
+      });
 
   const bus = new EventEmitter();
   let started = false;
@@ -104,6 +127,7 @@ export function createTaskLocalMonitor(task, opts = {}) {
       intervalMs,
       delayMs,
       mode: "local",
+      store: isDisney ? "disney" : "bandai",
     }),
   };
 }
