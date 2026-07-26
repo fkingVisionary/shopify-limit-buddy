@@ -1,0 +1,6 @@
+# Datacenter proxies for Bandai *stock monitor* only (not checkout).
+# One per line: host:port:user:pass
+# Set BANDAI_MONITOR_DC_FILE to override this path.
+#
+# Example:
+# dc.example.com:8000:user:pass

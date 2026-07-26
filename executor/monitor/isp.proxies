@@ -1,0 +1,6 @@
+# ISP proxies for Bandai *stock monitor* only (not checkout).
+# One per line: host:port:user:pass   or  http://user:pass@host:port
+# Set BANDAI_MONITOR_ISP_FILE to override this path.
+#
+# Example:
+# proxy.example.com:10000:user:pass

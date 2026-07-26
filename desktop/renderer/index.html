@@ -86,11 +86,29 @@
           <div id="taskBandaiOpts" hidden>
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
-              <option value="checkout">Autocheckout (login + ATC)</option>
-              <option value="account_gen">Account gen (IMAP + SMSPool)</option>
-              <option value="monitor">Monitor (search / PDP)</option>
+              <option value="checkout">Bandai — Autocheckout</option>
+              <option value="account_gen">Bandai — Account gen</option>
+              <option value="monitor">Bandai — Monitor</option>
               <option value="chance">Chance applyDraw</option>
             </select>
+            <div id="taskBandaiMonitorWrap" hidden>
+              <label>Monitor source</label>
+              <select id="taskBandaiMonitorMode">
+                <option value="local">Task-local — my proxies + interval</option>
+                <option value="global">Global — filter shared monitor events</option>
+              </select>
+              <p class="field-hint">Global does <strong>not</strong> add your keywords to the shared poll — it only matches SKU/keywords against what the global monitor already captured. Local uses this task’s proxy group and interval.</p>
+              <label>Watch SKU / product code <span class="optional">(optional)</span></label>
+              <input id="taskBandaiWatchSku" placeholder="N2903432003 or NAI…" autocomplete="off" />
+              <label>Watch keywords <span class="optional">(optional if SKU set)</span></label>
+              <input id="taskBandaiWatchKeywords" placeholder="ONE PIECE, GUNDAM" autocomplete="off" />
+              <div id="taskBandaiMonitorLocalOpts">
+                <label>Poll interval (ms)</label>
+                <input id="taskBandaiMonitorIntervalMs" type="number" min="2000" step="1000" value="10000" />
+                <label>Start delay (ms)</label>
+                <input id="taskBandaiMonitorDelayMs" type="number" min="0" step="500" value="0" />
+              </div>
+            </div>
             <div id="taskBandaiCheckoutModeWrap" hidden>
               <label>Checkout pay path</label>
               <select id="taskBandaiCheckoutMode">
