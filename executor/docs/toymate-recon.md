@@ -22,6 +22,18 @@ Pre-warm CapSolver off the critical path via the desktop **Harvest** tab:
 - Adapter: fresh harvest skips `cf_warm` CapSolver and prefers harvested spam token before on-demand solve.
 - Sessions are single-use + IP-bound (same sticky exit). Empty bank = on-demand CapSolver fallback.
 
+### Proof (2026-07-26)
+
+Script: `scripts/toymate-harvest-checkout-proof.mjs` · artifact: `docs/toymate-harvest-checkout-proof.json`
+
+| Path | Wall | CF | Spam critical | Result |
+|------|------|----|---------------|--------|
+| Harvest (pre-warm) | **54s** | minted | spam via proxy ~13s | bank ready |
+| Checkout **with** harvest | **36s** | **0ms** (`harvested cf_clearance`) | apply REST **1.3s** | BigPay **30102** declined |
+| Checkout **without** (baseline) | **144s** | **44s** CapSolver | **69s** CapSolver | BigPay **30102** declined |
+
+Checkout wall **~4× faster** with a pre-warmed bank (~108s saved on the critical path). Harvest cost sits off-drop when the bank is filled ahead of time.
+
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.

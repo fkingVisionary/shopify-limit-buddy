@@ -69,6 +69,8 @@ on-demand CapSolver (slower, still works). CF ~25 min TTL · spam ~100s.
 
 Executor: `POST /toymate/harvest` · adapter skips warm when `harvestedSession` is fresh.
 
+**Proof (2026-07-26):** harvested checkout **36s** → BigPay decline vs baseline **144s** on-demand CapSolver (~4×). See `executor/docs/toymate-harvest-checkout-proof.json`.
+
 ## Bandai (Premium Bandai / p-bandai.com)
 
 Shipped in the same Electron → local `executor/` sidecar path as Kmart.
