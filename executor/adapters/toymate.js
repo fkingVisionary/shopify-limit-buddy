@@ -764,7 +764,36 @@ export const toymateAdapter = {
     }
 
     // ── Checkout (guest or logged-in) ──────────────────────────────────
-    await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
+    const harvested = task.harvestedSession && typeof task.harvestedSession === "object"
+      ? task.harvestedSession
+      : null;
+    const harvestedFresh =
+      harvested &&
+      harvested.cookies &&
+      typeof harvested.cookies === "object" &&
+      (harvested.cfExpiresAt == null || Number(harvested.cfExpiresAt) > Date.now());
+
+    if (harvestedFresh) {
+      applyCookiesToJar(ctx.jar, harvested.cookies);
+      if (harvested.userAgent) {
+        ctx.extraHeaders = {
+          ...(ctx.extraHeaders || {}),
+          "user-agent": harvested.userAgent,
+        };
+      }
+      await tStep("cf_warm", async () => {
+        const ageMs = harvested.harvestedAt
+          ? Date.now() - Number(harvested.harvestedAt)
+          : null;
+        return {
+          ok: true,
+          status: 200,
+          note: `harvested cf_clearance${ageMs != null ? ` age=${Math.round(ageMs / 1000)}s` : ""} host=${harvested.proxyHost || "?"}`,
+        };
+      });
+    } else {
+      await warmCloudflare(ctx, www, proxyRaw, steps, tStep);
+    }
 
     const account = accountFromTask(task);
     if (account?.email && account?.password) {
@@ -1014,6 +1043,15 @@ export const toymateAdapter = {
     });
 
     let captchaToken = task.captchaToken || null;
+    // Prefer harvested spam token (still valid) before CapSolver spend.
+    if (
+      !captchaToken &&
+      harvestedFresh &&
+      harvested.captchaToken &&
+      (harvested.spamExpiresAt == null || Number(harvested.spamExpiresAt) > Date.now())
+    ) {
+      captchaToken = harvested.captchaToken;
+    }
     let spamCleared = false;
     let spamRestAttempted = false;
     await tStep("checkout_spam", async () => {

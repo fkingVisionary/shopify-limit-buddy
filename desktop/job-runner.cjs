@@ -253,6 +253,24 @@ function buildToymatePayload({ task, profile, proxyRaw, placeOrder, rotateSessio
           : null,
       account: resolvedAccount,
       accountAssignSource,
+      harvestedSession:
+        task.harvestedSession && typeof task.harvestedSession === "object"
+          ? {
+              id: task.harvestedSession.id || null,
+              proxy: task.harvestedSession.proxy || null,
+              proxyHost: task.harvestedSession.proxyHost || null,
+              userAgent: task.harvestedSession.userAgent || null,
+              cookies: task.harvestedSession.cookies || {},
+              captchaToken: task.harvestedSession.captchaToken || null,
+              harvestedAt: task.harvestedSession.harvestedAt || null,
+              cfExpiresAt: task.harvestedSession.cfExpiresAt || null,
+              spamExpiresAt: task.harvestedSession.spamExpiresAt || null,
+            }
+          : null,
+      captchaToken:
+        task.captchaToken ||
+        task.harvestedSession?.captchaToken ||
+        null,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -1073,6 +1091,8 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
+    // Harvested CF clearance is IP-bound — do not rotate off that exit.
+    const harvestLocked = Boolean(job.task?.harvestedSession?.cookies);
 
     // Sticky: use the listed session- token first (user-provided exits).
     // Always minting a random session on attempt 1 ignored the proxy list and
@@ -1085,11 +1105,14 @@ async function runOne(job) {
 
     // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
     // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
-    const maxProxyRetries = sticky
-      ? Math.min(4, Math.max(2, entries.length || 2))
-      : entries.length > 1
-        ? Math.min(3, entries.length - 1)
-        : 0;
+    // Skip entirely when a harvested Toymate CF session is locked to this proxy.
+    const maxProxyRetries = harvestLocked
+      ? 0
+      : sticky
+        ? Math.min(4, Math.max(2, entries.length || 2))
+        : entries.length > 1
+          ? Math.min(3, entries.length - 1)
+          : 0;
     let proxyRetries = 0;
     while (
       !result.ok &&
