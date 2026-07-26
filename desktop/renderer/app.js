@@ -535,7 +535,79 @@ function applyState(next) {
   renderResults();
   renderSettings();
   renderHarvest(next.harvest || null);
+  renderBandaiHarvest();
   engineUi();
+}
+
+function renderBandaiHarvest() {
+  const hv = state?.bandaiHarvest || {};
+  const cfg = hv.config || {};
+  const sel = $("bhProxyGroup");
+  if (sel) {
+    const cur = sel.value || cfg.proxyGroupId || "";
+    sel.innerHTML =
+      `<option value="">Select proxy group…</option>` +
+      (state.proxyGroups || [])
+        .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
+        .join("");
+    if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+    else if (cfg.proxyGroupId) sel.value = cfg.proxyGroupId;
+  }
+  if ($("bhDesired") && document.activeElement !== $("bhDesired")) {
+    $("bhDesired").value = cfg.desired != null ? cfg.desired : 2;
+  }
+  if ($("bhArea") && document.activeElement !== $("bhArea") && cfg.area) {
+    $("bhArea").value = cfg.area;
+  }
+  if ($("bhReady")) $("bhReady").textContent = String(hv.ready ?? 0);
+  if ($("bhSolved")) $("bhSolved").textContent = String(hv.solvedCount ?? 0);
+  if ($("bhFailed")) $("bhFailed").textContent = String(hv.failedCount ?? 0);
+  if ($("bhDesiredLabel")) $("bhDesiredLabel").textContent = String(cfg.desired ?? 2);
+
+  const line = $("bandaiHarvestStatusLine");
+  if (line) {
+    if (hv.running && hv.busy) line.textContent = "Harvesting… minting F5 bridge";
+    else if (hv.running) line.textContent = `Harvest armed · ready ${hv.ready ?? 0}`;
+    else line.textContent = "Harvest stopped";
+  }
+  const err = $("bandaiHarvestError");
+  if (err) {
+    if (hv.lastError) {
+      err.hidden = false;
+      err.textContent = hv.lastError;
+    } else {
+      err.hidden = true;
+      err.textContent = "";
+    }
+  }
+
+  const list = $("bandaiHarvestSessionList");
+  if (!list) return;
+  const rows = hv.sessions || [];
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty muted">No warm bridges yet — start harvest before a drop.</div>`;
+    return;
+  }
+  list.innerHTML = rows
+    .map(
+      (s) => `<div class="row">
+      <div>
+        <strong>${esc(s.proxyHost || s.id)}</strong>
+        <div class="muted">${esc(s.area || "au")} · age ${esc(String(s.ageSec))}s · ttl ${esc(String(s.ttlSec))}s</div>
+        <div class="muted">${esc(s.note || "")}</div>
+      </div>
+      <span class="badge ok">ready</span>
+    </div>`,
+    )
+    .join("");
+}
+
+function bandaiHarvestOptsFromForm() {
+  return {
+    proxyGroupId: $("bhProxyGroup")?.value || null,
+    desired: Number($("bhDesired")?.value || 2),
+    area: $("bhArea")?.value || "au",
+  };
 }
 
 function appendLog(html, cls) {
@@ -868,6 +940,50 @@ $("btnRunAll").onclick = async () => {
   if (res.snapshot) applyState(res.snapshot);
 };
 
+$("bhStart").onclick = async () => {
+  const res = await window.desktop.bandaiHarvestStart(bandaiHarvestOptsFromForm());
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest && state) {
+    state.bandaiHarvest = res.harvest;
+    renderBandaiHarvest();
+  }
+  appendLog(res.ok ? "Bandai harvest armed" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+};
+
+$("bhStop").onclick = async () => {
+  const res = await window.desktop.bandaiHarvestStop();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest && state) {
+    state.bandaiHarvest = res.harvest;
+    renderBandaiHarvest();
+  }
+  appendLog("Bandai harvest stopped", "muted");
+};
+
+$("bhClear").onclick = async () => {
+  const res = await window.desktop.bandaiHarvestClear();
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest && state) {
+    state.bandaiHarvest = res.harvest;
+    renderBandaiHarvest();
+  }
+  appendLog("Bandai harvest bank cleared", "muted");
+};
+
+$("bhOnce").onclick = async () => {
+  appendLog("Minting one Bandai F5 bridge…", "muted");
+  const res = await window.desktop.bandaiHarvestOnce(bandaiHarvestOptsFromForm());
+  if (res.snapshot) applyState(res.snapshot);
+  else if (res.harvest && state) {
+    state.bandaiHarvest = res.harvest;
+    renderBandaiHarvest();
+  }
+  appendLog(
+    res.ok ? `Harvested bridge (${Math.round((res.ms || 0) / 1000)}s)` : esc(res.error || "Harvest failed"),
+    res.ok ? "ok" : "err",
+  );
+};
+
 $("hvStart").onclick = async () => {
   const opts = harvestOptsFromForm();
   if (!opts.proxyGroupId) {
@@ -877,21 +993,21 @@ $("hvStart").onclick = async () => {
   const res = await window.desktop.harvestStart(opts);
   if (res.snapshot) applyState(res.snapshot);
   else if (res.harvest) renderHarvest(res.harvest);
-  appendLog(res.ok ? "Harvest started" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+  appendLog(res.ok ? "Toymate harvest started" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
 };
 
 $("hvStop").onclick = async () => {
   const res = await window.desktop.harvestStop();
   if (res.snapshot) applyState(res.snapshot);
   else if (res.harvest) renderHarvest(res.harvest);
-  appendLog("Harvest stopped", "muted");
+  appendLog("Toymate harvest stopped", "muted");
 };
 
 $("hvClear").onclick = async () => {
   const res = await window.desktop.harvestClear();
   if (res.snapshot) applyState(res.snapshot);
   else if (res.harvest) renderHarvest(res.harvest);
-  appendLog("Harvest bank cleared", "muted");
+  appendLog("Toymate harvest bank cleared", "muted");
 };
 
 $("hvOnce").onclick = async () => {
@@ -937,11 +1053,43 @@ if ($("hvSolveSpam")) {
   };
 }
 
+if ($("bhProxyGroup")) {
+  $("bhProxyGroup").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      proxyGroupId: $("bhProxyGroup").value || null,
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+if ($("bhDesired")) {
+  $("bhDesired").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      desired: Number($("bhDesired").value) || 0,
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+if ($("bhArea")) {
+  $("bhArea").onchange = async () => {
+    const snap = await window.desktop.bandaiHarvestConfigure({
+      area: $("bhArea").value || "au",
+    });
+    if (state) state.bandaiHarvest = snap;
+    renderBandaiHarvest();
+  };
+}
+
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);
+  }
+  if (evt.type === "bandaiHarvest" && evt.data) {
+    if (state) state.bandaiHarvest = evt.data;
+    renderBandaiHarvest();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

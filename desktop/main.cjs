@@ -15,6 +15,7 @@ const {
   shouldPersistGeneratedAccount,
   findRegisteredAccount,
 } = require("./account-vault.cjs");
+const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -24,9 +25,20 @@ const harvest = createHarvestPool({
   emit: (evt) => send(evt),
 });
 
+const bandaiHarvest = createBandaiHarvestPool({
+  sidecar,
+  emit: (evt) => send(evt),
+});
+
 function harvestEntries() {
   const gid = harvest.snapshot().config.proxyGroupId;
-  const group = state.db.proxyGroups.find((g) => g.id === gid);
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  return group?.entries || [];
+}
+
+function bandaiHarvestEntries() {
+  const gid = bandaiHarvest.snapshot().config.proxyGroupId;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
   return group?.entries || [];
 }
 
@@ -108,6 +120,7 @@ function snapshot() {
     runner: runner.state(),
     engine: sidecar.status(),
     harvest: harvest.snapshot(),
+    bandaiHarvest: bandaiHarvest.snapshot(),
   };
 }
 
@@ -265,10 +278,79 @@ ipcMain.handle("desktop:start-engine", async () => {
 
 ipcMain.handle("desktop:stop-engine", async () => {
   harvest.stop();
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot() };
+});
+
+// ── Bandai F5 Harvest tab ──────────────────────────────────────────────
+ipcMain.handle("desktop:bandai-harvest-status", () => bandaiHarvest.snapshot());
+
+ipcMain.handle("desktop:bandai-harvest-configure", (_e, patch) => {
+  return bandaiHarvest.configure(patch || {});
+});
+
+ipcMain.handle("desktop:bandai-harvest-start", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return {
+      ok: false,
+      error: "Start the engine first",
+      harvest: bandaiHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
+  const gid = opts.proxyGroupId || bandaiHarvest.snapshot().config.proxyGroupId;
+  if (gid) bandaiHarvest.configure({ proxyGroupId: gid });
+  if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
+  if (opts.area) bandaiHarvest.configure({ area: opts.area });
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  if (!group?.entries?.length) {
+    return {
+      ok: false,
+      error: "Select a Proxies group with sticky AU ISP/residential lines",
+      harvest: bandaiHarvest.snapshot(),
+      snapshot: snapshot(),
+    };
+  }
+  const snap = bandaiHarvest.start({
+    proxyGroupId: gid,
+    desired: opts.desired,
+    area: opts.area,
+    getEntries: bandaiHarvestEntries,
+  });
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-stop", () => {
+  const snap = bandaiHarvest.stop();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-clear", async () => {
+  const snap = await bandaiHarvest.clear();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:bandai-harvest-once", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", harvest: bandaiHarvest.snapshot() };
+  }
+  if (opts.proxyGroupId) bandaiHarvest.configure({ proxyGroupId: opts.proxyGroupId });
+  if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
+  if (opts.area) bandaiHarvest.configure({ area: opts.area });
+  const out = await bandaiHarvest.harvestOne(bandaiHarvestEntries());
+  send({ type: "snapshot", data: snapshot() });
+  return { ...out, harvest: bandaiHarvest.snapshot(), snapshot: snapshot() };
 });
 
 // ── Toymate Harvest tab ──────────────────────────────────────────────
@@ -576,7 +658,6 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
         if (session) {
           taskCopy.harvestedSession = session;
           taskCopy.captchaToken = session.captchaToken || taskCopy.captchaToken || null;
-          // Stay on the same sticky exit the CF clearance was minted for.
           if (session.proxy) {
             jobProxyRaw = session.proxy;
             jobProxyEntries = [session.proxy];
@@ -588,6 +669,30 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
             taskId: tid,
             level: "info",
             message: `Using harvested CF session (${session.proxyHost || "proxy"}${session.captchaToken ? " + spam" : ""})`,
+          });
+        }
+      }
+      // Bandai checkout: claim a pre-warmed F5 bridge when Harvest is armed.
+      if (
+        task.store === "bandai" &&
+        ["checkout", "chance"].includes(String(task.bandaiMode || "checkout"))
+      ) {
+        const session = bandaiHarvest.take();
+        if (session?.id) {
+          taskCopy.harvestedBridgeId = session.id;
+          taskCopy.harvestedProxy = session.proxy;
+          taskCopy.proxyOverride = session.proxy;
+          if (session.proxy) {
+            jobProxyRaw = session.proxy;
+            jobProxyEntries = [session.proxy];
+            proxyIndex = 0;
+          }
+          send({
+            type: "job",
+            phase: "log",
+            taskId: tid,
+            level: "info",
+            message: `Using harvested F5 bridge (${session.proxyHost || "proxy"} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
           });
         }
       }
@@ -763,12 +868,26 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", async () => {
+  harvest.stop();
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
   if (process.platform !== "darwin") app.quit();
 });
 
 app.on("before-quit", async () => {
+  harvest.stop();
+  bandaiHarvest.stop();
+  try {
+    await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
 });

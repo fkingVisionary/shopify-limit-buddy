@@ -15,12 +15,20 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  // Toymate CF + spam harvest
   harvestStatus: () => ipcRenderer.invoke("desktop:harvest-status"),
   harvestConfigure: (patch) => ipcRenderer.invoke("desktop:harvest-configure", patch),
   harvestStart: (opts) => ipcRenderer.invoke("desktop:harvest-start", opts),
   harvestStop: () => ipcRenderer.invoke("desktop:harvest-stop"),
   harvestClear: () => ipcRenderer.invoke("desktop:harvest-clear"),
   harvestOnce: (opts) => ipcRenderer.invoke("desktop:harvest-once", opts),
+  // Bandai F5 harvest
+  bandaiHarvestStatus: () => ipcRenderer.invoke("desktop:bandai-harvest-status"),
+  bandaiHarvestConfigure: (patch) => ipcRenderer.invoke("desktop:bandai-harvest-configure", patch),
+  bandaiHarvestStart: (opts) => ipcRenderer.invoke("desktop:bandai-harvest-start", opts),
+  bandaiHarvestStop: () => ipcRenderer.invoke("desktop:bandai-harvest-stop"),
+  bandaiHarvestClear: () => ipcRenderer.invoke("desktop:bandai-harvest-clear"),
+  bandaiHarvestOnce: (opts) => ipcRenderer.invoke("desktop:bandai-harvest-once", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

@@ -294,6 +294,29 @@ async function harvestToymate(body) {
   return json || { ok: false, error: `HTTP ${httpStatus}` };
 }
 
+async function harvestBandai(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/bandai/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "harvest bank full / at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
+async function bandaiHarvestStatus() {
+  const { json } = await requestJson("GET", "/bandai/harvest", null, 15_000);
+  return json || { ok: false, error: "no response" };
+}
+
+async function clearBandaiHarvest() {
+  const { json } = await requestJson("POST", "/bandai/harvest/clear", {}, 60_000);
+  return json || { ok: false, error: "no response" };
+}
+
 async function progress(taskId) {
   const { json } = await requestJson("GET", `/progress/${encodeURIComponent(taskId)}`, null, 10_000);
   return json;
@@ -305,5 +328,8 @@ module.exports = {
   status,
   runTask,
   harvestToymate,
+  harvestBandai,
+  bandaiHarvestStatus,
+  clearBandaiHarvest,
   progress,
 };

@@ -326,9 +326,23 @@ function buildBandaiPayload({
   const proxyNorm = normalizeKmartProxy(proxyRaw);
   if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
 
-  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
-    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
-  });
+  // Harvested F5 bridges are IP-bound — never rotate sticky session on claim.
+  const harvestedProxy =
+    typeof task.harvestedProxy === "string" && task.harvestedProxy.trim()
+      ? task.harvestedProxy.trim()
+      : typeof task.proxyOverride === "string" && task.proxyOverride.trim()
+        ? task.proxyOverride.trim()
+        : null;
+  const harvestedBridgeId =
+    typeof task.harvestedBridgeId === "string" && task.harvestedBridgeId.trim()
+      ? task.harvestedBridgeId.trim()
+      : null;
+
+  const proxy = harvestedProxy
+    ? harvestedProxy
+    : rotateStickyProxySession(proxyNorm.proxy, {
+        force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+      });
 
   const storeUrl =
     mode === "account_gen" || mode === "monitor" || !input
@@ -471,6 +485,7 @@ function buildBandaiPayload({
       bandaiMode: mode,
       bandaiArea,
       shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      harvestedBridgeId: harvestedBridgeId || undefined,
       bandaiMonitorMode: mode === "monitor" ? task.bandaiMonitorMode || "local" : undefined,
       bandaiWatchSku: task.bandaiWatchSku || null,
       bandaiWatchKeywords: task.bandaiWatchKeywords || null,
