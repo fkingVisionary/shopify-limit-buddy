@@ -38,6 +38,40 @@ import {
 } from "./disney-recaptcha.js";
 import { hyperConfigured } from "../antibot.js";
 import { resolveEgressIp } from "../ip-resolve.js";
+import { createJar, makeDispatcher } from "../http.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const EXECUTOR_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function loadDisneyProxyPool() {
+  try {
+    return fs
+      .readFileSync(path.join(EXECUTOR_ROOT, "resi.proxies"), "utf8")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#") && /^\d/.test(l));
+  } catch {
+    return [];
+  }
+}
+
+function disneyProxyToUrl(raw) {
+  if (!raw) return null;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const [host, port, user, ...pass] = String(raw).split(":");
+  if (!host || !port || !user) return null;
+  return `http://${encodeURIComponent(user)}:${encodeURIComponent(pass.join(":"))}@${host}:${port}`;
+}
+
+function disneyProxyHost(raw) {
+  return String(raw || "")
+    .replace(/^https?:\/\//i, "")
+    .split("@")
+    .pop()
+    ?.split(":")[0] || "";
+}
 
 function makeStep(steps, ctx) {
   return async (name, fn) => {
@@ -323,13 +357,82 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     });
     atc = await addDisneyToCart(session, ctx, {
       ...atcOpts,
-      csrf: atc.csrf || undefined,
+      csrf: undefined, // new CSRF on retry
     });
     steps.push({
       step: "atc_retry",
       ok: Boolean(atc.ok),
       note: atc.ok ? "ATC ok after sensor refresh retry" : `ATC retry still fail: ${atc.note}`,
     });
+  }
+
+  // Fail-path only: sticky exit often burns ATC despite ~0~ — rotate resi.proxies once.
+  if (!atc.ok && atc.atc?.denied && task.proxyRotate !== false) {
+    const pool = loadDisneyProxyPool();
+    const curHost = disneyProxyHost(task.proxy);
+    const maxRot = Math.max(0, Math.min(3, Number(task.proxyRotateMax ?? 2) | 0));
+    const candidates = pool.filter((l) => disneyProxyHost(l) !== curHost).slice(0, maxRot);
+    for (const line of candidates) {
+      const proxyUrl = disneyProxyToUrl(line);
+      if (!proxyUrl) continue;
+      const tRot = Date.now();
+      try {
+        await ctx.dispatcher?.close?.();
+      } catch {
+        /* ignore */
+      }
+      ctx.dispatcher = makeDispatcher(proxyUrl, { forceTls: true });
+      ctx.jar = createJar();
+      ctx.egressIp = null;
+      task.proxy = line;
+      session = createDisneySession(ctx, {});
+      await ensureDisneyEgressIp(task, ctx, tStep);
+      const rewarm = await warmDisneyAkamai(session, ctx, {
+        tStep,
+        egressIp: ctx.egressIp,
+      });
+      if (!rewarm.ok) {
+        steps.push({
+          step: "proxy_rotate",
+          ok: false,
+          ms: Date.now() - tRot,
+          note: `rotate ${disneyProxyHost(line)} warm fail: ${rewarm.note}`,
+        });
+        continue;
+      }
+      // Fresh CapSolver token on new exit (cheap vs another burnt ATC).
+      let rotateToken = recaptchaToken;
+      if (task.skipRecaptcha !== true && capsolverKey()) {
+        const solved = await solveDisneyRecaptchaEnterprise({
+          pageUrl: pdpUrl,
+          sitekey,
+          action: "AddToCart",
+          proxyRaw: line,
+          proxyless: task.capsolverProxyless !== false,
+        });
+        if (solved.ok) rotateToken = solved.token;
+      }
+      pdp = await fetchDisneyPdp(session, pdpUrl, { tStep });
+      atc = await addDisneyToCart(session, ctx, {
+        ...atcOpts,
+        recaptchaToken: rotateToken,
+        csrf: undefined,
+        addToCartUrl: pdp.addToCartUrl || atcOpts.addToCartUrl,
+      });
+      steps.push({
+        step: "proxy_rotate",
+        ok: Boolean(atc.ok),
+        ms: Date.now() - tRot,
+        note: atc.ok
+          ? `ATC ok after rotate → ${disneyProxyHost(line)}`
+          : `rotate ${disneyProxyHost(line)} still deny: ${atc.note}`,
+      });
+      if (atc.ok) {
+        recaptchaToken = rotateToken;
+        warm.note = `${warm.note || ""} | rotated→${disneyProxyHost(line)}`;
+        break;
+      }
+    }
   }
 
   let ge = null;
