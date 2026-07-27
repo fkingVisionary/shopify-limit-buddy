@@ -85,10 +85,18 @@ export async function harvestPokemonCentreSession({
   const homeUrl = pageUrl || `${session.state.base}/`;
 
   try {
-    try {
-      ctx.egressIp = await resolveEgressIp(ctx);
-    } catch {
-      /* optional */
+    // Static AU ISP exits advertise egress as the bare host — seed before Hyper
+    // solves so we don't burn tls-worker request slots on ipify probes first
+    // (tls-worker currently alternates empty status=0 responses under load).
+    const hostGuess = proxyHost(proxyRaw);
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(hostGuess || ""))) {
+      ctx.egressIp = hostGuess;
+    } else {
+      try {
+        ctx.egressIp = (await resolveEgressIp(ctx)) || ctx.egressIp || null;
+      } catch {
+        /* optional */
+      }
     }
 
     const warm = await warmPokemonCentre(session, ctx, {});

@@ -389,6 +389,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       checkoutStage: "pre_cart",
       failedStep: isHardIpBan(warm.note, warm) ? "datadome_ip_ban" : "edge_warm",
       note: warm.note,
+      harvestUsed,
+      harvestId,
+      stickyRotates,
       detail: {
         isIpBanned: isHardIpBan(warm.note, warm),
         stickyRotates,
@@ -405,9 +408,15 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     `${session.state.base}/product/${sku}`;
 
   // Auth before tags — tags can rotate datadome; keep token mint close to interstitial clear.
-  const auth = await tStep("cortex_auth", () =>
+  // tls-worker sometimes returns status 0 on alternate POSTs — retry once.
+  let auth = await tStep("cortex_auth", () =>
     getPublicToken(session, ctx, { locale: session.state.locale }),
   );
+  if (!auth.ok && /auth 0 |failed to do request/i.test(String(auth.note || ""))) {
+    auth = await tStep("cortex_auth_retry", () =>
+      getPublicToken(session, ctx, { locale: session.state.locale }),
+    );
+  }
   if (!auth.ok) {
     return {
       ok: false,
@@ -416,6 +425,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       checkoutStage: "pre_cart",
       failedStep: "cortex_auth",
       note: auth.note,
+      harvestUsed,
+      harvestId,
+      stickyRotates,
       detail: { harvestUsed, stickyRotates },
       finalUrl: productUrl,
       cookies: ctx.jar?.dump?.() ?? {},

@@ -84,7 +84,7 @@ export async function clearIncapsulaReese(session, ctx, { pageUrl, html } = {}) 
     return { ok: false, note: "reese script path not found in challenge HTML" };
   }
   const scriptUrl = `${PC_ORIGIN}${scriptPath}`;
-  const scriptRes = await session.get(scriptUrl, {
+  let scriptRes = await session.get(scriptUrl, {
     headers: {
       referer: pageUrl,
       accept: "*/*",
@@ -93,7 +93,20 @@ export async function clearIncapsulaReese(session, ctx, { pageUrl, html } = {}) 
       "sec-fetch-site": "same-origin",
     },
   });
-  const scriptBody = await session.readText(scriptRes);
+  let scriptBody = await session.readText(scriptRes);
+  // tls-worker alternate empty responses — one retry.
+  if (!scriptBody || scriptBody.length < 1000 || scriptRes.status === 0) {
+    scriptRes = await session.get(scriptUrl, {
+      headers: {
+        referer: pageUrl,
+        accept: "*/*",
+        "sec-fetch-dest": "script",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    scriptBody = await session.readText(scriptRes);
+  }
   if (!scriptBody || scriptBody.length < 1000) {
     return {
       ok: false,
@@ -104,9 +117,9 @@ export async function clearIncapsulaReese(session, ctx, { pageUrl, html } = {}) 
 
   let ip = "";
   try {
-    ip = (await resolveEgressIp(ctx)) || "";
+    ip = ctx?.egressIp || (await resolveEgressIp(ctx)) || "";
   } catch {
-    ip = "";
+    ip = ctx?.egressIp || "";
   }
 
   const { payload } = await solveIncapsulaReese84({
@@ -203,9 +216,9 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
 
   let ip = "";
   try {
-    ip = (await resolveEgressIp(ctx)) || "";
+    ip = ctx?.egressIp || (await resolveEgressIp(ctx)) || "";
   } catch {
-    ip = "";
+    ip = ctx?.egressIp || "";
   }
 
   if (isInterstitial) {
@@ -391,9 +404,9 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
   }
   let ip = "";
   try {
-    ip = (await resolveEgressIp(ctx)) || "";
+    ip = ctx?.egressIp || (await resolveEgressIp(ctx)) || "";
   } catch {
-    ip = "";
+    ip = ctx?.egressIp || "";
   }
   const referer = pageUrl || `${session.state?.base || PC_ORIGIN}/`;
   const deviceHtml = await fetchDeviceHtml(session, url, referer);
@@ -470,9 +483,9 @@ export async function postDataDomeTags(session, ctx, { pageUrl } = {}) {
   }
   let ip = "";
   try {
-    ip = (await resolveEgressIp(ctx)) || "";
+    ip = ctx?.egressIp || (await resolveEgressIp(ctx)) || "";
   } catch {
-    ip = "";
+    ip = ctx?.egressIp || "";
   }
   const referer = pageUrl || `${session.state.base}/`;
   const cid = ctx.jar?.get?.("datadome") || "";
@@ -537,9 +550,14 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
   const step = tStep || (async (_n, fn) => fn());
   const homeUrl = `${session.state.base}/`;
 
-  const home = await step("pc_home", async () => {
-    const res = await session.get(homeUrl);
-    const html = await session.readText(res);
+  /** tls-worker sometimes returns status 0 / tiny body on alternate requests — retry once. */
+  async function getHomeOnce() {
+    let res = await session.get(homeUrl);
+    let html = await session.readText(res);
+    if ((res.status === 0 || !html || html.length < 200) && Number(res.status) !== 200) {
+      res = await session.get(homeUrl);
+      html = await session.readText(res);
+    }
     const incap = looksLikeIncapsulaChallenge(html, res.status);
     const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
     return {
@@ -555,7 +573,9 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
       dd,
       headers: res.headers,
     };
-  });
+  }
+
+  const home = await step("pc_home", () => getHomeOnce());
 
   if (home.ok) {
     session.state.edgeNote = "home clear (no challenge)";
@@ -576,25 +596,7 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
   }
 
   // Re-fetch (after Reese if we ran it, otherwise one more look before DD)
-  const home2 = await step("pc_home_retry", async () => {
-    const res = await session.get(homeUrl);
-    const html = await session.readText(res);
-    const incap = looksLikeIncapsulaChallenge(html, res.status);
-    const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
-    return {
-      ok: !incap && !dd && res.status === 200 && html.length > 5_000,
-      status: res.status,
-      note: incap
-        ? `still incapsula (${html.length}b)`
-        : dd
-          ? `datadome block (${html.length}b)`
-          : `home ${res.status} (${html.length}b)`,
-      html,
-      incap,
-      dd,
-      headers: res.headers,
-    };
-  });
+  const home2 = await step("pc_home_retry", () => getHomeOnce());
 
   if (home2.ok) {
     session.state.edgeNote = session.state.reeseCleared
@@ -621,19 +623,7 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
     if (!ddClear.ok) {
       return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };
     }
-    const home3 = await step("pc_home_after_dd", async () => {
-      const res = await session.get(homeUrl);
-      const html = await session.readText(res);
-      const blocked =
-        looksLikeIncapsulaChallenge(html, res.status) ||
-        looksLikeDataDomeBlock(html, res.status, res.headers);
-      return {
-        ok: !blocked && res.status === 200 && html.length > 5_000,
-        status: res.status,
-        note: blocked ? `still blocked (${html.length}b)` : `home clear (${html.length}b)`,
-        html,
-      };
-    });
+    const home3 = await step("pc_home_after_dd", () => getHomeOnce());
     // Remint Reese after DD cookie swap — BFF auth otherwise hits Imperva incidentId 403
     // even when HTML home looks clear (observed 2026-07-22 grind2).
     let reeseAfterDd = null;
