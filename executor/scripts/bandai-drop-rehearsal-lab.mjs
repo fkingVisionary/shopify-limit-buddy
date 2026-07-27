@@ -139,24 +139,15 @@ function summarize(label, res, wallMs, extra = {}) {
 const accounts = loadAccounts().slice(0, Math.max(1, Number(process.env.BANDAI_LANES) || 2));
 const proxies = loadProxies();
 const sku = process.env.BANDAI_SKU || "N2542159011";
-const areaItemNo =
-  process.env.BANDAI_AREA_ITEM_NO ||
-  process.env.BANDAI_BACKEND_PID ||
-  (fs.existsSync(process.env.BANDAI_ACCOUNTS_JSON || "/tmp/bandai-drop-1300/roster.json")
-    ? (() => {
-        try {
-          const j = JSON.parse(
-            fs.readFileSync(
-              process.env.BANDAI_ACCOUNTS_JSON || "/tmp/bandai-drop-1300/roster.json",
-              "utf8",
-            ),
-          );
-          return j.backendPid || j.areaItemNo || "";
-        } catch {
-          return "";
-        }
-      })()
-    : "");
+function resolveAreaItemNoEnv() {
+  // Explicit empty BANDAI_AREA_ITEM_NO= means "no backend override" (frontend SKU only).
+  if (Object.prototype.hasOwnProperty.call(process.env, "BANDAI_AREA_ITEM_NO")) {
+    return String(process.env.BANDAI_AREA_ITEM_NO || "").trim();
+  }
+  if (process.env.BANDAI_BACKEND_PID) return String(process.env.BANDAI_BACKEND_PID).trim();
+  return "";
+}
+const areaItemNo = resolveAreaItemNoEnv();
 const pdp = `https://p-bandai.com/au/item/${sku}`;
 const concurrency = Math.max(1, Math.min(4, Number(process.env.BANDAI_CONCURRENCY) || accounts.length));
 const harvestAt = process.env.BANDAI_HARVEST_AT || ""; // e.g. 13:27
