@@ -26,6 +26,10 @@ import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { takeHarvestSlot } from "./bandai-harvest-pool.js";
 import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
+import {
+  BANDAI_PAY_WINDOW_MS,
+  withHeldCartMeta,
+} from "./bandai-held-cart.js";
 import { makeDispatcher, createJar } from "../http.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -728,11 +732,16 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     return { ok: true, steps, via: "http" };
   }
 
+  // Pay-from-held-cart: skip ATC race; verify live cart line, then checkout → GE.
+  const payFromCart =
+    task.bandaiPayFromCart === true ||
+    String(task.bandaiMode || "").toLowerCase() === "pay_cart";
+
   // ── Product ────────────────────────────────────────────────────────────
   // Lab 2026-07-23: p8komysnbc-* mint for addToCart works on /login and /cart
   // but NOT on /item/* (avail=false PDP). Fast path skips item nudge and keeps
   // the bridge on login for ATC mint (~3–4s saved + mint reliability).
-  if (bridge && !fastAtc) {
+  if (bridge && !fastAtc && !payFromCart) {
     const pdpNavT0 = Date.now();
     await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`, {
       settleMs: f5SettleMs,
@@ -748,33 +757,121 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       ms: Date.now() - pdpNavT0,
       note: `goto item/${productCode} settle=${f5SettleMs}ms`,
     });
-  } else if (bridge && fastAtc) {
+  } else if (bridge && (fastAtc || payFromCart)) {
     steps.push({
       step: "f5_pdp_nudge",
       ok: true,
       status: null,
       ms: 0,
-      note: "skipped item goto (fastAtc; mint ATC from login/cart context)",
+      note: payFromCart
+        ? "skipped item goto (payFromCart — verify live cart)"
+        : "skipped item goto (fastAtc; mint ATC from login/cart context)",
     });
   }
 
-  const pdp = await resolveAreaItemNo(session, productCode, tStep);
-  if (!pdp.ok || !pdp.areaItemNo) {
+  const pdpLookup = await resolveAreaItemNo(session, productCode, tStep);
+  if ((!pdpLookup.ok || !pdpLookup.areaItemNo) && !payFromCart) {
     await closeBridge();
     return {
       ok: false,
       steps,
-      error: pdp.note || "product lookup failed",
+      error: pdpLookup.note || "product lookup failed",
       failedStep: "product_get",
       checkoutStage: "pre_cart",
       via: "http",
     };
   }
+  const pdp = {
+    ok: true,
+    areaItemNo:
+      pdpLookup.areaItemNo ||
+      task.bandaiAreaItemNo ||
+      task.areaItemNo ||
+      task.heldCart?.areaItemNo ||
+      productCode,
+    title: pdpLookup.title || productCode,
+    productCode,
+  };
 
   const qty = Math.max(1, Math.min(5, Number(task.qty) || 1));
   const atcBodyObj = [{ areaItemNo: pdp.areaItemNo, qty }];
   const atcBody = JSON.stringify(atcBodyObj);
 
+  let atc;
+  let cartHoldAt = Date.now();
+  let atcWallMs = 0;
+
+  if (payFromCart) {
+    const cartIds = [
+      pdp.areaItemNo,
+      productCode,
+      task.bandaiAreaItemNo,
+      task.areaItemNo,
+      task.heldCart?.areaItemNo,
+      task.heldCart?.productCode,
+    ].filter(Boolean);
+    atc = await tStep("held_cart_verify", async () => {
+      let again = await session.apiJson("GET", "/api/cart/detail", {
+        referer: `${session.base}/cart`,
+      });
+      let line = findCartLineAny(again.json, cartIds);
+      if (!line?.cartItemSn) {
+        await sleepMs(500);
+        again = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        line = findCartLineAny(again.json, cartIds);
+      }
+      const lines = listCartLines(again.json);
+      if (!line?.cartItemSn) {
+        return {
+          ok: false,
+          status: again.status,
+          note: `held cart empty for [${cartIds.join(",")}] cart=[${lines
+            .map((l) => l.areaItemNo || l.productCode || "?")
+            .join(",")}]`,
+          json: again.json,
+          cartLines: lines,
+          heldCartGone: true,
+        };
+      }
+      return {
+        ok: true,
+        status: again.status,
+        note: `held cart line=${line.cartItemSn} aino=${line.areaItemNo} cartSn=${line.cartSn}`,
+        json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+        hit: line,
+        cartLines: lines,
+      };
+    });
+    if (!atc.ok) {
+      await closeBridge();
+      return withHeldCartMeta({
+        ok: false,
+        steps,
+        failedStep: "held_cart_verify",
+        error: atc.note,
+        checkoutStage: "held_cart_gone",
+        heldCartGone: true,
+        heldPayRetry: false,
+        areaItemNo: pdp.areaItemNo,
+        title: pdp.title,
+        productCode,
+        cookies: ctx.jar?.dump?.() ?? {},
+        via: "http",
+      });
+    }
+    if (atc.hit?.areaItemNo) pdp.areaItemNo = atc.hit.areaItemNo;
+    cartHoldAt = Number(task.heldCart?.cartHoldAt) || Date.now();
+    steps.push({
+      step: "cart_hold",
+      ok: true,
+      status: 200,
+      ms: 0,
+      note: `payFromCart — live line held (pay window ~${Math.round(BANDAI_PAY_WINDOW_MS / 60_000)}min)`,
+    });
+    ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
+  } else {
   // Pre-ATC cart peek costs a RTT; skip on fast path (drop race). Still OK to
   // POST addToCart when a line already exists (soft business / qty paths).
   let existing = null;
@@ -785,7 +882,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     existing = findCartLine(cartBefore.json, pdp.areaItemNo);
   }
 
-  const atc = await tStep("addToCart", async () => {
+  atc = await tStep("addToCart", async () => {
     if (existing?.cartItemSn) {
       return {
         ok: true,
@@ -991,13 +1088,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       checkoutStage: "cart",
       areaItemNo: pdp.areaItemNo,
       title: pdp.title,
+      productCode,
       cookies: ctx.jar?.dump?.() ?? {},
       via: "http",
       atcWallMs: Date.now() - atcT0,
     };
   }
 
-  const atcWallMs = Date.now() - atcT0;
+  atcWallMs = Date.now() - atcT0;
+  cartHoldAt = Date.now();
   steps.push({
     step: "cart_hold",
     ok: true,
@@ -1006,13 +1105,25 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     note: `wall→ATC ${atcWallMs}ms fastAtc=${fastAtc} settle=${f5SettleMs}ms (pay window ~30min)`,
   });
   ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
+  }
 
   // ── Cart detail + qty normalize ────────────────────────────────────────
   let cart = await tStep("cart_detail", async () => {
+    if (payFromCart && atc.hit?.cartSn && atc.hit?.cartItemSn) {
+      return {
+        ok: true,
+        status: 200,
+        note: `cartSn ${atc.hit.cartSn} line=${atc.hit.cartItemSn} type=${atc.hit.cartType} (payFromCart)`,
+        hit: atc.hit,
+        json: atc.json,
+      };
+    }
     const { status, json } = await session.apiJson("GET", "/api/cart/detail", {
       referer: `${session.base}/cart`,
     });
-    let hit = findCartLine(json, pdp.areaItemNo);
+    let hit =
+      findCartLineAny(json, [pdp.areaItemNo, productCode].filter(Boolean)) ||
+      findCartLine(json, pdp.areaItemNo);
     if (hit?.cartItemSn && Number(hit.qty) > qty) {
       let sensors = {};
       const modPath = `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=${qty}`;
@@ -1092,6 +1203,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       checkoutStage: "cart",
       dryRun: true,
       areaItemNo: pdp.areaItemNo,
+      productCode,
       cartSn,
       cartId,
       cartItemSn,
@@ -1101,6 +1213,19 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       note: "HTTP ATC + cart ok — stopped before checkout (bandaiStopAtCart)",
       via: "http",
       globaleMid: GLOBALE_MID,
+      cartHoldAt,
+      payWindowMs: BANDAI_PAY_WINDOW_MS,
+      heldPayRetry: true,
+      heldCart: {
+        cartSn,
+        cartId,
+        cartItemSn,
+        areaItemNo: pdp.areaItemNo,
+        productCode,
+        title: pdp.title,
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+      },
     };
   }
 
@@ -1246,7 +1371,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       }
       if (geOut.cookies && ctx.jar?.load) ctx.jar.load(geOut.cookies);
       await closeBridge();
-      return {
+      return withHeldCartMeta({
         ok: Boolean(geOut.ok),
         steps,
         timeline: geOut.timeline || [],
@@ -1276,20 +1401,29 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         globaleMid: GLOBALE_MID,
         orderNumber: geOut.orderNumber ?? null,
         elapsedMs: geOut.elapsedMs,
-      };
+        productCode,
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+        payFromCart: Boolean(payFromCart),
+});
     } catch (e) {
       await closeBridge();
-      return {
+      return withHeldCartMeta({
         ok: false,
         steps,
         failedStep: "ge_payment",
         error: e?.message || String(e),
         checkoutStage: "tokenize",
         areaItemNo: pdp.areaItemNo,
+        productCode,
         cartSn,
+        cartId,
         cartItemSn,
         via: "http+ge",
-      };
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+        payFromCart: Boolean(payFromCart),
+      });
     }
   }
 
@@ -1516,7 +1650,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     if (Array.isArray(geOut.steps)) {
       for (const s of geOut.steps) steps.push(s);
     }
-    return {
+    return withHeldCartMeta({
       ok: Boolean(geOut.ok),
       steps,
       timeline: geOut.timeline || [],
@@ -1549,7 +1683,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       merchantCartToken,
       orderNumber: geOut.orderNumber ?? null,
       elapsedMs: geOut.elapsedMs,
-    };
+      productCode,
+      cartHoldAt,
+      payWindowMs: BANDAI_PAY_WINDOW_MS,
+      payFromCart: Boolean(payFromCart),
+});
   }
 
   await closeBridge();

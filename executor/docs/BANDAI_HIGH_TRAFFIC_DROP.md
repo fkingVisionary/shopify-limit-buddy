@@ -37,6 +37,7 @@ Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
 - Prefer **backend `areaItemNo` / NAI** for ATC when both frontend N-code and NAI are known.
 - **ATC retries** (default 3) on congestion / SoftBlock / 5xx — not on SoldOut / MaxPurchaseQty.
 - **Login SoftBlock / proxy flake:** rotate sticky exit (default 2), remint cold F5, retry login. Pass `proxyPool` (desktop proxy group / `BANDAI_PROXY_POOL`). Disable with `bandaiLoginProxyRotate:false`.
+- **Pay-from-held-cart:** after decline / pay fail, desktop shows **Retry pay**. Adapter sets `bandaiPayFromCart` → login → **live `GET /api/cart/detail`** (source of truth) → skip ATC → checkout → GE. Local ~30 min clock is UI hint only. Gone cart → `held_cart_gone`.
 - Ensure shipping address on account (fresh agen) before GE — else `checkout_address` blocker.
 
 ---

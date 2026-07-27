@@ -493,6 +493,19 @@ function buildBandaiPayload({
           ? task.proxyEntries
           : undefined,
       bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
+      bandaiPayFromCart: task.bandaiPayFromCart === true,
+      heldCart:
+        task.heldCart && typeof task.heldCart === "object"
+          ? {
+              cartSn: task.heldCart.cartSn ?? null,
+              cartId: task.heldCart.cartId ?? null,
+              cartItemSn: task.heldCart.cartItemSn ?? null,
+              areaItemNo: task.heldCart.areaItemNo ?? null,
+              productCode: task.heldCart.productCode ?? null,
+              cartHoldAt: task.heldCart.cartHoldAt ?? null,
+              payWindowMs: task.heldCart.payWindowMs ?? null,
+            }
+          : undefined,
       // ATC always HTTP+F5. Pay path: fast=HTTP GE+riskHydrate, safe=Playwright GE.
       ...resolveDesktopBandaiPayPath(task, {
         mode,
@@ -922,6 +935,17 @@ function finishResult(job, res, summary) {
     accountGen: Boolean(res?.accountGen),
     paypalApproveUrl: res?.paypalApproveUrl ?? null,
     attempt: "undici",
+    // Bandai held-cart / pay-window (Retry pay)
+    paymentStatus: res?.paymentStatus ?? null,
+    cartSn: res?.cartSn ?? null,
+    cartId: res?.cartId ?? null,
+    cartItemSn: res?.cartItemSn ?? null,
+    areaItemNo: res?.areaItemNo ?? null,
+    productCode: res?.productCode ?? null,
+    cartHoldAt: res?.cartHoldAt ?? res?.heldCart?.cartHoldAt ?? null,
+    heldPayRetry: Boolean(res?.heldPayRetry),
+    heldCartGone: Boolean(res?.heldCartGone),
+    heldCart: res?.heldCart || null,
     raw: {
       ok: res?.ok,
       checkoutStage: res?.checkoutStage,
@@ -930,6 +954,8 @@ function finishResult(job, res, summary) {
       adapter: res?.adapter,
       transport: res?.transport,
       accountGen: Boolean(res?.accountGen),
+      heldPayRetry: Boolean(res?.heldPayRetry),
+      paymentStatus: res?.paymentStatus ?? null,
     },
   };
 }

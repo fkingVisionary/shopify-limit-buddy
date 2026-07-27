@@ -20,6 +20,8 @@ const OUTCOME = {
   akamai: "Failed on Akamai",
   proxy: "Proxy error",
   declined: "Payment declined",
+  held_pay_retry: "Cart held — retry pay",
+  held_cart_gone: "Cart hold expired",
   error: "Something went wrong",
   stopped: "Stopped",
 };
@@ -81,6 +83,33 @@ function isPaymentDeclined(res) {
   return false;
 }
 
+/** Bandai: cart still held after pay fail — Retry pay (cart-verified). */
+function isHeldPayRetry(res) {
+  if (!res || res.ok) return false;
+  if (res.heldCartGone === true || String(res.checkoutStage || "") === "held_cart_gone") {
+    return false;
+  }
+  if (res.heldPayRetry === true && (res.heldCart?.cartSn || res.cartSn)) return true;
+  const cartSn = res.cartSn ?? res.heldCart?.cartSn;
+  const cartItemSn = res.cartItemSn ?? res.heldCart?.cartItemSn;
+  if (!cartSn || !cartItemSn) return false;
+  const ps = String(res.paymentStatus || "");
+  const stage = String(res.checkoutStage || "");
+  if (/declined|auth_failed|fraud/i.test(ps)) return true;
+  if (/^declined$/i.test(stage)) return true;
+  if (/tokenize|threeds|http_ge|ge_/i.test(ps) || /tokenize|threeds/i.test(stage)) return true;
+  return false;
+}
+
+function isHeldCartGone(res) {
+  if (!res || res.ok) return false;
+  return (
+    res.heldCartGone === true ||
+    String(res.checkoutStage || "") === "held_cart_gone" ||
+    String(res.failedStep || "") === "held_cart_verify"
+  );
+}
+
 /**
  * Map live /progress payload → short consumer line.
  */
@@ -122,6 +151,13 @@ function consumerOutcome(res) {
   if (isAkamaiFail(res)) {
     return { code: "akamai", label: OUTCOME.akamai, stockStatus: "unknown" };
   }
+  if (isHeldCartGone(res)) {
+    return { code: "held_cart_gone", label: OUTCOME.held_cart_gone, stockStatus: "unknown" };
+  }
+  // Prefer held-cart retry over plain declined when cart ids survived pay fail.
+  if (isHeldPayRetry(res)) {
+    return { code: "held_pay_retry", label: OUTCOME.held_pay_retry, stockStatus: "ok" };
+  }
   if (isPaymentDeclined(res)) {
     return { code: "declined", label: OUTCOME.declined, stockStatus: "ok" };
   }
@@ -137,4 +173,6 @@ module.exports = {
   isAkamaiFail,
   isProxyFail,
   isPaymentDeclined,
+  isHeldPayRetry,
+  isHeldCartGone,
 };

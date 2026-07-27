@@ -220,6 +220,33 @@ runner.setFinishedHandler((result) => {
         t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
         t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = result.orderNumber || null;
+        // Bandai: persist held cart for Retry pay (live cart is still source of truth).
+        if (result.ok && result.orderNumber) {
+          t.heldCart = null;
+        } else if (result.heldCartGone || result.consumerCode === "held_cart_gone") {
+          t.heldCart = null;
+        } else if (result.heldCart && result.heldCart.cartSn && result.heldCart.cartItemSn) {
+          t.heldCart = {
+            ...result.heldCart,
+            accountId: result.account?.id || t.heldCart?.accountId || t.accountId || null,
+          };
+        } else if (
+          result.heldPayRetry &&
+          result.cartSn &&
+          result.cartItemSn
+        ) {
+          t.heldCart = {
+            cartSn: result.cartSn,
+            cartId: result.cartId || null,
+            cartItemSn: result.cartItemSn,
+            areaItemNo: result.areaItemNo || t.bandaiAreaItemNo || null,
+            productCode: result.productCode || null,
+            cartHoldAt: result.cartHoldAt || Date.now(),
+            payWindowMs: 30 * 60_000,
+            paymentStatus: result.paymentStatus || null,
+            accountId: result.account?.id || t.accountId || null,
+          };
+        }
       }
       t.lastCheckoutStage = result.checkoutStage || null;
       t.stockStatus = result.stockStatus || null;
@@ -722,16 +749,27 @@ ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
   return snapshot();
 });
 
-ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
+ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
   if (!sidecar.status().running) {
     return { ok: false, error: "Start the engine first (app must stay open)" };
   }
+  const payFromCart = opts?.payFromCart === true;
   const ids = Array.isArray(taskIds) && taskIds.length ? taskIds : state.db.tasks.filter((t) => t.enabled).map((t) => t.id);
   const jobs = [];
   const claimedAccountIds = [];
   for (const tid of ids) {
     const task = state.db.tasks.find((t) => t.id === tid);
     if (!task) continue;
+    if (payFromCart && task.store === "bandai" && !task.heldCart?.cartSn) {
+      send({
+        type: "job",
+        phase: "done",
+        taskId: tid,
+        ok: false,
+        error: "No held cart on this task — run checkout first",
+      });
+      continue;
+    }
     const profile = state.db.profiles.find((p) => p.id === task.profileId);
     if (!profile) {
       send({ type: "job", phase: "done", taskId: tid, ok: false, error: "Assign a profile first" });
@@ -739,12 +777,28 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     }
     const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
     const entries = group?.entries?.length ? group.entries : [null];
-    const n = Math.max(1, Math.min(50, Number(task.quantity) || 1));
+    const n = payFromCart ? 1 : Math.max(1, Math.min(50, Number(task.quantity) || 1));
     let assignError = null;
     for (let i = 0; i < n; i++) {
       const proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
       const taskCopy = { ...task };
+      if (payFromCart && task.store === "bandai") {
+        taskCopy.bandaiPayFromCart = true;
+        taskCopy.bandaiMode = "checkout";
+        taskCopy.placeOrder = true;
+        if (task.heldCart?.areaItemNo) {
+          taskCopy.bandaiAreaItemNo = task.heldCart.areaItemNo;
+        }
+        taskCopy.heldCart = task.heldCart;
+        send({
+          type: "job",
+          phase: "log",
+          taskId: tid,
+          level: "info",
+          message: `Retry pay from held cart (cartSn=${task.heldCart.cartSn} — live verify)`,
+        });
+      }
       // Wire vault account into Toymate / Bandai checkout (auto by profile email, or manual).
       const needsVault =
         (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
@@ -864,7 +918,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
         proxyRaw: jobProxyRaw,
         proxyEntries: jobProxyEntries,
         proxyIndex,
-        placeOrder: task.placeOrder !== false,
+        placeOrder: payFromCart ? true : task.placeOrder !== false,
         accounts: state.db.accounts || [],
         settings: state.settings,
       });

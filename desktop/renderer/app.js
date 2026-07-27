@@ -229,16 +229,28 @@ function renderTasks() {
       const badge =
         t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok"
           ? "ok"
+          : t.lastStatus === "held_pay_retry"
+            ? "run"
           : t.lastStatus === "failed" ||
               t.lastStatus === "error" ||
               t.lastStatus === "akamai" ||
               t.lastStatus === "proxy" ||
               t.lastStatus === "declined" ||
+              t.lastStatus === "held_cart_gone" ||
               t.lastStatus === "oos"
             ? "err"
             : t.lastStatus === "queued"
               ? "run"
               : "";
+      const heldHint = (() => {
+        if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
+        const start = Number(t.heldCart.cartHoldAt) || 0;
+        const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
+        if (!start) return " · cart held — retry pay";
+        const left = Math.max(0, start + win - Date.now());
+        if (left <= 0) return " · cart held? (window may be up — verify on retry)";
+        return ` · cart held · ~${Math.ceil(left / 60_000)}m left`;
+      })();
       const storeLabel =
         t.store === "toymate"
           ? `Toymate · ${t.toymateMode || "checkout"}`
@@ -289,15 +301,20 @@ function renderTasks() {
       const pdpMeta =
         t.pdpUrl ||
         (t.toymateMode === "account_gen" || t.bandaiMode === "account_gen" ? "account gen" : "");
+      const retryPayBtn =
+        t.store === "bandai" && t.heldCart?.cartSn
+          ? `<button type="button" class="secondary" data-retry-pay="${t.id}">Retry pay</button>`
+          : "";
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
+          ${retryPayBtn}
           <button type="button" data-run-task="${t.id}">Run</button>
           <button type="button" class="danger" data-del-task="${t.id}">Del</button>
         </div>
@@ -829,6 +846,12 @@ document.body.addEventListener("click", async (e) => {
     const res = await window.desktop.runTasks([t.dataset.runTask]);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  }
+  if (t.dataset.retryPay) {
+    const res = await window.desktop.runTasks([t.dataset.retryPay], { payFromCart: true });
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog(`Retry pay enqueued (${res.enqueued}) — live cart verify`, "ok");
     if (res.snapshot) applyState(res.snapshot);
   }
   if (t.dataset.editProf) {

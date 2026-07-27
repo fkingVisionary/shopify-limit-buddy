@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld("desktop", {
   deleteProxyGroup: (id) => ipcRenderer.invoke("desktop:delete-proxy-group", id),
   upsertTask: (t) => ipcRenderer.invoke("desktop:upsert-task", t),
   deleteTask: (id) => ipcRenderer.invoke("desktop:delete-task", id),
-  runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
+  runTasks: (ids, opts) => ipcRenderer.invoke("desktop:run-tasks", ids, opts || {}),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
   formatHarvestBankStrip: (banks) => formatHarvestBankStrip(banks || {}),

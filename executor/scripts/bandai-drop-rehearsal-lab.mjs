@@ -248,6 +248,16 @@ async function runLane(i) {
     harvestedBridgeId,
     proxyPool: proxies,
     bandaiLoginProxyRotate: true,
+    bandaiPayFromCart: process.env.BANDAI_PAY_FROM_CART === "1",
+    heldCart: (() => {
+      try {
+        const p = process.env.BANDAI_HELD_CART_JSON;
+        if (!p || !fs.existsSync(p)) return undefined;
+        return JSON.parse(fs.readFileSync(p, "utf8"));
+      } catch {
+        return undefined;
+      }
+    })(),
     account: { email: acc.email, password: acc.password },
     card: pan ? card : undefined,
     profile: {
