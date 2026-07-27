@@ -26,7 +26,10 @@ import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { takeHarvestSlot } from "./bandai-harvest-pool.js";
 import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
+import { makeDispatcher, createJar } from "../http.js";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createBandaiSession,
   parseAreaItemNo,
@@ -37,6 +40,8 @@ import {
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
+
+const EXECUTOR_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function isRetryableAtcFailure({ status, err, textHint }) {
   const blob = `${err || ""} ${textHint || ""} ${status || ""}`;
@@ -51,6 +56,88 @@ function isRetryableAtcFailure({ status, err, textHint }) {
   if (st === 429 || st === 501 || st === 502 || st === 503 || st === 504) return true;
   if (!Number.isFinite(st) || st === 0) return true; // network / empty
   return false;
+}
+
+/** Login SoftBlock / proxy flake — rotate sticky + remint F5. Not bad password. */
+export function isRetryableLoginFailure({ note, status, restrictedType, err } = {}) {
+  const blob = `${note || ""} ${err || ""} ${restrictedType || ""} ${status ?? ""}`;
+  if (
+    /invalid (password|credentials)|wrong password|MemberNotFound|password.*incorrect|BadCredentials/i.test(
+      blob,
+    )
+  ) {
+    return false;
+  }
+  if (/SoftBlock|Access Denied|Request rejected|NETWORK CONGESTION|PAGE NOT AVAILABLE/i.test(blob)) {
+    return true;
+  }
+  if (/sensor mint failed|f5_bridge|ERR_|ECONN|ETIMEDOUT|socket|fetch failed|und_err/i.test(blob)) {
+    return true;
+  }
+  if (/SoftBlock/i.test(String(restrictedType || ""))) return true;
+  const st = Number(status);
+  if (st === 429 || st === 501 || st === 502 || st === 503 || st === 504) return true;
+  if (!Number.isFinite(st) || st === 0) return true;
+  return false;
+}
+
+export function bandaiProxyHost(raw) {
+  const parsed = parseBandaiProxy(raw);
+  const server = parsed?.playwright?.server;
+  if (server) {
+    try {
+      return new URL(server).hostname;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (parsed?.url) {
+    try {
+      return new URL(parsed.url).hostname;
+    } catch {
+      /* fall through */
+    }
+  }
+  return (
+    String(raw || "")
+      .replace(/^https?:\/\//i, "")
+      .split("@")
+      .pop()
+      ?.split(":")[0] || ""
+  );
+}
+
+/** Proxy pool for login SoftBlock rotate — task list first, then env / resi file. */
+export function loadBandaiProxyPool(task = {}) {
+  const fromTask = Array.isArray(task.proxyPool)
+    ? task.proxyPool
+    : Array.isArray(task.bandaiProxyPool)
+      ? task.bandaiProxyPool
+      : Array.isArray(task.proxyEntries)
+        ? task.proxyEntries
+        : null;
+  if (fromTask?.length) {
+    return fromTask.map((l) => String(l || "").trim()).filter(Boolean);
+  }
+  const candidates = [
+    process.env.BANDAI_PROXY_POOL,
+    path.join(EXECUTOR_ROOT, "resi.proxies"),
+    "/tmp/bandai-proxy-pool.txt",
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const lines = fs
+        .readFileSync(p, "utf8")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"));
+      if (lines.length) return lines;
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
 }
 
 function sleepMs(ms) {
@@ -289,7 +376,8 @@ async function runChance(task, ctx, session, tStep, steps) {
 /**
  * HTTP checkout: undici for all API calls; F5 bridge only mints sensor headers.
  */
-async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
+async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
+  let session = sessionIn;
   const email = opts.email;
   const password = opts.password;
   const productCode = opts.productCode;
@@ -323,6 +411,31 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     ),
   );
   const atcT0 = Date.now();
+
+  async function seedColdF5Bridge(proxyLine, { noteSuffix = "" } = {}) {
+    const s0 = Date.now();
+    bridge = await createBandaiF5Bridge({
+      proxy: proxyLine || null,
+      area: session.area,
+      timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+    });
+    await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
+    const csrf = await bridge.csrfToken();
+    const cookies = await bridge.cookies();
+    if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+    if (csrf) session.state.csrfToken = csrf;
+    steps.push({
+      step: "f5_bridge",
+      ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
+      status: null,
+      ms: Date.now() - s0,
+      note: csrf
+        ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${noteSuffix}`
+        : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${noteSuffix}`,
+    });
+    ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
+    return Boolean(csrf) || Object.keys(cookies || {}).length > 0;
+  }
 
   if (wantBridge) {
     try {
@@ -362,24 +475,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       }
 
       if (!bridge) {
-        bridge = await createBandaiF5Bridge({
-          proxy: task.proxy || null,
-          area: session.area,
-          timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-        });
-        await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
-        const csrf = await bridge.csrfToken();
-        const cookies = await bridge.cookies();
-        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
-        if (csrf) session.state.csrfToken = csrf;
-        steps.push({
-          step: "f5_bridge",
-          ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
-          status: null,
-          ms: Date.now() - s0,
-          note: csrf
-            ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${harvestId ? " (harvest miss→cold)" : ""}`
-            : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${harvestId ? " (harvest miss→cold)" : ""}`,
+        await seedColdF5Bridge(task.proxy || null, {
+          noteSuffix: harvestId ? " (harvest miss→cold)" : "",
         });
       } else {
         const csrf = session.state.csrfToken || (await bridge.csrfToken());
@@ -396,8 +493,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
             ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${harvestId}`
             : `harvested bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} age=${ageSec ?? "?"}s`,
         });
+        ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
       }
-      ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
       steps.push({
         step: "f5_bridge",
@@ -427,7 +524,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     autoLogin: "false",
   }).toString();
 
-  const login = await tStep("login", async () => {
+  async function attemptLogin() {
     let sensors = {};
     if (bridge) {
       const mint = await bridge.mint("POST", "/login", {
@@ -459,7 +556,85 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         ? `login ok via=http sensors=${Object.keys(sensors).length}`
         : out.note || `login ${out.status}`,
     };
-  });
+  }
+
+  let login = await tStep("login", attemptLogin);
+
+  // SoftBlock / proxy flake: rotate sticky exit, remint cold F5, retry login.
+  // Do not spray on bad password. Default 2 rotates; disable via bandaiLoginProxyRotate:false.
+  if (
+    !login.ok &&
+    task.bandaiLoginProxyRotate !== false &&
+    isRetryableLoginFailure(login)
+  ) {
+    const pool = loadBandaiProxyPool(task);
+    const curHost = bandaiProxyHost(task.proxy);
+    const maxRot = Math.max(
+      0,
+      Math.min(
+        3,
+        Number(task.bandaiLoginProxyRotates ?? process.env.BANDAI_LOGIN_PROXY_ROTATES) || 2,
+      ),
+    );
+    const candidates = pool
+      .filter((l) => bandaiProxyHost(l) && bandaiProxyHost(l) !== curHost)
+      .slice(0, maxRot);
+    for (let i = 0; i < candidates.length; i++) {
+      const line = candidates[i];
+      const tRot = Date.now();
+      await closeBridge();
+      try {
+        await ctx.dispatcher?.close?.();
+      } catch {
+        /* ignore */
+      }
+      ctx.dispatcher = makeDispatcher(line, { forceUndici: true });
+      ctx.jar = createJar();
+      task.proxy = line;
+      // Harvest was bound to the burned exit — do not reclaim it.
+      delete task.harvestedBridgeId;
+      session = createBandaiSession(ctx, { area: session.area });
+      let seeded = false;
+      try {
+        if (wantBridge) {
+          seeded = await seedColdF5Bridge(line, {
+            noteSuffix: ` (login rotate ${i + 1}/${candidates.length})`,
+          });
+        } else {
+          const w = await session.warm();
+          seeded = Boolean(w.ok);
+        }
+      } catch (e) {
+        steps.push({
+          step: "login_proxy_rotate",
+          ok: false,
+          status: null,
+          ms: Date.now() - tRot,
+          note: `rotate→${bandaiProxyHost(line)} seed fail: ${e?.message || e}`,
+        });
+        continue;
+      }
+      steps.push({
+        step: "login_proxy_rotate",
+        ok: seeded,
+        status: null,
+        ms: Date.now() - tRot,
+        note: seeded
+          ? `rotated→${bandaiProxyHost(line)} remint F5 (attempt ${i + 1}/${candidates.length})`
+          : `rotate→${bandaiProxyHost(line)} seed incomplete`,
+      });
+      if (!seeded) continue;
+      login = await tStep(`login_retry_${i + 1}`, attemptLogin);
+      if (login.ok) {
+        login = {
+          ...login,
+          note: `${login.note} after proxy rotate→${bandaiProxyHost(line)}`,
+        };
+        break;
+      }
+      if (!isRetryableLoginFailure(login)) break;
+    }
+  }
 
   if (!login.ok) {
     await closeBridge();

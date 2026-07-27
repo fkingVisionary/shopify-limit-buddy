@@ -486,6 +486,13 @@ function buildBandaiPayload({
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
+      // Sticky pool for in-adapter SoftBlock login rotate (fail-path only).
+      proxyPool: Array.isArray(task._proxyEntries)
+        ? task._proxyEntries
+        : Array.isArray(task.proxyEntries)
+          ? task.proxyEntries
+          : undefined,
+      bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
       // ATC always HTTP+F5. Pay path: fast=HTTP GE+riskHydrate, safe=Playwright GE.
       ...resolveDesktopBandaiPayPath(task, {
         mode,
@@ -986,8 +993,27 @@ function isStickyTunnelDead(result) {
   );
 }
 
+/** Bandai login SoftBlock / sensor flake — outer belt when adapter rotate exhausted. */
+function isBandaiLoginBlock(result) {
+  if (!result || result.ok) return false;
+  if (String(result.failedStep || "") !== "login") return false;
+  const blob = [
+    result.debugError,
+    result.error,
+    result.note,
+    ...(result.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note}`),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /SoftBlock|sensor mint|NETWORK CONGESTION|PAGE NOT AVAILABLE|Access Denied|Request rejected|\b501\b|\b503\b|\b502\b|\b504\b/i.test(
+    blob,
+  );
+}
+
 function shouldStickyResiRetry(result) {
-  return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
+  return (
+    isResidentialAkamaiBlock(result) || isStickyTunnelDead(result) || isBandaiLoginBlock(result)
+  );
 }
 
 async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
@@ -1445,7 +1471,9 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
-    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit.
+    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit
+    // unless login SoftBlock forces a new sticky (adapter also rotates in-process).
+    if (entries.length && job.task) job.task._proxyEntries = entries;
     const harvestLocked = Boolean(
       job.task?.harvestedSession?.cookies || job.task?.harvestedBridgeId || job.task?.harvestedProxy,
     );
@@ -1461,14 +1489,15 @@ async function runOne(job) {
 
     // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
     // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
-    // Skip entirely when a harvested Toymate CF session is locked to this proxy.
-    const maxProxyRetries = harvestLocked
-      ? 0
-      : sticky
-        ? Math.min(4, Math.max(2, entries.length || 2))
-        : entries.length > 1
-          ? Math.min(3, entries.length - 1)
-          : 0;
+    // Skip entirely when a harvested Toymate CF session is locked to this proxy —
+    // except Bandai login SoftBlock (exit is burned for login).
+    const maxProxyRetriesBase = sticky
+      ? Math.min(4, Math.max(2, entries.length || 2))
+      : entries.length > 1
+        ? Math.min(3, entries.length - 1)
+        : 0;
+    const maxProxyRetries =
+      harvestLocked && !isBandaiLoginBlock(result) ? 0 : maxProxyRetriesBase;
     let proxyRetries = 0;
     while (
       !result.ok &&
@@ -1479,15 +1508,23 @@ async function runOne(job) {
       proxyRetries += 1;
       const why = isStickyTunnelDead(result)
         ? "tunnel/TLS failure"
-        : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
-          ? "unsolved _abck"
-          : "Akamai denial";
+        : isBandaiLoginBlock(result)
+          ? "Bandai login SoftBlock"
+          : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
+            ? "unsolved _abck"
+            : "Akamai denial";
 
       let rotateSession = false;
       if (entries.length > 1) {
         job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
         job.proxyRaw = entries[job.proxyIndex];
         rotateSession = sticky && proxyRetries >= entries.length;
+        // Drop burned harvest binding so next attempt can use the new sticky.
+        if (isBandaiLoginBlock(result) && job.task) {
+          delete job.task.harvestedBridgeId;
+          delete job.task.harvestedProxy;
+          delete job.task.proxyOverride;
+        }
       } else {
         rotateSession = sticky;
       }

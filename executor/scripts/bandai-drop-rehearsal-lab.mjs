@@ -246,6 +246,8 @@ async function runLane(i) {
     areaItemNo: areaItemNo || undefined,
     bandaiAreaItemNo: areaItemNo || undefined,
     harvestedBridgeId,
+    proxyPool: proxies,
+    bandaiLoginProxyRotate: true,
     account: { email: acc.email, password: acc.password },
     card: pan ? card : undefined,
     profile: {

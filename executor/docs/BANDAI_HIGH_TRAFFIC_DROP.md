@@ -36,6 +36,7 @@ Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
 - Claim harvest at trigger/enqueue — cold only if mint failed after retries.
 - Prefer **backend `areaItemNo` / NAI** for ATC when both frontend N-code and NAI are known.
 - **ATC retries** (default 3) on congestion / SoftBlock / 5xx — not on SoldOut / MaxPurchaseQty.
+- **Login SoftBlock / proxy flake:** rotate sticky exit (default 2), remint cold F5, retry login. Pass `proxyPool` (desktop proxy group / `BANDAI_PROXY_POOL`). Disable with `bandaiLoginProxyRotate:false`.
 - Ensure shipping address on account (fresh agen) before GE — else `checkout_address` blocker.
 
 ---
