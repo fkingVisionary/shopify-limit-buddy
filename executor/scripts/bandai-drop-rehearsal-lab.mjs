@@ -35,15 +35,21 @@ function aest() {
 }
 
 function aestHms() {
-  const parts = new Intl.DateTimeFormat("en-AU", {
+  // en-GB + hour12:false → reliable 24h clock (en-AU can still emit 1–12).
+  const s = new Date().toLocaleString("en-GB", {
     timeZone: "Australia/Sydney",
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date());
-  const get = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
-  return { h: get("hour"), m: get("minute"), s: get("second") };
+  });
+  // e.g. "27/07/2026, 13:27:01"
+  const m = String(s).match(/(\d{1,2}):(\d{2}):(\d{2})/);
+  if (!m) return { h: 0, m: 0, s: 0 };
+  return { h: Number(m[1]), m: Number(m[2]), s: Number(m[3]) };
 }
 
 function sleep(ms) {
