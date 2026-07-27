@@ -1290,6 +1290,33 @@ function pathToFileUrl(p) {
 }
 
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  // Bandai Autocheckout / chance: claim F5 at run-start (not enqueue) so bank TTL
+  // stays fresh through the queue — matches Monitor restock claim timing.
+  if (
+    job.task?.store === "bandai" &&
+    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    !job.task.harvestedBridgeId &&
+    typeof takeBandaiHarvestFn === "function"
+  ) {
+    const harvestSession = takeBandaiHarvestFn() || null;
+    if (harvestSession?.id) {
+      job.task.harvestedBridgeId = harvestSession.id;
+      job.task.harvestedProxy = harvestSession.proxy;
+      job.task.proxyOverride = harvestSession.proxy;
+      if (harvestSession.proxy) {
+        job.proxyRaw = harvestSession.proxy;
+        job.proxyEntries = [harvestSession.proxy];
+        job.proxyIndex = 0;
+      }
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"} age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
+      );
+    }
+  }
+
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
     return {

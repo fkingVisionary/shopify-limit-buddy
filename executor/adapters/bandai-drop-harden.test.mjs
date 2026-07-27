@@ -15,6 +15,23 @@ test("parseAreaItemNo prefers backend NAI over PDP N-code", () => {
   assert.equal(code, "NAI0859145AU");
 });
 
+test("parseFrontendProductCode keeps N-code separate from NAI", async () => {
+  const { parseFrontendProductCode } = await import("./bandai-session.js");
+  assert.equal(
+    parseFrontendProductCode({
+      pdpUrl: "https://p-bandai.com/au/item/N2890904001",
+      bandaiAreaItemNo: "NAI0859145AU",
+    }),
+    "N2890904001",
+  );
+  assert.equal(
+    parseFrontendProductCode({
+      pdpUrl: "https://p-bandai.com/au/item/N2542159011",
+    }),
+    "N2542159011",
+  );
+});
+
 test("parseAreaItemNo falls back to item path", () => {
   assert.equal(
     parseAreaItemNo({ pdpUrl: "https://p-bandai.com/au/item/N2542159011" }),

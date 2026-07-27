@@ -24,7 +24,7 @@ import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
-import { takeHarvestSlot } from "./bandai-harvest-pool.js";
+import { takeHarvestSlot, takeNextHarvestSlot } from "./bandai-harvest-pool.js";
 import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
 import {
   BANDAI_PAY_WINDOW_MS,
@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import {
   createBandaiSession,
   parseAreaItemNo,
+  parseFrontendProductCode,
   extractPreloadSuffix,
   readText,
   resolveBandaiArea,
@@ -217,37 +218,99 @@ function makeStep(steps, ctx) {
   };
 }
 
-async function resolveAreaItemNo(session, productCode, tStep) {
+async function resolveAreaItemNo(session, productCode, tStep, opts = {}) {
   const code = String(productCode || "").trim();
-  if (!code) return { ok: false, note: "product code / areaItemNo required" };
+  const fallback =
+    opts.fallbackAreaItemNo != null && String(opts.fallbackAreaItemNo).trim()
+      ? String(opts.fallbackAreaItemNo).trim()
+      : null;
+  if (!code && !fallback) return { ok: false, note: "product code / areaItemNo required" };
   if (/^NAI/i.test(code) || /^AAI/i.test(code)) {
     return { ok: true, areaItemNo: code, productCode: code };
   }
-  const pdp = await tStep("product_get", async () => {
-    const { status, json } = await session.apiJson("GET", `/api/products/${encodeURIComponent(code)}`, {
-      referer: `${session.base}/item/${code}`,
-    });
-    const areaItemNo =
-      json?.areaItemNos?.[0] ||
-      (Array.isArray(json?.areaItemNos) ? json.areaItemNos[0] : null) ||
-      Object.keys(json?.areaItemInventoryInfoMap || {})[0] ||
-      null;
-    const purchaseAvailable = Boolean(json?.purchaseAvailable);
-    const flags = json?.flags || [];
+  if (!code && fallback) {
     return {
-      ok: status === 200 && Boolean(json),
-      status,
-      note: areaItemNo
-        ? `${areaItemNo} avail=${purchaseAvailable}`
-        : `product ${status}`,
-      areaItemNo,
-      purchaseAvailable,
-      flags,
-      json,
-      title: json?.productName || json?.name || code,
+      ok: true,
+      areaItemNo: fallback,
+      productCode: fallback,
+      note: `using task backend PID ${fallback} (no frontend code)`,
     };
-  });
-  return pdp;
+  }
+
+  const maxAttempts = Math.max(1, Math.min(3, Number(opts.retries) || 2));
+  let last = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const pdp = await tStep(attempt === 1 ? "product_get" : `product_get_retry_${attempt}`, async () => {
+        const { status, json } = await session.apiJson(
+          "GET",
+          `/api/products/${encodeURIComponent(code)}`,
+          {
+            referer: `${session.base}/item/${code}`,
+          },
+        );
+        const areaItemNo =
+          json?.areaItemNos?.[0] ||
+          (Array.isArray(json?.areaItemNos) ? json.areaItemNos[0] : null) ||
+          Object.keys(json?.areaItemInventoryInfoMap || {})[0] ||
+          null;
+        const purchaseAvailable = Boolean(json?.purchaseAvailable);
+        const flags = json?.flags || [];
+        const err = json?.detail || json?.error || json?.message || null;
+        const retryable =
+          status === 429 ||
+          status === 501 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504 ||
+          /NETWORK CONGESTION|PAGE NOT AVAILABLE|SoftBlock/i.test(String(err || ""));
+        return {
+          ok: status === 200 && Boolean(json) && Boolean(areaItemNo || fallback),
+          status,
+          note: areaItemNo
+            ? `${areaItemNo} avail=${purchaseAvailable}${attempt > 1 ? ` (attempt ${attempt})` : ""}`
+            : err
+              ? `${err} product ${status}`
+              : `product ${status}`,
+          areaItemNo: areaItemNo || fallback || null,
+          purchaseAvailable,
+          flags,
+          json,
+          title: json?.productName || json?.name || code,
+          retryable,
+        };
+      });
+      last = pdp;
+      if (pdp.ok) return pdp;
+      if (pdp.status === 404) break;
+      if (!pdp.retryable && pdp.status >= 400 && pdp.status < 500) break;
+      if (attempt < maxAttempts) await sleepMs(350 * attempt);
+    } catch (e) {
+      last = {
+        ok: false,
+        note: e?.message || String(e),
+        areaItemNo: null,
+      };
+      if (attempt < maxAttempts && isRetryableAtcFailure({ err: e?.message, status: 0 })) {
+        await sleepMs(400 * attempt);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (fallback) {
+    return {
+      ok: true,
+      areaItemNo: fallback,
+      productCode: code || fallback,
+      title: last?.title || code,
+      note: `product_get failed (${last?.note || "n/a"}) → using task backend PID ${fallback}`,
+      purchaseAvailable: last?.purchaseAvailable,
+      flags: last?.flags,
+    };
+  }
+  return last || { ok: false, note: "product lookup failed" };
 }
 
 async function runMonitor(task, ctx, session, tStep, steps) {
@@ -384,7 +447,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   let session = sessionIn;
   const email = opts.email;
   const password = opts.password;
-  const productCode = opts.productCode;
+  const productCode = opts.frontendCode || opts.productCode;
+  const backendAreaItemNo = opts.backendAreaItemNo || null;
   const chanceOnly = opts.chanceOnly === true;
   const placeOrder = task.placeOrder === true && task.dryRun !== true;
   const wantBridge = task.bandaiF5Bridge !== false;
@@ -444,33 +508,160 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   if (wantBridge) {
     try {
       const s0 = Date.now();
-      // Opt-in harvest: claim a pre-warmed F5 bridge (same sticky proxy). Miss /
-      // dead page → cold createBandaiF5Bridge — checkout must never depend on harvest.
+      // Opt-in harvest: claim a pre-warmed F5 bridge. Dead/missing id → try next
+      // bank slot (same area) before cold Chromium — drop consistency under load.
       const harvestId =
         typeof task.harvestedBridgeId === "string" && task.harvestedBridgeId.trim()
           ? task.harvestedBridgeId.trim()
           : null;
       let harvestedMeta = null;
-      if (harvestId) {
-        const claimed = takeHarvestSlot(harvestId);
-        if (claimed?.bridge) {
+      let claimedId = harvestId;
+      const triedIds = [];
+
+      async function tryClaim(id, { via = "id" } = {}) {
+        if (!id) return false;
+        triedIds.push(String(id));
+        const claimed = takeHarvestSlot(id);
+        if (!claimed?.bridge) return false;
+        try {
+          const csrfCheck = await claimed.bridge.csrfToken();
+          const cookiesCheck = (await claimed.bridge.cookies()) || {};
+          const alive =
+            Boolean(csrfCheck) ||
+            Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
+          if (!alive) {
+            await claimed.bridge.close?.();
+            return false;
+          }
+          // Rebind sticky if reclaim used a different exit than task.proxy.
+          if (claimed.proxy && claimed.proxy !== task.proxy) {
+            try {
+              await ctx.dispatcher?.close?.();
+            } catch {
+              /* ignore */
+            }
+            ctx.dispatcher = makeDispatcher(claimed.proxy, { forceUndici: true });
+            ctx.jar = createJar();
+            task.proxy = claimed.proxy;
+            session = createBandaiSession(ctx, { area: session.area });
+          }
+          bridge = claimed.bridge;
+          harvestedMeta = claimed.meta;
+          claimedId = id;
+          if (csrfCheck) session.state.csrfToken = csrfCheck;
+          if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+          if (via === "next") {
+            steps.push({
+              step: "harvest_reclaim",
+              ok: true,
+              ms: Date.now() - s0,
+              note: `dead/miss → next bank slot id=${id} host=${bandaiProxyHost(claimed.proxy)}`,
+            });
+          }
+          return true;
+        } catch {
           try {
-            const csrfCheck = await claimed.bridge.csrfToken();
-            const cookiesCheck = (await claimed.bridge.cookies()) || {};
+            await claimed.bridge.close?.();
+          } catch {
+            /* ignore */
+          }
+          return false;
+        }
+      }
+
+      if (harvestId) {
+        const ok = await tryClaim(harvestId, { via: "id" });
+        if (!ok) {
+          // Prefer another warm bridge over cold mint while the bank still has stock.
+          for (let i = 0; i < 2 && !bridge; i++) {
+            const next = takeNextHarvestSlot({
+              area: session.area,
+              excludeIds: triedIds,
+            });
+            if (!next?.meta?.id && !next?.bridge) break;
+            // takeNextHarvestSlot already claimed — bridge is ours.
+            const nextId = next.meta?.id || `next_${i}`;
+            triedIds.push(String(nextId));
+            try {
+              const csrfCheck = await next.bridge.csrfToken();
+              const cookiesCheck = (await next.bridge.cookies()) || {};
+              const alive =
+                Boolean(csrfCheck) ||
+                Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
+              if (!alive) {
+                await next.bridge.close?.();
+                continue;
+              }
+              if (next.proxy && next.proxy !== task.proxy) {
+                try {
+                  await ctx.dispatcher?.close?.();
+                } catch {
+                  /* ignore */
+                }
+                ctx.dispatcher = makeDispatcher(next.proxy, { forceUndici: true });
+                ctx.jar = createJar();
+                task.proxy = next.proxy;
+                session = createBandaiSession(ctx, { area: session.area });
+              }
+              bridge = next.bridge;
+              harvestedMeta = next.meta;
+              claimedId = nextId;
+              if (csrfCheck) session.state.csrfToken = csrfCheck;
+              if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+              steps.push({
+                step: "harvest_reclaim",
+                ok: true,
+                ms: Date.now() - s0,
+                note: `miss ${harvestId} → reclaimed id=${nextId} host=${bandaiProxyHost(next.proxy)}`,
+              });
+            } catch {
+              try {
+                await next.bridge.close?.();
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }
+      } else if (task.bandaiClaimHarvest !== false) {
+        // No pre-bound id (late claim miss) — still try bank before cold.
+        const next = takeNextHarvestSlot({ area: session.area });
+        if (next?.bridge) {
+          try {
+            const csrfCheck = await next.bridge.csrfToken();
+            const cookiesCheck = (await next.bridge.cookies()) || {};
             const alive =
               Boolean(csrfCheck) ||
               Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
             if (alive) {
-              bridge = claimed.bridge;
-              harvestedMeta = claimed.meta;
+              if (next.proxy && next.proxy !== task.proxy) {
+                try {
+                  await ctx.dispatcher?.close?.();
+                } catch {
+                  /* ignore */
+                }
+                ctx.dispatcher = makeDispatcher(next.proxy, { forceUndici: true });
+                ctx.jar = createJar();
+                task.proxy = next.proxy;
+                session = createBandaiSession(ctx, { area: session.area });
+              }
+              bridge = next.bridge;
+              harvestedMeta = next.meta;
+              claimedId = next.meta?.id || "bank";
               if (csrfCheck) session.state.csrfToken = csrfCheck;
               if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+              steps.push({
+                step: "harvest_reclaim",
+                ok: true,
+                ms: Date.now() - s0,
+                note: `no harvest id → bank claim id=${claimedId}`,
+              });
             } else {
-              await claimed.bridge.close?.();
+              await next.bridge.close?.();
             }
           } catch {
             try {
-              await claimed.bridge.close?.();
+              await next.bridge.close?.();
             } catch {
               /* ignore */
             }
@@ -494,7 +685,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           status: null,
           ms: Date.now() - s0,
           note: csrf
-            ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${harvestId}`
+            ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${claimedId}`
             : `harvested bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} age=${ageSec ?? "?"}s`,
         });
         ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
@@ -769,7 +960,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     });
   }
 
-  const pdpLookup = await resolveAreaItemNo(session, productCode, tStep);
+  const pdpLookup = await resolveAreaItemNo(session, productCode, tStep, {
+    fallbackAreaItemNo: backendAreaItemNo || task.bandaiAreaItemNo || task.heldCart?.areaItemNo,
+  });
   if ((!pdpLookup.ok || !pdpLookup.areaItemNo) && !payFromCart) {
     await closeBridge();
     return {
@@ -784,6 +977,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   const pdp = {
     ok: true,
     areaItemNo:
+      // Prefer explicit backend NAI for ATC when set; else product_get / frontend.
+      backendAreaItemNo ||
       pdpLookup.areaItemNo ||
       task.bandaiAreaItemNo ||
       task.areaItemNo ||
@@ -791,6 +986,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       productCode,
     title: pdpLookup.title || productCode,
     productCode,
+    frontendCode: productCode,
   };
 
   const qty = Math.max(1, Math.min(5, Number(task.qty) || 1));
@@ -1737,8 +1933,15 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  const productCode = parseAreaItemNo(task);
-  if (!productCode) {
+  // Dual-ID: frontend N… for PDP referer/path; backend NAI… for ATC body.
+  const frontendCode = parseFrontendProductCode(task);
+  const backendHint =
+    (task.bandaiAreaItemNo && String(task.bandaiAreaItemNo).trim()) ||
+    (task.bandaiBackendPid && String(task.bandaiBackendPid).trim()) ||
+    (task.areaItemNo && String(task.areaItemNo).trim()) ||
+    null;
+  const productCode = frontendCode || parseAreaItemNo(task);
+  if (!productCode && !backendHint) {
     return {
       ok: false,
       steps,
@@ -1849,7 +2052,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,
-      productCode,
+      productCode: productCode || backendHint,
+      frontendCode: frontendCode || productCode || null,
+      backendAreaItemNo: backendHint,
       placeOrderGeHttp: true,
       card,
     });
@@ -1860,7 +2065,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,
-      productCode,
+      productCode: productCode || backendHint,
+      frontendCode: frontendCode || productCode || null,
+      backendAreaItemNo: backendHint,
       placeOrderGe: true,
       card,
     });
@@ -1869,7 +2076,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
   return runHttpCheckout(task, ctx, session, tStep, steps, {
     email,
     password,
-    productCode,
+    productCode: productCode || backendHint,
+    frontendCode: frontendCode || productCode || null,
+    backendAreaItemNo: backendHint,
   });
 }
 

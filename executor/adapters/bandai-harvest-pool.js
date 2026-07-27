@@ -284,6 +284,25 @@ export function takeHarvestSlot(id) {
   };
 }
 
+/**
+ * Claim the next ready bridge (optionally matching area). Used when a specific
+ * harvest id is dead/missing but the bank still has warm slots.
+ * @returns {{ bridge, meta, proxy, area, csrf } | null}
+ */
+export function takeNextHarvestSlot({ area = null, excludeIds = [] } = {}) {
+  void evictExpired();
+  const exclude = new Set((Array.isArray(excludeIds) ? excludeIds : [excludeIds]).map(String).filter(Boolean));
+  const want = area ? normalizeBandaiArea(area) : null;
+  const t = now();
+  for (const [id, slot] of slots) {
+    if (exclude.has(String(id))) continue;
+    if (want && slot.area !== want) continue;
+    if (slot.expiresAt <= t) continue;
+    return takeHarvestSlot(id);
+  }
+  return null;
+}
+
 /** Peek without claiming (tests / UI). */
 export function peekHarvestSlot(id) {
   const slot = slots.get(String(id || ""));
@@ -325,6 +344,7 @@ export default {
   mintHarvestSlot,
   mintHarvestSlotWithRetries,
   takeHarvestSlot,
+  takeNextHarvestSlot,
   peekHarvestSlot,
   releaseHarvestSlot,
   clearHarvestSlots,

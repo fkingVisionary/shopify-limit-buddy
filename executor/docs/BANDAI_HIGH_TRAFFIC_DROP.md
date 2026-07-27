@@ -35,6 +35,10 @@ Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
 - All checkout lanes at **T0** (small stagger ≤150ms OK). Avoid 40s wave-2 delays.
 - Claim harvest at trigger/enqueue — cold only if mint failed after retries.
 - Prefer **backend `areaItemNo` / NAI** for ATC when both frontend N-code and NAI are known.
+- **Harvest reclaim:** dead/missing claimed bridge → take next bank slot (same area) before cold Chromium.
+- **Autocheckout claim at run-start** (not enqueue) so F5 TTL stays fresh through the queue (Monitor already claimed at restock).
+- **product_get** retries congestion/5xx; falls back to task Backend PID when set.
+- Frontend **N…** stays on PDP referer; **NAI…** is ATC body only (dual-ID).
 - **ATC retries** (default 3) on congestion / SoftBlock / 5xx — not on SoldOut / MaxPurchaseQty.
 - **Login SoftBlock / proxy flake:** rotate sticky exit (default 2), remint cold F5, retry login. Pass `proxyPool` (desktop proxy group / `BANDAI_PROXY_POOL`). Disable with `bandaiLoginProxyRotate:false`.
 - **Pay-from-held-cart:** after decline / pay fail, desktop shows **Retry pay**. Adapter sets `bandaiPayFromCart` → login → **live `GET /api/cart/detail`** (source of truth) → skip ATC → checkout → GE. Local ~30 min clock is UI hint only. Gone cart → `held_cart_gone`.

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   takeHarvestSlot,
+  takeNextHarvestSlot,
   peekHarvestSlot,
   harvestSnapshot,
   clearHarvestSlots,
@@ -91,6 +92,41 @@ async function main() {
   const rel = await releaseHarvestSlot(id3);
   assert.equal(rel.ok, true);
   assert.equal(bridge3.closed(), true);
+
+  // takeNextHarvestSlot: claim any ready au slot (exclude burned id)
+  const bA = mockBridge("csrfA");
+  const bB = mockBridge("csrfB");
+  __test.slots.set("bf5_a", {
+    id: "bf5_a",
+    bridge: bA,
+    proxy: "http://a",
+    proxyHost: "a",
+    area: "au",
+    csrf: "csrfA",
+    cookieKeys: ["SESSION"],
+    harvestedAt: now,
+    expiresAt: now + 60_000,
+    settleMs: 1400,
+    note: "a",
+  });
+  __test.slots.set("bf5_b", {
+    id: "bf5_b",
+    bridge: bB,
+    proxy: "http://b",
+    proxyHost: "b",
+    area: "au",
+    csrf: "csrfB",
+    cookieKeys: ["SESSION"],
+    harvestedAt: now,
+    expiresAt: now + 60_000,
+    settleMs: 1400,
+    note: "b",
+  });
+  const next = takeNextHarvestSlot({ area: "au", excludeIds: ["bf5_a"] });
+  assert.ok(next?.bridge);
+  assert.equal(next.meta.id, "bf5_b");
+  assert.equal(harvestSnapshot().ready, 1);
+  assert.ok(peekHarvestSlot("bf5_a"));
 
   await clearHarvestSlots();
   console.log("bandai-harvest-pool.test.mjs: ok");

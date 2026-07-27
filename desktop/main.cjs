@@ -862,30 +862,8 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
           });
         }
       }
-      // Bandai checkout: claim a pre-warmed F5 bridge when Harvest is armed.
-      if (
-        task.store === "bandai" &&
-        ["checkout", "chance"].includes(String(task.bandaiMode || "checkout"))
-      ) {
-        const session = bandaiHarvest.take();
-        if (session?.id) {
-          taskCopy.harvestedBridgeId = session.id;
-          taskCopy.harvestedProxy = session.proxy;
-          taskCopy.proxyOverride = session.proxy;
-          if (session.proxy) {
-            jobProxyRaw = session.proxy;
-            jobProxyEntries = [session.proxy];
-            proxyIndex = 0;
-          }
-          send({
-            type: "job",
-            phase: "log",
-            taskId: tid,
-            level: "info",
-            message: `Using harvested F5 bridge (${session.proxyHost || "proxy"} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
-          });
-        }
-      }
+      // Bandai Autocheckout: F5 harvest is claimed at run-start in job-runner
+      // (not enqueue) so bank TTL stays fresh through the queue.
       // Disney checkout/pay: claim Akamai+CapSolver session when Harvest is armed.
       // Empty bank → cold path (warm + CapSolver on critical path) — unchanged.
       if (

@@ -376,6 +376,20 @@ export function parseAreaItemNo(task) {
   return m?.[1] || String(task?.productCode || "").trim() || null;
 }
 
+/** Frontend storefront code (N…/A…) from PDP URL — keep separate from backend NAI. */
+export function parseFrontendProductCode(task) {
+  const url = String(task?.pdpUrl || task?.storeUrl || task?.input || "");
+  const m =
+    url.match(/\/item\/([A-Za-z0-9_-]+)/i) ||
+    url.match(/\/products?\/([A-Za-z0-9_-]+)/i) ||
+    url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
+    url.match(/\b(A\d{7,}[A-Z0-9]*)\b/i);
+  if (m?.[1] && !/^NAI/i.test(m[1]) && !/^AAI/i.test(m[1])) return m[1];
+  const explicit = String(task?.productCode || task?.frontendCode || "").trim();
+  if (explicit && !/^NAI/i.test(explicit) && !/^AAI/i.test(explicit)) return explicit;
+  return null;
+}
+
 export default {
   createBandaiSession,
   resolveBandaiArea,
