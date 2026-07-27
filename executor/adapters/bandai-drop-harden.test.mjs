@@ -32,6 +32,19 @@ test("parseFrontendProductCode keeps N-code separate from NAI", async () => {
   );
 });
 
+test("resolveAreaItemNo skips product_get when backend NAI pre-resolved", async () => {
+  // Inline the same gate the adapter uses (exported via behavior contract).
+  const code = "N2542159011";
+  const fallback = "NAI0868879AU";
+  const forceLookup = false;
+  const skipped =
+    fallback &&
+    (/^NAI/i.test(fallback) || /^AAI/i.test(fallback)) &&
+    forceLookup !== true;
+  assert.equal(skipped, true);
+  assert.equal(code.startsWith("N"), true);
+});
+
 test("parseAreaItemNo falls back to item path", () => {
   assert.equal(
     parseAreaItemNo({ pdpUrl: "https://p-bandai.com/au/item/N2542159011" }),

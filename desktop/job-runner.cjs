@@ -23,6 +23,12 @@ const {
   shouldCheckoutOnMonitorHit,
   taskForMonitorCheckout,
 } = require("./bandai-monitor-checkout.cjs");
+const {
+  pickAreaItemNo,
+  isBackendAreaItemNo,
+  isFrontendProductCode,
+  resolveAreaItemNoHttp,
+} = require("./bandai-nai-resolve.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -32,6 +38,10 @@ let emit = () => {};
 let onFinished = null;
 /** @type {null | (() => object|null)} */
 let takeBandaiHarvestFn = null;
+/** @type {null | (() => void)} */
+let pauseBandaiHarvestRefillFn = null;
+/** @type {null | (() => void)} */
+let resumeBandaiHarvestRefillFn = null;
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -46,6 +56,14 @@ function configure(opts = {}) {
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
   if (Object.prototype.hasOwnProperty.call(opts, "takeBandaiHarvest")) {
     takeBandaiHarvestFn = typeof opts.takeBandaiHarvest === "function" ? opts.takeBandaiHarvest : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "pauseBandaiHarvestRefill")) {
+    pauseBandaiHarvestRefillFn =
+      typeof opts.pauseBandaiHarvestRefill === "function" ? opts.pauseBandaiHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "resumeBandaiHarvestRefill")) {
+    resumeBandaiHarvestRefillFn =
+      typeof opts.resumeBandaiHarvestRefill === "function" ? opts.resumeBandaiHarvestRefill : null;
   }
 }
 
@@ -1042,6 +1060,60 @@ function shouldStickyResiRetry(result) {
   );
 }
 
+/**
+ * Ensure Backend PID (NAI…) is on the task before ATC. Prefer existing fields;
+ * otherwise warm+GET /api/products off the critical path (monitor arm / pre-fire).
+ */
+async function ensureBandaiNaiForTask(task, { proxy, area, log } = {}) {
+  if (!task || typeof task !== "object") return { ok: false, skipped: true };
+  const existing = pickAreaItemNo({
+    bandaiAreaItemNo: task.bandaiAreaItemNo,
+    bandaiBackendPid: task.bandaiBackendPid,
+    areaItemNo: task.areaItemNo,
+    heldCartAreaItemNo: task.heldCart?.areaItemNo,
+  });
+  if (existing) {
+    task.bandaiAreaItemNo = existing;
+    task.areaItemNo = existing;
+    return { ok: true, areaItemNo: existing, cached: true };
+  }
+  const sku = String(
+    task.bandaiWatchSku ||
+      task.productId ||
+      task.input ||
+      task.pdpUrl ||
+      "",
+  )
+    .match(/\b(N\d{7,}[A-Z0-9]*|A\d{7,}[A-Z0-9]*|NAI[A-Z0-9]+)\b/i)?.[1];
+  if (!sku) return { ok: false, skipped: true, error: "no watch SKU" };
+  if (isBackendAreaItemNo(sku)) {
+    task.bandaiAreaItemNo = sku;
+    task.areaItemNo = sku;
+    return { ok: true, areaItemNo: sku, cached: true };
+  }
+  if (!isFrontendProductCode(sku)) return { ok: false, skipped: true, error: "not frontend SKU" };
+
+  const resolved = await resolveAreaItemNoHttp({
+    productCode: sku,
+    area: area || task.bandaiArea || "au",
+    proxy: proxy || task.proxyOverride || null,
+  });
+  if (resolved.ok && resolved.areaItemNo) {
+    task.bandaiAreaItemNo = resolved.areaItemNo;
+    task.areaItemNo = resolved.areaItemNo;
+    if (typeof log === "function") {
+      log(
+        `Pre-resolved Backend PID ${resolved.areaItemNo} for ${sku}${resolved.ms != null ? ` (${resolved.ms}ms)` : ""}`,
+      );
+    }
+    return { ok: true, areaItemNo: resolved.areaItemNo, ms: resolved.ms };
+  }
+  if (typeof log === "function") {
+    log(`Backend PID pre-resolve skipped: ${resolved.error || "n/a"} — ATC may product_get`);
+  }
+  return { ok: false, error: resolved.error || "resolve failed" };
+}
+
 async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
   const path = require("path");
   const { eventMatchesWatch, parseTaskWatch } = await import(
@@ -1317,6 +1389,28 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
+  // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
+  if (
+    job.task?.store === "bandai" &&
+    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    !job.task.bandaiPayFromCart &&
+    !pickAreaItemNo({
+      bandaiAreaItemNo: job.task.bandaiAreaItemNo,
+      bandaiBackendPid: job.task.bandaiBackendPid,
+      areaItemNo: job.task.areaItemNo,
+    })
+  ) {
+    try {
+      await ensureBandaiNaiForTask(job.task, {
+        proxy: job.task.harvestedProxy || job.proxyRaw || job.proxyEntries?.[0] || null,
+        area: job.task.bandaiArea || "au",
+        log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+      });
+    } catch {
+      /* best-effort — adapter still has product_get */
+    }
+  }
+
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
     return {
@@ -1350,6 +1444,23 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       "info",
       checkoutOnHit ? "Starting Bandai monitor → checkout on hit" : "Starting Bandai monitor",
     );
+    // Resolve N… → NAI… while monitor polls (off ATC critical path).
+    if (checkoutOnHit) {
+      try {
+        await ensureBandaiNaiForTask(job.task, {
+          proxy: job.proxyRaw || job.proxyEntries?.[0] || null,
+          area: payload.bandaiArea || job.task.bandaiArea || "au",
+          log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+        });
+      } catch (e) {
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `Backend PID pre-resolve error: ${e?.message || e}`,
+        );
+      }
+    }
     try {
       const mon = await runBandaiMonitorInProcess(job, payload, { checkoutOnHit });
       if (!mon.checkout || !mon.hit) {
@@ -1382,11 +1493,26 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
         emitLog(job.runId, job.task?.id, "info", "No harvested F5 bridge — cold checkout");
       }
 
+      // Last chance: resolve NAI from hit / warm GET before sidecar ATC.
+      if (!pickAreaItemNo({ bandaiAreaItemNo: switched.task.bandaiAreaItemNo })) {
+        try {
+          await ensureBandaiNaiForTask(switched.task, {
+            proxy: harvestSession?.proxy || job.proxyRaw || job.proxyEntries?.[0] || null,
+            area: payload.bandaiArea || switched.task.bandaiArea || "au",
+            log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+
       emitLog(
         job.runId,
         job.task?.id,
         "ok",
-        `Restock ${switched.target.productId} — Autocheckout${job.placeOrder !== false ? " (live)" : " (dry)"}`,
+        `Restock ${switched.target.productId}${
+          switched.task.bandaiAreaItemNo ? ` (${switched.task.bandaiAreaItemNo})` : ""
+        } — Autocheckout${job.placeOrder !== false ? " (live)" : " (dry)"}`,
       );
 
       const checkoutJob = {
@@ -1440,6 +1566,20 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
 async function runSidecarCheckout(job, payload, summary, extra = {}) {
   const attemptLabel = extra.attemptLabel || "run";
+  const bandaiMode = String(job.task?.bandaiMode || payload.bandaiMode || "checkout").toLowerCase();
+  const pauseHarvest =
+    job.task?.store === "bandai" &&
+    bandaiMode !== "monitor" &&
+    bandaiMode !== "account_gen" &&
+    typeof pauseBandaiHarvestRefillFn === "function";
+  if (pauseHarvest) {
+    try {
+      pauseBandaiHarvestRefillFn();
+      emitLog(job.runId, job.task?.id, "info", "Harvest refill paused (checkout lane)");
+    } catch {
+      /* ignore */
+    }
+  }
   console.log(
     "[desktop:run]",
     JSON.stringify({
@@ -1502,6 +1642,13 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
     return finished;
   } finally {
     clearInterval(progressTimer);
+    if (pauseHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+      try {
+        resumeBandaiHarvestRefillFn();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 

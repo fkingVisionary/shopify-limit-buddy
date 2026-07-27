@@ -14,6 +14,7 @@ test("monitor handoff builds checkout task ready for harvest claim", () => {
     store: "bandai",
     bandaiMode: "monitor",
     bandaiWatchSku: "N2542159011",
+    bandaiAreaItemNo: "NAI0868879AU",
     bandaiCheckoutOnHit: true,
     bandaiArea: "au",
   };
@@ -22,6 +23,7 @@ test("monitor handoff builds checkout task ready for harvest claim", () => {
   const hit = { productId: "N2542159011", inStock: true, reason: "restock" };
   const switched = taskForMonitorCheckout(monTask, hit, "au");
   assert.equal(switched.ok, true);
+  assert.equal(switched.task.bandaiAreaItemNo, "NAI0868879AU");
 
   const harvestSession = {
     id: "bf5_test",

@@ -58,6 +58,14 @@ function bandaiHarvestEntries() {
   return group?.entries || [];
 }
 
+function runnerHarvestHooks() {
+  return {
+    takeBandaiHarvest: () => bandaiHarvest.take(),
+    pauseBandaiHarvestRefill: () => bandaiHarvest.pauseRefill(),
+    resumeBandaiHarvestRefill: () => bandaiHarvest.resumeRefill(),
+  };
+}
+
 function disneyHarvestEntries() {
   const gid = disneyHarvest.snapshot().config.proxyGroupId;
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
@@ -273,7 +281,7 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = { ...state.settings, ...patch };
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    takeBandaiHarvest: () => bandaiHarvest.take(),
+    ...runnerHarvestHooks(),
   });
   persistSettings();
   return snapshot();
@@ -330,7 +338,7 @@ ipcMain.handle("desktop:start-engine", async () => {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    takeBandaiHarvest: () => bandaiHarvest.take(),
+    ...runnerHarvestHooks(),
   });
   runner.start();
   send({ type: "snapshot", data: snapshot() });
@@ -974,7 +982,7 @@ async function e2eAutorun() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    takeBandaiHarvest: () => bandaiHarvest.take(),
+    ...runnerHarvestHooks(),
   });
   runner.start();
 
@@ -1073,7 +1081,7 @@ async function e2eAutorun() {
 app.whenReady().then(async () => {
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
-    takeBandaiHarvest: () => bandaiHarvest.take(),
+    ...runnerHarvestHooks(),
   });
   createWindow();
   if (process.env.DESKTOP_E2E_AUTORUN === "1") {

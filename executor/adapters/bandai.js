@@ -236,6 +236,22 @@ async function resolveAreaItemNo(session, productCode, tStep, opts = {}) {
       note: `using task backend PID ${fallback} (no frontend code)`,
     };
   }
+  // Pre-resolved / task Backend PID: skip PDP product_get on the ATC critical path.
+  // Dual-ID keeps frontend N… for referer; NAI… goes straight to addToCart.
+  if (
+    fallback &&
+    (/^NAI/i.test(fallback) || /^AAI/i.test(fallback)) &&
+    opts.forceLookup !== true
+  ) {
+    return {
+      ok: true,
+      areaItemNo: fallback,
+      productCode: code || fallback,
+      title: code || fallback,
+      note: `pre-resolved backend PID ${fallback} (skipped product_get)`,
+      skippedLookup: true,
+    };
+  }
 
   const maxAttempts = Math.max(1, Math.min(3, Number(opts.retries) || 2));
   let last = null;

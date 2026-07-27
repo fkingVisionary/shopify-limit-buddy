@@ -62,6 +62,8 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
     proxyCursor: 0,
   };
   let tickTimer = null;
+  /** >0 while Bandai checkout lanes run — pause Chromium refill so mint doesn't fight ATC/login. */
+  let refillPauseDepth = 0;
 
   function snapshot() {
     const t = now();
@@ -69,6 +71,8 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
     return {
       running,
       busy,
+      refillPaused: refillPauseDepth > 0,
+      refillPauseDepth,
       lastError,
       solvedCount,
       failedCount,
@@ -170,6 +174,12 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
 
   async function tick(getEntries) {
     if (!running || busy) return;
+    // Checkout lanes own Chromium/proxy budget — keep bank as-is until they finish.
+    if (refillPauseDepth > 0) {
+      evictExpired();
+      publish();
+      return;
+    }
     evictExpired();
     const desired = Math.max(0, Math.min(6, Number(config.desired) || 0));
     const fresh = pool.filter((s) => s.expiresAt > now());
@@ -179,6 +189,18 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
     }
     const entries = typeof getEntries === "function" ? getEntries() : [];
     await harvestOne(entries);
+  }
+
+  function pauseRefill() {
+    refillPauseDepth += 1;
+    publish();
+    return snapshot();
+  }
+
+  function resumeRefill() {
+    refillPauseDepth = Math.max(0, refillPauseDepth - 1);
+    publish();
+    return snapshot();
   }
 
   function start({ proxyGroupId, desired, area, getEntries } = {}) {
@@ -250,6 +272,8 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
     configure,
     take,
     harvestOne,
+    pauseRefill,
+    resumeRefill,
   };
 }
 
