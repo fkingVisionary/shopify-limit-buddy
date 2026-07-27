@@ -34,6 +34,38 @@ function aest() {
   return new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 }
 
+function aestHms() {
+  const parts = new Intl.DateTimeFormat("en-AU", {
+    timeZone: "Australia/Sydney",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
+  return { h: get("hour"), m: get("minute"), s: get("second") };
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function waitUntilAest(hhmm, label) {
+  if (/^(1|true)$/i.test(String(process.env.DROP_FORCE_NOW || ""))) return;
+  if (!hhmm) return;
+  const [hh, mm] = String(hhmm).split(":").map((x) => Number(x));
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return;
+  const target = hh * 3600 + mm * 60;
+  for (;;) {
+    const { h, m, s } = aestHms();
+    const now = h * 3600 + m * 60 + s;
+    if (now >= target) return;
+    const left = target - now;
+    if (left % 15 === 0 || left < 20) console.log(`[${aest()}] wait ${label || hhmm} ${left}s`);
+    await sleep(Math.min(3000, Math.max(500, left * 1000)));
+  }
+}
+
 function loadAccounts() {
   const p = process.env.BANDAI_ACCOUNTS_JSON || "/tmp/bandai-drop-1300/roster.json";
   if (fs.existsSync(p)) {
@@ -101,9 +133,28 @@ function summarize(label, res, wallMs, extra = {}) {
 const accounts = loadAccounts().slice(0, Math.max(1, Number(process.env.BANDAI_LANES) || 2));
 const proxies = loadProxies();
 const sku = process.env.BANDAI_SKU || "N2542159011";
-const areaItemNo = process.env.BANDAI_AREA_ITEM_NO || process.env.BANDAI_BACKEND_PID || "";
+const areaItemNo =
+  process.env.BANDAI_AREA_ITEM_NO ||
+  process.env.BANDAI_BACKEND_PID ||
+  (fs.existsSync(process.env.BANDAI_ACCOUNTS_JSON || "/tmp/bandai-drop-1300/roster.json")
+    ? (() => {
+        try {
+          const j = JSON.parse(
+            fs.readFileSync(
+              process.env.BANDAI_ACCOUNTS_JSON || "/tmp/bandai-drop-1300/roster.json",
+              "utf8",
+            ),
+          );
+          return j.backendPid || j.areaItemNo || "";
+        } catch {
+          return "";
+        }
+      })()
+    : "");
 const pdp = `https://p-bandai.com/au/item/${sku}`;
 const concurrency = Math.max(1, Math.min(4, Number(process.env.BANDAI_CONCURRENCY) || accounts.length));
+const harvestAt = process.env.BANDAI_HARVEST_AT || ""; // e.g. 13:27
+const fireAt = process.env.BANDAI_FIRE_AT || ""; // e.g. 13:30
 const outPath =
   process.env.BANDAI_REHEARSAL_OUT ||
   `/tmp/bandai-drop-rehearsal-${Date.now()}.json`;
@@ -125,6 +176,8 @@ console.log(
       areaItemNo: areaItemNo || null,
       lanes: accounts.map((a) => a.id),
       concurrency,
+      harvestAt: harvestAt || null,
+      fireAt: fireAt || null,
       cardLast4: pan.slice(-4),
     },
     null,
@@ -135,6 +188,7 @@ console.log(
 process.env.BANDAI_HARVEST_TTL_MS =
   process.env.BANDAI_HARVEST_TTL_MS || String(15 * 60_000);
 
+await waitUntilAest(harvestAt, "harvest-arm");
 await clearHarvestSlots().catch(() => {});
 const start = Number(process.env.BANDAI_POOL_START) || 21;
 const mintProxies = proxies.slice(start, start + Math.max(accounts.length * 3, 6));
@@ -168,6 +222,9 @@ for (let i = 0; i < accounts.length; i++) {
 }
 console.log(`[${aest()}] harvest ready=${harvestSnapshot().ready}`);
 
+await waitUntilAest(fireAt, "fire");
+console.log(`[${aest()}] FIRE Fast checkout x${accounts.length}`);
+
 async function runLane(i) {
   const acc = accounts[i];
   const b = bridges[i];
@@ -194,6 +251,16 @@ async function runLane(i) {
     harvestedBridgeId,
     account: { email: acc.email, password: acc.password },
     card: pan ? card : undefined,
+    profile: {
+      first_name: process.env.BANDAI_SHIP_FIRST || "Alex",
+      last_name: process.env.BANDAI_SHIP_LAST || "Buyer",
+      address1: process.env.BANDAI_SHIP_ADDRESS1 || "133 Allenby Road",
+      city: process.env.BANDAI_SHIP_CITY || "Alexandra Hills",
+      province: process.env.BANDAI_SHIP_PROVINCE || "QLD",
+      zip: process.env.BANDAI_SHIP_ZIP || "4160",
+      phone: process.env.BANDAI_SHIP_PHONE || null,
+      country: "AU",
+    },
   });
   return summarize(acc.id, res, Date.now() - t0, {
     harvested: Boolean(harvestedBridgeId),

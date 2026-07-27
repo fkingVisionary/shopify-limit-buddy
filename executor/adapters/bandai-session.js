@@ -321,14 +321,26 @@ export function profileFromTask(task) {
   const area = resolveBandaiArea(task);
   const p = task?.profile || {};
   const defaults = {
-    au: { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" },
+    au: {
+      city: "Alexandra Hills",
+      province: "QLD",
+      zip: "4160",
+      country: "AU",
+      address1: "133 Allenby Road",
+    },
     us: { city: "Los Angeles", province: "CA", zip: "90012", country: "US", address1: "100 S Main St" },
     nz: { city: "Auckland", province: "AUK", zip: "1010", country: "NZ", address1: "1 Queen Street" },
     sg: { city: "Singapore", province: "", zip: "018956", country: "SG", address1: "1 Raffles Place" },
     hk: { city: "Hong Kong", province: "", zip: "", country: "HK", address1: "1 Queen's Road Central" },
     tw: { city: "Taipei", province: "", zip: "100", country: "TW", address1: "1 Zhongxiao E Rd" },
     fr: { city: "Paris", province: "", zip: "75001", country: "FR", address1: "1 Rue de Rivoli" },
-  }[area] || { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" };
+  }[area] || {
+    city: "Alexandra Hills",
+    province: "QLD",
+    zip: "4160",
+    country: "AU",
+    address1: "133 Allenby Road",
+  };
 
   return {
     email: p.email || task?.email || null,

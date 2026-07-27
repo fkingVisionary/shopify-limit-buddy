@@ -33,10 +33,29 @@ import {
   extractPreloadSuffix,
   readText,
   resolveBandaiArea,
+  profileFromTask,
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
 
+function isRetryableAtcFailure({ status, err, textHint }) {
+  const blob = `${err || ""} ${textHint || ""} ${status || ""}`;
+  if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation|SoldOut|OutOfStock)/i.test(blob)) {
+    return false;
+  }
+  if (/NETWORK CONGESTION|PAGE NOT AVAILABLE|Service Unavailable|Bad Gateway|Gateway Time-out/i.test(blob)) {
+    return true;
+  }
+  if (/SoftBlock|Access Denied|Request rejected/i.test(blob)) return true;
+  const st = Number(status);
+  if (st === 429 || st === 501 || st === 502 || st === 503 || st === 504) return true;
+  if (!Number.isFinite(st) || st === 0) return true; // network / empty
+  return false;
+}
+
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 /**
  * Resolve Fast vs Safe pay path after HTTP ATC / cart_hold.
  * Explicit bandaiBrowserCheckout / bandaiBrowserFull still win for labs.
@@ -483,6 +502,52 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     };
   }
 
+  // Ensure a shipping address exists for GE (fresh agen often has none → checkout_address).
+  const shipProfile = profileFromTask(task);
+  await tStep("shipping_ensure", async () => {
+    try {
+      const list = await session.apiJson("GET", "/api/my/shippingAddresses", {
+        referer: `${session.base}/mypage`,
+      });
+      const rows = Array.isArray(list.json)
+        ? list.json
+        : list.json?.shippingAddresses || list.json?.items || [];
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { ok: true, status: list.status, note: `shipping already ${rows.length}` };
+      }
+      const body = {
+        countryCode: "AU",
+        zipCode: String(shipProfile.zip || "4160").slice(0, 4),
+        address1: shipProfile.address1 || "133 Allenby Road",
+        address2: "",
+        address3: shipProfile.city || "Alexandra Hills",
+        address4: "",
+        address5: shipProfile.province || "QLD",
+        name: {
+          name1: shipProfile.first_name || "Alex",
+          name2: shipProfile.last_name || "Buyer",
+        },
+        phone1: shipProfile.phone
+          ? { countryNo: "61", phoneNo: String(shipProfile.phone).replace(/\D/g, "").slice(-9) }
+          : undefined,
+        defaultFlag: true,
+      };
+      const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
+        body,
+        referer: `${session.base}/mypage`,
+      });
+      const err = json?.detail || json?.error || json?.message || null;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        note: err || `shipping ${status}`,
+      };
+    } catch (e) {
+      return { ok: false, status: null, note: e?.message || String(e) };
+    }
+  });
+  // Soft: continue even if shipping_ensure fails — lab accounts may already be fine.
+
   if (chanceOnly) {
     await closeBridge();
     return { ok: true, steps, via: "http" };
@@ -554,63 +619,116 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         json: { items: [{ cartLineItemSn: existing.cartItemSn, addedNewCart: false }] },
       };
     }
-    let sensors = {};
-    if (bridge) {
-      let mint = await bridge.mint("POST", "/api/cart/addToCart", {
-        body: atcBody,
-        contentType: "application/json",
-        csrf: session.state.csrfToken,
-      });
-      // One settle bump if common.js was not hooked yet (fast settle race).
-      if (!mint.ok) {
-        try {
-          await bridge.page.waitForTimeout(800);
-        } catch {
-          /* ignore */
-        }
-        mint = await bridge.mint("POST", "/api/cart/addToCart", {
+    const maxAttempts = Math.max(
+      1,
+      Math.min(5, Number(task.bandaiAtcRetries ?? process.env.BANDAI_ATC_RETRIES) || 3),
+    );
+    const attempts = [];
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let sensors = {};
+      if (bridge) {
+        let mint = await bridge.mint("POST", "/api/cart/addToCart", {
           body: atcBody,
           contentType: "application/json",
-          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+          csrf: session.state.csrfToken,
         });
+        if (!mint.ok) {
+          try {
+            await bridge.page.waitForTimeout(800);
+          } catch {
+            /* ignore */
+          }
+          mint = await bridge.mint("POST", "/api/cart/addToCart", {
+            body: atcBody,
+            contentType: "application/json",
+            csrf: session.state.csrfToken || (await bridge.csrfToken()),
+          });
+        }
+        sensors = mint.sensors || {};
+        const c = await bridge.cookies();
+        if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+        if (!mint.ok) {
+          last = { ok: false, status: null, note: `ATC sensor mint failed: ${mint.note}` };
+          attempts.push({ attempt, ...last });
+          if (attempt < maxAttempts) await sleepMs(400 * attempt);
+          continue;
+        }
       }
-      sensors = mint.sensors || {};
-      const c = await bridge.cookies();
-      if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
-      if (!mint.ok) {
-        return { ok: false, status: null, note: `ATC sensor mint failed: ${mint.note}` };
+      let status;
+      let json;
+      let res;
+      try {
+        ({ status, json, res } = await session.apiJson("POST", "/api/cart/addToCart", {
+          body: atcBodyObj,
+          referer: `${session.base}/item/${productCode}`,
+          extraHeaders: sensors,
+        }));
+      } catch (e) {
+        last = {
+          ok: false,
+          status: null,
+          note: `ATC throw: ${e?.message || e}`,
+        };
+        attempts.push({ attempt, ...last });
+        if (attempt < maxAttempts) await sleepMs(500 * attempt);
+        continue;
       }
-    }
-    const { status, json, res } = await session.apiJson("POST", "/api/cart/addToCart", {
-      body: atcBodyObj,
-      referer: `${session.base}/item/${productCode}`,
-      extraHeaders: sensors,
-    });
-    const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
-    const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
-    // Treat MaxPurchaseQty / Preallocation as soft-ok if line already present
-    if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
-      const again = await session.apiJson("GET", "/api/cart/detail", {
-        referer: `${session.base}/cart`,
+      const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
+      const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
+      if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
+        const again = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        const line = findCartLine(again.json, pdp.areaItemNo);
+        if (line?.cartItemSn) {
+          return {
+            ok: true,
+            status,
+            note: `${err} → using cart line=${line.cartItemSn}`,
+            json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+            attempts,
+          };
+        }
+      }
+      const business =
+        err ||
+        (/PAGE NOT AVAILABLE|NETWORK CONGESTION/i.test(textHint) ? textHint.slice(0, 40) : null);
+      last = {
+        ok: status >= 200 && status < 300 && !/CouldNotAddToCart/i.test(String(err || "")),
+        status,
+        note: business || `ATC ${status}`,
+        json,
+      };
+      attempts.push({
+        attempt,
+        ok: last.ok,
+        status: last.status,
+        note: String(last.note || "").slice(0, 120),
       });
-      const line = findCartLine(again.json, pdp.areaItemNo);
-      if (line?.cartItemSn) {
+      if (last.ok) {
         return {
-          ok: true,
-          status,
-          note: `${err} → using cart line=${line.cartItemSn}`,
-          json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+          ...last,
+          note:
+            attempts.length > 1
+              ? `${last.note} (ok attempt ${attempt}/${maxAttempts})`
+              : last.note,
+          attempts,
         };
       }
+      if (
+        attempt < maxAttempts &&
+        isRetryableAtcFailure({ status, err, textHint })
+      ) {
+        await sleepMs(450 * attempt + Math.floor(Math.random() * 200));
+        continue;
+      }
+      break;
     }
-    const business =
-      err ||
-      (/PAGE NOT AVAILABLE|NETWORK CONGESTION/i.test(textHint) ? textHint.slice(0, 40) : null);
     return {
-      ok: status >= 200 && status < 300 && !/CouldNotAddToCart/i.test(String(err || "")),
-      status,
-      note: business || `ATC ${status}`,
-      json,
+      ...(last || { ok: false, note: "ATC failed" }),
+      note: `${last?.note || "ATC failed"} (attempts=${attempts.length})`,
+      attempts,
     };
   });
 

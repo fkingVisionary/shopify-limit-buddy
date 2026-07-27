@@ -35,6 +35,8 @@ Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
 - All checkout lanes at **T0** (small stagger ≤150ms OK). Avoid 40s wave-2 delays.
 - Claim harvest at trigger/enqueue — cold only if mint failed after retries.
 - Prefer **backend `areaItemNo` / NAI** for ATC when both frontend N-code and NAI are known.
+- **ATC retries** (default 3) on congestion / SoftBlock / 5xx — not on SoldOut / MaxPurchaseQty.
+- Ensure shipping address on account (fresh agen) before GE — else `checkout_address` blocker.
 
 ---
 
