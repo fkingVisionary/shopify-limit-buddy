@@ -30,6 +30,11 @@ import {
   BANDAI_PAY_WINDOW_MS,
   withHeldCartMeta,
 } from "./bandai-held-cart.js";
+import {
+  isBackendAreaItemNo,
+  isFrontendProductCode,
+  resolveAreaItemNoPublicRetry,
+} from "./bandai-nai.js";
 import { makeDispatcher, createJar } from "../http.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -464,7 +469,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   const email = opts.email;
   const password = opts.password;
   const productCode = opts.frontendCode || opts.productCode;
-  const backendAreaItemNo = opts.backendAreaItemNo || null;
+  let backendAreaItemNo = opts.backendAreaItemNo || null;
   const chanceOnly = opts.chanceOnly === true;
   const placeOrder = task.placeOrder === true && task.dryRun !== true;
   const wantBridge = task.bandaiF5Bridge !== false;
@@ -495,6 +500,26 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     ),
   );
   const atcT0 = Date.now();
+
+  // Public bot: auto-resolve N…→NAI… in parallel with F5/login so ATC skips product_get
+  // without requiring users to paste Backend PID.
+  let naiResolvePromise = null;
+  if (
+    !backendAreaItemNo &&
+    !task.bandaiAreaItemNo &&
+    !task.heldCart?.areaItemNo &&
+    productCode &&
+    isFrontendProductCode(productCode) &&
+    task.bandaiAutoResolveNai !== false &&
+    String(process.env.BANDAI_AUTO_RESOLVE_NAI || "1") !== "0"
+  ) {
+    naiResolvePromise = resolveAreaItemNoPublicRetry({
+      productCode,
+      area: session.area,
+      proxy: task.proxy || null,
+      retries: 2,
+    }).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+  }
 
   async function seedColdF5Bridge(proxyLine, { noteSuffix = "" } = {}) {
     const s0 = Date.now();
@@ -976,6 +1001,29 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     });
   }
 
+  // Await parallel public NAI resolve (started with F5) before product_get gate.
+  if (naiResolvePromise && !backendAreaItemNo) {
+    const resolved = await naiResolvePromise;
+    if (resolved?.ok && resolved.areaItemNo) {
+      backendAreaItemNo = resolved.areaItemNo;
+      steps.push({
+        step: "nai_resolve",
+        ok: true,
+        status: 200,
+        ms: resolved.ms ?? null,
+        note: `${resolved.note || resolved.areaItemNo} attempts=${resolved.attempts || 1} (parallel; skip product_get)`,
+      });
+    } else {
+      steps.push({
+        step: "nai_resolve",
+        ok: false,
+        status: resolved?.status ?? null,
+        ms: resolved?.ms ?? null,
+        note: `public resolve failed: ${resolved?.error || "n/a"} → product_get fallback`,
+      });
+    }
+  }
+
   const pdpLookup = await resolveAreaItemNo(session, productCode, tStep, {
     fallbackAreaItemNo: backendAreaItemNo || task.bandaiAreaItemNo || task.heldCart?.areaItemNo,
   });
@@ -993,7 +1041,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   const pdp = {
     ok: true,
     areaItemNo:
-      // Prefer explicit backend NAI for ATC when set; else product_get / frontend.
+      // Prefer explicit / auto-resolved backend NAI for ATC; else product_get / frontend.
       backendAreaItemNo ||
       pdpLookup.areaItemNo ||
       task.bandaiAreaItemNo ||

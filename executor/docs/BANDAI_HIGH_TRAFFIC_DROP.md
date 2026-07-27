@@ -38,7 +38,7 @@ Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
 - **Harvest reclaim:** dead/missing claimed bridge → take next bank slot (same area) before cold Chromium.
 - **Autocheckout claim at run-start** (not enqueue) so F5 TTL stays fresh through the queue (Monitor already claimed at restock).
 - **product_get** retries congestion/5xx; falls back to task Backend PID when set.
-- **Pre-resolve NAI:** Monitor arm + Autocheckout run-start warm+`GET /api/products/{N}` (off ATC path). When Backend PID is set, adapter **skips product_get**.
+- **Auto NAI (public bot):** adapter resolves `N…→NAI…` in **parallel with F5/login** (no user Backend PID). On success **skips product_get**. Desktop also pre-resolves on monitor arm.
 - Frontend **N…** stays on PDP referer; **NAI…** is ATC body only (dual-ID).
 - **Harvest refill pause:** while checkout lanes run, Chromium mint pauses so refill does not fight login/ATC.
 - **ATC retries** (default 3) on congestion / SoftBlock / 5xx — not on SoldOut / MaxPurchaseQty.
