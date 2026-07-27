@@ -25,7 +25,7 @@ import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { takeHarvestSlot } from "./bandai-harvest-pool.js";
-import { findCartLine, listCartLines } from "./bandai-cart.js";
+import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
 import fs from "node:fs";
 import {
   createBandaiSession,
@@ -676,20 +676,47 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       }
       const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
       const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
+      // Preallocation / MaxPurchaseQty often means the line is ALREADY held for this
+      // member — treat existing cart line as ATC success. Match NAI + frontend N-code.
+      const cartIds = [pdp.areaItemNo, productCode].filter(Boolean);
       if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
-        const again = await session.apiJson("GET", "/api/cart/detail", {
+        let again = await session.apiJson("GET", "/api/cart/detail", {
           referer: `${session.base}/cart`,
         });
-        const line = findCartLine(again.json, pdp.areaItemNo);
+        let line = findCartLineAny(again.json, cartIds);
+        if (!line?.cartItemSn) {
+          await sleepMs(600);
+          again = await session.apiJson("GET", "/api/cart/detail", {
+            referer: `${session.base}/cart`,
+          });
+          line = findCartLineAny(again.json, cartIds);
+        }
         if (line?.cartItemSn) {
           return {
             ok: true,
             status,
-            note: `${err} → using cart line=${line.cartItemSn}`,
+            note: `${err} → using cart line=${line.cartItemSn} aino=${line.areaItemNo}`,
             json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
             attempts,
+            cartLines: listCartLines(again.json),
           };
         }
+        last = {
+          ok: false,
+          status,
+          note: `${err} cart=[${listCartLines(again.json)
+            .map((l) => l.areaItemNo || l.productCode || "?")
+            .join(",")}]`,
+          json,
+          cartLines: listCartLines(again.json),
+        };
+        attempts.push({
+          attempt,
+          ok: false,
+          status,
+          note: String(last.note || "").slice(0, 140),
+        });
+        break; // empty cart + Preallocation ⇒ true hold/OOS, don't spray retries
       }
       const business =
         err ||
@@ -715,6 +742,23 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
               : last.note,
           attempts,
         };
+      }
+      // Last-chance on any ATC fail: if line already in cart, proceed (don't re-POST).
+      {
+        const peek = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        const held = findCartLineAny(peek.json, cartIds);
+        if (held?.cartItemSn) {
+          return {
+            ok: true,
+            status: last.status,
+            note: `${last.note} → cart already has line=${held.cartItemSn}`,
+            json: { items: [{ cartLineItemSn: held.cartItemSn, addedNewCart: false }] },
+            attempts,
+            cartLines: listCartLines(peek.json),
+          };
+        }
       }
       if (
         attempt < maxAttempts &&
