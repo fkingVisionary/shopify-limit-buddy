@@ -638,6 +638,12 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
       storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
         ? task.bandaiCheckoutOnHit !== false
         : undefined,
+    bandaiAreaItemNo:
+      storeId === "bandai" && typeof task.bandaiAreaItemNo === "string"
+        ? task.bandaiAreaItemNo.trim()
+        : storeId === "bandai" && typeof task.bandaiBackendPid === "string"
+          ? task.bandaiBackendPid.trim()
+          : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     // Disney Store AU fields (ignored by other stores).

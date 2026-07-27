@@ -28,6 +28,14 @@ function proxyHost(raw) {
   }
 }
 
+/** Proxy / browser flake — rotate sticky exit. Matches executor harvest pool. */
+function isTransientHarvestError(err) {
+  const s = String(err?.message || err || "");
+  return /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_CONNECTION_TIMED_OUT|ERR_TUNNEL|ERR_PROXY|Timeout \d+ms exceeded|net::ERR_|Target closed|browser has been closed|Protocol error/i.test(
+    s,
+  );
+}
+
 function toProxyUrl(raw) {
   if (!raw) return null;
   if (/^https?:\/\//i.test(raw)) return raw;
@@ -102,44 +110,56 @@ function createBandaiHarvestPool({ sidecar, emit } = {}) {
       publish();
       return { ok: false, error: lastError };
     }
-    const proxy = pickProxy(entries);
-    if (!proxy) {
-      lastError = "Pick a proxy group with sticky AU ISP/resi lines";
+    const list = (entries || []).map((e) => String(e || "").trim()).filter(Boolean);
+    if (!list.length) {
+      lastError = "Pick a proxy group with sticky AU ISP/residential lines";
       publish();
       return { ok: false, error: lastError };
     }
     busy = true;
     publish();
+    const maxAttempts = Math.min(3, list.length);
+    let lastErr = null;
     try {
-      const res = await sidecar.harvestBandai({
-        proxy,
-        area: config.area || "au",
-      });
-      if (!res?.ok || !res.session) {
-        failedCount += 1;
-        lastError = res?.error || "harvest failed";
-        publish();
-        return { ok: false, error: lastError };
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const proxy = pickProxy(list);
+        if (!proxy) {
+          lastErr = "Pick a proxy group with sticky AU ISP/residential lines";
+          break;
+        }
+        try {
+          const res = await sidecar.harvestBandai({
+            proxy,
+            area: config.area || "au",
+          });
+          if (res?.ok && res.session) {
+            const s = res.session;
+            /** @type {HarvestMeta} */
+            const row = {
+              id: s.id || `bf5_${crypto.randomBytes(4).toString("hex")}`,
+              proxy: s.proxy || proxy,
+              proxyHost: s.proxyHost || proxyHost(s.proxy || proxy),
+              area: s.area || config.area || "au",
+              harvestedAt: s.harvestedAt || now(),
+              expiresAt: s.expiresAt || now() + 6 * 60_000,
+              note: s.note,
+            };
+            pool.push(row);
+            solvedCount += 1;
+            lastError = null;
+            publish();
+            return { ok: true, session: row, ms: res.ms, attempts: attempt + 1 };
+          }
+          lastErr = res?.error || "harvest failed";
+          failedCount += 1;
+          if (!isTransientHarvestError(lastErr)) break;
+        } catch (e) {
+          lastErr = e?.message || String(e);
+          failedCount += 1;
+          if (!isTransientHarvestError(lastErr)) break;
+        }
       }
-      const s = res.session;
-      /** @type {HarvestMeta} */
-      const row = {
-        id: s.id || `bf5_${crypto.randomBytes(4).toString("hex")}`,
-        proxy: s.proxy || proxy,
-        proxyHost: s.proxyHost || proxyHost(s.proxy || proxy),
-        area: s.area || config.area || "au",
-        harvestedAt: s.harvestedAt || now(),
-        expiresAt: s.expiresAt || now() + 6 * 60_000,
-        note: s.note,
-      };
-      pool.push(row);
-      solvedCount += 1;
-      lastError = null;
-      publish();
-      return { ok: true, session: row, ms: res.ms };
-    } catch (e) {
-      failedCount += 1;
-      lastError = e?.message || String(e);
+      lastError = lastErr || "harvest failed";
       publish();
       return { ok: false, error: lastError };
     } finally {
@@ -237,4 +257,5 @@ module.exports = {
   createBandaiHarvestPool,
   toProxyUrl,
   proxyHost,
+  isTransientHarvestError,
 };

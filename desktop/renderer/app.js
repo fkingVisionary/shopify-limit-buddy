@@ -771,6 +771,7 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskDisneyMode")) $("taskDisneyMode").value = task.disneyMode || "pay";
     if ($("taskBandaiCheckoutMode"))
       $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
+    if ($("taskBandaiAreaItemNo")) $("taskBandaiAreaItemNo").value = task.bandaiAreaItemNo || "";
     if ($("taskBandaiMonitorMode"))
       $("taskBandaiMonitorMode").value = task.bandaiMonitorMode || "local";
     if ($("taskBandaiWatchSku")) $("taskBandaiWatchSku").value = task.bandaiWatchSku || "";
@@ -907,6 +908,8 @@ function readTaskForm() {
       store === "bandai" && ($("taskBandaiMode")?.value || "") === "monitor"
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
         : undefined,
+    bandaiAreaItemNo:
+      store === "bandai" ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,

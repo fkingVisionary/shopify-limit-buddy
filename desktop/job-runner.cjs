@@ -495,6 +495,19 @@ function buildBandaiPayload({
       bandaiMode: mode,
       bandaiArea,
       shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      // Backend ATC id (NAI…) — preferred over frontend PDP N-code under load.
+      areaItemNo:
+        typeof task.bandaiAreaItemNo === "string" && task.bandaiAreaItemNo.trim()
+          ? task.bandaiAreaItemNo.trim()
+          : typeof task.bandaiBackendPid === "string" && task.bandaiBackendPid.trim()
+            ? task.bandaiBackendPid.trim()
+            : typeof task.areaItemNo === "string" && task.areaItemNo.trim()
+              ? task.areaItemNo.trim()
+              : undefined,
+      bandaiAreaItemNo:
+        typeof task.bandaiAreaItemNo === "string" && task.bandaiAreaItemNo.trim()
+          ? task.bandaiAreaItemNo.trim()
+          : undefined,
       harvestedBridgeId: harvestedBridgeId || undefined,
       bandaiMonitorMode: mode === "monitor" ? task.bandaiMonitorMode || "local" : undefined,
       bandaiWatchSku: task.bandaiWatchSku || null,
@@ -925,8 +938,12 @@ function logResultTail(job, result) {
     return;
   }
   emitLog(job.runId, job.task?.id, "err", result.consumerLabel || result.error || "Something went wrong");
-  // Keep analytical step tail in the main-process console only — not the consumer log.
+  if (result.failedStep) {
+    emitLog(job.runId, job.task?.id, "err", `failedStep=${result.failedStep}`);
+  }
+  // Surface one line of analytical detail in the UI for drop diagnosis (still capped).
   if (result.debugError) {
+    emitLog(job.runId, job.task?.id, "err", `detail: ${String(result.debugError).slice(0, 220)}`);
     console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
   }
   for (const s of (result.lastSteps || []).slice(-8)) {

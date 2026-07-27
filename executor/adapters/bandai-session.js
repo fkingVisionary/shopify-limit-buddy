@@ -345,14 +345,21 @@ export function profileFromTask(task) {
 }
 
 export function parseAreaItemNo(task) {
+  // Prefer explicit backend / ATC id (NAI…) over frontend PDP N-code when both exist.
+  // Discord/extension tip: run backend PID when PDP path flakes under load.
+  const direct =
+    task?.bandaiAreaItemNo ||
+    task?.bandaiBackendPid ||
+    task?.areaItemNo ||
+    task?.backendPid ||
+    task?.sku;
+  if (direct != null && String(direct).trim()) return String(direct).trim();
   const url = String(task?.pdpUrl || task?.storeUrl || "");
-  if (task?.areaItemNo) return String(task.areaItemNo);
-  if (task?.sku) return String(task.sku);
   const m =
     url.match(/\/item\/([A-Za-z0-9_-]+)/i) ||
     url.match(/\/products?\/([A-Za-z0-9_-]+)/i) ||
-    url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
     url.match(/\b(NAI[A-Z0-9]+)\b/i) ||
+    url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
     url.match(/\b(A\d{7,}[A-Z0-9]*)\b/i);
   return m?.[1] || String(task?.productCode || "").trim() || null;
 }

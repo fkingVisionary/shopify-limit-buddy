@@ -81,4 +81,8 @@ Critical-path save ≈ **25s** wall / **~10s** pure F5 launch (rest is proxy/GE 
 
 ## Cost
 
-Local CPU/RAM only (Playwright). No CapSolver. Keep desired low; arm only for the drop window.
+Keep desired low; arm only for the drop window. Desktop harvest **retries** up to 3
+sticky exits on transient `ERR_CONNECTION_*` / timeouts (not SoftBlock).
+
+Executor: `mintHarvestSlotWithRetries({ proxies, maxAttempts })` — see
+`BANDAI_HIGH_TRAFFIC_DROP.md`.
