@@ -50,8 +50,22 @@
             <option value="kmart">Kmart AU</option>
             <option value="toymate">Toymate AU</option>
             <option value="bandai">Premium Bandai AU</option>
+            <option value="disney">Disney Store AU</option>
             <option value="pokemoncentre">Pokémon Centre AU</option>
           </select>
+          <div id="taskDisneyOpts" hidden>
+            <label>Disney mode</label>
+            <select id="taskDisneyMode">
+              <option value="pay" selected>Autocheckout (ATC → GE pay)</option>
+              <option value="atc">ATC only</option>
+              <option value="warm">Akamai warm only</option>
+              <option value="monitor">PDP monitor</option>
+            </select>
+            <p class="field-hint">
+              Autocheckout uses a harvested Akamai+CapSolver session when the Harvest tab bank has one;
+              empty bank = cold path (still works, slower). Same sticky proxy group as harvest recommended.
+            </p>
+          </div>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>
             <select id="taskToymateMode">
@@ -237,6 +251,64 @@
           <div class="row-actions">
             <button type="button" class="secondary" id="hvOnce">Harvest one now</button>
             <button type="button" class="secondary" id="hvClear">Clear bank</button>
+          </div>
+        </div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:28px 0" />
+
+      <div class="split">
+        <div>
+          <h2>Disney Store Harvest</h2>
+          <p class="hint">
+            Pre-warm <strong>Akamai <code>_abck</code></strong> and <strong>reCAPTCHA Enterprise</strong> (AddToCart)
+            on sticky AU ISP/resi so Disney Autocheckout skips Hyper warm + CapSolver on the drop path
+            (~15s → ATC becomes ~3s when claimed).
+          </p>
+
+          <div class="howto form-card">
+            <h3>How to use</h3>
+            <ol class="howto-list">
+              <li><strong>Settings</strong> → Hyper API key + CapSolver key → save → start engine.</li>
+              <li><strong>Proxies</strong> → sticky AU ISP/residential group (same exits you will checkout on).</li>
+              <li>Pick that group below, desired 1–3 sessions, leave captcha solve on.</li>
+              <li>Click <strong>Start harvest</strong> a few minutes before the drop.</li>
+              <li>Run <strong>Disney Store AU → Autocheckout</strong> — each run auto-claims one session when ready.</li>
+              <li><strong>Stop</strong> after the drop so CapSolver/Hyper stop spending.</li>
+            </ol>
+            <p class="field-hint">
+              <code>_abck</code> TTL ~3 min · captcha ~100s. Empty bank = cold checkout (warm + CapSolver on path — still works).
+              Sessions are single-use and IP-bound.
+            </p>
+          </div>
+
+          <div id="disneyHarvestSessionList" class="list"></div>
+        </div>
+
+        <div class="form-card">
+          <h3>Disney bank</h3>
+          <div class="harvest-stats" id="disneyHarvestStats">
+            <div><span class="muted">Ready</span><strong id="dhReady">0</strong></div>
+            <div><span class="muted">With captcha</span><strong id="dhCaptcha">0</strong></div>
+            <div><span class="muted">Solved</span><strong id="dhSolved">0</strong></div>
+            <div><span class="muted">Failed</span><strong id="dhFailed">0</strong></div>
+          </div>
+          <p id="disneyHarvestStatusLine" class="field-hint">Harvest stopped</p>
+          <p id="disneyHarvestError" class="err-line" hidden></p>
+
+          <label>Proxy group</label>
+          <select id="dhProxyGroup"></select>
+          <label>Desired warm sessions</label>
+          <input id="dhDesired" type="number" min="0" max="12" value="2" />
+          <label class="check"><input id="dhSolveCaptcha" type="checkbox" checked /> Solve AddToCart reCAPTCHA with each warm</label>
+
+          <div class="row-actions">
+            <button type="button" id="dhStart">Start harvest</button>
+            <button type="button" class="secondary" id="dhStop">Stop</button>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="secondary" id="dhOnce">Harvest one now</button>
+            <button type="button" class="secondary" id="dhClear">Clear bank</button>
           </div>
         </div>
       </div>

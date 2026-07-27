@@ -92,20 +92,25 @@ function syncTaskFormForStore() {
   const store = $("taskStore")?.value || "kmart";
   const toy = store === "toymate";
   const bandai = store === "bandai";
+  const disney = store === "disney";
   const pc = store === "pokemoncentre";
   const opts = $("taskToymateOpts");
   if (opts) opts.hidden = !toy;
   const bOpts = $("taskBandaiOpts");
   if (bOpts) bOpts.hidden = !bandai;
+  const dOpts = $("taskDisneyOpts");
+  if (dOpts) dOpts.hidden = !disney;
   const pcOpts = $("taskPcOpts");
   if (pcOpts) pcOpts.hidden = !pc;
   const mode = toy
     ? $("taskToymateMode")?.value || "checkout"
     : bandai
       ? $("taskBandaiMode")?.value || "checkout"
-      : pc
-        ? $("taskPcMode")?.value || "monitor"
-        : "checkout";
+      : disney
+        ? $("taskDisneyMode")?.value || "pay"
+        : pc
+          ? $("taskPcMode")?.value || "monitor"
+          : "checkout";
   const label = $("taskPdpLabel");
   const input = $("taskPdp");
   if (label) {
@@ -121,6 +126,9 @@ function syncTaskFormForStore() {
     } else if (toy) {
       label.textContent =
         mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
+    } else if (disney) {
+      label.textContent =
+        mode === "warm" ? "Store (auto)" : mode === "monitor" ? "PDP URL (optional)" : "Product URL (PDP)";
     } else if (pc) {
       label.textContent =
         mode === "edge"
@@ -211,7 +219,7 @@ function renderTasks() {
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
-    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart, Toymate, Bandai, or Pokémon Centre task on the right.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No tasks yet</strong><div class="meta">Create a Kmart, Toymate, Bandai, Disney, or Pokémon Centre task on the right.</div></div></div>`;
     return;
   }
   el.innerHTML = tasks
@@ -239,6 +247,8 @@ function renderTasks() {
                   ? ` · ${t.bandaiCheckoutMode || "fast"}`
                   : ""
               }`
+            : t.store === "disney"
+              ? `Disney · ${t.disneyMode || "pay"}`
             : t.store === "pokemoncentre"
               ? `Pokémon Centre · ${t.pcMode || "monitor"}`
             : "Kmart";
@@ -525,6 +535,92 @@ function renderHarvest(snap) {
   if (stopBtn) stopBtn.disabled = !harvestState.running;
 }
 
+function fillDisneyHarvestProxySelect() {
+  const sel = $("dhProxyGroup");
+  if (!sel || !state) return;
+  const cur = sel.value || state?.disneyHarvest?.config?.proxyGroupId || "";
+  sel.innerHTML =
+    `<option value="">Select sticky proxy group…</option>` +
+    (state.proxyGroups || [])
+      .map(
+        (g) =>
+          `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`,
+      )
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function renderDisneyHarvest() {
+  const hv = state?.disneyHarvest || {};
+  fillDisneyHarvestProxySelect();
+  const cfg = hv.config || {};
+  if ($("dhDesired") && document.activeElement !== $("dhDesired")) {
+    $("dhDesired").value = cfg.desired ?? 2;
+  }
+  if ($("dhSolveCaptcha") && document.activeElement !== $("dhSolveCaptcha")) {
+    $("dhSolveCaptcha").checked = cfg.solveCaptcha !== false;
+  }
+  if ($("dhReady")) $("dhReady").textContent = String(hv.ready ?? 0);
+  if ($("dhCaptcha")) $("dhCaptcha").textContent = String(hv.readyWithCaptcha ?? 0);
+  if ($("dhSolved")) $("dhSolved").textContent = String(hv.solvedCount ?? 0);
+  if ($("dhFailed")) $("dhFailed").textContent = String(hv.failedCount ?? 0);
+
+  const line = $("disneyHarvestStatusLine");
+  if (line) {
+    if (hv.running && hv.busy) line.textContent = "Harvesting… Hyper warm + CapSolver";
+    else if (hv.running) line.textContent = `Harvest armed · ready ${hv.ready ?? 0}`;
+    else line.textContent = "Harvest stopped";
+  }
+  const err = $("disneyHarvestError");
+  if (err) {
+    if (hv.lastError) {
+      err.hidden = false;
+      err.textContent = hv.lastError;
+    } else {
+      err.hidden = true;
+      err.textContent = "";
+    }
+  }
+  const list = $("disneyHarvestSessionList");
+  if (list) {
+    const rows = hv.sessions || [];
+    if (!rows.length) {
+      list.innerHTML = `<div class="item"><div><strong>Bank empty</strong><div class="meta">Start harvest or click Harvest one now. Disney checkout falls back to cold warm + CapSolver when empty.</div></div></div>`;
+    } else {
+      list.innerHTML = rows
+        .map(
+          (s) => `<div class="item">
+          <div>
+            <strong>${esc(s.proxyHost || "proxy")}</strong>
+            <div class="meta">_abck TTL ${s.abckTtlSec ?? "?"}s · age ${s.ageSec ?? "?"}s${
+              s.hasCaptcha
+                ? ` · captcha TTL ${s.captchaTtlSec ?? "?"}s`
+                : " · warm only (captcha on demand)"
+            }</div>
+            <div class="meta">${esc(s.warmNote || "")}${s.captchaNote ? ` · ${esc(s.captchaNote)}` : ""}</div>
+          </div>
+          <div class="actions">
+            <span class="badge ${s.hasCaptcha ? "spam" : "hv"}">${s.hasCaptcha ? "warm+captcha" : "warm"}</span>
+          </div>
+        </div>`,
+        )
+        .join("");
+    }
+  }
+  const startBtn = $("dhStart");
+  const stopBtn = $("dhStop");
+  if (startBtn) startBtn.disabled = Boolean(hv.running);
+  if (stopBtn) stopBtn.disabled = !hv.running;
+}
+
+function disneyHarvestOptsFromForm() {
+  return {
+    proxyGroupId: $("dhProxyGroup")?.value || null,
+    desired: Number($("dhDesired")?.value) || 0,
+    solveCaptcha: $("dhSolveCaptcha")?.checked !== false,
+  };
+}
+
 function harvestOptsFromForm() {
   return {
     proxyGroupId: $("hvProxyGroup")?.value || null,
@@ -545,6 +641,7 @@ function applyState(next) {
   renderSettings();
   renderHarvest(next.harvest || null);
   renderBandaiHarvest();
+  renderDisneyHarvest();
   engineUi();
 }
 
@@ -650,6 +747,7 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
     if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
+    if ($("taskDisneyMode")) $("taskDisneyMode").value = task.disneyMode || "pay";
     if ($("taskBandaiCheckoutMode"))
       $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
     if ($("taskBandaiMonitorMode"))
@@ -767,6 +865,7 @@ function readTaskForm() {
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
     bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
+    disneyMode: store === "disney" ? $("taskDisneyMode")?.value || "pay" : undefined,
     bandaiCheckoutMode:
       store === "bandai" ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
     bandaiMonitorMode:
@@ -810,6 +909,7 @@ function readTaskForm() {
 $("taskStore").onchange = () => syncTaskFormForStore();
 $("taskToymateMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForStore();
+if ($("taskDisneyMode")) $("taskDisneyMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMonitorMode"))
   $("taskBandaiMonitorMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiCheckoutOnHit"))
@@ -1001,6 +1101,98 @@ $("bhOnce").onclick = async () => {
   );
 };
 
+if ($("dhStart")) {
+  $("dhStart").onclick = async () => {
+    const opts = disneyHarvestOptsFromForm();
+    if (!opts.proxyGroupId) {
+      appendLog("Pick a proxy group on the Disney Harvest card", "err");
+      return;
+    }
+    const res = await window.desktop.disneyHarvestStart(opts);
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.disneyHarvest = res.harvest;
+      renderDisneyHarvest();
+    }
+    appendLog(res.ok ? "Disney harvest armed" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+  };
+}
+
+if ($("dhStop")) {
+  $("dhStop").onclick = async () => {
+    const res = await window.desktop.disneyHarvestStop();
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.disneyHarvest = res.harvest;
+      renderDisneyHarvest();
+    }
+    appendLog("Disney harvest stopped", "muted");
+  };
+}
+
+if ($("dhClear")) {
+  $("dhClear").onclick = async () => {
+    const res = await window.desktop.disneyHarvestClear();
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.disneyHarvest = res.harvest;
+      renderDisneyHarvest();
+    }
+    appendLog("Disney harvest bank cleared", "muted");
+  };
+}
+
+if ($("dhOnce")) {
+  $("dhOnce").onclick = async () => {
+    const opts = disneyHarvestOptsFromForm();
+    if (!opts.proxyGroupId) {
+      appendLog("Pick a proxy group on the Disney Harvest card", "err");
+      return;
+    }
+    appendLog("Harvesting one Disney Akamai session…", "muted");
+    const res = await window.desktop.disneyHarvestOnce(opts);
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.disneyHarvest = res.harvest;
+      renderDisneyHarvest();
+    }
+    appendLog(
+      res.ok
+        ? `Disney harvested${res.ms != null ? ` in ${Math.round(res.ms / 1000)}s` : ""}`
+        : esc(res.error || "Harvest failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
+if ($("dhProxyGroup")) {
+  $("dhProxyGroup").onchange = async () => {
+    const snap = await window.desktop.disneyHarvestConfigure({
+      proxyGroupId: $("dhProxyGroup").value || null,
+    });
+    if (state) state.disneyHarvest = snap;
+    renderDisneyHarvest();
+  };
+}
+if ($("dhDesired")) {
+  $("dhDesired").onchange = async () => {
+    const snap = await window.desktop.disneyHarvestConfigure({
+      desired: Number($("dhDesired").value) || 0,
+    });
+    if (state) state.disneyHarvest = snap;
+    renderDisneyHarvest();
+  };
+}
+if ($("dhSolveCaptcha")) {
+  $("dhSolveCaptcha").onchange = async () => {
+    const snap = await window.desktop.disneyHarvestConfigure({
+      solveCaptcha: $("dhSolveCaptcha").checked,
+    });
+    if (state) state.disneyHarvest = snap;
+    renderDisneyHarvest();
+  };
+}
+
 $("hvStart").onclick = async () => {
   const opts = harvestOptsFromForm();
   if (!opts.proxyGroupId) {
@@ -1107,6 +1299,10 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();
+  }
+  if (evt.type === "disneyHarvest" && evt.data) {
+    if (state) state.disneyHarvest = evt.data;
+    renderDisneyHarvest();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

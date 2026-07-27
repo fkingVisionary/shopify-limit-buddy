@@ -1,7 +1,7 @@
 # Disney Store AU/NZ — Module Research
 
-_Date: 2026-07-26 (scope dig)_  
-_Status: research only — no adapter code yet_  
+_Date: 2026-07-26 (scope dig + build scaffold)_  
+_Status: **adapter scaffolded** (`adapters/disney*.js`) — ATC/GE need sticky AU ISP + Hyper + reCAPTCHA token; issuer encoded-merchant TBD_  
 _Priority: **after Bandai Global-e reuse** — on BUTT card list; SFCC + Akamai (Hyper ✅) + reCAPTCHA Enterprise (Hyper ❌) + Global-e mid **1696**._  
 _Handoff:_ [`DISNEY_BUILD_HANDOFF.md`](./DISNEY_BUILD_HANDOFF.md)
 
@@ -133,9 +133,22 @@ PDP embeds:
   value="/on/demandware.store/Sites-DisneyStoreAUNZ-Site/en_AU/Cart-AddProduct" />
 ```
 
-Typical payload (confirm HAR): `pid`, `quantity`, CSRF token from `CSRF-Generate` (endpoint listed; JSON shape needs residential/browser — DC returned error HTML/gzip noise).
+### ATC wire (AU ISP + `main.js` + headed HAR, 2026-07-26)
 
-**Module assumption:** same as Kmart — **Hyper Akamai warm → sticky AU ISP → CSRF → Cart-AddProduct → bag → Globale-GetCartToken → GE checkout**.
+| Step | Detail |
+|---|---|
+| CSRF | `POST CSRF-Generate` → `{ csrf: { tokenName: "csrf_token", token } }` ✅ HAR |
+| Primary ATC body | Live browser: `pid` + `quantity` + `csrf_token` (optional `pidsObj` / bundles) |
+| reCAPTCHA | **Enterprise on ATC** — `execute(sitekey, { action: "AddToCart" })` → `POST Google-reCaptchaEnterprise` `{ token }`. CapSolver ProxyLess mints OK; SFCC currently returns `result:false` for CapSolver **and** native browser tokens (open). |
+| Sitekeys | ATC button `6LfTl6Ap…`; widget `#g-recaptch` also `6LeKIIIp…` + classic `Google-reCaptcha` |
+| Akamai | **Hyper allowlisted (2026-07-26)** — sensor POST **201 `{success:true}`**, `~0~` ✅ (plateau → script rebind). Home HTML: **no SBSD / no bazade pixel** (sensor script only). |
+| ATC | **Root cause = TLS/JA3, not missing SBSD.** Undici + valid `_abck` + CSRF 200 → `Cart-AddProduct` **AkamaiGHost 403**. Same jar on **node-tls-client `chrome_131`** → **ATC 200** `Product added to cart` + minibag line (Lorcana `050368983992`, 2026-07-26). Checkout defaults Disney to TLS (`DISNEY_TLS=0` / `transport=undici` to override). Exit-IP sensitive — some sticky lines still 403 after solve. |
+| GE token | **`POST` `Globale-GetCartToken`** → `{ cartToken: <GUID>, success:true }` (= Checkout/v2 GUID; no GEM hop required). GET=500. |
+| Checkout/v2 | `https://webservices.global-e.com/Checkout/v2/{guid}` → 200 Checkout HTML. `encodedMerchantId: **8u87**`. |
+| Issuer | `secure.ges.global-e.com` (PKC family, not Bandai `secure-bandai`) · form `…/payments/handlecreditcardrequestV2` · iframe `…/CreditCardForm/{guid}` |
+| HAR | `experiments/disney-isp-capture.mjs` + hyper labs → `har/disney/` (full HAR in `/tmp/disney-*`) |
+
+**Module assumption:** **TLS chrome_131 + Hyper → sticky AU ISP → CSRF → Cart-AddProduct → POST Globale-GetCartToken → Checkout/v2 (8u87 / secure.ges) → stop before issuer pay**. CapSolver optional.
 
 ---
 
@@ -197,11 +210,13 @@ US `disneystore.com` showed `x-queueit-connector: akamai` — do not assume AU h
 ## 10. Open questions
 
 1. Guest vs OneID-required before GE  
-2. Where reCAPTCHA Enterprise fires (login vs ATC vs GE)  
-3. Exact `CSRF-Generate` JSON + `Cart-AddProduct` form fields  
+2. ~~Where reCAPTCHA Enterprise fires~~ → **ATC** (action `AddToCart`) + gift-card balance; login path still TBD  
+3. ~~Exact CSRF + ATC fields~~ → closed from `main.js` (see §5); live CSRF still 500 until `_abck` solved  
 4. Variant / size products (costume SKUs) vs simple `standard` pid  
 5. NZ shipping profile vs AU bag on same session  
 6. Per-customer / drop limits  
+7. **GE issuer encoded merchant** (Bandai `8urc` / PC `8u22` analogue) + secure host for mid **1696**  
+8. CapSolver / external solver for reCAPTCHA Enterprise `AddToCart`
 
 ---
 

@@ -118,12 +118,33 @@ PDP example:
 
 ## 6. Acceptance checklist
 
-- [ ] Feature branch only; no Kmart regression  
-- [ ] ATC succeeds on sticky AU after Akamai warm  
-- [ ] GE mid 1696 session starts from bag  
-- [ ] GE merchantId not hard-coded to Bandai 1925  
-- [ ] Monitor can see a known Lorcana/test SKU  
-- [ ] Secrets out of git  
+- [x] Feature branch only; no Kmart regression — `adapters/disney*.js` + registry  
+- [x] GE merchantId not hard-coded to Bandai 1925 — mid **1696** / builders parameterized  
+- [x] Monitor can see a known Lorcana/test SKU — `disneyMode=monitor` + sitemap/PDP parse  
+- [x] Secrets out of git  
+- [x] Hyper sensor warm works (201 success + valid `_abck`; plateau rebind)  
+- [x] ATC on sticky AU via **TLS chrome_131** (undici alone AkamaiGHost-403s even with `~0~`) — CapSolver optional; SFCC verify still `result:false`  
+- [x] Minibag confirms line after ATC (`pids=050368983992`)  
+- [x] SFCC GE token: **POST** `Globale-GetCartToken` → Checkout GUID (GET=500)  
+- [x] Checkout/v2 boots at `webservices…/Checkout/v2/{guid}`; **encodedMerchantId=`8u87`**; issuer host **`secure.ges.global-e.com`** (PKC-class)  
+- [ ] Address/shipping handleaction + risk hydrate + issuer POST (stop until owner OK) — reuse Bandai/PKC GE HTTP patterns in Disney-only code  
+
+
+
+
+- [ ] GE mid 1696 session starts from bag (SFCC `Globale-GetCartToken` shape via HAR)  
+- [ ] Pay / issuer encoded-merchant confirmed  
+- [x] Own HAR captured (headed ISP): CSRF + sensor + ATC attempt — see `har/disney/`
+
+### Scaffold entrypoints
+
+| File | Role |
+|---|---|
+| `adapters/disney.js` | Modes: `warm` / `monitor` / `atc`/`checkout` / `ge` |
+| `adapters/disney-session.js` | SFCC URLs, PDP/pid parse, headers |
+| `adapters/disney-akamai.js` | Hyper sensor warm |
+| `adapters/disney-cart.js` | CSRF + ATC + minibag |
+| `adapters/disney-ge.js` | GE 1696 handoff (stop before pay) |
 
 ---
 

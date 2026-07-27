@@ -16,7 +16,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 - **Toymate** — agen restore (parallel); on BUTT list; CF + EQL.
 - **Costco / AusPost / Big W** — on BUTT card list; next retail after Bandai/PC.
 - **Shopify raffle pack** — Supply / UP THERE / Above The Clouds (BUTT raffle list).
-- **Disney Store AU** — dig + handoff: `DISNEY_STORE_MODULE.md` / `DISNEY_BUILD_HANDOFF.md` (SFCC + GE **1696** + OneID; on BUTT list).
+- **Disney Store AU** — scaffolded `adapters/disney*.js`; dig/handoff: `DISNEY_STORE_MODULE.md` / `DISNEY_BUILD_HANDOFF.md` (SFCC + GE **1696** + OneID; on BUTT list).
 - **JB Hi-Fi** — `JB_HIFI_MODULE.md` (CF, not Akamai).
 
 ---
@@ -50,7 +50,7 @@ Findings combine live edge/API probes (Cursor cloud DC egress) with public platf
 | 11 | **Topps (US/JP+)** | Backlog (Hyper ❌) | CF + captcha TBD | Shopify per-region | L — `TOPPS_MODULE.md` |
 | 12 | Toymate | Agen restore (on BUTT) | CF + EQL | BigCommerce | M–L |
 | 13 | EB Games | Backlog (on BUTT) | CF | Custom .NET | L |
-| 14 | **Disney Store AU** | Dig done — build after GE reuse (on BUTT) | Akamai ✅ + CF + reCAPTCHA ❌ | SFCC + Global‑e **1696** + OneID | L — `DISNEY_STORE_MODULE.md` |
+| 14 | **Disney Store AU** | **Scaffolded** — ATC/GE need Hyper+ISP+reCAPTCHA (on BUTT) | Akamai ✅ + CF + reCAPTCHA ❌ | SFCC + Global‑e **1696** + OneID | L — `adapters/disney*.js` |
 | 15 | Best & Less | Watch (on BUTT; dig TBD) | Soft Express/CF | SAP Commerce claimed | M |
 | 16 | Pop Mart AU | Watch | Cloudflare | Custom / CF | L |
 | 17 | Good Guys | Low priority | CF + Shopify Oxygen | Hydrogen headless | M |
