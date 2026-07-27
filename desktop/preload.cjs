@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { formatHarvestBankStrip } = require("./harvest-bank-status.cjs");
 
 contextBridge.exposeInMainWorld("desktop", {
   getState: () => ipcRenderer.invoke("desktop:get-state"),
@@ -15,6 +16,7 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  formatHarvestBankStrip: (banks) => formatHarvestBankStrip(banks || {}),
   // Toymate CF + spam harvest
   harvestStatus: () => ipcRenderer.invoke("desktop:harvest-status"),
   harvestConfigure: (patch) => ipcRenderer.invoke("desktop:harvest-configure", patch),

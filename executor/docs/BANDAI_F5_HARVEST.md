@@ -29,11 +29,16 @@ Chromium launch on the drop critical path.
 
 Bandai **Monitor** + **Checkout on restock** (`desktop/bandai-monitor-checkout.cjs`):
 
-1. Monitor polls stock on **monitor** proxies (no F5 claim).
-2. On first matching `stock_changed` (OOS→IS) → claim F5 harvest (if bank ready) → Fast Autocheckout.
-3. Empty harvest bank → cold Playwright path (same as Autocheckout).
+1. Set sticky **checkout** proxy group on **Harvest → Bandai** (not monitor proxies).
+2. Run Monitor task — desktop **auto-arms** F5 harvest at enqueue (`bandai-harvest-autoarm.cjs`) so bridges mint while polls run.
+3. Monitor polls stock on **monitor** proxies (no F5 claim yet).
+4. On first matching `stock_changed` (OOS→IS) → claim F5 harvest (if bank ready) → Fast Autocheckout.
+5. Empty harvest bank → cold Playwright path (same as Autocheckout).
+6. When the last auto-armed Monitor job finishes, harvest **stops refill** (bank kept until TTL/claim). Manual Harvest Start owns lifecycle instead.
 
-Do **not** claim at monitor enqueue — only at the restock trigger.
+Do **not** claim at monitor enqueue — only at the restock trigger. Opt out per task with `bandaiAutoHarvest: false`.
+
+**Tasks tab** shows a live bank strip (`Bandai F5 ready/desired · age`) so you can confirm armed state without leaving Tasks.
 
 ```bash
 # Injected stock_changed → mint harvest → Fast checkout (disposable card)

@@ -217,3 +217,20 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .badge.hv { color: var(--accent); border-color: #2a5a55; }
 .badge.spam { color: var(--ok); border-color: #2a5a45; }
+
+.harvest-bank-strip {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-family: var(--mono);
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+}
+.harvest-bank-strip .chip-armed,
+.harvest-bank-strip .chip-ready { color: var(--ok); }
+.harvest-bank-strip .chip-mint { color: var(--accent); }
+.harvest-bank-strip .chip-off { color: var(--muted); }
+

@@ -216,6 +216,7 @@ function esc(s) {
 }
 
 function renderTasks() {
+  renderHarvestBankStrip();
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
@@ -629,6 +630,25 @@ function harvestOptsFromForm() {
   };
 }
 
+function renderHarvestBankStrip() {
+  const el = $("harvestBankStrip");
+  if (!el) return;
+  const fmt = window.desktop?.formatHarvestBankStrip;
+  if (typeof fmt !== "function") {
+    el.textContent = "Harvest banks —";
+    return;
+  }
+  const { chips, text } = fmt({
+    bandai: state?.bandaiHarvest,
+    toymate: state?.harvest,
+    disney: state?.disneyHarvest,
+  });
+  el.innerHTML = (chips || [])
+    .map((c) => `<span class="chip-${esc(c.state)}">${esc(c.text)}</span>`)
+    .join(` <span class="chip-off">·</span> `);
+  if (!chips?.length) el.textContent = text || "Harvest banks —";
+}
+
 function applyState(next) {
   state = next;
   fillSelects();
@@ -642,6 +662,7 @@ function applyState(next) {
   renderHarvest(next.harvest || null);
   renderBandaiHarvest();
   renderDisneyHarvest();
+  renderHarvestBankStrip();
   engineUi();
 }
 
@@ -1295,14 +1316,17 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);
+    renderHarvestBankStrip();
   }
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();
+    renderHarvestBankStrip();
   }
   if (evt.type === "disneyHarvest" && evt.data) {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
+    renderHarvestBankStrip();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

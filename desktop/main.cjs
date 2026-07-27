@@ -17,6 +17,7 @@ const {
 } = require("./account-vault.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
+const { createBandaiHarvestAutoArm } = require("./bandai-harvest-autoarm.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -34,6 +35,15 @@ const bandaiHarvest = createBandaiHarvestPool({
 const disneyHarvest = createDisneyHarvestPool({
   sidecar,
   emit: (evt) => send(evt),
+});
+
+/** Auto-arm Bandai F5 harvest while Monitor → checkout jobs are live. */
+const bandaiHarvestAutoArm = createBandaiHarvestAutoArm({
+  harvest: bandaiHarvest,
+  getEntries: () => bandaiHarvestEntries(),
+  idFn: () => store.id("run"),
+  log: (message) =>
+    send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
 });
 
 function harvestEntries() {
@@ -216,6 +226,14 @@ runner.setFinishedHandler((result) => {
       t.updatedAt = Date.now();
     }
   }
+  // Release Monitor → checkout harvest auto-arm ref (stops refill if we started it).
+  if (result.runId) {
+    try {
+      bandaiHarvestAutoArm.release(result.runId);
+    } catch {
+      /* ignore */
+    }
+  }
   persistDb();
   send({ type: "snapshot", data: snapshot() });
 });
@@ -294,6 +312,7 @@ ipcMain.handle("desktop:start-engine", async () => {
 
 ipcMain.handle("desktop:stop-engine", async () => {
   harvest.stop();
+  bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
   disneyHarvest.stop();
   try {
@@ -418,11 +437,13 @@ ipcMain.handle("desktop:bandai-harvest-start", async (_e, opts = {}) => {
     area: opts.area,
     getEntries: bandaiHarvestEntries,
   });
+  bandaiHarvestAutoArm.markManualStart();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, harvest: snap, snapshot: snapshot() };
 });
 
 ipcMain.handle("desktop:bandai-harvest-stop", () => {
+  bandaiHarvestAutoArm.markManualStop();
   const snap = bandaiHarvest.stop();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, harvest: snap, snapshot: snapshot() };
@@ -852,6 +873,29 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     task.lastStatus = "queued";
     task.updatedAt = Date.now();
   }
+  // Monitor → checkout: arm Bandai F5 harvest at enqueue (claim still at restock).
+  try {
+    const arm = bandaiHarvestAutoArm.ensureForJobs(jobs, {
+      placeOrderDefault: state.settings.placeOrderDefault !== false,
+    });
+    if (arm?.armed) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "info",
+        message: `Harvest bank ${arm.ready ?? 0}/${arm.desired ?? "–"} (auto-arm for Monitor)`,
+      });
+    } else if (arm && arm.ok === false && arm.error) {
+      send({ type: "job", phase: "log", level: "info", message: arm.error });
+    }
+  } catch (e) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "err",
+      message: `Bandai Harvest auto-arm failed: ${e?.message || e}`,
+    });
+  }
   persistDb();
   runner.enqueue(jobs);
   send({ type: "snapshot", data: snapshot() });
@@ -1006,6 +1050,7 @@ app.whenReady().then(async () => {
 
 app.on("window-all-closed", async () => {
   harvest.stop();
+  bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
@@ -1019,6 +1064,7 @@ app.on("window-all-closed", async () => {
 
 app.on("before-quit", async () => {
   harvest.stop();
+  bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
