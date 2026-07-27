@@ -22,7 +22,7 @@ TTL: edge ~**3 min**; hCaptcha ~**100s**. Single-use claim.
 - **Claim at Autocheckout run-start** (job-runner), not enqueue — TTL stays fresh through queue wait
 - `pause()` while PC checkout lanes in-flight; reclaim next bank slot if claimed session dead/missing cookies
 - Auto-arm when Monitor→checkout / Drop Mode armed (`pokemoncentre-harvest-autoarm.cjs`)
-- Empty bank → cold path (edge warm on critical path) — unchanged
+- Empty bank / restock / random drop → **cold path must still work** (edge warm on critical path with tls-worker + same-sticky DD remint + SoftBlock rotate). Harvest is optional acceleration, not a gate.
 
 ## Executor
 

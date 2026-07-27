@@ -98,6 +98,8 @@ export async function runCheckout(task) {
     host === "shopdisney.com.au" ||
     host.endsWith(".disneystore.com.au") ||
     host.endsWith(".shopdisney.com.au");
+  const isPokemonCentre =
+    host === "pokemoncenter.com" || host === "www.pokemoncenter.com";
 
   // Transport selection.
   // Empirical green (place_order / 3DS on Fly direct 89.187.186.9) used undici.
@@ -107,6 +109,9 @@ export async function runCheckout(task) {
   // Disney AU (2026-07-26): Hyper `_abck` ~0~ on undici still AkamaiGHost-403s
   // Cart-AddProduct; same session on in-process chrome_131 → ATC 200. Default
   // Disney to TLS (override with transport=undici / forceUndici / DISNEY_TLS=0).
+  // Pokémon Centre AU: undici often escalates DD interstitial → view=captcha.
+  // Default PC to tls-worker (override with transport=undici / forceUndici /
+  // PC_TLS_WORKER=0). Cold restock path must clear edge without harvest.
   // - default / forceUndici / transport=undici → undici
   // - transport=tls-worker | tlsWorker:true | KMART_TLS_WORKER=1 → child chrome_131
   // - forceTls / transport=tls → in-process chrome_131 (can empty-502)
@@ -117,6 +122,14 @@ export async function runCheckout(task) {
     process.env.DISNEY_TLS === "0" || process.env.DISNEY_TLS === "false";
   const disneyWantsTls =
     isDisney && !forceUndici && task.disneyTls !== false && !disneyTlsEnvOff;
+  const pcTlsWorkerEnvOff =
+    process.env.PC_TLS_WORKER === "0" || process.env.PC_TLS_WORKER === "false";
+  const pcWantsTlsWorker =
+    isPokemonCentre &&
+    !forceUndici &&
+    task.pcTlsWorker !== false &&
+    task.tlsWorker !== false &&
+    !pcTlsWorkerEnvOff;
   const forceTls =
     task.forceTls === true || requestedTransport === "tls" || disneyWantsTls;
   const wantTlsWorker =
@@ -124,6 +137,7 @@ export async function runCheckout(task) {
     !forceTls &&
     (task.tlsWorker === true ||
       requestedTransport === "tls-worker" ||
+      pcWantsTlsWorker ||
       process.env.KMART_TLS_WORKER === "1" ||
       process.env.KMART_TLS_WORKER === "true");
 
@@ -139,7 +153,9 @@ export async function runCheckout(task) {
   } else if (wantTlsWorker) {
     try {
       dispatcher = await makeRemoteTlsDispatcher(task.proxy);
-      transportSelectNote = "tls-worker chrome_131 (opt-in)";
+      transportSelectNote = pcWantsTlsWorker
+        ? "tls-worker chrome_131 (Pokémon Centre default — DD interstitial)"
+        : "tls-worker chrome_131 (opt-in)";
     } catch (e) {
       dispatcher = makeDispatcher(task.proxy, { forceUndici: true });
       transportSelectNote = `tls-worker init failed → undici fallback: ${e?.message ?? String(e)}`.slice(0, 400);

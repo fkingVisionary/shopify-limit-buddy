@@ -37,9 +37,19 @@ Consistency over raw speed. Prefer logging successful milestones over fail-close
 2. Same sticky proxy locked — no rotate on claim.
 3. If claimed jar is dead/missing cookies → **reclaim next bank slot** then cold warm (diagnosable `failedStep`).
 4. Path: seed jar → skip edge warm → public token → ATC (retries on 5xx/transient DD) → GE issuer.
-5. SoftBlock / cookie flake: bounded sticky rotate (default **2**) + remint edge — pass `proxyPool`; don’t spray.
+5. SoftBlock / cookie flake: same-sticky remint once, then bounded sticky rotate (default **2**) — pass `proxyPool`; don’t spray. `ctx.rotateProxy` is wired in the adapter.
 6. Hard `t=bv` / sold-out / true OOS: **no** ATC retry loop — rotate or stop.
 7. Monitor → checkout: restock hit claims harvest at trigger; do **not** mint harvest on monitor-only proxies (set Harvest → PC checkout ISP / `pcHarvestProxyGroupId`).
+
+## Cold path (restock / random drop — no time to harvest)
+
+Harvest is an accelerator, **not** a requirement. Empty bank or surprise restock must still clear edge on the Autocheckout clock:
+
+1. Transport defaults to **tls-worker** (desktop + `checkout.js`) — undici often `view=captcha`.
+2. Seed sticky egress IP before Hyper solves (same as harvest mint).
+3. Warm: home → Reese → DD interstitial/slider with **same-sticky retries** on deviceLink / `view=captcha` / tls-worker status 0 (not `t=bv`).
+4. Then same Cortex ATC → GE HTTP path as harvested lanes.
+5. Score cold wins the same way (`cart_get` / ATC 201 / GE JWT) — do not gate the product on harvest-only.
 
 ## After-action
 

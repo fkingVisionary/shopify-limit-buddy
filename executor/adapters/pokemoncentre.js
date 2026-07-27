@@ -49,6 +49,8 @@ import {
 import { runGlobalEPayHttp, PC_GLOBALE_MID } from "./pokemoncentre-ge-http.js";
 import { isPcHarvestFresh } from "./pokemoncentre-harvest-fresh.js";
 import { looksLikeDataDomeBlock, hyperConfigured } from "../antibot.js";
+import { makeDispatcher, makeRemoteTlsDispatcher } from "../http.js";
+import { resolveEgressIp } from "../ip-resolve.js";
 
 function makeStep(steps, ctx) {
   return async (name, fn) => {
@@ -104,11 +106,116 @@ function rotateStickyInPool(current, pool) {
   return next || list[(list.indexOf(current) + 1) % list.length] || null;
 }
 
+function proxyHostOf(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  try {
+    if (/^https?:\/\//i.test(s)) return new URL(s).hostname;
+  } catch {
+    /* fall through */
+  }
+  return s.split("@").pop()?.split(":")[0] || null;
+}
+
+function clearPcEdgeCookies(jar) {
+  if (!jar?.set) return;
+  for (const name of [
+    "reese84",
+    "datadome",
+    `visid_incap_${2682446}`,
+    `incap_ses_${2682446}`,
+  ]) {
+    try {
+      jar.set(name, "");
+    } catch {
+      /* ignore */
+    }
+  }
+  // Wipe any incap_ses_* / visid_incap_* variants present in dump.
+  try {
+    const dump = jar.dump?.() || {};
+    for (const k of Object.keys(dump)) {
+      if (/^(reese84|datadome|visid_incap_|incap_ses_)/i.test(k)) {
+        jar.set(k, "");
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Seed sticky host as egress before Hyper solves (avoids ipify burning tls-worker slots). */
+async function seedPcEgressIp(ctx, task) {
+  if (ctx.egressIp) return ctx.egressIp;
+  const host =
+    proxyHostOf(task?.proxy || ctx.proxyRaw) ||
+    proxyHostOf(ctx.dispatcher?.proxy) ||
+    null;
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(String(host || ""))) {
+    ctx.egressIp = host;
+    return host;
+  }
+  try {
+    ctx.egressIp = (await resolveEgressIp(ctx)) || null;
+  } catch {
+    ctx.egressIp = ctx.egressIp || null;
+  }
+  return ctx.egressIp;
+}
+
+function wantsPcTlsWorker(task, ctx) {
+  const t = String(task?.transport || ctx?.dispatcher?.transport || "").toLowerCase();
+  if (task?.forceUndici === true || t === "undici") return false;
+  if (task?.tlsWorker === false || task?.pcTlsWorker === false) return false;
+  return true; // PC default tls-worker
+}
+
+/**
+ * Wire SoftBlock sticky rotate for cold path. Previously the rotate loop never
+ * ran because ctx.rotateProxy was unset from checkout/desktop.
+ */
+function ensurePcRotateProxy(ctx, task) {
+  if (typeof ctx.rotateProxy === "function") return;
+  ctx.proxyRaw = task.proxy || ctx.proxyRaw || null;
+  ctx.rotateProxy = async (nextProxy) => {
+    const next = String(nextProxy || "").trim();
+    if (!next) throw new Error("rotateProxy: empty next proxy");
+    try {
+      await ctx.dispatcher?.close?.();
+    } catch {
+      /* ignore */
+    }
+    clearPcEdgeCookies(ctx.jar);
+    const useTls = wantsPcTlsWorker(task, ctx);
+    if (useTls) {
+      try {
+        ctx.dispatcher = await makeRemoteTlsDispatcher(next);
+      } catch {
+        ctx.dispatcher = makeDispatcher(next, { forceUndici: true });
+      }
+    } else {
+      ctx.dispatcher = makeDispatcher(next, { forceUndici: true });
+    }
+    ctx.proxyRaw = next;
+    task.proxy = next;
+    ctx.egressIp = null;
+    await seedPcEgressIp(ctx, task);
+  };
+}
+
 function isHardIpBan(note, warm) {
   const n = `${note || ""} ${warm?.note || ""} ${warm?.datadome?.note || ""}`;
   return Boolean(
     warm?.datadome?.isIpBanned ||
       /t=bv|isIpBanned|hard IP block/i.test(n),
+  );
+}
+
+function isSoftEdgeFail(note, warm) {
+  if (isHardIpBan(note, warm)) return false;
+  const n = `${note || ""} ${warm?.note || ""} ${warm?.datadome?.note || ""}`;
+  return /edge|reese|incapsula|datadome|deviceLink|view=captcha|interstitial|home 0|script fetch|SoftBlock|status 0|failed to generate/i.test(
+    n,
   );
 }
 
@@ -347,8 +454,25 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     });
   }
 
+  // Cold restock path: seed egress + wire rotateProxy before warm (harvest skips warm).
+  await seedPcEgressIp(ctx, task);
+  ensurePcRotateProxy(ctx, task);
+
   let warm = { ok: harvestUsed, note: harvestUsed ? "skipped warm (harvest)" : null };
   if (!harvestUsed) {
+    warm = await warmPokemonCentre(session, ctx, { tStep });
+  }
+  // Same-sticky remint once on SoftBlock / cookie flake before rotating exits.
+  if (!warm.ok && !harvestUsed && !isHardIpBan(warm.note, warm) && isSoftEdgeFail(warm.note, warm)) {
+    steps.push({
+      step: "edge_remint_same_sticky",
+      ok: true,
+      note: "cold SoftBlock/flake → clear edge cookies + remint on same exit",
+    });
+    clearPcEdgeCookies(ctx.jar);
+    session.state.reeseCleared = false;
+    session.state.datadomeCleared = false;
+    session.state.edgeCleared = false;
     warm = await warmPokemonCentre(session, ctx, { tStep });
   }
   // SoftBlock / cookie flake: bounded sticky rotate + remint (not t=bv spray).
@@ -366,10 +490,14 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       step: "sticky_rotate",
       ok: true,
       note: `SoftBlock/edge flake → sticky rotate ${stickyRotates}/${maxStickyRotates}`,
-      detail: { nextHost: String(next).split("@").pop()?.split(":")[0] || null },
+      detail: { nextHost: proxyHostOf(next) },
     });
     try {
       await ctx.rotateProxy(next);
+      // Session UA/jar stay; dispatcher + egress rebound to new sticky.
+      session.state.reeseCleared = false;
+      session.state.datadomeCleared = false;
+      session.state.edgeCleared = false;
     } catch (e) {
       steps.push({
         step: "sticky_rotate_fail",
@@ -700,6 +828,10 @@ export const pokemoncentreAdapter = {
     const mode = normalizeMode(task);
     const locale = resolvePcLocale(task);
     task.pcLocale = locale;
+    ctx.proxyRaw = task.proxy || ctx.proxyRaw || null;
+    // Cold + harvest Hyper solves need egress before first edge GET.
+    await seedPcEgressIp(ctx, task);
+    ensurePcRotateProxy(ctx, task);
 
     const session = createPcSession(ctx, { locale });
     steps.push({

@@ -166,13 +166,35 @@ export async function clearIncapsulaReese(session, ctx, { pageUrl, html } = {}) 
 }
 
 async function fetchDeviceHtml(session, deviceLink, referer) {
-  const res = await session.get(deviceLink, {
-    headers: {
-      referer: referer || `${PC_ORIGIN}/`,
-      accept: "text/html,application/xhtml+xml",
-    },
-  });
-  return session.readText(res);
+  const headers = {
+    referer: referer || `${PC_ORIGIN}/`,
+    accept: "text/html,application/xhtml+xml",
+  };
+  let res = await session.get(deviceLink, { headers });
+  let html = await session.readText(res);
+  // tls-worker alternate empty responses — one retry.
+  if (res.status === 0 || !html || html.length < 80) {
+    res = await session.get(deviceLink, { headers });
+    html = await session.readText(res);
+  }
+  return html;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Soft / flaky DD failures worth one same-sticky remint (not t=bv). */
+export function isRecoverableDatadomeFail(out) {
+  if (!out || out.ok || out.isIpBanned) return false;
+  const n = String(out.note || "");
+  return (
+    out.kind === "interstitial_escalated" ||
+    out.view === "captcha" ||
+    /deviceLink missing|non-JSON|status 0|failed to do request|view=captcha|interstitial POST/i.test(
+      n,
+    )
+  );
 }
 
 /**
@@ -222,84 +244,146 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
   }
 
   if (isInterstitial) {
-    const deviceLink = parseInterstitialDeviceCheckUrl(html, datadomeCookie, pageUrl || "");
-    if (!deviceLink) {
-      return { ok: false, kind: "interstitial", note: "DataDome interstitial deviceLink missing", dd };
-    }
-    const deviceHtml = await fetchDeviceHtml(session, deviceLink, pageUrl);
-    const solved = await solveDataDomeInterstitial({
-      html,
-      datadomeCookie,
-      referer: pageUrl,
-      userAgent: session.state.userAgent,
-      ip,
-      acceptLanguage: session.state.acceptLanguage,
-      deviceLinkHtml: deviceHtml,
-    });
-    // Hyper returns sec-ch-* headers that must be used on the POST (never hardcode).
-    const postRes = await session.post(solved.postUrl, {
-      body: solved.payload,
-      headers: {
-        referer: pageUrl,
-        "content-type": "application/x-www-form-urlencoded",
-        origin: "https://geo.captcha-delivery.com",
-        "sec-fetch-site": "cross-site",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-dest": "empty",
-        ...(solved.headers || {}),
-      },
-    });
-    ctx.jar?.ingest?.(postRes.headers);
-    const postText = await session.readText(postRes);
-    let json = null;
-    try {
-      json = JSON.parse(postText);
-    } catch {
+    async function attemptInterstitial(htmlIn, cookieIn, attempt) {
+      const deviceLink = parseInterstitialDeviceCheckUrl(
+        htmlIn,
+        cookieIn,
+        pageUrl || "",
+      );
+      if (!deviceLink) {
+        return {
+          ok: false,
+          kind: "interstitial",
+          note: "DataDome interstitial deviceLink missing",
+          dd,
+          attempt,
+        };
+      }
+      const deviceHtml = await fetchDeviceHtml(session, deviceLink, pageUrl);
+      if (!deviceHtml || deviceHtml.length < 80) {
+        return {
+          ok: false,
+          kind: "interstitial",
+          note: `interstitial deviceHtml empty/status 0 (${deviceHtml?.length || 0}b)`,
+          dd,
+          attempt,
+        };
+      }
+      let solved;
+      try {
+        solved = await solveDataDomeInterstitial({
+          html: htmlIn,
+          datadomeCookie: cookieIn,
+          referer: pageUrl,
+          userAgent: session.state.userAgent,
+          ip,
+          acceptLanguage: session.state.acceptLanguage,
+          deviceLinkHtml: deviceHtml,
+        });
+      } catch (e) {
+        return {
+          ok: false,
+          kind: "interstitial",
+          note: e?.message || String(e),
+          dd,
+          attempt,
+        };
+      }
+      // Hyper returns sec-ch-* headers that must be used on the POST (never hardcode).
+      let postRes = await session.post(solved.postUrl, {
+        body: solved.payload,
+        headers: {
+          referer: pageUrl,
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "https://geo.captcha-delivery.com",
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "cors",
+          "sec-fetch-dest": "empty",
+          ...(solved.headers || {}),
+        },
+      });
+      // tls-worker empty POST — one immediate retry of the same payload.
+      if (postRes.status === 0) {
+        await sleep(150);
+        postRes = await session.post(solved.postUrl, {
+          body: solved.payload,
+          headers: {
+            referer: pageUrl,
+            "content-type": "application/x-www-form-urlencoded",
+            origin: "https://geo.captcha-delivery.com",
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+            ...(solved.headers || {}),
+          },
+        });
+      }
+      ctx.jar?.ingest?.(postRes.headers);
+      const postText = await session.readText(postRes);
+      let json = null;
+      try {
+        json = JSON.parse(postText);
+      } catch {
+        return {
+          ok: false,
+          kind: "interstitial",
+          status: postRes.status,
+          note: `interstitial POST non-JSON ${postRes.status}`,
+          dd,
+          attempt,
+        };
+      }
+      const applied = applyDatadomeSolveJson(ctx.jar, json);
+      if (json.view === "redirect" && applied.cookie) {
+        session.state.datadomeCleared = true;
+        return {
+          ok: true,
+          status: postRes.status,
+          kind: "interstitial",
+          view: "redirect",
+          redirectUrl: applied.url,
+          note: "datadome interstitial view=redirect (Hyper success)",
+          dd,
+          attempt,
+        };
+      }
+      if (json.view === "captcha") {
+        // Escalation — usually TLS/header fingerprint, not an automatic proxy condemnation.
+        return {
+          ok: false,
+          kind: "interstitial_escalated",
+          view: json.view,
+          captchaUrl: json.url || null,
+          status: postRes.status,
+          note: "interstitial returned view=captcha (not redirect) — check Hyper header-order/TLS before blaming proxy",
+          refs: [
+            "https://docs.hypersolutions.co/datadome/getting-started.md#posting-payload-solving-challenge",
+            "https://docs.hypersolutions.co/request-based-basics/header-order.md",
+          ],
+          dd,
+          attempt,
+        };
+      }
       return {
         ok: false,
         kind: "interstitial",
+        view: json.view || null,
         status: postRes.status,
-        note: `interstitial POST non-JSON ${postRes.status}`,
+        note: `interstitial unexpected view=${json.view || "?"} cookie=${Boolean(applied.cookie)}`,
         dd,
+        attempt,
       };
     }
-    const applied = applyDatadomeSolveJson(ctx.jar, json);
-    if (json.view === "redirect" && applied.cookie) {
-      session.state.datadomeCleared = true;
-      return {
-        ok: true,
-        status: postRes.status,
-        kind: "interstitial",
-        view: "redirect",
-        redirectUrl: applied.url,
-        note: "datadome interstitial view=redirect (Hyper success)",
-        dd,
-      };
+
+    let out = await attemptInterstitial(html, datadomeCookie, 1);
+    // Same-sticky remint once on SoftBlock / Hyper flake (not t=bv).
+    if (!out.ok && isRecoverableDatadomeFail(out)) {
+      await sleep(200);
+      const cookie2 = ctx.jar?.get?.("datadome") || datadomeCookie;
+      out = await attemptInterstitial(html, cookie2, 2);
+      if (out.ok) out.note = `${out.note} (same-sticky retry)`;
     }
-    if (json.view === "captcha") {
-      // Escalation — usually TLS/header fingerprint, not an automatic proxy condemnation.
-      return {
-        ok: false,
-        kind: "interstitial_escalated",
-        view: json.view,
-        captchaUrl: json.url || null,
-        status: postRes.status,
-        note: "interstitial returned view=captcha (not redirect) — check Hyper header-order/TLS before blaming proxy",
-        refs: [
-          "https://docs.hypersolutions.co/datadome/getting-started.md#posting-payload-solving-challenge",
-          "https://docs.hypersolutions.co/request-based-basics/header-order.md",
-        ],
-        dd,
-      };
-    }
-    return {
-      ok: false,
-      kind: "interstitial",
-      view: json.view || null,
-      status: postRes.status,
-      note: `interstitial unexpected view=${json.view || "?"} cookie=${Boolean(applied.cookie)}`,
-      dd,
-    };
+    return out;
   }
 
   // Slider / captcha (rt:'c' + c.js)
@@ -606,12 +690,14 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
   }
 
   if (home2.dd || home.dd) {
-    const ddClear = await step("datadome_clear", async () => {
+    let blockHtml = home2.html || home.html;
+    let blockHeaders = home2.headers || home.headers;
+    let ddClear = await step("datadome_clear", async () => {
       try {
         return await clearDataDome(session, ctx, {
           pageUrl: homeUrl,
-          html: home2.html || home.html,
-          headers: home2.headers || home.headers,
+          html: blockHtml,
+          headers: blockHeaders,
         });
       } catch (e) {
         return { ok: false, note: e?.message || String(e) };
@@ -619,6 +705,49 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
     });
     if (ddClear.isIpBanned) {
       return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };
+    }
+    // Same-sticky: re-GET block HTML + remint DD once (deviceLink / captcha flake).
+    if (!ddClear.ok && isRecoverableDatadomeFail(ddClear)) {
+      const refreshed = await step("pc_home_dd_refresh", () => getHomeOnce());
+      if (refreshed.ok) {
+        session.state.edgeNote = "home clear after DD refresh (no remint needed)";
+        return { ok: true, home: refreshed, datadome: ddClear, note: session.state.edgeNote };
+      }
+      if (refreshed.dd || refreshed.incap) {
+        blockHtml = refreshed.html || blockHtml;
+        blockHeaders = refreshed.headers || blockHeaders;
+        if (refreshed.incap && !session.state.reeseCleared) {
+          await step("incapsula_reese_before_dd_retry", async () => {
+            try {
+              return await clearIncapsulaReese(session, ctx, {
+                pageUrl: homeUrl,
+                html: blockHtml,
+              });
+            } catch (e) {
+              return { ok: false, note: e?.message || String(e) };
+            }
+          });
+        }
+        ddClear = await step("datadome_clear_retry", async () => {
+          try {
+            return await clearDataDome(session, ctx, {
+              pageUrl: homeUrl,
+              html: blockHtml,
+              headers: blockHeaders,
+            });
+          } catch (e) {
+            return { ok: false, note: e?.message || String(e) };
+          }
+        });
+        if (ddClear.isIpBanned) {
+          return {
+            ok: false,
+            home: refreshed,
+            datadome: ddClear,
+            note: ddClear.note,
+          };
+        }
+      }
     }
     if (!ddClear.ok) {
       return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };

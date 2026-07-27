@@ -707,8 +707,12 @@ function buildPokemonCentrePayload({
       dryRun: mode !== "checkout" ? true : !placeOrder,
       placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
       debugTrace: true,
-      forceUndici: true,
+      // tls-worker preferred for PC DataDome (undici often view=captcha).
+      // Cold restock/random-drop path must clear edge without harvest.
+      forceUndici: false,
       forceTls: false,
+      tlsWorker: true,
+      transport: "tls-worker",
       pcMode: mode,
       pcLocale,
       pcCheckoutOnHit:
