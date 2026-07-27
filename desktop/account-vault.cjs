@@ -137,14 +137,204 @@ function bandaiAutoAssignable(account) {
   return BANDAI_AUTO_STATUSES.has(s);
 }
 
+const MANUAL_STORE_IDS = new Set(["bandai", "toymate", "disney", "kmart"]);
+
+/**
+ * Normalize one manual / imported account payload (email+password required).
+ * @param {object} input
+ * @returns {{ ok: true, account: object } | { ok: false, error: string }}
+ */
+function normalizeManualAccount(input = {}) {
+  const email = String(input.email || input.memberId || "").trim();
+  const password = String(input.password || input.pass || "").trim();
+  if (!email || !email.includes("@")) {
+    return { ok: false, error: "email required (member login)" };
+  }
+  if (!password) return { ok: false, error: "password required" };
+
+  let storeId = String(input.storeId || input.store || input.adapter || "bandai")
+    .trim()
+    .toLowerCase();
+  if (storeId === "premium bandai" || storeId === "p-bandai") storeId = "bandai";
+  if (!MANUAL_STORE_IDS.has(storeId)) storeId = "bandai";
+
+  const statusRaw = input.status != null ? String(input.status).trim() : "";
+  // Manual/import rows default to ready (user intends checkout use).
+  const status = normalizeVaultStatus(statusRaw || "ready", storeId);
+  let source;
+  if (input.source != null && String(input.source).trim()) {
+    source = String(input.source).trim();
+  } else if (!input.id) {
+    source = "manual";
+  }
+
+  return {
+    ok: true,
+    account: {
+      id: input.id ? String(input.id) : undefined,
+      email,
+      emailBase: emailBase(email),
+      password,
+      phone: input.phone != null ? String(input.phone) : null,
+      storeId,
+      adapter: storeId,
+      profileId: input.profileId || null,
+      source,
+      status,
+      loginProvenAt: input.loginProvenAt || null,
+      lastLoginAt: input.lastLoginAt || null,
+      lastUsedAt: input.lastUsedAt || null,
+      createdAt: input.createdAt || null,
+      notes: input.notes != null ? String(input.notes).slice(0, 240) : null,
+    },
+  };
+}
+
+function splitImportLine(line) {
+  const s = String(line || "").trim();
+  if (!s || s.startsWith("#") || s.startsWith("//")) return null;
+  // email:password  |  store:email:password  |  csv commas
+  if (s.includes(",") && !/^[^,]+:[^:]+$/.test(s)) {
+    return s.split(",").map((p) => p.trim().replace(/^"|"$/g, ""));
+  }
+  // Prefer last colon split for email:password when email has no port noise.
+  const parts = s.split(":").map((p) => p.trim());
+  return parts;
+}
+
+/**
+ * Parse JSON array / NDJSON / line list into account drafts.
+ * Lines: `email:password`, `store:email:password`, or CSV `store,email,password[,status]`.
+ * @param {string|object} raw
+ * @returns {{ ok: boolean, accounts: object[], errors: string[], skipped: number }}
+ */
+function parseAccountsImport(raw) {
+  const errors = [];
+  const accounts = [];
+  let skipped = 0;
+
+  let parsed = raw;
+  if (typeof raw === "string") {
+    const text = raw.trim();
+    if (!text) return { ok: false, accounts: [], errors: ["empty import"], skipped: 0 };
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = text;
+    }
+  }
+
+  /** @type {object[]} */
+  let drafts = [];
+  if (Array.isArray(parsed)) {
+    drafts = parsed;
+  } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.accounts)) {
+    drafts = parsed.accounts;
+  } else if (typeof parsed === "string") {
+    const lines = parsed.split(/\r?\n/);
+    // Optional header
+    let start = 0;
+    if (/store|email|password/i.test(lines[0] || "") && /,/i.test(lines[0] || "")) {
+      start = 1;
+    }
+    for (let i = start; i < lines.length; i++) {
+      const parts = splitImportLine(lines[i]);
+      if (!parts) {
+        skipped += 1;
+        continue;
+      }
+      if (parts.length === 2) {
+        drafts.push({ email: parts[0], password: parts[1] });
+      } else if (parts.length === 3) {
+        // store,email,password OR email,password,status
+        if (parts[0].includes("@")) {
+          drafts.push({ email: parts[0], password: parts[1], status: parts[2] });
+        } else {
+          drafts.push({ storeId: parts[0], email: parts[1], password: parts[2] });
+        }
+      } else if (parts.length >= 4) {
+        drafts.push({
+          storeId: parts[0],
+          email: parts[1],
+          password: parts[2],
+          status: parts[3],
+        });
+      } else {
+        errors.push(`line ${i + 1}: need email:password`);
+      }
+    }
+  } else if (parsed && typeof parsed === "object" && parsed.email) {
+    drafts = [parsed];
+  } else {
+    return { ok: false, accounts: [], errors: ["unrecognized import format"], skipped: 0 };
+  }
+
+  for (let i = 0; i < drafts.length; i++) {
+    const n = normalizeManualAccount({ ...drafts[i], source: drafts[i]?.source || "import" });
+    if (!n.ok) {
+      errors.push(`row ${i + 1}: ${n.error}`);
+      continue;
+    }
+    accounts.push(n.account);
+  }
+
+  return {
+    ok: accounts.length > 0,
+    accounts,
+    errors,
+    skipped,
+  };
+}
+
+/**
+ * @param {object[]} accounts
+ * @param {"json"|"csv"|"lines"} [format]
+ */
+function formatAccountsExport(accounts, format = "json") {
+  const list = (Array.isArray(accounts) ? accounts : []).map((a) => ({
+    storeId: a.storeId || "bandai",
+    email: a.email,
+    password: a.password,
+    status: a.status || "ready",
+    source: a.source || null,
+    phone: a.phone || null,
+    emailBase: a.emailBase || emailBase(a.email),
+    loginProvenAt: a.loginProvenAt || null,
+    createdAt: a.createdAt || null,
+  }));
+  const fmt = String(format || "json").toLowerCase();
+  if (fmt === "csv") {
+    const header = "storeId,email,password,status,source";
+    const rows = list.map(
+      (a) =>
+        [a.storeId, a.email, a.password, a.status, a.source || ""]
+          .map((c) => {
+            const s = String(c ?? "");
+            return /["\n,]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+          })
+          .join(","),
+    );
+    return [header, ...rows].join("\n") + (rows.length ? "\n" : "");
+  }
+  if (fmt === "lines") {
+    return list.map((a) => `${a.storeId}:${a.email}:${a.password}`).join("\n") + (list.length ? "\n" : "");
+  }
+  return `${JSON.stringify({ exportedAt: new Date().toISOString(), accounts: list }, null, 2)}\n`;
+}
+
 module.exports = {
   KNOWN_VAULT_STATUSES,
   REGISTERED_STATUSES,
   BANDAI_AUTO_STATUSES,
+  MANUAL_STORE_IDS,
   normalizeVaultStatus,
   isRegisteredVaultStatus,
   shouldPersistGeneratedAccount,
   vaultRegisteredEmails,
   findRegisteredAccount,
   bandaiAutoAssignable,
+  normalizeManualAccount,
+  parseAccountsImport,
+  formatAccountsExport,
+  emailBase,
 };
