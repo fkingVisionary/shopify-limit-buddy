@@ -102,6 +102,11 @@ function syncTaskFormForStore() {
   if (dOpts) dOpts.hidden = !disney;
   const pcOpts = $("taskPcOpts");
   if (pcOpts) pcOpts.hidden = !pc;
+  const pcHitWrap = $("taskPcCheckoutOnHitWrap");
+  if (pcHitWrap) {
+    const pcMode = $("taskPcMode")?.value || "monitor";
+    pcHitWrap.hidden = !pc || pcMode !== "monitor";
+  }
   const mode = toy
     ? $("taskToymateMode")?.value || "checkout"
     : bandai
@@ -285,6 +290,11 @@ function renderTasks() {
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
           <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
+          ${
+            t.lastDropSummary
+              ? `<div class="meta drop-summary">${esc(t.lastDropSummary)}</div>`
+              : ""
+          }
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
@@ -612,6 +622,129 @@ function disneyHarvestOptsFromForm() {
   };
 }
 
+function fillPcHarvestProxySelect() {
+  const sel = $("pcProxyGroup");
+  if (!sel) return;
+  const cur = sel.value || state?.pokemoncentreHarvest?.config?.proxyGroupId || "";
+  sel.innerHTML =
+    `<option value="">Select proxy group…</option>` +
+    (state.proxyGroups || [])
+      .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
+      .join("");
+  if (cur && [...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function renderPcHarvest() {
+  const hv = state?.pokemoncentreHarvest || {};
+  const cfg = hv.config || {};
+  fillPcHarvestProxySelect();
+  if ($("pcDesired") && document.activeElement !== $("pcDesired")) {
+    $("pcDesired").value = cfg.desired != null ? cfg.desired : 2;
+  }
+  if ($("pcSolveCaptcha") && document.activeElement !== $("pcSolveCaptcha")) {
+    $("pcSolveCaptcha").checked = cfg.solveCaptcha === true;
+  }
+  if ($("pcReady")) $("pcReady").textContent = String(hv.ready ?? 0);
+  if ($("pcCaptcha")) $("pcCaptcha").textContent = String(hv.readyWithCaptcha ?? 0);
+  if ($("pcSolved")) $("pcSolved").textContent = String(hv.solvedCount ?? 0);
+  if ($("pcFailed")) $("pcFailed").textContent = String(hv.failedCount ?? 0);
+
+  const line = $("pcHarvestStatusLine");
+  if (line) {
+    if (hv.paused) line.textContent = `Harvest paused · ready ${hv.ready ?? 0}`;
+    else if (hv.running && hv.busy) line.textContent = "Harvesting… Reese+DD warm";
+    else if (hv.running) line.textContent = `Harvest armed · ready ${hv.ready ?? 0}`;
+    else line.textContent = "Harvest stopped";
+  }
+  const err = $("pcHarvestError");
+  if (err) {
+    if (hv.lastError) {
+      err.hidden = false;
+      err.textContent = hv.lastError;
+    } else {
+      err.hidden = true;
+      err.textContent = "";
+    }
+  }
+
+  const list = $("pcHarvestSessionList");
+  if (list) {
+    const rows = hv.sessions || [];
+    if (!rows.length) {
+      list.innerHTML = `<div class="item"><div><strong>Bank empty</strong><div class="meta">Start harvest or Arm Drop Mode. Checkout falls back to cold edge warm when empty.</div></div></div>`;
+    } else {
+      list.innerHTML = rows
+        .map(
+          (s) => `<div class="item"><div><strong>${esc(s.proxyHost || s.id)}</strong>
+          <div class="meta">age ${esc(String(s.ageSec))}s · edge ttl ${esc(String(s.edgeTtlSec))}s${
+            s.hasCaptcha ? ` · hCaptcha ${esc(String(s.captchaTtlSec))}s` : ""
+          }</div>
+          <div class="meta">${esc(s.warmNote || "")}</div></div>
+          <span class="badge ok">ready</span></div>`,
+        )
+        .join("");
+    }
+  }
+  const startBtn = $("pcStart");
+  const stopBtn = $("pcStop");
+  if (startBtn) startBtn.disabled = Boolean(hv.running);
+  if (stopBtn) stopBtn.disabled = !hv.running;
+}
+
+function pcHarvestOptsFromForm() {
+  return {
+    proxyGroupId: $("pcProxyGroup")?.value || null,
+    desired: Number($("pcDesired")?.value) || 0,
+    solveCaptcha: $("pcSolveCaptcha")?.checked === true,
+    locale: "en-au",
+  };
+}
+
+function renderHarvestBankStrip() {
+  const el = $("harvestBankStrip");
+  if (!el) return;
+  const tm = state?.harvest || {};
+  const bd = state?.bandaiHarvest || {};
+  const ds = state?.disneyHarvest || {};
+  const pc = state?.pokemoncentreHarvest || {};
+  const chip = (name, hv) => {
+    const ready = Number(hv.ready) || 0;
+    const armed = Boolean(hv.running);
+    const cls = armed ? (ready > 0 ? "chip-ready" : "chip-mint") : ready > 0 ? "chip-ready" : "chip-off";
+    const stateLabel = armed ? (hv.busy ? "minting" : "armed") : ready > 0 ? "banked" : "off";
+    return `<span class="${cls}">${name} ${ready} ${stateLabel}</span>`;
+  };
+  el.innerHTML = `Harvest banks — ${chip("Toymate", tm)} · ${chip("Disney", ds)} · ${chip("Bandai", bd)} · ${chip("PkC", pc)}`;
+}
+
+function renderDropPrep() {
+  const strip = $("dropReadyStrip");
+  const badge = $("dropReadyBadge");
+  const sched = $("dropScheduleLine");
+  if (!strip) return;
+  const ready = state.dropReady;
+  if (ready?.text) {
+    strip.textContent = ready.text;
+    strip.classList.toggle("ok", Boolean(ready.ready));
+    strip.classList.toggle("bad", !ready.ready);
+  } else {
+    strip.textContent = "Ready —";
+    strip.classList.remove("ok", "bad");
+  }
+  if (badge) {
+    badge.textContent = ready?.ready ? "READY" : ready?.lanes ? "NOT READY" : "—";
+    badge.className = `badge ${ready?.ready ? "ok" : ready?.lanes ? "err" : ""}`;
+  }
+  const ds = state.dropSchedule;
+  if (sched) {
+    if (ds?.armed) {
+      sched.textContent = `Armed → ${ds.label || ""} · fires in ${ds.countdown || "…"}`;
+    } else {
+      sched.textContent = "No schedule armed";
+    }
+  }
+}
+
 function harvestOptsFromForm() {
   return {
     proxyGroupId: $("hvProxyGroup")?.value || null,
@@ -633,6 +766,9 @@ function applyState(next) {
   renderHarvest(next.harvest || null);
   renderBandaiHarvest();
   renderDisneyHarvest();
+  renderPcHarvest();
+  renderHarvestBankStrip();
+  renderDropPrep();
   engineUi();
 }
 
@@ -751,6 +887,9 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskBandaiMonitorDelayMs"))
       $("taskBandaiMonitorDelayMs").value = task.bandaiMonitorDelayMs || 0;
     if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
+    if ($("taskPcCheckoutOnHit")) {
+      $("taskPcCheckoutOnHit").checked = task.pcCheckoutOnHit !== false;
+    }
     if ($("taskBandaiAccountPassword"))
       $("taskBandaiAccountPassword").value = task.accountPassword || "";
     if ($("taskBandaiAccountAssign"))
@@ -873,6 +1012,8 @@ function readTaskForm() {
       store === "bandai" ? Number($("taskBandaiMonitorDelayMs")?.value) || 0 : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
+    pcCheckoutOnHit:
+      store === "pokemoncentre" ? $("taskPcCheckoutOnHit")?.checked !== false : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
     accountPassword:
       store === "toymate"
@@ -1273,19 +1414,139 @@ if ($("bhArea")) {
   };
 }
 
+if ($("pcStart")) {
+  $("pcStart").onclick = async () => {
+    const opts = pcHarvestOptsFromForm();
+    const res = await window.desktop.pokemoncentreHarvestStart(opts);
+    if (!res.ok) return appendLog(res.error || "PC harvest start failed", "err");
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest) {
+      state.pokemoncentreHarvest = res.harvest;
+      renderPcHarvest();
+      renderHarvestBankStrip();
+    }
+    appendLog("Pokémon Centre harvest armed", "ok");
+  };
+}
+if ($("pcStop")) {
+  $("pcStop").onclick = async () => {
+    const res = await window.desktop.pokemoncentreHarvestStop();
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest) {
+      state.pokemoncentreHarvest = res.harvest;
+      renderPcHarvest();
+      renderHarvestBankStrip();
+    }
+    appendLog("PC harvest stopped", "muted");
+  };
+}
+if ($("pcClear")) {
+  $("pcClear").onclick = async () => {
+    const res = await window.desktop.pokemoncentreHarvestClear();
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest) {
+      state.pokemoncentreHarvest = res.harvest;
+      renderPcHarvest();
+      renderHarvestBankStrip();
+    }
+    appendLog("PC harvest bank cleared", "muted");
+  };
+}
+if ($("pcOnce")) {
+  $("pcOnce").onclick = async () => {
+    const opts = pcHarvestOptsFromForm();
+    const res = await window.desktop.pokemoncentreHarvestOnce(opts);
+    if (!res.ok) return appendLog(res.error || "PC harvest one failed", "err");
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest) {
+      state.pokemoncentreHarvest = res.harvest;
+      renderPcHarvest();
+      renderHarvestBankStrip();
+    }
+    appendLog("PC harvested one session", "ok");
+  };
+}
+if ($("pcProxyGroup")) {
+  $("pcProxyGroup").onchange = async () => {
+    const snap = await window.desktop.pokemoncentreHarvestConfigure({
+      proxyGroupId: $("pcProxyGroup").value || null,
+    });
+    if (state) state.pokemoncentreHarvest = snap;
+    renderPcHarvest();
+  };
+}
+if ($("pcDesired")) {
+  $("pcDesired").onchange = async () => {
+    const snap = await window.desktop.pokemoncentreHarvestConfigure({
+      desired: Number($("pcDesired").value) || 0,
+    });
+    if (state) state.pokemoncentreHarvest = snap;
+    renderPcHarvest();
+  };
+}
+if ($("pcSolveCaptcha")) {
+  $("pcSolveCaptcha").onchange = async () => {
+    const snap = await window.desktop.pokemoncentreHarvestConfigure({
+      solveCaptcha: $("pcSolveCaptcha").checked === true,
+    });
+    if (state) state.pokemoncentreHarvest = snap;
+    renderPcHarvest();
+  };
+}
+
+if ($("btnDropModeArm")) {
+  $("btnDropModeArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim() || null;
+    const res = await window.desktop.dropModeArm(fireAt ? { fireAt } : {});
+    if (!res.ok) return appendLog(res.error || "Drop Mode arm failed", "err");
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(`PC Drop Mode armed — desired ${res.desired} for ${res.lanes} lane(s)`, "ok");
+  };
+}
+if ($("btnDropScheduleArm")) {
+  $("btnDropScheduleArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim();
+    if (!fireAt) return appendLog("Enter Fire at (AEST) first", "err");
+    const res = await window.desktop.dropScheduleArm({ fireAt });
+    if (!res.ok) return appendLog(res.error || "Schedule arm failed", "err");
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(`PC schedule armed → ${res.label}`, "ok");
+  };
+}
+if ($("btnDropScheduleCancel")) {
+  $("btnDropScheduleCancel").onclick = async () => {
+    const res = await window.desktop.dropScheduleCancel();
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog("PC schedule cancelled", "muted");
+  };
+}
+
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);
+    renderHarvestBankStrip();
   }
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();
+    renderHarvestBankStrip();
   }
   if (evt.type === "disneyHarvest" && evt.data) {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
+    renderHarvestBankStrip();
+  }
+  if (evt.type === "pokemoncentreHarvest" && evt.data) {
+    if (state) state.pokemoncentreHarvest = evt.data;
+    renderPcHarvest();
+    renderHarvestBankStrip();
+    renderDropPrep();
+  }
+  if (evt.type === "dropSchedule" && evt.data) {
+    if (state) state.dropSchedule = evt.data;
+    renderDropPrep();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

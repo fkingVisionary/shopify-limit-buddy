@@ -17,9 +17,24 @@ const {
 } = require("./account-vault.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
+const { createPokemonCentreHarvestPool } = require("./pokemoncentre-harvest.cjs");
+const { createPokemonCentreHarvestAutoArm } = require("./pokemoncentre-harvest-autoarm.cjs");
+const {
+  parseDropFireAt,
+  msUntil,
+  formatCountdown,
+  staggerOffsets,
+  listPcDropTasks,
+  assessDropReady,
+  planDropMode,
+  formatLaneAfterAction,
+} = require("./pokemoncentre-drop-ops.cjs");
 
 let win = null;
 let state = store.loadAll();
+
+/** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
+let dropSchedule = null;
 
 const harvest = createHarvestPool({
   sidecar,
@@ -36,6 +51,30 @@ const disneyHarvest = createDisneyHarvestPool({
   emit: (evt) => send(evt),
 });
 
+const pokemoncentreHarvest = createPokemonCentreHarvestPool({
+  sidecar,
+  emit: (evt) => send(evt),
+});
+
+/** Auto-arm PC edge harvest while Monitor → checkout jobs are live. */
+const pokemoncentreHarvestAutoArm = createPokemonCentreHarvestAutoArm({
+  harvest: pokemoncentreHarvest,
+  getEntries: () => pokemoncentreHarvestEntries(),
+  idFn: () => store.id("run"),
+  log: (msg) =>
+    send({ type: "job", phase: "log", level: "info", message: String(msg || "") }),
+});
+
+runner.setPokemonCentreHarvestHooks({
+  takePokemonCentreHarvest: (opts) => pokemoncentreHarvest.take(opts || {}),
+  pausePokemonCentreHarvestRefill: () => pokemoncentreHarvest.pause(),
+  resumePokemonCentreHarvestRefill: () => {
+    // Only resume if no checkout lanes still in-flight.
+    const st = runner.state();
+    if ((st.inflight || 0) <= 1) pokemoncentreHarvest.resume();
+  },
+});
+
 function harvestEntries() {
   const gid = harvest.snapshot().config.proxyGroupId;
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
@@ -50,6 +89,12 @@ function bandaiHarvestEntries() {
 
 function disneyHarvestEntries() {
   const gid = disneyHarvest.snapshot().config.proxyGroupId;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+  return group?.entries || [];
+}
+
+function pokemoncentreHarvestEntries() {
+  const gid = pokemoncentreHarvest.snapshot().config.proxyGroupId;
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
   return group?.entries || [];
 }
@@ -71,6 +116,9 @@ function storeDisplayName(sid) {
   if (sid === "bandai") return "Premium Bandai";
   if (sid === "kmart") return "Kmart AU";
   if (sid === "disney") return "Disney Store AU";
+  if (sid === "pokemoncentre" || sid === "pokemon" || sid === "pokemoncenter") {
+    return "Pokémon Centre AU";
+  }
   return sid;
 }
 
@@ -113,7 +161,110 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
   return row;
 }
 
+function cancelDropSchedule({ silent = false } = {}) {
+  if (!dropSchedule) return;
+  if (dropSchedule.timer) clearTimeout(dropSchedule.timer);
+  if (dropSchedule.tickTimer) clearInterval(dropSchedule.tickTimer);
+  dropSchedule = null;
+  if (!silent) {
+    send({ type: "dropSchedule", data: { armed: false } });
+  }
+}
+
+function publishDropSchedule() {
+  if (!dropSchedule) {
+    send({ type: "dropSchedule", data: { armed: false } });
+    return;
+  }
+  const left = msUntil(dropSchedule.atMs);
+  send({
+    type: "dropSchedule",
+    data: {
+      armed: true,
+      atMs: dropSchedule.atMs,
+      label: dropSchedule.label,
+      taskIds: dropSchedule.taskIds,
+      countdownMs: left,
+      countdown: formatCountdown(left),
+    },
+  });
+}
+
+function armDropSchedule({ fireAt, taskIds, staggerGapMs = 50 } = {}) {
+  const parsed = parseDropFireAt(fireAt);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const ids =
+    Array.isArray(taskIds) && taskIds.length
+      ? taskIds.map(String)
+      : listPcDropTasks(state.db.tasks).map((t) => t.id);
+  if (!ids.length) return { ok: false, error: "No Pokémon Centre Autocheckout tasks to fire" };
+
+  cancelDropSchedule({ silent: true });
+  const delay = msUntil(parsed.atMs);
+  dropSchedule = {
+    atMs: parsed.atMs,
+    label: parsed.label,
+    taskIds: ids,
+    staggerGapMs: Math.max(0, Math.min(150, Number(staggerGapMs) || 50)),
+    timer: null,
+    tickTimer: null,
+  };
+  dropSchedule.timer = setTimeout(() => {
+    void fireArmedDropSchedule();
+  }, delay);
+  dropSchedule.tickTimer = setInterval(() => publishDropSchedule(), 1000);
+  publishDropSchedule();
+  send({
+    type: "job",
+    phase: "log",
+    level: "info",
+    message: `PC Drop schedule armed → ${parsed.label} (${ids.length} task(s), countdown ${formatCountdown(delay)})`,
+  });
+  return {
+    ok: true,
+    atMs: parsed.atMs,
+    label: parsed.label,
+    taskIds: ids,
+    countdownMs: delay,
+    countdown: formatCountdown(delay),
+  };
+}
+
+async function fireArmedDropSchedule() {
+  if (!dropSchedule) return;
+  const { taskIds, staggerGapMs, label } = dropSchedule;
+  cancelDropSchedule({ silent: true });
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    message: `PC Drop T0 — firing ${taskIds.length} task(s) (${label})`,
+  });
+  const res = enqueueTaskIds(taskIds, { stagger: true, staggerGapMs });
+  send({ type: "dropSchedule", data: { armed: false, fired: true, result: res } });
+  send({ type: "snapshot", data: snapshot() });
+}
+
+function dropReadySnapshot() {
+  return assessDropReady({
+    engineRunning: Boolean(sidecar.status()?.running),
+    harvest: pokemoncentreHarvest.snapshot(),
+    tasks: state.db.tasks,
+    proxyGroups: state.db.proxyGroups || [],
+  });
+}
+
 function snapshot() {
+  const schedule = dropSchedule
+    ? {
+        armed: true,
+        atMs: dropSchedule.atMs,
+        label: dropSchedule.label,
+        taskIds: dropSchedule.taskIds,
+        countdownMs: msUntil(dropSchedule.atMs),
+        countdown: formatCountdown(msUntil(dropSchedule.atMs)),
+      }
+    : { armed: false };
   return {
     settings: {
       ...state.settings,
@@ -135,6 +286,9 @@ function snapshot() {
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
+    pokemoncentreHarvest: pokemoncentreHarvest.snapshot(),
+    dropSchedule: schedule,
+    dropReady: dropReadySnapshot(),
   };
 }
 
@@ -213,8 +367,30 @@ runner.setFinishedHandler((result) => {
       }
       t.lastCheckoutStage = result.checkoutStage || null;
       t.stockStatus = result.stockStatus || null;
+      if (
+        t.store === "pokemoncentre" ||
+        t.store === "pokemon" ||
+        t.store === "pokemoncenter"
+      ) {
+        t.lastDropSummary = formatLaneAfterAction(result);
+      }
       t.updatedAt = Date.now();
     }
+  }
+  // Release Monitor → checkout harvest auto-arm ref (stops refill if we started it).
+  try {
+    pokemoncentreHarvestAutoArm.release(result.runId);
+  } catch {
+    /* ignore */
+  }
+  // Resume harvest mint when queue drains.
+  try {
+    const st = runner.state();
+    if ((st.inflight || 0) <= 0 && (st.queued || 0) <= 0) {
+      pokemoncentreHarvest.resume();
+    }
+  } catch {
+    /* ignore */
   }
   persistDb();
   send({ type: "snapshot", data: snapshot() });
@@ -294,6 +470,7 @@ ipcMain.handle("desktop:stop-engine", async () => {
   harvest.stop();
   bandaiHarvest.stop();
   disneyHarvest.stop();
+  pokemoncentreHarvest.stop();
   try {
     await bandaiHarvest.clear();
   } catch {
@@ -304,10 +481,92 @@ ipcMain.handle("desktop:stop-engine", async () => {
   } catch {
     /* ignore */
   }
+  try {
+    pokemoncentreHarvest.clear();
+  } catch {
+    /* ignore */
+  }
   runner.stop();
   await sidecar.stopSidecar();
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot() };
+});
+
+// ── Pokémon Centre Incapsula+DD Harvest tab ───────────────────────────
+ipcMain.handle("desktop:pc-harvest-status", () => pokemoncentreHarvest.snapshot());
+
+ipcMain.handle("desktop:pc-harvest-configure", (_e, patch) => {
+  return pokemoncentreHarvest.configure(patch || {});
+});
+
+ipcMain.handle("desktop:pc-harvest-start", async (_e, opts = {}) => {
+  const hyper = String(state.settings.hyperApiKey || "").trim();
+  if (!hyper) {
+    return { ok: false, error: "Set Hyper API key in Settings first", snapshot: snapshot() };
+  }
+  if (opts.solveCaptcha && !String(state.settings.capsolverApiKey || "").trim()) {
+    return {
+      ok: false,
+      error: "CapSolver key required when hCaptcha harvest is on (or uncheck it)",
+      snapshot: snapshot(),
+    };
+  }
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", harvest: pokemoncentreHarvest.snapshot() };
+  }
+  const gid = opts.proxyGroupId || pokemoncentreHarvest.snapshot().config.proxyGroupId;
+  if (gid) pokemoncentreHarvest.configure({ proxyGroupId: gid });
+  if (opts.desired != null) pokemoncentreHarvest.configure({ desired: opts.desired });
+  if (opts.solveCaptcha != null) pokemoncentreHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  if (opts.locale) pokemoncentreHarvest.configure({ locale: opts.locale });
+  const snap = pokemoncentreHarvest.start({
+    proxyGroupId: gid,
+    desired: opts.desired,
+    solveCaptcha: opts.solveCaptcha,
+    locale: opts.locale,
+    getEntries: pokemoncentreHarvestEntries,
+  });
+  pokemoncentreHarvestAutoArm.markManualStart();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:pc-harvest-stop", () => {
+  pokemoncentreHarvestAutoArm.markManualStop();
+  const snap = pokemoncentreHarvest.stop();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:pc-harvest-pause", () => {
+  const snap = pokemoncentreHarvest.pause();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:pc-harvest-resume", () => {
+  const snap = pokemoncentreHarvest.resume();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:pc-harvest-clear", () => {
+  const snap = pokemoncentreHarvest.clear();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, harvest: snap, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:pc-harvest-once", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", harvest: pokemoncentreHarvest.snapshot() };
+  }
+  if (opts.proxyGroupId) pokemoncentreHarvest.configure({ proxyGroupId: opts.proxyGroupId });
+  if (opts.desired != null) pokemoncentreHarvest.configure({ desired: opts.desired });
+  if (opts.solveCaptcha != null) pokemoncentreHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  if (opts.locale) pokemoncentreHarvest.configure({ locale: opts.locale });
+  const out = await pokemoncentreHarvest.harvestOne(pokemoncentreHarvestEntries());
+  send({ type: "snapshot", data: snapshot() });
+  return { ...out, harvest: pokemoncentreHarvest.snapshot(), snapshot: snapshot() };
 });
 
 // ── Disney Akamai + CapSolver Harvest tab ─────────────────────────────
@@ -631,6 +890,10 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
         ? String(task.pcLocale || "en-au")
         : undefined,
+    pcCheckoutOnHit:
+      storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
+        ? task.pcCheckoutOnHit !== false
+        : undefined,
     paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
     accountPassword:
       (storeId === "toymate" || storeId === "bandai") && typeof task.accountPassword === "string"
@@ -694,6 +957,17 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     return { ok: false, error: "Start the engine first (app must stay open)" };
   }
   const ids = Array.isArray(taskIds) && taskIds.length ? taskIds : state.db.tasks.filter((t) => t.enabled).map((t) => t.id);
+  return enqueueTaskIds(ids);
+});
+
+function enqueueTaskIds(taskIds, opts = {}) {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first (app must stay open)" };
+  }
+  const ids =
+    Array.isArray(taskIds) && taskIds.length
+      ? taskIds
+      : state.db.tasks.filter((t) => t.enabled).map((t) => t.id);
   const jobs = [];
   const claimedAccountIds = [];
   for (const tid of ids) {
@@ -709,7 +983,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     const n = Math.max(1, Math.min(50, Number(task.quantity) || 1));
     let assignError = null;
     for (let i = 0; i < n; i++) {
-      const proxyIndex = i % entries.length;
+      let proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
       const taskCopy = { ...task };
       // Wire vault account into Toymate / Bandai checkout (auto by profile email, or manual).
@@ -822,6 +1096,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
           });
         }
       }
+      // Pokémon Centre: claim at job-runner run-start (not enqueue) so Reese+DD TTL stays fresh.
       jobs.push({
         task: taskCopy,
         profile,
@@ -844,9 +1119,108 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
     task.updatedAt = Date.now();
   }
   persistDb();
-  runner.enqueue(jobs);
+  // Auto-arm PC harvest for Monitor → checkout (uses Harvest checkout ISP, not monitor proxies).
+  try {
+    pokemoncentreHarvestAutoArm.ensureForJobs(jobs);
+  } catch (e) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "warn",
+      message: `PC harvest auto-arm: ${e?.message || e}`,
+    });
+  }
+
+  const useStagger = opts.stagger === true || opts.staggerGapMs != null;
+  if (useStagger && jobs.length > 1) {
+    const offsets = staggerOffsets(jobs.length, {
+      gapMs: opts.staggerGapMs ?? 50,
+      maxSpreadMs: 150,
+    });
+    jobs.forEach((job, i) => {
+      setTimeout(() => {
+        runner.enqueue([job]);
+      }, offsets[i] || 0);
+    });
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: `Staggered enqueue ${jobs.length} PC lane(s) over ${offsets[offsets.length - 1] || 0}ms`,
+    });
+  } else {
+    runner.enqueue(jobs);
+  }
   send({ type: "snapshot", data: snapshot() });
-  return { ok: true, enqueued: jobs.length, snapshot: snapshot() };
+  return { ok: true, enqueued: jobs.length, staggered: useStagger, snapshot: snapshot() };
+}
+
+ipcMain.handle("desktop:drop-ready", () => ({ ok: true, ...dropReadySnapshot() }));
+
+ipcMain.handle("desktop:drop-schedule-arm", (_e, opts = {}) => {
+  const res = armDropSchedule(opts || {});
+  return { ...res, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:drop-schedule-cancel", () => {
+  cancelDropSchedule();
+  send({
+    type: "job",
+    phase: "log",
+    level: "muted",
+    message: "PC Drop schedule cancelled",
+  });
+  return { ok: true, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:drop-mode-arm", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", snapshot: snapshot() };
+  }
+  const plan = planDropMode({
+    tasks: state.db.tasks,
+    harvest: pokemoncentreHarvest.snapshot(),
+  });
+  if (!plan.ok) return { ...plan, snapshot: snapshot() };
+
+  pokemoncentreHarvest.configure({
+    proxyGroupId: plan.proxyGroupId,
+    desired: plan.desired,
+    locale: plan.locale || "en-au",
+    solveCaptcha: plan.solveCaptcha === true,
+  });
+  const snap = pokemoncentreHarvest.start({
+    proxyGroupId: plan.proxyGroupId,
+    desired: plan.desired,
+    locale: plan.locale || "en-au",
+    solveCaptcha: plan.solveCaptcha === true,
+    getEntries: pokemoncentreHarvestEntries,
+  });
+  pokemoncentreHarvestAutoArm.markManualStart();
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    message: `PC Drop Mode armed — harvest desired ${plan.desired} for ${plan.lanes} lane(s)`,
+  });
+
+  let schedule = null;
+  if (opts.fireAt) {
+    schedule = armDropSchedule({
+      fireAt: opts.fireAt,
+      taskIds: plan.taskIds,
+      staggerGapMs: opts.staggerGapMs ?? 50,
+    });
+  }
+
+  return {
+    ok: true,
+    ...plan,
+    harvest: snap,
+    schedule,
+    dropReady: dropReadySnapshot(),
+    snapshot: snapshot(),
+  };
 });
 
 // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -996,8 +1370,20 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", async () => {
   harvest.stop();
   bandaiHarvest.stop();
+  disneyHarvest.stop();
+  pokemoncentreHarvest.stop();
   try {
     await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    disneyHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    pokemoncentreHarvest.clear();
   } catch {
     /* ignore */
   }
@@ -1009,8 +1395,20 @@ app.on("window-all-closed", async () => {
 app.on("before-quit", async () => {
   harvest.stop();
   bandaiHarvest.stop();
+  disneyHarvest.stop();
+  pokemoncentreHarvest.stop();
   try {
     await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    disneyHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    pokemoncentreHarvest.clear();
   } catch {
     /* ignore */
   }

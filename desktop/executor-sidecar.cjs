@@ -320,6 +320,19 @@ async function harvestDisney(body) {
   return json || { ok: false, error: `HTTP ${httpStatus}` };
 }
 
+async function harvestPokemonCentre(body) {
+  const { status: httpStatus, json } = await requestJson(
+    "POST",
+    "/pokemoncentre/harvest",
+    body,
+    180_000,
+  );
+  if (httpStatus === 429) {
+    return { ok: false, error: json?.error || "pc harvest at capacity", atCapacity: true };
+  }
+  return json || { ok: false, error: `HTTP ${httpStatus}` };
+}
+
 async function bandaiHarvestStatus() {
   const { json } = await requestJson("GET", "/bandai/harvest", null, 15_000);
   return json || { ok: false, error: "no response" };
@@ -343,6 +356,7 @@ module.exports = {
   harvestToymate,
   harvestBandai,
   harvestDisney,
+  harvestPokemonCentre,
   bandaiHarvestStatus,
   clearBandaiHarvest,
   progress,

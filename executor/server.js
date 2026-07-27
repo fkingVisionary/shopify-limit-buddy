@@ -34,6 +34,14 @@ import {
   disneyHarvestSnapshot,
 } from "./adapters/disney-harvest-pool.js";
 import { harvestDisneySession } from "./adapters/disney-harvest-session.js";
+import {
+  mintPokemonCentreHarvestSlot,
+  clearPokemonCentreHarvestSlots,
+  releasePokemonCentreHarvestSlot,
+  takePokemonCentreHarvestSlot,
+  pokemoncentreHarvestSnapshot,
+} from "./adapters/pokemoncentre-harvest-pool.js";
+import { harvestPokemonCentreSession } from "./adapters/pokemoncentre-harvest-session.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -67,6 +75,7 @@ app.get("/", async () => ({
   bandaiHarvest: "POST|GET /bandai/harvest (Bearer auth)",
   toymateHarvest: "POST /toymate/harvest (Bearer auth)",
   disneyHarvest: "POST|GET /disney/harvest (Bearer auth)",
+  pokemoncentreHarvest: "POST|GET /pokemoncentre/harvest (Bearer auth)",
   transport: HTTP_TRANSPORT,
   hyperApiKey: Boolean(process.env.HYPER_API_KEY),
   proxyConfigured: Boolean(process.env.PROXY_URL_RESI),
@@ -363,6 +372,118 @@ app.post("/disney/harvest/release", async (req, reply) => {
 app.post("/disney/harvest/clear", async (req, reply) => {
   if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
   return clearDisneyHarvestSlots();
+});
+
+// Pokémon Centre Incapsula+DD harvest (desktop Harvest tab). Soft capacity: counts as inflight.
+app.get("/pokemoncentre/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return { ok: true, ...pokemoncentreHarvestSnapshot() };
+});
+
+app.post("/pokemoncentre/harvest", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body || {};
+  const proxy = typeof body.proxy === "string" ? body.proxy.trim() : "";
+  if (!proxy) {
+    reply.code(400);
+    return { ok: false, error: "proxy required" };
+  }
+  if (inflight >= MAX_CONCURRENT) {
+    reply.code(429);
+    return { ok: false, error: `executor at capacity: ${inflight}/${MAX_CONCURRENT}` };
+  }
+  inflight++;
+  try {
+    if (body.bank === false) {
+      const out = await harvestPokemonCentreSession({
+        proxyRaw: proxy,
+        solveCaptcha: body.solveCaptcha === true,
+        locale: typeof body.locale === "string" ? body.locale : "en-au",
+        transport: body.transport || "tls-worker",
+      });
+      if (!out.ok) {
+        reply.code(502);
+        return {
+          ok: false,
+          error: out.error || "harvest failed",
+          ms: out.ms,
+          isIpBanned: Boolean(out.isIpBanned),
+        };
+      }
+      return { ok: true, session: out.session, ms: out.ms };
+    }
+    const out = await mintPokemonCentreHarvestSlot({
+      proxyRaw: proxy,
+      solveCaptcha: body.solveCaptcha === true,
+      locale: typeof body.locale === "string" ? body.locale : "en-au",
+      ttlMs: body.ttlMs,
+    });
+    if (!out.ok) {
+      reply.code(out.atCapacity ? 429 : 502);
+      return {
+        ok: false,
+        error: out.error || "harvest failed",
+        ms: out.ms,
+        snapshot: pokemoncentreHarvestSnapshot(),
+      };
+    }
+    return {
+      ok: true,
+      session: out.session,
+      fullSession: out.fullSession,
+      ms: out.ms,
+      snapshot: out.snapshot,
+    };
+  } catch (e) {
+    reply.code(500);
+    return { ok: false, error: e?.message || String(e) };
+  } finally {
+    inflight--;
+  }
+});
+
+app.post("/pokemoncentre/harvest/claim", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const claimed = takePokemonCentreHarvestSlot(id);
+  if (!claimed?.session) {
+    reply.code(404);
+    return {
+      ok: false,
+      error: claimed?.expired ? "expired" : "not found or expired",
+      snapshot: pokemoncentreHarvestSnapshot(),
+    };
+  }
+  return {
+    ok: true,
+    session: claimed.session,
+    meta: claimed.meta,
+    snapshot: pokemoncentreHarvestSnapshot(),
+  };
+});
+
+app.post("/pokemoncentre/harvest/release", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const id = typeof req.body?.id === "string" ? req.body.id.trim() : "";
+  if (!id) {
+    reply.code(400);
+    return { ok: false, error: "id required" };
+  }
+  const out = releasePokemonCentreHarvestSlot(id);
+  if (!out.ok) {
+    reply.code(404);
+    return { ok: false, error: out.error || "not found", snapshot: pokemoncentreHarvestSnapshot() };
+  }
+  return { ok: true, id: out.id, snapshot: pokemoncentreHarvestSnapshot() };
+});
+
+app.post("/pokemoncentre/harvest/clear", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  return clearPokemonCentreHarvestSlots();
 });
 
 // Toymate CF + spam harvest (desktop Harvest tab). Soft capacity: counts as inflight.

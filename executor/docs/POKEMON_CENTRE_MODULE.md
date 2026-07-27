@@ -224,9 +224,12 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 | `adapters/pokemoncentre-ge-http.js` | **Only product pay path** — GetCartToken → riskHydrate → handleaction/save → one issuer POST + JWT score |
 | `adapters/pokemoncentre-ge.js` | Browser HAR / wire dump only (`pcBrowserCheckout`, `placeOrder=false`) |
 | `adapters/pokemoncentre-hcaptcha.js` | CapSolver hCaptcha |
+| `adapters/pokemoncentre-harvest-session.js` | Mint Reese+DD jar (± hCaptcha) for harvest bank |
+| `adapters/pokemoncentre-harvest-pool.js` | Optional in-process executor harvest slots |
 | `antibot.js` | Shared Incapsula + DataDome Hyper wrappers (Akamai untouched) |
 
 Desktop: store **Pokémon Centre AU** → modes above. Sticky AU ISP + Hyper key + CapSolver (hCaptcha) in Settings.
+Harvest bank + Drop Mode: `POKEMON_CENTRE_HARVEST.md` · `POKEMON_CENTRE_HIGH_TRAFFIC_DROP.md`.
 
 ### Feasibility
 
