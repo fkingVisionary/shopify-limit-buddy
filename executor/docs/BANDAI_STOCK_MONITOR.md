@@ -87,18 +87,36 @@ Same `executor/monitor/*` modules. Desktop runs them in-process via the job runn
 (dynamic import). Fly can host the same hub later behind `/run` or a monitor
 route — no separate checkout fork.
 
+## Next (major: global monitor feed)
+
+After store modules are solid, upgrade Monitor from per-task pollers to a **shared
+desktop hub**:
+
+| Piece | Role |
+|-------|------|
+| One global poll loop | Keywords/catalog search on dedicated monitor proxies (already in `bandai-stock-monitor.js`) |
+| Live event feed UI | Tasks/Monitor strip: restock / new-IS cards as they fire (not buried in job logs) |
+| Task subscribe | Watch SKU/keywords filter only — does not add load to the poll |
+| Watchdog handoff | `stock_changed` → matching monitoring tasks → Autocheckout (+ harvest claim) via bridge |
+| Multi-store later | Same feed shape for Toymate/Pokémon/etc. once each adapter emits stock events |
+
+V1 already has the executor hub + task-local mode. Desktop still needs the **toggle +
+live feed + multi-task subscribe** product layer. Until then, task-local Monitor +
+Checkout on restock is the drop path.
+
 ## Next (not V1)
 
-- Desktop global monitor toggle + live event feed
-- ~~Wire tasks in `monitoring` via bridge → `runCheckout(task)`~~ **done** (Desktop Monitor + Checkout on restock; claims F5 harvest at trigger)
-- Pre-warm checkout sessions on subscribe (separate from monitor proxies) — use **Harvest → Bandai** while Monitor runs
+- Desktop global monitor toggle + live event feed (see above)
+- ~~Wire tasks in `monitoring` via bridge → `runCheckout(task)`~~ **done** (Desktop Monitor + Checkout on restock; claims F5 harvest at trigger; auto-arms harvest at enqueue)
+- Pre-warm checkout sessions on subscribe (separate from monitor proxies) — **auto-arm** + Harvest → Bandai
 
 ## Monitor → Autocheckout (Desktop)
 
-1. Arm **Harvest → Bandai** (sticky checkout proxies).
+1. Set sticky **checkout** proxy group on **Harvest → Bandai** (required for auto-arm).
 2. Task: Bandai → **Monitor**, set watch SKU/keywords, leave **Checkout on restock** on.
 3. Assign vault account + Place order (or off for dry).
-4. Run task — polls until matching `stock_changed`, claims harvest, Autocheckout.
+4. Run task — harvest auto-arms at enqueue; polls until matching `stock_changed`, claims harvest, Autocheckout.
+5. Tasks strip shows Bandai/Toymate/Disney bank ready counts while you wait.
 
 Labs:
 

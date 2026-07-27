@@ -5,6 +5,7 @@
 // Modes (task.bandaiMode):
 //   checkout      — login → ATC → cart → checkoutSn (HTTP + F5 sensor bridge)
 //   account_gen   — bandai-agen (IMAP + SMSPool/OnlineSim → registerVerification → vault)
+//   login_check   — F5 + login + member_refresh only (vault same-day proof)
 //   monitor       — poll search/PDP for purchaseAvailable / Chance
 //   chance        — applyDraw for a campaign
 //
@@ -24,19 +25,135 @@ import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
-import { takeHarvestSlot } from "./bandai-harvest-pool.js";
-import { findCartLine, listCartLines } from "./bandai-cart.js";
+import { takeHarvestSlot, takeNextHarvestSlot } from "./bandai-harvest-pool.js";
+import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
+import {
+  BANDAI_PAY_WINDOW_MS,
+  withHeldCartMeta,
+} from "./bandai-held-cart.js";
+import {
+  isBackendAreaItemNo,
+  isFrontendProductCode,
+  resolveAreaItemNoPublicRetry,
+} from "./bandai-nai.js";
+import { makeDispatcher, createJar } from "../http.js";
 import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createBandaiSession,
   parseAreaItemNo,
+  parseFrontendProductCode,
   extractPreloadSuffix,
   readText,
   resolveBandaiArea,
+  profileFromTask,
   BANDAI_ORIGIN,
   GLOBALE_MID,
 } from "./bandai-session.js";
 
+const EXECUTOR_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function isRetryableAtcFailure({ status, err, textHint }) {
+  const blob = `${err || ""} ${textHint || ""} ${status || ""}`;
+  if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation|SoldOut|OutOfStock)/i.test(blob)) {
+    return false;
+  }
+  if (/NETWORK CONGESTION|PAGE NOT AVAILABLE|Service Unavailable|Bad Gateway|Gateway Time-out/i.test(blob)) {
+    return true;
+  }
+  if (/SoftBlock|Access Denied|Request rejected/i.test(blob)) return true;
+  const st = Number(status);
+  if (st === 429 || st === 501 || st === 502 || st === 503 || st === 504) return true;
+  if (!Number.isFinite(st) || st === 0) return true; // network / empty
+  return false;
+}
+
+/** Login SoftBlock / proxy flake — rotate sticky + remint F5. Not bad password. */
+export function isRetryableLoginFailure({ note, status, restrictedType, err } = {}) {
+  const blob = `${note || ""} ${err || ""} ${restrictedType || ""} ${status ?? ""}`;
+  if (
+    /invalid (password|credentials)|wrong password|MemberNotFound|password.*incorrect|BadCredentials/i.test(
+      blob,
+    )
+  ) {
+    return false;
+  }
+  if (/SoftBlock|Access Denied|Request rejected|NETWORK CONGESTION|PAGE NOT AVAILABLE/i.test(blob)) {
+    return true;
+  }
+  if (/sensor mint failed|f5_bridge|ERR_|ECONN|ETIMEDOUT|socket|fetch failed|und_err/i.test(blob)) {
+    return true;
+  }
+  if (/SoftBlock/i.test(String(restrictedType || ""))) return true;
+  const st = Number(status);
+  if (st === 429 || st === 501 || st === 502 || st === 503 || st === 504) return true;
+  if (!Number.isFinite(st) || st === 0) return true;
+  return false;
+}
+
+export function bandaiProxyHost(raw) {
+  const parsed = parseBandaiProxy(raw);
+  const server = parsed?.playwright?.server;
+  if (server) {
+    try {
+      return new URL(server).hostname;
+    } catch {
+      /* fall through */
+    }
+  }
+  if (parsed?.url) {
+    try {
+      return new URL(parsed.url).hostname;
+    } catch {
+      /* fall through */
+    }
+  }
+  return (
+    String(raw || "")
+      .replace(/^https?:\/\//i, "")
+      .split("@")
+      .pop()
+      ?.split(":")[0] || ""
+  );
+}
+
+/** Proxy pool for login SoftBlock rotate — task list first, then env / resi file. */
+export function loadBandaiProxyPool(task = {}) {
+  const fromTask = Array.isArray(task.proxyPool)
+    ? task.proxyPool
+    : Array.isArray(task.bandaiProxyPool)
+      ? task.bandaiProxyPool
+      : Array.isArray(task.proxyEntries)
+        ? task.proxyEntries
+        : null;
+  if (fromTask?.length) {
+    return fromTask.map((l) => String(l || "").trim()).filter(Boolean);
+  }
+  const candidates = [
+    process.env.BANDAI_PROXY_POOL,
+    path.join(EXECUTOR_ROOT, "resi.proxies"),
+    "/tmp/bandai-proxy-pool.txt",
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const lines = fs
+        .readFileSync(p, "utf8")
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("#"));
+      if (lines.length) return lines;
+    } catch {
+      /* try next */
+    }
+  }
+  return [];
+}
+
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 /**
  * Resolve Fast vs Safe pay path after HTTP ATC / cart_hold.
  * Explicit bandaiBrowserCheckout / bandaiBrowserFull still win for labs.
@@ -107,37 +224,115 @@ function makeStep(steps, ctx) {
   };
 }
 
-async function resolveAreaItemNo(session, productCode, tStep) {
+async function resolveAreaItemNo(session, productCode, tStep, opts = {}) {
   const code = String(productCode || "").trim();
-  if (!code) return { ok: false, note: "product code / areaItemNo required" };
+  const fallback =
+    opts.fallbackAreaItemNo != null && String(opts.fallbackAreaItemNo).trim()
+      ? String(opts.fallbackAreaItemNo).trim()
+      : null;
+  if (!code && !fallback) return { ok: false, note: "product code / areaItemNo required" };
   if (/^NAI/i.test(code) || /^AAI/i.test(code)) {
     return { ok: true, areaItemNo: code, productCode: code };
   }
-  const pdp = await tStep("product_get", async () => {
-    const { status, json } = await session.apiJson("GET", `/api/products/${encodeURIComponent(code)}`, {
-      referer: `${session.base}/item/${code}`,
-    });
-    const areaItemNo =
-      json?.areaItemNos?.[0] ||
-      (Array.isArray(json?.areaItemNos) ? json.areaItemNos[0] : null) ||
-      Object.keys(json?.areaItemInventoryInfoMap || {})[0] ||
-      null;
-    const purchaseAvailable = Boolean(json?.purchaseAvailable);
-    const flags = json?.flags || [];
+  if (!code && fallback) {
     return {
-      ok: status === 200 && Boolean(json),
-      status,
-      note: areaItemNo
-        ? `${areaItemNo} avail=${purchaseAvailable}`
-        : `product ${status}`,
-      areaItemNo,
-      purchaseAvailable,
-      flags,
-      json,
-      title: json?.productName || json?.name || code,
+      ok: true,
+      areaItemNo: fallback,
+      productCode: fallback,
+      note: `using task backend PID ${fallback} (no frontend code)`,
     };
-  });
-  return pdp;
+  }
+  // Pre-resolved / task Backend PID: skip PDP product_get on the ATC critical path.
+  // Dual-ID keeps frontend N… for referer; NAI… goes straight to addToCart.
+  if (
+    fallback &&
+    (/^NAI/i.test(fallback) || /^AAI/i.test(fallback)) &&
+    opts.forceLookup !== true
+  ) {
+    return {
+      ok: true,
+      areaItemNo: fallback,
+      productCode: code || fallback,
+      title: code || fallback,
+      note: `pre-resolved backend PID ${fallback} (skipped product_get)`,
+      skippedLookup: true,
+    };
+  }
+
+  const maxAttempts = Math.max(1, Math.min(3, Number(opts.retries) || 2));
+  let last = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const pdp = await tStep(attempt === 1 ? "product_get" : `product_get_retry_${attempt}`, async () => {
+        const { status, json } = await session.apiJson(
+          "GET",
+          `/api/products/${encodeURIComponent(code)}`,
+          {
+            referer: `${session.base}/item/${code}`,
+          },
+        );
+        const areaItemNo =
+          json?.areaItemNos?.[0] ||
+          (Array.isArray(json?.areaItemNos) ? json.areaItemNos[0] : null) ||
+          Object.keys(json?.areaItemInventoryInfoMap || {})[0] ||
+          null;
+        const purchaseAvailable = Boolean(json?.purchaseAvailable);
+        const flags = json?.flags || [];
+        const err = json?.detail || json?.error || json?.message || null;
+        const retryable =
+          status === 429 ||
+          status === 501 ||
+          status === 502 ||
+          status === 503 ||
+          status === 504 ||
+          /NETWORK CONGESTION|PAGE NOT AVAILABLE|SoftBlock/i.test(String(err || ""));
+        return {
+          ok: status === 200 && Boolean(json) && Boolean(areaItemNo || fallback),
+          status,
+          note: areaItemNo
+            ? `${areaItemNo} avail=${purchaseAvailable}${attempt > 1 ? ` (attempt ${attempt})` : ""}`
+            : err
+              ? `${err} product ${status}`
+              : `product ${status}`,
+          areaItemNo: areaItemNo || fallback || null,
+          purchaseAvailable,
+          flags,
+          json,
+          title: json?.productName || json?.name || code,
+          retryable,
+        };
+      });
+      last = pdp;
+      if (pdp.ok) return pdp;
+      if (pdp.status === 404) break;
+      if (!pdp.retryable && pdp.status >= 400 && pdp.status < 500) break;
+      if (attempt < maxAttempts) await sleepMs(350 * attempt);
+    } catch (e) {
+      last = {
+        ok: false,
+        note: e?.message || String(e),
+        areaItemNo: null,
+      };
+      if (attempt < maxAttempts && isRetryableAtcFailure({ err: e?.message, status: 0 })) {
+        await sleepMs(400 * attempt);
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (fallback) {
+    return {
+      ok: true,
+      areaItemNo: fallback,
+      productCode: code || fallback,
+      title: last?.title || code,
+      note: `product_get failed (${last?.note || "n/a"}) → using task backend PID ${fallback}`,
+      purchaseAvailable: last?.purchaseAvailable,
+      flags: last?.flags,
+    };
+  }
+  return last || { ok: false, note: "product lookup failed" };
 }
 
 async function runMonitor(task, ctx, session, tStep, steps) {
@@ -270,10 +465,12 @@ async function runChance(task, ctx, session, tStep, steps) {
 /**
  * HTTP checkout: undici for all API calls; F5 bridge only mints sensor headers.
  */
-async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
+async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
+  let session = sessionIn;
   const email = opts.email;
   const password = opts.password;
-  const productCode = opts.productCode;
+  const productCode = opts.frontendCode || opts.productCode;
+  let backendAreaItemNo = opts.backendAreaItemNo || null;
   const chanceOnly = opts.chanceOnly === true;
   const placeOrder = task.placeOrder === true && task.dryRun !== true;
   const wantBridge = task.bandaiF5Bridge !== false;
@@ -305,36 +502,208 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
   );
   const atcT0 = Date.now();
 
+  // Public bot: auto-resolve N…→NAI… in parallel with F5/login so ATC skips product_get
+  // without requiring users to paste Backend PID.
+  let naiResolvePromise = null;
+  if (
+    !backendAreaItemNo &&
+    !task.bandaiAreaItemNo &&
+    !task.heldCart?.areaItemNo &&
+    productCode &&
+    isFrontendProductCode(productCode) &&
+    task.bandaiAutoResolveNai !== false &&
+    String(process.env.BANDAI_AUTO_RESOLVE_NAI || "1") !== "0"
+  ) {
+    naiResolvePromise = resolveAreaItemNoPublicRetry({
+      productCode,
+      area: session.area,
+      proxy: task.proxy || null,
+      retries: 2,
+    }).catch((e) => ({ ok: false, error: e?.message || String(e) }));
+  }
+
+  async function seedColdF5Bridge(proxyLine, { noteSuffix = "" } = {}) {
+    const s0 = Date.now();
+    bridge = await createBandaiF5Bridge({
+      proxy: proxyLine || null,
+      area: session.area,
+      timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+    });
+    await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
+    const csrf = await bridge.csrfToken();
+    const cookies = await bridge.cookies();
+    if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+    if (csrf) session.state.csrfToken = csrf;
+    steps.push({
+      step: "f5_bridge",
+      ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
+      status: null,
+      ms: Date.now() - s0,
+      note: csrf
+        ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${noteSuffix}`
+        : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${noteSuffix}`,
+    });
+    ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
+    return Boolean(csrf) || Object.keys(cookies || {}).length > 0;
+  }
+
   if (wantBridge) {
     try {
       const s0 = Date.now();
-      // Opt-in harvest: claim a pre-warmed F5 bridge (same sticky proxy). Miss /
-      // dead page → cold createBandaiF5Bridge — checkout must never depend on harvest.
+      // Opt-in harvest: claim a pre-warmed F5 bridge. Dead/missing id → try next
+      // bank slot (same area) before cold Chromium — drop consistency under load.
       const harvestId =
         typeof task.harvestedBridgeId === "string" && task.harvestedBridgeId.trim()
           ? task.harvestedBridgeId.trim()
           : null;
       let harvestedMeta = null;
-      if (harvestId) {
-        const claimed = takeHarvestSlot(harvestId);
-        if (claimed?.bridge) {
+      let claimedId = harvestId;
+      const triedIds = [];
+
+      async function tryClaim(id, { via = "id" } = {}) {
+        if (!id) return false;
+        triedIds.push(String(id));
+        const claimed = takeHarvestSlot(id);
+        if (!claimed?.bridge) return false;
+        try {
+          const csrfCheck = await claimed.bridge.csrfToken();
+          const cookiesCheck = (await claimed.bridge.cookies()) || {};
+          const alive =
+            Boolean(csrfCheck) ||
+            Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
+          if (!alive) {
+            await claimed.bridge.close?.();
+            return false;
+          }
+          // Rebind sticky if reclaim used a different exit than task.proxy.
+          if (claimed.proxy && claimed.proxy !== task.proxy) {
+            try {
+              await ctx.dispatcher?.close?.();
+            } catch {
+              /* ignore */
+            }
+            ctx.dispatcher = makeDispatcher(claimed.proxy, { forceUndici: true });
+            ctx.jar = createJar();
+            task.proxy = claimed.proxy;
+            session = createBandaiSession(ctx, { area: session.area });
+          }
+          bridge = claimed.bridge;
+          harvestedMeta = claimed.meta;
+          claimedId = id;
+          if (csrfCheck) session.state.csrfToken = csrfCheck;
+          if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+          if (via === "next") {
+            steps.push({
+              step: "harvest_reclaim",
+              ok: true,
+              ms: Date.now() - s0,
+              note: `dead/miss → next bank slot id=${id} host=${bandaiProxyHost(claimed.proxy)}`,
+            });
+          }
+          return true;
+        } catch {
           try {
-            const csrfCheck = await claimed.bridge.csrfToken();
-            const cookiesCheck = (await claimed.bridge.cookies()) || {};
+            await claimed.bridge.close?.();
+          } catch {
+            /* ignore */
+          }
+          return false;
+        }
+      }
+
+      if (harvestId) {
+        const ok = await tryClaim(harvestId, { via: "id" });
+        if (!ok) {
+          // Prefer another warm bridge over cold mint while the bank still has stock.
+          for (let i = 0; i < 2 && !bridge; i++) {
+            const next = takeNextHarvestSlot({
+              area: session.area,
+              excludeIds: triedIds,
+            });
+            if (!next?.meta?.id && !next?.bridge) break;
+            // takeNextHarvestSlot already claimed — bridge is ours.
+            const nextId = next.meta?.id || `next_${i}`;
+            triedIds.push(String(nextId));
+            try {
+              const csrfCheck = await next.bridge.csrfToken();
+              const cookiesCheck = (await next.bridge.cookies()) || {};
+              const alive =
+                Boolean(csrfCheck) ||
+                Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
+              if (!alive) {
+                await next.bridge.close?.();
+                continue;
+              }
+              if (next.proxy && next.proxy !== task.proxy) {
+                try {
+                  await ctx.dispatcher?.close?.();
+                } catch {
+                  /* ignore */
+                }
+                ctx.dispatcher = makeDispatcher(next.proxy, { forceUndici: true });
+                ctx.jar = createJar();
+                task.proxy = next.proxy;
+                session = createBandaiSession(ctx, { area: session.area });
+              }
+              bridge = next.bridge;
+              harvestedMeta = next.meta;
+              claimedId = nextId;
+              if (csrfCheck) session.state.csrfToken = csrfCheck;
+              if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+              steps.push({
+                step: "harvest_reclaim",
+                ok: true,
+                ms: Date.now() - s0,
+                note: `miss ${harvestId} → reclaimed id=${nextId} host=${bandaiProxyHost(next.proxy)}`,
+              });
+            } catch {
+              try {
+                await next.bridge.close?.();
+              } catch {
+                /* ignore */
+              }
+            }
+          }
+        }
+      } else if (task.bandaiClaimHarvest !== false) {
+        // No pre-bound id (late claim miss) — still try bank before cold.
+        const next = takeNextHarvestSlot({ area: session.area });
+        if (next?.bridge) {
+          try {
+            const csrfCheck = await next.bridge.csrfToken();
+            const cookiesCheck = (await next.bridge.cookies()) || {};
             const alive =
               Boolean(csrfCheck) ||
               Object.keys(cookiesCheck).some((k) => /^TS/i.test(k) || k === "SESSION");
             if (alive) {
-              bridge = claimed.bridge;
-              harvestedMeta = claimed.meta;
+              if (next.proxy && next.proxy !== task.proxy) {
+                try {
+                  await ctx.dispatcher?.close?.();
+                } catch {
+                  /* ignore */
+                }
+                ctx.dispatcher = makeDispatcher(next.proxy, { forceUndici: true });
+                ctx.jar = createJar();
+                task.proxy = next.proxy;
+                session = createBandaiSession(ctx, { area: session.area });
+              }
+              bridge = next.bridge;
+              harvestedMeta = next.meta;
+              claimedId = next.meta?.id || "bank";
               if (csrfCheck) session.state.csrfToken = csrfCheck;
               if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
+              steps.push({
+                step: "harvest_reclaim",
+                ok: true,
+                ms: Date.now() - s0,
+                note: `no harvest id → bank claim id=${claimedId}`,
+              });
             } else {
-              await claimed.bridge.close?.();
+              await next.bridge.close?.();
             }
           } catch {
             try {
-              await claimed.bridge.close?.();
+              await next.bridge.close?.();
             } catch {
               /* ignore */
             }
@@ -343,24 +712,8 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       }
 
       if (!bridge) {
-        bridge = await createBandaiF5Bridge({
-          proxy: task.proxy || null,
-          area: session.area,
-          timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-        });
-        await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
-        const csrf = await bridge.csrfToken();
-        const cookies = await bridge.cookies();
-        if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
-        if (csrf) session.state.csrfToken = csrf;
-        steps.push({
-          step: "f5_bridge",
-          ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
-          status: null,
-          ms: Date.now() - s0,
-          note: csrf
-            ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${harvestId ? " (harvest miss→cold)" : ""}`
-            : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${harvestId ? " (harvest miss→cold)" : ""}`,
+        await seedColdF5Bridge(task.proxy || null, {
+          noteSuffix: harvestId ? " (harvest miss→cold)" : "",
         });
       } else {
         const csrf = session.state.csrfToken || (await bridge.csrfToken());
@@ -374,11 +727,11 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
           status: null,
           ms: Date.now() - s0,
           note: csrf
-            ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${harvestId}`
+            ? `harvested bridge area=${session.area} csrf=${String(csrf).slice(0, 8)}… age=${ageSec ?? "?"}s id=${claimedId}`
             : `harvested bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} age=${ageSec ?? "?"}s`,
         });
+        ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
       }
-      ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     } catch (e) {
       steps.push({
         step: "f5_bridge",
@@ -408,7 +761,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     autoLogin: "false",
   }).toString();
 
-  const login = await tStep("login", async () => {
+  async function attemptLogin() {
     let sensors = {};
     if (bridge) {
       const mint = await bridge.mint("POST", "/login", {
@@ -440,7 +793,85 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         ? `login ok via=http sensors=${Object.keys(sensors).length}`
         : out.note || `login ${out.status}`,
     };
-  });
+  }
+
+  let login = await tStep("login", attemptLogin);
+
+  // SoftBlock / proxy flake: rotate sticky exit, remint cold F5, retry login.
+  // Do not spray on bad password. Default 2 rotates; disable via bandaiLoginProxyRotate:false.
+  if (
+    !login.ok &&
+    task.bandaiLoginProxyRotate !== false &&
+    isRetryableLoginFailure(login)
+  ) {
+    const pool = loadBandaiProxyPool(task);
+    const curHost = bandaiProxyHost(task.proxy);
+    const maxRot = Math.max(
+      0,
+      Math.min(
+        3,
+        Number(task.bandaiLoginProxyRotates ?? process.env.BANDAI_LOGIN_PROXY_ROTATES) || 2,
+      ),
+    );
+    const candidates = pool
+      .filter((l) => bandaiProxyHost(l) && bandaiProxyHost(l) !== curHost)
+      .slice(0, maxRot);
+    for (let i = 0; i < candidates.length; i++) {
+      const line = candidates[i];
+      const tRot = Date.now();
+      await closeBridge();
+      try {
+        await ctx.dispatcher?.close?.();
+      } catch {
+        /* ignore */
+      }
+      ctx.dispatcher = makeDispatcher(line, { forceUndici: true });
+      ctx.jar = createJar();
+      task.proxy = line;
+      // Harvest was bound to the burned exit — do not reclaim it.
+      delete task.harvestedBridgeId;
+      session = createBandaiSession(ctx, { area: session.area });
+      let seeded = false;
+      try {
+        if (wantBridge) {
+          seeded = await seedColdF5Bridge(line, {
+            noteSuffix: ` (login rotate ${i + 1}/${candidates.length})`,
+          });
+        } else {
+          const w = await session.warm();
+          seeded = Boolean(w.ok);
+        }
+      } catch (e) {
+        steps.push({
+          step: "login_proxy_rotate",
+          ok: false,
+          status: null,
+          ms: Date.now() - tRot,
+          note: `rotate→${bandaiProxyHost(line)} seed fail: ${e?.message || e}`,
+        });
+        continue;
+      }
+      steps.push({
+        step: "login_proxy_rotate",
+        ok: seeded,
+        status: null,
+        ms: Date.now() - tRot,
+        note: seeded
+          ? `rotated→${bandaiProxyHost(line)} remint F5 (attempt ${i + 1}/${candidates.length})`
+          : `rotate→${bandaiProxyHost(line)} seed incomplete`,
+      });
+      if (!seeded) continue;
+      login = await tStep(`login_retry_${i + 1}`, attemptLogin);
+      if (login.ok) {
+        login = {
+          ...login,
+          note: `${login.note} after proxy rotate→${bandaiProxyHost(line)}`,
+        };
+        break;
+      }
+      if (!isRetryableLoginFailure(login)) break;
+    }
+  }
 
   if (!login.ok) {
     await closeBridge();
@@ -483,16 +914,83 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     };
   }
 
+  // Vault / drop prep: prove login same day without ATC.
+  if (opts.loginCheckOnly === true) {
+    await closeBridge();
+    return {
+      ok: true,
+      steps,
+      loginCheck: true,
+      dryRun: true,
+      checkoutStage: "login_ok",
+      note: `login proven ${email}`,
+      account: { email, status: "ready" },
+      cookies: ctx.jar?.dump?.() ?? {},
+      via: "http",
+    };
+  }
+
+  // Ensure a shipping address exists for GE (fresh agen often has none → checkout_address).
+  const shipProfile = profileFromTask(task);
+  await tStep("shipping_ensure", async () => {
+    try {
+      const list = await session.apiJson("GET", "/api/my/shippingAddresses", {
+        referer: `${session.base}/mypage`,
+      });
+      const rows = Array.isArray(list.json)
+        ? list.json
+        : list.json?.shippingAddresses || list.json?.items || [];
+      if (Array.isArray(rows) && rows.length > 0) {
+        return { ok: true, status: list.status, note: `shipping already ${rows.length}` };
+      }
+      const body = {
+        countryCode: "AU",
+        zipCode: String(shipProfile.zip || "4160").slice(0, 4),
+        address1: shipProfile.address1 || "133 Allenby Road",
+        address2: "",
+        address3: shipProfile.city || "Alexandra Hills",
+        address4: "",
+        address5: shipProfile.province || "QLD",
+        name: {
+          name1: shipProfile.first_name || "Alex",
+          name2: shipProfile.last_name || "Buyer",
+        },
+        phone1: shipProfile.phone
+          ? { countryNo: "61", phoneNo: String(shipProfile.phone).replace(/\D/g, "").slice(-9) }
+          : undefined,
+        defaultFlag: true,
+      };
+      const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
+        body,
+        referer: `${session.base}/mypage`,
+      });
+      const err = json?.detail || json?.error || json?.message || null;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        note: err || `shipping ${status}`,
+      };
+    } catch (e) {
+      return { ok: false, status: null, note: e?.message || String(e) };
+    }
+  });
+  // Soft: continue even if shipping_ensure fails — lab accounts may already be fine.
+
   if (chanceOnly) {
     await closeBridge();
     return { ok: true, steps, via: "http" };
   }
 
+  // Pay-from-held-cart: skip ATC race; verify live cart line, then checkout → GE.
+  const payFromCart =
+    task.bandaiPayFromCart === true ||
+    String(task.bandaiMode || "").toLowerCase() === "pay_cart";
+
   // ── Product ────────────────────────────────────────────────────────────
   // Lab 2026-07-23: p8komysnbc-* mint for addToCart works on /login and /cart
   // but NOT on /item/* (avail=false PDP). Fast path skips item nudge and keeps
   // the bridge on login for ATC mint (~3–4s saved + mint reliability).
-  if (bridge && !fastAtc) {
+  if (bridge && !fastAtc && !payFromCart) {
     const pdpNavT0 = Date.now();
     await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`, {
       settleMs: f5SettleMs,
@@ -508,33 +1006,149 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       ms: Date.now() - pdpNavT0,
       note: `goto item/${productCode} settle=${f5SettleMs}ms`,
     });
-  } else if (bridge && fastAtc) {
+  } else if (bridge && (fastAtc || payFromCart)) {
     steps.push({
       step: "f5_pdp_nudge",
       ok: true,
       status: null,
       ms: 0,
-      note: "skipped item goto (fastAtc; mint ATC from login/cart context)",
+      note: payFromCart
+        ? "skipped item goto (payFromCart — verify live cart)"
+        : "skipped item goto (fastAtc; mint ATC from login/cart context)",
     });
   }
 
-  const pdp = await resolveAreaItemNo(session, productCode, tStep);
-  if (!pdp.ok || !pdp.areaItemNo) {
+  // Await parallel public NAI resolve (started with F5) before product_get gate.
+  if (naiResolvePromise && !backendAreaItemNo) {
+    const resolved = await naiResolvePromise;
+    if (resolved?.ok && resolved.areaItemNo) {
+      backendAreaItemNo = resolved.areaItemNo;
+      steps.push({
+        step: "nai_resolve",
+        ok: true,
+        status: 200,
+        ms: resolved.ms ?? null,
+        note: `${resolved.note || resolved.areaItemNo} attempts=${resolved.attempts || 1} (parallel; skip product_get)`,
+      });
+    } else {
+      steps.push({
+        step: "nai_resolve",
+        ok: false,
+        status: resolved?.status ?? null,
+        ms: resolved?.ms ?? null,
+        note: `public resolve failed: ${resolved?.error || "n/a"} → product_get fallback`,
+      });
+    }
+  }
+
+  const pdpLookup = await resolveAreaItemNo(session, productCode, tStep, {
+    fallbackAreaItemNo: backendAreaItemNo || task.bandaiAreaItemNo || task.heldCart?.areaItemNo,
+  });
+  if ((!pdpLookup.ok || !pdpLookup.areaItemNo) && !payFromCart) {
     await closeBridge();
     return {
       ok: false,
       steps,
-      error: pdp.note || "product lookup failed",
+      error: pdpLookup.note || "product lookup failed",
       failedStep: "product_get",
       checkoutStage: "pre_cart",
       via: "http",
     };
   }
+  const pdp = {
+    ok: true,
+    areaItemNo:
+      // Prefer explicit / auto-resolved backend NAI for ATC; else product_get / frontend.
+      backendAreaItemNo ||
+      pdpLookup.areaItemNo ||
+      task.bandaiAreaItemNo ||
+      task.areaItemNo ||
+      task.heldCart?.areaItemNo ||
+      productCode,
+    title: pdpLookup.title || productCode,
+    productCode,
+    frontendCode: productCode,
+  };
 
   const qty = Math.max(1, Math.min(5, Number(task.qty) || 1));
   const atcBodyObj = [{ areaItemNo: pdp.areaItemNo, qty }];
   const atcBody = JSON.stringify(atcBodyObj);
 
+  let atc;
+  let cartHoldAt = Date.now();
+  let atcWallMs = 0;
+
+  if (payFromCart) {
+    const cartIds = [
+      pdp.areaItemNo,
+      productCode,
+      task.bandaiAreaItemNo,
+      task.areaItemNo,
+      task.heldCart?.areaItemNo,
+      task.heldCart?.productCode,
+    ].filter(Boolean);
+    atc = await tStep("held_cart_verify", async () => {
+      let again = await session.apiJson("GET", "/api/cart/detail", {
+        referer: `${session.base}/cart`,
+      });
+      let line = findCartLineAny(again.json, cartIds);
+      if (!line?.cartItemSn) {
+        await sleepMs(500);
+        again = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        line = findCartLineAny(again.json, cartIds);
+      }
+      const lines = listCartLines(again.json);
+      if (!line?.cartItemSn) {
+        return {
+          ok: false,
+          status: again.status,
+          note: `held cart empty for [${cartIds.join(",")}] cart=[${lines
+            .map((l) => l.areaItemNo || l.productCode || "?")
+            .join(",")}]`,
+          json: again.json,
+          cartLines: lines,
+          heldCartGone: true,
+        };
+      }
+      return {
+        ok: true,
+        status: again.status,
+        note: `held cart line=${line.cartItemSn} aino=${line.areaItemNo} cartSn=${line.cartSn}`,
+        json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+        hit: line,
+        cartLines: lines,
+      };
+    });
+    if (!atc.ok) {
+      await closeBridge();
+      return withHeldCartMeta({
+        ok: false,
+        steps,
+        failedStep: "held_cart_verify",
+        error: atc.note,
+        checkoutStage: "held_cart_gone",
+        heldCartGone: true,
+        heldPayRetry: false,
+        areaItemNo: pdp.areaItemNo,
+        title: pdp.title,
+        productCode,
+        cookies: ctx.jar?.dump?.() ?? {},
+        via: "http",
+      });
+    }
+    if (atc.hit?.areaItemNo) pdp.areaItemNo = atc.hit.areaItemNo;
+    cartHoldAt = Number(task.heldCart?.cartHoldAt) || Date.now();
+    steps.push({
+      step: "cart_hold",
+      ok: true,
+      status: 200,
+      ms: 0,
+      note: `payFromCart — live line held (pay window ~${Math.round(BANDAI_PAY_WINDOW_MS / 60_000)}min)`,
+    });
+    ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
+  } else {
   // Pre-ATC cart peek costs a RTT; skip on fast path (drop race). Still OK to
   // POST addToCart when a line already exists (soft business / qty paths).
   let existing = null;
@@ -545,7 +1159,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     existing = findCartLine(cartBefore.json, pdp.areaItemNo);
   }
 
-  const atc = await tStep("addToCart", async () => {
+  atc = await tStep("addToCart", async () => {
     if (existing?.cartItemSn) {
       return {
         ok: true,
@@ -554,63 +1168,190 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         json: { items: [{ cartLineItemSn: existing.cartItemSn, addedNewCart: false }] },
       };
     }
-    let sensors = {};
-    if (bridge) {
-      let mint = await bridge.mint("POST", "/api/cart/addToCart", {
-        body: atcBody,
-        contentType: "application/json",
-        csrf: session.state.csrfToken,
-      });
-      // One settle bump if common.js was not hooked yet (fast settle race).
-      if (!mint.ok) {
-        try {
-          await bridge.page.waitForTimeout(800);
-        } catch {
-          /* ignore */
-        }
-        mint = await bridge.mint("POST", "/api/cart/addToCart", {
+    const maxAttempts = Math.max(
+      1,
+      Math.min(5, Number(task.bandaiAtcRetries ?? process.env.BANDAI_ATC_RETRIES) || 3),
+    );
+    const attempts = [];
+    let last = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let sensors = {};
+      if (bridge) {
+        let mint = await bridge.mint("POST", "/api/cart/addToCart", {
           body: atcBody,
           contentType: "application/json",
-          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+          csrf: session.state.csrfToken,
         });
+        if (!mint.ok) {
+          try {
+            await bridge.page.waitForTimeout(800);
+          } catch {
+            /* ignore */
+          }
+          mint = await bridge.mint("POST", "/api/cart/addToCart", {
+            body: atcBody,
+            contentType: "application/json",
+            csrf: session.state.csrfToken || (await bridge.csrfToken()),
+          });
+        }
+        sensors = mint.sensors || {};
+        const c = await bridge.cookies();
+        if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+        if (!mint.ok) {
+          last = { ok: false, status: null, note: `ATC sensor mint failed: ${mint.note}` };
+          attempts.push({ attempt, ...last });
+          if (attempt < maxAttempts) await sleepMs(400 * attempt);
+          continue;
+        }
       }
-      sensors = mint.sensors || {};
-      const c = await bridge.cookies();
-      if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
-      if (!mint.ok) {
-        return { ok: false, status: null, note: `ATC sensor mint failed: ${mint.note}` };
+      let status;
+      let json;
+      let res;
+      try {
+        ({ status, json, res } = await session.apiJson("POST", "/api/cart/addToCart", {
+          body: atcBodyObj,
+          referer: `${session.base}/item/${productCode}`,
+          extraHeaders: sensors,
+        }));
+      } catch (e) {
+        last = {
+          ok: false,
+          status: null,
+          note: `ATC throw: ${e?.message || e}`,
+        };
+        attempts.push({ attempt, ...last });
+        if (attempt < maxAttempts) await sleepMs(500 * attempt);
+        continue;
       }
-    }
-    const { status, json, res } = await session.apiJson("POST", "/api/cart/addToCart", {
-      body: atcBodyObj,
-      referer: `${session.base}/item/${productCode}`,
-      extraHeaders: sensors,
-    });
-    const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
-    const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
-    // Treat MaxPurchaseQty / Preallocation as soft-ok if line already present
-    if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
-      const again = await session.apiJson("GET", "/api/cart/detail", {
-        referer: `${session.base}/cart`,
-      });
-      const line = findCartLine(again.json, pdp.areaItemNo);
-      if (line?.cartItemSn) {
-        return {
-          ok: true,
+      const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
+      const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
+      // Preallocation / MaxPurchaseQty often means the line is ALREADY held for this
+      // member — treat existing cart line as ATC success. Match NAI + frontend N-code.
+      const cartIds = [pdp.areaItemNo, productCode].filter(Boolean);
+      if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
+        let again = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        let line = findCartLineAny(again.json, cartIds);
+        if (!line?.cartItemSn) {
+          await sleepMs(600);
+          again = await session.apiJson("GET", "/api/cart/detail", {
+            referer: `${session.base}/cart`,
+          });
+          line = findCartLineAny(again.json, cartIds);
+        }
+        if (line?.cartItemSn) {
+          return {
+            ok: true,
+            status,
+            note: `${err} → using cart line=${line.cartItemSn} aino=${line.areaItemNo}`,
+            json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+            attempts,
+            cartLines: listCartLines(again.json),
+          };
+        }
+        // Foreign lines left over from a prior SKU / control run can still trip
+        // Preallocation. Clear them once, then retry ATC (don't spray forever).
+        const foreign = listCartLines(again.json).filter((l) => l.cartItemSn);
+        const alreadyCleared = attempts.some((a) =>
+          /cleared foreign cart/i.test(String(a?.note || "")),
+        );
+        if (foreign.length && !alreadyCleared && attempt < maxAttempts) {
+          const sns = foreign.map((l) => l.cartItemSn).filter(Boolean);
+          const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(sns.join(","))}`;
+          const rem = await session.apiJson("DELETE", remPath, {
+            referer: `${session.base}/cart`,
+          });
+          last = {
+            ok: false,
+            status,
+            note: `${err} → cleared foreign cart=[${foreign
+              .map((l) => l.areaItemNo || l.productCode || "?")
+              .join(",")}] rem=${rem.status}`,
+            json,
+            cartLines: foreign,
+          };
+          attempts.push({
+            attempt,
+            ok: false,
+            status,
+            note: String(last.note || "").slice(0, 160),
+          });
+          await sleepMs(350);
+          continue;
+        }
+        last = {
+          ok: false,
           status,
-          note: `${err} → using cart line=${line.cartItemSn}`,
-          json: { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: false }] },
+          note: `${err} cart=[${listCartLines(again.json)
+            .map((l) => l.areaItemNo || l.productCode || "?")
+            .join(",")}]`,
+          json,
+          cartLines: listCartLines(again.json),
+        };
+        attempts.push({
+          attempt,
+          ok: false,
+          status,
+          note: String(last.note || "").slice(0, 140),
+        });
+        break; // empty cart + Preallocation ⇒ true hold/OOS, don't spray retries
+      }
+      const business =
+        err ||
+        (/PAGE NOT AVAILABLE|NETWORK CONGESTION/i.test(textHint) ? textHint.slice(0, 40) : null);
+      last = {
+        ok: status >= 200 && status < 300 && !/CouldNotAddToCart/i.test(String(err || "")),
+        status,
+        note: business || `ATC ${status}`,
+        json,
+      };
+      attempts.push({
+        attempt,
+        ok: last.ok,
+        status: last.status,
+        note: String(last.note || "").slice(0, 120),
+      });
+      if (last.ok) {
+        return {
+          ...last,
+          note:
+            attempts.length > 1
+              ? `${last.note} (ok attempt ${attempt}/${maxAttempts})`
+              : last.note,
+          attempts,
         };
       }
+      // Last-chance on any ATC fail: if line already in cart, proceed (don't re-POST).
+      {
+        const peek = await session.apiJson("GET", "/api/cart/detail", {
+          referer: `${session.base}/cart`,
+        });
+        const held = findCartLineAny(peek.json, cartIds);
+        if (held?.cartItemSn) {
+          return {
+            ok: true,
+            status: last.status,
+            note: `${last.note} → cart already has line=${held.cartItemSn}`,
+            json: { items: [{ cartLineItemSn: held.cartItemSn, addedNewCart: false }] },
+            attempts,
+            cartLines: listCartLines(peek.json),
+          };
+        }
+      }
+      if (
+        attempt < maxAttempts &&
+        isRetryableAtcFailure({ status, err, textHint })
+      ) {
+        await sleepMs(450 * attempt + Math.floor(Math.random() * 200));
+        continue;
+      }
+      break;
     }
-    const business =
-      err ||
-      (/PAGE NOT AVAILABLE|NETWORK CONGESTION/i.test(textHint) ? textHint.slice(0, 40) : null);
     return {
-      ok: status >= 200 && status < 300 && !/CouldNotAddToCart/i.test(String(err || "")),
-      status,
-      note: business || `ATC ${status}`,
-      json,
+      ...(last || { ok: false, note: "ATC failed" }),
+      note: `${last?.note || "ATC failed"} (attempts=${attempts.length})`,
+      attempts,
     };
   });
 
@@ -624,13 +1365,15 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       checkoutStage: "cart",
       areaItemNo: pdp.areaItemNo,
       title: pdp.title,
+      productCode,
       cookies: ctx.jar?.dump?.() ?? {},
       via: "http",
       atcWallMs: Date.now() - atcT0,
     };
   }
 
-  const atcWallMs = Date.now() - atcT0;
+  atcWallMs = Date.now() - atcT0;
+  cartHoldAt = Date.now();
   steps.push({
     step: "cart_hold",
     ok: true,
@@ -639,13 +1382,25 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     note: `wall→ATC ${atcWallMs}ms fastAtc=${fastAtc} settle=${f5SettleMs}ms (pay window ~30min)`,
   });
   ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
+  }
 
   // ── Cart detail + qty normalize ────────────────────────────────────────
   let cart = await tStep("cart_detail", async () => {
+    if (payFromCart && atc.hit?.cartSn && atc.hit?.cartItemSn) {
+      return {
+        ok: true,
+        status: 200,
+        note: `cartSn ${atc.hit.cartSn} line=${atc.hit.cartItemSn} type=${atc.hit.cartType} (payFromCart)`,
+        hit: atc.hit,
+        json: atc.json,
+      };
+    }
     const { status, json } = await session.apiJson("GET", "/api/cart/detail", {
       referer: `${session.base}/cart`,
     });
-    let hit = findCartLine(json, pdp.areaItemNo);
+    let hit =
+      findCartLineAny(json, [pdp.areaItemNo, productCode].filter(Boolean)) ||
+      findCartLine(json, pdp.areaItemNo);
     if (hit?.cartItemSn && Number(hit.qty) > qty) {
       let sensors = {};
       const modPath = `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=${qty}`;
@@ -725,6 +1480,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       checkoutStage: "cart",
       dryRun: true,
       areaItemNo: pdp.areaItemNo,
+      productCode,
       cartSn,
       cartId,
       cartItemSn,
@@ -734,6 +1490,19 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       note: "HTTP ATC + cart ok — stopped before checkout (bandaiStopAtCart)",
       via: "http",
       globaleMid: GLOBALE_MID,
+      cartHoldAt,
+      payWindowMs: BANDAI_PAY_WINDOW_MS,
+      heldPayRetry: true,
+      heldCart: {
+        cartSn,
+        cartId,
+        cartItemSn,
+        areaItemNo: pdp.areaItemNo,
+        productCode,
+        title: pdp.title,
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+      },
     };
   }
 
@@ -879,7 +1648,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       }
       if (geOut.cookies && ctx.jar?.load) ctx.jar.load(geOut.cookies);
       await closeBridge();
-      return {
+      return withHeldCartMeta({
         ok: Boolean(geOut.ok),
         steps,
         timeline: geOut.timeline || [],
@@ -909,20 +1678,29 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
         globaleMid: GLOBALE_MID,
         orderNumber: geOut.orderNumber ?? null,
         elapsedMs: geOut.elapsedMs,
-      };
+        productCode,
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+        payFromCart: Boolean(payFromCart),
+});
     } catch (e) {
       await closeBridge();
-      return {
+      return withHeldCartMeta({
         ok: false,
         steps,
         failedStep: "ge_payment",
         error: e?.message || String(e),
         checkoutStage: "tokenize",
         areaItemNo: pdp.areaItemNo,
+        productCode,
         cartSn,
+        cartId,
         cartItemSn,
         via: "http+ge",
-      };
+        cartHoldAt,
+        payWindowMs: BANDAI_PAY_WINDOW_MS,
+        payFromCart: Boolean(payFromCart),
+      });
     }
   }
 
@@ -1149,7 +1927,7 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
     if (Array.isArray(geOut.steps)) {
       for (const s of geOut.steps) steps.push(s);
     }
-    return {
+    return withHeldCartMeta({
       ok: Boolean(geOut.ok),
       steps,
       timeline: geOut.timeline || [],
@@ -1182,7 +1960,11 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
       merchantCartToken,
       orderNumber: geOut.orderNumber ?? null,
       elapsedMs: geOut.elapsedMs,
-    };
+      productCode,
+      cartHoldAt,
+      payWindowMs: BANDAI_PAY_WINDOW_MS,
+      payFromCart: Boolean(payFromCart),
+});
   }
 
   await closeBridge();
@@ -1232,8 +2014,15 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  const productCode = parseAreaItemNo(task);
-  if (!productCode) {
+  // Dual-ID: frontend N… for PDP referer/path; backend NAI… for ATC body.
+  const frontendCode = parseFrontendProductCode(task);
+  const backendHint =
+    (task.bandaiAreaItemNo && String(task.bandaiAreaItemNo).trim()) ||
+    (task.bandaiBackendPid && String(task.bandaiBackendPid).trim()) ||
+    (task.areaItemNo && String(task.areaItemNo).trim()) ||
+    null;
+  const productCode = frontendCode || parseAreaItemNo(task);
+  if (!productCode && !backendHint) {
     return {
       ok: false,
       steps,
@@ -1344,7 +2133,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,
-      productCode,
+      productCode: productCode || backendHint,
+      frontendCode: frontendCode || productCode || null,
+      backendAreaItemNo: backendHint,
       placeOrderGeHttp: true,
       card,
     });
@@ -1355,7 +2146,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     return runHttpCheckout(task, ctx, session, tStep, steps, {
       email,
       password,
-      productCode,
+      productCode: productCode || backendHint,
+      frontendCode: frontendCode || productCode || null,
+      backendAreaItemNo: backendHint,
       placeOrderGe: true,
       card,
     });
@@ -1364,7 +2157,9 @@ async function runCheckout(task, ctx, session, tStep, steps) {
   return runHttpCheckout(task, ctx, session, tStep, steps, {
     email,
     password,
-    productCode,
+    productCode: productCode || backendHint,
+    frontendCode: frontendCode || productCode || null,
+    backendAreaItemNo: backendHint,
   });
 }
 
@@ -1395,6 +2190,28 @@ export const bandaiAdapter = {
 
     if (normalized === "account_gen") {
       return createBandaiAccount(task, ctx, { tStep, area });
+    }
+
+    if (normalized === "login_check") {
+      const account = task.account || {};
+      const email = account.email || task.email || task.profile?.email;
+      const password = account.password || task.password || task.accountPassword;
+      if (!email || !password) {
+        return {
+          ok: false,
+          steps,
+          error: "login_check requires account email + password",
+          failedStep: "login",
+          checkoutStage: "pre_cart",
+        };
+      }
+      return runHttpCheckout(task, ctx, session, tStep, steps, {
+        email,
+        password,
+        productCode: null,
+        frontendCode: null,
+        loginCheckOnly: true,
+      });
     }
 
     if (normalized === "monitor") {

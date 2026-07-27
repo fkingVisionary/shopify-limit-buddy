@@ -37,7 +37,24 @@
       <div class="split">
         <div>
           <h2>Tasks</h2>
-          <p class="hint">Kmart + Toymate run on this machine. Kmart still uses Hyper; Toymate uses CapSolver for Cloudflare.</p>
+          <p id="harvestBankStrip" class="harvest-bank-strip" aria-live="polite">Harvest banks —</p>
+          <div id="dropPrepCard" class="drop-prep-card">
+            <div class="drop-prep-head">
+              <strong>Bandai drop prep</strong>
+              <span id="dropReadyBadge" class="badge">—</span>
+            </div>
+            <p id="dropReadyStrip" class="drop-ready-strip" aria-live="polite">Ready —</p>
+            <div class="drop-prep-row">
+              <label class="drop-fire-label">Fire at (AEST)</label>
+              <input id="dropFireAt" placeholder="13:00 or 2026-07-27T13:00" autocomplete="off" />
+              <button type="button" id="btnDropModeArm">Arm Drop Mode</button>
+              <button type="button" id="btnDropScheduleArm" class="secondary">Arm schedule</button>
+              <button type="button" id="btnDropScheduleCancel" class="secondary">Cancel</button>
+              <button type="button" id="btnVaultLoginCheck" class="secondary">Check vault logins</button>
+            </div>
+            <p id="dropScheduleLine" class="field-hint">No schedule armed</p>
+          </div>
+          <p class="hint">Kmart + Toymate run on this machine. Bandai: Arm Drop Mode → harvest fills → Arm schedule (AEST T0) fires all Autocheckout lanes together. Monitor + Checkout on restock also auto-arms F5 when Harvest → Bandai has a sticky proxy group.</p>
           <div id="taskList" class="list"></div>
         </div>
         <form id="taskForm" class="form-card">
@@ -125,8 +142,9 @@
               </div>
               <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout on restock / new in-stock match</label>
               <p class="field-hint">
-                When on, the first matching <code>stock_changed</code> switches to Autocheckout (claims a Bandai F5 harvest bridge if Harvest is armed).
-                Arm <strong>Harvest → Bandai</strong> before the drop. Leave Place order off for a dry cart-only prove.
+                When on, the first matching <code>stock_changed</code> switches to Autocheckout (claims a Bandai F5 harvest bridge if ready).
+                Running the task <strong>auto-arms</strong> Harvest → Bandai when a sticky checkout proxy group is set on the Harvest tab (monitor proxies are not used for F5).
+                Leave Place order off for a dry cart-only prove.
               </p>
             </div>
             <div id="taskBandaiCheckoutModeWrap" hidden>
@@ -136,6 +154,9 @@
                 <option value="safe">Safe — Playwright GE after cart hold</option>
               </select>
               <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast pays undici issuer with fresh Forter/iovation mint (clears GE PossibleFraudDetected). Safe keeps the ~30 min window and pays via browser GEM on the F5 bridge.</p>
+              <label>Backend PID / areaItemNo <span class="optional">(NAI… — preferred on drops)</span></label>
+              <input id="taskBandaiAreaItemNo" placeholder="NAI0859145AU" autocomplete="off" />
+              <p class="field-hint">If set, ATC uses this id instead of the frontend <code>N…</code> from the PDP URL (extension tip under load).</p>
             </div>
             <div id="taskBandaiAccountPassWrap" hidden>
               <label>Account password <span class="optional">(optional — agen)</span></label>

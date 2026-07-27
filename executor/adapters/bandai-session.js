@@ -321,14 +321,26 @@ export function profileFromTask(task) {
   const area = resolveBandaiArea(task);
   const p = task?.profile || {};
   const defaults = {
-    au: { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" },
+    au: {
+      city: "Alexandra Hills",
+      province: "QLD",
+      zip: "4160",
+      country: "AU",
+      address1: "133 Allenby Road",
+    },
     us: { city: "Los Angeles", province: "CA", zip: "90012", country: "US", address1: "100 S Main St" },
     nz: { city: "Auckland", province: "AUK", zip: "1010", country: "NZ", address1: "1 Queen Street" },
     sg: { city: "Singapore", province: "", zip: "018956", country: "SG", address1: "1 Raffles Place" },
     hk: { city: "Hong Kong", province: "", zip: "", country: "HK", address1: "1 Queen's Road Central" },
     tw: { city: "Taipei", province: "", zip: "100", country: "TW", address1: "1 Zhongxiao E Rd" },
     fr: { city: "Paris", province: "", zip: "75001", country: "FR", address1: "1 Rue de Rivoli" },
-  }[area] || { city: "Sydney", province: "NSW", zip: "2000", country: "AU", address1: "1 George Street" };
+  }[area] || {
+    city: "Alexandra Hills",
+    province: "QLD",
+    zip: "4160",
+    country: "AU",
+    address1: "133 Allenby Road",
+  };
 
   return {
     email: p.email || task?.email || null,
@@ -345,16 +357,37 @@ export function profileFromTask(task) {
 }
 
 export function parseAreaItemNo(task) {
+  // Prefer explicit backend / ATC id (NAI…) over frontend PDP N-code when both exist.
+  // Discord/extension tip: run backend PID when PDP path flakes under load.
+  const direct =
+    task?.bandaiAreaItemNo ||
+    task?.bandaiBackendPid ||
+    task?.areaItemNo ||
+    task?.backendPid ||
+    task?.sku;
+  if (direct != null && String(direct).trim()) return String(direct).trim();
   const url = String(task?.pdpUrl || task?.storeUrl || "");
-  if (task?.areaItemNo) return String(task.areaItemNo);
-  if (task?.sku) return String(task.sku);
+  const m =
+    url.match(/\/item\/([A-Za-z0-9_-]+)/i) ||
+    url.match(/\/products?\/([A-Za-z0-9_-]+)/i) ||
+    url.match(/\b(NAI[A-Z0-9]+)\b/i) ||
+    url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
+    url.match(/\b(A\d{7,}[A-Z0-9]*)\b/i);
+  return m?.[1] || String(task?.productCode || "").trim() || null;
+}
+
+/** Frontend storefront code (N…/A…) from PDP URL — keep separate from backend NAI. */
+export function parseFrontendProductCode(task) {
+  const url = String(task?.pdpUrl || task?.storeUrl || task?.input || "");
   const m =
     url.match(/\/item\/([A-Za-z0-9_-]+)/i) ||
     url.match(/\/products?\/([A-Za-z0-9_-]+)/i) ||
     url.match(/\b(N\d{7,}[A-Z0-9]*)\b/i) ||
-    url.match(/\b(NAI[A-Z0-9]+)\b/i) ||
     url.match(/\b(A\d{7,}[A-Z0-9]*)\b/i);
-  return m?.[1] || String(task?.productCode || "").trim() || null;
+  if (m?.[1] && !/^NAI/i.test(m[1]) && !/^AAI/i.test(m[1])) return m[1];
+  const explicit = String(task?.productCode || task?.frontendCode || "").trim();
+  if (explicit && !/^NAI/i.test(explicit) && !/^AAI/i.test(explicit)) return explicit;
+  return null;
 }
 
 export default {

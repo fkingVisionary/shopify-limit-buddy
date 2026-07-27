@@ -23,6 +23,12 @@ const {
   shouldCheckoutOnMonitorHit,
   taskForMonitorCheckout,
 } = require("./bandai-monitor-checkout.cjs");
+const {
+  pickAreaItemNo,
+  isBackendAreaItemNo,
+  isFrontendProductCode,
+  resolveAreaItemNoHttp,
+} = require("./bandai-nai-resolve.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -32,6 +38,10 @@ let emit = () => {};
 let onFinished = null;
 /** @type {null | (() => object|null)} */
 let takeBandaiHarvestFn = null;
+/** @type {null | (() => void)} */
+let pauseBandaiHarvestRefillFn = null;
+/** @type {null | (() => void)} */
+let resumeBandaiHarvestRefillFn = null;
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -46,6 +56,14 @@ function configure(opts = {}) {
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
   if (Object.prototype.hasOwnProperty.call(opts, "takeBandaiHarvest")) {
     takeBandaiHarvestFn = typeof opts.takeBandaiHarvest === "function" ? opts.takeBandaiHarvest : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "pauseBandaiHarvestRefill")) {
+    pauseBandaiHarvestRefillFn =
+      typeof opts.pauseBandaiHarvestRefill === "function" ? opts.pauseBandaiHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "resumeBandaiHarvestRefill")) {
+    resumeBandaiHarvestRefillFn =
+      typeof opts.resumeBandaiHarvestRefill === "function" ? opts.resumeBandaiHarvestRefill : null;
   }
 }
 
@@ -323,6 +341,7 @@ function buildBandaiPayload({
     mode !== "account_gen" &&
     mode !== "monitor" &&
     mode !== "chance" &&
+    mode !== "login_check" &&
     input &&
     !/^https:\/\/(www\.)?p-bandai\.com\//i.test(input) &&
     !/^[A-Za-z0-9_-]+$/.test(input)
@@ -355,7 +374,7 @@ function buildBandaiPayload({
       });
 
   const storeUrl =
-    mode === "account_gen" || mode === "monitor" || !input
+    mode === "account_gen" || mode === "monitor" || mode === "login_check" || !input
       ? `https://p-bandai.com/${bandaiArea}/`
       : /^https?:\/\//i.test(input)
         ? input
@@ -363,7 +382,7 @@ function buildBandaiPayload({
 
   let resolvedAccount = null;
   let accountAssignSource = null;
-  if (mode === "checkout" || mode === "chance") {
+  if (mode === "checkout" || mode === "chance" || mode === "login_check") {
     if (task.account?.email && task.account?.password) {
       resolvedAccount = {
         email: task.account.email,
@@ -486,6 +505,26 @@ function buildBandaiPayload({
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
+      // Sticky pool for in-adapter SoftBlock login rotate (fail-path only).
+      proxyPool: Array.isArray(task._proxyEntries)
+        ? task._proxyEntries
+        : Array.isArray(task.proxyEntries)
+          ? task.proxyEntries
+          : undefined,
+      bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
+      bandaiPayFromCart: task.bandaiPayFromCart === true,
+      heldCart:
+        task.heldCart && typeof task.heldCart === "object"
+          ? {
+              cartSn: task.heldCart.cartSn ?? null,
+              cartId: task.heldCart.cartId ?? null,
+              cartItemSn: task.heldCart.cartItemSn ?? null,
+              areaItemNo: task.heldCart.areaItemNo ?? null,
+              productCode: task.heldCart.productCode ?? null,
+              cartHoldAt: task.heldCart.cartHoldAt ?? null,
+              payWindowMs: task.heldCart.payWindowMs ?? null,
+            }
+          : undefined,
       // ATC always HTTP+F5. Pay path: fast=HTTP GE+riskHydrate, safe=Playwright GE.
       ...resolveDesktopBandaiPayPath(task, {
         mode,
@@ -495,6 +534,19 @@ function buildBandaiPayload({
       bandaiMode: mode,
       bandaiArea,
       shippingAreaCode: task.shippingAreaCode || bandaiArea,
+      // Backend ATC id (NAI…) — preferred over frontend PDP N-code under load.
+      areaItemNo:
+        typeof task.bandaiAreaItemNo === "string" && task.bandaiAreaItemNo.trim()
+          ? task.bandaiAreaItemNo.trim()
+          : typeof task.bandaiBackendPid === "string" && task.bandaiBackendPid.trim()
+            ? task.bandaiBackendPid.trim()
+            : typeof task.areaItemNo === "string" && task.areaItemNo.trim()
+              ? task.areaItemNo.trim()
+              : undefined,
+      bandaiAreaItemNo:
+        typeof task.bandaiAreaItemNo === "string" && task.bandaiAreaItemNo.trim()
+          ? task.bandaiAreaItemNo.trim()
+          : undefined,
       harvestedBridgeId: harvestedBridgeId || undefined,
       bandaiMonitorMode: mode === "monitor" ? task.bandaiMonitorMode || "local" : undefined,
       bandaiWatchSku: task.bandaiWatchSku || null,
@@ -902,6 +954,21 @@ function finishResult(job, res, summary) {
     accountGen: Boolean(res?.accountGen),
     paypalApproveUrl: res?.paypalApproveUrl ?? null,
     attempt: "undici",
+    // Bandai held-cart / pay-window (Retry pay)
+    paymentStatus: res?.paymentStatus ?? null,
+    cartSn: res?.cartSn ?? null,
+    cartId: res?.cartId ?? null,
+    cartItemSn: res?.cartItemSn ?? null,
+    areaItemNo: res?.areaItemNo ?? null,
+    productCode: res?.productCode ?? null,
+    cartHoldAt: res?.cartHoldAt ?? res?.heldCart?.cartHoldAt ?? null,
+    heldPayRetry: Boolean(res?.heldPayRetry),
+    heldCartGone: Boolean(res?.heldCartGone),
+    heldCart: res?.heldCart || null,
+    loginCheck: Boolean(res?.loginCheck),
+    atcWallMs: res?.atcWallMs ?? null,
+    transactionId: res?.transactionId || res?.geTransactionId || null,
+    note: res?.note ?? null,
     raw: {
       ok: res?.ok,
       checkoutStage: res?.checkoutStage,
@@ -910,6 +977,9 @@ function finishResult(job, res, summary) {
       adapter: res?.adapter,
       transport: res?.transport,
       accountGen: Boolean(res?.accountGen),
+      heldPayRetry: Boolean(res?.heldPayRetry),
+      paymentStatus: res?.paymentStatus ?? null,
+      loginCheck: Boolean(res?.loginCheck),
     },
   };
 }
@@ -925,8 +995,12 @@ function logResultTail(job, result) {
     return;
   }
   emitLog(job.runId, job.task?.id, "err", result.consumerLabel || result.error || "Something went wrong");
-  // Keep analytical step tail in the main-process console only — not the consumer log.
+  if (result.failedStep) {
+    emitLog(job.runId, job.task?.id, "err", `failedStep=${result.failedStep}`);
+  }
+  // Surface one line of analytical detail in the UI for drop diagnosis (still capped).
   if (result.debugError) {
+    emitLog(job.runId, job.task?.id, "err", `detail: ${String(result.debugError).slice(0, 220)}`);
     console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
   }
   for (const s of (result.lastSteps || []).slice(-8)) {
@@ -969,8 +1043,81 @@ function isStickyTunnelDead(result) {
   );
 }
 
+/** Bandai login SoftBlock / sensor flake — outer belt when adapter rotate exhausted. */
+function isBandaiLoginBlock(result) {
+  if (!result || result.ok) return false;
+  if (String(result.failedStep || "") !== "login") return false;
+  const blob = [
+    result.debugError,
+    result.error,
+    result.note,
+    ...(result.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note}`),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /SoftBlock|sensor mint|NETWORK CONGESTION|PAGE NOT AVAILABLE|Access Denied|Request rejected|\b501\b|\b503\b|\b502\b|\b504\b/i.test(
+    blob,
+  );
+}
+
 function shouldStickyResiRetry(result) {
-  return isResidentialAkamaiBlock(result) || isStickyTunnelDead(result);
+  return (
+    isResidentialAkamaiBlock(result) || isStickyTunnelDead(result) || isBandaiLoginBlock(result)
+  );
+}
+
+/**
+ * Ensure Backend PID (NAI…) is on the task before ATC. Prefer existing fields;
+ * otherwise warm+GET /api/products off the critical path (monitor arm / pre-fire).
+ */
+async function ensureBandaiNaiForTask(task, { proxy, area, log } = {}) {
+  if (!task || typeof task !== "object") return { ok: false, skipped: true };
+  const existing = pickAreaItemNo({
+    bandaiAreaItemNo: task.bandaiAreaItemNo,
+    bandaiBackendPid: task.bandaiBackendPid,
+    areaItemNo: task.areaItemNo,
+    heldCartAreaItemNo: task.heldCart?.areaItemNo,
+  });
+  if (existing) {
+    task.bandaiAreaItemNo = existing;
+    task.areaItemNo = existing;
+    return { ok: true, areaItemNo: existing, cached: true };
+  }
+  const sku = String(
+    task.bandaiWatchSku ||
+      task.productId ||
+      task.input ||
+      task.pdpUrl ||
+      "",
+  )
+    .match(/\b(N\d{7,}[A-Z0-9]*|A\d{7,}[A-Z0-9]*|NAI[A-Z0-9]+)\b/i)?.[1];
+  if (!sku) return { ok: false, skipped: true, error: "no watch SKU" };
+  if (isBackendAreaItemNo(sku)) {
+    task.bandaiAreaItemNo = sku;
+    task.areaItemNo = sku;
+    return { ok: true, areaItemNo: sku, cached: true };
+  }
+  if (!isFrontendProductCode(sku)) return { ok: false, skipped: true, error: "not frontend SKU" };
+
+  const resolved = await resolveAreaItemNoHttp({
+    productCode: sku,
+    area: area || task.bandaiArea || "au",
+    proxy: proxy || task.proxyOverride || null,
+  });
+  if (resolved.ok && resolved.areaItemNo) {
+    task.bandaiAreaItemNo = resolved.areaItemNo;
+    task.areaItemNo = resolved.areaItemNo;
+    if (typeof log === "function") {
+      log(
+        `Pre-resolved Backend PID ${resolved.areaItemNo} for ${sku}${resolved.ms != null ? ` (${resolved.ms}ms)` : ""}`,
+      );
+    }
+    return { ok: true, areaItemNo: resolved.areaItemNo, ms: resolved.ms };
+  }
+  if (typeof log === "function") {
+    log(`Backend PID pre-resolve skipped: ${resolved.error || "n/a"} — ATC may product_get`);
+  }
+  return { ok: false, error: resolved.error || "resolve failed" };
 }
 
 async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
@@ -1221,6 +1368,55 @@ function pathToFileUrl(p) {
 }
 
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  // Bandai Autocheckout / chance: claim F5 at run-start (not enqueue) so bank TTL
+  // stays fresh through the queue — matches Monitor restock claim timing.
+  if (
+    job.task?.store === "bandai" &&
+    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    !job.task.harvestedBridgeId &&
+    typeof takeBandaiHarvestFn === "function"
+  ) {
+    const harvestSession = takeBandaiHarvestFn() || null;
+    if (harvestSession?.id) {
+      job.task.harvestedBridgeId = harvestSession.id;
+      job.task.harvestedProxy = harvestSession.proxy;
+      job.task.proxyOverride = harvestSession.proxy;
+      if (harvestSession.proxy) {
+        job.proxyRaw = harvestSession.proxy;
+        job.proxyEntries = [harvestSession.proxy];
+        job.proxyIndex = 0;
+      }
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"} age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
+      );
+    }
+  }
+
+  // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
+  if (
+    job.task?.store === "bandai" &&
+    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    !job.task.bandaiPayFromCart &&
+    !pickAreaItemNo({
+      bandaiAreaItemNo: job.task.bandaiAreaItemNo,
+      bandaiBackendPid: job.task.bandaiBackendPid,
+      areaItemNo: job.task.areaItemNo,
+    })
+  ) {
+    try {
+      await ensureBandaiNaiForTask(job.task, {
+        proxy: job.task.harvestedProxy || job.proxyRaw || job.proxyEntries?.[0] || null,
+        area: job.task.bandaiArea || "au",
+        log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+      });
+    } catch {
+      /* best-effort — adapter still has product_get */
+    }
+  }
+
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
     return {
@@ -1254,6 +1450,23 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       "info",
       checkoutOnHit ? "Starting Bandai monitor → checkout on hit" : "Starting Bandai monitor",
     );
+    // Resolve N… → NAI… while monitor polls (off ATC critical path).
+    if (checkoutOnHit) {
+      try {
+        await ensureBandaiNaiForTask(job.task, {
+          proxy: job.proxyRaw || job.proxyEntries?.[0] || null,
+          area: payload.bandaiArea || job.task.bandaiArea || "au",
+          log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+        });
+      } catch (e) {
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `Backend PID pre-resolve error: ${e?.message || e}`,
+        );
+      }
+    }
     try {
       const mon = await runBandaiMonitorInProcess(job, payload, { checkoutOnHit });
       if (!mon.checkout || !mon.hit) {
@@ -1286,11 +1499,26 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
         emitLog(job.runId, job.task?.id, "info", "No harvested F5 bridge — cold checkout");
       }
 
+      // Last chance: resolve NAI from hit / warm GET before sidecar ATC.
+      if (!pickAreaItemNo({ bandaiAreaItemNo: switched.task.bandaiAreaItemNo })) {
+        try {
+          await ensureBandaiNaiForTask(switched.task, {
+            proxy: harvestSession?.proxy || job.proxyRaw || job.proxyEntries?.[0] || null,
+            area: payload.bandaiArea || switched.task.bandaiArea || "au",
+            log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+
       emitLog(
         job.runId,
         job.task?.id,
         "ok",
-        `Restock ${switched.target.productId} — Autocheckout${job.placeOrder !== false ? " (live)" : " (dry)"}`,
+        `Restock ${switched.target.productId}${
+          switched.task.bandaiAreaItemNo ? ` (${switched.task.bandaiAreaItemNo})` : ""
+        } — Autocheckout${job.placeOrder !== false ? " (live)" : " (dry)"}`,
       );
 
       const checkoutJob = {
@@ -1344,6 +1572,20 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
 async function runSidecarCheckout(job, payload, summary, extra = {}) {
   const attemptLabel = extra.attemptLabel || "run";
+  const bandaiMode = String(job.task?.bandaiMode || payload.bandaiMode || "checkout").toLowerCase();
+  const pauseHarvest =
+    job.task?.store === "bandai" &&
+    bandaiMode !== "monitor" &&
+    bandaiMode !== "account_gen" &&
+    typeof pauseBandaiHarvestRefillFn === "function";
+  if (pauseHarvest) {
+    try {
+      pauseBandaiHarvestRefillFn();
+      emitLog(job.runId, job.task?.id, "info", "Harvest refill paused (checkout lane)");
+    } catch {
+      /* ignore */
+    }
+  }
   console.log(
     "[desktop:run]",
     JSON.stringify({
@@ -1406,6 +1648,13 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
     return finished;
   } finally {
     clearInterval(progressTimer);
+    if (pauseHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+      try {
+        resumeBandaiHarvestRefillFn();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -1428,7 +1677,9 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
-    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit.
+    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit
+    // unless login SoftBlock forces a new sticky (adapter also rotates in-process).
+    if (entries.length && job.task) job.task._proxyEntries = entries;
     const harvestLocked = Boolean(
       job.task?.harvestedSession?.cookies || job.task?.harvestedBridgeId || job.task?.harvestedProxy,
     );
@@ -1444,14 +1695,15 @@ async function runOne(job) {
 
     // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
     // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
-    // Skip entirely when a harvested Toymate CF session is locked to this proxy.
-    const maxProxyRetries = harvestLocked
-      ? 0
-      : sticky
-        ? Math.min(4, Math.max(2, entries.length || 2))
-        : entries.length > 1
-          ? Math.min(3, entries.length - 1)
-          : 0;
+    // Skip entirely when a harvested Toymate CF session is locked to this proxy —
+    // except Bandai login SoftBlock (exit is burned for login).
+    const maxProxyRetriesBase = sticky
+      ? Math.min(4, Math.max(2, entries.length || 2))
+      : entries.length > 1
+        ? Math.min(3, entries.length - 1)
+        : 0;
+    const maxProxyRetries =
+      harvestLocked && !isBandaiLoginBlock(result) ? 0 : maxProxyRetriesBase;
     let proxyRetries = 0;
     while (
       !result.ok &&
@@ -1462,15 +1714,23 @@ async function runOne(job) {
       proxyRetries += 1;
       const why = isStickyTunnelDead(result)
         ? "tunnel/TLS failure"
-        : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
-          ? "unsolved _abck"
-          : "Akamai denial";
+        : isBandaiLoginBlock(result)
+          ? "Bandai login SoftBlock"
+          : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
+            ? "unsolved _abck"
+            : "Akamai denial";
 
       let rotateSession = false;
       if (entries.length > 1) {
         job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
         job.proxyRaw = entries[job.proxyIndex];
         rotateSession = sticky && proxyRetries >= entries.length;
+        // Drop burned harvest binding so next attempt can use the new sticky.
+        if (isBandaiLoginBlock(result) && job.task) {
+          delete job.task.harvestedBridgeId;
+          delete job.task.harvestedProxy;
+          delete job.task.proxyOverride;
+        }
       } else {
         rotateSession = sticky;
       }

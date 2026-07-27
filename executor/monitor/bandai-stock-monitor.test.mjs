@@ -20,6 +20,27 @@ test("normalizeCatalogCard maps purchaseAvailable", () => {
   assert.equal(row.title, "Demo");
 });
 
+test("normalizeCatalogCard carries areaItemNos when present", () => {
+  const row = normalizeCatalogCard({
+    productCode: "N2542159011",
+    purchaseAvailable: true,
+    flags: [],
+    areaItemNos: ["NAI0868879AU"],
+  });
+  assert.equal(row.areaItemNo, "NAI0868879AU");
+  assert.deepEqual(row.areaItemNos, ["NAI0868879AU"]);
+});
+
+test("diffCatalog includes areaItemNo on restock events", () => {
+  const prev = new Map([["N1", { productId: "N1", inStock: false }]]);
+  const next = new Map([
+    ["N1", { productId: "N1", inStock: true, areaItemNo: "NAI1", areaItemNos: ["NAI1"] }],
+  ]);
+  const ev = diffCatalog(prev, next);
+  assert.equal(ev[0].reason, "restock");
+  assert.equal(ev[0].areaItemNo, "NAI1");
+});
+
 test("normalizeCatalogCard treats OUT_OF_STOCK flag as oos", () => {
   const row = normalizeCatalogCard({
     productCode: "N123",

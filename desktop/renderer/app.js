@@ -216,6 +216,8 @@ function esc(s) {
 }
 
 function renderTasks() {
+  renderHarvestBankStrip();
+  renderDropPrep();
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
@@ -226,18 +228,30 @@ function renderTasks() {
     .map((t) => {
       const statusLabel = t.lastLabel || t.lastStatus || "idle";
       const badge =
-        t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok"
+        t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok" || t.lastStatus === "login_ok"
           ? "ok"
+          : t.lastStatus === "held_pay_retry"
+            ? "run"
           : t.lastStatus === "failed" ||
               t.lastStatus === "error" ||
               t.lastStatus === "akamai" ||
               t.lastStatus === "proxy" ||
               t.lastStatus === "declined" ||
+              t.lastStatus === "held_cart_gone" ||
               t.lastStatus === "oos"
             ? "err"
             : t.lastStatus === "queued"
               ? "run"
               : "";
+      const heldHint = (() => {
+        if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
+        const start = Number(t.heldCart.cartHoldAt) || 0;
+        const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
+        if (!start) return " · cart held — retry pay";
+        const left = Math.max(0, start + win - Date.now());
+        if (left <= 0) return " · cart held? (window may be up — verify on retry)";
+        return ` · cart held · ~${Math.ceil(left / 60_000)}m left`;
+      })();
       const storeLabel =
         t.store === "toymate"
           ? `Toymate · ${t.toymateMode || "checkout"}`
@@ -246,7 +260,7 @@ function renderTasks() {
                 String(t.bandaiMode || "checkout") === "checkout"
                   ? ` · ${t.bandaiCheckoutMode || "fast"}`
                   : ""
-              }`
+              }${t.bandaiAreaItemNo ? ` · ${t.bandaiAreaItemNo}` : ""}`
             : t.store === "disney"
               ? `Disney · ${t.disneyMode || "pay"}`
             : t.store === "pokemoncentre"
@@ -275,7 +289,11 @@ function renderTasks() {
         const assign = t.accountAssign || "auto";
         if (assign === "manual") {
           const acc = (state.accounts || []).find((a) => a.id === t.accountId);
-          accountMeta = acc ? `account: ${acc.email}` : "account: manual (missing)";
+          const proven =
+            acc?.loginProvenAt && Date.now() - Number(acc.loginProvenAt) < 36 * 3600_000
+              ? " · proven"
+              : "";
+          accountMeta = acc ? `account: ${acc.email}${proven}` : "account: manual (missing)";
         } else {
           const prof = (state.profiles || []).find((p) => p.id === t.profileId);
           const base = emailBaseClient(prof?.email);
@@ -288,21 +306,59 @@ function renderTasks() {
       const pdpMeta =
         t.pdpUrl ||
         (t.toymateMode === "account_gen" || t.bandaiMode === "account_gen" ? "account gen" : "");
+      const retryPayBtn =
+        t.store === "bandai" && t.heldCart?.cartSn
+          ? `<button type="button" class="secondary" data-retry-pay="${t.id}">Retry pay</button>`
+          : "";
+      const dropSummary =
+        t.store === "bandai" && t.lastDropSummary
+          ? `<div class="meta drop-summary">${esc(t.lastDropSummary)}</div>`
+          : "";
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
+          ${dropSummary}
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
+          ${retryPayBtn}
           <button type="button" data-run-task="${t.id}">Run</button>
           <button type="button" class="danger" data-del-task="${t.id}">Del</button>
         </div>
       </div>`;
     })
     .join("");
+}
+
+function renderDropPrep() {
+  const strip = $("dropReadyStrip");
+  const badge = $("dropReadyBadge");
+  const sched = $("dropScheduleLine");
+  if (!strip) return;
+  const ready = state.dropReady;
+  if (ready?.text) {
+    strip.textContent = ready.text;
+    strip.classList.toggle("ok", Boolean(ready.ready));
+    strip.classList.toggle("bad", !ready.ready);
+  } else {
+    strip.textContent = "Ready —";
+    strip.classList.remove("ok", "bad");
+  }
+  if (badge) {
+    badge.textContent = ready?.ready ? "READY" : ready?.lanes ? "NOT READY" : "—";
+    badge.className = `badge ${ready?.ready ? "ok" : ready?.lanes ? "err" : ""}`;
+  }
+  const ds = state.dropSchedule;
+  if (sched) {
+    if (ds?.armed) {
+      sched.textContent = `Armed → ${ds.label || ""} · fires in ${ds.countdown || "…"}`;
+    } else {
+      sched.textContent = "No schedule armed";
+    }
+  }
 }
 
 function accountStatusBadge(status) {
@@ -629,6 +685,25 @@ function harvestOptsFromForm() {
   };
 }
 
+function renderHarvestBankStrip() {
+  const el = $("harvestBankStrip");
+  if (!el) return;
+  const fmt = window.desktop?.formatHarvestBankStrip;
+  if (typeof fmt !== "function") {
+    el.textContent = "Harvest banks —";
+    return;
+  }
+  const { chips, text } = fmt({
+    bandai: state?.bandaiHarvest,
+    toymate: state?.harvest,
+    disney: state?.disneyHarvest,
+  });
+  el.innerHTML = (chips || [])
+    .map((c) => `<span class="chip-${esc(c.state)}">${esc(c.text)}</span>`)
+    .join(` <span class="chip-off">·</span> `);
+  if (!chips?.length) el.textContent = text || "Harvest banks —";
+}
+
 function applyState(next) {
   state = next;
   fillSelects();
@@ -642,6 +717,7 @@ function applyState(next) {
   renderHarvest(next.harvest || null);
   renderBandaiHarvest();
   renderDisneyHarvest();
+  renderHarvestBankStrip();
   engineUi();
 }
 
@@ -750,6 +826,7 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskDisneyMode")) $("taskDisneyMode").value = task.disneyMode || "pay";
     if ($("taskBandaiCheckoutMode"))
       $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
+    if ($("taskBandaiAreaItemNo")) $("taskBandaiAreaItemNo").value = task.bandaiAreaItemNo || "";
     if ($("taskBandaiMonitorMode"))
       $("taskBandaiMonitorMode").value = task.bandaiMonitorMode || "local";
     if ($("taskBandaiWatchSku")) $("taskBandaiWatchSku").value = task.bandaiWatchSku || "";
@@ -807,6 +884,12 @@ document.body.addEventListener("click", async (e) => {
     const res = await window.desktop.runTasks([t.dataset.runTask]);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  }
+  if (t.dataset.retryPay) {
+    const res = await window.desktop.runTasks([t.dataset.retryPay], { payFromCart: true });
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog(`Retry pay enqueued (${res.enqueued}) — live cart verify`, "ok");
     if (res.snapshot) applyState(res.snapshot);
   }
   if (t.dataset.editProf) {
@@ -886,6 +969,8 @@ function readTaskForm() {
       store === "bandai" && ($("taskBandaiMode")?.value || "") === "monitor"
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
         : undefined,
+    bandaiAreaItemNo:
+      store === "bandai" ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
@@ -1056,6 +1141,63 @@ $("btnRunAll").onclick = async () => {
   else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
   if (res.snapshot) applyState(res.snapshot);
 };
+
+if ($("btnDropModeArm")) {
+  $("btnDropModeArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim() || "";
+    const res = await window.desktop.dropModeArm(fireAt ? { fireAt } : {});
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.bandaiHarvest = res.harvest;
+      state.dropReady = res.dropReady;
+      renderDropPrep();
+      renderBandaiHarvest();
+    }
+    appendLog(
+      res.ok
+        ? `Drop Mode armed — ${res.lanes} lane(s), harvest desired ${res.desired}${
+            res.schedule?.ok ? ` · schedule ${res.schedule.label}` : ""
+          }`
+        : esc(res.error || "Drop Mode failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
+if ($("btnDropScheduleArm")) {
+  $("btnDropScheduleArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim();
+    if (!fireAt) {
+      appendLog("Enter fire time (e.g. 13:00 AEST)", "err");
+      return;
+    }
+    const res = await window.desktop.dropScheduleArm({ fireAt });
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(
+      res.ok ? `Schedule armed → ${res.label} (in ${res.countdown})` : esc(res.error || "Schedule failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
+if ($("btnDropScheduleCancel")) {
+  $("btnDropScheduleCancel").onclick = async () => {
+    const res = await window.desktop.dropScheduleCancel();
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog("Drop schedule cancelled", "muted");
+  };
+}
+
+if ($("btnVaultLoginCheck")) {
+  $("btnVaultLoginCheck").onclick = async () => {
+    const res = await window.desktop.bandaiVaultLoginCheck({});
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(
+      res.ok ? `Vault login check enqueued (${res.enqueued})` : esc(res.error || "Login check failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
 
 $("bhStart").onclick = async () => {
   const res = await window.desktop.bandaiHarvestStart(bandaiHarvestOptsFromForm());
@@ -1295,14 +1437,21 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);
+    renderHarvestBankStrip();
   }
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();
+    renderHarvestBankStrip();
   }
   if (evt.type === "disneyHarvest" && evt.data) {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
+    renderHarvestBankStrip();
+  }
+  if (evt.type === "dropSchedule") {
+    if (state) state.dropSchedule = evt.data || { armed: false };
+    renderDropPrep();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

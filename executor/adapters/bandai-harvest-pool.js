@@ -73,6 +73,14 @@ async function safeClose(bridge) {
   }
 }
 
+/** Proxy / browser flake — retry on another sticky exit. Not Shape SoftBlock. */
+export function isTransientHarvestError(err) {
+  const s = String(err?.message || err || "");
+  return /ERR_CONNECTION_CLOSED|ERR_CONNECTION_RESET|ERR_CONNECTION_TIMED_OUT|ERR_TUNNEL|ERR_PROXY|Timeout \d+ms exceeded|net::ERR_|Target closed|browser has been closed|Protocol error/i.test(
+    s,
+  );
+}
+
 async function evictExpired() {
   const t = now();
   const drop = [];
@@ -207,6 +215,53 @@ export async function mintHarvestSlot({
 }
 
 /**
+ * Mint across a proxy list, rotating on transient network/browser errors.
+ * Stops on SoftBlock-ish / non-transient failures or success.
+ */
+export async function mintHarvestSlotWithRetries({
+  proxies,
+  area = "au",
+  settleMs = DEFAULT_SETTLE_MS,
+  ttlMs = DEFAULT_TTL_MS,
+  timeoutMs = 90_000,
+  maxAttempts = 3,
+} = {}) {
+  const list = (Array.isArray(proxies) ? proxies : [proxies])
+    .map((p) => String(p || "").trim())
+    .filter(Boolean);
+  if (!list.length) return { ok: false, error: "proxies required" };
+  const attempts = Math.max(1, Math.min(8, Number(maxAttempts) || 3));
+  const tried = [];
+  let last = null;
+  for (let i = 0; i < attempts && i < list.length; i++) {
+    const proxy = list[i];
+    const tag = (proxy.match(/session-([^-]+)/) || [])[1] || `i${i}`;
+    const res = await mintHarvestSlot({ proxy, area, settleMs, ttlMs, timeoutMs });
+    tried.push({
+      i,
+      tag,
+      ok: res.ok,
+      ms: res.ms,
+      error: res.error ? String(res.error).slice(0, 160) : null,
+      id: res.session?.id || null,
+    });
+    if (res.ok) {
+      return { ...res, attempts: tried, retried: i > 0 };
+    }
+    last = res;
+    if (res.atCapacity) break;
+    if (!isTransientHarvestError(res.error)) break;
+  }
+  return {
+    ok: false,
+    error: last?.error || "harvest mint failed",
+    ms: last?.ms,
+    attempts: tried,
+    retried: tried.length > 1,
+  };
+}
+
+/**
  * Transfer a ready bridge to checkout. Caller owns close(). Returns null on miss.
  * @returns {{ bridge, meta } | null}
  */
@@ -227,6 +282,25 @@ export function takeHarvestSlot(id) {
     area: slot.area,
     csrf: slot.csrf,
   };
+}
+
+/**
+ * Claim the next ready bridge (optionally matching area). Used when a specific
+ * harvest id is dead/missing but the bank still has warm slots.
+ * @returns {{ bridge, meta, proxy, area, csrf } | null}
+ */
+export function takeNextHarvestSlot({ area = null, excludeIds = [] } = {}) {
+  void evictExpired();
+  const exclude = new Set((Array.isArray(excludeIds) ? excludeIds : [excludeIds]).map(String).filter(Boolean));
+  const want = area ? normalizeBandaiArea(area) : null;
+  const t = now();
+  for (const [id, slot] of slots) {
+    if (exclude.has(String(id))) continue;
+    if (want && slot.area !== want) continue;
+    if (slot.expiresAt <= t) continue;
+    return takeHarvestSlot(id);
+  }
+  return null;
 }
 
 /** Peek without claiming (tests / UI). */
@@ -268,9 +342,12 @@ export const __test = {
 
 export default {
   mintHarvestSlot,
+  mintHarvestSlotWithRetries,
   takeHarvestSlot,
+  takeNextHarvestSlot,
   peekHarvestSlot,
   releaseHarvestSlot,
   clearHarvestSlots,
   harvestSnapshot,
+  isTransientHarvestError,
 };

@@ -56,6 +56,13 @@ export function normalizeCatalogCard(p) {
   const flags = Array.isArray(p.flags) ? p.flags.map(String) : [];
   const oos = flags.some((f) => /OUT_OF_STOCK/i.test(f));
   const inStock = purchaseAvailable && !oos;
+  const areaItemNos = Array.isArray(p.areaItemNos)
+    ? p.areaItemNos.map(String).filter(Boolean)
+    : [];
+  const areaItemNo =
+    (areaItemNos[0] && String(areaItemNos[0])) ||
+    (p.areaItemNo != null ? String(p.areaItemNo).trim() : null) ||
+    null;
   return {
     productId,
     inStock,
@@ -64,6 +71,8 @@ export function normalizeCatalogCard(p) {
     productType: p.productType || null,
     title: p.productName || p.name || null,
     flags,
+    ...(areaItemNo ? { areaItemNo } : {}),
+    ...(areaItemNos.length ? { areaItemNos } : {}),
   };
 }
 
@@ -86,6 +95,8 @@ export function diffCatalog(prev, next) {
           timestamp: now,
           reason: "new_in_stock",
           meta: row,
+          ...(row.areaItemNo ? { areaItemNo: row.areaItemNo } : {}),
+          ...(row.areaItemNos ? { areaItemNos: row.areaItemNos } : {}),
         });
       }
       continue;
@@ -97,6 +108,8 @@ export function diffCatalog(prev, next) {
         timestamp: now,
         reason: "restock",
         meta: row,
+        ...(row.areaItemNo ? { areaItemNo: row.areaItemNo } : {}),
+        ...(row.areaItemNos ? { areaItemNos: row.areaItemNos } : {}),
       });
     } else if (before.inStock && !row.inStock) {
       events.push({

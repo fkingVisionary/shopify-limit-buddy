@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { formatHarvestBankStrip } = require("./harvest-bank-status.cjs");
 
 contextBridge.exposeInMainWorld("desktop", {
   getState: () => ipcRenderer.invoke("desktop:get-state"),
@@ -12,9 +13,15 @@ contextBridge.exposeInMainWorld("desktop", {
   deleteProxyGroup: (id) => ipcRenderer.invoke("desktop:delete-proxy-group", id),
   upsertTask: (t) => ipcRenderer.invoke("desktop:upsert-task", t),
   deleteTask: (id) => ipcRenderer.invoke("desktop:delete-task", id),
-  runTasks: (ids) => ipcRenderer.invoke("desktop:run-tasks", ids),
+  runTasks: (ids, opts) => ipcRenderer.invoke("desktop:run-tasks", ids, opts || {}),
+  dropReady: () => ipcRenderer.invoke("desktop:drop-ready"),
+  dropScheduleArm: (opts) => ipcRenderer.invoke("desktop:drop-schedule-arm", opts || {}),
+  dropScheduleCancel: () => ipcRenderer.invoke("desktop:drop-schedule-cancel"),
+  dropModeArm: (opts) => ipcRenderer.invoke("desktop:drop-mode-arm", opts || {}),
+  bandaiVaultLoginCheck: (opts) => ipcRenderer.invoke("desktop:bandai-vault-login-check", opts || {}),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
+  formatHarvestBankStrip: (banks) => formatHarvestBankStrip(banks || {}),
   // Toymate CF + spam harvest
   harvestStatus: () => ipcRenderer.invoke("desktop:harvest-status"),
   harvestConfigure: (patch) => ipcRenderer.invoke("desktop:harvest-configure", patch),
