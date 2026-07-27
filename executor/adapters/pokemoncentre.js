@@ -47,6 +47,7 @@ import {
   capsolverKey,
 } from "./pokemoncentre-hcaptcha.js";
 import { runGlobalEPayHttp, PC_GLOBALE_MID } from "./pokemoncentre-ge-http.js";
+import { isPcHarvestFresh } from "./pokemoncentre-harvest-fresh.js";
 import { looksLikeDataDomeBlock, hyperConfigured } from "../antibot.js";
 
 function makeStep(steps, ctx) {
@@ -60,6 +61,7 @@ function makeStep(steps, ctx) {
         status: out?.status ?? null,
         ms: Date.now() - s0,
         note: out?.note ?? null,
+        detail: out?.detail || out?.bodySnippet || null,
       };
       steps.push(row);
       ctx.onProgress?.(name, out?.note || null);
@@ -71,11 +73,60 @@ function makeStep(steps, ctx) {
         status: null,
         ms: Date.now() - s0,
         note: e?.message || String(e),
+        detail: e?.stack ? String(e.stack).slice(0, 400) : null,
       };
       steps.push(row);
       throw e;
     }
   };
+}
+
+function applyPcCookiesToJar(jar, cookies) {
+  if (!jar || !cookies || typeof cookies !== "object") return;
+  if (typeof jar.load === "function") {
+    jar.load(cookies);
+    return;
+  }
+  for (const [name, value] of Object.entries(cookies)) {
+    if (!name || value == null || value === "") continue;
+    jar.set?.(String(name), String(value));
+  }
+}
+
+function rotateStickyInPool(current, pool) {
+  const list = (pool || []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (list.length < 2) return null;
+  const curHost = String(current || "").split("@").pop()?.split(":")[0] || "";
+  const next = list.find((p) => {
+    const h = p.split("@").pop()?.split(":")[0] || p.split(":")[0];
+    return h && h !== curHost;
+  });
+  return next || list[(list.indexOf(current) + 1) % list.length] || null;
+}
+
+function isHardIpBan(note, warm) {
+  const n = `${note || ""} ${warm?.note || ""} ${warm?.datadome?.note || ""}`;
+  return Boolean(
+    warm?.datadome?.isIpBanned ||
+      /t=bv|isIpBanned|hard IP block/i.test(n),
+  );
+}
+
+function isSoldOutOrOos(atc) {
+  const n = String(atc?.note || atc?.detail || "").toLowerCase();
+  return /sold.?out|out of stock|oos|unavailable|not available|inventory/i.test(n);
+}
+
+function isTransientAtcFail(atc) {
+  if (!atc || atc.ok) return false;
+  if (isSoldOutOrOos(atc)) return false;
+  if (isHardIpBan(atc.note)) return false;
+  const st = Number(atc.status || 0);
+  if (st >= 500 || st === 429 || st === 0) return true;
+  if (atc.datadomeChallenge) return true;
+  return /timeout|econnreset|socket|congestion|503|502|429|fetch failed/i.test(
+    String(atc.note || ""),
+  );
 }
 
 function normalizeMode(task) {
@@ -186,6 +237,13 @@ async function runMonitor(task, ctx, session, tStep, steps) {
     };
   });
 
+  const purchaseAvailable = Boolean(pdp.avail?.available);
+  const checkoutOnHit =
+    task.pcCheckoutOnHit === true ||
+    task.checkoutOnHit === true ||
+    (task.pcCheckoutOnHit !== false &&
+      task.checkoutOnHit !== false &&
+      task.placeOrder === true);
   return {
     ok: pdp.ok,
     steps,
@@ -196,7 +254,9 @@ async function runMonitor(task, ctx, session, tStep, steps) {
     cookies: ctx.jar?.dump?.() ?? {},
     sku: sku || parsed?.sku,
     title: pdp.avail?.title || null,
-    purchaseAvailable: pdp.avail?.available,
+    purchaseAvailable,
+    // Desktop job-runner claims harvest + switches to checkout when true.
+    triggerCheckout: Boolean(pdp.ok && purchaseAvailable && checkoutOnHit),
     note: pdp.note,
     locale: session.state.locale,
   };
@@ -248,15 +308,93 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     };
   }
 
-  const warm = await warmPokemonCentre(session, ctx, { tStep });
+  const maxStickyRotates = Math.max(0, Math.min(4, Number(task.maxStickyRotates ?? 2)));
+  const proxyPool = Array.isArray(task.proxyPool)
+    ? task.proxyPool
+    : Array.isArray(task.proxyEntries)
+      ? task.proxyEntries
+      : [];
+  let stickyRotates = 0;
+  let harvestUsed = false;
+  let harvestId = null;
+
+  // Seed harvested edge jar (same sticky exit) — skip warm when fresh.
+  const harvested =
+    task.harvestedSession && typeof task.harvestedSession === "object"
+      ? task.harvestedSession
+      : null;
+  if (harvested && isPcHarvestFresh(harvested)) {
+    applyPcCookiesToJar(ctx.jar, harvested.cookies);
+    if (harvested.userAgent) session.state.userAgent = harvested.userAgent;
+    harvestUsed = true;
+    harvestId = harvested.id || null;
+    steps.push({
+      step: "harvest_claim",
+      ok: true,
+      note: `seeded Reese+DD jar id=${harvestId || "?"} host=${harvested.proxyHost || "?"} age≈${Math.round((Date.now() - Number(harvested.harvestedAt || Date.now())) / 1000)}s`,
+    });
+    session.state.edgeCleared = true;
+  } else if (harvested) {
+    steps.push({
+      step: "harvest_stale",
+      ok: false,
+      note: "harvested session stale/missing cookies — cold edge warm",
+      detail: {
+        hasReese: Boolean(harvested.cookies?.reese84),
+        hasDd: Boolean(harvested.cookies?.datadome),
+        edgeExpiresAt: harvested.edgeExpiresAt || null,
+      },
+    });
+  }
+
+  let warm = { ok: harvestUsed, note: harvestUsed ? "skipped warm (harvest)" : null };
+  if (!harvestUsed) {
+    warm = await warmPokemonCentre(session, ctx, { tStep });
+  }
+  // SoftBlock / cookie flake: bounded sticky rotate + remint (not t=bv spray).
+  while (
+    !warm.ok &&
+    !isHardIpBan(warm.note, warm) &&
+    stickyRotates < maxStickyRotates &&
+    proxyPool.length > 1 &&
+    ctx.rotateProxy
+  ) {
+    const next = rotateStickyInPool(task.proxy || ctx.proxyRaw, proxyPool);
+    if (!next) break;
+    stickyRotates += 1;
+    steps.push({
+      step: "sticky_rotate",
+      ok: true,
+      note: `SoftBlock/edge flake → sticky rotate ${stickyRotates}/${maxStickyRotates}`,
+      detail: { nextHost: String(next).split("@").pop()?.split(":")[0] || null },
+    });
+    try {
+      await ctx.rotateProxy(next);
+    } catch (e) {
+      steps.push({
+        step: "sticky_rotate_fail",
+        ok: false,
+        note: e?.message || String(e),
+      });
+      break;
+    }
+    warm = await warmPokemonCentre(session, ctx, { tStep });
+  }
+
   if (!warm.ok) {
     return {
       ok: false,
       steps,
       dryRun,
       checkoutStage: "pre_cart",
-      failedStep: warm.datadome?.isIpBanned ? "datadome_ip_ban" : "edge_warm",
+      failedStep: isHardIpBan(warm.note, warm) ? "datadome_ip_ban" : "edge_warm",
       note: warm.note,
+      detail: {
+        isIpBanned: isHardIpBan(warm.note, warm),
+        stickyRotates,
+        harvestUsed,
+        harvestId,
+      },
       finalUrl: `${session.state.base}/`,
       cookies: ctx.jar?.dump?.() ?? {},
     };
@@ -278,6 +416,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       checkoutStage: "pre_cart",
       failedStep: "cortex_auth",
       note: auth.note,
+      detail: { harvestUsed, stickyRotates },
       finalUrl: productUrl,
       cookies: ctx.jar?.dump?.() ?? {},
     };
@@ -306,29 +445,12 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       avail,
       product: avail.product || null,
       cart: avail.cart || null,
-      hcaptchaToken: hc?.token || null,
+      hcaptchaToken: hc?.token || task.hcaptchaToken || null,
     };
   });
 
-  let atc = await tStep("cortex_atc", async () => {
-    try {
-      return await attemptGuestAtc(session, {
-        sku,
-        qty: task.qty || 1,
-        task,
-        product: pdp.product,
-        pageUrl: productUrl,
-      });
-    } catch (e) {
-      return { ok: false, note: e?.message || String(e) };
-    }
-  });
-  // BFF ATC can still escalate to DD captcha JSON — refresh tags once and retry.
-  if (atc.datadomeChallenge) {
-    await tStep("datadome_tags_retry", () =>
-      postDataDomeTags(session, ctx, { pageUrl: productUrl }),
-    );
-    atc = await tStep("cortex_atc_retry", async () => {
+  const runAtc = async (label) =>
+    tStep(label, async () => {
       try {
         return await attemptGuestAtc(session, {
           sku,
@@ -341,6 +463,31 @@ async function runCheckout(task, ctx, session, tStep, steps) {
         return { ok: false, note: e?.message || String(e) };
       }
     });
+
+  let atc = await runAtc("cortex_atc");
+  // Transient congestion / DD challenge — retry (not sold-out / t=bv).
+  let atcAttempts = 1;
+  while (isTransientAtcFail(atc) && atcAttempts < 3) {
+    atcAttempts += 1;
+    if (atc.datadomeChallenge) {
+      await tStep("datadome_tags_retry", () =>
+        postDataDomeTags(session, ctx, { pageUrl: productUrl }),
+      );
+    }
+    atc = await runAtc(`cortex_atc_retry_${atcAttempts}`);
+  }
+  if (isSoldOutOrOos(atc)) {
+    return {
+      ok: false,
+      steps,
+      dryRun,
+      checkoutStage: "pre_cart",
+      failedStep: "sold_out",
+      note: atc.note,
+      detail: { status: atc.status, body: atc.detail || null, harvestUsed },
+      finalUrl: productUrl,
+      cookies: ctx.jar?.dump?.() ?? {},
+    };
   }
 
   const usesGe = localeUsesGlobalE(session.state.locale);
@@ -490,7 +637,12 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     title: pdp.avail?.title || pdp.product?.name || null,
     epItemId: atc.epItemId || pdp.product?.epItemId || null,
     cartUri: atc.cartUri || null,
+    cartGuid: cartGuid || null,
     locale: session.state.locale,
+    harvestUsed,
+    harvestId,
+    stickyRotates,
+    atcAttempts,
     geM2m: geM2m?.ok ? true : geM2m?.note || null,
     globaleMid: geResult?.globaleMid || task.globaleMid || null,
     orderNumber: geResult?.orderNumber || null,
@@ -502,6 +654,16 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     transactionStatusType: geResult?.transactionStatusType || null,
     chargeReqCount: geResult?.chargeReqCount ?? null,
     note: geResult?.note || atc.note || pdp.note,
+    detail: !ok
+      ? {
+          atcStatus: atc.status || null,
+          atcNote: atc.note || null,
+          atcBody: atc.detail || null,
+          geNote: geResult?.note || null,
+          harvestUsed,
+          stickyRotates,
+        }
+      : null,
     failedStep: ok
       ? null
       : atc.ok

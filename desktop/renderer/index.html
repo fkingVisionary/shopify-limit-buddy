@@ -37,7 +37,23 @@
       <div class="split">
         <div>
           <h2>Tasks</h2>
-          <p class="hint">Kmart + Toymate run on this machine. Kmart still uses Hyper; Toymate uses CapSolver for Cloudflare.</p>
+          <p id="harvestBankStrip" class="harvest-bank-strip" aria-live="polite">Harvest banks —</p>
+          <div id="dropPrepCard" class="drop-prep-card">
+            <div class="drop-prep-head">
+              <strong>Pokémon Centre drop prep</strong>
+              <span id="dropReadyBadge" class="badge">—</span>
+            </div>
+            <p id="dropReadyStrip" class="drop-ready-strip" aria-live="polite">Ready —</p>
+            <div class="drop-prep-row">
+              <label class="drop-fire-label">Fire at (AEST)</label>
+              <input id="dropFireAt" placeholder="13:00 or 2026-07-27T13:00" autocomplete="off" />
+              <button type="button" id="btnDropModeArm">Arm Drop Mode</button>
+              <button type="button" id="btnDropScheduleArm" class="secondary">Arm schedule</button>
+              <button type="button" id="btnDropScheduleCancel" class="secondary">Cancel</button>
+            </div>
+            <p id="dropScheduleLine" class="field-hint">No schedule armed</p>
+          </div>
+          <p class="hint">Arm Drop Mode → harvest fills Reese+DD → Arm schedule (AEST T0) fires Autocheckout lanes together (≤150ms stagger). PC carts do not hold — continuous sticky session.</p>
           <div id="taskList" class="list"></div>
         </div>
         <form id="taskForm" class="form-card">
@@ -161,7 +177,8 @@
               <option value="edge">Edge warm only (Incapsula + DD)</option>
               <option value="har_probe">HAR probe (Cortex paths)</option>
             </select>
-            <p class="field-hint">Needs sticky AU ISP/residential + Hyper (Incapsula/DD). CapSolver for hCaptcha drops. Cortex ATC bodies harden after HAR.</p>
+            <label class="check" id="taskPcCheckoutOnHitWrap"><input id="taskPcCheckoutOnHit" type="checkbox" checked /> Checkout on restock hit (Monitor)</label>
+            <p class="field-hint">Needs sticky AU ISP/residential + Hyper (Incapsula/DD). CapSolver for hCaptcha drops. Harvest tab banks Reese+DD off the critical path. Cortex ATC → HTTP GE mid 1634.</p>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
           <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
@@ -371,6 +388,63 @@
           <div class="row-actions">
             <button type="button" class="secondary" id="bhOnce">Harvest one now</button>
             <button type="button" class="secondary" id="bhClear">Clear bank</button>
+          </div>
+        </div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--border);margin:28px 0" />
+
+      <div class="split">
+        <div>
+          <h2>Pokémon Centre Harvest</h2>
+          <p class="hint">
+            Pre-warm <strong>Incapsula Reese84</strong> + <strong>DataDome</strong> (± optional CapSolver hCaptcha)
+            on sticky AU ISP so Autocheckout skips edge warm on the drop path. Same sticky exit must run checkout
+            (IP-bound queue). PC carts do <strong>not</strong> hold — harvest buys edge-clear time only.
+          </p>
+
+          <div class="howto form-card">
+            <h3>How to use</h3>
+            <ol class="howto-list">
+              <li><strong>Settings</strong> → Hyper API key (+ CapSolver if harvesting hCaptcha) → save → start engine.</li>
+              <li><strong>Proxies</strong> → sticky AU ISP/residential group (same exits you will checkout on).</li>
+              <li>Pick that group below, desired = lane count, Start harvest a few minutes before T0.</li>
+              <li>Or use Tasks → <strong>Arm Drop Mode</strong> (desired = lanes) → Arm schedule AEST.</li>
+              <li>Run <strong>Pokémon Centre → Checkout</strong> — each lane claims one session at run-start.</li>
+              <li><strong>Stop</strong> after the drop so Hyper/CapSolver stop spending.</li>
+            </ol>
+            <p class="field-hint">
+              Edge TTL ~3 min · hCaptcha ~100s. Empty bank = cold edge warm on path (still works). Sessions are single-use and IP-bound.
+            </p>
+          </div>
+
+          <div id="pcHarvestSessionList" class="list"></div>
+        </div>
+
+        <div class="form-card">
+          <h3>PC bank</h3>
+          <div class="harvest-stats" id="pcHarvestStats">
+            <div><span class="muted">Ready</span><strong id="pcReady">0</strong></div>
+            <div><span class="muted">With hCaptcha</span><strong id="pcCaptcha">0</strong></div>
+            <div><span class="muted">Solved</span><strong id="pcSolved">0</strong></div>
+            <div><span class="muted">Failed</span><strong id="pcFailed">0</strong></div>
+          </div>
+          <p id="pcHarvestStatusLine" class="field-hint">Harvest stopped</p>
+          <p id="pcHarvestError" class="err-line" hidden></p>
+
+          <label>Proxy group</label>
+          <select id="pcProxyGroup"></select>
+          <label>Desired warm sessions</label>
+          <input id="pcDesired" type="number" min="0" max="12" value="2" />
+          <label class="check"><input id="pcSolveCaptcha" type="checkbox" /> Pre-solve hCaptcha with each warm</label>
+
+          <div class="row-actions">
+            <button type="button" id="pcStart">Start harvest</button>
+            <button type="button" class="secondary" id="pcStop">Stop</button>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="secondary" id="pcOnce">Harvest one now</button>
+            <button type="button" class="secondary" id="pcClear">Clear bank</button>
           </div>
         </div>
       </div>

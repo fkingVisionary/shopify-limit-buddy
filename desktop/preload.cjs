@@ -36,6 +36,20 @@ contextBridge.exposeInMainWorld("desktop", {
   disneyHarvestStop: () => ipcRenderer.invoke("desktop:disney-harvest-stop"),
   disneyHarvestClear: () => ipcRenderer.invoke("desktop:disney-harvest-clear"),
   disneyHarvestOnce: (opts) => ipcRenderer.invoke("desktop:disney-harvest-once", opts),
+  // Pokémon Centre Incapsula+DD harvest
+  pokemoncentreHarvestStatus: () => ipcRenderer.invoke("desktop:pc-harvest-status"),
+  pokemoncentreHarvestConfigure: (patch) => ipcRenderer.invoke("desktop:pc-harvest-configure", patch),
+  pokemoncentreHarvestStart: (opts) => ipcRenderer.invoke("desktop:pc-harvest-start", opts),
+  pokemoncentreHarvestStop: () => ipcRenderer.invoke("desktop:pc-harvest-stop"),
+  pokemoncentreHarvestClear: () => ipcRenderer.invoke("desktop:pc-harvest-clear"),
+  pokemoncentreHarvestOnce: (opts) => ipcRenderer.invoke("desktop:pc-harvest-once", opts),
+  pokemoncentreHarvestPause: () => ipcRenderer.invoke("desktop:pc-harvest-pause"),
+  pokemoncentreHarvestResume: () => ipcRenderer.invoke("desktop:pc-harvest-resume"),
+  // Pokémon Centre drop ops
+  dropReady: () => ipcRenderer.invoke("desktop:drop-ready"),
+  dropScheduleArm: (opts) => ipcRenderer.invoke("desktop:drop-schedule-arm", opts),
+  dropScheduleCancel: () => ipcRenderer.invoke("desktop:drop-schedule-cancel"),
+  dropModeArm: (opts) => ipcRenderer.invoke("desktop:drop-mode-arm", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

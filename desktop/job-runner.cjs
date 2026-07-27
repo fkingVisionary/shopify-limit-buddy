@@ -19,6 +19,10 @@ const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
+const {
+  shouldCheckoutOnMonitorHit: shouldPcCheckoutOnMonitorHit,
+  taskForMonitorCheckout: taskForPcMonitorCheckout,
+} = require("./pokemoncentre-monitor-checkout.cjs");
 
 let queue = [];
 let inflight = 0;
@@ -26,6 +30,12 @@ let running = false;
 let maxConcurrent = 5;
 let emit = () => {};
 let onFinished = null;
+/** @type {null | (() => object|null)} */
+let takePokemonCentreHarvestFn = null;
+/** @type {null | (() => void)} */
+let pausePokemonCentreHarvestRefillFn = null;
+/** @type {null | (() => void)} */
+let resumePokemonCentreHarvestRefillFn = null;
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -33,6 +43,82 @@ function setEmitter(fn) {
 
 function setFinishedHandler(fn) {
   onFinished = typeof fn === "function" ? fn : null;
+}
+
+function setPokemonCentreHarvestHooks({
+  takePokemonCentreHarvest,
+  pausePokemonCentreHarvestRefill,
+  resumePokemonCentreHarvestRefill,
+} = {}) {
+  takePokemonCentreHarvestFn =
+    typeof takePokemonCentreHarvest === "function" ? takePokemonCentreHarvest : null;
+  pausePokemonCentreHarvestRefillFn =
+    typeof pausePokemonCentreHarvestRefill === "function"
+      ? pausePokemonCentreHarvestRefill
+      : null;
+  resumePokemonCentreHarvestRefillFn =
+    typeof resumePokemonCentreHarvestRefill === "function"
+      ? resumePokemonCentreHarvestRefill
+      : null;
+}
+
+function isPcStoreId(store) {
+  const s = String(store || "").toLowerCase();
+  return s === "pokemoncentre" || s === "pokemon" || s === "pokemoncenter";
+}
+
+/**
+ * Claim Reese+DD harvest at Autocheckout run-start (not enqueue) so TTL stays fresh.
+ * Same sticky exit locked onto the job.
+ */
+function claimPcHarvestForJob(job) {
+  if (!job?.task || !isPcStoreId(job.task.store)) return null;
+  if (job.task.harvestedSession?.cookies?.reese84) return job.task.harvestedSession;
+  const mode = String(job.task.pcMode || job.task.pokemoncentreMode || "checkout").toLowerCase();
+  if (!["checkout", "autocheckout", "pay"].includes(mode)) return null;
+  if (typeof takePokemonCentreHarvestFn !== "function") return null;
+
+  if (typeof pausePokemonCentreHarvestRefillFn === "function") {
+    try {
+      pausePokemonCentreHarvestRefillFn();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  let session = takePokemonCentreHarvestFn({
+    preferCaptcha: Boolean(job.task.preferHarvestCaptcha),
+  });
+  if (session && (!session.cookies?.reese84 || !session.cookies?.datadome)) {
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "warn",
+      "Harvested PC session missing edge cookies — trying next bank slot",
+    );
+    session = takePokemonCentreHarvestFn({
+      preferCaptcha: Boolean(job.task.preferHarvestCaptcha),
+    });
+  }
+  if (session?.cookies?.reese84 && session?.cookies?.datadome) {
+    job.task.harvestedSession = session;
+    if (session.captchaToken) job.task.hcaptchaToken = session.captchaToken;
+    if (session.proxy) {
+      job.proxyRaw = session.proxy;
+      job.proxyEntries = [session.proxy];
+      job.proxyIndex = 0;
+    }
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Using harvested PC edge session (${session.proxyHost || "proxy"}${
+        session.captchaToken ? " + hCaptcha" : ""
+      } age≈${Math.round((Date.now() - (session.harvestedAt || Date.now())) / 1000)}s)`,
+    );
+    return session;
+  }
+  return null;
 }
 
 function configure({ maxConcurrent: n } = {}) {
@@ -564,12 +650,20 @@ function buildPokemonCentrePayload({
     };
   }
 
-  const proxyNorm = normalizeKmartProxy(proxyRaw);
+  const harvested =
+    task.harvestedSession && typeof task.harvestedSession === "object"
+      ? task.harvestedSession
+      : null;
+
+  const proxyNorm = normalizeKmartProxy(harvested?.proxy || proxyRaw);
   if (!proxyNorm.ok) return { ok: false, error: proxyNorm.error };
 
-  const proxy = rotateStickyProxySession(proxyNorm.proxy, {
-    force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
-  });
+  // Harvested Reese+DD jars are exit-bound — never rotate sticky session on claim.
+  const proxy = harvested?.proxy
+    ? String(harvested.proxy).trim()
+    : rotateStickyProxySession(proxyNorm.proxy, {
+        force: rotateSession === true || process.env.DESKTOP_ROTATE_PROXY_SESSION === "1",
+      });
 
   const storeUrl =
     mode === "edge" || mode === "monitor" || mode === "har_probe" || !input
@@ -617,9 +711,32 @@ function buildPokemonCentrePayload({
       forceTls: false,
       pcMode: mode,
       pcLocale,
-      pcBrowserCheckout:
-        task.pcBrowserCheckout === true || (mode === "checkout" && Boolean(placeOrder)),
+      pcCheckoutOnHit:
+        mode === "monitor" ? task.pcCheckoutOnHit !== false && task.checkoutOnHit !== false : undefined,
+      // Explicit wire-capture only — never imply browser pay on placeOrder.
+      pcBrowserCheckout: task.pcBrowserCheckout === true,
       globaleMid: task.globaleMid || task.geMerchantId || undefined,
+      harvestedSession: harvested
+        ? {
+            id: harvested.id || null,
+            proxy: harvested.proxy || null,
+            proxyHost: harvested.proxyHost || null,
+            userAgent: harvested.userAgent || null,
+            cookies: harvested.cookies || {},
+            captchaToken: harvested.captchaToken || null,
+            harvestedAt: harvested.harvestedAt || null,
+            edgeExpiresAt: harvested.edgeExpiresAt || null,
+            captchaExpiresAt: harvested.captchaExpiresAt || null,
+            egressIp: harvested.egressIp || null,
+          }
+        : null,
+      hcaptchaToken: task.hcaptchaToken || harvested?.captchaToken || null,
+      proxyPool: Array.isArray(task.proxyPool)
+        ? task.proxyPool
+        : Array.isArray(task.proxyEntries)
+          ? task.proxyEntries
+          : undefined,
+      maxStickyRotates: task.maxStickyRotates != null ? Number(task.maxStickyRotates) : 2,
       card,
       profile: {
         email: profile?.email || null,
@@ -891,6 +1008,18 @@ function finishResult(job, res, summary) {
     account: res?.account ?? null,
     accountGen: Boolean(res?.accountGen),
     paypalApproveUrl: res?.paypalApproveUrl ?? null,
+    harvestUsed: Boolean(res?.harvestUsed),
+    harvestId: res?.harvestId || null,
+    stickyRotates: res?.stickyRotates ?? null,
+    transactionId: res?.transactionId ?? null,
+    transactionStatusType: res?.transactionStatusType ?? null,
+    possibleFraudDetected: res?.possibleFraudDetected ?? null,
+    chargeReqCount: res?.chargeReqCount ?? null,
+    triggerCheckout: Boolean(res?.triggerCheckout),
+    purchaseAvailable: res?.purchaseAvailable ?? null,
+    sku: res?.sku || null,
+    title: res?.title || null,
+    finalUrl: res?.finalUrl || null,
     attempt: "undici",
     raw: {
       ok: res?.ok,
@@ -900,6 +1029,13 @@ function finishResult(job, res, summary) {
       adapter: res?.adapter,
       transport: res?.transport,
       accountGen: Boolean(res?.accountGen),
+      harvestUsed: Boolean(res?.harvestUsed),
+      transactionId: res?.transactionId ?? null,
+      triggerCheckout: Boolean(res?.triggerCheckout),
+      purchaseAvailable: res?.purchaseAvailable ?? null,
+      sku: res?.sku || null,
+      title: res?.title || null,
+      finalUrl: res?.finalUrl || null,
     },
   };
 }
@@ -1119,6 +1255,9 @@ function pathToFileUrl(p) {
 }
 
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  // PC Autocheckout: claim harvest at run-start (TTL fresh through queue wait).
+  claimPcHarvestForJob(job);
+
   const built = buildPayload({ ...job, rotateSession });
   if (!built.ok) {
     return {
@@ -1162,6 +1301,93 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
+  // Pokémon Centre monitor → optional Autocheckout on in-stock hit.
+  // Harvest claimed at trigger (not during monitor polls / not on monitor proxies).
+  if (
+    isPcStoreId(job.task?.store) &&
+    String(job.task?.pcMode || payload.pcMode || "") === "monitor"
+  ) {
+    const checkoutOnHit = shouldPcCheckoutOnMonitorHit(job.task, job.placeOrder !== false);
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      checkoutOnHit ? "Starting PC monitor → checkout on hit" : "Starting PC monitor",
+    );
+    const monResult = await runSidecarCheckout(job, payload, summary, { attemptLabel });
+    const purchaseAvailable = Boolean(
+      monResult.triggerCheckout ||
+        monResult.purchaseAvailable ||
+        monResult.raw?.triggerCheckout ||
+        monResult.raw?.purchaseAvailable,
+    );
+    if (!checkoutOnHit || !purchaseAvailable) {
+      return monResult;
+    }
+
+    const switched = taskForPcMonitorCheckout(job.task, {
+      sku: monResult.sku || monResult.raw?.sku || job.task.sku,
+      pdpUrl: monResult.finalUrl || monResult.raw?.finalUrl || job.task.pdpUrl,
+      title: monResult.title || monResult.raw?.title || null,
+      purchaseAvailable: true,
+      finalUrl: monResult.finalUrl || monResult.raw?.finalUrl,
+    });
+    if (!switched.ok) {
+      return finishResult(job, { ok: false, error: switched.error, monitor: true }, summary);
+    }
+
+    const checkoutJob = {
+      ...job,
+      task: { ...switched.task },
+      placeOrder: job.placeOrder !== false,
+    };
+    delete checkoutJob.task.harvestedSession;
+    claimPcHarvestForJob(checkoutJob);
+
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "ok",
+      `PC in-stock ${switched.target.sku || switched.target.pdpUrl || ""} — Autocheckout${
+        checkoutJob.placeOrder !== false ? " (live)" : " (dry)"
+      }`,
+    );
+
+    const builtCheckout = buildPayload({ ...checkoutJob, rotateSession: false });
+    if (!builtCheckout.ok) {
+      return finishResult(
+        job,
+        { ok: false, error: builtCheckout.error, monitor: true, monitorHit: switched.target },
+        summary,
+      );
+    }
+    const checkoutPayload = builtCheckout.data;
+    checkoutPayload.taskId = `${job.runId}-checkout`;
+    return runSidecarCheckout(checkoutJob, checkoutPayload, summarizePayload(checkoutPayload), {
+      attemptLabel: attemptLabel === "run" ? "monitor-checkout" : `${attemptLabel}-checkout`,
+      monitorHit: switched.target,
+    });
+  }
+
+  return runSidecarCheckout(job, payload, summary, { attemptLabel });
+}
+
+async function runSidecarCheckout(job, payload, summary, extra = {}) {
+  const attemptLabel = extra.attemptLabel || "run";
+  const pcMode = String(job.task?.pcMode || payload.pcMode || "").toLowerCase();
+  const pauseHarvest =
+    isPcStoreId(job.task?.store) &&
+    ["checkout", "autocheckout", "pay"].includes(pcMode) &&
+    typeof pausePokemonCentreHarvestRefillFn === "function";
+  if (pauseHarvest) {
+    try {
+      pausePokemonCentreHarvestRefillFn();
+      emitLog(job.runId, job.task?.id, "info", "PC Harvest refill paused (checkout lane)");
+    } catch {
+      /* ignore */
+    }
+  }
+
   console.log(
     "[desktop:run]",
     JSON.stringify({
@@ -1173,6 +1399,8 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       kmartMode: summary.kmartMode,
       placeOrder: summary.placeOrder,
       pdp: summary.storeUrl,
+      harvestUsed: Boolean(payload.harvestedSession?.cookies),
+      monitorHit: extra.monitorHit?.sku || null,
     }),
   );
   emitLog(job.runId, job.task?.id, "info", "Starting");
@@ -1217,6 +1445,13 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     return finishResult(job, res, summary);
   } finally {
     clearInterval(progressTimer);
+    if (pauseHarvest && typeof resumePokemonCentreHarvestRefillFn === "function") {
+      try {
+        resumePokemonCentreHarvestRefillFn();
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -1333,6 +1568,7 @@ async function runOne(job) {
 module.exports = {
   setEmitter,
   setFinishedHandler,
+  setPokemonCentreHarvestHooks,
   configure,
   state,
   enqueue,
