@@ -639,8 +639,12 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
   const mode = String(task.disneyMode || "pay").toLowerCase();
   const DEFAULT_PDP =
     "https://www.disneystore.com.au/disney-lorcana-trading-card-game-by-ravensburger-gateway-050368983992.html";
-  const input = String(task.pdpUrl || task.input || task.storeUrl || "").trim() || DEFAULT_PDP;
+  const rawInput = String(task.pdpUrl || task.input || task.storeUrl || "").trim();
+  const isMonitor = mode === "monitor";
+  // Monitor may be keywords/SKU-only (Watch fields) — don't force a PDP.
+  const input = rawInput || (isMonitor ? "" : DEFAULT_PDP);
   if (
+    !isMonitor &&
     input &&
     !/^https:\/\/(www\.)?(disneystore|shopdisney)\.com\.au\//i.test(input) &&
     !/^\d{6,}$/.test(input)
@@ -648,6 +652,18 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
     return {
       ok: false,
       error: "Disney PDP URL (disneystore.com.au/…html) or pid required",
+    };
+  }
+  if (
+    isMonitor &&
+    !task.disneyWatchSku &&
+    !task.disneyWatchKeywords &&
+    !task.keywords &&
+    !rawInput
+  ) {
+    return {
+      ok: false,
+      error: "Disney monitor needs Watch SKU, Watch keywords, or a PDP/pid",
     };
   }
 
@@ -670,7 +686,9 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
     ? input
     : /^\d{6,}$/.test(input)
       ? DEFAULT_PDP.replace(/\d{6,}(?=\.html)/, input)
-      : DEFAULT_PDP;
+      : isMonitor
+        ? null
+        : DEFAULT_PDP;
 
   const pan = String(profile?.card_number || "").replace(/\s+/g, "");
   const cvv = String(profile?.card_cvv || "").trim();
@@ -712,9 +730,27 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
       pdpUrl,
       disneyMode,
       disneyGePay: disneyMode === "pay" || disneyMode === "ge",
+      disneyMonitorMode: isMonitor ? task.disneyMonitorMode || "local" : undefined,
+      disneyWatchSku: task.disneyWatchSku || null,
+      disneyWatchKeywords: task.disneyWatchKeywords || null,
+      disneyMonitorIntervalMs: isMonitor
+        ? Math.max(2000, Number(task.disneyMonitorIntervalMs) || 10000)
+        : undefined,
+      disneyMonitorDelayMs: isMonitor
+        ? Math.max(0, Number(task.disneyMonitorDelayMs) || 0)
+        : undefined,
+      disneyUseHarvest: task.disneyUseHarvest !== false,
+      disneyRequireHarvestCaptcha: task.disneyRequireHarvestCaptcha === true,
+      disneyPreferLastGoodProxy: task.disneyPreferLastGoodProxy !== false,
+      keywords: isMonitor
+        ? task.disneyWatchKeywords || task.keywords || (!/^https?:/i.test(rawInput) ? rawInput : null) || null
+        : undefined,
+      productId: isMonitor
+        ? task.disneyWatchSku || (/^\d{6,}$/.test(rawInput) ? rawInput : null) || null
+        : undefined,
       quantity: Math.max(1, Math.min(20, Number(task.qty) || 1)),
       proxy,
-      dryRun: !placeOrder,
+      dryRun: isMonitor ? true : !placeOrder,
       placeOrder: Boolean(placeOrder) && wantsPay,
       fakeDecline: !placeOrder && wantsPay,
       debugTrace: true,
@@ -739,7 +775,8 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
           }
         : null,
       recaptchaToken: task.recaptchaToken || harvested?.captchaToken || null,
-      preferLastGoodProxy: !harvested,
+      preferLastGoodProxy:
+        harvested ? false : task.disneyPreferLastGoodProxy !== false,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -833,6 +870,22 @@ function emitLog(runId, taskId, level, message, extra) {
     level: level || "info",
     message: String(message || ""),
     ...(extra || {}),
+  });
+}
+
+function emitMonitorHit(hit) {
+  if (!hit?.productId) return;
+  emit({
+    type: "monitorHit",
+    data: {
+      store: hit.store || "disney",
+      productId: hit.productId,
+      title: hit.title || null,
+      reason: hit.reason || null,
+      at: hit.at || Date.now(),
+      taskId: hit.taskId || null,
+      runId: hit.runId || null,
+    },
   });
 }
 
@@ -1001,6 +1054,14 @@ async function runBandaiMonitorInProcess(job, payload) {
             "ok",
             `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
           );
+          emitMonitorHit({
+            store: "bandai",
+            productId: ev.productId,
+            title: ev.title,
+            reason: ev.reason,
+            taskId: job.task?.id,
+            runId: job.runId,
+          });
         },
       },
     );
@@ -1093,6 +1154,14 @@ async function runBandaiMonitorInProcess(job, payload) {
     local.on("stock_changed", (ev) => {
       hits.push(ev);
       emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      emitMonitorHit({
+        store: "bandai",
+        productId: ev.productId,
+        title: ev.title,
+        reason: ev.reason,
+        taskId: job.task?.id,
+        runId: job.runId,
+      });
     });
     local.on("error", (e) =>
       emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
@@ -1104,6 +1173,175 @@ async function runBandaiMonitorInProcess(job, payload) {
     ok: true,
     monitor: true,
     bandaiMonitorMode: "local",
+    hits,
+    note: hits.length ? `matched ${hits.length}` : `no change in ${polls} polls`,
+    dryRun: true,
+  };
+}
+
+async function runDisneyMonitorInProcess(job, payload) {
+  const path = require("path");
+  const monitorDir = path.join(__dirname, "..", "executor", "monitor");
+  const mode = String(payload.disneyMonitorMode || "local").toLowerCase();
+  const maxPolls = Math.max(
+    1,
+    Number(job.task?.monitorMaxPolls || process.env.DISNEY_MONITOR_MAX_POLLS) || 3,
+  );
+  const hits = [];
+
+  emitLog(job.runId, job.task?.id, "info", `Disney monitor mode=${mode}`);
+
+  if (mode === "global") {
+    const { createGlobalMonitorHub } = await import(
+      pathToFileUrl(path.join(monitorDir, "global-monitor-hub.js"))
+    );
+    const { createDisneyStockMonitor } = await import(
+      pathToFileUrl(path.join(monitorDir, "disney-stock-monitor.js"))
+    );
+    const hub = createGlobalMonitorHub({
+      attachBridge: false,
+      monitor: createDisneyStockMonitor({
+        intervalMs: Number(payload.disneyMonitorIntervalMs) || 10000,
+        // Global poll keywords stay owner/env — task only filters.
+      }),
+      log: (line) => emitLog(job.runId, job.task?.id, "info", line),
+    });
+    const sub = hub.subscribeTask(
+      {
+        taskId: payload.taskId,
+        disneyMonitorMode: "global",
+        productId: payload.productId || payload.disneyWatchSku,
+        keywords: payload.keywords || payload.disneyWatchKeywords,
+        pdpUrl: payload.pdpUrl,
+      },
+      {
+        onHit: (ev) => {
+          hits.push(ev);
+          emitLog(
+            job.runId,
+            job.task?.id,
+            "ok",
+            `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
+          );
+          emitMonitorHit({
+            store: "disney",
+            productId: ev.productId,
+            title: ev.title,
+            reason: ev.reason,
+            taskId: job.task?.id,
+            runId: job.runId,
+          });
+        },
+      },
+    );
+    if (!sub.ok) {
+      return {
+        ok: false,
+        error: sub.error || "subscribe failed",
+        monitor: true,
+        disneyMonitorMode: "global",
+      };
+    }
+    emitLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Subscribed watch sku=${(sub.watch.productIds || []).join(",") || "-"} kw=${(sub.watch.keywords || []).join(",") || "-"}`,
+    );
+
+    let polls = 0;
+    await new Promise((resolve) => {
+      const onPoll = (s) => {
+        polls += 1;
+        emitLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          `global poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+        );
+        if (hits.length || polls >= maxPolls) {
+          hub.monitor.off("poll", onPoll);
+          resolve();
+        }
+      };
+      hub.monitor.on("poll", onPoll);
+      hub.monitor.on("error", (e) =>
+        emitLog(job.runId, job.task?.id, "err", e.error || "monitor error"),
+      );
+      hub.start();
+    });
+    await hub.stop();
+    hub.detach();
+    return {
+      ok: true,
+      monitor: true,
+      disneyMonitorMode: "global",
+      hits,
+      note: hits.length ? `matched ${hits.length}` : `no match in ${polls} polls (baseline/filter)`,
+      dryRun: true,
+    };
+  }
+
+  // local — task proxies
+  const { createTaskLocalMonitor } = await import(
+    pathToFileUrl(path.join(monitorDir, "task-local-monitor.js"))
+  );
+  const entries = Array.isArray(job.proxyEntries)
+    ? job.proxyEntries.map((e) => String(e || "").trim()).filter(Boolean)
+    : [];
+  const proxies = entries.length ? entries : job.proxyRaw ? [job.proxyRaw] : [];
+  if (!proxies.length) {
+    return { ok: false, error: "Task-local monitor needs a proxy group", monitor: true };
+  }
+  let local;
+  try {
+    local = createTaskLocalMonitor({
+      store: "disney",
+      productId: payload.productId || payload.disneyWatchSku,
+      keywords: payload.keywords || payload.disneyWatchKeywords,
+      pdpUrl: payload.pdpUrl,
+      proxies,
+      monitorIntervalMs: payload.disneyMonitorIntervalMs,
+      monitorDelayMs: payload.disneyMonitorDelayMs,
+    });
+  } catch (e) {
+    return { ok: false, error: e.message || String(e), monitor: true };
+  }
+
+  let polls = 0;
+  await new Promise((resolve) => {
+    local.on("poll", (s) => {
+      polls += 1;
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `local poll #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events}`,
+      );
+      if (hits.length || polls >= maxPolls) resolve();
+    });
+    local.on("stock_changed", (ev) => {
+      hits.push(ev);
+      emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      emitMonitorHit({
+        store: "disney",
+        productId: ev.productId,
+        title: ev.title,
+        reason: ev.reason,
+        taskId: job.task?.id,
+        runId: job.runId,
+      });
+    });
+    local.on("error", (e) =>
+      emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
+    );
+    local.start();
+  });
+  await local.stop();
+  return {
+    ok: true,
+    monitor: true,
+    disneyMonitorMode: "local",
     hits,
     note: hits.length ? `matched ${hits.length}` : `no change in ${polls} polls`,
     dryRun: true,
@@ -1139,8 +1377,8 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   payload.taskId = `${job.runId}-${attemptLabel}`;
   const summary = summarizePayload(payload);
 
-  // Bandai monitor (global filter / task-local) runs in-process against executor/
-  // monitor modules — same code Fly would use; no checkout adapter import.
+  // Bandai / Disney monitor (global filter / task-local) runs in-process against
+  // executor/monitor modules — same code Fly would use; no checkout adapter import.
   if (
     job.task?.store === "bandai" &&
     String(job.task?.bandaiMode || payload.bandaiMode || "") === "monitor"
@@ -1148,6 +1386,27 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     emitLog(job.runId, job.task?.id, "info", "Starting Bandai monitor");
     try {
       const mon = await runBandaiMonitorInProcess(job, payload);
+      return finishResult(job, mon, summary);
+    } catch (e) {
+      return finishResult(
+        job,
+        {
+          ok: false,
+          error: e?.message || String(e),
+          monitor: true,
+        },
+        summary,
+      );
+    }
+  }
+
+  if (
+    job.task?.store === "disney" &&
+    String(job.task?.disneyMode || payload.disneyMode || "") === "monitor"
+  ) {
+    emitLog(job.runId, job.task?.id, "info", "Starting Disney monitor");
+    try {
+      const mon = await runDisneyMonitorInProcess(job, payload);
       return finishResult(job, mon, summary);
     } catch (e) {
       return finishResult(

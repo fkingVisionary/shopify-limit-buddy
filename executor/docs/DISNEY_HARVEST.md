@@ -51,8 +51,17 @@ Desktop owns the bank (`desktop/disney-harvest.cjs`), same shape as Toymate:
 
 1. **Settings** → Hyper + CapSolver → start engine.
 2. **Harvest** → **Disney Store Harvest** → pick sticky AU ISP/resi proxy group → Start harvest (or Harvest one now).
-3. **Tasks** → Disney Store AU → Autocheckout/pay → Run — main process `take()`s one session when ready and passes `harvestedSession` on `/run`.
-4. **Empty bank / Stop / Clear** → no claim; payload sends `harvestedSession: null` → executor cold path (warm + CapSolver). Still works.
+3. Leave **Drop pressure** on (default) so the bank refills faster while below desired and immediately after each claim.
+4. **Tasks** → Disney Autocheckout options:
+   - **Use harvested session when available** (default on)
+   - **Require fresh CapSolver token on claim** (default off — warm-only claim OK, CapSolver on path)
+   - **Prefer last-good sticky exit when cold** (default on)
+5. Run — main `take()`s when opted in; near-expiry captcha is discarded (not claimed) → cold path.
+6. **Empty bank / harvest off / Stop / Clear** → `harvestedSession: null` → cold warm + CapSolver. Still works.
+
+### Monitor feed · Quick Task
+
+Disney/Bandai monitor matches land on **Results → Monitor feed**. Set Quick Task profile/proxy/qty/place-order/harvest toggles, then press **Quick Task** on a hit to launch Autocheckout for that SKU with those defaults (ephemeral run — not saved to the task list).
 
 Sessions are single-use and exit-bound. Do not rotate sticky session after claim.
 

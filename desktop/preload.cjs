@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld("desktop", {
   disneyHarvestStop: () => ipcRenderer.invoke("desktop:disney-harvest-stop"),
   disneyHarvestClear: () => ipcRenderer.invoke("desktop:disney-harvest-clear"),
   disneyHarvestOnce: (opts) => ipcRenderer.invoke("desktop:disney-harvest-once", opts),
+  clearMonitorFeed: () => ipcRenderer.invoke("desktop:clear-monitor-feed"),
+  quickTask: (opts) => ipcRenderer.invoke("desktop:quick-task", opts),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);
