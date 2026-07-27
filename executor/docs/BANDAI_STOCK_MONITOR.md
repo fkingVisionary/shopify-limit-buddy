@@ -90,5 +90,22 @@ route — no separate checkout fork.
 ## Next (not V1)
 
 - Desktop global monitor toggle + live event feed
-- Wire tasks in `monitoring` via bridge → `runCheckout(task)`
-- Pre-warm checkout sessions on subscribe (separate from monitor proxies)
+- ~~Wire tasks in `monitoring` via bridge → `runCheckout(task)`~~ **done** (Desktop Monitor + Checkout on restock; claims F5 harvest at trigger)
+- Pre-warm checkout sessions on subscribe (separate from monitor proxies) — use **Harvest → Bandai** while Monitor runs
+
+## Monitor → Autocheckout (Desktop)
+
+1. Arm **Harvest → Bandai** (sticky checkout proxies).
+2. Task: Bandai → **Monitor**, set watch SKU/keywords, leave **Checkout on restock** on.
+3. Assign vault account + Place order (or off for dry).
+4. Run task — polls until matching `stock_changed`, claims harvest, Autocheckout.
+
+Labs:
+
+```bash
+# Dry handoff + hub inject
+node executor/scripts/bandai-monitor-checkout-lab.mjs
+
+# Live (inject skipped — uses harvest + Fast GE on watch SKU)
+BANDAI_MONITOR_CHECKOUT_LIVE=1 BANDAI_CARD_*=… node executor/scripts/bandai-monitor-checkout-lab.mjs
+```

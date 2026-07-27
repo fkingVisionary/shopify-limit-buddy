@@ -228,6 +228,7 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = { ...state.settings, ...patch };
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    takeBandaiHarvest: () => bandaiHarvest.take(),
   });
   persistSettings();
   return snapshot();
@@ -284,6 +285,7 @@ ipcMain.handle("desktop:start-engine", async () => {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    takeBandaiHarvest: () => bandaiHarvest.take(),
   });
   runner.start();
   send({ type: "snapshot", data: snapshot() });
@@ -611,6 +613,10 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
       storeId === "bandai" && task.bandaiMode === "monitor"
         ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0)
         : undefined,
+    bandaiCheckoutOnHit:
+      storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
+        ? task.bandaiCheckoutOnHit !== false
+        : undefined,
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     // Disney Store AU fields (ignored by other stores).
@@ -716,7 +722,10 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
       const needsVault =
         (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
         (task.store === "bandai" &&
-          ["checkout", "chance"].includes(String(task.bandaiMode || "checkout")));
+          (["checkout", "chance"].includes(String(task.bandaiMode || "checkout")) ||
+            (String(task.bandaiMode || "") === "monitor" &&
+              task.bandaiCheckoutOnHit !== false &&
+              task.placeOrder !== false)));
       if (needsVault) {
         const resolved = resolveAccountForTask({
           task,
@@ -883,6 +892,7 @@ async function e2eAutorun() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    takeBandaiHarvest: () => bandaiHarvest.take(),
   });
   runner.start();
 
@@ -981,6 +991,7 @@ async function e2eAutorun() {
 app.whenReady().then(async () => {
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    takeBandaiHarvest: () => bandaiHarvest.take(),
   });
   createWindow();
   if (process.env.DESKTOP_E2E_AUTORUN === "1") {

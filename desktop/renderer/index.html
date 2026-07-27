@@ -123,6 +123,11 @@
                 <label>Start delay (ms)</label>
                 <input id="taskBandaiMonitorDelayMs" type="number" min="0" step="500" value="0" />
               </div>
+              <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout on restock / new in-stock match</label>
+              <p class="field-hint">
+                When on, the first matching <code>stock_changed</code> switches to Autocheckout (claims a Bandai F5 harvest bridge if Harvest is armed).
+                Arm <strong>Harvest → Bandai</strong> before the drop. Leave Place order off for a dry cart-only prove.
+              </p>
             </div>
             <div id="taskBandaiCheckoutModeWrap" hidden>
               <label>Checkout pay path</label>

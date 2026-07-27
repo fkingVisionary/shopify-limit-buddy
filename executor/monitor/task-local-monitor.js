@@ -92,6 +92,7 @@ export function createTaskLocalMonitor(task, opts = {}) {
   return {
     on: (...a) => bus.on(...a),
     off: (...a) => bus.off(...a),
+    emit: (...a) => bus.emit(...a),
     start,
     stop,
     pollOnce: () => monitor.pollOnce(),

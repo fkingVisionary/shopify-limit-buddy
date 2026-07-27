@@ -176,11 +176,17 @@ function syncTaskFormForStore() {
   const bPass = $("taskBandaiAccountPassWrap");
   if (bPass) bPass.hidden = !bandai || mode !== "account_gen";
   const bAssign = $("taskBandaiAssignWrap");
-  if (bAssign) bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance");
+  if (bAssign) {
+    const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
+    bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance" && !monCheckout);
+  }
   const bChance = $("taskBandaiChanceWrap");
   if (bChance) bChance.hidden = !bandai || mode !== "chance";
   const bPayPath = $("taskBandaiCheckoutModeWrap");
-  if (bPayPath) bPayPath.hidden = !bandai || mode !== "checkout";
+  if (bPayPath) {
+    const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
+    bPayPath.hidden = !bandai || (mode !== "checkout" && !monCheckout);
+  }
   const bMon = $("taskBandaiMonitorWrap");
   if (bMon) bMon.hidden = !bandai || mode !== "monitor";
   const bMonLocal = $("taskBandaiMonitorLocalOpts");
@@ -190,13 +196,16 @@ function syncTaskFormForStore() {
   }
   const placeWrap = $("taskPlaceOrderWrap");
   if (placeWrap) {
+    const bandaiMonCheckout =
+      bandai && mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
     placeWrap.hidden =
       (toy && mode !== "checkout") ||
-      (bandai && mode !== "checkout") ||
+      (bandai && mode !== "checkout" && !bandaiMonCheckout) ||
       (pc && mode !== "checkout");
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
-  if (bandai && (mode === "checkout" || mode === "chance")) syncBandaiAccountAssignUi();
+  if (bandai && (mode === "checkout" || mode === "chance" || mode === "monitor"))
+    syncBandaiAccountAssignUi();
 }
 
 function esc(s) {
@@ -750,6 +759,8 @@ document.body.addEventListener("click", async (e) => {
       $("taskBandaiMonitorIntervalMs").value = task.bandaiMonitorIntervalMs || 10000;
     if ($("taskBandaiMonitorDelayMs"))
       $("taskBandaiMonitorDelayMs").value = task.bandaiMonitorDelayMs || 0;
+    if ($("taskBandaiCheckoutOnHit"))
+      $("taskBandaiCheckoutOnHit").checked = task.bandaiCheckoutOnHit !== false;
     if ($("taskPcMode")) $("taskPcMode").value = task.pcMode || "monitor";
     if ($("taskBandaiAccountPassword"))
       $("taskBandaiAccountPassword").value = task.accountPassword || "";
@@ -871,6 +882,10 @@ function readTaskForm() {
         : undefined,
     bandaiMonitorDelayMs:
       store === "bandai" ? Number($("taskBandaiMonitorDelayMs")?.value) || 0 : undefined,
+    bandaiCheckoutOnHit:
+      store === "bandai" && ($("taskBandaiMode")?.value || "") === "monitor"
+        ? $("taskBandaiCheckoutOnHit")?.checked !== false
+        : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
@@ -897,6 +912,8 @@ if ($("taskBandaiMode")) $("taskBandaiMode").onchange = () => syncTaskFormForSto
 if ($("taskDisneyMode")) $("taskDisneyMode").onchange = () => syncTaskFormForStore();
 if ($("taskBandaiMonitorMode"))
   $("taskBandaiMonitorMode").onchange = () => syncTaskFormForStore();
+if ($("taskBandaiCheckoutOnHit"))
+  $("taskBandaiCheckoutOnHit").onchange = () => syncTaskFormForStore();
 if ($("taskPcMode")) $("taskPcMode").onchange = () => syncTaskFormForStore();
 if ($("taskAccountAssign")) $("taskAccountAssign").onchange = () => syncAccountAssignUi();
 if ($("taskBandaiAccountAssign"))

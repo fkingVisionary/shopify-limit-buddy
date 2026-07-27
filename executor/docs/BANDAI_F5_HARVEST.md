@@ -25,6 +25,21 @@ Chromium launch on the drop critical path.
 3. Run Bandai Autocheckout — each job claims one bridge + locks that proxy.
 4. **Stop** after the drop (CPU).
 
+### Monitor → Autocheckout
+
+Bandai **Monitor** + **Checkout on restock** (`desktop/bandai-monitor-checkout.cjs`):
+
+1. Monitor polls stock on **monitor** proxies (no F5 claim).
+2. On first matching `stock_changed` (OOS→IS) → claim F5 harvest (if bank ready) → Fast Autocheckout.
+3. Empty harvest bank → cold Playwright path (same as Autocheckout).
+
+Do **not** claim at monitor enqueue — only at the restock trigger.
+
+```bash
+# Injected stock_changed → mint harvest → Fast checkout (disposable card)
+PROXY='host:port:user:pass' BANDAI_CARD_NUMBER=… node executor/scripts/bandai-monitor-checkout-lab.mjs
+```
+
 ## Executor API
 
 ```

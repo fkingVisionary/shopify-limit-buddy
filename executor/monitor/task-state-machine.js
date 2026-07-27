@@ -100,9 +100,16 @@ export function createTaskStateMachine(opts = {}) {
 
   function listMonitoring(productId) {
     const pid = productId != null ? String(productId) : null;
-    return [...tasks.values()].filter(
-      (t) => t.status === "monitoring" && (!pid || t.productId === pid),
-    );
+    return [...tasks.values()].filter((t) => {
+      if (t.status !== "monitoring") return false;
+      if (!pid) return true;
+      if (t.productId && t.productId === pid) return true;
+      // Keyword watches store first keyword as productId placeholder — also
+      // match via meta.watch.productIds when present.
+      const ids = t.meta?.watch?.productIds || [];
+      const up = pid.toUpperCase();
+      return ids.some((id) => String(id).toUpperCase() === up);
+    });
   }
 
   function all() {
