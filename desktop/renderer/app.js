@@ -217,6 +217,7 @@ function esc(s) {
 
 function renderTasks() {
   renderHarvestBankStrip();
+  renderDropPrep();
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
@@ -227,7 +228,7 @@ function renderTasks() {
     .map((t) => {
       const statusLabel = t.lastLabel || t.lastStatus || "idle";
       const badge =
-        t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok"
+        t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok" || t.lastStatus === "login_ok"
           ? "ok"
           : t.lastStatus === "held_pay_retry"
             ? "run"
@@ -259,7 +260,7 @@ function renderTasks() {
                 String(t.bandaiMode || "checkout") === "checkout"
                   ? ` · ${t.bandaiCheckoutMode || "fast"}`
                   : ""
-              }`
+              }${t.bandaiAreaItemNo ? ` · ${t.bandaiAreaItemNo}` : ""}`
             : t.store === "disney"
               ? `Disney · ${t.disneyMode || "pay"}`
             : t.store === "pokemoncentre"
@@ -288,7 +289,11 @@ function renderTasks() {
         const assign = t.accountAssign || "auto";
         if (assign === "manual") {
           const acc = (state.accounts || []).find((a) => a.id === t.accountId);
-          accountMeta = acc ? `account: ${acc.email}` : "account: manual (missing)";
+          const proven =
+            acc?.loginProvenAt && Date.now() - Number(acc.loginProvenAt) < 36 * 3600_000
+              ? " · proven"
+              : "";
+          accountMeta = acc ? `account: ${acc.email}${proven}` : "account: manual (missing)";
         } else {
           const prof = (state.profiles || []).find((p) => p.id === t.profileId);
           const base = emailBaseClient(prof?.email);
@@ -305,12 +310,17 @@ function renderTasks() {
         t.store === "bandai" && t.heldCart?.cartSn
           ? `<button type="button" class="secondary" data-retry-pay="${t.id}">Retry pay</button>`
           : "";
+      const dropSummary =
+        t.store === "bandai" && t.lastDropSummary
+          ? `<div class="meta drop-summary">${esc(t.lastDropSummary)}</div>`
+          : "";
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
           <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
+          ${dropSummary}
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
@@ -321,6 +331,34 @@ function renderTasks() {
       </div>`;
     })
     .join("");
+}
+
+function renderDropPrep() {
+  const strip = $("dropReadyStrip");
+  const badge = $("dropReadyBadge");
+  const sched = $("dropScheduleLine");
+  if (!strip) return;
+  const ready = state.dropReady;
+  if (ready?.text) {
+    strip.textContent = ready.text;
+    strip.classList.toggle("ok", Boolean(ready.ready));
+    strip.classList.toggle("bad", !ready.ready);
+  } else {
+    strip.textContent = "Ready —";
+    strip.classList.remove("ok", "bad");
+  }
+  if (badge) {
+    badge.textContent = ready?.ready ? "READY" : ready?.lanes ? "NOT READY" : "—";
+    badge.className = `badge ${ready?.ready ? "ok" : ready?.lanes ? "err" : ""}`;
+  }
+  const ds = state.dropSchedule;
+  if (sched) {
+    if (ds?.armed) {
+      sched.textContent = `Armed → ${ds.label || ""} · fires in ${ds.countdown || "…"}`;
+    } else {
+      sched.textContent = "No schedule armed";
+    }
+  }
 }
 
 function accountStatusBadge(status) {
@@ -1104,6 +1142,63 @@ $("btnRunAll").onclick = async () => {
   if (res.snapshot) applyState(res.snapshot);
 };
 
+if ($("btnDropModeArm")) {
+  $("btnDropModeArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim() || "";
+    const res = await window.desktop.dropModeArm(fireAt ? { fireAt } : {});
+    if (res.snapshot) applyState(res.snapshot);
+    else if (res.harvest && state) {
+      state.bandaiHarvest = res.harvest;
+      state.dropReady = res.dropReady;
+      renderDropPrep();
+      renderBandaiHarvest();
+    }
+    appendLog(
+      res.ok
+        ? `Drop Mode armed — ${res.lanes} lane(s), harvest desired ${res.desired}${
+            res.schedule?.ok ? ` · schedule ${res.schedule.label}` : ""
+          }`
+        : esc(res.error || "Drop Mode failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
+if ($("btnDropScheduleArm")) {
+  $("btnDropScheduleArm").onclick = async () => {
+    const fireAt = $("dropFireAt")?.value?.trim();
+    if (!fireAt) {
+      appendLog("Enter fire time (e.g. 13:00 AEST)", "err");
+      return;
+    }
+    const res = await window.desktop.dropScheduleArm({ fireAt });
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(
+      res.ok ? `Schedule armed → ${res.label} (in ${res.countdown})` : esc(res.error || "Schedule failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
+if ($("btnDropScheduleCancel")) {
+  $("btnDropScheduleCancel").onclick = async () => {
+    const res = await window.desktop.dropScheduleCancel();
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog("Drop schedule cancelled", "muted");
+  };
+}
+
+if ($("btnVaultLoginCheck")) {
+  $("btnVaultLoginCheck").onclick = async () => {
+    const res = await window.desktop.bandaiVaultLoginCheck({});
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(
+      res.ok ? `Vault login check enqueued (${res.enqueued})` : esc(res.error || "Login check failed"),
+      res.ok ? "ok" : "err",
+    );
+  };
+}
+
 $("bhStart").onclick = async () => {
   const res = await window.desktop.bandaiHarvestStart(bandaiHarvestOptsFromForm());
   if (res.snapshot) applyState(res.snapshot);
@@ -1353,6 +1448,10 @@ window.desktop.onEvent((evt) => {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
     renderHarvestBankStrip();
+  }
+  if (evt.type === "dropSchedule") {
+    if (state) state.dropSchedule = evt.data || { armed: false };
+    renderDropPrep();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

@@ -38,7 +38,23 @@
         <div>
           <h2>Tasks</h2>
           <p id="harvestBankStrip" class="harvest-bank-strip" aria-live="polite">Harvest banks —</p>
-          <p class="hint">Kmart + Toymate run on this machine. Kmart still uses Hyper; Toymate uses CapSolver for Cloudflare. Bandai Monitor + Checkout on restock auto-arms F5 harvest when Harvest → Bandai has a sticky proxy group.</p>
+          <div id="dropPrepCard" class="drop-prep-card">
+            <div class="drop-prep-head">
+              <strong>Bandai drop prep</strong>
+              <span id="dropReadyBadge" class="badge">—</span>
+            </div>
+            <p id="dropReadyStrip" class="drop-ready-strip" aria-live="polite">Ready —</p>
+            <div class="drop-prep-row">
+              <label class="drop-fire-label">Fire at (AEST)</label>
+              <input id="dropFireAt" placeholder="13:00 or 2026-07-27T13:00" autocomplete="off" />
+              <button type="button" id="btnDropModeArm">Arm Drop Mode</button>
+              <button type="button" id="btnDropScheduleArm" class="secondary">Arm schedule</button>
+              <button type="button" id="btnDropScheduleCancel" class="secondary">Cancel</button>
+              <button type="button" id="btnVaultLoginCheck" class="secondary">Check vault logins</button>
+            </div>
+            <p id="dropScheduleLine" class="field-hint">No schedule armed</p>
+          </div>
+          <p class="hint">Kmart + Toymate run on this machine. Bandai: Arm Drop Mode → harvest fills → Arm schedule (AEST T0) fires all Autocheckout lanes together. Monitor + Checkout on restock also auto-arms F5 when Harvest → Bandai has a sticky proxy group.</p>
           <div id="taskList" class="list"></div>
         </div>
         <form id="taskForm" class="form-card">

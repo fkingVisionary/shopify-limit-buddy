@@ -341,6 +341,7 @@ function buildBandaiPayload({
     mode !== "account_gen" &&
     mode !== "monitor" &&
     mode !== "chance" &&
+    mode !== "login_check" &&
     input &&
     !/^https:\/\/(www\.)?p-bandai\.com\//i.test(input) &&
     !/^[A-Za-z0-9_-]+$/.test(input)
@@ -373,7 +374,7 @@ function buildBandaiPayload({
       });
 
   const storeUrl =
-    mode === "account_gen" || mode === "monitor" || !input
+    mode === "account_gen" || mode === "monitor" || mode === "login_check" || !input
       ? `https://p-bandai.com/${bandaiArea}/`
       : /^https?:\/\//i.test(input)
         ? input
@@ -381,7 +382,7 @@ function buildBandaiPayload({
 
   let resolvedAccount = null;
   let accountAssignSource = null;
-  if (mode === "checkout" || mode === "chance") {
+  if (mode === "checkout" || mode === "chance" || mode === "login_check") {
     if (task.account?.email && task.account?.password) {
       resolvedAccount = {
         email: task.account.email,
@@ -964,6 +965,10 @@ function finishResult(job, res, summary) {
     heldPayRetry: Boolean(res?.heldPayRetry),
     heldCartGone: Boolean(res?.heldCartGone),
     heldCart: res?.heldCart || null,
+    loginCheck: Boolean(res?.loginCheck),
+    atcWallMs: res?.atcWallMs ?? null,
+    transactionId: res?.transactionId || res?.geTransactionId || null,
+    note: res?.note ?? null,
     raw: {
       ok: res?.ok,
       checkoutStage: res?.checkoutStage,
@@ -974,6 +979,7 @@ function finishResult(job, res, summary) {
       accountGen: Boolean(res?.accountGen),
       heldPayRetry: Boolean(res?.heldPayRetry),
       paymentStatus: res?.paymentStatus ?? null,
+      loginCheck: Boolean(res?.loginCheck),
     },
   };
 }

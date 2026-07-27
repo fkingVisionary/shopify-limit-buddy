@@ -24,9 +24,18 @@ Companion: [`BANDAI_CHECKOUT_BIBLE.md`](./BANDAI_CHECKOUT_BIBLE.md) ·
 | T−30 | Sticky **checkout** proxy group set on Harvest → Bandai (not monitor proxies) |
 | T−15 | Desired bank = lane count (1–4). Harvest **retries** transient `ERR_CONNECTION_*` |
 | T−5 | Confirm Tasks strip / harvest ready ≥ lanes. Extend TTL if needed (`BANDAI_HARVEST_TTL_MS`) |
-| Task setup | PDP `N…` URL **and** Backend PID `NAI…` when known (extension tip under load) |
+| Task setup | PDP `N…` URL (Backend PID optional — auto-resolved) |
+| T−5 | **Arm Drop Mode** (harvest desired = lanes) → optional **Check vault logins** → **Arm schedule** AEST T0 |
 
 Do **not** start harvest mint at T0 — that puts Chromium on the critical path.
+
+### Desktop drop ops (solo fire)
+
+1. **Drop ready strip** — engine / lanes / harvest / accounts / proxies
+2. **Arm Drop Mode** — sets harvest desired = lane count and starts mint
+3. **Arm schedule** — AEST `HH:mm` or `YYYY-MM-DDTHH:mm`; fires all Autocheckout lanes with ≤150ms stagger
+4. **Check vault logins** — F5+login proof; stamps `loginProvenAt` on vault rows
+5. Lane **after-action** line + auto-cached `bandaiAreaItemNo` after first resolve
 
 ---
 

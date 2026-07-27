@@ -137,6 +137,9 @@ function consumerOutcome(res) {
     return { code: "error", label: OUTCOME.error, stockStatus: "unknown" };
   }
   if (res.ok) {
+    if (res.loginCheck) {
+      return { code: "login_ok", label: "Login proven", stockStatus: "ok" };
+    }
     if (res.orderNumber) {
       return { code: "confirmed", label: OUTCOME.confirmed, stockStatus: "ok" };
     }

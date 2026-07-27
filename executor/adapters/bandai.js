@@ -5,6 +5,7 @@
 // Modes (task.bandaiMode):
 //   checkout      — login → ATC → cart → checkoutSn (HTTP + F5 sensor bridge)
 //   account_gen   — bandai-agen (IMAP + SMSPool/OnlineSim → registerVerification → vault)
+//   login_check   — F5 + login + member_refresh only (vault same-day proof)
 //   monitor       — poll search/PDP for purchaseAvailable / Chance
 //   chance        — applyDraw for a campaign
 //
@@ -909,6 +910,22 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       error: member.note || "member refresh failed",
       failedStep: "member_refresh",
       checkoutStage: "pre_cart",
+      via: "http",
+    };
+  }
+
+  // Vault / drop prep: prove login same day without ATC.
+  if (opts.loginCheckOnly === true) {
+    await closeBridge();
+    return {
+      ok: true,
+      steps,
+      loginCheck: true,
+      dryRun: true,
+      checkoutStage: "login_ok",
+      note: `login proven ${email}`,
+      account: { email, status: "ready" },
+      cookies: ctx.jar?.dump?.() ?? {},
       via: "http",
     };
   }
@@ -2173,6 +2190,28 @@ export const bandaiAdapter = {
 
     if (normalized === "account_gen") {
       return createBandaiAccount(task, ctx, { tStep, area });
+    }
+
+    if (normalized === "login_check") {
+      const account = task.account || {};
+      const email = account.email || task.email || task.profile?.email;
+      const password = account.password || task.password || task.accountPassword;
+      if (!email || !password) {
+        return {
+          ok: false,
+          steps,
+          error: "login_check requires account email + password",
+          failedStep: "login",
+          checkoutStage: "pre_cart",
+        };
+      }
+      return runHttpCheckout(task, ctx, session, tStep, steps, {
+        email,
+        password,
+        productCode: null,
+        frontendCode: null,
+        loginCheckOnly: true,
+      });
     }
 
     if (normalized === "monitor") {

@@ -18,9 +18,22 @@ const {
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 const { createBandaiHarvestAutoArm } = require("./bandai-harvest-autoarm.cjs");
+const {
+  parseDropFireAt,
+  msUntil,
+  formatCountdown,
+  staggerOffsets,
+  listBandaiDropTasks,
+  assessDropReady,
+  planDropMode,
+  formatLaneAfterAction,
+} = require("./bandai-drop-ops.cjs");
 
 let win = null;
 let state = store.loadAll();
+
+/** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
+let dropSchedule = null;
 
 const harvest = createHarvestPool({
   sidecar,
@@ -131,7 +144,110 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
   return row;
 }
 
+function cancelDropSchedule({ silent = false } = {}) {
+  if (dropSchedule?.timer) clearTimeout(dropSchedule.timer);
+  if (dropSchedule?.tickTimer) clearInterval(dropSchedule.tickTimer);
+  dropSchedule = null;
+  if (!silent) {
+    send({ type: "dropSchedule", data: { armed: false } });
+  }
+}
+
+function publishDropSchedule() {
+  if (!dropSchedule) {
+    send({ type: "dropSchedule", data: { armed: false } });
+    return;
+  }
+  const left = msUntil(dropSchedule.atMs);
+  send({
+    type: "dropSchedule",
+    data: {
+      armed: true,
+      atMs: dropSchedule.atMs,
+      label: dropSchedule.label,
+      taskIds: dropSchedule.taskIds,
+      countdownMs: left,
+      countdown: formatCountdown(left),
+    },
+  });
+}
+
+function armDropSchedule({ fireAt, taskIds, staggerGapMs = 50 } = {}) {
+  const parsed = parseDropFireAt(fireAt);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+  const ids =
+    Array.isArray(taskIds) && taskIds.length
+      ? taskIds.map(String)
+      : listBandaiDropTasks(state.db.tasks).map((t) => t.id);
+  if (!ids.length) return { ok: false, error: "No Bandai Autocheckout tasks to fire" };
+
+  cancelDropSchedule({ silent: true });
+  const delay = msUntil(parsed.atMs);
+  dropSchedule = {
+    atMs: parsed.atMs,
+    label: parsed.label,
+    taskIds: ids,
+    staggerGapMs: Math.max(0, Math.min(150, Number(staggerGapMs) || 50)),
+    timer: null,
+    tickTimer: null,
+  };
+  dropSchedule.timer = setTimeout(() => {
+    void fireArmedDropSchedule();
+  }, delay);
+  dropSchedule.tickTimer = setInterval(() => publishDropSchedule(), 1000);
+  publishDropSchedule();
+  send({
+    type: "job",
+    phase: "log",
+    level: "info",
+    message: `Drop schedule armed → ${parsed.label} (${ids.length} task(s), countdown ${formatCountdown(delay)})`,
+  });
+  return {
+    ok: true,
+    atMs: parsed.atMs,
+    label: parsed.label,
+    taskIds: ids,
+    countdownMs: delay,
+    countdown: formatCountdown(delay),
+  };
+}
+
+async function fireArmedDropSchedule() {
+  if (!dropSchedule) return;
+  const { taskIds, staggerGapMs, label } = dropSchedule;
+  cancelDropSchedule({ silent: true });
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    message: `Drop T0 — firing ${taskIds.length} task(s) (${label})`,
+  });
+  const res = enqueueTaskIds(taskIds, { stagger: true, staggerGapMs });
+  send({ type: "dropSchedule", data: { armed: false, fired: true, result: res } });
+  send({ type: "snapshot", data: snapshot() });
+}
+
+function dropReadySnapshot() {
+  return assessDropReady({
+    engineRunning: Boolean(sidecar.status()?.running),
+    harvest: bandaiHarvest.snapshot(),
+    tasks: state.db.tasks,
+    accounts: state.db.accounts || [],
+    proxyGroups: state.db.proxyGroups || [],
+  });
+}
+
 function snapshot() {
+  const schedule = dropSchedule
+    ? {
+        armed: true,
+        atMs: dropSchedule.atMs,
+        label: dropSchedule.label,
+        taskIds: dropSchedule.taskIds,
+        countdownMs: msUntil(dropSchedule.atMs),
+        countdown: formatCountdown(msUntil(dropSchedule.atMs)),
+      }
+    : { armed: false };
   return {
     settings: {
       ...state.settings,
@@ -153,6 +269,8 @@ function snapshot() {
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
+    dropSchedule: schedule,
+    dropReady: dropReadySnapshot(),
   };
 }
 
@@ -195,6 +313,21 @@ runner.setFinishedHandler((result) => {
     at: result.at || Date.now(),
   });
   state.db.results = state.db.results.slice(0, 200);
+  // Vault login_check — stamp same-day proof even without a real task row.
+  if (result.loginCheck && result.ok) {
+    const email = String(result.account?.email || "").toLowerCase();
+    const acc = (state.db.accounts || []).find(
+      (a) =>
+        String(a.storeId || "") === "bandai" &&
+        String(a.email || "").toLowerCase() === email,
+    );
+    if (acc) {
+      acc.status = "ready";
+      acc.loginProvenAt = Date.now();
+      acc.lastLoginAt = Date.now();
+      acc.updatedAt = Date.now();
+    }
+  }
   // Mirror status onto task row
   if (result.taskId) {
     const t = state.db.tasks.find((x) => x.id === result.taskId);
@@ -221,6 +354,13 @@ runner.setFinishedHandler((result) => {
               : "Account gen failed");
         t.lastError = result.ok && persisted ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = null;
+      } else if (result.loginCheck) {
+        t.lastStatus = result.ok ? "login_ok" : "error";
+        t.lastLabel = result.ok
+          ? `Login proven ${result.account?.email || ""}`.trim()
+          : result.consumerLabel || result.error || "Login check failed";
+        t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
+        t.lastDropSummary = t.lastLabel;
       } else {
         t.lastStatus =
           result.consumerCode ||
@@ -228,6 +368,18 @@ runner.setFinishedHandler((result) => {
         t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
         t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = result.orderNumber || null;
+        // Persist auto-resolved Backend PID so later lanes skip public resolve.
+        if (
+          result.areaItemNo &&
+          /^NAI/i.test(String(result.areaItemNo)) &&
+          t.store === "bandai"
+        ) {
+          t.bandaiAreaItemNo = String(result.areaItemNo).trim();
+        }
+        // Compact lane after-action for Tasks list.
+        if (t.store === "bandai") {
+          t.lastDropSummary = formatLaneAfterAction(result);
+        }
         // Bandai: persist held cart for Retry pay (live cart is still source of truth).
         if (result.ok && result.orderNumber) {
           t.heldCart = null;
@@ -757,7 +909,12 @@ ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
   return snapshot();
 });
 
-ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
+ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => enqueueTaskIds(taskIds, opts));
+
+/**
+ * Build + enqueue jobs for task ids. Supports staggered fire for drop T0.
+ */
+function enqueueTaskIds(taskIds, opts = {}) {
   if (!sidecar.status().running) {
     return { ok: false, error: "Start the engine first (app must stay open)" };
   }
@@ -788,7 +945,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
     const n = payFromCart ? 1 : Math.max(1, Math.min(50, Number(task.quantity) || 1));
     let assignError = null;
     for (let i = 0; i < n; i++) {
-      const proxyIndex = i % entries.length;
+      let proxyIndex = i % entries.length;
       const proxyRaw = entries[proxyIndex];
       const taskCopy = { ...task };
       if (payFromCart && task.store === "bandai") {
@@ -811,7 +968,7 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
       const needsVault =
         (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
         (task.store === "bandai" &&
-          (["checkout", "chance"].includes(String(task.bandaiMode || "checkout")) ||
+          (["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")) ||
             (String(task.bandaiMode || "") === "monitor" &&
               task.bandaiCheckoutOnHit !== false &&
               task.placeOrder !== false)));
@@ -943,8 +1100,171 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => {
     });
   }
   persistDb();
-  runner.enqueue(jobs);
+
+  const useStagger = opts.stagger === true || opts.staggerGapMs != null;
+  if (useStagger && jobs.length > 1) {
+    const offsets = staggerOffsets(jobs.length, {
+      gapMs: opts.staggerGapMs ?? 50,
+      maxSpreadMs: 150,
+    });
+    jobs.forEach((job, i) => {
+      setTimeout(() => {
+        runner.enqueue([job]);
+      }, offsets[i] || 0);
+    });
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: `Staggered enqueue ${jobs.length} lane(s) over ${offsets[offsets.length - 1] || 0}ms`,
+    });
+  } else {
+    runner.enqueue(jobs);
+  }
   send({ type: "snapshot", data: snapshot() });
+  return { ok: true, enqueued: jobs.length, staggered: useStagger, snapshot: snapshot() };
+}
+
+ipcMain.handle("desktop:drop-ready", () => ({ ok: true, ...dropReadySnapshot() }));
+
+ipcMain.handle("desktop:drop-schedule-arm", (_e, opts = {}) => {
+  const res = armDropSchedule(opts || {});
+  return { ...res, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:drop-schedule-cancel", () => {
+  cancelDropSchedule();
+  send({
+    type: "job",
+    phase: "log",
+    level: "muted",
+    message: "Drop schedule cancelled",
+  });
+  return { ok: true, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:drop-mode-arm", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", snapshot: snapshot() };
+  }
+  const plan = planDropMode({
+    tasks: state.db.tasks,
+    harvest: bandaiHarvest.snapshot(),
+  });
+  if (!plan.ok) return { ...plan, snapshot: snapshot() };
+
+  bandaiHarvest.configure({
+    proxyGroupId: plan.proxyGroupId,
+    desired: plan.desired,
+    area: plan.area || "au",
+  });
+  const snap = bandaiHarvest.start({
+    proxyGroupId: plan.proxyGroupId,
+    desired: plan.desired,
+    area: plan.area || "au",
+    getEntries: bandaiHarvestEntries,
+  });
+  bandaiHarvestAutoArm.markManualStart();
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    message: `Drop Mode armed — harvest desired ${plan.desired} for ${plan.lanes} lane(s)`,
+  });
+
+  // Optional: also arm schedule if fireAt provided
+  let schedule = null;
+  if (opts.fireAt) {
+    schedule = armDropSchedule({
+      fireAt: opts.fireAt,
+      taskIds: plan.taskIds,
+      staggerGapMs: opts.staggerGapMs ?? 50,
+    });
+  }
+
+  return {
+    ok: true,
+    ...plan,
+    harvest: snap,
+    schedule,
+    dropReady: dropReadySnapshot(),
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:bandai-vault-login-check", async (_e, opts = {}) => {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", snapshot: snapshot() };
+  }
+  const accountIds = Array.isArray(opts.accountIds) ? opts.accountIds.map(String) : null;
+  let accounts = (state.db.accounts || []).filter((a) => String(a.storeId || "") === "bandai");
+  if (accountIds?.length) {
+    accounts = accounts.filter((a) => accountIds.includes(a.id));
+  } else {
+    // Default: accounts tied to enabled drop tasks, else all ready/active Bandai.
+    const dropTasks = listBandaiDropTasks(state.db.tasks);
+    const linked = new Set();
+    for (const t of dropTasks) {
+      if (t.accountAssign === "manual" && t.accountId) linked.add(String(t.accountId));
+    }
+    if (linked.size) {
+      accounts = accounts.filter((a) => linked.has(a.id));
+    } else {
+      accounts = accounts.filter((a) =>
+        ["ready", "active", "created", "needs_sms"].includes(String(a.status || "").toLowerCase()),
+      );
+    }
+  }
+  accounts = accounts.filter((a) => a.email && a.password).slice(0, 8);
+  if (!accounts.length) {
+    return { ok: false, error: "No Bandai vault accounts to check", snapshot: snapshot() };
+  }
+
+  const harvestPx = bandaiHarvest.snapshot().config?.proxyGroupId;
+  const group =
+    (harvestPx && state.db.proxyGroups.find((g) => g.id === harvestPx)) ||
+    state.db.proxyGroups.find((g) => g.entries?.length) ||
+    null;
+  const entries = group?.entries || [];
+  if (!entries.length) {
+    return { ok: false, error: "Pick a sticky proxy group on Harvest → Bandai first", snapshot: snapshot() };
+  }
+
+  const profile =
+    state.db.profiles[0] || {
+      id: "login-check-profile",
+      email: accounts[0].email,
+      first_name: "Alex",
+      last_name: "Buyer",
+    };
+
+  const jobs = accounts.map((acc, i) => ({
+    task: {
+      id: `login_check_${acc.id}`,
+      store: "bandai",
+      bandaiMode: "login_check",
+      label: `Login check ${acc.email}`,
+      placeOrder: false,
+      account: { email: acc.email, password: acc.password, id: acc.id },
+      accountAssignSource: "vault_check",
+      proxyGroupId: group.id,
+    },
+    profile,
+    proxyRaw: entries[i % entries.length],
+    proxyEntries: entries,
+    proxyIndex: i % entries.length,
+    placeOrder: false,
+    accounts: state.db.accounts || [],
+    settings: state.settings,
+  }));
+
+  send({
+    type: "job",
+    phase: "log",
+    level: "info",
+    message: `Vault login check — ${jobs.length} account(s)`,
+  });
+  runner.enqueue(jobs);
   return { ok: true, enqueued: jobs.length, snapshot: snapshot() };
 });
 
