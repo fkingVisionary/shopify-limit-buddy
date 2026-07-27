@@ -701,6 +701,36 @@ async function runHttpCheckout(task, ctx, session, tStep, steps, opts = {}) {
             cartLines: listCartLines(again.json),
           };
         }
+        // Foreign lines left over from a prior SKU / control run can still trip
+        // Preallocation. Clear them once, then retry ATC (don't spray forever).
+        const foreign = listCartLines(again.json).filter((l) => l.cartItemSn);
+        const alreadyCleared = attempts.some((a) =>
+          /cleared foreign cart/i.test(String(a?.note || "")),
+        );
+        if (foreign.length && !alreadyCleared && attempt < maxAttempts) {
+          const sns = foreign.map((l) => l.cartItemSn).filter(Boolean);
+          const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(sns.join(","))}`;
+          const rem = await session.apiJson("DELETE", remPath, {
+            referer: `${session.base}/cart`,
+          });
+          last = {
+            ok: false,
+            status,
+            note: `${err} → cleared foreign cart=[${foreign
+              .map((l) => l.areaItemNo || l.productCode || "?")
+              .join(",")}] rem=${rem.status}`,
+            json,
+            cartLines: foreign,
+          };
+          attempts.push({
+            attempt,
+            ok: false,
+            status,
+            note: String(last.note || "").slice(0, 160),
+          });
+          await sleepMs(350);
+          continue;
+        }
         last = {
           ok: false,
           status,
