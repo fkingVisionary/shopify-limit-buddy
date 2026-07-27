@@ -454,23 +454,66 @@
       <div class="split">
         <div>
           <h2>Accounts</h2>
-          <p class="hint">Generated retailer logins (Toymate + Bandai). Checkout auto-assigns by profile email base (<code>+tag</code> OK). No match → task <strong>Checkout account → Manual</strong>.</p>
+          <p class="hint">Retailer logins (manual, import, or Account gen). Checkout auto-assigns by profile email base (<code>+tag</code> OK). Save the <strong>exact</strong> Bandai member email + password — a typo (e.g. <code>spotongg</code> vs <code>spotondotgg</code>) returns login 401.</p>
           <div class="row" style="margin-bottom:12px">
+            <button type="button" class="secondary" id="btnExportAccounts">Export</button>
+            <button type="button" class="secondary" id="btnImportAccounts">Import</button>
             <button type="button" class="secondary" id="btnClearAccounts">Clear all</button>
+            <input type="file" id="accImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
           </div>
           <div id="accountList" class="list"></div>
         </div>
-        <div class="form-card">
-          <h3>How to generate</h3>
-          <ol class="hint" style="padding-left:18px;line-height:1.6">
-            <li>Profiles → shipping + email base (billing profile)</li>
-            <li>Proxies → sticky AU ISP/resi</li>
-            <li><strong>Bandai:</strong> Settings → SMSPool + IMAP → Tasks → Bandai → Account gen → Run</li>
-            <li><strong>Toymate:</strong> Settings → CapSolver → Tasks → Toymate → Account gen → Run</li>
-            <li>Checkout task on the same profile → Auto picks vault account by email</li>
-          </ol>
-          <p class="hint">Bandai status: <code>ready</code> = checkout OK; <code>created</code> = registered but SoftBlock login; <code>needs_sms</code>/<code>needs_terms</code> = finish gate. Already-registered emails are not vaulted again.</p>
-          <p class="hint">Bandai password needs upper+lower+digit+symbol. Leave blank to randomise. Catchall <code>bullposted.com</code> uniquifies <code>+tag</code> automatically.</p>
+        <div>
+          <form id="accountForm" class="form-card">
+            <h3 id="accountFormTitle">Add account</h3>
+            <input type="hidden" id="accId" />
+            <label>Store</label>
+            <select id="accStore">
+              <option value="bandai">Premium Bandai AU</option>
+              <option value="toymate">Toymate AU</option>
+              <option value="disney">Disney Store AU</option>
+              <option value="kmart">Kmart AU</option>
+            </select>
+            <label>Email (exact login)</label>
+            <input id="accEmail" type="email" autocomplete="off" placeholder="you@domain.com" required />
+            <label>Password</label>
+            <input id="accPassword" type="text" autocomplete="off" placeholder="account password" required />
+            <div class="grid2">
+              <div>
+                <label>Status</label>
+                <select id="accStatus">
+                  <option value="ready">ready (checkout OK)</option>
+                  <option value="active">active</option>
+                  <option value="created">created (SoftBlock / unproven)</option>
+                  <option value="needs_sms">needs_sms</option>
+                  <option value="needs_terms">needs_terms</option>
+                  <option value="disabled">disabled</option>
+                  <option value="burned">burned</option>
+                </select>
+              </div>
+              <div>
+                <label>Phone (optional)</label>
+                <input id="accPhone" placeholder="for agen rows" />
+              </div>
+            </div>
+            <label>Notes (optional)</label>
+            <input id="accNotes" maxlength="240" placeholder="lab gmail, drop lane 1…" />
+            <div class="row">
+              <button type="submit">Save account</button>
+              <button type="button" class="secondary" id="accReset">Clear</button>
+            </div>
+            <p class="hint" style="margin-top:10px">Import accepts JSON (<code>{"accounts":[…]}</code>), CSV (<code>storeId,email,password,status</code>), or lines (<code>email:password</code> / <code>store:email:password</code>).</p>
+          </form>
+          <div class="form-card" style="margin-top:12px">
+            <h3>How to generate</h3>
+            <ol class="hint" style="padding-left:18px;line-height:1.6">
+              <li>Profiles → shipping + email base (billing profile)</li>
+              <li>Proxies → sticky AU ISP/resi</li>
+              <li><strong>Bandai:</strong> Settings → SMSPool + IMAP → Tasks → Bandai → Account gen → Run</li>
+              <li><strong>Toymate:</strong> Settings → CapSolver → Tasks → Toymate → Account gen → Run</li>
+              <li>Or paste a known login above / Import a JSON dump</li>
+            </ol>
+          </div>
         </div>
       </div>
     </section>

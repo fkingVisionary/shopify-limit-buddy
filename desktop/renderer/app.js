@@ -369,12 +369,44 @@ function accountStatusBadge(status) {
   return "";
 }
 
+function resetAccountForm() {
+  if (!$("accountForm")) return;
+  $("accId").value = "";
+  $("accountForm").reset();
+  if ($("accStore")) $("accStore").value = "bandai";
+  if ($("accStatus")) $("accStatus").value = "ready";
+  if ($("accountFormTitle")) $("accountFormTitle").textContent = "Add account";
+}
+
+function fillAccountForm(a) {
+  if (!a || !$("accountForm")) return;
+  $("accId").value = a.id || "";
+  $("accStore").value = a.storeId || "bandai";
+  $("accEmail").value = a.email || "";
+  $("accPassword").value = a.password || "";
+  $("accStatus").value = a.status || "ready";
+  $("accPhone").value = a.phone || "";
+  $("accNotes").value = a.notes || "";
+  if ($("accountFormTitle")) $("accountFormTitle").textContent = "Edit account";
+  setTab("accounts");
+}
+
+function downloadTextFile(filename, body, mime = "application/json") {
+  const blob = new Blob([body], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
 function renderAccounts() {
   const el = $("accountList");
   if (!el) return;
   const rows = state.accounts || [];
   if (!rows.length) {
-    el.innerHTML = `<div class="item"><div><strong>No accounts yet</strong><div class="meta">Run a Toymate or Bandai Account gen task.</div></div></div>`;
+    el.innerHTML = `<div class="item"><div><strong>No accounts yet</strong><div class="meta">Add one manually, Import, or run Account gen.</div></div></div>`;
     return;
   }
   el.innerHTML = rows
@@ -386,16 +418,22 @@ function renderAccounts() {
           : a.emailBase || emailBaseClient(a.email);
       const st = a.status || "unknown";
       const badge = accountStatusBadge(st);
+      const src = a.source ? ` · ${a.source}` : "";
       return `<div class="item">
         <div>
           <strong>${esc(a.email)}</strong>
           <span class="badge ok">${esc(a.storeName || a.storeId || "store")}</span>
           <span class="badge ${badge}">${esc(st)}</span>
-          <div class="meta"><code>${esc(a.password || "")}</code></div>
-          <div class="meta">match ${esc(match)}${a.lastUsedAt ? ` · used ${new Date(a.lastUsedAt).toLocaleString()}` : ""}</div>
-          <div class="meta">${a.createdAt ? new Date(a.createdAt).toLocaleString() : ""}</div>
+          <div class="meta"><code>${esc(a.password || "")}</code>${esc(src)}</div>
+          <div class="meta">match ${esc(match)}${a.lastUsedAt ? ` · used ${new Date(a.lastUsedAt).toLocaleString()}` : ""}${
+            a.loginProvenAt ? ` · login ok ${new Date(a.loginProvenAt).toLocaleString()}` : ""
+          }</div>
+          <div class="meta">${a.createdAt ? new Date(a.createdAt).toLocaleString() : ""}${
+            a.notes ? ` · ${esc(a.notes)}` : ""
+          }</div>
         </div>
         <div class="actions">
+          <button type="button" class="secondary" data-edit-acc="${esc(a.id)}">Edit</button>
           <button type="button" class="secondary" data-copy-acc-email="${esc(a.id)}">Email</button>
           <button type="button" class="secondary" data-copy-acc-pass="${esc(a.id)}">Pass</button>
           <button type="button" class="danger" data-del-acc="${esc(a.id)}">Del</button>
@@ -861,6 +899,10 @@ document.body.addEventListener("click", async (e) => {
     }
     setTab("tasks");
   }
+  if (t.dataset.editAcc) {
+    const acc = (state.accounts || []).find((a) => a.id === t.dataset.editAcc);
+    if (acc) fillAccountForm(acc);
+  }
   if (t.dataset.delAcc) {
     applyState(await window.desktop.deleteAccount(t.dataset.delAcc));
   }
@@ -1044,6 +1086,81 @@ $("btnClearAccounts").onclick = async () => {
   if (!window.confirm(`Delete all ${n} account(s)?`)) return;
   applyState(await window.desktop.clearAccounts(null));
 };
+
+if ($("accountForm")) {
+  $("accountForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const res = await window.desktop.upsertAccount({
+      id: $("accId").value || undefined,
+      storeId: $("accStore").value || "bandai",
+      email: $("accEmail").value,
+      password: $("accPassword").value,
+      status: $("accStatus").value || "ready",
+      phone: $("accPhone").value || null,
+      notes: $("accNotes").value || null,
+      source: $("accId").value ? undefined : "manual",
+    });
+    if (!res.ok) {
+      appendLog(esc(res.error || "save account failed"), "err");
+      return;
+    }
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(`Saved account ${res.account?.email || ""}`, "ok");
+    resetAccountForm();
+  };
+}
+if ($("accReset")) {
+  $("accReset").onclick = () => resetAccountForm();
+}
+
+if ($("btnExportAccounts")) {
+  $("btnExportAccounts").onclick = async () => {
+    const fmt = window.confirm("OK = JSON export\nCancel = CSV export") ? "json" : "csv";
+    const res = await window.desktop.exportAccounts({ format: fmt });
+    if (!res.ok) {
+      appendLog(esc(res.error || "export failed"), "err");
+      return;
+    }
+    downloadTextFile(
+      res.filename || `accounts.${fmt === "csv" ? "csv" : "json"}`,
+      res.body || "",
+      fmt === "csv" ? "text/csv" : "application/json",
+    );
+    appendLog(`Exported ${res.count} account(s) (${fmt})`, "ok");
+  };
+}
+
+if ($("btnImportAccounts") && $("accImportFile")) {
+  $("btnImportAccounts").onclick = () => $("accImportFile").click();
+  $("accImportFile").onchange = async () => {
+    const file = $("accImportFile").files?.[0];
+    $("accImportFile").value = "";
+    if (!file) return;
+    let text = "";
+    try {
+      text = await file.text();
+    } catch (e) {
+      appendLog(`Import read failed: ${esc(e?.message || e)}`, "err");
+      return;
+    }
+    if (!window.confirm(`Import accounts from ${file.name}?`)) return;
+    const replace =
+      (state.accounts || []).length > 0 &&
+      window.confirm("Wipe existing vault first?\n\nOK = replace all\nCancel = merge (update matching emails)");
+    const res = await window.desktop.importAccounts(text, { replace });
+    if (res.snapshot) applyState(res.snapshot);
+    if (!res.ok) {
+      appendLog(esc(res.error || "import failed"), "err");
+      return;
+    }
+    appendLog(
+      `Imported ${res.imported} account(s)${replace ? " (replaced vault)" : ""}${
+        res.errors?.length ? ` · ${res.errors.length} row warning(s)` : ""
+      }`,
+      "ok",
+    );
+  };
+}
 
 $("profileForm").onsubmit = async (e) => {
   e.preventDefault();

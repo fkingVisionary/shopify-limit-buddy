@@ -14,6 +14,9 @@ const {
   normalizeVaultStatus,
   shouldPersistGeneratedAccount,
   findRegisteredAccount,
+  normalizeManualAccount,
+  parseAccountsImport,
+  formatAccountsExport,
 } = require("./account-vault.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
@@ -105,20 +108,30 @@ function storeDisplayName(sid) {
   return sid;
 }
 
-function upsertGeneratedAccount(account, { storeId, profileId, source = "generated" } = {}) {
+/**
+ * Upsert a vault account by id (edit) or storeId+email (merge).
+ * @param {object} account
+ * @param {{ storeId?: string, profileId?: string, source?: string }} [opts]
+ */
+function upsertAccountRow(account, { storeId, profileId, source } = {}) {
   if (!account?.email || !account?.password) return null;
   if (!Array.isArray(state.db.accounts)) state.db.accounts = [];
   const email = String(account.email).trim();
-  const sid = storeId || "toymate";
-  const existing = state.db.accounts.find(
-    (a) =>
-      String(a.storeId || "") === sid &&
-      String(a.email || "").toLowerCase() === email.toLowerCase(),
-  );
+  const sid = storeId || account.storeId || "toymate";
+  const byId = account.id
+    ? state.db.accounts.find((a) => a.id === String(account.id))
+    : null;
+  const existing =
+    byId ||
+    state.db.accounts.find(
+      (a) =>
+        String(a.storeId || "") === sid &&
+        String(a.email || "").toLowerCase() === email.toLowerCase(),
+    );
   // Preserve SoftBlock / needs_* truth — never coerce Bandai unknowns to "ready".
-  const status = normalizeVaultStatus(account.status, sid);
+  const status = normalizeVaultStatus(account.status ?? existing?.status, sid);
   const row = {
-    id: existing?.id || store.id("acc"),
+    id: existing?.id || account.id || store.id("acc"),
     email,
     emailBase: emailBase(email),
     password: String(account.password),
@@ -127,11 +140,13 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
     storeId: sid,
     adapter: sid,
     storeName: storeDisplayName(sid),
-    profileId: profileId || existing?.profileId || null,
-    source,
+    profileId: profileId || account.profileId || existing?.profileId || null,
+    source: source || account.source || existing?.source || "generated",
     status,
-    lastUsedAt: existing?.lastUsedAt || null,
+    notes: account.notes != null ? account.notes : existing?.notes || null,
+    lastUsedAt: existing?.lastUsedAt || account.lastUsedAt || null,
     lastLoginAt: account.lastLoginAt || existing?.lastLoginAt || null,
+    loginProvenAt: account.loginProvenAt || existing?.loginProvenAt || null,
     createdAt: existing?.createdAt || account.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
@@ -142,6 +157,10 @@ function upsertGeneratedAccount(account, { storeId, profileId, source = "generat
   }
   state.db.accounts = state.db.accounts.slice(0, 500);
   return row;
+}
+
+function upsertGeneratedAccount(account, { storeId, profileId, source = "generated" } = {}) {
+  return upsertAccountRow(account, { storeId, profileId, source });
 }
 
 function cancelDropSchedule({ silent = false } = {}) {
@@ -907,6 +926,69 @@ ipcMain.handle("desktop:clear-accounts", (_e, storeId) => {
   }
   persistDb();
   return snapshot();
+});
+
+ipcMain.handle("desktop:upsert-account", (_e, payload = {}) => {
+  const normalized = normalizeManualAccount(payload);
+  if (!normalized.ok) {
+    return { ok: false, error: normalized.error, snapshot: snapshot() };
+  }
+  const row = upsertAccountRow(normalized.account, {
+    storeId: normalized.account.storeId,
+    profileId: normalized.account.profileId,
+    source: normalized.account.source || "manual",
+  });
+  persistDb();
+  return { ok: true, account: row, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:import-accounts", (_e, raw, opts = {}) => {
+  const parsed = parseAccountsImport(raw);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: parsed.errors.join("; ") || "import failed",
+      errors: parsed.errors,
+      imported: 0,
+      snapshot: snapshot(),
+    };
+  }
+  const replace = opts.replace === true;
+  if (replace) state.db.accounts = [];
+  let imported = 0;
+  for (const draft of parsed.accounts) {
+    const row = upsertAccountRow(draft, {
+      storeId: draft.storeId,
+      profileId: draft.profileId,
+      source: draft.source || "import",
+    });
+    if (row) imported += 1;
+  }
+  persistDb();
+  return {
+    ok: true,
+    imported,
+    errors: parsed.errors,
+    skipped: parsed.skipped,
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:export-accounts", (_e, opts = {}) => {
+  const sid = opts.storeId ? String(opts.storeId) : "";
+  let list = Array.isArray(state.db.accounts) ? state.db.accounts : [];
+  if (sid) list = list.filter((a) => String(a.storeId || "") === sid);
+  const format = opts.format || "json";
+  const body = formatAccountsExport(list, format);
+  return {
+    ok: true,
+    format,
+    count: list.length,
+    body,
+    filename: `j1ms-accounts-${sid || "all"}-${new Date().toISOString().slice(0, 10)}.${
+      format === "csv" ? "csv" : format === "lines" ? "txt" : "json"
+    }`,
+  };
 });
 
 ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => enqueueTaskIds(taskIds, opts));

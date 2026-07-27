@@ -7,6 +7,10 @@ const {
   findRegisteredAccount,
   vaultRegisteredEmails,
   bandaiAutoAssignable,
+  normalizeManualAccount,
+  parseAccountsImport,
+  formatAccountsExport,
+  emailBase,
 } = require("./account-vault.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 
@@ -127,4 +131,55 @@ test("Bandai manual can still pick SoftBlock created", () => {
   });
   assert.equal(r.source, "manual");
   assert.equal(r.account.id, "soft");
+});
+
+test("normalizeManualAccount keeps exact gmail memberId (dots only stripped in emailBase)", () => {
+  const n = normalizeManualAccount({
+    email: "spoton.dot.gg@gmail.com",
+    password: "Millward3!",
+    storeId: "bandai",
+  });
+  assert.equal(n.ok, true);
+  assert.equal(n.account.email, "spoton.dot.gg@gmail.com");
+  assert.equal(n.account.emailBase, "spotondotgg@gmail.com");
+  assert.equal(n.account.status, "ready");
+  // Lab login has no '.' chars — emailBase equals email; still must save exact string.
+  const lab = normalizeManualAccount({
+    email: "spotondotgg@gmail.com",
+    password: "Millward3!",
+  });
+  assert.equal(lab.account.email, "spotondotgg@gmail.com");
+  assert.equal(emailBase("spotondotgg@gmail.com"), "spotondotgg@gmail.com");
+});
+
+test("parseAccountsImport JSON + lines + csv", () => {
+  const json = parseAccountsImport(
+    JSON.stringify({
+      accounts: [{ email: "a@x.com", password: "Pw1!", storeId: "bandai" }],
+    }),
+  );
+  assert.equal(json.ok, true);
+  assert.equal(json.accounts[0].email, "a@x.com");
+
+  const lines = parseAccountsImport("bandai:fairing.bands_8k@icloud.com:Ab1!53dzggj1\n# skip\nbadline");
+  assert.equal(lines.ok, true);
+  assert.equal(lines.accounts[0].email, "fairing.bands_8k@icloud.com");
+  assert.equal(lines.accounts[0].password, "Ab1!53dzggj1");
+
+  const csv = parseAccountsImport("storeId,email,password,status\ntoymate,t@x.com,Secret1!,active\n");
+  assert.equal(csv.ok, true);
+  assert.equal(csv.accounts[0].storeId, "toymate");
+  assert.equal(csv.accounts[0].status, "active");
+});
+
+test("formatAccountsExport round-trips csv", () => {
+  const body = formatAccountsExport(
+    [{ storeId: "bandai", email: "a@b.com", password: "x", status: "ready", source: "manual" }],
+    "csv",
+  );
+  assert.match(body, /^storeId,email,password/);
+  const back = parseAccountsImport(body);
+  assert.equal(back.ok, true);
+  assert.equal(back.accounts[0].email, "a@b.com");
+  assert.equal(back.accounts[0].storeId, "bandai");
 });
