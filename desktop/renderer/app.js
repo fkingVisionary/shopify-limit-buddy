@@ -199,6 +199,10 @@ function syncTaskFormForStore() {
     const src = $("taskBandaiMonitorMode")?.value || "local";
     bMonLocal.hidden = !bandai || mode !== "monitor" || src !== "local";
   }
+  const dCheckout = $("taskDisneyCheckoutOpts");
+  if (dCheckout) {
+    dCheckout.hidden = !disney || mode === "monitor" || mode === "warm";
+  }
   const dMon = $("taskDisneyMonitorWrap");
   if (dMon) dMon.hidden = !disney || mode !== "monitor";
   const dMonLocal = $("taskDisneyMonitorLocalOpts");
@@ -411,7 +415,90 @@ function renderProxies() {
     .join("");
 }
 
+function fillQuickTaskSelects() {
+  const prof = $("qtProfile");
+  const px = $("qtProxy");
+  if (!state) return;
+  if (prof) {
+    const cur = prof.value || state.settings?.disneyQuickTask?.profileId || "";
+    prof.innerHTML =
+      `<option value="">Select profile…</option>` +
+      (state.profiles || [])
+        .map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.email || p.id)}</option>`)
+        .join("");
+    if (cur && [...prof.options].some((o) => o.value === cur)) prof.value = cur;
+    else if ($("taskProfile")?.value && [...prof.options].some((o) => o.value === $("taskProfile").value)) {
+      prof.value = $("taskProfile").value;
+    }
+  }
+  if (px) {
+    const cur = px.value || state.settings?.disneyQuickTask?.proxyGroupId || "";
+    px.innerHTML =
+      `<option value="">Select proxy group…</option>` +
+      (state.proxyGroups || [])
+        .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
+        .join("");
+    if (cur && [...px.options].some((o) => o.value === cur)) px.value = cur;
+    else if ($("taskProxy")?.value && [...px.options].some((o) => o.value === $("taskProxy").value)) {
+      px.value = $("taskProxy").value;
+    }
+  }
+  const qt = state.settings?.disneyQuickTask || {};
+  if ($("qtQty") && document.activeElement !== $("qtQty")) {
+    $("qtQty").value = qt.qty ?? $("taskQty")?.value ?? 1;
+  }
+  if ($("qtPlaceOrder") && document.activeElement !== $("qtPlaceOrder")) {
+    $("qtPlaceOrder").checked =
+      qt.placeOrder != null ? Boolean(qt.placeOrder) : $("taskPlaceOrder")?.checked === true;
+  }
+  if ($("qtUseHarvest") && document.activeElement !== $("qtUseHarvest")) {
+    $("qtUseHarvest").checked = qt.useHarvest !== false;
+  }
+  if ($("qtPreferLastGood") && document.activeElement !== $("qtPreferLastGood")) {
+    $("qtPreferLastGood").checked = qt.preferLastGood !== false;
+  }
+}
+
+function quickTaskDefaultsFromForm() {
+  return {
+    profileId: $("qtProfile")?.value || $("taskProfile")?.value || null,
+    proxyGroupId: $("qtProxy")?.value || $("taskProxy")?.value || null,
+    qty: Math.max(1, Math.min(20, Number($("qtQty")?.value) || 1)),
+    placeOrder: $("qtPlaceOrder")?.checked === true,
+    useHarvest: $("qtUseHarvest")?.checked !== false,
+    preferLastGood: $("qtPreferLastGood")?.checked !== false,
+  };
+}
+
+function renderMonitorFeed() {
+  fillQuickTaskSelects();
+  const el = $("monitorFeedList");
+  if (!el) return;
+  const rows = state?.monitorFeed || [];
+  if (!rows.length) {
+    el.innerHTML = `<div class="item"><div><strong>No monitor hits yet</strong><div class="meta">Run a Disney or Bandai Monitor task — matches appear here for Quick Task.</div></div></div>`;
+    return;
+  }
+  el.innerHTML = rows
+    .map((h) => {
+      const when = h.at ? new Date(h.at).toLocaleTimeString() : "";
+      const store = h.store || "disney";
+      return `<div class="item">
+        <div>
+          <span class="badge hv">${esc(store)}</span>
+          <strong>${esc(h.productId || "?")}</strong>
+          <div class="meta">${esc(h.title || h.reason || "in stock")}${when ? ` · ${esc(when)}` : ""}</div>
+        </div>
+        <div class="actions">
+          <button type="button" data-qt-store="${esc(store)}" data-qt-pid="${esc(h.productId || "")}" data-qt-title="${esc(h.title || "")}">Quick Task</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
 function renderResults() {
+  renderMonitorFeed();
   const el = $("resultList");
   const rows = state.results || [];
   if (!rows.length) {
@@ -574,6 +661,9 @@ function renderDisneyHarvest() {
   if ($("dhSolveCaptcha") && document.activeElement !== $("dhSolveCaptcha")) {
     $("dhSolveCaptcha").checked = cfg.solveCaptcha !== false;
   }
+  if ($("dhDropPressure") && document.activeElement !== $("dhDropPressure")) {
+    $("dhDropPressure").checked = cfg.dropPressure !== false;
+  }
   if ($("dhReady")) $("dhReady").textContent = String(hv.ready ?? 0);
   if ($("dhCaptcha")) $("dhCaptcha").textContent = String(hv.readyWithCaptcha ?? 0);
   if ($("dhSolved")) $("dhSolved").textContent = String(hv.solvedCount ?? 0);
@@ -582,6 +672,8 @@ function renderDisneyHarvest() {
   const line = $("disneyHarvestStatusLine");
   if (line) {
     if (hv.running && hv.busy) line.textContent = "Harvesting… Hyper warm + CapSolver";
+    else if (hv.running && hv.underPressure)
+      line.textContent = `Drop pressure · refilling · ready ${hv.ready ?? 0}/${cfg.desired ?? "?"}`;
     else if (hv.running) line.textContent = `Harvest armed · ready ${hv.ready ?? 0}`;
     else line.textContent = "Harvest stopped";
   }
@@ -632,6 +724,7 @@ function disneyHarvestOptsFromForm() {
     proxyGroupId: $("dhProxyGroup")?.value || null,
     desired: Number($("dhDesired")?.value) || 0,
     solveCaptcha: $("dhSolveCaptcha")?.checked !== false,
+    dropPressure: $("dhDropPressure")?.checked !== false,
   };
 }
 
@@ -762,6 +855,12 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
     if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
     if ($("taskDisneyMode")) $("taskDisneyMode").value = task.disneyMode || "pay";
+    if ($("taskDisneyUseHarvest"))
+      $("taskDisneyUseHarvest").checked = task.disneyUseHarvest !== false;
+    if ($("taskDisneyRequireHarvestCaptcha"))
+      $("taskDisneyRequireHarvestCaptcha").checked = task.disneyRequireHarvestCaptcha === true;
+    if ($("taskDisneyPreferLastGood"))
+      $("taskDisneyPreferLastGood").checked = task.disneyPreferLastGoodProxy !== false;
     if ($("taskBandaiCheckoutMode"))
       $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
     if ($("taskBandaiMonitorMode"))
@@ -887,6 +986,12 @@ function readTaskForm() {
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
     bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
     disneyMode: store === "disney" ? $("taskDisneyMode")?.value || "pay" : undefined,
+    disneyUseHarvest:
+      store === "disney" ? $("taskDisneyUseHarvest")?.checked !== false : undefined,
+    disneyRequireHarvestCaptcha:
+      store === "disney" ? $("taskDisneyRequireHarvestCaptcha")?.checked === true : undefined,
+    disneyPreferLastGoodProxy:
+      store === "disney" ? $("taskDisneyPreferLastGood")?.checked !== false : undefined,
     bandaiCheckoutMode:
       store === "bandai" ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
     bandaiMonitorMode:
@@ -1223,6 +1328,71 @@ if ($("dhSolveCaptcha")) {
     renderDisneyHarvest();
   };
 }
+if ($("dhDropPressure")) {
+  $("dhDropPressure").onchange = async () => {
+    const snap = await window.desktop.disneyHarvestConfigure({
+      dropPressure: $("dhDropPressure").checked,
+    });
+    if (state) state.disneyHarvest = snap;
+    renderDisneyHarvest();
+  };
+}
+
+async function persistQuickTaskDefaults() {
+  const patch = { disneyQuickTask: quickTaskDefaultsFromForm() };
+  const snap = await window.desktop.saveSettings(patch);
+  if (snap) applyState(snap);
+}
+
+for (const id of ["qtProfile", "qtProxy", "qtQty", "qtPlaceOrder", "qtUseHarvest", "qtPreferLastGood"]) {
+  const el = $(id);
+  if (el) el.onchange = () => void persistQuickTaskDefaults();
+}
+
+if ($("qtClearFeed")) {
+  $("qtClearFeed").onclick = async () => {
+    const res = await window.desktop.clearMonitorFeed();
+    if (res?.snapshot) applyState(res.snapshot);
+    else if (state) {
+      state.monitorFeed = [];
+      renderMonitorFeed();
+    }
+    appendLog("Monitor feed cleared", "muted");
+  };
+}
+
+document.body.addEventListener("click", async (e) => {
+  const btn = e.target instanceof HTMLElement ? e.target.closest("[data-qt-pid]") : null;
+  if (!btn) return;
+  const productId = btn.getAttribute("data-qt-pid") || "";
+  const title = btn.getAttribute("data-qt-title") || "";
+  const store = btn.getAttribute("data-qt-store") || "disney";
+  if (!productId) {
+    appendLog("Quick Task needs a product id", "err");
+    return;
+  }
+  const defaults = quickTaskDefaultsFromForm();
+  if (!defaults.profileId) {
+    appendLog("Quick Task: pick a profile in Results → Monitor feed", "err");
+    return;
+  }
+  if (!defaults.proxyGroupId) {
+    appendLog("Quick Task: pick a proxy group in Results → Monitor feed", "err");
+    return;
+  }
+  appendLog(`Quick Task ${store} ${productId}…`, "muted");
+  const res = await window.desktop.quickTask({
+    store,
+    productId,
+    title,
+    ...defaults,
+  });
+  if (res?.snapshot) applyState(res.snapshot);
+  appendLog(
+    res?.ok ? `Quick Task queued (${productId})` : esc(res?.error || "Quick Task failed"),
+    res?.ok ? "ok" : "err",
+  );
+});
 
 $("hvStart").onclick = async () => {
   const opts = harvestOptsFromForm();
@@ -1334,6 +1504,17 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "disneyHarvest" && evt.data) {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
+  }
+  if (evt.type === "monitorHit" && evt.data) {
+    // Feed is also updated via snapshot from main; keep optimistic row for snappy UI.
+    if (state) {
+      const feed = Array.isArray(state.monitorFeed) ? state.monitorFeed : [];
+      const id = evt.data.id;
+      if (!id || !feed.some((h) => h.id === id)) {
+        state.monitorFeed = [evt.data, ...feed].slice(0, 80);
+      }
+    }
+    renderMonitorFeed();
   }
   if (evt.type === "queue" || evt.type === "runner") {
     if (state) {

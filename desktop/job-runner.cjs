@@ -739,6 +739,9 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
       disneyMonitorDelayMs: isMonitor
         ? Math.max(0, Number(task.disneyMonitorDelayMs) || 0)
         : undefined,
+      disneyUseHarvest: task.disneyUseHarvest !== false,
+      disneyRequireHarvestCaptcha: task.disneyRequireHarvestCaptcha === true,
+      disneyPreferLastGoodProxy: task.disneyPreferLastGoodProxy !== false,
       keywords: isMonitor
         ? task.disneyWatchKeywords || task.keywords || (!/^https?:/i.test(rawInput) ? rawInput : null) || null
         : undefined,
@@ -772,7 +775,8 @@ function buildDisneyPayload({ task, profile, proxyRaw, placeOrder }) {
           }
         : null,
       recaptchaToken: task.recaptchaToken || harvested?.captchaToken || null,
-      preferLastGoodProxy: !harvested,
+      preferLastGoodProxy:
+        harvested ? false : task.disneyPreferLastGoodProxy !== false,
       profile: {
         email: profile?.email || null,
         first_name: profile?.first_name || null,
@@ -866,6 +870,22 @@ function emitLog(runId, taskId, level, message, extra) {
     level: level || "info",
     message: String(message || ""),
     ...(extra || {}),
+  });
+}
+
+function emitMonitorHit(hit) {
+  if (!hit?.productId) return;
+  emit({
+    type: "monitorHit",
+    data: {
+      store: hit.store || "disney",
+      productId: hit.productId,
+      title: hit.title || null,
+      reason: hit.reason || null,
+      at: hit.at || Date.now(),
+      taskId: hit.taskId || null,
+      runId: hit.runId || null,
+    },
   });
 }
 
@@ -1034,6 +1054,14 @@ async function runBandaiMonitorInProcess(job, payload) {
             "ok",
             `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
           );
+          emitMonitorHit({
+            store: "bandai",
+            productId: ev.productId,
+            title: ev.title,
+            reason: ev.reason,
+            taskId: job.task?.id,
+            runId: job.runId,
+          });
         },
       },
     );
@@ -1126,6 +1154,14 @@ async function runBandaiMonitorInProcess(job, payload) {
     local.on("stock_changed", (ev) => {
       hits.push(ev);
       emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      emitMonitorHit({
+        store: "bandai",
+        productId: ev.productId,
+        title: ev.title,
+        reason: ev.reason,
+        taskId: job.task?.id,
+        runId: job.runId,
+      });
     });
     local.on("error", (e) =>
       emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),
@@ -1187,6 +1223,14 @@ async function runDisneyMonitorInProcess(job, payload) {
             "ok",
             `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
           );
+          emitMonitorHit({
+            store: "disney",
+            productId: ev.productId,
+            title: ev.title,
+            reason: ev.reason,
+            taskId: job.task?.id,
+            runId: job.runId,
+          });
         },
       },
     );
@@ -1279,6 +1323,14 @@ async function runDisneyMonitorInProcess(job, payload) {
     local.on("stock_changed", (ev) => {
       hits.push(ev);
       emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      emitMonitorHit({
+        store: "disney",
+        productId: ev.productId,
+        title: ev.title,
+        reason: ev.reason,
+        taskId: job.task?.id,
+        runId: job.runId,
+      });
     });
     local.on("error", (e) =>
       emitLog(job.runId, job.task?.id, "err", e.error || "local monitor error"),

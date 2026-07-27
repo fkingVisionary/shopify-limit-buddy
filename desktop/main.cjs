@@ -20,6 +20,8 @@ const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 
 let win = null;
 let state = store.loadAll();
+/** In-memory monitor hit feed for Quick Task (not persisted across restarts). */
+let monitorFeed = [];
 
 const harvest = createHarvestPool({
   sidecar,
@@ -135,7 +137,23 @@ function snapshot() {
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
+    monitorFeed: monitorFeed.slice(0, 80),
   };
+}
+
+function pushMonitorHit(hit) {
+  if (!hit?.productId) return;
+  const row = {
+    id: store.id("hit"),
+    store: hit.store || "disney",
+    productId: String(hit.productId),
+    title: hit.title || null,
+    reason: hit.reason || null,
+    at: hit.at || Date.now(),
+  };
+  monitorFeed = [row, ...monitorFeed].slice(0, 80);
+  send({ type: "monitorHit", data: row });
+  send({ type: "snapshot", data: snapshot() });
 }
 
 function createWindow() {
@@ -158,7 +176,13 @@ function createWindow() {
   });
 }
 
-runner.setEmitter((evt) => send(evt));
+runner.setEmitter((evt) => {
+  if (evt?.type === "monitorHit" && evt.data) {
+    pushMonitorHit(evt.data);
+    return;
+  }
+  send(evt);
+});
 runner.setFinishedHandler((result) => {
   // Keep step tail for Results UI (same info the web dashboard surfaces).
   state.db.results.unshift({
@@ -338,6 +362,7 @@ ipcMain.handle("desktop:disney-harvest-start", async (_e, opts = {}) => {
   if (gid) disneyHarvest.configure({ proxyGroupId: gid });
   if (opts.desired != null) disneyHarvest.configure({ desired: opts.desired });
   if (opts.solveCaptcha != null) disneyHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  if (opts.dropPressure != null) disneyHarvest.configure({ dropPressure: opts.dropPressure });
   const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
   if (!group?.entries?.length) {
     return {
@@ -351,6 +376,7 @@ ipcMain.handle("desktop:disney-harvest-start", async (_e, opts = {}) => {
     proxyGroupId: gid,
     desired: opts.desired,
     solveCaptcha: opts.solveCaptcha,
+    dropPressure: opts.dropPressure,
     getEntries: disneyHarvestEntries,
   });
   send({ type: "snapshot", data: snapshot() });
@@ -376,9 +402,154 @@ ipcMain.handle("desktop:disney-harvest-once", async (_e, opts = {}) => {
   if (opts.proxyGroupId) disneyHarvest.configure({ proxyGroupId: opts.proxyGroupId });
   if (opts.desired != null) disneyHarvest.configure({ desired: opts.desired });
   if (opts.solveCaptcha != null) disneyHarvest.configure({ solveCaptcha: opts.solveCaptcha });
+  if (opts.dropPressure != null) disneyHarvest.configure({ dropPressure: opts.dropPressure });
   const out = await disneyHarvest.harvestOne(disneyHarvestEntries());
   send({ type: "snapshot", data: snapshot() });
   return { ...out, harvest: disneyHarvest.snapshot(), snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:clear-monitor-feed", () => {
+  monitorFeed = [];
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, snapshot: snapshot() };
+});
+
+/**
+ * Launch Autocheckout for a monitor-feed SKU using present Quick Task defaults
+ * (profile / proxy / qty / place order / harvest toggles).
+ */
+ipcMain.handle("desktop:quick-task", async (_e, opts = {}) => {
+  const storeId = String(opts.store || "disney").toLowerCase();
+  const productId = String(opts.productId || "").trim();
+  if (!productId) return { ok: false, error: "productId required", snapshot: snapshot() };
+  if (!sidecar.status().running) {
+    return { ok: false, error: "Start the engine first", snapshot: snapshot() };
+  }
+
+  const profileId = opts.profileId || state.settings?.disneyQuickTask?.profileId || null;
+  const proxyGroupId = opts.proxyGroupId || state.settings?.disneyQuickTask?.proxyGroupId || null;
+  const profile = (state.db.profiles || []).find((p) => p.id === profileId);
+  if (!profile) {
+    return { ok: false, error: "Pick a Quick Task profile", snapshot: snapshot() };
+  }
+  const group = (state.db.proxyGroups || []).find((g) => g.id === proxyGroupId);
+  if (!group?.entries?.length) {
+    return { ok: false, error: "Pick a Quick Task proxy group", snapshot: snapshot() };
+  }
+
+  const qty = Math.max(1, Math.min(20, Number(opts.qty) || 1));
+  const placeOrder = opts.placeOrder === true;
+  const useHarvest = opts.useHarvest !== false;
+  const preferLastGood = opts.preferLastGood !== false;
+  const title = String(opts.title || "").trim();
+
+  // Persist defaults for next Quick Task.
+  state.settings.disneyQuickTask = {
+    profileId,
+    proxyGroupId,
+    qty,
+    placeOrder,
+    useHarvest,
+    preferLastGood,
+  };
+  persistSettings();
+
+  let task;
+  if (storeId === "disney") {
+    task = {
+      id: store.id("task"),
+      label: title ? `QT ${title.slice(0, 40)}` : `QT Disney ${productId}`,
+      store: "disney",
+      enabled: true,
+      pdpUrl: /^\d{6,}$/.test(productId) ? productId : productId,
+      qty,
+      quantity: 1,
+      profileId,
+      proxyGroupId,
+      placeOrder,
+      disneyMode: "pay",
+      disneyUseHarvest: useHarvest,
+      disneyRequireHarvestCaptcha: false,
+      disneyPreferLastGoodProxy: preferLastGood,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  } else if (storeId === "bandai") {
+    task = {
+      id: store.id("task"),
+      label: title ? `QT ${title.slice(0, 40)}` : `QT Bandai ${productId}`,
+      store: "bandai",
+      enabled: true,
+      pdpUrl: productId,
+      qty,
+      quantity: 1,
+      profileId,
+      proxyGroupId,
+      placeOrder,
+      bandaiMode: "checkout",
+      bandaiCheckoutMode: "fast",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+  } else {
+    return { ok: false, error: `Quick Task not supported for store ${storeId}`, snapshot: snapshot() };
+  }
+
+  // Ephemeral — do not pollute the saved task list unless user wants; keep in results via run.
+  const taskCopy = { ...task };
+  let jobProxyRaw = group.entries[0];
+  let jobProxyEntries = group.entries.slice();
+  let proxyIndex = 0;
+
+  if (
+    storeId === "disney" &&
+    useHarvest &&
+    ["pay", "checkout", "atc", "ge"].includes(String(task.disneyMode || "pay"))
+  ) {
+    const session = disneyHarvest.take({
+      preferCaptcha: true,
+      requireCaptcha: false,
+    });
+    if (session?.cookies) {
+      taskCopy.harvestedSession = session;
+      taskCopy.recaptchaToken = session.captchaToken || null;
+      if (session.proxy) {
+        jobProxyRaw = session.proxy;
+        jobProxyEntries = [session.proxy];
+        proxyIndex = 0;
+      }
+      send({
+        type: "job",
+        phase: "log",
+        taskId: task.id,
+        level: "info",
+        message: `Quick Task using harvested Disney session (${session.proxyHost || "proxy"}${session.captchaToken ? " + captcha" : ""})`,
+      });
+    } else {
+      send({
+        type: "job",
+        phase: "log",
+        taskId: task.id,
+        level: "info",
+        message: "Quick Task harvest empty/stale → cold path (warm + CapSolver)",
+      });
+    }
+  }
+
+  runner.enqueue([
+    {
+      task: taskCopy,
+      profile,
+      proxyRaw: jobProxyRaw,
+      proxyEntries: jobProxyEntries,
+      proxyIndex,
+      placeOrder,
+      accounts: state.db.accounts || [],
+      settings: state.settings,
+    },
+  ]);
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, taskId: task.id, snapshot: snapshot() };
 });
 
 // ── Bandai F5 Harvest tab ──────────────────────────────────────────────
@@ -644,6 +815,12 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
       storeId === "disney" && task.disneyMode === "monitor"
         ? Math.max(0, Number(task.disneyMonitorDelayMs) || 0)
         : undefined,
+    disneyUseHarvest:
+      storeId === "disney" ? task.disneyUseHarvest !== false : undefined,
+    disneyRequireHarvestCaptcha:
+      storeId === "disney" ? task.disneyRequireHarvestCaptcha === true : undefined,
+    disneyPreferLastGoodProxy:
+      storeId === "disney" ? task.disneyPreferLastGoodProxy !== false : undefined,
     // Pokémon Centre-only fields (ignored by other stores).
     pcMode:
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
@@ -818,15 +995,20 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
           });
         }
       }
-      // Disney checkout/pay: claim Akamai+CapSolver session when Harvest is armed.
-      // Empty bank → cold path (warm + CapSolver on critical path) — unchanged.
+      // Disney checkout/pay: claim harvest when task opts in (default on).
+      // Off / empty / stale captcha → cold path (warm + CapSolver) — unchanged.
       if (
         task.store === "disney" &&
+        task.disneyUseHarvest !== false &&
         ["pay", "checkout", "atc", "ge"].includes(
           String(task.disneyMode || "pay").toLowerCase(),
         )
       ) {
-        const session = disneyHarvest.take({ preferCaptcha: true });
+        const requireCaptcha = task.disneyRequireHarvestCaptcha === true;
+        const session = disneyHarvest.take({
+          preferCaptcha: true,
+          requireCaptcha,
+        });
         if (session?.cookies) {
           taskCopy.harvestedSession = session;
           taskCopy.recaptchaToken = session.captchaToken || taskCopy.recaptchaToken || null;
@@ -842,7 +1024,31 @@ ipcMain.handle("desktop:run-tasks", (_e, taskIds) => {
             level: "info",
             message: `Using harvested Disney session (${session.proxyHost || "proxy"}${session.captchaToken ? " + captcha" : ""} age≈${Math.round((Date.now() - session.harvestedAt) / 1000)}s)`,
           });
+        } else {
+          send({
+            type: "job",
+            phase: "log",
+            taskId: tid,
+            level: "info",
+            message: requireCaptcha
+              ? "Harvest require-captcha miss/stale → cold path (warm + CapSolver)"
+              : "Harvest empty/stale → cold path (warm + CapSolver)",
+          });
         }
+      } else if (
+        task.store === "disney" &&
+        task.disneyUseHarvest === false &&
+        ["pay", "checkout", "atc", "ge"].includes(
+          String(task.disneyMode || "pay").toLowerCase(),
+        )
+      ) {
+        send({
+          type: "job",
+          phase: "log",
+          taskId: tid,
+          level: "info",
+          message: "Harvest disabled on task → cold path",
+        });
       }
       jobs.push({
         task: taskCopy,

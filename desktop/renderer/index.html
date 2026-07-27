@@ -62,9 +62,14 @@
               <option value="monitor">Disney — Monitor</option>
             </select>
             <p class="field-hint">
-              Autocheckout uses a harvested Akamai+CapSolver session when the Harvest tab bank has one;
-              empty bank = cold path (still works, slower). Same sticky proxy group as harvest recommended.
+              Same sticky proxy group as Harvest recommended. Empty bank or harvest off = cold path
+              (warm + CapSolver on the critical path — still works).
             </p>
+            <div id="taskDisneyCheckoutOpts">
+              <label class="check"><input id="taskDisneyUseHarvest" type="checkbox" checked /> Use harvested session when available</label>
+              <label class="check"><input id="taskDisneyRequireHarvestCaptcha" type="checkbox" /> Require fresh CapSolver token on claim (else cold)</label>
+              <label class="check"><input id="taskDisneyPreferLastGood" type="checkbox" checked /> Prefer last-good sticky exit when cold</label>
+            </div>
             <div id="taskDisneyMonitorWrap" hidden>
               <label>Monitor source</label>
               <select id="taskDisneyMonitorMode">
@@ -318,6 +323,8 @@
           <label>Desired warm sessions</label>
           <input id="dhDesired" type="number" min="0" max="12" value="2" />
           <label class="check"><input id="dhSolveCaptcha" type="checkbox" checked /> Solve AddToCart reCAPTCHA with each warm</label>
+          <label class="check"><input id="dhDropPressure" type="checkbox" checked /> Drop pressure — refill faster while bank is below desired / after each claim</label>
+          <p class="field-hint">Near-expiry captcha sessions are discarded (not claimed) so Autocheckout falls back to cold CapSolver instead of burning a dead token.</p>
 
           <div class="row-actions">
             <button type="button" id="dhStart">Start harvest</button>
@@ -497,6 +504,38 @@
     <!-- RESULTS -->
     <section id="tab-results" class="panel">
       <h2>Results</h2>
+      <div class="form-card" style="margin-bottom:16px">
+        <h3>Monitor feed · Quick Task</h3>
+        <p class="field-hint">
+          Stock hits from Disney (and Bandai) monitors land here. <strong>Quick Task</strong> launches
+          Autocheckout for that SKU using the defaults below (same as your current Tasks form when filled).
+        </p>
+        <div class="grid2">
+          <div>
+            <label>Quick Task profile</label>
+            <select id="qtProfile"></select>
+          </div>
+          <div>
+            <label>Quick Task proxy group</label>
+            <select id="qtProxy"></select>
+          </div>
+        </div>
+        <div class="grid2">
+          <div>
+            <label>Qty</label>
+            <input id="qtQty" type="number" min="1" max="20" value="1" />
+          </div>
+          <div>
+            <label class="check" style="margin-top:1.5rem"><input id="qtPlaceOrder" type="checkbox" /> Place order (live)</label>
+          </div>
+        </div>
+        <label class="check"><input id="qtUseHarvest" type="checkbox" checked /> Use harvested Disney session when available</label>
+        <label class="check"><input id="qtPreferLastGood" type="checkbox" checked /> Prefer last-good sticky exit when cold</label>
+        <div class="row-actions">
+          <button type="button" class="secondary" id="qtClearFeed">Clear feed</button>
+        </div>
+        <div id="monitorFeedList" class="list" style="margin-top:12px"></div>
+      </div>
       <div id="liveLog" class="log"></div>
       <div id="resultList" class="list"></div>
     </section>
