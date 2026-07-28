@@ -84,6 +84,44 @@ hub.monitor.on("error", (e) => {
 
 const app = Fastify({ logger: false });
 
+app.get("/", async (_req, reply) => {
+  const st = hub.status();
+  const m = st.monitor || {};
+  const body = {
+    ok: true,
+    service: "bandai-monitor",
+    message: "Bandai stock monitor is running. Use /health (open) or /status /hits /events with Bearer MONITOR_TOKEN.",
+    area: AREA,
+    intervalMs: INTERVAL_MS,
+    keywords: String(KEYWORDS)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    running: Boolean(m.running),
+    polls: m.polls ?? 0,
+    products: m.products ?? 0,
+    inStock: m.inStock ?? 0,
+    hitsBuffered: recentHits.length,
+    lastError: m.lastError || null,
+    pool: m.pool
+      ? { isp: m.pool.isp, dc: m.pool.dc, cooling: m.pool.cooling, picks: m.pool.picks }
+      : null,
+    recentHits: recentHits.slice(0, 5).map((h) => ({
+      at: h.at,
+      productId: h.productId,
+      reason: h.reason,
+      title: h.title,
+    })),
+    links: {
+      health: "/health",
+      status: "/status",
+      hits: "/hits",
+      events: "/events",
+    },
+  };
+  return reply.type("application/json").send(body);
+});
+
 app.get("/health", async () => {
   const st = hub.status();
   return {
