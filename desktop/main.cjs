@@ -33,9 +33,20 @@ const {
 } = require("./bandai-drop-ops.cjs");
 const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
 const { postDiscordWebhook, checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
+const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
+const {
+  normalizeQuickTaskPreset,
+  parseBandaiProductInput,
+  targetFromMonitorHit,
+  buildQuickTaskDraft,
+  contextFromMonitorHit,
+  contextFromQuickTask,
+} = require("./quick-task.cjs");
 
 let win = null;
 let state = store.loadAll();
+if (!Array.isArray(state.db.smartActions)) state.db.smartActions = [];
+state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
 
 /** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
 let dropSchedule = null;
@@ -64,6 +75,41 @@ const bandaiHarvestAutoArm = createBandaiHarvestAutoArm({
     send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
 });
 
+/** Smart Actions engine — main-process only; orchestrates tasks, never checkouts itself. */
+const smartActions = createSmartActionsEngine({
+  getActions: () => state.db.smartActions || [],
+  saveActions: (actions) => {
+    state.db.smartActions = Array.isArray(actions) ? actions : [];
+    persistDb();
+    send({ type: "smartActions", data: smartActions.snapshot() });
+  },
+  getSettings: () => state.settings,
+  idFn: (prefix) => store.id(prefix || "sa"),
+  upsertTask: (task) => upsertTaskRow(task),
+  startTasks: (ids, opts) => enqueueTaskIds(ids, opts || {}),
+  deleteTasks: (ids) => {
+    const set = new Set(ids || []);
+    state.db.tasks = (state.db.tasks || []).filter((t) => !set.has(t.id));
+    persistDb();
+  },
+  stopTasks: (ids) => {
+    // Soft-disable — runner has no cancel-by-id; mark disabled so they won't re-arm.
+    const set = new Set(ids || []);
+    for (const t of state.db.tasks || []) {
+      if (set.has(t.id)) {
+        t.enabled = false;
+        t.updatedAt = Date.now();
+      }
+    }
+    persistDb();
+  },
+  notifyDiscord: async (payload) => {
+    const url = state.settings.discordCheckoutWebhook || "";
+    return postDiscordWebhook(url, payload);
+  },
+  emit: (evt) => send(evt),
+});
+
 /** Railway global monitor SSE — subscribed while engine is running. */
 const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
   getSettings: () => state.settings,
@@ -71,6 +117,13 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
   emitLog: (message) =>
     send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
   onCheckoutTask: async (task) => enqueueGlobalMonitorCheckout(task),
+  onFeedHit: (hit) => {
+    send({ type: "monitorFeed", hit });
+    // Smart Actions Product Monitor trigger (orchestration only).
+    void smartActions.handleMonitorHit(hit).then(() => {
+      send({ type: "snapshot", data: snapshot() });
+    });
+  },
 });
 
 function harvestEntries() {
@@ -328,6 +381,8 @@ function snapshot() {
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
     bandaiGlobalMonitor: bandaiGlobalMonitor.snapshot(),
+    smartActions: smartActions.snapshot(),
+    monitorFeed: bandaiGlobalMonitor.getFeed?.() || bandaiGlobalMonitor.snapshot().feed || [],
     dropSchedule: schedule,
     dropReady: dropReadySnapshot(),
   };
@@ -493,7 +548,11 @@ runner.setFinishedHandler((result) => {
 ipcMain.handle("desktop:get-state", () => snapshot());
 
 ipcMain.handle("desktop:save-settings", async (_e, patch) => {
-  state.settings = { ...state.settings, ...patch };
+  const next = { ...state.settings, ...patch };
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "quickTaskPreset")) {
+    next.quickTaskPreset = normalizeQuickTaskPreset(patch.quickTaskPreset || {});
+  }
+  state.settings = next;
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
     ...runnerHarvestHooks(),
@@ -874,7 +933,7 @@ ipcMain.handle("desktop:delete-proxy-group", (_e, groupId) => {
 });
 
 // Tasks
-ipcMain.handle("desktop:upsert-task", (_e, task) => {
+function upsertTaskRow(task) {
   const now = Date.now();
   const storeId = task.store || "kmart";
   const row = {
@@ -981,6 +1040,11 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
   if (i >= 0) state.db.tasks[i] = { ...state.db.tasks[i], ...row };
   else state.db.tasks.push({ ...row, createdAt: now, lastStatus: "idle" });
   persistDb();
+  return state.db.tasks.find((t) => t.id === row.id);
+}
+
+ipcMain.handle("desktop:upsert-task", (_e, task) => {
+  upsertTaskRow(task);
   return snapshot();
 });
 
@@ -1505,11 +1569,162 @@ ipcMain.handle("desktop:bandai-vault-login-check", async (_e, opts = {}) => {
   return { ok: true, enqueued: jobs.length, snapshot: snapshot() };
 });
 
+// ── Monitor Feed / Quick Task / Smart Actions ──────────────────────────────
+
+ipcMain.handle("desktop:monitor-feed", () => ({
+  ok: true,
+  feed: bandaiGlobalMonitor.getFeed?.() || [],
+  monitor: bandaiGlobalMonitor.snapshot(),
+}));
+
+ipcMain.handle("desktop:monitor-feed-clear", () => {
+  bandaiGlobalMonitor.clearFeed?.();
+  send({ type: "monitorFeed", cleared: true, feed: [] });
+  return { ok: true, feed: [], snapshot: snapshot() };
+});
+
+/**
+ * Quick Task from pasted SKU/URL or a monitor feed hit.
+ * Creates a task from Settings → Quick Task preset, optionally starts it,
+ * and fires Smart Actions with trigger=quicktask.
+ */
+ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
+  const preset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+  let target;
+  if (payload.hit && payload.hit.productId) {
+    target = targetFromMonitorHit(payload.hit, { area: payload.area || "au" });
+  } else {
+    target = parseBandaiProductInput(payload.input || payload.sku || payload.url || "", {
+      area: payload.area || "au",
+    });
+  }
+  if (!target.ok) {
+    return { ok: false, error: target.error || "Invalid product", snapshot: snapshot() };
+  }
+  if (payload.title) target.title = payload.title;
+
+  const built = buildQuickTaskDraft(preset, target, {
+    label: payload.label || target.title || target.productId,
+  });
+  if (!built.ok) {
+    return { ok: false, error: built.error, snapshot: snapshot() };
+  }
+  if (!built.task.profileId) {
+    return {
+      ok: false,
+      error: "Set a default profile in Settings → Quick Task preset",
+      snapshot: snapshot(),
+    };
+  }
+
+  const row = upsertTaskRow(built.task);
+  const start =
+    payload.start != null ? payload.start !== false : built.startAfterCreate !== false;
+  let enqueue = null;
+  if (start) {
+    enqueue = enqueueTaskIds([row.id], {});
+    if (!enqueue.ok) {
+      return {
+        ok: false,
+        error: enqueue.error || "Could not start task",
+        task: row,
+        snapshot: snapshot(),
+      };
+    }
+  }
+
+  const ctx = contextFromQuickTask(target, {
+    store: preset.store,
+    label: row.label,
+  });
+  void smartActions.handleQuickTaskContext(ctx);
+
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    message: `Quick Task ${start ? "started" : "created"} — ${row.label || row.id}`,
+  });
+  send({ type: "snapshot", data: snapshot() });
+  return {
+    ok: true,
+    task: row,
+    started: Boolean(start && enqueue?.ok),
+    enqueued: enqueue?.enqueued || 0,
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:smart-actions-list", () => ({
+  ok: true,
+  ...smartActions.snapshot(),
+}));
+
+ipcMain.handle("desktop:smart-action-upsert", (_e, action) => {
+  const row = smartActions.upsert(action || {});
+  return { ok: true, action: row, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-delete", (_e, actionId) => {
+  smartActions.remove(String(actionId || ""));
+  return { ok: true, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-set-enabled", (_e, actionId, enabled) => {
+  const row = smartActions.setEnabled(String(actionId || ""), enabled !== false);
+  return { ok: Boolean(row), action: row, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-logs", (_e, actionId) => ({
+  ok: true,
+  logs: smartActions.getLogs(String(actionId || "")),
+}));
+
+/** Seed creator from a feed hit (returns draft filters — UI opens SA editor). */
+ipcMain.handle("desktop:smart-action-from-hit", (_e, hit = {}) => {
+  const ctx = contextFromMonitorHit(hit, { store: "bandai", area: "au" });
+  const draft = smartActions.normalizeSmartAction(
+    {
+      name: `Monitor ${ctx.sku || ctx.title || "hit"}`.slice(0, 120),
+      enabled: true,
+      runOnce: false,
+      runIntervalMs: 30000,
+      notifications: true,
+      trigger: { type: "product_monitor" },
+      filters: [
+        ...(ctx.sku
+          ? [{ field: "sku", op: "matches", value: String(ctx.sku) }]
+          : []),
+        ...(ctx.title && ctx.title !== ctx.sku
+          ? [{ field: "title", op: "matches", value: String(ctx.title).slice(0, 80) }]
+          : []),
+      ],
+      actions: [
+        {
+          type: "create_tasks",
+          config: {
+            usePreset: true,
+            store: "bandai",
+            bandaiMode: "checkout",
+            labelTemplate: "{{title}}",
+            count: 1,
+          },
+        },
+        { type: "start_tasks", config: {} },
+      ],
+    },
+    (prefix) => store.id(prefix || "sa"),
+  );
+  // Don't persist — UI decides Save.
+  return { ok: true, draft, context: ctx };
+});
+
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 async function e2eAutorun() {
-  // DESKTOP_E2E_AUTORUN=1 — start engine, enqueue enabled tasks (dry-run unless
-  // DESKTOP_E2E_PLACE_ORDER=1), wait for completion, write result JSON, quit.
+  // DESKTOP_E2E_AUTORUN=1 — start engine via Electron sidecar, enqueue like the UI
+  // (vault account + settings), wait for completion, write result JSON, quit.
+  // DESKTOP_E2E_PLACE_ORDER=1 → real pay. DESKTOP_E2E_TASK_ID=task_… → one task.
   const outPath = process.env.DESKTOP_E2E_OUT || require("path").join(app.getPath("userData"), "j1ms-desktop", "e2e-last.json");
   console.log("[e2e] autorun starting →", outPath);
 
@@ -1521,11 +1736,14 @@ async function e2eAutorun() {
     });
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
     let hyper = String(state.settings.hyperApiKey || "").trim();
-    if (!hyper) return { ok: false, error: "Hyper API key required in Settings" };
+    const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    if (!hyper && !capsolver) {
+      return { ok: false, error: "Need Hyper and/or CapSolver in Settings" };
+    }
     return sidecar.startSidecar({
-      hyperApiKey: hyper,
+      hyperApiKey: hyper || undefined,
       paydockPublicKey: state.settings.paydockPublicKey,
-      capsolverApiKey: state.settings.capsolverApiKey,
+      capsolverApiKey: capsolver || state.settings.capsolverApiKey,
       maxConcurrent: state.settings.maxConcurrent,
     });
   })();
@@ -1544,8 +1762,11 @@ async function e2eAutorun() {
   runner.start();
 
   const placeOrder = process.env.DESKTOP_E2E_PLACE_ORDER === "1";
+  const onlyId = String(process.env.DESKTOP_E2E_TASK_ID || "").trim();
   const jobs = [];
+  const claimedAccountIds = [];
   for (const task of state.db.tasks.filter((t) => t.enabled !== false)) {
+    if (onlyId && task.id !== onlyId) continue;
     const profile = state.db.profiles.find((p) => p.id === task.profileId);
     if (!profile) {
       console.error("[e2e] task missing profile", task.id);
@@ -1553,19 +1774,60 @@ async function e2eAutorun() {
     }
     const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
     const entries = group?.entries?.length ? group.entries : [null];
+    const taskCopy = { ...task, placeOrder, pwEdgeRetries: 5 };
+    const needsVault =
+      (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
+      (task.store === "bandai" &&
+        ["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")));
+    if (needsVault) {
+      const resolved = resolveAccountForTask({
+        task,
+        profile,
+        accounts: state.db.accounts || [],
+        excludeIds: claimedAccountIds,
+      });
+      if (resolved.error) {
+        console.error("[e2e] account assign failed", task.id, resolved.error);
+        continue;
+      }
+      if (resolved.account) {
+        claimedAccountIds.push(resolved.account.id);
+        taskCopy.account = {
+          email: resolved.account.email,
+          password: resolved.account.password,
+          id: resolved.account.id,
+        };
+        taskCopy.accountAssignSource = resolved.source;
+      }
+    }
     // One attempt for e2e (ignore quantity) — sticky retries can advance entries.
     jobs.push({
-      task: { ...task, placeOrder, pwEdgeRetries: 5 },
+      task: taskCopy,
       profile,
       proxyRaw: entries[0] ?? null,
       proxyEntries: entries.filter(Boolean),
       proxyIndex: 0,
       placeOrder,
+      accounts: state.db.accounts || [],
+      settings: state.settings,
     });
   }
 
   if (!jobs.length) {
-    require("fs").writeFileSync(outPath, JSON.stringify({ ok: false, phase: "enqueue", error: "no enabled tasks with profiles" }, null, 2));
+    require("fs").writeFileSync(
+      outPath,
+      JSON.stringify(
+        {
+          ok: false,
+          phase: "enqueue",
+          error: onlyId
+            ? `no job for DESKTOP_E2E_TASK_ID=${onlyId}`
+            : "no enabled tasks with profiles",
+        },
+        null,
+        2,
+      ),
+    );
     console.error("[e2e] no jobs");
     app.quit();
     return;
@@ -1586,6 +1848,10 @@ async function e2eAutorun() {
       stockStatus: result.stockStatus || null,
       checkoutStage: result.checkoutStage || null,
       failedStep: result.failedStep || null,
+      paymentStatus: result.paymentStatus || null,
+      transactionId: result.transactionId || null,
+      via: result.via || null,
+      note: result.note || null,
       elapsedMs: result.elapsedMs ?? null,
       lastSteps: result.lastSteps || null,
       at: result.at || Date.now(),
@@ -1612,27 +1878,62 @@ async function e2eAutorun() {
       runId: result.runId,
       checkoutStage: result.checkoutStage,
       failedStep: result.failedStep,
+      paymentStatus: result.paymentStatus || null,
+      transactionId: result.transactionId || null,
+      via: result.via || null,
+      note: result.note || null,
+      isSameCartToken: result.isSameCartToken ?? null,
       error: result.error,
+      consumerLabel: result.consumerLabel || null,
       elapsedMs: result.elapsedMs,
-      lastSteps: (result.lastSteps || []).slice(-15).map((s) => ({
+      lastSteps: (result.lastSteps || []).slice(-20).map((s) => ({
         step: s.step,
         ok: s.ok,
         status: s.status,
-        note: String(s.note || "").slice(0, 240),
+        note: String(s.note || "").slice(0, 280),
       })),
     });
     remaining -= 1;
-    console.log("[e2e] job done", JSON.stringify({ ok: result.ok, failedStep: result.failedStep, stage: result.checkoutStage, remaining }));
+    console.log(
+      "[e2e] job done",
+      JSON.stringify({
+        ok: result.ok,
+        failedStep: result.failedStep,
+        stage: result.checkoutStage,
+        paymentStatus: result.paymentStatus,
+        tx: result.transactionId,
+        remaining,
+      }),
+    );
     if (remaining <= 0) {
-      const payload = { ok: results.every((r) => r.ok), results, at: Date.now() };
+      const bankHit = results.some(
+        (r) =>
+          r.transactionId &&
+          String(r.transactionId) !== "0" &&
+          !/RELOAD_ONLY|DataCorruption/i.test(String(r.note || "")),
+      );
+      const payload = {
+        ok: results.every((r) => r.ok),
+        bankHit,
+        viaElectron: true,
+        results,
+        at: Date.now(),
+      };
       require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
-      console.log("[e2e] wrote", outPath, "ok=", payload.ok);
+      console.log("[e2e] wrote", outPath, "ok=", payload.ok, "bankHit=", bankHit);
       setTimeout(() => app.quit(), 500);
     }
   });
 
   runner.enqueue(jobs);
-  console.log("[e2e] enqueued", jobs.length, "dryRun=", !placeOrder);
+  console.log(
+    "[e2e] enqueued",
+    jobs.length,
+    "placeOrder=",
+    placeOrder,
+    "task=",
+    jobs.map((j) => j.task.id).join(","),
+  );
 }
 
 app.whenReady().then(async () => {

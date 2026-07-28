@@ -81,6 +81,10 @@ test("client inject hit matches watch and enqueues checkout", async () => {
   assert.equal(enqueued.length, 1);
   assert.equal(enqueued[0].bandaiMode, "checkout");
   assert.equal(enqueued[0].bandaiAreaItemNo, "NAI0859145AU");
+  const feed = client.getFeed();
+  assert.equal(feed.length, 1);
+  assert.equal(feed[0].productId, "N2890904001");
+  assert.ok(feed[0].receivedAt);
 });
 
 test("checkout result discord embed", () => {

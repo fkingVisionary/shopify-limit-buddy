@@ -57,12 +57,16 @@ function listGlobalWatchTasks(tasks = []) {
   });
 }
 
+const FEED_MAX = 120;
+
 function createBandaiGlobalMonitorClient({
   emitLog,
   getSettings,
   getTasks,
   onCheckoutTask,
+  onFeedHit,
   fetchImpl,
+  feedMax = FEED_MAX,
 } = {}) {
   const bus = new EventEmitter();
   const fetchFn = fetchImpl || globalThis.fetch?.bind(globalThis);
@@ -73,6 +77,8 @@ function createBandaiGlobalMonitorClient({
   let connected = false;
   let hits = 0;
   let startedAt = null;
+  /** @type {object[]} newest-first ring buffer for Monitor Feed UI */
+  let feed = [];
 
   function settings() {
     return getSettings?.() || {};
@@ -83,25 +89,43 @@ function createBandaiGlobalMonitorClient({
     reconnectTimer = null;
   }
 
+  function pushFeed(hit) {
+    const row = {
+      ...hit,
+      at: hit?.at || new Date().toISOString(),
+      receivedAt: Date.now(),
+      store: hit?.store || "bandai",
+    };
+    feed = [row, ...feed].slice(0, Math.max(20, feedMax));
+    bus.emit("feed", row);
+    try {
+      onFeedHit?.(row);
+    } catch {
+      /* UI bridge must not break checkout path */
+    }
+    return row;
+  }
+
   async function handleHit(hit) {
     if (!hit?.productId) return;
     hits += 1;
-    bus.emit("hit", hit);
-    emitLog?.(`Global monitor hit ${hit.productId} (${hit.reason || "restock"})`);
+    const row = pushFeed(hit);
+    bus.emit("hit", row);
+    emitLog?.(`Global monitor hit ${row.productId} (${row.reason || "restock"})`);
 
     const tasks = listGlobalWatchTasks(getTasks?.() || []);
     for (const task of tasks) {
       const watch = parseWatch(task);
-      if (!eventMatchesWatch(hit, watch)) continue;
-      emitLog?.(`Watch match → ${task.label || task.id} (${hit.productId})`);
+      if (!eventMatchesWatch(row, watch)) continue;
+      emitLog?.(`Watch match → ${task.label || task.id} (${row.productId})`);
       if (!shouldCheckoutOnMonitorHit(task, task.placeOrder !== false)) continue;
-      const switched = taskForMonitorCheckout(task, hit, task.bandaiArea || "au");
+      const switched = taskForMonitorCheckout(task, row, task.bandaiArea || "au");
       if (!switched.ok) {
         emitLog?.(`Checkout handoff failed: ${switched.error}`);
         continue;
       }
       try {
-        await onCheckoutTask?.(switched.task, hit);
+        await onCheckoutTask?.(switched.task, row);
       } catch (e) {
         emitLog?.(`Checkout enqueue failed: ${e?.message || e}`);
       }
@@ -243,7 +267,17 @@ function createBandaiGlobalMonitorClient({
       startedAt,
       url: normalizeMonitorBase(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl) || null,
       watchTasks: listGlobalWatchTasks(getTasks?.() || []).length,
+      feed: feed.slice(0, 80),
     };
+  }
+
+  function getFeed() {
+    return feed.slice();
+  }
+
+  function clearFeed() {
+    feed = [];
+    return getFeed();
   }
 
   /** Test helper */
@@ -255,6 +289,8 @@ function createBandaiGlobalMonitorClient({
     start,
     stop,
     snapshot,
+    getFeed,
+    clearFeed,
     on: bus.on.bind(bus),
     off: bus.off.bind(bus),
     listGlobalWatchTasks,
