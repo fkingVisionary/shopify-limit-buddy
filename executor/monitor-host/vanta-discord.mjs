@@ -185,6 +185,13 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
 
   const reasonLabel =
     reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
+  const qtUrl = buildQuickTaskBridgeUrl(hit, { area });
+  // Put QT in description too — Discord often strips LINK buttons on channel webhooks.
+  const description = [
+    `**${reasonLabel}** · Premium Bandai AU`,
+    "",
+    `[⚡ Quick Task](${qtUrl}) — needs J1m's Bot desktop open on this PC`,
+  ].join("\n");
 
   return {
     username: VANTA_NAME,
@@ -195,7 +202,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
         },
         title: title.slice(0, 250),
         url: pdp,
-        description: `**${reasonLabel}** · Premium Bandai AU`,
+        description,
         color: VANTA_COLOR,
         fields,
         ...(image

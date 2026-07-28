@@ -64,6 +64,8 @@ test("admin lab test restock also includes Quick Task", () => {
   );
   assert.match(testPing.embeds[0].author.name, /test restock/i);
   assert.match(testPing.embeds[0].footer.text, /Quick Task/i);
+  assert.match(testPing.embeds[0].description, /Quick Task/i);
+  assert.match(testPing.embeds[0].description, /\/qt\?/);
   const btn = testPing.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.ok(btn);
   assert.match(btn.url, /\/qt\?/);

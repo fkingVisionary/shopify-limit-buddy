@@ -269,6 +269,7 @@ app.get("/", async (_req, reply) => {
     ok: true,
     service: "bandai-monitor",
     brand: "Vanta",
+    gitSha: process.env.GIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || null,
     message: "Vanta Bandai monitor. Phone lab: /admin · API needs Bearer MONITOR_TOKEN.",
     area: AREA,
     intervalMs: m.intervalMs ?? runtime.intervalMs,
@@ -345,6 +346,7 @@ app.get("/health", async () => {
   return {
     ok: true,
     service: "bandai-monitor",
+    gitSha: process.env.GIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || null,
     area: AREA,
     intervalMs: st.monitor?.intervalMs ?? runtime.intervalMs,
     keywords: st.monitor?.keywords || [],
@@ -353,6 +355,7 @@ app.get("/health", async () => {
     sseClients: sseClients.size,
     authRequired: Boolean(TOKEN),
     admin: "/admin/",
+    quickTask: "/qt",
   };
 });
 

@@ -16,6 +16,8 @@ COPY monitor-host/bot-executor.mjs ./monitor-host/bot-executor.mjs
 COPY monitor-host/lab-log.mjs ./monitor-host/lab-log.mjs
 COPY monitor-host/admin ./monitor-host/admin
 
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
 ENV PORT=8080
 ENV NODE_ENV=production
 EXPOSE 8080
