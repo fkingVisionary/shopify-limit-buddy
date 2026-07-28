@@ -30,31 +30,39 @@ test("monitor setKeywords live", () => {
   assert.deepEqual(m.status().keywords, ["X", "Y"]);
 });
 
-test("oos discord is red; restock is black + Quick Task button", () => {
+test("oos discord is red; restock is black + Quick Task once", () => {
   const body = vantaOosDiscordBody({
     productId: "N1",
-    title: "Demo",
+    title: "Demo Figure",
     reason: "went_oos",
   });
   assert.equal(body.username, "Vanta");
   assert.match(body.embeds[0].title, /^OOS ·/);
   assert.match(body.embeds[0].description, /OUT OF STOCK/i);
   assert.equal(body.embeds[0].color, 0xdc2626);
-  assert.equal(body.components, undefined);
+  assert.match(body.embeds[0].description, /eBay sold/i);
+  assert.ok(body.components?.[0]?.components?.some((c) => /eBay sold/i.test(c.label)));
 
-  const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo", areaItemNo: "NAI1" });
+  const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo Figure", areaItemNo: "NAI1" });
   assert.equal(restock.embeds[0].color, 0x000000);
+  // QT appears once in description (not also in a Desktop field)
+  const desc = restock.embeds[0].description;
+  assert.equal((desc.match(/Quick Task/g) || []).length, 1);
+  assert.match(desc, /Setup presets/);
+  assert.match(desc, /eBay sold/);
+  assert.match(desc, /ebay\.com\.au/);
+  assert.equal(
+    restock.embeds[0].fields.some((f) => f.name === "Desktop"),
+    false,
+  );
   assert.ok(Array.isArray(restock.components));
+  const labels = restock.components[0].components.map((c) => c.label);
+  assert.ok(labels.some((l) => /Quick Task/i.test(l)));
+  assert.ok(labels.some((l) => /Setup presets/i.test(l)));
+  assert.ok(labels.some((l) => /eBay sold/i.test(l)));
   const btn = restock.components[0].components.find((c) => /Quick Task/i.test(c.label));
-  assert.ok(btn);
-  assert.equal(btn.style, 5);
-  // HTTPS /qt bounce — Discord-safe (not raw 127.0.0.1)
   assert.match(btn.url, /^https:\/\/.+\/qt\?/);
   assert.match(btn.url, /sku=N1/);
-  assert.match(btn.url, /nai=NAI1/);
-  const desktopField = restock.embeds[0].fields.find((f) => f.name === "Desktop");
-  assert.ok(desktopField);
-  assert.match(desktopField.value, /Quick Task/);
 });
 
 test("admin lab test restock also includes Quick Task", () => {
@@ -63,15 +71,13 @@ test("admin lab test restock also includes Quick Task", () => {
     { area: "au", test: true },
   );
   assert.match(testPing.embeds[0].author.name, /test restock/i);
-  assert.match(testPing.embeds[0].footer.text, /Quick Task/i);
-  assert.match(testPing.embeds[0].description, /Quick Task/i);
+  assert.equal(/needs .+ open/i.test(testPing.embeds[0].description), false);
+  assert.equal((testPing.embeds[0].description.match(/Quick Task/g) || []).length, 1);
   assert.match(testPing.embeds[0].description, /\/qt\?/);
+  assert.match(testPing.embeds[0].description, /qt-setup/);
   const btn = testPing.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.ok(btn);
-  assert.match(btn.url, /\/qt\?/);
   assert.match(btn.url, /sku=N2890904001/);
-  const desktop = testPing.embeds[0].fields.find((f) => f.name === "Desktop");
-  assert.ok(desktop);
 });
 
 test("runtime config round-trip", () => {
