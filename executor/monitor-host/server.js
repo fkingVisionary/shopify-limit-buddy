@@ -26,6 +26,7 @@ import {
   buildKmartLabPayload,
   redactRunPayload,
 } from "./bot-executor.mjs";
+import { labLog, getLabLogs, clearLabLogs, labLogStats } from "./lab-log.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
@@ -111,7 +112,12 @@ async function postDiscord(body) {
     body: JSON.stringify(body),
   });
   const text = await res.text().catch(() => "");
-  if (!res.ok) return { ok: false, status: res.status, error: text.slice(0, 200) };
+  if (!res.ok) {
+    labLog("discord", "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
+    return { ok: false, status: res.status, error: text.slice(0, 200) };
+  }
+  const title = body?.embeds?.[0]?.title || body?.username || "ping";
+  labLog("discord", "info", `sent · ${title}`.slice(0, 200));
   return { ok: true, status: res.status };
 }
 
@@ -145,9 +151,25 @@ try {
   console.warn("[runtime-config]", e?.message || e);
 }
 
+hub.monitor.on("started", (s) => {
+  labLog("monitor", "info", "Monitor started", {
+    intervalMs: s?.intervalMs,
+    keywords: s?.keywords,
+  });
+});
+hub.monitor.on("stopped", (s) => {
+  labLog("monitor", "warn", "Monitor stopped", { polls: s?.polls });
+});
+
 hub.monitor.on("stock_changed", async (ev) => {
   console.log(
     `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ev.meta?.title || ""}`,
+  );
+  labLog(
+    "monitor",
+    ev?.inStock ? "info" : "warn",
+    `${ev.reason || "stock"} ${ev.productId}${ev.title || ev.meta?.title ? ` · ${ev.title || ev.meta?.title}` : ""}`,
+    { productId: ev.productId, inStock: ev.inStock, reason: ev.reason },
   );
   pushHit(ev);
 
@@ -183,9 +205,20 @@ hub.monitor.on("poll", (s) => {
       `[poll] #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events} ms=${s.ms} tier=${s.proxyTier} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
     );
   }
+  // Keep every poll in the lab buffer (ring-capped) so phone Logs stays useful.
+  labLog("monitor", s.events > 0 ? "info" : "info", `poll #${s.polls}`, {
+    products: s.products,
+    inStock: s.inStock,
+    events: s.events,
+    ms: s.ms,
+    tier: s.proxyTier,
+    host: s.proxyHost,
+    baseline: Boolean(s.firstSnapshot),
+  });
 });
 hub.monitor.on("error", (e) => {
   console.warn(`[monitor:error] ${e.error || e}`);
+  labLog("monitor", "err", String(e.error || e), { polls: e.polls });
 });
 
 const app = Fastify({ logger: false });
@@ -339,6 +372,11 @@ app.post("/lab/poll", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   try {
     const { summary, events } = await hub.monitor.pollOnce();
+    labLog("monitor", "info", "Force poll", {
+      polls: summary?.polls,
+      products: summary?.products,
+      events: events?.length || 0,
+    });
     return {
       ok: true,
       summary,
@@ -349,8 +387,51 @@ app.post("/lab/poll", async (req, reply) => {
       })),
     };
   } catch (e) {
+    labLog("monitor", "err", `Force poll failed: ${e?.message || e}`);
     return reply.code(503).send({ ok: false, error: e?.message || "poll_failed" });
   }
+});
+
+app.post("/monitor/start", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const st = hub.monitor.status();
+  if (st.running) {
+    return { ok: true, already: true, monitor: st };
+  }
+  hub.monitor.start();
+  labLog("system", "info", "Monitor start requested from admin");
+  return { ok: true, monitor: hub.monitor.status() };
+});
+
+app.post("/monitor/stop", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const st = hub.monitor.status();
+  if (!st.running) {
+    return { ok: true, already: true, monitor: st };
+  }
+  await hub.monitor.stop();
+  labLog("system", "warn", "Monitor stop requested from admin", { polls: st.polls });
+  return { ok: true, monitor: hub.monitor.status() };
+});
+
+app.get("/logs", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const limit = Number(req.query?.limit) || 100;
+  const source = req.query?.source || null;
+  const level = req.query?.level || null;
+  return {
+    ok: true,
+    ...labLogStats(),
+    monitorRunning: Boolean(hub.monitor.status()?.running),
+    logs: getLabLogs({ limit, source, level }),
+  };
+});
+
+app.delete("/logs", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  clearLabLogs();
+  labLog("system", "info", "Logs cleared");
+  return { ok: true, ...labLogStats() };
 });
 
 /** Operator test: POST /test-discord?sku=…&kind=restock|oos */
@@ -566,6 +647,10 @@ app.post("/bot/run", async (req, reply) => {
   };
   botRuns.unshift(row);
   if (botRuns.length > MAX_BOT_RUNS) botRuns.length = MAX_BOT_RUNS;
+  labLog("bot", "info", `run start ${row.store}/${row.mode}`, {
+    taskId: row.taskId,
+    placeOrder: row.placeOrder,
+  });
 
   // Fire-and-forget — checkout can run for minutes.
   row.status = "running";
@@ -581,6 +666,7 @@ app.post("/bot/run", async (req, reply) => {
       row.ok = false;
       row.error = r.error || `http_${r.status}`;
       row.summary = r.json || null;
+      labLog("bot", "err", `run error ${row.taskId}`, { error: row.error });
       return;
     }
     const j = r.json || {};
@@ -600,11 +686,18 @@ app.post("/bot/run", async (req, reply) => {
         ? j.steps.slice(-8).map((s) => ({ step: s.step, ok: s.ok, status: s.status }))
         : null,
     };
+    labLog("bot", row.ok ? "info" : "warn", `run done ${row.taskId}`, {
+      ok: row.ok,
+      checkoutStage: row.checkoutStage,
+      failedStep: row.failedStep,
+      error: row.error,
+    });
   })().catch((e) => {
     row.status = "error";
     row.ok = false;
     row.finishedAt = new Date().toISOString();
     row.error = e?.message || String(e);
+    labLog("bot", "err", `run throw ${row.taskId}`, { error: row.error });
   });
 
   return { ok: true, taskId: row.taskId, run: row };

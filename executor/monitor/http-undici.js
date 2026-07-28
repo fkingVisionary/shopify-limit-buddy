@@ -81,7 +81,13 @@ class UndiciDispatcher {
   undiciDispatcher() {
     if (!this.proxy) return undefined;
     if (!this._proxyAgent) {
-      this._proxyAgent = new ProxyAgent(this.proxy);
+      // Connect/proxy hang was freezing the whole poll loop (polls stuck).
+      this._proxyAgent = new ProxyAgent({
+        uri: this.proxy,
+        connect: { timeout: 12_000 },
+        bodyTimeout: 25_000,
+        headersTimeout: 25_000,
+      });
     }
     return this._proxyAgent;
   }
@@ -185,12 +191,26 @@ export async function request(url, opts = {}, ctx = {}) {
   const cookie = ctx.jar?.header?.();
   if (cookie) headers.cookie = cookie;
   const dispatcher = ctx.dispatcher?.undiciDispatcher?.();
+  const timeoutMs = Math.max(
+    3_000,
+    Number(opts.timeoutMs ?? process.env.BANDAI_MONITOR_REQ_TIMEOUT_MS) || 20_000,
+  );
+  /** @type {AbortSignal[]} */
+  const signals = [];
+  if (opts.signal) signals.push(opts.signal);
+  signals.push(AbortSignal.timeout(timeoutMs));
+  const signal =
+    signals.length === 1
+      ? signals[0]
+      : typeof AbortSignal.any === "function"
+        ? AbortSignal.any(signals)
+        : signals[signals.length - 1];
   const res = await undiciFetch(url, {
     method: opts.method || "GET",
     headers,
     body: opts.body,
     dispatcher,
-    signal: opts.signal,
+    signal,
   });
   return wrapFetchResponse(res, url);
 }
