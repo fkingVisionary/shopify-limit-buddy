@@ -150,10 +150,11 @@
             <div id="taskBandaiCheckoutModeWrap" hidden>
               <label>Checkout pay path</label>
               <select id="taskBandaiCheckoutMode">
-                <option value="fast">Fast — HTTP GE + risk-hydrate (default)</option>
+                <option value="fast">Fast — risk-hydrate + page issuer (default)</option>
+                <option value="fast_undici">Fast — undici issuer (A/B / lab)</option>
                 <option value="safe">Safe — Playwright GE after cart hold</option>
               </select>
-              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast pays undici issuer with fresh Forter/iovation mint (clears GE PossibleFraudDetected). Safe keeps the ~30 min window and pays via browser GEM on the F5 bridge.</p>
+              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast mints Forter/iovation then pays from the same Playwright context (avoids RELOAD_ONLY after page-drop). Use undici issuer only for A/B. Safe keeps the ~30 min window and pays via browser GEM.</p>
               <label>Backend PID / areaItemNo <span class="optional">(NAI… — preferred on drops)</span></label>
               <input id="taskBandaiAreaItemNo" placeholder="NAI0859145AU" autocomplete="off" />
               <p class="field-hint">If set, ATC uses this id instead of the frontend <code>N…</code> from the PDP URL (extension tip under load).</p>

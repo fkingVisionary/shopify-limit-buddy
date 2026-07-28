@@ -22,6 +22,29 @@ function isProxyEgressFailed(res) {
 
 function formatExecutorFailure(res) {
   if (!res || typeof res !== "object") return "checkout failed (empty response)";
+
+  // Prefer structured GE reload diagnostics over a truncated ErrorMessage.
+  if (res.reloadDiag || (res.reloadOnly && res.redirectErrorType)) {
+    const bits = [];
+    if (res.failedStep) bits.push(String(res.failedStep));
+    if (res.checkoutStage) bits.push(`stage=${res.checkoutStage}`);
+    bits.push(
+      String(
+        res.reloadDiag ||
+          [
+            res.redirectErrorType && `RedirectErrorType=${res.redirectErrorType}`,
+            res.isSameCartToken != null && `IsTheSameCartToken=${res.isSameCartToken}`,
+            res.transactionId != null && `TransactionId=${res.transactionId}`,
+            res.forterTokenPresent != null && `forter=${res.forterTokenPresent}`,
+            res.harvestedBridge != null && `harvested=${res.harvestedBridge}`,
+          ]
+            .filter(Boolean)
+            .join(";"),
+      ),
+    );
+    return bits.join(" | ");
+  }
+
   if (res.error) return String(res.error);
 
   const steps = Array.isArray(res.steps) ? res.steps : [];
@@ -34,11 +57,14 @@ function formatExecutorFailure(res) {
   if (res.failedStep) bits.push(String(res.failedStep));
   if (res.checkoutStage) bits.push(`stage=${res.checkoutStage}`);
   if (failed) {
-    bits.push(`${failed.step}${failed.status != null ? ` HTTP ${failed.status}` : ""}: ${String(failed.note || "").slice(0, 180)}`);
+    const noteMax = /ge_issuer|RELOAD_ONLY|ge_risk/i.test(String(failed.step || failed.note || ""))
+      ? 360
+      : 180;
+    bits.push(`${failed.step}${failed.status != null ? ` HTTP ${failed.status}` : ""}: ${String(failed.note || "").slice(0, noteMax)}`);
   }
   for (const s of failedRecent) {
     if (failed && s.step === failed.step && s.note === failed.note) continue;
-    bits.push(`${s.step}${s.status != null ? ` HTTP ${s.status}` : ""}: ${String(s.note || "").slice(0, 120)}`);
+    bits.push(`${s.step}${s.status != null ? ` HTTP ${s.status}` : ""}: ${String(s.note || "").slice(0, 160)}`);
   }
   if (isProxyEgressFailed(res)) {
     bits.push(
@@ -55,6 +81,11 @@ function formatExecutorFailure(res) {
   }
   if (/bm_sv=false/i.test(blob) && /Access Denied/i.test(blob) && !isProxyEgressFailed(res)) {
     bits.push("hint: SBSD posted OK but bm_sv never minted — classic prelude to hard 403 on category/PDP.");
+  }
+  if (/RELOAD_ONLY|ge_reload_only|IsTheSameCartToken=False|DataCorruption/i.test(blob)) {
+    bits.push(
+      "hint: GE ReloadBehaviour (no bank) — usually cart-session / undici-after-page-drop. Prefer Fast page issuer; check sameCart + RedirectErrorType in the note.",
+    );
   }
   if (!bits.length && res.ok === false) {
     bits.push("executor ok=false (no failed step notes — check proxy/egress)");

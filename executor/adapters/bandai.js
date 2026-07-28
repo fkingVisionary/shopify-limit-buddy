@@ -476,6 +476,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   const wantBridge = task.bandaiF5Bridge !== false;
 
   let bridge = null;
+  let usedHarvestedBridge = false;
   const closeBridge = async () => {
     try {
       await bridge?.close?.();
@@ -590,6 +591,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           bridge = claimed.bridge;
           harvestedMeta = claimed.meta;
           claimedId = id;
+          usedHarvestedBridge = true;
           if (csrfCheck) session.state.csrfToken = csrfCheck;
           if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
           if (via === "next") {
@@ -648,6 +650,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
               bridge = next.bridge;
               harvestedMeta = next.meta;
               claimedId = nextId;
+              usedHarvestedBridge = true;
               if (csrfCheck) session.state.csrfToken = csrfCheck;
               if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
               steps.push({
@@ -690,6 +693,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
               bridge = next.bridge;
               harvestedMeta = next.meta;
               claimedId = next.meta?.id || "bank";
+              usedHarvestedBridge = true;
               if (csrfCheck) session.state.csrfToken = csrfCheck;
               if (cookiesCheck && ctx.jar?.load) ctx.jar.load(cookiesCheck);
               steps.push({
@@ -1859,6 +1863,17 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         note: `continuing to GetCartToken despite checkout fail: ${chk.note}`,
       });
     }
+    // Re-sync F5 bridge cookies → undici jar after checkout mutations (harvest gap).
+    if (bridge && ctx.jar?.load) {
+      try {
+        const cookies = await bridge.cookies();
+        if (cookies && Object.keys(cookies).length) {
+          ctx.jar.load({ ...ctx.jar.dump(), ...cookies });
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     // Fast anti-fraud default: riskHydrate (fresh snare/Forter mint + cookie
     // merge, then undici pay). Stale noPage blackbox was scoring
     // PossibleFraudDetected=True. Opt into pure noPage only explicitly.
@@ -1891,6 +1906,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
       card: opts.card,
+      // Desktop/imported vaults: GE form often lacks BillingFirstName — fill from profile.
+      profile: shipProfile || profileFromTask(task),
       area: session.area,
       customerEmail: email,
       userAgent: session.state.userAgent,
@@ -1898,8 +1915,20 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
       forceIssuer: task.bandaiGeForceIssuer === true,
       keepPageAfterIovation: task.bandaiGeKeepPage === true,
-      preferPageIssuer: task.bandaiGePreferPageIssuer === true,
+      // undefined → ge-http defaults page issuer after riskHydrate; false = undici A/B.
+      preferPageIssuer:
+        task.bandaiGePreferPageIssuer === true
+          ? true
+          : task.bandaiGePreferPageIssuer === false || task.bandaiGeUndiciIssuer === true
+            ? false
+            : undefined,
+      forceUndiciIssuer: task.bandaiGeUndiciIssuer === true,
       scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
+      harvestedBridge: Boolean(
+        usedHarvestedBridge || task.harvestedBridgeId || task._harvestedBridge,
+      ),
+      allowThinRisk:
+        task.bandaiGeAllowThinRisk === true || process.env.BANDAI_GE_ALLOW_THIN_RISK === "1",
       mergeIovationCookies:
         riskHydrate || task.bandaiGeMergeIovationCookies === true,
       iovationSettleMs:

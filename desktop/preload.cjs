@@ -1,5 +1,8 @@
 const { contextBridge, ipcRenderer } = require("electron");
-const { formatHarvestBankStrip } = require("./harvest-bank-status.cjs");
+
+// Sandboxed preload may only require electron/built-ins — do NOT require local
+// modules here (e.g. harvest-bank-status.cjs). That kills window.desktop entirely.
+// Harvest bank strip formatting lives in renderer/app.js instead.
 
 contextBridge.exposeInMainWorld("desktop", {
   getState: () => ipcRenderer.invoke("desktop:get-state"),
@@ -24,7 +27,6 @@ contextBridge.exposeInMainWorld("desktop", {
   exportAccounts: (opts) => ipcRenderer.invoke("desktop:export-accounts", opts || {}),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
-  formatHarvestBankStrip: (banks) => formatHarvestBankStrip(banks || {}),
   // Toymate CF + spam harvest
   harvestStatus: () => ipcRenderer.invoke("desktop:harvest-status"),
   harvestConfigure: (patch) => ipcRenderer.invoke("desktop:harvest-configure", patch),

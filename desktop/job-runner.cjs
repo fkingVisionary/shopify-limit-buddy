@@ -1000,7 +1000,12 @@ function logResultTail(job, result) {
   }
   // Surface one line of analytical detail in the UI for drop diagnosis (still capped).
   if (result.debugError) {
-    emitLog(job.runId, job.task?.id, "err", `detail: ${String(result.debugError).slice(0, 220)}`);
+    const cap = /RELOAD_ONLY|RedirectErrorType|IsTheSameCartToken|ge_risk_hydrate/i.test(
+      String(result.debugError),
+    )
+      ? 480
+      : 220;
+    emitLog(job.runId, job.task?.id, "err", `detail: ${String(result.debugError).slice(0, cap)}`);
     console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
   }
   for (const s of (result.lastSteps || []).slice(-8)) {

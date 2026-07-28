@@ -88,7 +88,8 @@ Shipped in the same Electron → local `executor/` sidecar path as Kmart.
 | UI field | Payload | Behavior |
 |----------|---------|----------|
 | Mode **Autocheckout** | `bandaiMode=checkout` | Login → ATC → cart hold (HTTP + F5) |
-| Pay path **Fast** (default) | `bandaiCheckoutMode=fast` + `bandaiGeHttpPay` + `bandaiGeRiskHydrate` | Undici GE hydrate → issuer; fresh Forter/iovation mint |
+| Pay path **Fast** (default) | `bandaiCheckoutMode=fast` + riskHydrate + **page issuer** | Fresh Forter/iovation mint; issuer POST from same Playwright context (avoids RELOAD_ONLY) |
+| Pay path **Fast undici** (A/B) | `bandaiCheckoutMode=fast_undici` | Same mint, undici issuer after page-drop (lab compare) |
 | Pay path **Safe** | `bandaiCheckoutMode=safe` + `bandaiBrowserCheckout` | Same cart hold, Playwright GEM Pay on F5 bridge |
 | Account gen / monitor / chance | `bandaiMode=…` | See executor Bandai bible |
 

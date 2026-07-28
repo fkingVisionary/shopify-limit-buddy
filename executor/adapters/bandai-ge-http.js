@@ -316,6 +316,111 @@ export function parseCheckoutV2Form(html) {
 }
 
 /**
+ * Parse GE AU (etc.) state <option data-code="QLD" value="49181"> maps from Checkout/v2 HTML.
+ */
+export function parseGeStateOptionsFromHtml(html) {
+  const byCode = {};
+  const htmlStr = String(html || "");
+  const re = /<option\b([^>]*)>/gi;
+  let m;
+  while ((m = re.exec(htmlStr))) {
+    const attrs = m[1] || "";
+    const code = (attrs.match(/data-code=["']([^"']+)["']/i) || [])[1];
+    const value = (attrs.match(/\bvalue=["']([^"']+)["']/i) || [])[1];
+    if (!code || !value || !/^\d+$/.test(String(value))) continue;
+    byCode[String(code).trim().toUpperCase()] = String(value);
+  }
+  return byCode;
+}
+
+/** Known Bandai AU Global-e StateIDs (fallback when HTML options missing). */
+export const BANDAI_GE_AU_STATE_IDS = {
+  // Proven from Checkout/v2 captures / bandai-flow.test.mjs
+  QLD: "49181",
+};
+
+export function resolveGeStateId(profile = {}, form = {}, html = "") {
+  const existing =
+    form?.shipping?.StateId || form?.billing?.StateId || null;
+  if (existing && String(existing).trim()) return String(existing).trim();
+  const raw = String(
+    profile.province || profile.state || profile.stateCode || "",
+  )
+    .trim()
+    .toUpperCase();
+  if (!raw) return null;
+  const fromHtml = parseGeStateOptionsFromHtml(html);
+  if (fromHtml[raw]) return fromHtml[raw];
+  // "Queensland" / "New South Wales" → code guess
+  const nameToCode = {
+    QUEENSLAND: "QLD",
+    "NEW SOUTH WALES": "NSW",
+    VICTORIA: "VIC",
+    "SOUTH AUSTRALIA": "SA",
+    "WESTERN AUSTRALIA": "WA",
+    TASMANIA: "TAS",
+    "AUSTRALIAN CAPITAL TERRITORY": "ACT",
+    "NORTHERN TERRITORY": "NT",
+  };
+  const code = nameToCode[raw] || raw;
+  if (fromHtml[code]) return fromHtml[code];
+  if (BANDAI_GE_AU_STATE_IDS[code]) return BANDAI_GE_AU_STATE_IDS[code];
+  return null;
+}
+
+/**
+ * Fill missing GE shipping/billing names from the desktop/lab profile.
+ * Imported Bandai logins often already have a member shipping row, so
+ * shipping_ensure skips — but Checkout/v2 can still render empty
+ * BillingFirstName/LastName → SaveForm BillingMandatory.
+ */
+export function applyProfileToGeForm(form, profile = {}, html = "") {
+  if (!form || !profile || typeof profile !== "object") return form;
+  let first = String(profile.first_name || profile.firstName || "").trim();
+  let last = String(profile.last_name || profile.lastName || "").trim();
+  if ((!first || !last) && profile.card_name) {
+    const parts = String(profile.card_name)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (!first && parts[0]) first = parts[0];
+    if (!last && parts.length > 1) last = parts.slice(1).join(" ");
+  }
+  const phone = String(profile.phone || "").trim();
+  const email = String(profile.email || "").trim();
+  const address1 = String(profile.address1 || "").trim();
+  const city = String(profile.city || "").trim();
+  const zip = String(profile.zip || profile.postcode || "").trim();
+  const stateId = resolveGeStateId(profile, form, html);
+  const fill = (addr) => {
+    if (!addr) return;
+    if (!addr.FirstName && first) addr.FirstName = first;
+    if (!addr.LastName && last) addr.LastName = last;
+    if (!addr.Phone && phone) addr.Phone = phone;
+    if (!addr.Email && email) addr.Email = email;
+    if (!addr.Address1 && address1) addr.Address1 = address1;
+    if (!addr.City && city) addr.City = city;
+    if (!addr.Zip && zip) addr.Zip = zip;
+    if (!addr.StateId && stateId) addr.StateId = stateId;
+  };
+  fill(form.shipping);
+  fill(form.billing);
+  // Keep billing in sync when GEM uses ShippingSameAsBilling.
+  if (form.billing && form.shipping) {
+    for (const k of ["FirstName", "LastName", "Phone", "Email", "Address1", "City", "Zip", "StateId"]) {
+      if (!form.billing[k] && form.shipping[k]) form.billing[k] = form.shipping[k];
+    }
+  }
+  if (!form.email && (email || form.shipping?.Email || form.billing?.Email)) {
+    form.email = email || form.shipping?.Email || form.billing?.Email;
+  }
+  form.hasAddress = Boolean(
+    form.shipping?.Address1 && form.shipping?.City && form.shipping?.Zip,
+  );
+  return form;
+}
+
+/**
  * GEM CheckoutManagerV2 HandleAction bodies (cv2bot.js).
  * Action enum: ShippingOptions=1, TaxOptions=2, Totals=3.
  */
@@ -403,9 +508,14 @@ export function buildCheckoutSaveBody(form, opts = {}) {
   set("CheckoutData.ShippingCity", shipping.City);
   set("CheckoutData.ShippingZIP", shipping.Zip);
   set("CheckoutData.ShippingStateID", shipping.StateId);
-  set("CheckoutData.ShippingFirstName", shipping.FirstName);
-  set("CheckoutData.ShippingLastName", shipping.LastName);
-  set("CheckoutData.ShippingPhone", shipping.Phone);
+  const profile = opts.profile || {};
+  const profileFirst = String(profile.first_name || profile.firstName || "").trim();
+  const profileLast = String(profile.last_name || profile.lastName || "").trim();
+  const shipFirst = shipping.FirstName || profileFirst;
+  const shipLast = shipping.LastName || profileLast;
+  set("CheckoutData.ShippingFirstName", shipFirst);
+  set("CheckoutData.ShippingLastName", shipLast);
+  set("CheckoutData.ShippingPhone", shipping.Phone || profile.phone);
   set("CheckoutData.ShippingAddress.PhoneNational", shipping.Phone?.replace?.(/^\+61/, "") || "");
   set("CheckoutData.BillingCountryID", billing.CountryId || form.countryId || 14);
   set("CheckoutData.BillingAddress1", billing.Address1 || shipping.Address1);
@@ -413,9 +523,15 @@ export function buildCheckoutSaveBody(form, opts = {}) {
   set("CheckoutData.BillingCity", billing.City || shipping.City);
   set("CheckoutData.BillingZIP", billing.Zip || shipping.Zip);
   set("CheckoutData.BillingStateID", billing.StateId || shipping.StateId);
-  set("CheckoutData.BillingFirstName", billing.FirstName || shipping.FirstName);
-  set("CheckoutData.BillingLastName", billing.LastName || shipping.LastName);
-  set("CheckoutData.BillingPhone", billing.Phone || shipping.Phone);
+  set(
+    "CheckoutData.BillingFirstName",
+    billing.FirstName || shipping.FirstName || profileFirst,
+  );
+  set(
+    "CheckoutData.BillingLastName",
+    billing.LastName || shipping.LastName || profileLast,
+  );
+  set("CheckoutData.BillingPhone", billing.Phone || shipping.Phone || profile.phone);
   set(
     "CheckoutData.SelectedShippingOptionID",
     opts.shippingMethodId || form.selectedShippingOptionId || "",
@@ -495,7 +611,39 @@ export function mapCcPaymentRedirect(redirectUrlOrData) {
 }
 
 /**
- * Bank/PSP touched the card: non-zero TransactionId or a real auth status.
+ * Compact RELOAD_ONLY / JWT reject diagnostics for desktop logs.
+ * Prefer map fields over truncated ErrorMessage alone.
+ */
+export function formatGeReloadOnlyDiag(txMap = {}, extras = {}) {
+  const keys = [
+    "RedirectErrorType",
+    "IsTheSameCartToken",
+    "Success",
+    "TransactionId",
+    "TransactionStatusType",
+    "ErrorMessage",
+  ];
+  const fromMap = keys
+    .filter((k) => txMap[k] != null && String(txMap[k]) !== "")
+    .map((k) => {
+      const v = String(txMap[k]);
+      // Cap ErrorMessage so other keys stay visible in desktop debug lines.
+      if (k === "ErrorMessage") return `${k}=${v.slice(0, 80)}`;
+      return `${k}=${v}`;
+    })
+    .join(";");
+  const bits = [
+    fromMap || null,
+    extras.forter != null ? `forter=${extras.forter}` : null,
+    extras.machineIdBytes != null ? `midBytes=${extras.machineIdBytes}` : null,
+    extras.harvested != null ? `harvested=${extras.harvested}` : null,
+    extras.via ? `via=${extras.via}` : null,
+    extras.riskHydrate != null ? `riskHydrate=${extras.riskHydrate}` : null,
+  ].filter(Boolean);
+  return bits.join(" ");
+}
+
+/** Bank/PSP touched the card: non-zero TransactionId or a real auth status.
  * DataCorruption with TransactionId=0 is NOT a bank hit (Revolut silent).
  * AutherizationFailed (GE spelling) IS a bank hit (decline).
  */
@@ -1436,7 +1584,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${opts.machineId ? "opts" : htmlMachineId ? "html" : "none"} bytes=${(v2.text || "").length}`,
   });
 
-  const form = parseCheckoutV2Form(v2.text);
+  const form = applyProfileToGeForm(
+    parseCheckoutV2Form(v2.text),
+    opts.profile || {},
+    v2.text,
+  );
   let shippingMethodId = form.selectedShippingOptionId || "";
   let hydrateShippingOk = false;
 
@@ -1574,22 +1726,34 @@ export async function runBandaiGeHttpPay(opts = {}) {
       forterBytes: forterToken ? String(forterToken).length : 0,
       cookieKeys: jarNames.slice(0, 40),
     });
-    const keepPage =
-      opts.keepPageAfterIovation === true ||
+    // Prefer page issuer after riskHydrate (same cookies/TLS as mint). Undici
+    // after page-drop often → DataCorruption / IsTheSameCartToken=False.
+    const preferPageIssuer =
       opts.preferPageIssuer === true ||
+      (opts.preferPageIssuer !== false &&
+        riskHydrate &&
+        Boolean(opts.page) &&
+        opts.forceUndiciIssuer !== true);
+    const keepPage =
+      preferPageIssuer ||
+      opts.keepPageAfterIovation === true ||
       opts.scrapeCardFormViaPage === true;
-    try {
-      await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
-    } catch {
-      /* ignore */
-    }
+    // Stash resolved flag for issuer branch (opts may be read-only).
+    opts = { ...opts, preferPageIssuer };
     if (keepPage) {
+      // Stay on Checkout/v2 — do not blank before page issuer.
       issuerPage = opts.page;
       mark("ge_page_kept_after_iovation", {
         ok: true,
-        warn: "live_cart_browser_may_pair_revolut",
+        preferPageIssuer,
+        warn: preferPageIssuer ? "page_issuer_after_riskHydrate" : "live_cart_browser_may_pair_revolut",
       });
     } else {
+      try {
+        await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+      } catch {
+        /* ignore */
+      }
       mark("ge_page_dropped_after_iovation", {
         ok: true,
         liveGuid: guid,
@@ -1682,6 +1846,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     gatewayId,
     machineId,
     forterToken,
+    profile: opts.profile || {},
     selectedTaxOption: /^\d+$/.test(String(form.selectedTaxOption || ""))
       ? form.selectedTaxOption
       : "",
@@ -1704,9 +1869,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
     },
   ).catch((e) => ({ ok: false, status: 0, ms: 0, text: "", error: e?.message }));
   let saveOk = false;
+  let saveJson = null;
   try {
-    const sj = JSON.parse(String(saveRes?.text || ""));
-    saveOk = Boolean(saveRes?.ok && (sj?.Success === true || sj?.success === true));
+    saveJson = JSON.parse(String(saveRes?.text || ""));
+    saveOk = Boolean(saveRes?.ok && (saveJson?.Success === true || saveJson?.success === true));
   } catch {
     saveOk = Boolean(saveRes?.ok);
   }
@@ -1716,10 +1882,36 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ms: saveRes?.ms,
     note: (
       saveOk
-        ? `save ok gw=${gatewayId} pm=${paymentMethodId} ship=${shippingMethodId || "none"}`
+        ? `save ok gw=${gatewayId} pm=${paymentMethodId} ship=${shippingMethodId || "none"} names=${form.billing?.FirstName || form.shipping?.FirstName || "?"}/${form.billing?.LastName || form.shipping?.LastName || "?"}`
         : `save fail ${String(saveRes?.text || saveRes?.error || "").replace(/\s+/g, " ")}`
     ).slice(0, 200),
   });
+  // Any SaveForm validation failure → fail closed (continuing issuer → DataCorruption).
+  if (!saveOk) {
+    const errBlob = JSON.stringify(saveJson || saveRes?.text || "");
+    const elapsedMs = Date.now() - t0;
+    await browserIssuerBlock.unroute().catch(() => 0);
+    const billingish = /Billing|Shipping|Mandatory|StateID|FirstName|LastName|Address/i.test(
+      errBlob,
+    );
+    return {
+      ok: false,
+      steps,
+      timeline,
+      failedStep: billingish ? "checkout_address" : "ge_checkout_save",
+      error: "ge_checkout_save_failed",
+      paymentStatus: "http_ge_save_fail",
+      checkoutStage: "tokenize",
+      checkoutSn: opts.checkoutSn || null,
+      cartToken: guid,
+      blockers: billingish
+        ? ["checkout_address", "ge_save"]
+        : ["ge_save"],
+      via: "http-ge",
+      elapsedMs,
+      note: `GE SaveForm failed — refuse issuer (avoids DataCorruption). state=${form.shipping?.StateId || form.billing?.StateId || "none"} ${errBlob.replace(/\s+/g, " ").slice(0, 220)}`,
+    };
+  }
 
   // Path segment = gatewayId (GEM ShowCCForm / secureFrameURL+"/"+currentGatewayID).
   let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${gatewayId}`;
@@ -1852,13 +2044,22 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   })();
   if (jwtCart && jwtCart !== guid) {
+    // UrlStructureToken embeds CartToken — PaymentData.cartToken must match it
+    // or GE returns IsTheSameCartToken=False / DataCorruption.
     push("ge_cart_token_rebind", {
       ok: true,
       status: null,
       ms: 0,
-      note: `jwt guid ${jwtCart} (was ${guid})`,
+      note: `align issuer cartToken to JWT guid ${jwtCart} (was ${guid})`,
     });
     guid = jwtCart;
+  } else if (jwtCart && jwtCart === guid) {
+    push("ge_cart_token_rebind", {
+      ok: true,
+      status: null,
+      ms: 0,
+      note: `jwt guid matches save guid`,
+    });
   }
   push("ge_credit_card_form", {
     ok: cc.ok,
@@ -1935,17 +2136,30 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const blockers = [];
   if (!urlStructureToken) blockers.push("urlStructureToken");
   if (!machineId) blockers.push("machineId");
+  // Fail closed when riskHydrate ran but Forter never landed (thin mint → RELOAD_ONLY).
+  const allowThinRisk =
+    opts.allowThinRisk === true ||
+    opts.bandaiGeAllowThinRisk === true ||
+    process.env.BANDAI_GE_ALLOW_THIN_RISK === "1";
+  if (riskHydrate && !forterToken && !allowThinRisk) blockers.push("forterToken");
   if (!card?.number || !card?.cvv) blockers.push("card");
   if (!hydrateShippingOk) blockers.push("hydrate_shipping");
   if (!form.hasAddress) blockers.push("checkout_address");
+  if (!form.shipping?.StateId && !form.billing?.StateId) blockers.push("billing_state");
+  // jwtCart rebind is applied above — no mismatch blocker
 
   mark("ge_http_hydrate_done", {
     guid,
     blockers,
     urlStructureToken: Boolean(urlStructureToken),
     machineId: Boolean(machineId),
+    machineIdBytes: machineId ? String(machineId).length : 0,
+    forterToken: Boolean(forterToken),
+    forterBytes: forterToken ? String(forterToken).length : 0,
     hydrateShippingOk,
     shippingMethodId: shippingMethodId || null,
+    harvestedBridge: Boolean(opts.harvestedBridge),
+    preferPageIssuer: opts.preferPageIssuer === true,
   });
 
   if (stopBeforeIssuer || (blockers.length && !forceIssuer)) {
@@ -1953,12 +2167,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
     const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
     timing.gePathSec = timing.gePathMs != null ? Math.round(timing.gePathMs / 100) / 10 : null;
     await browserIssuerBlock.unroute();
+    const failedStep =
+      blockers.includes("forterToken") || blockers.includes("machineId")
+        ? "ge_risk_hydrate"
+        : blockers.includes("billing_state") || blockers.includes("checkout_address")
+          ? "checkout_address"
+          : blockers[0] || "ge_http_stop";
     return {
       ok: false,
       steps,
       timeline,
       timing,
-      failedStep: blockers[0] || "ge_http_stop",
+      failedStep,
       error: blockers.length ? `http_ge_blockers:${blockers.join(",")}` : "stop_before_issuer",
       paymentStatus: "http_ge_hydrated",
       checkoutStage: "tokenize",
@@ -1967,10 +2187,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
       blockers,
       urlStructureToken: Boolean(urlStructureToken),
       machineId: Boolean(machineId),
+      forterTokenPresent: Boolean(forterToken),
+      harvestedBridge: Boolean(opts.harvestedBridge),
       browserIssuerBlocked: Number(browserIssuerBlock.blocked || 0),
       via: "http-ge",
       elapsedMs,
-      note: `HTTP GE hydrated guid=${guid}; blockers=${blockers.join(",") || "none"} total=${timing.totalSec}s`,
+      note: `HTTP GE hydrated guid=${guid}; blockers=${blockers.join(",") || "none"} forter=${Boolean(forterToken)} midBytes=${machineId ? String(machineId).length : 0} harvested=${Boolean(opts.harvestedBridge)} total=${timing.totalSec}s`,
     };
   }
 
@@ -2015,6 +2237,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
     const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
     issuerPostCount = 1;
     if (usePageIssuer) {
+      // Push undici save/CC session cookies into Playwright before page issuer.
+      await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
       await browserIssuerBlock.unroute();
       issuer = await postBandaiGeIssuerViaPage({
         page: issuerPage,
@@ -2122,22 +2346,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
       responseLost
         ? `RESPONSE_LOST posts=${chargeReqCount} undiciAttempts=${undiciAttempts} code=${issuer?.errorCode || "?"} timedOut=${Boolean(issuer?.timedOut)} ${issuer?.errorMessage || ""} — check bank`
         : issuer?.reloadOnly && !bankHit
-          ? `RELOAD_ONLY ${issuer.status} err=${
-              Array.isArray(issuer.redirectPayload)
-                ? issuer.redirectPayload
-                    .filter((x) =>
-                      /RedirectErrorType|ErrorMessage|Success|IsTheSameCartToken|TransactionId|TransactionStatusType/i.test(
-                        String(x?.Key || ""),
-                      ),
-                    )
-                    .map((x) => `${x.Key}=${x.Value}`)
-                    .join(";")
-                : ""
-            }`
+          ? `RELOAD_ONLY ${issuer.status} ${formatGeReloadOnlyDiag(txMap, {
+              forter: Boolean(forterToken),
+              machineIdBytes: machineId ? String(machineId).length : 0,
+              harvested: Boolean(opts.harvestedBridge),
+              via: issuer?.via || "http",
+              riskHydrate: Boolean(riskHydrate),
+            })}`
           : issuer?.redirectUrl || bankHit
             ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
             : issuer?.bodySnippet || issuer?.error || "issuer_null"
-    ).slice(0, 280),
+    ).slice(0, 420),
   });
 
   const fraudDetected = /^(true|1)$/i.test(String(txMap.PossibleFraudDetected || ""));
@@ -2213,6 +2432,20 @@ export async function runBandaiGeHttpPay(opts = {}) {
     redirectUrl: issuer?.redirectUrl || null,
     redirectPayload: issuer?.redirectPayload || null,
     transactionId,
+    redirectErrorType: txMap.RedirectErrorType || null,
+    harvestedBridge: Boolean(opts.harvestedBridge),
+    preferPageIssuer: opts.preferPageIssuer === true,
+    reloadOnly: Boolean(issuer?.reloadOnly && !bankHit),
+    reloadDiag:
+      issuer?.reloadOnly && !bankHit
+        ? formatGeReloadOnlyDiag(txMap, {
+            forter: Boolean(forterToken),
+            machineIdBytes: machineId ? String(machineId).length : 0,
+            harvested: Boolean(opts.harvestedBridge),
+            via: issuer?.via || "http",
+            riskHydrate: Boolean(riskHydrate),
+          })
+        : null,
     via: issuer?.via === "page-ge-issuer" ? "http-ge+page-issuer" : "http-ge",
     elapsedMs,
     note: paymentStatus === "ge_fraud_refused"
@@ -2224,7 +2457,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
           : issuer?.ok
             ? `HTTP issuer ${issuer.status}${issuer.isPaymentRedirect ? "→CCPaymentRedirect" : ""} bank=${bankHit} fraud=${fraudDetected} forter=${Boolean(forterToken)} sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} guid=${guid} total=${timing.totalSec}s`
             : issuer?.reloadOnly
-              ? `HTTP issuer ReloadBehaviour only (no Revolut) sameCart=${txMap.IsTheSameCartToken || "?"} via=${issuer.via} guid=${guid} total=${timing.totalSec}s`
+              ? `HTTP issuer ReloadBehaviour only (no Revolut) ${formatGeReloadOnlyDiag(txMap, {
+                  forter: Boolean(forterToken),
+                  machineIdBytes: machineId ? String(machineId).length : 0,
+                  harvested: Boolean(opts.harvestedBridge),
+                  via: issuer.via,
+                  riskHydrate: Boolean(riskHydrate),
+                })} guid=${guid} total=${timing.totalSec}s`
               : `HTTP issuer failed; ${issuer?.bodySnippet || issuer?.error || "null"} total=${timing.totalSec}s`,
   };
 }
@@ -2240,6 +2479,10 @@ export default {
   extractMachineId,
   htmlFormValue,
   parseCheckoutV2Form,
+  applyProfileToGeForm,
+  parseGeStateOptionsFromHtml,
+  resolveGeStateId,
+  BANDAI_GE_AU_STATE_IDS,
   buildHandleActionBodies,
   buildCheckoutSaveBody,
   pickShippingMethodId,
@@ -2247,6 +2490,7 @@ export default {
   isBandaiGePaymentRedirectSignal,
   isBandaiGeRedirectDecline,
   mapCcPaymentRedirect,
+  formatGeReloadOnlyDiag,
   mintIovationBlackbox,
   loadIssuerCapture,
   postBandaiGeIssuerHttp,

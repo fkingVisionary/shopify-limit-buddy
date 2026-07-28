@@ -732,15 +732,58 @@ function harvestOptsFromForm() {
   };
 }
 
+/** Harvest bank strip — kept in renderer (sandbox preload cannot require local modules). */
+function harvestSessionAgeSec(snap) {
+  const rows = Array.isArray(snap?.sessions) ? snap.sessions : [];
+  if (!rows.length) return null;
+  let min = Infinity;
+  for (const s of rows) {
+    const a = Number(s.ageSec);
+    if (Number.isFinite(a) && a < min) min = a;
+  }
+  return Number.isFinite(min) ? min : null;
+}
+
+function formatHarvestBankChip(label, snap) {
+  const ready = Number(snap?.ready) || 0;
+  const desired = Number(snap?.config?.desired);
+  const desiredLabel = Number.isFinite(desired) ? String(desired) : "–";
+  const age = harvestSessionAgeSec(snap);
+  const agePart = ready > 0 && age != null ? ` · ${age}s` : "";
+  let chipState = "off";
+  if (snap?.busy) chipState = "mint";
+  else if (snap?.running) chipState = "armed";
+  else if (ready > 0) chipState = "ready";
+  const stateLabel =
+    chipState === "mint"
+      ? "minting"
+      : chipState === "armed"
+        ? "armed"
+        : chipState === "ready"
+          ? "banked"
+          : "off";
+  return {
+    state: chipState,
+    text: `${label} ${ready}/${desiredLabel}${agePart} ${stateLabel}`,
+  };
+}
+
+function formatHarvestBankStrip(banks = {}) {
+  const chips = [
+    formatHarvestBankChip("Bandai F5", banks.bandai || banks.bandaiHarvest),
+    formatHarvestBankChip("Toymate CF", banks.toymate || banks.harvest),
+    formatHarvestBankChip("Disney", banks.disney || banks.disneyHarvest),
+  ];
+  return {
+    chips,
+    text: chips.map((c) => c.text).join("  ·  "),
+  };
+}
+
 function renderHarvestBankStrip() {
   const el = $("harvestBankStrip");
   if (!el) return;
-  const fmt = window.desktop?.formatHarvestBankStrip;
-  if (typeof fmt !== "function") {
-    el.textContent = "Harvest banks —";
-    return;
-  }
-  const { chips, text } = fmt({
+  const { chips, text } = formatHarvestBankStrip({
     bandai: state?.bandaiHarvest,
     toymate: state?.harvest,
     disney: state?.disneyHarvest,
@@ -1562,6 +1605,9 @@ if ($("bhArea")) {
   };
 }
 
+if (!window.desktop) {
+  console.error("desktop preload failed — UI bridge unavailable");
+} else {
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
   if (evt.type === "harvest" && evt.data) {
@@ -1614,3 +1660,4 @@ window.desktop.onEvent((evt) => {
 });
 
 refresh();
+}

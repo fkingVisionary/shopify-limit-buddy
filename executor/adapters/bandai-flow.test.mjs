@@ -29,11 +29,17 @@ import {
   extractUrlStructureToken,
   htmlFormValue,
   parseCheckoutV2Form,
+  applyProfileToGeForm,
+  parseGeStateOptionsFromHtml,
+  resolveGeStateId,
+  BANDAI_GE_AU_STATE_IDS,
   buildHandleActionBodies,
   buildCheckoutSaveBody,
   isBandaiGePaymentRedirectSignal,
   isBandaiGeRedirectDecline,
   decodeCcPaymentRedirectData,
+  formatGeReloadOnlyDiag,
+  mapCcPaymentRedirect,
 } from "./bandai-ge-http.js";
 import { resolveBandaiCheckoutPayPath } from "./bandai.js";
 
@@ -296,6 +302,43 @@ const saveBadTax = buildCheckoutSaveBody(form, {
 });
 assert.equal(/SelectedTaxOption=/.test(saveBadTax), false);
 
+// Imported vault / empty GE name fields — profile fills BillingFirstName for SaveForm
+const emptyNameHtml = `
+<input name="CheckoutData.ShippingCountryID" value="14" />
+<input name="CheckoutData.ShippingAddress1" value="123 Allenby Road" />
+<input name="CheckoutData.ShippingCity" value="Alexandra Hills" />
+<input name="CheckoutData.ShippingZIP" value="4160" />
+<input name="CheckoutData.ShippingStateID" value="49181" />
+<input name="CheckoutData.ShippingFirstName" value="" />
+<input name="CheckoutData.ShippingLastName" value="" />
+<input name="CheckoutData.Email" value="a@b.com" />
+<input name="CheckoutData.ShippingType" value="ShippingSameAsBilling" checked />
+`;
+const emptyForm = applyProfileToGeForm(parseCheckoutV2Form(emptyNameHtml), {
+  first_name: "Bob",
+  last_name: "Jones",
+  phone: "0429888546",
+  province: "QLD",
+}, emptyNameHtml);
+assert.equal(emptyForm.shipping.FirstName, "Bob");
+assert.equal(emptyForm.billing.LastName, "Jones");
+assert.equal(emptyForm.shipping.StateId, "49181");
+assert.equal(emptyForm.billing.StateId, "49181");
+const filledSave = buildCheckoutSaveBody(emptyForm, {
+  cartToken: "guid-2",
+  profile: { first_name: "Bob", last_name: "Jones", province: "QLD" },
+});
+assert.match(filledSave, /CheckoutData\.BillingFirstName=Bob/);
+assert.match(filledSave, /CheckoutData\.BillingLastName=Jones/);
+assert.match(filledSave, /CheckoutData\.BillingStateID=49181/);
+assert.equal(resolveGeStateId({ province: "QLD" }, {}, ""), "49181");
+assert.equal(
+  parseGeStateOptionsFromHtml(
+    `<option data-code="NSW" value="49174">New South Wales</option>`,
+  ).NSW,
+  "49174",
+);
+
 // ReloadBehaviour-only JWT must NOT score as bank
 const reloadJwt =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
@@ -311,6 +354,51 @@ assert.equal(
   isBandaiGePaymentRedirectSignal(`https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${reloadJwt}`),
   false,
 );
+
+// Electron RELOAD_ONLY shape: Undefined + Reload copy + no txId → not bank
+const undefinedReloadJwt =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+  Buffer.from(
+    JSON.stringify([
+      { Key: "ReloadBehaviour", Value: "Redirect" },
+      { Key: "TransactionStatusType", Value: "Undefined" },
+      { Key: "TransactionId", Value: "0" },
+      { Key: "Success", Value: "False" },
+      { Key: "IsTheSameCartToken", Value: "False" },
+      { Key: "RedirectErrorType", Value: "DataCorruption" },
+      {
+        Key: "ErrorMessage",
+        Value:
+          'We are sorry but there was a problem submitting your order , please click the "Reload" button to try again',
+      },
+    ]),
+  )
+    .toString("base64url") +
+  ".sig";
+assert.equal(
+  isBandaiGePaymentRedirectSignal(
+    `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${undefinedReloadJwt}`,
+  ),
+  false,
+);
+const undefMap = mapCcPaymentRedirect(
+  `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${undefinedReloadJwt}`,
+);
+assert.equal(undefMap.TransactionStatusType, "Undefined");
+assert.equal(undefMap.IsTheSameCartToken, "False");
+const reloadDiag = formatGeReloadOnlyDiag(undefMap, {
+  forter: true,
+  machineIdBytes: 120,
+  harvested: true,
+  via: "http",
+  riskHydrate: true,
+});
+assert.match(reloadDiag, /RedirectErrorType=DataCorruption/);
+assert.match(reloadDiag, /IsTheSameCartToken=False/);
+assert.match(reloadDiag, /forter=true/);
+assert.match(reloadDiag, /harvested=true/);
+assert.match(reloadDiag, /midBytes=120/);
+
 const bankJwt =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
   Buffer.from(JSON.stringify([{ Key: "TransactionStatus", Value: "Declined" }])).toString(

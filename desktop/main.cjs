@@ -894,7 +894,7 @@ ipcMain.handle("desktop:upsert-task", (_e, task) => {
     bandaiMode: storeId === "bandai" ? String(task.bandaiMode || "checkout") : undefined,
     bandaiCheckoutMode:
       storeId === "bandai"
-        ? ["fast", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
+        ? ["fast", "fast_undici", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
           ? String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
         : undefined,

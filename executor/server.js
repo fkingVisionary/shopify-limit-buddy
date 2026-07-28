@@ -44,6 +44,27 @@ const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT ?? 120);
 let inflight = 0;
 
+/**
+ * Desktop / labs send Bandai·Disney·Toymate knobs on POST /run. The whitelist
+ * below used to drop them (esp. harvestedBridgeId), so Electron “harvested”
+ * UI lied while the adapter cold-minted F5 — GE then saw DataCorruption.
+ * Copy adapter passthrough keys; never override core fields (proxy/card/…).
+ */
+const ADAPTER_PASSTHROUGH_KEY =
+  /^(bandai|disney|toymate|pcMode|pcLocale|harvestedBridgeId|harvestedSession|harvestedProxy|_harvestedBridge|heldCart|areaItemNo|shippingAreaCode|proxyPool|otp|vaultEmails|uniquifyEmail|campaignSn|productId|input|keywords|signupEmail)$/i;
+
+function pickAdapterPassthrough(task) {
+  const out = {};
+  if (!task || typeof task !== "object") return out;
+  for (const [k, v] of Object.entries(task)) {
+    if (v === undefined) continue;
+    if (ADAPTER_PASSTHROUGH_KEY.test(k) || k.startsWith("bandai") || k.startsWith("disney") || k.startsWith("toymate")) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 if (!TOKEN) {
   console.error("FATAL: EXECUTOR_TOKEN env var is required");
   process.exit(1);
@@ -536,8 +557,7 @@ app.post("/run", async (req, reply) => {
         // undefined = let adapter default (skip category when proxied)
         skipCategory:
           task.skipCategory === true ? true : task.skipCategory === false ? false : undefined,
-        // ── Non-Kmart adapters (Toymate / Bandai / PKC) — pass through ──
-        toymateMode: typeof task.toymateMode === "string" ? task.toymateMode : undefined,
+        // ── Non-Kmart adapters (Toymate / Bandai / Disney / PKC) ──
         pdpUrl: typeof task.pdpUrl === "string" ? task.pdpUrl : undefined,
         paymentMethod: typeof task.paymentMethod === "string" ? task.paymentMethod : undefined,
         captchaToken: typeof task.captchaToken === "string" ? task.captchaToken : undefined,
@@ -546,18 +566,8 @@ app.post("/run", async (req, reply) => {
           typeof task.accountPassword === "string" ? task.accountPassword : undefined,
         accountAssignSource:
           typeof task.accountAssignSource === "string" ? task.accountAssignSource : undefined,
-        harvestedSession:
-          task.harvestedSession && typeof task.harvestedSession === "object"
-            ? task.harvestedSession
-            : undefined,
-        bandaiMode: typeof task.bandaiMode === "string" ? task.bandaiMode : undefined,
-        bandaiCheckoutMode:
-          typeof task.bandaiCheckoutMode === "string" ? task.bandaiCheckoutMode : undefined,
-        campaignSn: typeof task.campaignSn === "string" ? task.campaignSn : undefined,
-        pcMode: typeof task.pcMode === "string" ? task.pcMode : undefined,
-        pcLocale: typeof task.pcLocale === "string" ? task.pcLocale : undefined,
-        keywords: typeof task.keywords === "string" ? task.keywords : undefined,
-        input: typeof task.input === "string" ? task.input : undefined,
+        // harvestedBridgeId, bandaiGe*, heldCart, disney*, toymate*, …
+        ...pickAdapterPassthrough(task),
       });
 
       proxyAttempts.push({
