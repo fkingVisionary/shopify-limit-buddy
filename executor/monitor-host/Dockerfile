@@ -3,16 +3,14 @@
 FROM node:20-bookworm-slim
 WORKDIR /app
 
-COPY monitor-host/package.json ./monitor-host/package.json
-WORKDIR /app/monitor-host
+# Install deps at /app so ../monitor/http-undici.js can resolve undici.
+COPY monitor-host/package.json monitor-host/package-lock.json ./
 RUN npm install --omit=dev
 
-WORKDIR /app
 COPY monitor ./monitor
 COPY monitor-host/server.js ./monitor-host/server.js
 
 ENV PORT=8080
 ENV NODE_ENV=production
-WORKDIR /app/monitor-host
 EXPOSE 8080
-CMD ["node", "server.js"]
+CMD ["node", "monitor-host/server.js"]
