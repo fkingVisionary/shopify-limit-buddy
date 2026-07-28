@@ -2,10 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0c0b10" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>Vanta Lab</title>
@@ -22,34 +19,29 @@
         --line: rgba(255, 255, 255, 0.08);
         --text: #f2f0f7;
         --muted: #9b96a8;
-        --accent: #8b5cf6;
-        --accent-dim: rgba(139, 92, 246, 0.18);
+        --accent: #f5f5f5;
+        --accent-fg: #0c0b10;
         --ok: #34d399;
-        --warn: #fbbf24;
         --bad: #f87171;
         --radius: 14px;
         --pad: 16px;
         --font: "Instrument Sans", system-ui, sans-serif;
         --display: Syne, "Instrument Sans", sans-serif;
       }
-      * {
-        box-sizing: border-box;
-      }
-      html,
-      body {
+      * { box-sizing: border-box; }
+      html, body {
         margin: 0;
         min-height: 100%;
         background:
-          radial-gradient(1200px 600px at 10% -10%, rgba(139, 92, 246, 0.16), transparent 55%),
-          radial-gradient(900px 500px at 100% 0%, rgba(56, 189, 248, 0.08), transparent 50%),
+          radial-gradient(1000px 500px at 0% -10%, rgba(255,255,255,0.06), transparent 50%),
+          radial-gradient(800px 400px at 100% 0%, rgba(220,38,38,0.08), transparent 45%),
           var(--bg0);
         color: var(--text);
         font-family: var(--font);
         -webkit-font-smoothing: antialiased;
       }
       body {
-        padding: calc(12px + env(safe-area-inset-top)) var(--pad)
-          calc(28px + env(safe-area-inset-bottom));
+        padding: calc(12px + env(safe-area-inset-top)) var(--pad) calc(28px + env(safe-area-inset-bottom));
         max-width: 560px;
         margin: 0 auto;
       }
@@ -58,7 +50,7 @@
         align-items: baseline;
         justify-content: space-between;
         gap: 12px;
-        margin-bottom: 18px;
+        margin-bottom: 14px;
       }
       .brand {
         font-family: var(--display);
@@ -67,16 +59,34 @@
         letter-spacing: -0.03em;
         line-height: 1;
       }
-      .brand span {
-        color: var(--accent);
+      .sub { color: var(--muted); font-size: 0.82rem; margin-top: 4px; }
+      .tabs {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 12px;
+        position: sticky;
+        top: env(safe-area-inset-top);
+        z-index: 5;
+        background: rgba(12, 11, 16, 0.92);
+        backdrop-filter: blur(8px);
+        padding: 6px 0;
       }
-      .sub {
+      .tabs button {
+        flex: 1;
+        background: rgba(255,255,255,0.04);
         color: var(--muted);
-        font-size: 0.82rem;
-        margin-top: 4px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        min-height: 40px;
+        font-weight: 600;
+      }
+      .tabs button.active {
+        background: var(--accent);
+        color: var(--accent-fg);
+        border-color: transparent;
       }
       section {
-        margin-top: 14px;
+        margin-top: 12px;
         padding: 14px;
         background: var(--bg1);
         border: 1px solid var(--line);
@@ -98,48 +108,24 @@
       .stat {
         padding: 10px 12px;
         border-radius: 10px;
-        background: rgba(255, 255, 255, 0.03);
+        background: rgba(255,255,255,0.03);
         border: 1px solid var(--line);
       }
-      .stat b {
-        display: block;
-        font-size: 1.15rem;
-        font-variant-numeric: tabular-nums;
-      }
-      .stat small {
-        color: var(--muted);
-        font-size: 0.72rem;
-      }
-      label {
-        display: block;
-        font-size: 0.78rem;
-        color: var(--muted);
-        margin: 10px 0 6px;
-      }
-      textarea,
-      input[type="text"],
-      input[type="password"],
-      input[type="number"] {
+      .stat b { display: block; font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+      .stat small { color: var(--muted); font-size: 0.72rem; }
+      label { display: block; font-size: 0.78rem; color: var(--muted); margin: 10px 0 6px; }
+      textarea, input, select {
         width: 100%;
         border: 1px solid var(--line);
-        background: rgba(0, 0, 0, 0.35);
+        background: rgba(0,0,0,0.35);
         color: var(--text);
         border-radius: 10px;
         padding: 12px;
         font: inherit;
-        font-size: 16px; /* iOS zoom prevent */
-        resize: vertical;
+        font-size: 16px;
       }
-      textarea {
-        min-height: 110px;
-        line-height: 1.35;
-      }
-      .row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin-top: 12px;
-      }
+      textarea { min-height: 100px; line-height: 1.35; resize: vertical; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
       button {
         appearance: none;
         border: 0;
@@ -150,60 +136,41 @@
         font-size: 0.92rem;
         cursor: pointer;
         background: var(--accent);
-        color: #fff;
+        color: var(--accent-fg);
         flex: 1 1 auto;
         min-height: 44px;
       }
       button.secondary {
-        background: rgba(255, 255, 255, 0.06);
+        background: rgba(255,255,255,0.06);
         color: var(--text);
         border: 1px solid var(--line);
       }
-      button:disabled {
-        opacity: 0.5;
-        cursor: wait;
-      }
+      button.danger { background: #dc2626; color: #fff; }
+      button:disabled { opacity: 0.5; cursor: wait; }
       .toggle {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
         margin-top: 10px;
-        padding: 10px 0 0;
       }
-      .toggle span {
-        font-size: 0.92rem;
-      }
-      .hits {
-        list-style: none;
-        margin: 0;
-        padding: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-      }
+      .hits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
       .hits li {
         padding: 10px 12px;
         border-radius: 10px;
-        background: rgba(255, 255, 255, 0.03);
+        background: rgba(255,255,255,0.03);
         border: 1px solid var(--line);
         font-size: 0.86rem;
       }
-      .hits li strong {
-        display: block;
-        margin-bottom: 2px;
-      }
-      .hits .meta {
-        color: var(--muted);
-        font-size: 0.75rem;
-      }
+      .hits li strong { display: block; margin-bottom: 2px; }
+      .hits .meta { color: var(--muted); font-size: 0.75rem; }
       .toast {
         position: fixed;
         left: 50%;
         bottom: calc(18px + env(safe-area-inset-bottom));
         transform: translateX(-50%) translateY(120%);
         background: #1f1b2e;
-        border: 1px solid var(--accent);
+        border: 1px solid #aaa;
         color: var(--text);
         padding: 12px 16px;
         border-radius: 999px;
@@ -213,48 +180,33 @@
         z-index: 20;
         pointer-events: none;
       }
-      .toast.show {
-        transform: translateX(-50%) translateY(0);
-      }
-      .toast.bad {
-        border-color: var(--bad);
-      }
-      .toast.ok {
-        border-color: var(--ok);
-      }
-      #gate,
-      #app {
-        display: none;
-      }
-      #gate.show,
-      #app.show {
-        display: block;
-      }
+      .toast.show { transform: translateX(-50%) translateY(0); }
+      .toast.bad { border-color: var(--bad); }
+      .toast.ok { border-color: var(--ok); }
+      #gate, #app, .panel { display: none; }
+      #gate.show, #app.show, .panel.show { display: block; }
       .dot {
         display: inline-block;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--muted);
-        margin-right: 6px;
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--muted); margin-right: 6px;
       }
-      .dot.on {
-        background: var(--ok);
-        box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.2);
-      }
-      .hint {
-        color: var(--muted);
-        font-size: 0.75rem;
+      .dot.on { background: var(--ok); box-shadow: 0 0 0 3px rgba(52,211,153,0.2); }
+      .hint { color: var(--muted); font-size: 0.75rem; margin-top: 8px; line-height: 1.4; }
+      .warn {
         margin-top: 8px;
-        line-height: 1.4;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(248,113,113,0.35);
+        background: rgba(220,38,38,0.12);
+        font-size: 0.82rem;
       }
     </style>
   </head>
   <body>
     <header>
       <div>
-        <div class="brand">Vanta <span>Lab</span></div>
-        <div class="sub">Monitor · proxies · Discord labs</div>
+        <div class="brand">Vanta Lab</div>
+        <div class="sub">Monitor · Bot · Discord</div>
       </div>
       <div class="sub" id="conn"><span class="dot" id="dot"></span>offline</div>
     </header>
@@ -264,73 +216,152 @@
         <h2>Operator unlock</h2>
         <label for="token">MONITOR_TOKEN</label>
         <input id="token" type="password" autocomplete="current-password" placeholder="Bearer token" />
-        <div class="row">
-          <button id="btnLogin" type="button">Open lab</button>
-        </div>
-        <p class="hint">
-          Token stays in this phone’s session only. Same secret as Railway
-          <code>MONITOR_TOKEN</code>.
-        </p>
+        <div class="row"><button id="btnLogin" type="button">Open lab</button></div>
+        <p class="hint">Same Railway <code>MONITOR_TOKEN</code>. Stored in this phone session only.</p>
       </section>
     </div>
 
     <div id="app">
-      <section>
-        <h2>Status</h2>
-        <div class="grid" id="stats"></div>
-        <div class="row">
-          <button class="secondary" id="btnRefresh" type="button">Refresh</button>
-          <button class="secondary" id="btnLogout" type="button">Lock</button>
-        </div>
-      </section>
+      <div class="tabs">
+        <button type="button" class="active" data-tab="monitor">Monitor</button>
+        <button type="button" data-tab="bot">Bot</button>
+        <button type="button" data-tab="labs">Labs</button>
+      </div>
 
-      <section>
-        <h2>Watch keywords / SKUs</h2>
-        <label for="keywords">Comma or newline separated</label>
-        <textarea id="keywords" placeholder="GUNDAM&#10;ONE PIECE&#10;N2890904001"></textarea>
-        <div class="row">
-          <button id="btnSaveKw" type="button">Save keywords</button>
-        </div>
-      </section>
+      <div class="panel show" id="panel-monitor">
+        <section>
+          <h2>Monitor status</h2>
+          <div class="grid" id="stats"></div>
+          <div class="row">
+            <button class="secondary" id="btnRefresh" type="button">Refresh</button>
+            <button class="secondary" id="btnLogout" type="button">Lock</button>
+          </div>
+        </section>
+        <section>
+          <h2>Watch keywords / SKUs</h2>
+          <textarea id="keywords" placeholder="GUNDAM&#10;ONE PIECE&#10;N2890904001"></textarea>
+          <div class="row"><button id="btnSaveKw" type="button">Save keywords</button></div>
+        </section>
+        <section>
+          <h2>Monitor proxies</h2>
+          <label for="isp">ISP lines</label>
+          <textarea id="isp"></textarea>
+          <label for="dc">DC lines (optional)</label>
+          <textarea id="dc"></textarea>
+          <label for="interval">Poll interval (ms)</label>
+          <input id="interval" type="number" min="2000" step="500" />
+          <div class="toggle">
+            <span>Discord OOS pings</span>
+            <input id="notifyOos" type="checkbox" />
+          </div>
+          <div class="row"><button id="btnSaveProx" type="button">Save proxies &amp; settings</button></div>
+        </section>
+        <section>
+          <h2>Recent hits</h2>
+          <ul class="hits" id="hits"></ul>
+        </section>
+      </div>
 
-      <section>
-        <h2>Monitor proxies</h2>
-        <label for="isp">ISP lines (host:port:user:pass)</label>
-        <textarea id="isp" placeholder="45.x.x.x:12323:user:pass"></textarea>
-        <label for="dc">DC lines (optional — paste when ready)</label>
-        <textarea id="dc" placeholder="Leave empty until you have DC"></textarea>
-        <label for="interval">Poll interval (ms, min 2000)</label>
-        <input id="interval" type="number" min="2000" step="500" />
-        <div class="toggle">
-          <span>Discord when SKU goes OOS</span>
-          <input id="notifyOos" type="checkbox" />
-        </div>
-        <div class="row">
-          <button id="btnSaveProx" type="button">Save proxies &amp; settings</button>
-        </div>
-        <p class="hint">
-          Applies live — no redeploy. Persists until the next Railway redeploy unless you attach a
-          volume (<code>MONITOR_STATE_PATH</code>).
-        </p>
-      </section>
+      <div class="panel" id="panel-bot">
+        <section>
+          <h2>Executor (Fly)</h2>
+          <div class="grid" id="botStats"></div>
+          <div id="botWarn" class="warn" style="display:none"></div>
+          <div class="row">
+            <button class="secondary" id="btnBotRefresh" type="button">Refresh executor</button>
+          </div>
+        </section>
 
-      <section>
-        <h2>Labs</h2>
-        <label for="testSku">Test Discord SKU</label>
-        <input id="testSku" type="text" value="N2890904001" />
-        <div class="row">
-          <button id="btnTestRestock" type="button">Test restock ping</button>
-          <button class="secondary" id="btnTestOos" type="button">Test OOS ping</button>
-        </div>
-        <div class="row">
-          <button class="secondary" id="btnPoll" type="button">Force poll now</button>
-        </div>
-      </section>
+        <section>
+          <h2>Bot vault</h2>
+          <label for="accountsText">Bandai accounts (email:password per line)</label>
+          <textarea id="accountsText" placeholder="you@icloud.com:secret"></textarea>
+          <label for="checkoutProxies">Checkout ISP proxies</label>
+          <textarea id="checkoutProxies" placeholder="host:port:user:pass"></textarea>
+          <label for="pf_email">Profile email</label>
+          <input id="pf_email" type="text" />
+          <label for="pf_name">First / last</label>
+          <div class="row" style="margin-top:0">
+            <input id="pf_first" type="text" placeholder="First" />
+            <input id="pf_last" type="text" placeholder="Last" />
+          </div>
+          <label for="pf_addr">Address</label>
+          <input id="pf_addr" type="text" />
+          <div class="row" style="margin-top:0">
+            <input id="pf_city" type="text" placeholder="City" />
+            <input id="pf_prov" type="text" placeholder="QLD" />
+          </div>
+          <div class="row" style="margin-top:0">
+            <input id="pf_zip" type="text" placeholder="Postcode" />
+            <input id="pf_phone" type="text" placeholder="Phone" />
+          </div>
+          <label for="pf_card">Card (for live place order only)</label>
+          <input id="pf_card" type="text" placeholder="Number" autocomplete="off" />
+          <div class="row" style="margin-top:0">
+            <input id="pf_mm" type="text" placeholder="MM" />
+            <input id="pf_yy" type="text" placeholder="YY" />
+            <input id="pf_cvv" type="password" placeholder="CVV" />
+          </div>
+          <div class="row"><button id="btnSaveVault" type="button">Save vault</button></div>
+          <p class="hint">Vault stays on Railway (volume or until redeploy). Card only needed for live place order.</p>
+        </section>
 
-      <section>
-        <h2>Recent hits</h2>
-        <ul class="hits" id="hits"></ul>
-      </section>
+        <section>
+          <h2>Launch Bandai</h2>
+          <label for="bMode">Mode</label>
+          <select id="bMode">
+            <option value="login_check">Login check</option>
+            <option value="checkout">Checkout (dry unless live)</option>
+          </select>
+          <label for="bSku">SKU or PDP URL</label>
+          <input id="bSku" type="text" placeholder="N2890904001" />
+          <label for="bAccount">Account</label>
+          <select id="bAccount"></select>
+          <div class="toggle">
+            <span>Live place order</span>
+            <input id="bLive" type="checkbox" />
+          </div>
+          <div class="row">
+            <button id="btnBandaiRun" type="button">Launch Bandai</button>
+          </div>
+          <p class="hint">Runs on Fly executor. Dry-run is default — leave live unchecked unless you mean it.</p>
+        </section>
+
+        <section>
+          <h2>Launch Kmart</h2>
+          <label for="kUrl">Product URL</label>
+          <input id="kUrl" type="text" placeholder="https://www.kmart.com.au/..." />
+          <label for="kVar">Variant ID</label>
+          <input id="kVar" type="text" placeholder="numeric variantId" />
+          <div class="toggle">
+            <span>Live place order</span>
+            <input id="kLive" type="checkbox" />
+          </div>
+          <div class="row">
+            <button id="btnKmartRun" type="button">Launch Kmart</button>
+          </div>
+        </section>
+
+        <section>
+          <h2>Recent runs</h2>
+          <ul class="hits" id="botRuns"></ul>
+        </section>
+      </div>
+
+      <div class="panel" id="panel-labs">
+        <section>
+          <h2>Discord labs</h2>
+          <label for="testSku">SKU</label>
+          <input id="testSku" type="text" value="N2890904001" />
+          <div class="row">
+            <button id="btnTestRestock" type="button">Test restock</button>
+            <button class="secondary danger" id="btnTestOos" type="button">Test OOS</button>
+          </div>
+          <div class="row">
+            <button class="secondary" id="btnPoll" type="button">Force monitor poll</button>
+          </div>
+        </section>
+      </div>
     </div>
 
     <div class="toast" id="toast"></div>
@@ -338,34 +369,29 @@
     <script>
       const KEY = "vanta_monitor_token";
       const $ = (id) => document.getElementById(id);
+      let vaultFull = null;
 
       function toast(msg, kind) {
         const el = $("toast");
         el.textContent = msg;
         el.className = "toast show " + (kind || "");
         clearTimeout(toast._t);
-        toast._t = setTimeout(() => el.classList.remove("show"), 2600);
+        toast._t = setTimeout(() => el.classList.remove("show"), 2800);
       }
-
-      function token() {
-        return sessionStorage.getItem(KEY) || "";
+      function token() { return sessionStorage.getItem(KEY) || ""; }
+      function escapeHtml(s) {
+        return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
       }
 
       async function api(path, opts = {}) {
         const headers = { ...(opts.headers || {}) };
         const t = token();
         if (t) headers.Authorization = "Bearer " + t;
-        if (opts.body && !headers["content-type"]) {
-          headers["content-type"] = "application/json";
-        }
+        if (opts.body && !headers["content-type"]) headers["content-type"] = "application/json";
         const res = await fetch(path, { ...opts, headers });
         const text = await res.text();
         let json = null;
-        try {
-          json = text ? JSON.parse(text) : null;
-        } catch {
-          json = { raw: text };
-        }
+        try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
         if (!res.ok) {
           const err = new Error(json?.error || json?.message || "http_" + res.status);
           err.status = res.status;
@@ -380,7 +406,16 @@
         $("app").classList.toggle("show", on);
       }
 
-      function renderStatus(st) {
+      function setTab(name) {
+        document.querySelectorAll(".tabs button").forEach((b) => {
+          b.classList.toggle("active", b.dataset.tab === name);
+        });
+        document.querySelectorAll(".panel").forEach((p) => {
+          p.classList.toggle("show", p.id === "panel-" + name);
+        });
+      }
+
+      function renderMonitor(st, cfg) {
         const m = st.monitor || {};
         const pool = m.pool || {};
         const cells = [
@@ -391,50 +426,100 @@
           ["Interval", (m.intervalMs ?? "—") + "ms"],
           ["SSE", st.sseClients ?? 0],
         ];
-        $("stats").innerHTML = cells
-          .map(
-            ([k, v]) =>
-              `<div class="stat"><b>${v}</b><small>${k}</small></div>`,
-          )
-          .join("");
+        $("stats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
         const running = Boolean(m.running);
-        $("dot").classList.toggle("on", running);
-        $("conn").innerHTML =
-          `<span class="dot${running ? " on" : ""}" id="dot"></span>` +
-          (running ? "live" : "stopped") +
-          (m.lastError ? " · err" : "");
-
-        const hits = st.recentHits || [];
-        $("hits").innerHTML = hits.length
-          ? hits
-              .map((h) => {
-                const why = h.reason || (h.inStock ? "in_stock" : "oos");
-                return `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>
-                  <div class="meta">${escapeHtml(h.productId || "")} · ${escapeHtml(why)} · ${escapeHtml(
-                    (h.at || "").replace("T", " ").slice(0, 19),
-                  )}</div></li>`;
-              })
-              .join("")
-          : `<li><div class="meta">No hits yet this process lifetime.</div></li>`;
-      }
-
-      function escapeHtml(s) {
-        return String(s)
-          .replace(/&/g, "&amp;")
-          .replace(/</g, "&lt;")
-          .replace(/>/g, "&gt;")
-          .replace(/"/g, "&quot;");
-      }
-
-      async function loadAll() {
-        const [st, cfg] = await Promise.all([api("/status"), api("/admin/config")]);
-        renderStatus(st);
+        $("conn").innerHTML = `<span class="dot${running ? " on" : ""}"></span>` + (running ? "live" : "stopped");
         $("keywords").value = cfg.keywords || "";
         $("isp").value = cfg.ispProxies || "";
         $("dc").value = cfg.dcProxies || "";
         $("interval").value = cfg.intervalMs || 5000;
         $("notifyOos").checked = cfg.notifyOos !== false;
+        const hits = st.recentHits || [];
+        $("hits").innerHTML = hits.length
+          ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>
+              <div class="meta">${escapeHtml(h.productId||"")} · ${escapeHtml(h.reason||"")} · ${escapeHtml((h.at||"").replace("T"," ").slice(0,19))}</div></li>`).join("")
+          : `<li><div class="meta">No monitor hits yet.</div></li>`;
       }
+
+      function fillAccounts(vault) {
+        const sel = $("bAccount");
+        const accs = vault?.accounts || [];
+        sel.innerHTML = accs.length
+          ? accs.map((a) => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.label || a.email)}</option>`).join("")
+          : `<option value="">(save accounts in vault)</option>`;
+      }
+
+      function renderBot(bs) {
+        const h = bs.health || {};
+        const ex = bs.executor || {};
+        const cells = [
+          ["Fly", h.ok ? "up" : (ex.hasToken ? "down" : "n/a")],
+          ["Inflight", h.inflight ?? "—"],
+          ["Git", (h.gitSha || "—").toString().slice(0, 7)],
+          ["Hyper", h.hyperApiKey ? "yes" : "no"],
+          ["Accounts", (bs.vault?.accounts || []).length],
+          ["Proxies", bs.vault?.proxyCount ?? 0],
+        ];
+        $("botStats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${escapeHtml(v)}</b><small>${k}</small></div>`).join("");
+        const warn = $("botWarn");
+        if (!ex.hasToken) {
+          warn.style.display = "block";
+          warn.textContent = "Set EXECUTOR_URL + EXECUTOR_TOKEN on Railway to launch tasks from your phone.";
+        } else if (h && h.ok === false) {
+          warn.style.display = "block";
+          warn.textContent = "Executor unreachable: " + (h.error || "unknown");
+        } else {
+          warn.style.display = "none";
+        }
+        fillAccounts(bs.vault);
+        const runs = bs.runs || [];
+        $("botRuns").innerHTML = runs.length
+          ? runs.map((r) => `<li><strong>${escapeHtml(r.store)} · ${escapeHtml(r.mode)}</strong>
+              <div class="meta">${escapeHtml(r.taskId)} · ${escapeHtml(r.status)}${r.ok==null?"":(r.ok?" · ok":" · fail")}
+              ${r.checkoutStage ? " · "+escapeHtml(r.checkoutStage) : ""}
+              ${r.error ? " · "+escapeHtml(String(r.error).slice(0,80)) : ""}</div></li>`).join("")
+          : `<li><div class="meta">No bot runs this process lifetime.</div></li>`;
+      }
+
+      function applyVaultForm(v) {
+        vaultFull = v;
+        const accounts = v.accounts || [];
+        $("accountsText").value = accounts.map((a) => `${a.email}:${a.password}`).join("\n");
+        $("checkoutProxies").value = v.checkoutProxies || "";
+        const p = v.profile || {};
+        $("pf_email").value = p.email || "";
+        $("pf_first").value = p.first_name || "";
+        $("pf_last").value = p.last_name || "";
+        $("pf_addr").value = p.address1 || "";
+        $("pf_city").value = p.city || "";
+        $("pf_prov").value = p.province || "";
+        $("pf_zip").value = p.zip || "";
+        $("pf_phone").value = p.phone || "";
+        $("pf_card").value = p.card_number || "";
+        $("pf_mm").value = p.card_exp_month || "";
+        $("pf_yy").value = p.card_exp_year || "";
+        $("pf_cvv").value = p.card_cvv || "";
+        $("bSku").value = v.defaults?.bandaiSku || "N2890904001";
+        $("kUrl").value = v.defaults?.kmartUrl || "";
+        $("kVar").value = v.defaults?.kmartVariantId || "";
+        fillAccounts({ accounts: accounts.map((a) => ({ id: a.id, label: a.label, email: a.email })) });
+      }
+
+      async function loadAll() {
+        const [st, cfg, vaultRes, bot] = await Promise.all([
+          api("/status"),
+          api("/admin/config"),
+          api("/bot/vault?full=1"),
+          api("/bot/status"),
+        ]);
+        renderMonitor(st, cfg);
+        applyVaultForm(vaultRes.vault);
+        renderBot(bot);
+      }
+
+      document.querySelectorAll(".tabs button").forEach((b) => {
+        b.onclick = () => setTab(b.dataset.tab);
+      });
 
       $("btnLogin").onclick = async () => {
         const t = $("token").value.trim();
@@ -450,34 +535,22 @@
           toast(e.message || "Auth failed", "bad");
         }
       };
-
-      $("btnLogout").onclick = () => {
-        sessionStorage.removeItem(KEY);
-        showApp(false);
-      };
-
-      $("btnRefresh").onclick = async () => {
+      $("btnLogout").onclick = () => { sessionStorage.removeItem(KEY); showApp(false); };
+      $("btnRefresh").onclick = async () => { try { await loadAll(); toast("Refreshed","ok"); } catch(e){ toast(e.message,"bad"); } };
+      $("btnBotRefresh").onclick = async () => {
         try {
-          await loadAll();
-          toast("Refreshed", "ok");
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+          const bot = await api("/bot/status");
+          renderBot(bot);
+          toast("Executor refreshed", "ok");
+        } catch (e) { toast(e.message, "bad"); }
       };
 
       $("btnSaveKw").onclick = async () => {
         try {
-          await api("/admin/config", {
-            method: "PUT",
-            body: JSON.stringify({ keywords: $("keywords").value }),
-          });
+          await api("/admin/config", { method: "PUT", body: JSON.stringify({ keywords: $("keywords").value }) });
           toast("Keywords live", "ok");
-          await loadAll();
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+        } catch (e) { toast(e.message, "bad"); }
       };
-
       $("btnSaveProx").onclick = async () => {
         try {
           await api("/admin/config", {
@@ -489,59 +562,114 @@
               notifyOos: $("notifyOos").checked,
             }),
           });
-          toast("Proxies & settings live", "ok");
-          await loadAll();
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+          toast("Monitor settings live", "ok");
+        } catch (e) { toast(e.message, "bad"); }
+      };
+
+      $("btnSaveVault").onclick = async () => {
+        try {
+          await api("/bot/vault", {
+            method: "PUT",
+            body: JSON.stringify({
+              accountsText: $("accountsText").value,
+              checkoutProxies: $("checkoutProxies").value,
+              profile: {
+                email: $("pf_email").value,
+                first_name: $("pf_first").value,
+                last_name: $("pf_last").value,
+                address1: $("pf_addr").value,
+                city: $("pf_city").value,
+                province: $("pf_prov").value,
+                zip: $("pf_zip").value,
+                phone: $("pf_phone").value,
+                card_number: $("pf_card").value,
+                card_exp_month: $("pf_mm").value,
+                card_exp_year: $("pf_yy").value,
+                card_cvv: $("pf_cvv").value,
+              },
+              defaults: {
+                bandaiSku: $("bSku").value,
+                kmartUrl: $("kUrl").value,
+                kmartVariantId: $("kVar").value,
+              },
+            }),
+          });
+          const v = await api("/bot/vault?full=1");
+          applyVaultForm(v.vault);
+          toast("Vault saved", "ok");
+        } catch (e) { toast(e.message, "bad"); }
+      };
+
+      async function launch(body) {
+        const r = await api("/bot/run", { method: "POST", body: JSON.stringify(body) });
+        toast("Started " + r.taskId, "ok");
+        const bot = await api("/bot/status");
+        renderBot(bot);
+        // light poll
+        let n = 0;
+        const tick = setInterval(async () => {
+          n += 1;
+          try {
+            const bot2 = await api("/bot/status");
+            renderBot(bot2);
+            const row = (bot2.runs || []).find((x) => x.taskId === r.taskId);
+            if (row && row.status !== "running" && row.status !== "queued") {
+              clearInterval(tick);
+              toast(row.ok ? "Run OK" : ("Run ended · " + (row.error || row.status)), row.ok ? "ok" : "bad");
+            }
+          } catch {}
+          if (n > 120) clearInterval(tick);
+        }, 4000);
+      }
+
+      $("btnBandaiRun").onclick = async () => {
+        try {
+          if ($("bLive").checked && !confirm("LIVE Bandai place order — are you sure?")) return;
+          await launch({
+            store: "bandai",
+            mode: $("bMode").value,
+            sku: $("bSku").value,
+            accountId: $("bAccount").value || undefined,
+            placeOrder: $("bLive").checked,
+          });
+        } catch (e) { toast(e.message, "bad"); }
+      };
+      $("btnKmartRun").onclick = async () => {
+        try {
+          if ($("kLive").checked && !confirm("LIVE Kmart place order — are you sure?")) return;
+          await launch({
+            store: "kmart",
+            storeUrl: $("kUrl").value,
+            variantId: $("kVar").value,
+            placeOrder: $("kLive").checked,
+          });
+        } catch (e) { toast(e.message, "bad"); }
       };
 
       $("btnTestRestock").onclick = async () => {
         try {
           const sku = $("testSku").value.trim() || "N2890904001";
-          const r = await api("/test-discord?sku=" + encodeURIComponent(sku), {
-            method: "POST",
-          });
-          toast("Restock ping · " + (r.product?.title || sku), "ok");
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+          await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=restock", { method: "POST" });
+          toast("Restock ping sent", "ok");
+        } catch (e) { toast(e.message, "bad"); }
       };
-
       $("btnTestOos").onclick = async () => {
         try {
           const sku = $("testSku").value.trim() || "N2890904001";
-          const r = await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=oos", {
-            method: "POST",
-          });
-          toast("OOS ping · " + (r.product?.title || sku), "ok");
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+          await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=oos", { method: "POST" });
+          toast("OOS ping sent", "ok");
+        } catch (e) { toast(e.message, "bad"); }
       };
-
       $("btnPoll").onclick = async () => {
         try {
           const r = await api("/lab/poll", { method: "POST" });
-          toast(
-            `Poll #${r.summary?.polls ?? "?"} · ${r.summary?.products ?? "?"} products`,
-            "ok",
-          );
-          await loadAll();
-        } catch (e) {
-          toast(e.message, "bad");
-        }
+          toast(`Poll #${r.summary?.polls ?? "?"} · ${r.summary?.products ?? "?"} products`, "ok");
+        } catch (e) { toast(e.message, "bad"); }
       };
 
       (async () => {
         if (token()) {
-          try {
-            await loadAll();
-            showApp(true);
-            return;
-          } catch {
-            sessionStorage.removeItem(KEY);
-          }
+          try { await loadAll(); showApp(true); return; } catch { sessionStorage.removeItem(KEY); }
         }
         showApp(false);
       })();

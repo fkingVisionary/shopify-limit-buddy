@@ -18,6 +18,14 @@ import fastifyStatic from "@fastify/static";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
 import { vantaRestockDiscordBody, vantaOosDiscordBody } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config.mjs";
+import { loadBotVault, saveBotVault, vaultPublicView } from "./bot-vault.mjs";
+import {
+  executorFetch,
+  executorStatus,
+  buildBandaiLabPayload,
+  buildKmartLabPayload,
+  redactRunPayload,
+} from "./bot-executor.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
@@ -32,6 +40,12 @@ let runtime = loadRuntimeConfig();
 const recentHits = [];
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
+
+/** @type {ReturnType<typeof loadBotVault>} */
+let botVault = loadBotVault();
+/** @type {object[]} in-memory lab runs (newest first) */
+const botRuns = [];
+const MAX_BOT_RUNS = 40;
 
 function authOk(req) {
   if (!TOKEN) return true;
@@ -416,6 +430,186 @@ app.post("/test-discord", async (req, reply) => {
   }
 });
 
+// ── Bot lab (Fly executor proxy + operator vault) ──────────────────────────
+
+app.get("/bot/status", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const cfg = executorStatus();
+  let health = null;
+  if (cfg.configured) {
+    const r = await executorFetch("/health", { timeoutMs: 8000 });
+    health = r.ok ? r.json : { ok: false, error: r.error, status: r.status };
+  }
+  let harvest = null;
+  if (cfg.configured) {
+    const h = await executorFetch("/bandai/harvest", { timeoutMs: 8000 });
+    harvest = h.ok ? h.json : null;
+  }
+  return {
+    ok: true,
+    executor: { ...cfg, token: undefined, hasToken: Boolean(cfg.token) },
+    health,
+    harvest,
+    runs: botRuns.slice(0, 15),
+    vault: vaultPublicView(botVault),
+  };
+});
+
+app.get("/bot/vault", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const full = String(req.query?.full || "") === "1";
+  if (full) {
+    // Full vault for editing on phone (operator-only token).
+    return { ok: true, vault: botVault, public: vaultPublicView(botVault) };
+  }
+  return { ok: true, vault: vaultPublicView(botVault) };
+});
+
+app.put("/bot/vault", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  try {
+    if (Array.isArray(body.accounts)) botVault.accounts = body.accounts;
+    if (body.profile && typeof body.profile === "object") {
+      const prev = botVault.profile || {};
+      const next = { ...prev, ...body.profile };
+      // Keep prior secrets when UI sends masked placeholders.
+      if (/^•|^•••|\*\*\*\*/.test(String(next.card_number || ""))) next.card_number = prev.card_number;
+      if (/^•|^•••|\*\*\*\*/.test(String(next.card_cvv || ""))) next.card_cvv = prev.card_cvv;
+      botVault.profile = next;
+    }
+    if (body.checkoutProxies != null) botVault.checkoutProxies = String(body.checkoutProxies);
+    if (body.defaults && typeof body.defaults === "object") {
+      botVault.defaults = { ...botVault.defaults, ...body.defaults };
+    }
+    // Convenience: paste accounts as email:password lines
+    if (typeof body.accountsText === "string") {
+      const rows = [];
+      for (const line of body.accountsText.split(/\r?\n/)) {
+        const t = line.trim();
+        if (!t || t.startsWith("#")) continue;
+        const idx = t.indexOf(":");
+        if (idx < 1) continue;
+        const email = t.slice(0, idx).trim();
+        const password = t.slice(idx + 1).trim();
+        if (!email || !password) continue;
+        rows.push({
+          id: `acc_${email.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 40)}`,
+          storeId: "bandai",
+          label: email,
+          email,
+          password,
+        });
+      }
+      if (rows.length) botVault.accounts = rows;
+    }
+    botVault = { ...botVault, ...saveBotVault(botVault, botVault._path) };
+    return { ok: true, vault: vaultPublicView(botVault) };
+  } catch (e) {
+    return reply.code(400).send({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.get("/bot/runs", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  return { ok: true, runs: botRuns.slice(0, MAX_BOT_RUNS) };
+});
+
+app.get("/bot/runs/:taskId", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const taskId = String(req.params.taskId || "");
+  const local = botRuns.find((r) => r.taskId === taskId) || null;
+  let progress = null;
+  if (executorStatus().configured) {
+    const p = await executorFetch(`/progress/${encodeURIComponent(taskId)}`, { timeoutMs: 8000 });
+    if (p.ok) progress = p.json;
+  }
+  if (!local && !progress) return reply.code(404).send({ ok: false, error: "not_found" });
+  return { ok: true, run: local, progress };
+});
+
+/**
+ * Start a lab run against Fly (async — returns immediately with taskId).
+ * Body: { store: "bandai"|"kmart", ...form fields }
+ */
+app.post("/bot/run", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const cfg = executorStatus();
+  if (!cfg.configured) {
+    return reply.code(503).send({
+      ok: false,
+      error: "Set EXECUTOR_URL + EXECUTOR_TOKEN on the Railway monitor service",
+    });
+  }
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const store = String(body.store || "bandai").toLowerCase();
+  const built =
+    store === "kmart"
+      ? buildKmartLabPayload(body, botVault)
+      : buildBandaiLabPayload(body, botVault);
+  if (!built.ok) return reply.code(400).send({ ok: false, error: built.error });
+
+  const row = {
+    taskId: built.data.taskId,
+    store: built.meta.store,
+    mode: built.meta.mode,
+    placeOrder: Boolean(built.meta.placeOrder),
+    status: "queued",
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    ok: null,
+    error: null,
+    checkoutStage: null,
+    failedStep: null,
+    summary: null,
+    request: redactRunPayload(built.data),
+  };
+  botRuns.unshift(row);
+  if (botRuns.length > MAX_BOT_RUNS) botRuns.length = MAX_BOT_RUNS;
+
+  // Fire-and-forget — checkout can run for minutes.
+  row.status = "running";
+  void (async () => {
+    const r = await executorFetch("/run", {
+      method: "POST",
+      body: built.data,
+      timeoutMs: Number(process.env.BOT_RUN_TIMEOUT_MS) || 12 * 60_000,
+    });
+    row.finishedAt = new Date().toISOString();
+    if (!r.ok) {
+      row.status = "error";
+      row.ok = false;
+      row.error = r.error || `http_${r.status}`;
+      row.summary = r.json || null;
+      return;
+    }
+    const j = r.json || {};
+    row.status = "done";
+    row.ok = Boolean(j.ok);
+    row.error = j.error || j.consumerLabel || null;
+    row.checkoutStage = j.checkoutStage || null;
+    row.failedStep = j.failedStep || null;
+    row.summary = {
+      ok: j.ok,
+      orderNumber: j.orderNumber || null,
+      checkoutStage: j.checkoutStage || null,
+      failedStep: j.failedStep || null,
+      consumerLabel: j.consumerLabel || null,
+      elapsedMs: j.elapsedMs ?? null,
+      lastSteps: Array.isArray(j.steps)
+        ? j.steps.slice(-8).map((s) => ({ step: s.step, ok: s.ok, status: s.status }))
+        : null,
+    };
+  })().catch((e) => {
+    row.status = "error";
+    row.ok = false;
+    row.finishedAt = new Date().toISOString();
+    row.error = e?.message || String(e);
+  });
+
+  return { ok: true, taskId: row.taskId, run: row };
+});
+
 app.get("/events", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   reply.hijack();
@@ -452,6 +646,7 @@ console.log(
     admin: "/admin/",
     statePath: runtime._path,
     fromDisk: Boolean(runtime._fromDisk),
+    executorConfigured: executorStatus().configured,
   }),
 );
 hub.start();
