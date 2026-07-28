@@ -11,6 +11,7 @@
  */
 import Fastify from "fastify";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
+import { vantaRestockDiscordBody } from "./vanta-discord.mjs";
 
 const PORT = Number(process.env.PORT) || 8080;
 const TOKEN = String(process.env.MONITOR_TOKEN || process.env.EXECUTOR_TOKEN || "").trim();
@@ -35,13 +36,17 @@ function authOk(req) {
 }
 
 function pushHit(ev) {
+  const meta = ev?.meta || {};
   const row = {
     at: new Date().toISOString(),
     productId: ev.productId,
     inStock: ev.inStock,
     reason: ev.reason || null,
-    title: ev.title || ev.meta?.title || null,
-    areaItemNo: ev.areaItemNo || ev.meta?.areaItemNo || null,
+    title: ev.title || meta.title || null,
+    imageUrl: ev.imageUrl || meta.imageUrl || null,
+    price: ev.price || meta.price || null,
+    areaItemNo: ev.areaItemNo || meta.areaItemNo || null,
+    productType: meta.productType || null,
   };
   recentHits.unshift(row);
   if (recentHits.length > MAX_HITS) recentHits.length = MAX_HITS;
@@ -67,32 +72,23 @@ const hub = createGlobalMonitorHub({
 
 hub.monitor.on("stock_changed", async (ev) => {
   console.log(
-    `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ""}`,
+    `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ev.meta?.title || ""}`,
   );
   if (!ev?.inStock) return;
   pushHit(ev);
   const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
   if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) return;
   try {
-    const productId = String(ev.productId || "?");
-    const payload = {
-      embeds: [
-        {
-          title: `Bandai ${ev.reason || "restock"}: ${productId}`,
-          description: String(ev.title || productId).slice(0, 200),
-          url: `https://p-bandai.com/${AREA}/item/${productId}`,
-          color: 0x2ecc71,
-          fields: [
-            { name: "SKU", value: productId, inline: true },
-            ...(ev.areaItemNo
-              ? [{ name: "NAI", value: String(ev.areaItemNo), inline: true }]
-              : []),
-            { name: "Source", value: "railway-monitor", inline: true },
-          ],
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    };
+    const payload = vantaRestockDiscordBody(
+      {
+        ...ev,
+        title: ev.title || ev.meta?.title,
+        imageUrl: ev.imageUrl || ev.meta?.imageUrl,
+        price: ev.price || ev.meta?.price,
+        areaItemNo: ev.areaItemNo || ev.meta?.areaItemNo,
+      },
+      { area: AREA, source: "railway-monitor" },
+    );
     const res = await fetch(hook, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -181,6 +177,86 @@ app.get("/hits", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const limit = Math.max(1, Math.min(MAX_HITS, Number(req.query?.limit) || 50));
   return { ok: true, hits: recentHits.slice(0, limit) };
+});
+
+/** Operator test: POST /test-discord?sku=N2890904001 — Vanta restock embed from live catalog card. */
+app.post("/test-discord", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
+  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) {
+    return reply.code(400).send({ ok: false, error: "DISCORD_WEBHOOK_URL not configured" });
+  }
+  const q = req.query || {};
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const sku = String(q.sku || body.sku || "N2890904001").trim();
+
+  // Ensure we have a snapshot (cold deploy may still be warming).
+  if ((hub.monitor.status()?.products || 0) === 0) {
+    try {
+      await hub.monitor.pollOnce();
+    } catch (e) {
+      return reply.code(503).send({ ok: false, error: e?.message || "poll_failed" });
+    }
+  }
+
+  let row = hub.monitor.getProduct?.(sku) || null;
+  if (!row) {
+    const cat = hub.monitor.getCatalog?.();
+    if (cat?.size) {
+      row =
+        [...cat.values()].find((r) => r?.imageUrl && r?.title) ||
+        [...cat.values()][0] ||
+        null;
+    }
+  }
+  if (!row) {
+    return reply.code(404).send({ ok: false, error: "sku_not_in_catalog", sku });
+  }
+
+  const payload = vantaRestockDiscordBody(
+    {
+      productId: row.productId,
+      areaItemNo: row.areaItemNo,
+      title: row.title,
+      imageUrl: row.imageUrl,
+      price: row.price,
+      productType: row.productType,
+      reason: "restock",
+      at: new Date().toISOString(),
+    },
+    { area: AREA, test: true },
+  );
+
+  try {
+    const res = await fetch(hook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      return reply.code(502).send({
+        ok: false,
+        error: "discord_reject",
+        status: res.status,
+        detail: text.slice(0, 200),
+      });
+    }
+    return {
+      ok: true,
+      discord: res.status,
+      product: {
+        productId: row.productId,
+        areaItemNo: row.areaItemNo || null,
+        title: row.title,
+        price: row.price,
+        imageUrl: row.imageUrl,
+        productType: row.productType,
+      },
+    };
+  } catch (e) {
+    return reply.code(502).send({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 app.get("/events", async (req, reply) => {

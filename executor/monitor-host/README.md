@@ -26,6 +26,7 @@ Dockerfile = `monitor-host/Dockerfile` (see `railway.toml`).
 - `GET /status` — hub + recent hits (auth)
 - `GET /hits` — buffer of in-stock events (auth)
 - `GET /events` — SSE `stock_changed` stream (auth)
+- `POST /test-discord?sku=N2890904001` — operator Vanta restock test ping (auth)
 
 ## Discord (operator only)
 

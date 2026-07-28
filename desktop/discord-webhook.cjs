@@ -35,25 +35,40 @@ async function postDiscordWebhook(webhookUrl, body) {
  * @param {{ area?: string, source?: string }} [opts]
  */
 function bandaiRestockDiscordPayload(hit, opts = {}) {
+  // Keep CJS helper aligned with Vanta Railway embeds (operator channel).
   const productId = String(hit?.productId || "").trim() || "?";
   const area = String(opts.area || "au").toLowerCase();
-  const title = String(hit?.title || productId).slice(0, 200);
-  const reason = String(hit?.reason || "restock");
-  const nai = hit?.areaItemNo || null;
-  const url = `https://p-bandai.com/${area}/item/${productId}`;
+  const title = String(hit?.title || hit?.meta?.title || productId).slice(0, 250);
+  const reason = String(hit?.reason || "restock").replace(/_/g, " ");
+  const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
+  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
+  let image = hit?.imageUrl || hit?.meta?.imageUrl || null;
+  if (image && !String(image).startsWith("http")) {
+    image = `https://p-bandai.com/${String(image).replace(/^\//, "")}`;
+  }
+  const price = hit?.price || hit?.meta?.price || null;
+  const productType = hit?.meta?.productType || hit?.productType || null;
+  const reasonLabel =
+    reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
   return {
-    content: null,
+    username: "Vanta",
     embeds: [
       {
-        title: `Bandai ${reason}: ${productId}`,
-        description: title,
-        url,
-        color: 0x2ecc71,
+        author: { name: opts.test ? "Vanta · test ping" : "Vanta · Bandai AU" },
+        title,
+        url: pdp,
+        description: `**${reasonLabel}** detected on Premium Bandai AU`,
+        color: 0x7c3aed,
         fields: [
-          { name: "SKU", value: productId, inline: true },
-          ...(nai ? [{ name: "NAI", value: String(nai), inline: true }] : []),
-          { name: "Source", value: String(opts.source || "monitor"), inline: true },
+          { name: "SKU", value: `\`${productId}\``, inline: true },
+          ...(nai ? [{ name: "Backend PID", value: `\`${nai}\``, inline: true }] : []),
+          ...(price ? [{ name: "Price", value: String(price), inline: true }] : []),
+          ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
+          { name: "Region", value: area.toUpperCase(), inline: true },
+          { name: "PDP", value: `[Open on Premium Bandai](${pdp})` },
         ],
+        ...(image ? { thumbnail: { url: image }, image: { url: image } } : {}),
+        footer: { text: opts.test ? "Vanta monitor · test event" : "Vanta global stock monitor" },
         timestamp: hit?.at || new Date().toISOString(),
       },
     ],

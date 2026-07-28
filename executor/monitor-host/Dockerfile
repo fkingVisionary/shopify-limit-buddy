@@ -9,6 +9,7 @@ RUN npm install --omit=dev
 
 COPY monitor ./monitor
 COPY monitor-host/server.js ./monitor-host/server.js
+COPY monitor-host/vanta-discord.mjs ./monitor-host/vanta-discord.mjs
 
 ENV PORT=8080
 ENV NODE_ENV=production
