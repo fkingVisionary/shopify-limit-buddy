@@ -65,11 +65,43 @@ const hub = createGlobalMonitorHub({
   log: (line) => console.log(`[hub] ${line}`),
 });
 
-hub.monitor.on("stock_changed", (ev) => {
+hub.monitor.on("stock_changed", async (ev) => {
   console.log(
     `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ""}`,
   );
-  if (ev?.inStock) pushHit(ev);
+  if (!ev?.inStock) return;
+  pushHit(ev);
+  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
+  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) return;
+  try {
+    const productId = String(ev.productId || "?");
+    const payload = {
+      embeds: [
+        {
+          title: `Bandai ${ev.reason || "restock"}: ${productId}`,
+          description: String(ev.title || productId).slice(0, 200),
+          url: `https://p-bandai.com/${AREA}/item/${productId}`,
+          color: 0x2ecc71,
+          fields: [
+            { name: "SKU", value: productId, inline: true },
+            ...(ev.areaItemNo
+              ? [{ name: "NAI", value: String(ev.areaItemNo), inline: true }]
+              : []),
+            { name: "Source", value: "railway-monitor", inline: true },
+          ],
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+    const res = await fetch(hook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) console.warn("[discord]", res.status, await res.text().catch(() => ""));
+  } catch (e) {
+    console.warn("[discord]", e?.message || e);
+  }
 });
 hub.monitor.on("poll", (s) => {
   if (s.polls <= 3 || s.polls % 12 === 0 || s.events > 0) {

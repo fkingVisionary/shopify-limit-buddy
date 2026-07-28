@@ -535,6 +535,13 @@ function renderSettings() {
   if ($("setImapAppPassword")) $("setImapAppPassword").value = s.imapAppPassword || "";
   $("setMax").value = s.maxConcurrent ?? 5;
   $("setPlaceOrder").checked = s.placeOrderDefault !== false;
+  if ($("setBandaiGlobalMon")) $("setBandaiGlobalMon").checked = s.bandaiGlobalMonitorEnabled !== false;
+  if ($("setBandaiGlobalMonUrl")) {
+    $("setBandaiGlobalMonUrl").value =
+      s.bandaiGlobalMonitorUrl || "https://j1ms-bandai-monitor-production.up.railway.app";
+  }
+  if ($("setBandaiGlobalMonToken")) $("setBandaiGlobalMonToken").value = s.bandaiGlobalMonitorToken || "";
+  if ($("setDiscordWebhook")) $("setDiscordWebhook").value = s.discordMonitorWebhook || "";
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
@@ -1227,6 +1234,10 @@ $("btnSaveSettings").onclick = async () => {
       imapMailbox: $("setImapMailbox")?.value?.trim() || "INBOX",
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
+      bandaiGlobalMonitorEnabled: $("setBandaiGlobalMon")?.checked !== false,
+      bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
+      bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
+      discordMonitorWebhook: $("setDiscordWebhook")?.value?.trim() || "",
     }),
   );
   appendLog("Settings saved", "muted");
