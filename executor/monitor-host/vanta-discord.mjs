@@ -13,6 +13,22 @@ const VANTA_NAME = "Vanta";
 /** Must match desktop/deep-link.cjs BRIDGE_PORT — Discord → local Electron Quick Task. */
 export const QUICKTASK_BRIDGE_PORT = 17865;
 
+/**
+ * Public HTTPS base for Discord LINK buttons.
+ * Discord rejects/strips localhost button URLs on many webhooks — /qt on the
+ * monitor host serves a tiny page that bounces to 127.0.0.1:17865.
+ */
+export function quickTaskPublicBase() {
+  const fromEnv =
+    process.env.QUICKTASK_PUBLIC_BASE ||
+    (process.env.RAILWAY_PUBLIC_DOMAIN
+      ? `https://${String(process.env.RAILWAY_PUBLIC_DOMAIN).replace(/^https?:\/\//, "")}`
+      : "");
+  return String(
+    fromEnv || "https://j1ms-bandai-monitor-production.up.railway.app",
+  ).replace(/\/+$/, "");
+}
+
 function pickTitle(hit) {
   const t = hit?.title || hit?.meta?.title || hit?.productName;
   if (typeof t === "string" && t.trim()) return t.trim();
@@ -45,12 +61,11 @@ function pickPrice(hit) {
 }
 
 /**
- * Localhost Quick Task URL for Discord LINK buttons (desktop must be open).
+ * Query string shared by public /qt bounce and local desktop bridge.
  */
-export function buildQuickTaskBridgeUrl(hit, opts = {}) {
+export function buildQuickTaskQuery(hit, opts = {}) {
   const area = String(opts.area || "au").toLowerCase();
   const productId = String(hit?.productId || hit?.sku || "").trim();
-  const port = Number(opts.port) || QUICKTASK_BRIDGE_PORT;
   const params = new URLSearchParams();
   if (productId) params.set("sku", productId);
   const title = pickTitle(hit);
@@ -59,15 +74,41 @@ export function buildQuickTaskBridgeUrl(hit, opts = {}) {
   if (nai) params.set("nai", String(nai));
   params.set("area", area);
   if (hit?.reason) params.set("reason", String(hit.reason).slice(0, 40));
-  const qs = params.toString();
-  let url = `http://127.0.0.1:${port}/quicktask${qs ? `?${qs}` : ""}`;
-  if (url.length > 512) {
-    // Discord button URL max length
+  // Prefer requested SKU when catalog fallback used a different row.
+  if (opts.sku && String(opts.sku).trim()) {
+    params.set("sku", String(opts.sku).trim());
+  }
+  let qs = params.toString();
+  if (`http://127.0.0.1:${QUICKTASK_BRIDGE_PORT}/quicktask?${qs}`.length > 480) {
     const slim = new URLSearchParams();
-    if (productId) slim.set("sku", productId);
+    const sku = params.get("sku");
+    if (sku) slim.set("sku", sku);
     if (nai) slim.set("nai", String(nai));
     slim.set("area", area);
-    url = `http://127.0.0.1:${port}/quicktask?${slim.toString()}`;
+    qs = slim.toString();
+  }
+  return qs;
+}
+
+/** Local desktop bridge URL (after /qt bounce). */
+export function buildQuickTaskLocalUrl(hit, opts = {}) {
+  const port = Number(opts.port) || QUICKTASK_BRIDGE_PORT;
+  const qs = buildQuickTaskQuery(hit, opts);
+  return `http://127.0.0.1:${port}/quicktask${qs ? `?${qs}` : ""}`;
+}
+
+/**
+ * Discord LINK button URL — HTTPS public /qt (test + live restock pings).
+ * Desktop must be open; /qt bounces the browser to localhost.
+ */
+export function buildQuickTaskBridgeUrl(hit, opts = {}) {
+  const base = String(opts.publicBase || quickTaskPublicBase()).replace(/\/+$/, "");
+  const qs = buildQuickTaskQuery(hit, opts);
+  let url = `${base}/qt${qs ? `?${qs}` : ""}`;
+  if (url.length > 512) {
+    const slimHit = { ...hit, title: undefined, reason: undefined };
+    const slimQs = buildQuickTaskQuery(slimHit, { ...opts, title: "" });
+    url = `${base}/qt?${slimQs}`;
   }
   return url;
 }
@@ -165,7 +206,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
           : {}),
         footer: {
           text: isTest
-            ? "Vanta monitor · test restock"
+            ? "Vanta monitor · test restock · Quick Task needs desktop open"
             : "Vanta · restock · Quick Task needs desktop open",
         },
         timestamp: hit?.at || hit?.timestamp
