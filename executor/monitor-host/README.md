@@ -45,3 +45,25 @@ Without `EXECUTOR_TOKEN`, Monitor + Discord labs still work; Bot launches show a
 ## Deploy
 
 Root Directory = `executor`. Dockerfile = `monitor-host/Dockerfile`.
+
+**Merging to `main` does not auto-deploy** unless Railway’s GitHub connection is
+watching this service, or you run the **Deploy Bandai monitor (Railway)** GitHub
+Action (`RAILWAY_TOKEN` secret).
+
+### Redeploy now (phone / dashboard)
+
+1. Railway → project **j1ms-bandai-monitor** → service → **Deployments**
+2. **Redeploy** the latest from `main` (or trigger a new deploy from GitHub)
+3. Confirm tip moved: open `/health` — should show `gitSha` and `quickTask:"/qt"`
+4. Open `/qt?sku=N1` — should be an HTML “Opening Quick Task…” page (not 404)
+5. Labs → **Test restock** — Discord embed description includes **⚡ Quick Task**
+
+### Discord Quick Task
+
+Restock (live + lab test) embeds include:
+
+- Description link → `https://<monitor>/qt?sku=…` (always visible)
+- LINK button row (when Discord accepts components on your webhook)
+- Desktop field with the same link
+
+`/qt` bounces the browser to `http://127.0.0.1:17865/quicktask` (desktop must be open).

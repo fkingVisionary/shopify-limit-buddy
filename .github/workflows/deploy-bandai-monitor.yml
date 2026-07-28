@@ -1,0 +1,85 @@
+name: Deploy Bandai monitor (Railway)
+
+# Redeploys j1ms-bandai-monitor on Railway when monitor-host code changes,
+# or when you manually Run workflow (phone-friendly).
+#
+# One-time secrets (GitHub repo → Settings → Secrets):
+#   RAILWAY_TOKEN        Account or project token from railway.app
+#   RAILWAY_SERVICE_ID   Service id for the Bandai monitor (optional if linked)
+#
+# Or in Railway dashboard: Service → Settings → connect GitHub repo with
+# Root Directory = executor, watch main — then merges auto-deploy without this workflow.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "executor/monitor-host/**"
+      - "executor/monitor/**"
+      - "executor/railway.toml"
+      - "executor/monitor-host/railway.toml"
+      - ".github/workflows/deploy-bandai-monitor.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-bandai-monitor
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & deploy monitor to Railway
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: executor
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check Railway token
+        run: |
+          if [ -z "$RAILWAY_TOKEN" ]; then
+            echo "::error::Missing RAILWAY_TOKEN secret. Add it in GitHub → Settings → Secrets, or Redeploy manually in Railway dashboard."
+            exit 1
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Deploy
+        run: |
+          SHA="${GITHUB_SHA}"
+          echo "Deploying monitor gitSha=$SHA"
+          # Root Directory on the Railway service should be `executor`.
+          # --ci avoids interactive prompts; Dockerfile gets GIT_SHA via build-arg when supported.
+          if [ -n "$RAILWAY_SERVICE_ID" ]; then
+            railway up --service "$RAILWAY_SERVICE_ID" --detach --ci \
+              || railway up --detach --ci
+          else
+            railway up --detach --ci
+          fi
+
+      - name: Verify /qt live
+        env:
+          MONITOR_URL: ${{ vars.BANDAI_MONITOR_URL }}
+        run: |
+          URL="${MONITOR_URL:-https://j1ms-bandai-monitor-production.up.railway.app}"
+          echo "Probing $URL ..."
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /tmp/qt.html -w "%{http_code}" "$URL/qt?sku=N1" || echo "000")
+            echo "attempt $i → HTTP $code"
+            if [ "$code" = "200" ]; then
+              grep -q "Quick Task" /tmp/qt.html && echo "OK: /qt serves Quick Task bounce" && exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Deploy finished but /qt not 200 yet — check Railway deploy logs / custom domain."
+          curl -sS "$URL/" || true
+          exit 0
