@@ -27,4 +27,8 @@ Dockerfile = `monitor-host/Dockerfile` (see `railway.toml`).
 - `GET /hits` — buffer of in-stock events (auth)
 - `GET /events` — SSE `stock_changed` stream (auth)
 
-Desktop Global subscribe → this host is the next wire-up; until then use task-local Monitor + Checkout on restock.
+## Discord
+
+Set `DISCORD_WEBHOOK_URL` on the Railway service to an incoming webhook. Each in-stock
+`stock_changed` posts an embed (SKU + PDP link). Desktop can also ping via
+Settings → Discord webhook while subscribed.
