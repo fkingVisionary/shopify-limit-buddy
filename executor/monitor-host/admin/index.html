@@ -380,6 +380,10 @@
       <div class="panel" id="panel-labs">
         <section>
           <h2>Discord labs</h2>
+          <p class="hint" style="margin:0 0 10px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Test restock includes <strong>⚡ Quick Task</strong> (button + Desktop field) → opens local desktop via <code>/qt</code>.
+            Desktop app must be open on the machine where you click. OOS pings have no Quick Task.
+          </p>
           <label for="testSku">SKU</label>
           <input id="testSku" type="text" value="N2890904001" />
           <div class="row">
@@ -389,6 +393,7 @@
           <div class="row">
             <button class="secondary" id="btnPoll" type="button">Force monitor poll</button>
           </div>
+          <p id="discordLabNote" class="hint" style="margin:10px 0 0;color:var(--muted);font-size:0.8rem;word-break:break-all"></p>
         </section>
       </div>
     </div>
@@ -737,14 +742,30 @@
       $("btnTestRestock").onclick = async () => {
         try {
           const sku = $("testSku").value.trim() || "N2890904001";
-          await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=restock", { method: "POST" });
-          toast("Restock ping sent", "ok");
+          const r = await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=restock", { method: "POST" });
+          const note = $("discordLabNote");
+          if (note) {
+            const bits = [];
+            if (r.hasQuickTaskButton) bits.push("Quick Task button on embed");
+            else if (r.hasQuickTaskLink) bits.push("Quick Task link in Desktop field (button stripped by Discord)");
+            else bits.push("no Quick Task on payload");
+            if (r.quickTaskUrl) bits.push(r.quickTaskUrl);
+            note.textContent = bits.join(" · ");
+          }
+          toast(
+            r.hasQuickTaskButton || r.hasQuickTaskLink
+              ? "Restock ping sent · Quick Task included"
+              : "Restock ping sent",
+            "ok",
+          );
         } catch (e) { toast(e.message, "bad"); }
       };
       $("btnTestOos").onclick = async () => {
         try {
           const sku = $("testSku").value.trim() || "N2890904001";
           await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=oos", { method: "POST" });
+          const note = $("discordLabNote");
+          if (note) note.textContent = "OOS ping — no Quick Task (by design)";
           toast("OOS ping sent", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };

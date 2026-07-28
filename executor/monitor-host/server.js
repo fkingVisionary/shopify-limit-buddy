@@ -16,7 +16,13 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
-import { vantaRestockDiscordBody, vantaOosDiscordBody } from "./vanta-discord.mjs";
+import {
+  vantaRestockDiscordBody,
+  vantaOosDiscordBody,
+  buildQuickTaskBridgeUrl,
+  buildQuickTaskLocalUrl,
+  QUICKTASK_BRIDGE_PORT,
+} from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config.mjs";
 import { loadBotVault, saveBotVault, vaultPublicView } from "./bot-vault.mjs";
 import {
@@ -121,6 +127,17 @@ async function postDiscord(body) {
   return { ok: true, status: res.status };
 }
 
+/** Post Discord; if components are rejected, retry embed-only (Desktop QT field kept). */
+async function postDiscordWithQtFallback(body) {
+  let r = await postDiscord(body);
+  if (!r.ok && body?.components) {
+    const { components: _drop, ...embedOnly } = body;
+    r = await postDiscord(embedOnly);
+    if (r.ok) return { ...r, componentsStripped: true };
+  }
+  return r;
+}
+
 const hub = createGlobalMonitorHub({
   attachBridge: false,
   monitorOpts: {
@@ -190,10 +207,11 @@ hub.monitor.on("stock_changed", async (ev) => {
 
   if (!ev?.inStock) return;
   try {
-    const r = await postDiscord(
+    const r = await postDiscordWithQtFallback(
       vantaRestockDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
     );
     if (!r.ok && !r.skipped) console.warn("[discord]", r.status, r.error);
+    else if (r.componentsStripped) console.warn("[discord] components stripped — Desktop QT field kept");
   } catch (e) {
     console.warn("[discord]", e?.message || e);
   }
@@ -271,9 +289,56 @@ app.get("/", async (_req, reply) => {
       hits: "/hits",
       events: "/events",
       testDiscord: "/test-discord",
+      quickTask: "/qt",
     },
   });
 });
+
+/**
+ * Public Quick Task bounce (no auth) — Discord LINK buttons point here (HTTPS).
+ * Browser lands on this page, then jumps to the local Electron bridge.
+ */
+app.get("/qt", async (req, reply) => {
+  const q = req.query && typeof req.query === "object" ? req.query : {};
+  const params = new URLSearchParams();
+  for (const key of ["sku", "title", "nai", "area", "reason", "url"]) {
+    if (q[key] != null && String(q[key]).trim()) params.set(key, String(q[key]).trim());
+  }
+  const qs = params.toString();
+  const local = `http://127.0.0.1:${QUICKTASK_BRIDGE_PORT}/quicktask${qs ? `?${qs}` : ""}`;
+  const sku = params.get("sku") || "";
+  reply
+    .type("text/html; charset=utf-8")
+    .header("cache-control", "no-store")
+    .send(`<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Vanta · Quick Task</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    font:15px/1.45 system-ui,sans-serif;background:#0e1012;color:#e8eaed}
+  .card{max-width:420px;padding:28px;border:1px solid #2a323c;border-radius:12px;background:#161a1f}
+  h1{font-size:18px;margin:0 0 8px} p{margin:0 0 12px;color:#8b949e}
+  a{color:#3dd6c6} code{color:#3dd6c6;font-size:12px}
+</style>
+</head><body><div class="card">
+  <h1>Opening Quick Task…</h1>
+  <p>${sku ? `SKU <code>${escapeHtml(sku)}</code> · ` : ""}Needs <strong>J1m's Bot</strong> desktop open on this PC (engine + Quick Task preset).</p>
+  <p><a id="go" href="${escapeHtml(local)}">Launch Quick Task</a></p>
+  <p style="font-size:12px">If nothing happens, start the desktop app and click the link again.</p>
+</div>
+<script>setTimeout(function(){ location.replace(${JSON.stringify(local)}); }, 120);</script>
+</body></html>`);
+});
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 app.get("/health", async () => {
   const st = hub.status();
@@ -478,13 +543,23 @@ app.post("/test-discord", async (req, reply) => {
     inStock: kind !== "oos",
     at: new Date().toISOString(),
   };
+  // Prefer the SKU the operator typed (catalog row may fall back to another product).
+  const hitForDiscord = {
+    ...hit,
+    productId: row.productId || sku,
+  };
   const payload =
     kind === "oos"
-      ? vantaOosDiscordBody(hit, { area: AREA, test: true })
-      : vantaRestockDiscordBody(hit, { area: AREA, test: true });
+      ? vantaOosDiscordBody(hitForDiscord, { area: AREA, test: true })
+      : vantaRestockDiscordBody(hitForDiscord, { area: AREA, test: true });
+
+  const quickTaskUrl =
+    kind === "oos" ? null : buildQuickTaskBridgeUrl(hitForDiscord, { area: AREA });
+  const quickTaskLocal =
+    kind === "oos" ? null : buildQuickTaskLocalUrl(hitForDiscord, { area: AREA });
 
   try {
-    const r = await postDiscord(payload);
+    const r = await postDiscordWithQtFallback(payload);
     if (!r.ok) {
       return reply.code(502).send({
         ok: false,
@@ -497,6 +572,13 @@ app.post("/test-discord", async (req, reply) => {
       ok: true,
       discord: r.status,
       kind: kind === "oos" ? "oos" : "restock",
+      quickTaskUrl,
+      quickTaskLocal,
+      hasQuickTaskButton: Boolean(payload.components?.length && !r.componentsStripped),
+      hasQuickTaskLink: Boolean(
+        payload.embeds?.[0]?.fields?.some((f) => f.name === "Desktop"),
+      ),
+      componentsStripped: Boolean(r.componentsStripped),
       product: {
         productId: row.productId,
         areaItemNo: row.areaItemNo || null,

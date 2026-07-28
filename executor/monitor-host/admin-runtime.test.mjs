@@ -48,11 +48,28 @@ test("oos discord is red; restock is black + Quick Task button", () => {
   const btn = restock.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.ok(btn);
   assert.equal(btn.style, 5);
-  assert.match(btn.url, /http:\/\/127\.0\.0\.1:17865\/quicktask\?sku=N1/);
+  // HTTPS /qt bounce — Discord-safe (not raw 127.0.0.1)
+  assert.match(btn.url, /^https:\/\/.+\/qt\?/);
+  assert.match(btn.url, /sku=N1/);
   assert.match(btn.url, /nai=NAI1/);
   const desktopField = restock.embeds[0].fields.find((f) => f.name === "Desktop");
   assert.ok(desktopField);
   assert.match(desktopField.value, /Quick Task/);
+});
+
+test("admin lab test restock also includes Quick Task", () => {
+  const testPing = vantaRestockDiscordBody(
+    { productId: "N2890904001", title: "Lab Demo", areaItemNo: "NAI9" },
+    { area: "au", test: true },
+  );
+  assert.match(testPing.embeds[0].author.name, /test restock/i);
+  assert.match(testPing.embeds[0].footer.text, /Quick Task/i);
+  const btn = testPing.components[0].components.find((c) => /Quick Task/i.test(c.label));
+  assert.ok(btn);
+  assert.match(btn.url, /\/qt\?/);
+  assert.match(btn.url, /sku=N2890904001/);
+  const desktop = testPing.embeds[0].fields.find((f) => f.name === "Desktop");
+  assert.ok(desktop);
 });
 
 test("runtime config round-trip", () => {

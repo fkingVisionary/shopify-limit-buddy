@@ -8,7 +8,7 @@ const {
   BRIDGE_PORT,
 } = require("./deep-link.cjs");
 
-test("build localhost Quick Task URL", () => {
+test("build public /qt Quick Task URL (Discord-safe default)", () => {
   const url = buildQuickTaskDeepLink({
     productId: "N2890904001",
     title: "Gundam",
@@ -16,10 +16,19 @@ test("build localhost Quick Task URL", () => {
     area: "au",
     reason: "restock",
   });
-  assert.match(url, new RegExp(`http://127\\.0\\.0\\.1:${BRIDGE_PORT}/quicktask\\?`));
+  assert.match(url, /\/qt\?/);
+  assert.match(url, /^https:\/\//);
   assert.match(url, /sku=N2890904001/);
   assert.match(url, /nai=NAI0859145AU/);
   assert.ok(url.length <= 512);
+});
+
+test("build localhost bridge URL when scheme=local", () => {
+  const url = buildQuickTaskDeepLink(
+    { productId: "N2890904001", title: "Gundam" },
+    { scheme: "local" },
+  );
+  assert.match(url, new RegExp(`http://127\\.0\\.0\\.1:${BRIDGE_PORT}/quicktask\\?`));
 });
 
 test("parse bridge + protocol links", () => {
@@ -46,5 +55,6 @@ test("discord components include Quick Task link button", () => {
   const btn = comps[0].components.find((c) => c.label.includes("Quick Task"));
   assert.ok(btn);
   assert.equal(btn.style, 5);
-  assert.match(btn.url, /127\.0\.0\.1:17865\/quicktask/);
+  assert.match(btn.url, /\/qt\?/);
+  assert.match(btn.url, /^https:\/\//);
 });

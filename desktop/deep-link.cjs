@@ -5,11 +5,16 @@
 const PROTOCOL = "j1ms";
 const BRIDGE_PORT = 17865;
 const BRIDGE_HOST = "127.0.0.1";
+/** Discord LINK buttons need HTTPS — monitor-host /qt bounces to localhost. */
+const DEFAULT_PUBLIC_QT_BASE =
+  process.env.QUICKTASK_PUBLIC_BASE ||
+  "https://j1ms-bandai-monitor-production.up.railway.app";
 
 /**
  * Build the URL Discord (and Feed docs) use for one-click Quick Task.
+ * Default: HTTPS public /qt bounce (Discord-safe). Pass scheme:"local" for bridge URL.
  * @param {{ productId?: string, sku?: string, title?: string, areaItemNo?: string, area?: string, reason?: string, pdpUrl?: string }} hit
- * @param {{ port?: number, scheme?: "http"|"protocol" }} [opts]
+ * @param {{ port?: number, scheme?: "http"|"protocol"|"local"|"public", publicBase?: string }} [opts]
  */
 function buildQuickTaskDeepLink(hit = {}, opts = {}) {
   const sku = String(hit.productId || hit.sku || "").trim();
@@ -31,7 +36,12 @@ function buildQuickTaskDeepLink(hit = {}, opts = {}) {
     return `${PROTOCOL}://quicktask${qs ? `?${qs}` : ""}`;
   }
   const port = Number(opts.port) || BRIDGE_PORT;
-  return `http://${BRIDGE_HOST}:${port}/quicktask${qs ? `?${qs}` : ""}`;
+  if (opts.scheme === "local" || opts.scheme === "http") {
+    return `http://${BRIDGE_HOST}:${port}/quicktask${qs ? `?${qs}` : ""}`;
+  }
+  // Default / "public" — HTTPS /qt for Discord buttons (test + live)
+  const base = String(opts.publicBase || DEFAULT_PUBLIC_QT_BASE).replace(/\/+$/, "");
+  return `${base}/qt${qs ? `?${qs}` : ""}`;
 }
 
 /**
