@@ -2133,6 +2133,18 @@ if (!window.desktop) {
 } else {
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
+  if (evt.type === "navigate" && evt.tab) {
+    setTab(evt.tab);
+    if (evt.focus === "quickTaskPreset") {
+      const el = $("qtPresetProfile") || $("qtPresetStore");
+      try {
+        el?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+        el?.focus?.();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
   if (evt.type === "monitorFeed") {
     if (evt.cleared && state) {
       state.monitorFeed = [];

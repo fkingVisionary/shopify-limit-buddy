@@ -3,6 +3,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   buildQuickTaskDeepLink,
+  buildQuickTaskSetupDeepLink,
+  buildEbaySoldUrl,
   parseQuickTaskDeepLink,
   quickTaskDiscordComponents,
   BRIDGE_PORT,
@@ -45,16 +47,32 @@ test("parse bridge + protocol links", () => {
   assert.equal(b.payload.sku, "N2");
 });
 
-test("discord components include Quick Task link button", () => {
+test("discord components include Quick Task + Setup + eBay", () => {
   const comps = quickTaskDiscordComponents({
     productId: "N2890904001",
     title: "Gundam",
     area: "au",
   });
   assert.equal(comps[0].type, 1);
+  const labels = comps[0].components.map((c) => c.label);
+  assert.ok(labels.some((l) => /Quick Task/i.test(l)));
+  assert.ok(labels.some((l) => /Setup presets/i.test(l)));
+  assert.ok(labels.some((l) => /eBay sold/i.test(l)));
   const btn = comps[0].components.find((c) => c.label.includes("Quick Task"));
   assert.ok(btn);
   assert.equal(btn.style, 5);
   assert.match(btn.url, /\/qt\?/);
   assert.match(btn.url, /^https:\/\//);
+});
+
+test("setup deep link and ebay sold url", () => {
+  assert.match(buildQuickTaskSetupDeepLink(), /\/qt-setup$/);
+  const ebay = buildEbaySoldUrl({
+    productId: "N1",
+    title: "Premium Bandai METAL BUILD Gundam",
+  });
+  assert.match(ebay, /ebay\.com\.au/);
+  assert.match(ebay, /LH_Sold=1/);
+  assert.match(ebay, /METAL/);
+  assert.equal(/premium\s+bandai/i.test(decodeURIComponent(ebay)), false);
 });

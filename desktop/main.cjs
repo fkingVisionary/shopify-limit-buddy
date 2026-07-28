@@ -1705,6 +1705,21 @@ async function handleQuickTaskDeepLink(rawUrl) {
 
 const quickTaskBridge = createQuickTaskBridge({
   onQuickTask: (payload) => runQuickTaskPayload({ ...payload, source: "discord" }),
+  onOpenSetup: () => {
+    try {
+      win?.show();
+      win?.focus();
+    } catch {
+      /* ignore */
+    }
+    send({ type: "navigate", tab: "settings", focus: "quickTaskPreset" });
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: "Opened Settings → Quick Task preset (Discord)",
+    });
+  },
   port: QT_BRIDGE_PORT,
   log: (message) =>
     send({ type: "job", phase: "log", level: "info", message: String(message || "") }),

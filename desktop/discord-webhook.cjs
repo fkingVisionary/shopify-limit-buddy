@@ -54,10 +54,12 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
     reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
 
   let components;
-  let qtField = null;
+  let description = `**${reasonLabel}** detected on Premium Bandai AU`;
   try {
     const {
       buildQuickTaskDeepLink,
+      buildQuickTaskSetupDeepLink,
+      buildEbaySoldUrl,
       quickTaskDiscordComponents,
     } = require("./deep-link.cjs");
     const qtHit = {
@@ -70,11 +72,13 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
     };
     components = quickTaskDiscordComponents(qtHit, { area });
     const qtUrl = buildQuickTaskDeepLink(qtHit);
-    qtField = {
-      name: "Desktop",
-      value: `[⚡ Quick Task](${qtUrl}) — needs J1m's Bot open on this PC`,
-      inline: false,
-    };
+    const setupUrl = buildQuickTaskSetupDeepLink();
+    const ebayUrl = buildEbaySoldUrl(qtHit);
+    description = [
+      `**${reasonLabel}** detected on Premium Bandai AU`,
+      "",
+      `[⚡ Quick Task](${qtUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
+    ].join("\n");
   } catch {
     components = undefined;
   }
@@ -86,7 +90,7 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
         author: { name: opts.test ? "Vanta · test ping" : "Vanta · Bandai AU" },
         title,
         url: pdp,
-        description: `**${reasonLabel}** detected on Premium Bandai AU`,
+        description,
         color: 0x7c3aed,
         fields: [
           { name: "SKU", value: `\`${productId}\``, inline: true },
@@ -95,13 +99,10 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
           ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
           { name: "Region", value: area.toUpperCase(), inline: true },
           { name: "PDP", value: `[Open on Premium Bandai](${pdp})` },
-          ...(qtField ? [qtField] : []),
         ],
         ...(image ? { thumbnail: { url: image }, image: { url: image } } : {}),
         footer: {
-          text: opts.test
-            ? "Vanta monitor · test event"
-            : "Vanta global stock monitor · Quick Task needs desktop open",
+          text: opts.test ? "Vanta monitor · test event" : "Vanta global stock monitor",
         },
         timestamp: hit?.at || new Date().toISOString(),
       },

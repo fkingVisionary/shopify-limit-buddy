@@ -112,19 +112,36 @@ function parseQuickTaskDeepLink(rawUrl) {
   };
 }
 
+function buildQuickTaskSetupDeepLink(opts = {}) {
+  const base = String(opts.publicBase || DEFAULT_PUBLIC_QT_BASE).replace(/\/+$/, "");
+  return `${base}/qt-setup`;
+}
+
+function buildEbaySoldUrl(hit = {}, opts = {}) {
+  const title = String(hit.title || "").trim();
+  const sku = String(hit.productId || hit.sku || "").trim();
+  let q = (title || sku || "bandai")
+    .replace(/\b(premium\s+bandai|p-bandai|bandai\s+spirits|tamashii)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  const site = String(opts.site || "ebay.com.au");
+  const params = new URLSearchParams({
+    _nkw: q || sku || "bandai",
+    LH_Sold: "1",
+    LH_Complete: "1",
+    rt: "nc",
+  });
+  return `https://www.${site}/sch/i.html?${params.toString()}`;
+}
+
 /**
- * Discord message components: LINK button row for Quick Task (+ optional PDP).
- * Discord requires http(s) for style=5 buttons — localhost bridge while app is open.
+ * Discord LINK buttons: Quick Task + Setup presets + eBay sold + PDP.
  */
 function quickTaskDiscordComponents(hit, opts = {}) {
-  const qtUrl = buildQuickTaskDeepLink(hit, { port: opts.port || BRIDGE_PORT });
+  let qtUrl = buildQuickTaskDeepLink(hit, { port: opts.port || BRIDGE_PORT });
   if (qtUrl.length > 512) {
-    // Discord button URL max 512 — drop title if needed
-    const slim = buildQuickTaskDeepLink(
-      { ...hit, title: "" },
-      { port: opts.port || BRIDGE_PORT },
-    );
-    return buildComponents(slim, hit, opts);
+    qtUrl = buildQuickTaskDeepLink({ ...hit, title: "" }, { port: opts.port || BRIDGE_PORT });
   }
   return buildComponents(qtUrl, hit, opts);
 }
@@ -135,24 +152,18 @@ function buildComponents(qtUrl, hit, opts = {}) {
   const pdp =
     hit.pdpUrl ||
     (productId ? `https://p-bandai.com/${area}/item/${productId}` : null);
+  const setupUrl = buildQuickTaskSetupDeepLink(opts);
+  const ebayUrl = buildEbaySoldUrl(hit, opts);
   const row = {
     type: 1,
     components: [
-      {
-        type: 2,
-        style: 5,
-        label: "⚡ Quick Task",
-        url: qtUrl,
-      },
+      { type: 2, style: 5, label: "⚡ Quick Task", url: String(qtUrl).slice(0, 512) },
+      { type: 2, style: 5, label: "Setup presets", url: String(setupUrl).slice(0, 512) },
+      { type: 2, style: 5, label: "eBay sold", url: String(ebayUrl).slice(0, 512) },
     ],
   };
   if (pdp && String(pdp).length <= 512) {
-    row.components.push({
-      type: 2,
-      style: 5,
-      label: "Open PDP",
-      url: pdp,
-    });
+    row.components.push({ type: 2, style: 5, label: "Open PDP", url: pdp });
   }
   return [row];
 }
@@ -162,6 +173,8 @@ module.exports = {
   BRIDGE_PORT,
   BRIDGE_HOST,
   buildQuickTaskDeepLink,
+  buildQuickTaskSetupDeepLink,
+  buildEbaySoldUrl,
   parseQuickTaskDeepLink,
   quickTaskDiscordComponents,
 };

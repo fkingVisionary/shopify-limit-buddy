@@ -381,8 +381,9 @@
         <section>
           <h2>Discord labs</h2>
           <p class="hint" style="margin:0 0 10px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Test restock includes <strong>⚡ Quick Task</strong> (button + Desktop field) → opens local desktop via <code>/qt</code>.
-            Desktop app must be open on the machine where you click. OOS pings have no Quick Task.
+            Test restock: <strong>⚡ Quick Task</strong>, <strong>Setup presets</strong>, and <strong>eBay sold</strong>
+            (description links + buttons). QT / Setup bounce via <code>/qt</code> · <code>/qt-setup</code>.
+            OOS pings include eBay sold only.
           </p>
           <label for="testSku">SKU</label>
           <input id="testSku" type="text" value="N2890904001" />
@@ -747,7 +748,7 @@
           if (note) {
             const bits = [];
             if (r.hasQuickTaskButton) bits.push("Quick Task button on embed");
-            else if (r.hasQuickTaskLink) bits.push("Quick Task link in Desktop field (button stripped by Discord)");
+            else if (r.hasQuickTaskLink) bits.push("Quick Task link in description (button stripped by Discord)");
             else bits.push("no Quick Task on payload");
             if (r.quickTaskUrl) bits.push(r.quickTaskUrl);
             note.textContent = bits.join(" · ");

@@ -7,6 +7,7 @@ const { BRIDGE_PORT, BRIDGE_HOST, parseQuickTaskDeepLink } = require("./deep-lin
 /**
  * @param {{
  *   onQuickTask: (payload: object) => Promise<object>|object,
+ *   onOpenSetup?: () => void|Promise<void>,
  *   port?: number,
  *   log?: (msg: string) => void,
  * }} opts
@@ -29,7 +30,7 @@ function createQuickTaskBridge(opts = {}) {
   code{color:#3dd6c6}
 </style></head>
 <body><div class="card"><h1>${escapeHtml(title)}</h1><p>${escapeHtml(detail)}</p>
-<p style="margin-top:12px;font-size:12px">You can close this tab — J1m's Bot handled the click.</p>
+<p style="margin-top:12px;font-size:12px">You can close this tab.</p>
 </div></body></html>`;
   }
 
@@ -55,6 +56,23 @@ function createQuickTaskBridge(opts = {}) {
     if (url.pathname === "/health" || url.pathname === "/") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, service: "j1ms-quicktask-bridge", port }));
+      return;
+    }
+
+    if (url.pathname === "/setup" || url.pathname === "/qt-setup") {
+      try {
+        await opts.onOpenSetup?.();
+      } catch (e) {
+        log(`setup bridge error: ${e?.message || e}`);
+      }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(
+        htmlPage({
+          ok: true,
+          title: "Quick Task presets",
+          detail: "Opened Settings → Quick Task preset",
+        }),
+      );
       return;
     }
 
@@ -85,7 +103,7 @@ function createQuickTaskBridge(opts = {}) {
           htmlPage({
             ok: false,
             title: "Quick Task failed",
-            detail: result?.error || "Desktop could not start the task (engine/preset?)",
+            detail: result?.error || "Could not start the task (engine/preset?)",
           }),
         );
         return;

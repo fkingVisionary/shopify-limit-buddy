@@ -127,7 +127,7 @@ async function postDiscord(body) {
   return { ok: true, status: res.status };
 }
 
-/** Post Discord; if components are rejected, retry embed-only (Desktop QT field kept). */
+/** Post Discord; if components are rejected, retry embed-only (QT link stays in description). */
 async function postDiscordWithQtFallback(body) {
   let r = await postDiscord(body);
   if (!r.ok && body?.components) {
@@ -211,7 +211,7 @@ hub.monitor.on("stock_changed", async (ev) => {
       vantaRestockDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
     );
     if (!r.ok && !r.skipped) console.warn("[discord]", r.status, r.error);
-    else if (r.componentsStripped) console.warn("[discord] components stripped — Desktop QT field kept");
+    else if (r.componentsStripped) console.warn("[discord] components stripped — QT description links kept");
   } catch (e) {
     console.warn("[discord]", e?.message || e);
   }
@@ -291,13 +291,43 @@ app.get("/", async (_req, reply) => {
       events: "/events",
       testDiscord: "/test-discord",
       quickTask: "/qt",
+      quickTaskSetup: "/qt-setup",
     },
   });
 });
 
+function bounceHtml({ title, local, detail }) {
+  return `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${escapeHtml(title)}</title>
+<style>
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    font:15px/1.45 system-ui,sans-serif;background:#0e1012;color:#e8eaed}
+  .card{max-width:420px;padding:28px;border:1px solid #2a323c;border-radius:12px;background:#161a1f}
+  h1{font-size:18px;margin:0 0 8px} p{margin:0 0 12px;color:#8b949e}
+  a{color:#3dd6c6} code{color:#3dd6c6;font-size:12px}
+</style>
+</head><body><div class="card">
+  <h1>${escapeHtml(title)}</h1>
+  <p>${detail}</p>
+  <p><a href="${escapeHtml(local)}">Continue</a></p>
+</div>
+<script>setTimeout(function(){ location.replace(${JSON.stringify(local)}); }, 120);</script>
+</body></html>`;
+}
+
+function escapeHtml(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
  * Public Quick Task bounce (no auth) — Discord LINK buttons point here (HTTPS).
- * Browser lands on this page, then jumps to the local Electron bridge.
  */
 app.get("/qt", async (req, reply) => {
   const q = req.query && typeof req.query === "object" ? req.query : {};
@@ -311,35 +341,31 @@ app.get("/qt", async (req, reply) => {
   reply
     .type("text/html; charset=utf-8")
     .header("cache-control", "no-store")
-    .send(`<!doctype html>
-<html lang="en"><head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Vanta · Quick Task</title>
-<style>
-  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-    font:15px/1.45 system-ui,sans-serif;background:#0e1012;color:#e8eaed}
-  .card{max-width:420px;padding:28px;border:1px solid #2a323c;border-radius:12px;background:#161a1f}
-  h1{font-size:18px;margin:0 0 8px} p{margin:0 0 12px;color:#8b949e}
-  a{color:#3dd6c6} code{color:#3dd6c6;font-size:12px}
-</style>
-</head><body><div class="card">
-  <h1>Opening Quick Task…</h1>
-  <p>${sku ? `SKU <code>${escapeHtml(sku)}</code> · ` : ""}Needs <strong>J1m's Bot</strong> desktop open on this PC (engine + Quick Task preset).</p>
-  <p><a id="go" href="${escapeHtml(local)}">Launch Quick Task</a></p>
-  <p style="font-size:12px">If nothing happens, start the desktop app and click the link again.</p>
-</div>
-<script>setTimeout(function(){ location.replace(${JSON.stringify(local)}); }, 120);</script>
-</body></html>`);
+    .send(
+      bounceHtml({
+        title: "Opening Quick Task…",
+        local,
+        detail: sku
+          ? `SKU <code>${escapeHtml(sku)}</code>`
+          : "Launching Quick Task…",
+      }),
+    );
 });
 
-function escapeHtml(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+/** Open Desktop Settings → Quick Task preset. */
+app.get("/qt-setup", async (_req, reply) => {
+  const local = `http://127.0.0.1:${QUICKTASK_BRIDGE_PORT}/setup`;
+  reply
+    .type("text/html; charset=utf-8")
+    .header("cache-control", "no-store")
+    .send(
+      bounceHtml({
+        title: "Opening Quick Task presets…",
+        local,
+        detail: "Desktop Settings → Quick Task preset",
+      }),
+    );
+});
 
 app.get("/health", async () => {
   const st = hub.status();
@@ -579,7 +605,7 @@ app.post("/test-discord", async (req, reply) => {
       quickTaskLocal,
       hasQuickTaskButton: Boolean(payload.components?.length && !r.componentsStripped),
       hasQuickTaskLink: Boolean(
-        payload.embeds?.[0]?.fields?.some((f) => f.name === "Desktop"),
+        /Quick Task/i.test(String(payload.embeds?.[0]?.description || "")),
       ),
       componentsStripped: Boolean(r.componentsStripped),
       product: {
