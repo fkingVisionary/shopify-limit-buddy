@@ -32,6 +32,7 @@ const {
   formatLaneAfterAction,
 } = require("./bandai-drop-ops.cjs");
 const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
+const { postDiscordWebhook, checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -108,6 +109,34 @@ function persistDb() {
 
 function persistSettings() {
   store.saveSettings(state.settings);
+}
+
+/**
+ * User Discord webhook — checkout success/fail only.
+ * Global restock pings stay on the operator Railway webhook.
+ */
+async function notifyUserCheckoutDiscord(result) {
+  if (!result || result.monitor === true && !result.checkout) return;
+  if (result.accountGen || result.loginCheck) return;
+  const url =
+    state.settings.discordCheckoutWebhook ||
+    state.settings.discordMonitorWebhook || // legacy key
+    state.settings.discordWebhookUrl ||
+    "";
+  if (!url) return;
+  const task = (state.db.tasks || []).find((t) => t.id === result.taskId);
+  const storeId = task?.store || result.store || "checkout";
+  // Skip pure monitor poll finishes with no checkout attempt.
+  if (String(task?.bandaiMode || "") === "monitor" && !result.checkout && result.monitor) return;
+  try {
+    const payload = checkoutResultDiscordPayload(result, {
+      store: storeId,
+      label: task?.label || result.taskId,
+    });
+    await postDiscordWebhook(url, payload);
+  } catch {
+    /* ignore webhook errors */
+  }
 }
 
 function storeDisplayName(sid) {
@@ -343,6 +372,10 @@ runner.setFinishedHandler((result) => {
     at: result.at || Date.now(),
   });
   state.db.results = state.db.results.slice(0, 200);
+
+  // Per-user Discord: checkout success/fail only (not global restocks).
+  void notifyUserCheckoutDiscord(result);
+
   // Vault login_check — stamp same-day proof even without a real task row.
   if (result.loginCheck && result.ok) {
     const email = String(result.account?.email || "").toLowerCase();

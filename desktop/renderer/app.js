@@ -541,7 +541,9 @@ function renderSettings() {
       s.bandaiGlobalMonitorUrl || "https://j1ms-bandai-monitor-production.up.railway.app";
   }
   if ($("setBandaiGlobalMonToken")) $("setBandaiGlobalMonToken").value = s.bandaiGlobalMonitorToken || "";
-  if ($("setDiscordWebhook")) $("setDiscordWebhook").value = s.discordMonitorWebhook || "";
+  if ($("setDiscordWebhook")) {
+    $("setDiscordWebhook").value = s.discordCheckoutWebhook || s.discordMonitorWebhook || "";
+  }
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
@@ -1237,7 +1239,7 @@ $("btnSaveSettings").onclick = async () => {
       bandaiGlobalMonitorEnabled: $("setBandaiGlobalMon")?.checked !== false,
       bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
       bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
-      discordMonitorWebhook: $("setDiscordWebhook")?.value?.trim() || "",
+      discordCheckoutWebhook: $("setDiscordWebhook")?.value?.trim() || "",
     }),
   );
   appendLog("Settings saved", "muted");

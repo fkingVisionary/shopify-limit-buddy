@@ -27,8 +27,11 @@ Dockerfile = `monitor-host/Dockerfile` (see `railway.toml`).
 - `GET /hits` — buffer of in-stock events (auth)
 - `GET /events` — SSE `stock_changed` stream (auth)
 
-## Discord
+## Discord (operator only)
 
-Set `DISCORD_WEBHOOK_URL` on the Railway service to an incoming webhook. Each in-stock
-`stock_changed` posts an embed (SKU + PDP link). Desktop can also ping via
-Settings → Discord webhook while subscribed.
+Set Railway `DISCORD_WEBHOOK_URL` to the **operator** restock channel webhook.
+This is not user-configurable from Desktop — stops the shared poller being piped
+into third-party groups.
+
+Per-user Discord webhooks live in Desktop Settings and only fire for that user's
+checkout success/fail.

@@ -64,8 +64,11 @@ const DEFAULT_SETTINGS = {
   bandaiGlobalMonitorEnabled: true,
   bandaiGlobalMonitorUrl: "https://j1ms-bandai-monitor-production.up.railway.app",
   bandaiGlobalMonitorToken: "",
-  /** Discord incoming webhook for restock pings (Desktop + optional Railway). */
-  discordMonitorWebhook: "",
+  /**
+   * Per-user Discord webhook for checkout success/fail only.
+   * Global restock pings are operator-only on the Railway monitor host.
+   */
+  discordCheckoutWebhook: "",
 };
 
 const DEFAULT_DB = {

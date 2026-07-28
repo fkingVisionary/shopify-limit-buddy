@@ -1,8 +1,8 @@
 // Desktop → Railway Bandai global monitor SSE subscriber.
 // Lifecycle: start with engine, stop with engine. Matches local watch tasks.
+// Restock Discord is operator-only on Railway — never fan out to user webhooks.
 
 const { EventEmitter } = require("node:events");
-const { postDiscordWebhook, bandaiRestockDiscordPayload } = require("./discord-webhook.cjs");
 const {
   shouldCheckoutOnMonitorHit,
   taskForMonitorCheckout,
@@ -83,27 +83,11 @@ function createBandaiGlobalMonitorClient({
     reconnectTimer = null;
   }
 
-  async function notifyDiscord(hit) {
-    const s = settings();
-    const url = s.discordMonitorWebhook || s.discordWebhookUrl || "";
-    if (!url) return { ok: false, skipped: true };
-    const payload = bandaiRestockDiscordPayload(hit, {
-      area: s.bandaiMonitorArea || "au",
-      source: "railway-global",
-    });
-    return postDiscordWebhook(url, payload);
-  }
-
   async function handleHit(hit) {
     if (!hit?.productId) return;
     hits += 1;
     bus.emit("hit", hit);
     emitLog?.(`Global monitor hit ${hit.productId} (${hit.reason || "restock"})`);
-    try {
-      await notifyDiscord(hit);
-    } catch {
-      /* ignore */
-    }
 
     const tasks = listGlobalWatchTasks(getTasks?.() || []);
     for (const task of tasks) {
@@ -127,7 +111,6 @@ function createBandaiGlobalMonitorClient({
   async function readSseStream(res) {
     const reader = res.body?.getReader?.();
     if (!reader) {
-      // Node fetch without getReader — consume as text chunks via async iterator if present
       const text = await res.text();
       for (const block of String(text).split("\n\n")) {
         parseSseBlock(block);

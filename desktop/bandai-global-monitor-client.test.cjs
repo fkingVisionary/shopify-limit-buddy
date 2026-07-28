@@ -7,7 +7,6 @@ const {
   parseWatch,
   eventMatchesWatch,
 } = require("./bandai-global-monitor-client.cjs");
-const { bandaiRestockDiscordPayload } = require("./discord-webhook.cjs");
 
 test("parseWatch extracts SKU from PDP URL", () => {
   const w = parseWatch({ pdpUrl: "https://p-bandai.com/au/item/N2890904001" });
@@ -54,7 +53,6 @@ test("client inject hit matches watch and enqueues checkout", async () => {
     getSettings: () => ({
       bandaiGlobalMonitorEnabled: true,
       bandaiGlobalMonitorUrl: "https://example.test",
-      discordMonitorWebhook: "",
     }),
     getTasks: () => [
       {
@@ -85,11 +83,16 @@ test("client inject hit matches watch and enqueues checkout", async () => {
   assert.equal(enqueued[0].bandaiAreaItemNo, "NAI0859145AU");
 });
 
-test("discord embed includes sku link", () => {
-  const p = bandaiRestockDiscordPayload(
-    { productId: "N2890904001", title: "Set", reason: "restock", areaItemNo: "NAI0859145AU" },
-    { area: "au" },
+test("checkout result discord embed", () => {
+  const { checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
+  const ok = checkoutResultDiscordPayload(
+    { ok: true, orderNumber: "ABC", checkoutStage: "complete", account: { email: "a@b.com" } },
+    { store: "bandai", label: "lane1" },
   );
-  assert.match(p.embeds[0].url, /N2890904001/);
-  assert.equal(p.embeds[0].fields[0].value, "N2890904001");
+  assert.match(ok.embeds[0].title, /OK/);
+  const fail = checkoutResultDiscordPayload(
+    { ok: false, failedStep: "login", error: "login 401" },
+    { store: "bandai" },
+  );
+  assert.match(fail.embeds[0].title, /failed/);
 });

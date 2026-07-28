@@ -627,9 +627,9 @@
         <input id="setBandaiGlobalMonUrl" placeholder="https://j1ms-bandai-monitor-production.up.railway.app" />
         <label>Monitor token (Bearer)</label>
         <input id="setBandaiGlobalMonToken" placeholder="MONITOR_TOKEN from Railway" autocomplete="off" />
-        <label>Discord webhook (restock pings)</label>
+        <label>Discord webhook (your checkouts)</label>
         <input id="setDiscordWebhook" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-        <p class="hint">Optional. Also set <code>DISCORD_WEBHOOK_URL</code> on the Railway monitor service to ping from the host itself.</p>
+        <p class="hint">Pings <strong>successful / failed checkouts</strong> from your tasks only. Global restock alerts go to the operator channel on Railway — not this URL.</p>
         <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
         <div class="row">
           <button type="button" id="btnSaveSettings">Save settings</button>
