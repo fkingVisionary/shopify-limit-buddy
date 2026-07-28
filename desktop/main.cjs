@@ -42,6 +42,18 @@ const {
   contextFromMonitorHit,
   contextFromQuickTask,
 } = require("./quick-task.cjs");
+const {
+  PROTOCOL: QT_PROTOCOL,
+  BRIDGE_PORT: QT_BRIDGE_PORT,
+  parseQuickTaskDeepLink,
+} = require("./deep-link.cjs");
+const { createQuickTaskBridge } = require("./quick-task-bridge.cjs");
+
+// Single instance so Discord → localhost / j1ms:// lands on the running app.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+}
 
 let win = null;
 let state = store.loadAll();
@@ -50,6 +62,9 @@ state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTa
 
 /** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
 let dropSchedule = null;
+
+/** Pending deep-link QT if app was cold-started from Discord. */
+let pendingQuickTaskUrl = null;
 
 const harvest = createHarvestPool({
   sidecar,
@@ -383,6 +398,7 @@ function snapshot() {
     bandaiGlobalMonitor: bandaiGlobalMonitor.snapshot(),
     smartActions: smartActions.snapshot(),
     monitorFeed: bandaiGlobalMonitor.getFeed?.() || bandaiGlobalMonitor.snapshot().feed || [],
+    quickTaskBridge: typeof quickTaskBridge !== "undefined" ? quickTaskBridge.snapshot() : null,
     dropSchedule: schedule,
     dropReady: dropReadySnapshot(),
   };
@@ -1584,11 +1600,11 @@ ipcMain.handle("desktop:monitor-feed-clear", () => {
 });
 
 /**
- * Quick Task from pasted SKU/URL or a monitor feed hit.
+ * Quick Task from pasted SKU/URL, monitor feed hit, or Discord deep-link.
  * Creates a task from Settings → Quick Task preset, optionally starts it,
  * and fires Smart Actions with trigger=quicktask.
  */
-ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
+async function runQuickTaskPayload(payload = {}) {
   const preset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
   let target;
   if (payload.hit && payload.hit.productId) {
@@ -1602,6 +1618,9 @@ ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
     return { ok: false, error: target.error || "Invalid product", snapshot: snapshot() };
   }
   if (payload.title) target.title = payload.title;
+  if (payload.hit?.areaItemNo && !target.areaItemNo) {
+    target.areaItemNo = payload.hit.areaItemNo;
+  }
 
   const built = buildQuickTaskDraft(preset, target, {
     label: payload.label || target.title || target.productId,
@@ -1622,6 +1641,14 @@ ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
     payload.start != null ? payload.start !== false : built.startAfterCreate !== false;
   let enqueue = null;
   if (start) {
+    if (!sidecar.status().running) {
+      return {
+        ok: false,
+        error: "Start the engine first (app must stay open)",
+        task: row,
+        snapshot: snapshot(),
+      };
+    }
     enqueue = enqueueTaskIds([row.id], {});
     if (!enqueue.ok) {
       return {
@@ -1639,13 +1666,20 @@ ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
   });
   void smartActions.handleQuickTaskContext(ctx);
 
+  const src = payload.source ? ` (${payload.source})` : "";
   send({
     type: "job",
     phase: "log",
     level: "ok",
-    message: `Quick Task ${start ? "started" : "created"} — ${row.label || row.id}`,
+    message: `Quick Task ${start ? "started" : "created"}${src} — ${row.label || row.id}`,
   });
   send({ type: "snapshot", data: snapshot() });
+  try {
+    win?.show();
+    win?.focus();
+  } catch {
+    /* ignore */
+  }
   return {
     ok: true,
     task: row,
@@ -1653,7 +1687,30 @@ ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => {
     enqueued: enqueue?.enqueued || 0,
     snapshot: snapshot(),
   };
+}
+
+async function handleQuickTaskDeepLink(rawUrl) {
+  const parsed = parseQuickTaskDeepLink(rawUrl);
+  if (!parsed.ok) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "err",
+      message: `Quick Task link failed: ${parsed.error}`,
+    });
+    return { ok: false, error: parsed.error };
+  }
+  return runQuickTaskPayload({ ...parsed.payload, source: parsed.payload.source || "discord" });
+}
+
+const quickTaskBridge = createQuickTaskBridge({
+  onQuickTask: (payload) => runQuickTaskPayload({ ...payload, source: "discord" }),
+  port: QT_BRIDGE_PORT,
+  log: (message) =>
+    send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
 });
+
+ipcMain.handle("desktop:quick-task", async (_e, payload = {}) => runQuickTaskPayload(payload));
 
 ipcMain.handle("desktop:smart-actions-list", () => ({
   ok: true,
@@ -1941,7 +1998,40 @@ app.whenReady().then(async () => {
     maxConcurrent: state.settings.maxConcurrent,
     ...runnerHarvestHooks(),
   });
+
+  // Discord LINK buttons → http://127.0.0.1:17865/quicktask (app must stay open).
+  try {
+    await quickTaskBridge.start();
+  } catch (e) {
+    console.warn("[qt-bridge]", e?.message || e);
+  }
+  try {
+    if (process.defaultApp) {
+      if (process.argv.length >= 2) {
+        app.setAsDefaultProtocolClient(QT_PROTOCOL, process.execPath, [
+          path.resolve(process.argv[1]),
+        ]);
+      }
+    } else {
+      app.setAsDefaultProtocolClient(QT_PROTOCOL);
+    }
+  } catch (e) {
+    console.warn("[qt-protocol]", e?.message || e);
+  }
+
   createWindow();
+
+  // Cold-start from j1ms:// or argv URL
+  const argvUrl = [...process.argv, pendingQuickTaskUrl].find(
+    (a) => typeof a === "string" && (/^j1ms:/i.test(a) || /\/quicktask\?/i.test(a)),
+  );
+  if (argvUrl) {
+    setTimeout(() => {
+      void handleQuickTaskDeepLink(argvUrl);
+    }, 800);
+  }
+  pendingQuickTaskUrl = null;
+
   if (process.env.DESKTOP_E2E_AUTORUN === "1") {
     try {
       await e2eAutorun();
@@ -1952,12 +2042,36 @@ app.whenReady().then(async () => {
   }
 });
 
+if (gotLock) {
+  app.on("second-instance", (_event, argv) => {
+    const url = (argv || []).find(
+      (a) => typeof a === "string" && (/^j1ms:/i.test(a) || /\/quicktask\?/i.test(a)),
+    );
+    if (win) {
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    }
+    if (url) void handleQuickTaskDeepLink(url);
+  });
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  if (app.isReady()) void handleQuickTaskDeepLink(url);
+  else pendingQuickTaskUrl = url;
+});
+
 app.on("window-all-closed", async () => {
   harvest.stop();
   bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await quickTaskBridge.stop();
   } catch {
     /* ignore */
   }
@@ -1972,6 +2086,11 @@ app.on("before-quit", async () => {
   bandaiHarvest.stop();
   try {
     await bandaiHarvest.clear();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await quickTaskBridge.stop();
   } catch {
     /* ignore */
   }

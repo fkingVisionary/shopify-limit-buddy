@@ -1670,6 +1670,8 @@ function renderMonitorFeed() {
     if (mon.url) bits.push(mon.url.replace(/^https?:\/\//, ""));
     bits.push(`${mon.hits ?? 0} hits`);
     bits.push(`${mon.watchTasks ?? 0} watch task(s)`);
+    const bridge = state?.quickTaskBridge;
+    if (bridge?.running) bits.push(`QT bridge :${bridge.port}`);
     if (mon.lastError) bits.push(`err: ${mon.lastError}`);
     line.textContent = `Global monitor — ${bits.join(" · ")}`;
   }

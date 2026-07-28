@@ -225,7 +225,7 @@
       <div class="split">
         <div>
           <h2>Monitor Feed</h2>
-          <p class="hint">Live Bandai global SSE hits while the engine is subscribed. Quick Task uses Settings → Quick Task preset. Restock Discord stays on Railway (operator) — not your checkout webhook.</p>
+          <p class="hint">Live Bandai global SSE hits while the engine is subscribed. Quick Task uses Settings → Quick Task preset. Discord restock pings also have a <strong>Quick Task</strong> button → localhost bridge (desktop must be open on this PC). Restock Discord stays on Railway (operator) — not your checkout webhook.</p>
           <p id="feedStatusLine" class="harvest-bank-strip" aria-live="polite">Global monitor —</p>
           <div class="feed-qt-row">
             <input id="qtInput" placeholder="Paste Bandai SKU or PDP URL…" autocomplete="off" />
@@ -239,7 +239,8 @@
           <ol class="hint" style="padding-left:18px;line-height:1.6">
             <li>Start engine with Bandai global monitor enabled (Settings).</li>
             <li>Set Quick Task preset (profile + proxy) before using row actions.</li>
-            <li><strong>Quick Task</strong> creates/starts from the preset.</li>
+            <li><strong>Quick Task</strong> on a feed row (or Discord ping) creates/starts from the preset.</li>
+            <li>Discord button opens <code>http://127.0.0.1:17865/quicktask</code> — only works with this app open.</li>
             <li><strong>Use in Smart Action</strong> opens the creator with SKU/title filters prefilled.</li>
           </ol>
           <p class="field-hint">Existing Bandai → Monitor → Global watch tasks still checkout on match. Smart Actions only orchestrate Create/Start tasks.</p>
