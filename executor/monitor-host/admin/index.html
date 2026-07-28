@@ -418,13 +418,15 @@
       function renderMonitor(st, cfg) {
         const m = st.monitor || {};
         const pool = m.pool || {};
+        const staleSec =
+          m.staleMs != null ? Math.round(Number(m.staleMs) / 1000) + "s" : "—";
         const cells = [
           ["Polls", m.polls ?? "—"],
           ["Products", m.products ?? "—"],
           ["In stock", m.inStock ?? "—"],
           ["ISP / DC", `${pool.isp ?? 0} / ${pool.dc ?? 0}`],
           ["Interval", (m.intervalMs ?? "—") + "ms"],
-          ["SSE", st.sseClients ?? 0],
+          ["Last poll", staleSec],
         ];
         $("stats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
         const running = Boolean(m.running);

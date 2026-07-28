@@ -181,54 +181,72 @@ export function createBandaiStockMonitor(opts = {}) {
   let loopPromise = null;
   let polls = 0;
   let lastError = null;
+  let lastPollAt = null;
   let sticky = null; // { url, tier, jar, dispatcher, used }
+  /** Serialize proxy sessions so force-poll can't race the loop mid-request. */
+  let proxyGate = Promise.resolve();
 
   async function withProxyCtx(fn) {
-    if (!sticky || sticky.used >= stickyPolls) {
-      await closeSticky();
-      const pick = pool.next();
-      if (!pick.ok) {
-        throw new Error(pick.error || "monitor_proxy_pool_exhausted");
-      }
-      const jar = createJar();
-      const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
-      sticky = {
-        url: pick.url,
-        tier: pick.tier,
-        jar,
-        dispatcher,
-        used: 0,
-        ctx: { jar, dispatcher },
-      };
-      // Warm once per sticky window — cheap guest HTML for cookies.
-      try {
-        const res = await request(
-          `${base}/`,
-          { method: "GET", headers: navHeaders(area) },
-          sticky.ctx,
-        );
-        sticky.jar.ingest?.(res.headers);
-        if (res.status >= 400) {
+    const prev = proxyGate;
+    let release;
+    proxyGate = new Promise((r) => {
+      release = r;
+    });
+    await prev;
+    try {
+      if (!sticky || sticky.used >= stickyPolls) {
+        await closeSticky();
+        const pick = pool.next();
+        if (!pick.ok) {
+          throw new Error(pick.error || "monitor_proxy_pool_exhausted");
+        }
+        const jar = createJar();
+        const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
+        sticky = {
+          url: pick.url,
+          tier: pick.tier,
+          jar,
+          dispatcher,
+          used: 0,
+          ctx: { jar, dispatcher },
+        };
+        // Warm once per sticky window — cheap guest HTML for cookies.
+        try {
+          const res = await request(
+            `${base}/`,
+            {
+              method: "GET",
+              headers: navHeaders(area),
+              timeoutMs: 15_000,
+              signal: fn._signal,
+            },
+            sticky.ctx,
+          );
+          sticky.jar.ingest?.(res.headers);
+          if (res.status >= 400) {
+            pool.markFail(sticky.url);
+            await closeSticky();
+            throw new Error(`warm_${res.status}`);
+          }
+          pool.markOk(sticky.url);
+        } catch (e) {
           pool.markFail(sticky.url);
           await closeSticky();
-          throw new Error(`warm_${res.status}`);
+          throw e;
         }
+      }
+      sticky.used += 1;
+      try {
+        const out = await fn(sticky.ctx, sticky);
         pool.markOk(sticky.url);
+        return out;
       } catch (e) {
         pool.markFail(sticky.url);
         await closeSticky();
         throw e;
       }
-    }
-    sticky.used += 1;
-    try {
-      const out = await fn(sticky.ctx, sticky);
-      pool.markOk(sticky.url);
-      return out;
-    } catch (e) {
-      pool.markFail(sticky.url);
-      await closeSticky();
-      throw e;
+    } finally {
+      release?.();
     }
   }
 
@@ -242,11 +260,16 @@ export function createBandaiStockMonitor(opts = {}) {
     sticky = null;
   }
 
-  async function apiGet(ctx, path, referer) {
+  async function apiGet(ctx, path, referer, signal) {
     const url = path.startsWith("http") ? path : `${ORIGIN}${path}`;
     const res = await request(
       url,
-      { method: "GET", headers: apiHeaders(area, referer || `${base}/`) },
+      {
+        method: "GET",
+        headers: apiHeaders(area, referer || `${base}/`),
+        timeoutMs: 20_000,
+        signal,
+      },
       ctx,
     );
     ctx.jar?.ingest?.(res.headers);
@@ -264,18 +287,24 @@ export function createBandaiStockMonitor(opts = {}) {
     return { status: res.status, json };
   }
 
-  async function fetchCatalogOnce() {
-    return withProxyCtx(async (ctx, meta) => {
+  async function fetchCatalogOnce(signal) {
+    const run = async (ctx, meta) => {
       /** @type {Map<string, object>} */
       const next = new Map();
       const sources = [];
 
       for (const kw of keywords) {
+        if (signal?.aborted) {
+          const err = new Error("poll_aborted");
+          err.code = "POLL_TIMEOUT";
+          throw err;
+        }
         const q = encodeURIComponent(kw);
         const { json } = await apiGet(
           ctx,
           `/api/search?keyword=${q}&offset=0&limit=${searchLimit}`,
           `${base}/search?keyword=${q}`,
+          signal,
         );
         const products =
           json?.productResults?.products || json?.products || json?.items || [];
@@ -293,7 +322,7 @@ export function createBandaiStockMonitor(opts = {}) {
 
       // Trends are keywords only — useful log signal, not product cards.
       try {
-        const { json } = await apiGet(ctx, `/api/search/topSearched`, `${base}/`);
+        const { json } = await apiGet(ctx, `/api/search/topSearched`, `${base}/`, signal);
         const trends = Array.isArray(json)
           ? json
           : json?.keywords || json?.topSearched || json?.data || [];
@@ -312,17 +341,48 @@ export function createBandaiStockMonitor(opts = {}) {
         proxyTier: meta.tier,
         proxyHost: String(meta.url || "").replace(/^https?:\/\//, "").split("@").pop()?.split(":")[0],
       };
-    });
+    };
+    run._signal = signal;
+    return withProxyCtx(run);
   }
 
   async function pollOnce() {
     const t0 = Date.now();
-    const { catalog, sources, proxyTier, proxyHost } = await fetchCatalogOnce();
+    const pollBudgetMs = Math.max(
+      30_000,
+      Number(process.env.BANDAI_MONITOR_POLL_TIMEOUT_MS) || 90_000,
+    );
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), pollBudgetMs);
+    let catalog;
+    let sources;
+    let proxyTier;
+    let proxyHost;
+    try {
+      const raced = await fetchCatalogOnce(ac.signal);
+      catalog = raced.catalog;
+      sources = raced.sources;
+      proxyTier = raced.proxyTier;
+      proxyHost = raced.proxyHost;
+    } catch (e) {
+      // Drop sticky session so the next attempt doesn't reuse a dead tunnel.
+      if (sticky?.url) pool.markFail(sticky.url);
+      await closeSticky();
+      if (ac.signal.aborted || e?.code === "POLL_TIMEOUT" || e?.name === "AbortError") {
+        const err = new Error(`poll_timeout_${pollBudgetMs}ms`);
+        err.code = "POLL_TIMEOUT";
+        throw err;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+    }
     const prev = snapshot;
     const first = prev.size === 0;
     const events = first ? [] : diffCatalog(prev, catalog);
     snapshot = catalog;
     polls += 1;
+    lastPollAt = Date.now();
     lastError = null;
 
     const summary = {
@@ -427,6 +487,8 @@ export function createBandaiStockMonitor(opts = {}) {
         products: snapshot.size,
         inStock: [...snapshot.values()].filter((r) => r.inStock).length,
         lastError,
+        lastPollAt,
+        staleMs: lastPollAt ? Date.now() - lastPollAt : null,
         pool: pool.stats(),
       };
     },
