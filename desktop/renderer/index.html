@@ -64,6 +64,9 @@
           <input type="hidden" id="taskId" />
           <label>Label</label>
           <input id="taskLabel" placeholder="Drop SKU name" />
+          <label>Task group <span class="optional">Smart Actions target</span></label>
+          <input id="taskGroup" placeholder="e.g. Drop A / Harvest" list="taskGroupList" autocomplete="off" />
+          <datalist id="taskGroupList"></datalist>
           <label>Store</label>
           <select id="taskStore">
             <option value="kmart">Kmart AU</option>
@@ -255,7 +258,7 @@
           <div class="sa-head">
             <div>
               <h2>Smart Actions</h2>
-              <p class="hint">Cybersole-style: 1 trigger → filters (AND) → ordered actions. Engine runs in the main process while the app stays open.</p>
+              <p class="hint">Cybersole-style builder: Schedule / Monitor / Quicktask → filters → Wait, Harvester, Create/Update/Start/Stop by task group. Runs in the main process while the app stays open.</p>
             </div>
             <button type="button" id="btnSaNew">New Action</button>
           </div>
@@ -284,7 +287,26 @@
           <select id="saTrigger">
             <option value="product_monitor">Product Monitor (Bandai SSE)</option>
             <option value="quicktask">Quicktask</option>
+            <option value="schedule">Schedule (timer)</option>
           </select>
+          <div id="saScheduleOpts" hidden>
+            <div class="grid2">
+              <div>
+                <label>Time (HH:MM)</label>
+                <input id="saScheduleAt" placeholder="07:00" />
+              </div>
+              <div>
+                <label>Repeat</label>
+                <select id="saScheduleRepeat">
+                  <option value="daily">Daily</option>
+                  <option value="once">Once</option>
+                </select>
+              </div>
+            </div>
+            <label>Timezone</label>
+            <input id="saScheduleTz" value="Australia/Sydney" />
+            <p class="field-hint">Fires while Desktop is open (checks every ~15s). Pair with Wait + Start Harvester / Start Tasks by group.</p>
+          </div>
 
           <h3 class="sa-section">Filters <span class="optional">AND · empty = always</span></h3>
           <p class="field-hint">Keyword syntax: comma AND, <code>a/b</code> OR, <code>-neg</code> negative.</p>
@@ -293,9 +315,14 @@
 
           <h3 class="sa-section">Actions <span class="optional">top → bottom</span></h3>
           <div id="saActions"></div>
-          <div class="row" style="margin-top:8px">
+          <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
             <button type="button" class="secondary" id="btnSaAddCreate">+ Create Tasks</button>
+            <button type="button" class="secondary" id="btnSaAddUpdate">+ Update Tasks</button>
             <button type="button" class="secondary" id="btnSaAddStart">+ Start Tasks</button>
+            <button type="button" class="secondary" id="btnSaAddStop">+ Stop Tasks</button>
+            <button type="button" class="secondary" id="btnSaAddWait">+ Wait</button>
+            <button type="button" class="secondary" id="btnSaAddHarvestStart">+ Start Harvester</button>
+            <button type="button" class="secondary" id="btnSaAddHarvestStop">+ Stop Harvester</button>
             <button type="button" class="secondary" id="btnSaAddNotify">+ Notify Discord</button>
           </div>
 

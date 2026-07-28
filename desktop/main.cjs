@@ -99,6 +99,7 @@ const smartActions = createSmartActionsEngine({
     send({ type: "smartActions", data: smartActions.snapshot() });
   },
   getSettings: () => state.settings,
+  getTasks: () => state.db.tasks || [],
   idFn: (prefix) => store.id(prefix || "sa"),
   upsertTask: (task) => upsertTaskRow(task),
   startTasks: (ids, opts) => enqueueTaskIds(ids, opts || {}),
@@ -118,12 +119,64 @@ const smartActions = createSmartActionsEngine({
     }
     persistDb();
   },
+  patchTasks: (ids, patch) => {
+    const set = new Set(ids || []);
+    let updated = 0;
+    for (const t of state.db.tasks || []) {
+      if (!set.has(t.id)) continue;
+      upsertTaskRow({ ...t, ...patch, id: t.id });
+      updated += 1;
+    }
+    return { ok: true, updated };
+  },
+  startHarvester: async (opts = {}) => {
+    if (!sidecar.status().running) {
+      return { ok: false, error: "Start the engine first" };
+    }
+    const gid = opts.proxyGroupId || bandaiHarvest.snapshot().config.proxyGroupId;
+    if (gid) bandaiHarvest.configure({ proxyGroupId: gid });
+    if (opts.desired != null) bandaiHarvest.configure({ desired: opts.desired });
+    const group = (state.db.proxyGroups || []).find((g) => g.id === gid);
+    if (!group?.entries?.length) {
+      return { ok: false, error: "Select a Proxies group on Harvest → Bandai first" };
+    }
+    bandaiHarvest.start({
+      proxyGroupId: gid,
+      desired: opts.desired,
+      getEntries: bandaiHarvestEntries,
+    });
+    bandaiHarvestAutoArm.markManualStart();
+    return { ok: true };
+  },
+  stopHarvester: () => {
+    bandaiHarvestAutoArm.markManualStop();
+    bandaiHarvest.stop();
+    return { ok: true };
+  },
   notifyDiscord: async (payload) => {
     const url = state.settings.discordCheckoutWebhook || "";
     return postDiscordWebhook(url, payload);
   },
   emit: (evt) => send(evt),
 });
+
+/** Smart Action schedule trigger — fires at HH:MM in trigger tz while app is open. */
+let smartActionScheduleTimer = null;
+function startSmartActionScheduleTicker() {
+  if (smartActionScheduleTimer) return;
+  smartActionScheduleTimer = setInterval(() => {
+    void smartActions.tickSchedule(Date.now()).then((results) => {
+      if (Array.isArray(results) && results.some((r) => r && !r.skipped)) {
+        send({ type: "snapshot", data: snapshot() });
+      }
+    });
+  }, 15_000);
+}
+function stopSmartActionScheduleTicker() {
+  if (smartActionScheduleTimer) clearInterval(smartActionScheduleTimer);
+  smartActionScheduleTimer = null;
+}
+startSmartActionScheduleTicker();
 
 /** Railway global monitor SSE — subscribed while engine is running. */
 const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
@@ -956,6 +1009,7 @@ function upsertTaskRow(task) {
     id: task.id || store.id("task"),
     store: storeId,
     label: String(task.label || "").slice(0, 120),
+    taskGroup: String(task.taskGroup || "").trim().slice(0, 80),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
     quantity: Math.max(1, Math.min(50, Number(task.quantity) || 1)), // how many parallel jobs
@@ -2077,6 +2131,7 @@ app.on("open-url", (event, url) => {
 });
 
 app.on("window-all-closed", async () => {
+  stopSmartActionScheduleTicker();
   harvest.stop();
   bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
@@ -2096,6 +2151,7 @@ app.on("window-all-closed", async () => {
 });
 
 app.on("before-quit", async () => {
+  stopSmartActionScheduleTicker();
   harvest.stop();
   bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
