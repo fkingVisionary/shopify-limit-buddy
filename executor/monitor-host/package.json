@@ -1,0 +1,19 @@
+{
+  "name": "j1ms-bandai-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Always-on Bandai AU global stock monitor (Railway). No checkout / no Playwright.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "undici": "^6.21.1"
+  }
+}

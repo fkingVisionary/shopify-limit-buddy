@@ -129,7 +129,7 @@
                 <option value="local">Task-local — my proxies + interval</option>
                 <option value="global">Global — filter shared monitor events</option>
               </select>
-              <p class="field-hint">Global does <strong>not</strong> add your keywords to the shared poll — it only matches SKU/keywords against what the global monitor already captured. Local uses this task’s proxy group and interval.</p>
+              <p class="field-hint">Global filters the always-on Railway poller (Settings → Bandai global monitor). Local uses this task’s proxy group and interval.</p>
               <label>Watch SKU / product code <span class="optional">(optional)</span></label>
               <input id="taskBandaiWatchSku" placeholder="N2903432003 or NAI…" autocomplete="off" />
               <label>Watch keywords <span class="optional">(optional if SKU set)</span></label>
@@ -620,6 +620,16 @@
         <label>Max concurrent checkouts</label>
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
+        <h3 style="margin-top:1.25rem">Bandai global monitor (Railway)</h3>
+        <p class="hint">While the engine is on, Desktop stays subscribed to the always-on Railway poller. Create Bandai → Monitor → <strong>Global</strong> tasks with watch SKU; Checkout on restock fires ATC without running a local poll loop.</p>
+        <label class="check"><input id="setBandaiGlobalMon" type="checkbox" checked /> Subscribe when engine starts</label>
+        <label>Monitor URL</label>
+        <input id="setBandaiGlobalMonUrl" placeholder="https://j1ms-bandai-monitor-production.up.railway.app" />
+        <label>Monitor token (Bearer)</label>
+        <input id="setBandaiGlobalMonToken" placeholder="MONITOR_TOKEN from Railway" autocomplete="off" />
+        <label>Discord webhook (your checkouts)</label>
+        <input id="setDiscordWebhook" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        <p class="hint">Pings <strong>successful / failed checkouts</strong> from your tasks only. Global restock alerts go to the operator channel on Railway — not this URL.</p>
         <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
         <div class="row">
           <button type="button" id="btnSaveSettings">Save settings</button>

@@ -5,7 +5,7 @@
 // Has zero knowledge of tasks / profiles / payment.
 
 import { EventEmitter } from "node:events";
-import { createJar, makeDispatcher, request, UA } from "../http.js";
+import { createJar, makeDispatcher, request, UA } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 
 const ORIGIN = "https://p-bandai.com";
@@ -62,14 +62,38 @@ export function normalizeCatalogCard(p) {
   const areaItemNo =
     (areaItemNos[0] && String(areaItemNos[0])) ||
     (p.areaItemNo != null ? String(p.areaItemNo).trim() : null) ||
+    (p.areaProductNo != null ? String(p.areaProductNo).trim() : null) ||
     null;
+
+  let title = null;
+  const pn = p.productName || p.name || null;
+  if (typeof pn === "string") title = pn;
+  else if (pn && typeof pn === "object") title = pn.en || pn.fr || Object.values(pn)[0] || null;
+
+  const imgs = Array.isArray(p.productImages) ? p.productImages : [];
+  const fileUrl = imgs.find((i) => i?.fileUrl)?.fileUrl || p.imageUrl || p.thumbnailUrl || null;
+  const imageUrl = fileUrl
+    ? String(fileUrl).startsWith("http")
+      ? String(fileUrl)
+      : `https://p-bandai.com/${String(fileUrl).replace(/^\//, "")}`
+    : null;
+
+  const priceAmt = p.fixedListPrice?.amount ?? p.listPrice?.amount ?? p.price?.amount ?? null;
+  const priceCur = p.fixedListPrice?.currency || p.listPrice?.currency || p.price?.currency || "AUD";
+  const price =
+    priceAmt != null && Number.isFinite(Number(priceAmt))
+      ? `${priceCur} ${Number(priceAmt).toFixed(Number(priceAmt) % 1 ? 2 : 0)}`
+      : null;
+
   return {
     productId,
     inStock,
     purchaseAvailable,
     saleStatus: p.saleStatus || null,
     productType: p.productType || null,
-    title: p.productName || p.name || null,
+    title: title ? String(title) : null,
+    imageUrl,
+    price,
     flags,
     ...(areaItemNo ? { areaItemNo } : {}),
     ...(areaItemNos.length ? { areaItemNos } : {}),
@@ -317,14 +341,26 @@ export function createBandaiStockMonitor(opts = {}) {
     bus.emit("poll", summary);
 
     for (const ev of events) {
-      // Hot-path event — keep payload small.
+      // Hot-path — include search-card fields only (no extra HTTP).
+      const m = ev.meta || {};
       bus.emit("stock_changed", {
         productId: ev.productId,
         inStock: ev.inStock,
         timestamp: ev.timestamp,
         reason: ev.reason,
         area,
-        title: ev.meta?.title || null,
+        title: m.title || null,
+        imageUrl: m.imageUrl || null,
+        price: m.price || null,
+        productType: m.productType || null,
+        areaItemNo: ev.areaItemNo || m.areaItemNo || null,
+        meta: {
+          title: m.title || null,
+          imageUrl: m.imageUrl || null,
+          price: m.price || null,
+          productType: m.productType || null,
+          areaItemNo: m.areaItemNo || null,
+        },
       });
     }
     return { summary, events };
@@ -393,6 +429,22 @@ export function createBandaiStockMonitor(opts = {}) {
         lastError,
         pool: pool.stats(),
       };
+    },
+    /** Current search-card snapshot (for Discord test / debug). */
+    getCatalog() {
+      return new Map(snapshot);
+    },
+    getProduct(productId) {
+      const id = String(productId || "").trim();
+      if (!id) return null;
+      if (snapshot.has(id)) return snapshot.get(id);
+      const upper = id.toUpperCase();
+      for (const [pid, row] of snapshot) {
+        if (String(pid).toUpperCase() === upper) return row;
+        if (String(row?.areaItemNo || "").toUpperCase() === upper) return row;
+        if ((row?.areaItemNos || []).some((x) => String(x).toUpperCase() === upper)) return row;
+      }
+      return null;
     },
   };
 }

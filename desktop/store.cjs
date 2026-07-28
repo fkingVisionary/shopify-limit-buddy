@@ -60,6 +60,15 @@ const DEFAULT_SETTINGS = {
   placeOrderDefault: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
+  /** Always-on Bandai Railway global monitor (SSE) while engine is running. */
+  bandaiGlobalMonitorEnabled: true,
+  bandaiGlobalMonitorUrl: "https://j1ms-bandai-monitor-production.up.railway.app",
+  bandaiGlobalMonitorToken: "",
+  /**
+   * Per-user Discord webhook for checkout success/fail only.
+   * Global restock pings are operator-only on the Railway monitor host.
+   */
+  discordCheckoutWebhook: "",
 };
 
 const DEFAULT_DB = {

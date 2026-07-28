@@ -31,6 +31,8 @@ const {
   planDropMode,
   formatLaneAfterAction,
 } = require("./bandai-drop-ops.cjs");
+const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
+const { postDiscordWebhook, checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
 
 let win = null;
 let state = store.loadAll();
@@ -60,6 +62,15 @@ const bandaiHarvestAutoArm = createBandaiHarvestAutoArm({
   idFn: () => store.id("run"),
   log: (message) =>
     send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
+});
+
+/** Railway global monitor SSE — subscribed while engine is running. */
+const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
+  getSettings: () => state.settings,
+  getTasks: () => state.db.tasks,
+  emitLog: (message) =>
+    send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
+  onCheckoutTask: async (task) => enqueueGlobalMonitorCheckout(task),
 });
 
 function harvestEntries() {
@@ -98,6 +109,34 @@ function persistDb() {
 
 function persistSettings() {
   store.saveSettings(state.settings);
+}
+
+/**
+ * User Discord webhook — checkout success/fail only.
+ * Global restock pings stay on the operator Railway webhook.
+ */
+async function notifyUserCheckoutDiscord(result) {
+  if (!result || result.monitor === true && !result.checkout) return;
+  if (result.accountGen || result.loginCheck) return;
+  const url =
+    state.settings.discordCheckoutWebhook ||
+    state.settings.discordMonitorWebhook || // legacy key
+    state.settings.discordWebhookUrl ||
+    "";
+  if (!url) return;
+  const task = (state.db.tasks || []).find((t) => t.id === result.taskId);
+  const storeId = task?.store || result.store || "checkout";
+  // Skip pure monitor poll finishes with no checkout attempt.
+  if (String(task?.bandaiMode || "") === "monitor" && !result.checkout && result.monitor) return;
+  try {
+    const payload = checkoutResultDiscordPayload(result, {
+      store: storeId,
+      label: task?.label || result.taskId,
+    });
+    await postDiscordWebhook(url, payload);
+  } catch {
+    /* ignore webhook errors */
+  }
 }
 
 function storeDisplayName(sid) {
@@ -288,6 +327,7 @@ function snapshot() {
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
+    bandaiGlobalMonitor: bandaiGlobalMonitor.snapshot(),
     dropSchedule: schedule,
     dropReady: dropReadySnapshot(),
   };
@@ -332,6 +372,10 @@ runner.setFinishedHandler((result) => {
     at: result.at || Date.now(),
   });
   state.db.results = state.db.results.slice(0, 200);
+
+  // Per-user Discord: checkout success/fail only (not global restocks).
+  void notifyUserCheckoutDiscord(result);
+
   // Vault login_check — stamp same-day proof even without a real task row.
   if (result.loginCheck && result.ok) {
     const email = String(result.account?.email || "").toLowerCase();
@@ -512,11 +556,47 @@ ipcMain.handle("desktop:start-engine", async () => {
     ...runnerHarvestHooks(),
   });
   runner.start();
+  const mon = bandaiGlobalMonitor.start();
+  if (mon.ok && !mon.skipped) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: `Bandai global monitor subscribe → ${mon.url || state.settings.bandaiGlobalMonitorUrl}`,
+    });
+    const watchJobs = (state.db.tasks || [])
+      .filter(
+        (t) =>
+          t.enabled !== false &&
+          t.store === "bandai" &&
+          String(t.bandaiMode || "") === "monitor" &&
+          String(t.bandaiMonitorMode || "global").toLowerCase() === "global" &&
+          t.bandaiCheckoutOnHit !== false,
+      )
+      .map((t) => ({ task: t, placeOrder: t.placeOrder !== false }));
+    if (watchJobs.length) {
+      try {
+        bandaiHarvestAutoArm.ensureForJobs(watchJobs, {
+          placeOrderDefault: state.settings.placeOrderDefault !== false,
+        });
+      } catch {
+        /* best-effort */
+      }
+    }
+  } else if (mon.skipped && mon.reason === "missing_url") {
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: "Bandai global monitor skipped — set URL in Settings",
+    });
+  }
   send({ type: "snapshot", data: snapshot() });
   return { ok: true, snapshot: snapshot(), hyperConfigured: Boolean(hyper), capsolverConfigured: Boolean(capsolver) };
 });
 
 ipcMain.handle("desktop:stop-engine", async () => {
+  bandaiGlobalMonitor.stop();
   harvest.stop();
   bandaiHarvestAutoArm.markManualStop();
   bandaiHarvest.stop();
@@ -992,6 +1072,81 @@ ipcMain.handle("desktop:export-accounts", (_e, opts = {}) => {
 });
 
 ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => enqueueTaskIds(taskIds, opts));
+
+/**
+ * Fire Autocheckout from a Railway global-monitor SSE hit (task already switched to checkout).
+ */
+function enqueueGlobalMonitorCheckout(checkoutTask) {
+  if (!sidecar.status().running) {
+    return { ok: false, error: "engine not running" };
+  }
+  const task = { ...checkoutTask, bandaiMode: "checkout" };
+  const profile = (state.db.profiles || []).find((p) => p.id === task.profileId) || null;
+  const group = (state.db.proxyGroups || []).find((g) => g.id === task.proxyGroupId);
+  const entries = group?.entries || [];
+  let proxyRaw = entries[0] || null;
+
+  const resolved = resolveAccountForTask({
+    task,
+    profile,
+    accounts: state.db.accounts || [],
+  });
+  if (resolved.error) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "err",
+      taskId: task.id,
+      message: `Global monitor checkout blocked: ${resolved.error}`,
+    });
+    return { ok: false, error: resolved.error };
+  }
+  if (resolved.account) {
+    task.account = {
+      email: resolved.account.email,
+      password: resolved.account.password,
+      id: resolved.account.id,
+    };
+    task.accountAssignSource = resolved.source;
+  }
+
+  const harvestSession = bandaiHarvest.take();
+  if (harvestSession?.id) {
+    task.harvestedBridgeId = harvestSession.id;
+    task.harvestedProxy = harvestSession.proxy;
+    task.proxyOverride = harvestSession.proxy;
+    proxyRaw = harvestSession.proxy;
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      taskId: task.id,
+      message: `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"})`,
+    });
+  }
+
+  const job = {
+    task,
+    profile,
+    proxyRaw,
+    proxyEntries: proxyRaw ? [proxyRaw] : entries.filter(Boolean),
+    proxyIndex: 0,
+    placeOrder: task.placeOrder !== false,
+    accounts: state.db.accounts || [],
+    settings: state.settings,
+  };
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    taskId: task.id,
+    message: `Global restock → Autocheckout ${task.pdpUrl || task.input || task.id}`,
+  });
+  runner.enqueue([job]);
+  persistDb();
+  send({ type: "snapshot", data: snapshot() });
+  return { ok: true, enqueued: 1 };
+}
 
 /**
  * Build + enqueue jobs for task ids. Supports staggered fire for drop T0.
