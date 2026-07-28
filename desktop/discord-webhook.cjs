@@ -10,6 +10,7 @@ async function postDiscordWebhook(webhookUrl, body) {
     return { ok: false, skipped: true, error: "invalid_or_missing_webhook" };
   }
   const payload = {
+    username: body.username != null ? String(body.username).slice(0, 80) : undefined,
     content: body.content != null ? String(body.content).slice(0, 1900) : undefined,
     embeds: Array.isArray(body.embeds) ? body.embeds.slice(0, 10) : undefined,
   };

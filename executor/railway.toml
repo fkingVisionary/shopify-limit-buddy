@@ -1,23 +1,16 @@
-# Railway — deploy the checkout executor only
+# Railway project `j1ms-bandai-monitor` — always-on Bandai stock monitor.
+# Checkout executor stays on Fly.io (`executor/Dockerfile`).
 #
-# In the Railway service settings:
+# Service settings:
 #   Root Directory = executor
-#   Builder        = Dockerfile  (auto-detected via railway.toml)
-#
-# Do NOT deploy the repo root to Railway for this bot. The Lovable/TanStack
-# control plane is not a Node `dist/` app; Railpack will look for /app/dist
-# and fail with:
-#   failed to calculate checksum ... "/app/dist": not found
+#   This railway.toml selects the slim monitor image (no Playwright / Chrome).
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "monitor-host/Dockerfile"
 
 [deploy]
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
-# Railway injects PORT — do not hardcode a public target port in Networking
-# unless it matches process.env.PORT. Prefer leaving target port blank /
-# default so the edge proxies to whatever PORT the container binds.
+restartPolicyMaxRetries = 5
