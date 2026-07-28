@@ -6,33 +6,54 @@ Permanent global poller for Premium Bandai AU search/list restocks.
 ## Deploy
 
 Root Directory on the Railway service = `executor`.  
-Dockerfile = `monitor-host/Dockerfile` (see `railway.toml`).
+Dockerfile = `monitor-host/Dockerfile` (see `railway.toml` / `executor/railway.toml`).
+
+## Phone admin (Vanta Lab)
+
+Open **`/admin/`** on the Railway URL (e.g. `https://…railway.app/admin/`).
+
+Unlock with Bearer `MONITOR_TOKEN`. From your phone you can:
+
+- Edit watch **keywords / SKUs** (live, no redeploy)
+- Paste **ISP / DC** proxy lines and poll interval
+- Toggle **Discord OOS** pings
+- Force a poll, fire **test restock / test OOS** Discord embeds
+
+Runtime edits persist to `MONITOR_STATE_PATH` (default `/tmp/…`, or a Railway volume mount). Without a volume they last until the next redeploy — env vars remain the bootstrap defaults.
 
 ## Env
 
 | Var | Purpose |
 |---|---|
-| `BANDAI_MONITOR_DC_PROXIES` | Multiline unlimited DC proxies (primary) |
-| `BANDAI_MONITOR_ISP_PROXIES` | Optional AU ISP slice |
-| `BANDAI_MONITOR_ISP_RATIO` | Default `0.8` ISP share when both set — lower for drip hunting |
+| `BANDAI_MONITOR_DC_PROXIES` | Multiline DC proxies (optional until you have them) |
+| `BANDAI_MONITOR_ISP_PROXIES` | AU ISP slice (current primary) |
+| `BANDAI_MONITOR_ISP_RATIO` | Default `0.8` ISP share when both set |
 | `BANDAI_MONITOR_KEYWORDS` | Comma list / SKUs in search |
 | `BANDAI_MONITOR_INTERVAL_MS` | Poll interval (try `3000`–`5000`) |
 | `BANDAI_MONITOR_AREA` | `au` |
-| `MONITOR_TOKEN` | Bearer for `/status`, `/events`, `/hits` |
+| `BANDAI_MONITOR_NOTIFY_OOS` | `0` to disable OOS Discord (default on) |
+| `MONITOR_TOKEN` | Bearer for `/status`, `/events`, `/hits`, `/admin` APIs |
+| `DISCORD_WEBHOOK_URL` | Operator restock + OOS channel |
+| `MONITOR_STATE_PATH` | Optional durable JSON path for admin edits |
 
 ## Endpoints
 
+- `GET /admin/` — phone lab UI
 - `GET /health` — open (Railway healthcheck)
 - `GET /status` — hub + recent hits (auth)
-- `GET /hits` — buffer of in-stock events (auth)
+- `GET /hits` — buffer of stock events (auth)
 - `GET /events` — SSE `stock_changed` stream (auth)
-- `POST /test-discord?sku=N2890904001` — operator Vanta restock test ping (auth)
+- `GET|PUT /admin/config` — keywords / proxies / toggles (auth)
+- `POST /lab/poll` — force one catalog poll (auth)
+- `POST /test-discord?sku=…&kind=restock|oos` — Vanta test ping (auth)
 
 ## Discord (operator only)
 
-Set Railway `DISCORD_WEBHOOK_URL` to the **operator** restock channel webhook.
-This is not user-configurable from Desktop — stops the shared poller being piped
-into third-party groups.
+Set Railway `DISCORD_WEBHOOK_URL` to the **operator** channel webhook.
+
+- **Restock / new in stock** — violet Vanta embed  
+- **Went OOS** — slate Vanta embed (toggle in admin)  
+- `@role` pings intentionally deferred  
 
 Per-user Discord webhooks live in Desktop Settings and only fire for that user's
 checkout success/fail.

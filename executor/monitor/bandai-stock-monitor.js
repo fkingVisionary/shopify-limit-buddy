@@ -157,7 +157,7 @@ export function createBandaiStockMonitor(opts = {}) {
 
   const area = String(opts.area || process.env.BANDAI_MONITOR_AREA || "au").toLowerCase();
   const base = `${ORIGIN}/${area}`;
-  const intervalMs = Math.max(
+  let intervalMs = Math.max(
     2_000,
     Number(opts.intervalMs || process.env.BANDAI_MONITOR_INTERVAL_MS) || 10_000,
   );
@@ -169,7 +169,7 @@ export function createBandaiStockMonitor(opts = {}) {
     60,
     Math.max(10, Number(opts.searchLimit || process.env.BANDAI_MONITOR_SEARCH_LIMIT) || 40),
   );
-  const keywords = parseKeywords(
+  let keywords = parseKeywords(
     opts.keywords || process.env.BANDAI_MONITOR_KEYWORDS || "ONE PIECE",
   );
 
@@ -446,6 +446,24 @@ export function createBandaiStockMonitor(opts = {}) {
       }
       return null;
     },
+    /** Hot-reload search keywords (admin). */
+    setKeywords(raw) {
+      const next = parseKeywords(raw);
+      if (!next.length) throw new Error("keywords_empty");
+      keywords = next;
+      return [...keywords];
+    },
+    setIntervalMs(ms) {
+      intervalMs = Math.max(2_000, Number(ms) || intervalMs);
+      return intervalMs;
+    },
+    /** Hot-replace monitor proxy pool lists (admin). */
+    replaceProxies(patch = {}) {
+      if (typeof pool.replaceLists !== "function") {
+        throw new Error("proxy_pool_immutable");
+      }
+      return pool.replaceLists(patch);
+    },
   };
 }
 
@@ -454,7 +472,7 @@ function parseKeywords(raw) {
     return raw.map((s) => String(s || "").trim()).filter(Boolean);
   }
   return String(raw || "")
-    .split(/[,|]/)
+    .split(/[\n,|]+/)
     .map((s) => s.trim())
     .filter(Boolean);
 }

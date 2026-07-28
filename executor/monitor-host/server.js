@@ -4,24 +4,29 @@
  *
  * - Polls search/list on monitor proxies (DC+ISP)
  * - Exposes /health, /status, /events (SSE), recent /hits
+ * - Phone admin UI at /admin (keywords, proxies, Discord labs)
  * - Does NOT run checkout (Desktop / executor claim ATC later)
  *
- * Auth: set MONITOR_TOKEN → require Bearer on /status /events /hits
- *       /health stays open for Railway healthchecks.
+ * Auth: set MONITOR_TOKEN → require Bearer on /status /events /hits /admin APIs
+ *       /health stays open for Railway healthchecks. /admin HTML is public;
+ *       API calls still need the token.
  */
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
+import fastifyStatic from "@fastify/static";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
-import { vantaRestockDiscordBody } from "./vanta-discord.mjs";
+import { vantaRestockDiscordBody, vantaOosDiscordBody } from "./vanta-discord.mjs";
+import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config.mjs";
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
 const TOKEN = String(process.env.MONITOR_TOKEN || process.env.EXECUTOR_TOKEN || "").trim();
-const KEYWORDS =
-  process.env.BANDAI_MONITOR_KEYWORDS ||
-  process.env.MONITOR_KEYWORDS ||
-  "GUNDAM,ONE PIECE,N2890904001";
-const INTERVAL_MS = Number(process.env.BANDAI_MONITOR_INTERVAL_MS) || 5000;
 const AREA = process.env.BANDAI_MONITOR_AREA || "au";
 const MAX_HITS = Math.max(20, Math.min(500, Number(process.env.MONITOR_HIT_BUFFER) || 100));
+
+/** @type {ReturnType<typeof loadRuntimeConfig>} */
+let runtime = loadRuntimeConfig();
 
 /** @type {object[]} */
 const recentHits = [];
@@ -32,7 +37,17 @@ function authOk(req) {
   if (!TOKEN) return true;
   const h = String(req.headers.authorization || "");
   const m = h.match(/^Bearer\s+(.+)$/i);
-  return Boolean(m && m[1].trim() === TOKEN);
+  if (m && m[1].trim() === TOKEN) return true;
+  const q = String(req.query?.token || "").trim();
+  return Boolean(q && q === TOKEN);
+}
+
+function discordHook() {
+  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
+  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) {
+    return null;
+  }
+  return hook;
 }
 
 function pushHit(ev) {
@@ -46,10 +61,11 @@ function pushHit(ev) {
     imageUrl: ev.imageUrl || meta.imageUrl || null,
     price: ev.price || meta.price || null,
     areaItemNo: ev.areaItemNo || meta.areaItemNo || null,
-    productType: meta.productType || null,
+    productType: meta.productType || ev.productType || null,
   };
   recentHits.unshift(row);
   if (recentHits.length > MAX_HITS) recentHits.length = MAX_HITS;
+  // Desktop checkout only cares about in-stock; still stream OOS for operators.
   const payload = `event: stock_changed\ndata: ${JSON.stringify(row)}\n\n`;
   for (const res of sseClients) {
     try {
@@ -58,47 +74,95 @@ function pushHit(ev) {
       sseClients.delete(res);
     }
   }
+  return row;
+}
+
+function hitPayload(ev) {
+  return {
+    ...ev,
+    title: ev.title || ev.meta?.title,
+    imageUrl: ev.imageUrl || ev.meta?.imageUrl,
+    price: ev.price || ev.meta?.price,
+    areaItemNo: ev.areaItemNo || ev.meta?.areaItemNo,
+    productType: ev.productType || ev.meta?.productType,
+  };
+}
+
+async function postDiscord(body) {
+  const hook = discordHook();
+  if (!hook) return { ok: false, skipped: true, error: "no_webhook" };
+  const res = await fetch(hook, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) return { ok: false, status: res.status, error: text.slice(0, 200) };
+  return { ok: true, status: res.status };
 }
 
 const hub = createGlobalMonitorHub({
   attachBridge: false,
   monitorOpts: {
-    intervalMs: INTERVAL_MS,
-    keywords: KEYWORDS,
+    intervalMs: runtime.intervalMs,
+    keywords: runtime.keywords,
     area: AREA,
+    proxy: {
+      ispRaw: runtime.ispProxies || undefined,
+      dcRaw: runtime.dcProxies || undefined,
+    },
   },
   log: (line) => console.log(`[hub] ${line}`),
 });
+
+// Apply disk overrides that may differ from constructor env (keywords already passed).
+try {
+  if (runtime._fromDisk) {
+    hub.monitor.setKeywords(runtime.keywords);
+    hub.monitor.setIntervalMs(runtime.intervalMs);
+    if (runtime.ispProxies || runtime.dcProxies) {
+      hub.monitor.replaceProxies({
+        ispRaw: runtime.ispProxies,
+        dcRaw: runtime.dcProxies,
+      });
+    }
+  }
+} catch (e) {
+  console.warn("[runtime-config]", e?.message || e);
+}
 
 hub.monitor.on("stock_changed", async (ev) => {
   console.log(
     `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ev.meta?.title || ""}`,
   );
-  if (!ev?.inStock) return;
   pushHit(ev);
-  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
-  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) return;
+
+  const reason = String(ev?.reason || "");
+  const isOos = ev?.inStock === false || reason === "went_oos";
+  if (isOos) {
+    if (runtime.notifyOos === false) return;
+    try {
+      const r = await postDiscord(
+        vantaOosDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
+      );
+      if (!r.ok && !r.skipped) console.warn("[discord:oos]", r.status, r.error);
+    } catch (e) {
+      console.warn("[discord:oos]", e?.message || e);
+    }
+    return;
+  }
+
+  if (!ev?.inStock) return;
   try {
-    const payload = vantaRestockDiscordBody(
-      {
-        ...ev,
-        title: ev.title || ev.meta?.title,
-        imageUrl: ev.imageUrl || ev.meta?.imageUrl,
-        price: ev.price || ev.meta?.price,
-        areaItemNo: ev.areaItemNo || ev.meta?.areaItemNo,
-      },
-      { area: AREA, source: "railway-monitor" },
+    const r = await postDiscord(
+      vantaRestockDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
     );
-    const res = await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) console.warn("[discord]", res.status, await res.text().catch(() => ""));
+    if (!r.ok && !r.skipped) console.warn("[discord]", r.status, r.error);
   } catch (e) {
     console.warn("[discord]", e?.message || e);
   }
 });
+
 hub.monitor.on("poll", (s) => {
   if (s.polls <= 3 || s.polls % 12 === 0 || s.events > 0) {
     console.log(
@@ -112,19 +176,38 @@ hub.monitor.on("error", (e) => {
 
 const app = Fastify({ logger: false });
 
+// Allow empty JSON body on POST (phone clients / curl without body).
+app.addContentTypeParser("application/json", { parseAs: "string" }, (req, body, done) => {
+  if (!body || !String(body).trim()) {
+    done(null, {});
+    return;
+  }
+  try {
+    done(null, JSON.parse(body));
+  } catch (e) {
+    done(e, undefined);
+  }
+});
+
+await app.register(fastifyStatic, {
+  root: path.join(__dirname, "admin"),
+  prefix: "/admin/",
+  index: ["index.html"],
+});
+
+app.get("/admin", async (_req, reply) => reply.redirect("/admin/"));
+
 app.get("/", async (_req, reply) => {
   const st = hub.status();
   const m = st.monitor || {};
-  const body = {
+  return reply.type("application/json").send({
     ok: true,
     service: "bandai-monitor",
-    message: "Bandai stock monitor is running. Use /health (open) or /status /hits /events with Bearer MONITOR_TOKEN.",
+    brand: "Vanta",
+    message: "Vanta Bandai monitor. Phone lab: /admin · API needs Bearer MONITOR_TOKEN.",
     area: AREA,
-    intervalMs: INTERVAL_MS,
-    keywords: String(KEYWORDS)
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
+    intervalMs: m.intervalMs ?? runtime.intervalMs,
+    keywords: m.keywords || [],
     running: Boolean(m.running),
     polls: m.polls ?? 0,
     products: m.products ?? 0,
@@ -134,20 +217,15 @@ app.get("/", async (_req, reply) => {
     pool: m.pool
       ? { isp: m.pool.isp, dc: m.pool.dc, cooling: m.pool.cooling, picks: m.pool.picks }
       : null,
-    recentHits: recentHits.slice(0, 5).map((h) => ({
-      at: h.at,
-      productId: h.productId,
-      reason: h.reason,
-      title: h.title,
-    })),
     links: {
+      admin: "/admin/",
       health: "/health",
       status: "/status",
       hits: "/hits",
       events: "/events",
+      testDiscord: "/test-discord",
     },
-  };
-  return reply.type("application/json").send(body);
+  });
 });
 
 app.get("/health", async () => {
@@ -156,21 +234,30 @@ app.get("/health", async () => {
     ok: true,
     service: "bandai-monitor",
     area: AREA,
-    intervalMs: INTERVAL_MS,
-    keywords: String(KEYWORDS)
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean),
+    intervalMs: st.monitor?.intervalMs ?? runtime.intervalMs,
+    keywords: st.monitor?.keywords || [],
     monitor: st.monitor,
     hitsBuffered: recentHits.length,
     sseClients: sseClients.size,
     authRequired: Boolean(TOKEN),
+    admin: "/admin/",
   };
 });
 
 app.get("/status", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
-  return { ok: true, ...hub.status(), recentHits: recentHits.slice(0, 20) };
+  return {
+    ok: true,
+    ...hub.status(),
+    recentHits: recentHits.slice(0, 20),
+    sseClients: sseClients.size,
+    runtime: {
+      notifyOos: runtime.notifyOos !== false,
+      updatedAt: runtime.updatedAt || null,
+      statePath: runtime._path || null,
+      fromDisk: Boolean(runtime._fromDisk),
+    },
+  };
 });
 
 app.get("/hits", async (req, reply) => {
@@ -179,18 +266,90 @@ app.get("/hits", async (req, reply) => {
   return { ok: true, hits: recentHits.slice(0, limit) };
 });
 
-/** Operator test: POST /test-discord?sku=N2890904001 — Vanta restock embed from live catalog card. */
+app.get("/admin/config", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const m = hub.monitor.status();
+  return {
+    ok: true,
+    keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
+    ispProxies: runtime.ispProxies || "",
+    dcProxies: runtime.dcProxies || "",
+    intervalMs: m.intervalMs ?? runtime.intervalMs,
+    notifyOos: runtime.notifyOos !== false,
+    updatedAt: runtime.updatedAt || null,
+    pool: m.pool || null,
+  };
+});
+
+app.put("/admin/config", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  try {
+    if (body.keywords != null) {
+      const list = hub.monitor.setKeywords(body.keywords);
+      runtime.keywords = list.join("\n");
+    }
+    if (body.intervalMs != null) {
+      runtime.intervalMs = hub.monitor.setIntervalMs(body.intervalMs);
+    }
+    if (body.notifyOos != null) {
+      runtime.notifyOos = Boolean(body.notifyOos);
+    }
+    const proxPatch = {};
+    if (body.ispProxies != null) {
+      runtime.ispProxies = String(body.ispProxies);
+      proxPatch.ispRaw = runtime.ispProxies;
+    }
+    if (body.dcProxies != null) {
+      runtime.dcProxies = String(body.dcProxies);
+      proxPatch.dcRaw = runtime.dcProxies;
+    }
+    if (Object.keys(proxPatch).length) {
+      hub.monitor.replaceProxies(proxPatch);
+    }
+    runtime = { ...runtime, ...saveRuntimeConfig(runtime, runtime._path) };
+    return {
+      ok: true,
+      keywords: hub.monitor.status().keywords,
+      intervalMs: hub.monitor.status().intervalMs,
+      notifyOos: runtime.notifyOos !== false,
+      pool: hub.monitor.status().pool,
+      updatedAt: runtime.updatedAt,
+    };
+  } catch (e) {
+    return reply.code(400).send({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post("/lab/poll", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const { summary, events } = await hub.monitor.pollOnce();
+    return {
+      ok: true,
+      summary,
+      events: (events || []).map((e) => ({
+        productId: e.productId,
+        inStock: e.inStock,
+        reason: e.reason,
+      })),
+    };
+  } catch (e) {
+    return reply.code(503).send({ ok: false, error: e?.message || "poll_failed" });
+  }
+});
+
+/** Operator test: POST /test-discord?sku=…&kind=restock|oos */
 app.post("/test-discord", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
-  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
-  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) {
+  if (!discordHook()) {
     return reply.code(400).send({ ok: false, error: "DISCORD_WEBHOOK_URL not configured" });
   }
   const q = req.query || {};
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const sku = String(q.sku || body.sku || "N2890904001").trim();
+  const kind = String(q.kind || body.kind || "restock").toLowerCase();
 
-  // Ensure we have a snapshot (cold deploy may still be warming).
   if ((hub.monitor.status()?.products || 0) === 0) {
     try {
       await hub.monitor.pollOnce();
@@ -213,38 +372,36 @@ app.post("/test-discord", async (req, reply) => {
     return reply.code(404).send({ ok: false, error: "sku_not_in_catalog", sku });
   }
 
-  const payload = vantaRestockDiscordBody(
-    {
-      productId: row.productId,
-      areaItemNo: row.areaItemNo,
-      title: row.title,
-      imageUrl: row.imageUrl,
-      price: row.price,
-      productType: row.productType,
-      reason: "restock",
-      at: new Date().toISOString(),
-    },
-    { area: AREA, test: true },
-  );
+  const hit = {
+    productId: row.productId,
+    areaItemNo: row.areaItemNo,
+    title: row.title,
+    imageUrl: row.imageUrl,
+    price: row.price,
+    productType: row.productType,
+    reason: kind === "oos" ? "went_oos" : "restock",
+    inStock: kind !== "oos",
+    at: new Date().toISOString(),
+  };
+  const payload =
+    kind === "oos"
+      ? vantaOosDiscordBody(hit, { area: AREA, test: true })
+      : vantaRestockDiscordBody(hit, { area: AREA, test: true });
 
   try {
-    const res = await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const text = await res.text().catch(() => "");
-    if (!res.ok) {
+    const r = await postDiscord(payload);
+    if (!r.ok) {
       return reply.code(502).send({
         ok: false,
         error: "discord_reject",
-        status: res.status,
-        detail: text.slice(0, 200),
+        status: r.status,
+        detail: r.error,
       });
     }
     return {
       ok: true,
-      discord: res.status,
+      discord: r.status,
+      kind: kind === "oos" ? "oos" : "restock",
       product: {
         productId: row.productId,
         areaItemNo: row.areaItemNo || null,
@@ -289,9 +446,12 @@ console.log(
   JSON.stringify({
     listening: PORT,
     area: AREA,
-    intervalMs: INTERVAL_MS,
-    keywords: KEYWORDS,
+    intervalMs: runtime.intervalMs,
+    keywords: runtime.keywords,
     authRequired: Boolean(TOKEN),
+    admin: "/admin/",
+    statePath: runtime._path,
+    fromDisk: Boolean(runtime._fromDisk),
   }),
 );
 hub.start();

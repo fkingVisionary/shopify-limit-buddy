@@ -1,9 +1,10 @@
 /**
- * Vanta operator restock Discord payload (shared shape for Railway monitor).
+ * Vanta operator Discord payloads (Railway monitor).
  * Uses only fields already on the search card — no extra HTTP.
  */
 
-const VANTA_COLOR = 0x7c3aed; // violet accent
+const VANTA_COLOR = 0x7c3aed; // violet — in stock / restock
+const VANTA_OOS_COLOR = 0x64748b; // slate — went OOS
 const VANTA_NAME = "Vanta";
 
 function pickTitle(hit) {
@@ -37,6 +38,28 @@ function pickPrice(hit) {
   return null;
 }
 
+function baseFields(hit, area, productId) {
+  const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
+  const price = pickPrice(hit);
+  const productType = hit?.meta?.productType || hit?.productType || null;
+  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
+  return {
+    pdp,
+    fields: [
+      { name: "SKU", value: `\`${productId}\``, inline: true },
+      ...(nai ? [{ name: "Backend PID", value: `\`${nai}\``, inline: true }] : []),
+      ...(price ? [{ name: "Price", value: price, inline: true }] : []),
+      ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
+      { name: "Region", value: area.toUpperCase(), inline: true },
+      {
+        name: "PDP",
+        value: `[Open on Premium Bandai](${pdp})`,
+        inline: false,
+      },
+    ],
+  };
+}
+
 /**
  * @param {object} hit
  * @param {{ area?: string, test?: boolean, source?: string }} [opts]
@@ -46,32 +69,15 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
   const productId = String(hit?.productId || "?").trim() || "?";
   const title = pickTitle(hit) || productId;
   const reason = String(hit?.reason || "restock").replace(/_/g, " ");
-  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
-  const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
   const image = pickImage(hit);
-  const price = pickPrice(hit);
-  const productType = hit?.meta?.productType || hit?.productType || null;
   const isTest = opts.test === true;
+  const { pdp, fields } = baseFields(hit, area, productId);
 
   const reasonLabel =
     reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
 
-  const fields = [
-    { name: "SKU", value: `\`${productId}\``, inline: true },
-    ...(nai ? [{ name: "Backend PID", value: `\`${nai}\``, inline: true }] : []),
-    ...(price ? [{ name: "Price", value: price, inline: true }] : []),
-    ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
-    { name: "Region", value: area.toUpperCase(), inline: true },
-    {
-      name: "PDP",
-      value: `[Open on Premium Bandai](${pdp})`,
-      inline: false,
-    },
-  ];
-
   return {
     username: VANTA_NAME,
-    // Discord ignores custom avatar_url unless webhook allows; fine if omitted.
     embeds: [
       {
         author: {
@@ -99,4 +105,41 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
   };
 }
 
-export { VANTA_NAME, VANTA_COLOR, pickTitle, pickImage, pickPrice };
+/**
+ * Went out of stock — quieter slate embed (no @role).
+ * @param {object} hit
+ * @param {{ area?: string, test?: boolean }} [opts]
+ */
+export function vantaOosDiscordBody(hit, opts = {}) {
+  const area = String(opts.area || "au").toLowerCase();
+  const productId = String(hit?.productId || "?").trim() || "?";
+  const title = pickTitle(hit) || productId;
+  const image = pickImage(hit);
+  const isTest = opts.test === true;
+  const { pdp, fields } = baseFields(hit, area, productId);
+
+  return {
+    username: VANTA_NAME,
+    embeds: [
+      {
+        author: {
+          name: isTest ? `${VANTA_NAME} · test OOS` : `${VANTA_NAME} · Bandai AU`,
+        },
+        title: title.slice(0, 250),
+        url: pdp,
+        description: "**Went out of stock** on Premium Bandai AU",
+        color: VANTA_OOS_COLOR,
+        fields,
+        ...(image ? { thumbnail: { url: image } } : {}),
+        footer: {
+          text: isTest ? "Vanta monitor · test OOS" : "Vanta global stock monitor",
+        },
+        timestamp: hit?.at || hit?.timestamp
+          ? new Date(hit.at || hit.timestamp).toISOString()
+          : new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+export { VANTA_NAME, VANTA_COLOR, VANTA_OOS_COLOR, pickTitle, pickImage, pickPrice };

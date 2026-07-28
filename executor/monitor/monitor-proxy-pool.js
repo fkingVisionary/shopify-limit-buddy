@@ -83,8 +83,12 @@ export function loadMonitorProxyLists(opts = {}) {
  * Round-robin / random picker with ISP:DC ratio and per-URL cooldown.
  */
 export function createMonitorProxyPool(opts = {}) {
-  const { isp, dc } = loadMonitorProxyLists(opts);
-  const ispRatio = clamp01(
+  const loaded = loadMonitorProxyLists(opts);
+  /** @type {string[]} */
+  let isp = [...loaded.isp];
+  /** @type {string[]} */
+  let dc = [...loaded.dc];
+  let ispRatio = clamp01(
     opts.ispRatio != null
       ? Number(opts.ispRatio)
       : process.env.BANDAI_MONITOR_ISP_RATIO != null
@@ -160,21 +164,44 @@ export function createMonitorProxyPool(opts = {}) {
     coolUntil.delete(url);
   }
 
+  /**
+   * Hot-replace proxy lists (admin dashboard). Clears cooldowns.
+   * @param {{ ispRaw?: string, dcRaw?: string, ispRatio?: number }} patch
+   */
+  function replaceLists(patch = {}) {
+    if (patch.ispRaw != null) {
+      isp = parseMonitorProxyList(patch.ispRaw);
+    }
+    if (patch.dcRaw != null) {
+      dc = parseMonitorProxyList(patch.dcRaw);
+    }
+    if (patch.ispRatio != null && Number.isFinite(Number(patch.ispRatio))) {
+      ispRatio = clamp01(Number(patch.ispRatio));
+    }
+    coolUntil.clear();
+    ispIdx = 0;
+    dcIdx = 0;
+    return stats();
+  }
+
+  function stats() {
+    return {
+      isp: isp.length,
+      dc: dc.length,
+      ispRatio,
+      rotateMode: random ? "random" : "roundrobin",
+      cooldownMs,
+      cooling: [...coolUntil.entries()].filter(([, t]) => t > Date.now()).length,
+      picks,
+    };
+  }
+
   return {
     next,
     markFail,
     markOk,
-    stats() {
-      return {
-        isp: isp.length,
-        dc: dc.length,
-        ispRatio,
-        rotateMode: random ? "random" : "roundrobin",
-        cooldownMs,
-        cooling: [...coolUntil.entries()].filter(([, t]) => t > Date.now()).length,
-        picks,
-      };
-    },
+    replaceLists,
+    stats,
   };
 }
 
