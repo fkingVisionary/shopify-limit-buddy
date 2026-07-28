@@ -1,59 +1,46 @@
-# Bandai always-on stock monitor (Railway)
+# Bandai always-on stock monitor + Vanta Lab (Railway)
 
-Permanent global poller for Premium Bandai AU search/list restocks.
-**No checkout** — Desktop / Fly still claim F5 and ATC on hit.
+Permanent global poller for Premium Bandai AU search/list restocks, plus a
+phone **Vanta Lab** for monitor control and remote Bot launches via Fly.
 
-## Deploy
+## Phone admin
 
-Root Directory on the Railway service = `executor`.  
-Dockerfile = `monitor-host/Dockerfile` (see `railway.toml` / `executor/railway.toml`).
+Open **`/admin/`** (e.g. `https://j1ms-bandai-monitor-production.up.railway.app/admin/`).
 
-## Phone admin (Vanta Lab)
+Unlock with `MONITOR_TOKEN`.
 
-Open **`/admin/`** on the Railway URL (e.g. `https://…railway.app/admin/`).
+### Tabs
 
-Unlock with Bearer `MONITOR_TOKEN`. From your phone you can:
+| Tab | What |
+|---|---|
+| **Monitor** | Keywords/SKUs, ISP/DC poll proxies, interval, OOS Discord toggle, hits |
+| **Bot** | Fly executor health, vault (accounts/profile/checkout proxies), launch Bandai / Kmart |
+| **Labs** | Discord restock/OOS test pings, force monitor poll |
 
-- Edit watch **keywords / SKUs** (live, no redeploy)
-- Paste **ISP / DC** proxy lines and poll interval
-- Toggle **Discord OOS** pings
-- Force a poll, fire **test restock / test OOS** Discord embeds
+Bot launches call Fly `POST /run` asynchronously and show recent run status on the phone.
 
-Runtime edits persist to `MONITOR_STATE_PATH` (default `/tmp/…`, or a Railway volume mount). Without a volume they last until the next redeploy — env vars remain the bootstrap defaults.
-
-## Env
+## Railway env
 
 | Var | Purpose |
 |---|---|
-| `BANDAI_MONITOR_DC_PROXIES` | Multiline DC proxies (optional until you have them) |
-| `BANDAI_MONITOR_ISP_PROXIES` | AU ISP slice (current primary) |
-| `BANDAI_MONITOR_ISP_RATIO` | Default `0.8` ISP share when both set |
-| `BANDAI_MONITOR_KEYWORDS` | Comma list / SKUs in search |
-| `BANDAI_MONITOR_INTERVAL_MS` | Poll interval (try `3000`–`5000`) |
-| `BANDAI_MONITOR_AREA` | `au` |
-| `BANDAI_MONITOR_NOTIFY_OOS` | `0` to disable OOS Discord (default on) |
-| `MONITOR_TOKEN` | Bearer for `/status`, `/events`, `/hits`, `/admin` APIs |
-| `DISCORD_WEBHOOK_URL` | Operator restock + OOS channel |
-| `MONITOR_STATE_PATH` | Optional durable JSON path for admin edits |
+| `MONITOR_TOKEN` | Bearer for admin + APIs |
+| `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
+| `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap) |
+| `BANDAI_MONITOR_DC_PROXIES` | Monitor DC (optional) |
+| `BANDAI_MONITOR_KEYWORDS` | Bootstrap keywords |
+| `BANDAI_MONITOR_INTERVAL_MS` | Bootstrap interval |
+| `BANDAI_MONITOR_NOTIFY_OOS` | `0` to disable OOS Discord |
+| `EXECUTOR_URL` | Fly origin, e.g. `https://j1ms-bot-executor.fly.dev` |
+| `EXECUTOR_TOKEN` | Same Bearer as Fly executor (required for Bot tab launches) |
+| `MONITOR_STATE_PATH` / `BOT_VAULT_PATH` | Optional durable JSON paths (or Railway volume) |
 
-## Endpoints
+Without `EXECUTOR_TOKEN`, Monitor + Discord labs still work; Bot launches show a setup warning.
 
-- `GET /admin/` — phone lab UI
-- `GET /health` — open (Railway healthcheck)
-- `GET /status` — hub + recent hits (auth)
-- `GET /hits` — buffer of stock events (auth)
-- `GET /events` — SSE `stock_changed` stream (auth)
-- `GET|PUT /admin/config` — keywords / proxies / toggles (auth)
-- `POST /lab/poll` — force one catalog poll (auth)
-- `POST /test-discord?sku=…&kind=restock|oos` — Vanta test ping (auth)
+## Discord
 
-## Discord (operator only)
+- Restock — **black** accent  
+- OOS — **red** accent + `OOS ·` title  
 
-Set Railway `DISCORD_WEBHOOK_URL` to the **operator** channel webhook.
+## Deploy
 
-- **Restock / new in stock** — violet Vanta embed  
-- **Went OOS** — slate Vanta embed (toggle in admin)  
-- `@role` pings intentionally deferred  
-
-Per-user Discord webhooks live in Desktop Settings and only fire for that user's
-checkout success/fail.
+Root Directory = `executor`. Dockerfile = `monitor-host/Dockerfile`.
