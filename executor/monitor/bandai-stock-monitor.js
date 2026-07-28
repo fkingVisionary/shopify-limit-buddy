@@ -5,7 +5,7 @@
 // Has zero knowledge of tasks / profiles / payment.
 
 import { EventEmitter } from "node:events";
-import { createJar, makeDispatcher, request, UA } from "../http.js";
+import { createJar, makeDispatcher, request, UA } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 
 const ORIGIN = "https://p-bandai.com";

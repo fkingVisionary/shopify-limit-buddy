@@ -40,3 +40,4 @@ yarn-error.log*
 # Browser HAR captures (may contain session/password)
 *.har
 **/*.har
+executor/monitor-host/node_modules/

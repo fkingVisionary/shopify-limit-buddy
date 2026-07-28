@@ -1,0 +1,22 @@
+# Railway — Bandai always-on stock monitor (separate from dashboard / Fly executor)
+#
+# Service settings:
+#   Root Directory = executor
+#   Config file    = monitor-host/railway.toml  (or set dockerfile path below)
+#
+# Variables (required for useful polls):
+#   BANDAI_MONITOR_DC_PROXIES   multiline DC list  OR BANDAI_MONITOR_DC_FILE (baked empty)
+#   BANDAI_MONITOR_ISP_PROXIES  optional AU ISP slice
+#   BANDAI_MONITOR_KEYWORDS     e.g. GUNDAM,ONE PIECE,N2890904001
+#   BANDAI_MONITOR_INTERVAL_MS  e.g. 3000–5000 for drip hunting
+#   MONITOR_TOKEN               Bearer for /status /events /hits
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "monitor-host/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
