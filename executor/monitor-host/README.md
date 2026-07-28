@@ -51,8 +51,8 @@ Runtime edits persist to `MONITOR_STATE_PATH` (default `/tmp/…`, or a Railway 
 
 Set Railway `DISCORD_WEBHOOK_URL` to the **operator** channel webhook.
 
-- **Restock / new in stock** — violet Vanta embed  
-- **Went OOS** — slate Vanta embed (toggle in admin)  
+- **Restock / new in stock** — black accent (brand)  
+- **Went OOS** — red accent + `OOS ·` title (toggle in admin)  
 - `@role` pings intentionally deferred  
 
 Per-user Discord webhooks live in Desktop Settings and only fire for that user's

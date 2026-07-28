@@ -55,11 +55,11 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
     username: "Vanta",
     embeds: [
       {
-        author: { name: opts.test ? "Vanta · test ping" : "Vanta · Bandai AU" },
+        author: { name: opts.test ? "Vanta · test restock" : "Vanta · Restock" },
         title,
         url: pdp,
-        description: `**${reasonLabel}** detected on Premium Bandai AU`,
-        color: 0x7c3aed,
+        description: `**${reasonLabel}** · Premium Bandai AU`,
+        color: 0x000000,
         fields: [
           { name: "SKU", value: `\`${productId}\``, inline: true },
           ...(nai ? [{ name: "Backend PID", value: `\`${nai}\``, inline: true }] : []),
@@ -69,7 +69,7 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
           { name: "PDP", value: `[Open on Premium Bandai](${pdp})` },
         ],
         ...(image ? { thumbnail: { url: image }, image: { url: image } } : {}),
-        footer: { text: opts.test ? "Vanta monitor · test event" : "Vanta global stock monitor" },
+        footer: { text: opts.test ? "Vanta monitor · test restock" : "Vanta · restock alert" },
         timestamp: hit?.at || new Date().toISOString(),
       },
     ],

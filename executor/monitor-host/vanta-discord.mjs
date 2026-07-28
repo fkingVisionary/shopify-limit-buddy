@@ -3,8 +3,8 @@
  * Uses only fields already on the search card — no extra HTTP.
  */
 
-const VANTA_COLOR = 0x7c3aed; // violet — in stock / restock
-const VANTA_OOS_COLOR = 0x64748b; // slate — went OOS
+const VANTA_COLOR = 0x000000; // black — restock / main brand
+const VANTA_OOS_COLOR = 0xdc2626; // red — out of stock (obviously not a restock)
 const VANTA_NAME = "Vanta";
 
 function pickTitle(hit) {
@@ -81,11 +81,11 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
     embeds: [
       {
         author: {
-          name: isTest ? `${VANTA_NAME} · test ping` : `${VANTA_NAME} · Bandai AU`,
+          name: isTest ? `${VANTA_NAME} · test restock` : `${VANTA_NAME} · Restock`,
         },
         title: title.slice(0, 250),
         url: pdp,
-        description: `**${reasonLabel}** detected on Premium Bandai AU`,
+        description: `**${reasonLabel}** · Premium Bandai AU`,
         color: VANTA_COLOR,
         fields,
         ...(image
@@ -95,7 +95,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
             }
           : {}),
         footer: {
-          text: isTest ? "Vanta monitor · test event" : "Vanta global stock monitor",
+          text: isTest ? "Vanta monitor · test restock" : "Vanta · restock alert",
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -106,7 +106,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
 }
 
 /**
- * Went out of stock — quieter slate embed (no @role).
+ * Went out of stock — red accent, clearly not a restock (no @role).
  * @param {object} hit
  * @param {{ area?: string, test?: boolean }} [opts]
  */
@@ -123,16 +123,16 @@ export function vantaOosDiscordBody(hit, opts = {}) {
     embeds: [
       {
         author: {
-          name: isTest ? `${VANTA_NAME} · test OOS` : `${VANTA_NAME} · Bandai AU`,
+          name: isTest ? `${VANTA_NAME} · test OOS` : `${VANTA_NAME} · OUT OF STOCK`,
         },
-        title: title.slice(0, 250),
+        title: `OOS · ${title}`.slice(0, 250),
         url: pdp,
-        description: "**Went out of stock** on Premium Bandai AU",
+        description: "**OUT OF STOCK** — no longer purchaseable on Premium Bandai AU",
         color: VANTA_OOS_COLOR,
-        fields,
+        fields: [{ name: "Status", value: "`OOS`", inline: true }, ...fields],
         ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest ? "Vanta monitor · test OOS" : "Vanta global stock monitor",
+          text: isTest ? "Vanta monitor · test OOS" : "Vanta · out of stock alert",
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()

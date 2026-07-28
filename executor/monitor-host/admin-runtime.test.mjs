@@ -30,17 +30,18 @@ test("monitor setKeywords live", () => {
   assert.deepEqual(m.status().keywords, ["X", "Y"]);
 });
 
-test("oos discord is slate not violet", () => {
+test("oos discord is red; restock is black", () => {
   const body = vantaOosDiscordBody({
     productId: "N1",
     title: "Demo",
     reason: "went_oos",
   });
   assert.equal(body.username, "Vanta");
-  assert.match(body.embeds[0].description, /out of stock/i);
-  assert.equal(body.embeds[0].color, 0x64748b);
+  assert.match(body.embeds[0].title, /^OOS ·/);
+  assert.match(body.embeds[0].description, /OUT OF STOCK/i);
+  assert.equal(body.embeds[0].color, 0xdc2626);
   const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo" });
-  assert.equal(restock.embeds[0].color, 0x7c3aed);
+  assert.equal(restock.embeds[0].color, 0x000000);
 });
 
 test("runtime config round-trip", () => {
