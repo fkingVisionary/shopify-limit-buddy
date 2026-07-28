@@ -13,6 +13,7 @@ async function postDiscordWebhook(webhookUrl, body) {
     username: body.username != null ? String(body.username).slice(0, 80) : undefined,
     content: body.content != null ? String(body.content).slice(0, 1900) : undefined,
     embeds: Array.isArray(body.embeds) ? body.embeds.slice(0, 10) : undefined,
+    components: Array.isArray(body.components) ? body.components.slice(0, 5) : undefined,
   };
   try {
     const res = await fetch(url, {
@@ -51,6 +52,33 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
   const productType = hit?.meta?.productType || hit?.productType || null;
   const reasonLabel =
     reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
+
+  let components;
+  let qtField = null;
+  try {
+    const {
+      buildQuickTaskDeepLink,
+      quickTaskDiscordComponents,
+    } = require("./deep-link.cjs");
+    const qtHit = {
+      productId,
+      title,
+      areaItemNo: nai,
+      area,
+      reason: hit?.reason || "restock",
+      pdpUrl: pdp,
+    };
+    components = quickTaskDiscordComponents(qtHit, { area });
+    const qtUrl = buildQuickTaskDeepLink(qtHit);
+    qtField = {
+      name: "Desktop",
+      value: `[⚡ Quick Task](${qtUrl}) — needs J1m's Bot open on this PC`,
+      inline: false,
+    };
+  } catch {
+    components = undefined;
+  }
+
   return {
     username: "Vanta",
     embeds: [
@@ -67,12 +95,18 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
           ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
           { name: "Region", value: area.toUpperCase(), inline: true },
           { name: "PDP", value: `[Open on Premium Bandai](${pdp})` },
+          ...(qtField ? [qtField] : []),
         ],
         ...(image ? { thumbnail: { url: image }, image: { url: image } } : {}),
-        footer: { text: opts.test ? "Vanta monitor · test event" : "Vanta global stock monitor" },
+        footer: {
+          text: opts.test
+            ? "Vanta monitor · test event"
+            : "Vanta global stock monitor · Quick Task needs desktop open",
+        },
         timestamp: hit?.at || new Date().toISOString(),
       },
     ],
+    ...(components ? { components } : {}),
   };
 }
 

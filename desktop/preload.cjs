@@ -48,6 +48,17 @@ contextBridge.exposeInMainWorld("desktop", {
   disneyHarvestStop: () => ipcRenderer.invoke("desktop:disney-harvest-stop"),
   disneyHarvestClear: () => ipcRenderer.invoke("desktop:disney-harvest-clear"),
   disneyHarvestOnce: (opts) => ipcRenderer.invoke("desktop:disney-harvest-once", opts),
+  // Monitor Feed / Quick Task / Smart Actions
+  monitorFeed: () => ipcRenderer.invoke("desktop:monitor-feed"),
+  monitorFeedClear: () => ipcRenderer.invoke("desktop:monitor-feed-clear"),
+  quickTask: (payload) => ipcRenderer.invoke("desktop:quick-task", payload || {}),
+  smartActionsList: () => ipcRenderer.invoke("desktop:smart-actions-list"),
+  smartActionUpsert: (a) => ipcRenderer.invoke("desktop:smart-action-upsert", a || {}),
+  smartActionDelete: (id) => ipcRenderer.invoke("desktop:smart-action-delete", id),
+  smartActionSetEnabled: (id, enabled) =>
+    ipcRenderer.invoke("desktop:smart-action-set-enabled", id, enabled),
+  smartActionLogs: (id) => ipcRenderer.invoke("desktop:smart-action-logs", id),
+  smartActionFromHit: (hit) => ipcRenderer.invoke("desktop:smart-action-from-hit", hit || {}),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

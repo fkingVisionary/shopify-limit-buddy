@@ -544,9 +544,58 @@ function renderSettings() {
   if ($("setDiscordWebhook")) {
     $("setDiscordWebhook").value = s.discordCheckoutWebhook || s.discordMonitorWebhook || "";
   }
+  fillQuickTaskPresetSelects();
+  const qt = s.quickTaskPreset || {};
+  if ($("qtPresetStore")) $("qtPresetStore").value = qt.store || "bandai";
+  if ($("qtPresetMode")) $("qtPresetMode").value = qt.bandaiMode || "checkout";
+  if ($("qtPresetProfile") && qt.profileId) $("qtPresetProfile").value = qt.profileId;
+  if ($("qtPresetProxy")) $("qtPresetProxy").value = qt.proxyGroupId || "";
+  if ($("qtPresetQty") && document.activeElement !== $("qtPresetQty")) {
+    $("qtPresetQty").value = qt.qty ?? 1;
+  }
+  if ($("qtPresetQuantity") && document.activeElement !== $("qtPresetQuantity")) {
+    $("qtPresetQuantity").value = qt.quantity ?? 1;
+  }
+  if ($("qtPresetPlaceOrder")) $("qtPresetPlaceOrder").checked = qt.placeOrder !== false;
+  if ($("qtPresetStart")) $("qtPresetStart").checked = qt.startAfterCreate !== false;
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
+}
+
+function fillQuickTaskPresetSelects() {
+  const prof = $("qtPresetProfile");
+  const px = $("qtPresetProxy");
+  if (!prof || !px || !state) return;
+  const curP = prof.value;
+  const curX = px.value;
+  prof.innerHTML =
+    `<option value="">Select profile…</option>` +
+    (state.profiles || [])
+      .map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.email || p.id)}</option>`)
+      .join("");
+  px.innerHTML =
+    `<option value="">Direct (no proxy)</option>` +
+    (state.proxyGroups || [])
+      .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
+      .join("");
+  if (curP && [...prof.options].some((o) => o.value === curP)) prof.value = curP;
+  if (curX && [...px.options].some((o) => o.value === curX)) px.value = curX;
+}
+
+function readQuickTaskPresetFromForm() {
+  return {
+    store: $("qtPresetStore")?.value || "bandai",
+    bandaiMode: $("qtPresetMode")?.value || "checkout",
+    bandaiCheckoutMode: "fast",
+    profileId: $("qtPresetProfile")?.value || null,
+    proxyGroupId: $("qtPresetProxy")?.value || null,
+    qty: Number($("qtPresetQty")?.value) || 1,
+    quantity: Number($("qtPresetQuantity")?.value) || 1,
+    placeOrder: $("qtPresetPlaceOrder")?.checked !== false,
+    accountAssign: "auto",
+    startAfterCreate: $("qtPresetStart")?.checked !== false,
+  };
 }
 
 let harvestState = null;
@@ -808,6 +857,8 @@ function applyState(next) {
   renderBandaiHarvest();
   renderDisneyHarvest();
   renderHarvestBankStrip();
+  renderMonitorFeed();
+  renderSmartActions();
   engineUi();
 }
 
@@ -1283,6 +1334,7 @@ $("btnSaveSettings").onclick = async () => {
       bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
       bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
       discordCheckoutWebhook: $("setDiscordWebhook")?.value?.trim() || "",
+      quickTaskPreset: readQuickTaskPresetFromForm(),
     }),
   );
   appendLog("Settings saved", "muted");
@@ -1605,11 +1657,513 @@ if ($("bhArea")) {
   };
 }
 
+// ── Monitor Feed ───────────────────────────────────────────────────────────
+
+function renderMonitorFeed() {
+  const mon = state?.bandaiGlobalMonitor || {};
+  const line = $("feedStatusLine");
+  if (line) {
+    const bits = [];
+    if (mon.connected) bits.push("SSE connected");
+    else if (mon.running) bits.push("SSE reconnecting…");
+    else bits.push(state?.engine?.running ? "not subscribed" : "engine offline");
+    if (mon.url) bits.push(mon.url.replace(/^https?:\/\//, ""));
+    bits.push(`${mon.hits ?? 0} hits`);
+    bits.push(`${mon.watchTasks ?? 0} watch task(s)`);
+    const bridge = state?.quickTaskBridge;
+    if (bridge?.running) bits.push(`QT bridge :${bridge.port}`);
+    if (mon.lastError) bits.push(`err: ${mon.lastError}`);
+    line.textContent = `Global monitor — ${bits.join(" · ")}`;
+  }
+
+  const list = $("feedList");
+  if (!list) return;
+  const rows = state?.monitorFeed || mon.feed || [];
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty muted">No events yet — start the engine with Bandai global monitor enabled.</div>`;
+    return;
+  }
+  list.innerHTML = rows
+    .map((h, idx) => {
+      const title = h.title || h.productName || h.productId || "—";
+      const reason = (h.reason || "restock").replace(/_/g, " ");
+      const when = h.receivedAt
+        ? new Date(h.receivedAt).toLocaleTimeString()
+        : h.at
+          ? String(h.at).slice(11, 19)
+          : "";
+      return `<div class="item" data-feed-idx="${idx}">
+        <div>
+          <span class="badge hv">${esc(reason)}</span>
+          <strong>${esc(title)}</strong>
+          <div class="meta">${esc(h.productId || "")}${h.areaItemNo ? ` · ${esc(h.areaItemNo)}` : ""}${when ? ` · ${esc(when)}` : ""}</div>
+          <div class="feed-row-actions">
+            <button type="button" data-feed-qt="${idx}">Quick Task</button>
+            <button type="button" class="secondary" data-feed-sa="${idx}">Use in Smart Action</button>
+          </div>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+async function runQuickTask(payload) {
+  if (!window.desktop?.quickTask) {
+    appendLog("Quick Task unavailable", "err");
+    return;
+  }
+  const res = await window.desktop.quickTask(payload);
+  if (res.snapshot) applyState(res.snapshot);
+  if (!res.ok) appendLog(esc(res.error || "Quick Task failed"), "err");
+  else
+    appendLog(
+      `Quick Task ${res.started ? "started" : "created"} — ${esc(res.task?.label || res.task?.id || "")}`,
+      "ok",
+    );
+  return res;
+}
+
+if ($("btnQuickTask")) {
+  $("btnQuickTask").onclick = async () => {
+    const input = $("qtInput")?.value?.trim() || "";
+    if (!input) {
+      appendLog("Paste a Bandai SKU or PDP URL first", "err");
+      return;
+    }
+    await runQuickTask({ input });
+  };
+}
+if ($("qtInput")) {
+  $("qtInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("btnQuickTask")?.click();
+    }
+  });
+}
+if ($("btnFeedClear")) {
+  $("btnFeedClear").onclick = async () => {
+    const res = await window.desktop.monitorFeedClear();
+    if (res.snapshot) applyState(res.snapshot);
+    else if (state) {
+      state.monitorFeed = [];
+      renderMonitorFeed();
+    }
+  };
+}
+
+// ── Smart Actions UI ───────────────────────────────────────────────────────
+
+let saDraftFilters = [];
+let saDraftActions = [];
+
+function saOutcomeBadge(result) {
+  if (!result) return `<span class="badge">—</span>`;
+  const r = String(result);
+  if (r === "Filtered") return `<span class="badge filtered">Filtered</span>`;
+  if (r === "Failed") return `<span class="badge failed">Failed</span>`;
+  if (r === "Completed") return `<span class="badge completed">Completed</span>`;
+  return `<span class="badge">${esc(r)}</span>`;
+}
+
+function renderSmartActions() {
+  const list = $("saList");
+  if (!list) return;
+  const rows = state?.smartActions?.actions || [];
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty muted">No Smart Actions yet — click New Action.</div>`;
+    return;
+  }
+  list.innerHTML = rows
+    .map((a) => {
+      const trig =
+        a.trigger?.type === "quicktask" ? "Quicktask" : "Product Monitor";
+      const filt = (a.filters || []).length;
+      const acts = (a.actions || []).map((x) => x.type).join(" → ") || "—";
+      return `<div class="item">
+        <div>
+          ${saOutcomeBadge(a.lastResult)}
+          <strong>${esc(a.name)}</strong>
+          ${a.enabled === false ? `<span class="badge">off</span>` : ""}
+          <div class="meta">${esc(trig)} · ${filt} filter(s) · ${esc(acts)}${
+            a.runIntervalMs ? ` · interval ${a.runIntervalMs}ms` : ""
+          }</div>
+          <div class="feed-row-actions">
+            <button type="button" data-sa-toggle="${esc(a.id)}" class="secondary">${
+              a.enabled === false ? "Enable" : "Disable"
+            }</button>
+            <button type="button" data-sa-edit="${esc(a.id)}">Edit</button>
+            <button type="button" class="secondary" data-sa-logs="${esc(a.id)}">Logs</button>
+            <button type="button" class="secondary" data-sa-del="${esc(a.id)}">Delete</button>
+          </div>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+function renderSaFiltersEditor() {
+  const el = $("saFilters");
+  if (!el) return;
+  if (!saDraftFilters.length) {
+    el.innerHTML = `<p class="field-hint">No filters — action runs on every matching trigger.</p>`;
+    return;
+  }
+  el.innerHTML = saDraftFilters
+    .map(
+      (f, i) => `<div class="sa-filter-row">
+      <div>
+        <label>Field</label>
+        <select data-sa-ff="${i}">
+          ${["store", "title", "sku", "url", "reason"]
+            .map(
+              (v) =>
+                `<option value="${v}" ${f.field === v ? "selected" : ""}>${v}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+      <div>
+        <label>Op</label>
+        <select data-sa-fo="${i}">
+          ${["matches", "contains", "equals"]
+            .map(
+              (v) =>
+                `<option value="${v}" ${(f.op || "matches") === v ? "selected" : ""}>${v}</option>`,
+            )
+            .join("")}
+        </select>
+      </div>
+      <div>
+        <label>Value</label>
+        <input data-sa-fv="${i}" value="${esc(f.value || "")}" placeholder="gundam, -rg" />
+      </div>
+      <button type="button" class="secondary" data-sa-fdel="${i}">✕</button>
+    </div>`,
+    )
+    .join("");
+}
+
+function renderSaActionsEditor() {
+  const el = $("saActions");
+  if (!el) return;
+  if (!saDraftActions.length) {
+    el.innerHTML = `<p class="field-hint">Add Create Tasks then Start Tasks (order matters).</p>`;
+    return;
+  }
+  el.innerHTML = saDraftActions
+    .map((a, i) => {
+      const cfg = a.config || {};
+      if (a.type === "create_tasks") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Create Tasks</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          <label class="check"><input type="checkbox" data-sa-ac="${i}" data-k="usePreset" ${
+            cfg.usePreset !== false ? "checked" : ""
+          } /> Use Quick Task preset</label>
+          <label>Mode</label>
+          <select data-sa-ac="${i}" data-k="bandaiMode">
+            <option value="checkout" ${cfg.bandaiMode !== "monitor" ? "selected" : ""}>Autocheckout</option>
+            <option value="monitor" ${cfg.bandaiMode === "monitor" ? "selected" : ""}>Monitor</option>
+          </select>
+          <label>Label template</label>
+          <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(
+            cfg.labelTemplate || "{{title}}",
+          )}" />
+          <div class="grid2">
+            <div>
+              <label>Count</label>
+              <input type="number" min="1" max="20" data-sa-ac="${i}" data-k="count" value="${
+                cfg.count ?? 1
+              }" />
+            </div>
+            <div>
+              <label>Qty</label>
+              <input type="number" min="1" max="20" data-sa-ac="${i}" data-k="qty" value="${
+                cfg.qty ?? 1
+              }" />
+            </div>
+          </div>
+        </div>`;
+      }
+      if (a.type === "start_tasks") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Start Tasks</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          <p class="field-hint">Consumes task IDs from Create Tasks above.</p>
+        </div>`;
+      }
+      if (a.type === "notify_discord") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Notify Discord</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          <label>Message</label>
+          <input data-sa-ac="${i}" data-k="message" value="${esc(
+            cfg.message || "Smart Action: {{title}} ({{sku}})",
+          )}" />
+          <p class="field-hint">Uses your checkout webhook — not the Railway restock channel.</p>
+        </div>`;
+      }
+      return `<div class="sa-action-row">
+        <div class="sa-action-head"><strong>${esc(a.type)}</strong>
+          <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+      </div>`;
+    })
+    .join("");
+}
+
+function syncSaDraftFromForm() {
+  // Pull filter values from DOM before rebuilds
+  saDraftFilters = saDraftFilters.map((f, i) => ({
+    field: document.querySelector(`[data-sa-ff="${i}"]`)?.value || f.field || "title",
+    op: document.querySelector(`[data-sa-fo="${i}"]`)?.value || f.op || "matches",
+    value: document.querySelector(`[data-sa-fv="${i}"]`)?.value ?? f.value ?? "",
+  }));
+  saDraftActions = saDraftActions.map((a, i) => {
+    if (a.type === "create_tasks" || a.type === "notify_discord") {
+      const cfg = { ...(a.config || {}) };
+      document.querySelectorAll(`[data-sa-ac="${i}"]`).forEach((node) => {
+        const k = node.getAttribute("data-k");
+        if (!k) return;
+        if (node.type === "checkbox") cfg[k] = node.checked;
+        else if (node.type === "number") cfg[k] = Number(node.value);
+        else cfg[k] = node.value;
+      });
+      return { type: a.type, config: cfg };
+    }
+    return a;
+  });
+}
+
+function openSaEditor(action) {
+  const form = $("saForm");
+  if (!form) return;
+  form.hidden = false;
+  $("saFormTitle").textContent = action?.id ? "Edit Smart Action" : "New Smart Action";
+  $("saId").value = action?.id || "";
+  $("saName").value = action?.name || "";
+  $("saEnabled").checked = action?.enabled !== false;
+  $("saRunOnce").checked = action?.runOnce === true;
+  $("saNotifications").checked = action?.notifications !== false;
+  $("saRunInterval").value = action?.runIntervalMs ?? 30000;
+  $("saTrigger").value =
+    action?.trigger?.type === "quicktask" ? "quicktask" : "product_monitor";
+  saDraftFilters = Array.isArray(action?.filters)
+    ? action.filters.map((f) => ({ ...f }))
+    : [];
+  saDraftActions = Array.isArray(action?.actions)
+    ? action.actions.map((a) => ({ type: a.type, config: { ...(a.config || {}) } }))
+    : [
+        {
+          type: "create_tasks",
+          config: {
+            usePreset: true,
+            bandaiMode: "checkout",
+            labelTemplate: "{{title}}",
+            count: 1,
+            qty: 1,
+          },
+        },
+        { type: "start_tasks", config: {} },
+      ];
+  renderSaFiltersEditor();
+  renderSaActionsEditor();
+}
+
+function closeSaEditor() {
+  if ($("saForm")) $("saForm").hidden = true;
+  saDraftFilters = [];
+  saDraftActions = [];
+}
+
+if ($("btnSaNew")) {
+  $("btnSaNew").onclick = () => openSaEditor(null);
+}
+if ($("btnSaCancel")) {
+  $("btnSaCancel").onclick = () => closeSaEditor();
+}
+if ($("btnSaAddFilter")) {
+  $("btnSaAddFilter").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftFilters.push({ field: "sku", op: "matches", value: "" });
+    renderSaFiltersEditor();
+  };
+}
+if ($("btnSaAddCreate")) {
+  $("btnSaAddCreate").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({
+      type: "create_tasks",
+      config: {
+        usePreset: true,
+        bandaiMode: "checkout",
+        labelTemplate: "{{title}}",
+        count: 1,
+        qty: 1,
+      },
+    });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddStart")) {
+  $("btnSaAddStart").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({ type: "start_tasks", config: {} });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddNotify")) {
+  $("btnSaAddNotify").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({
+      type: "notify_discord",
+      config: { message: "Smart Action: {{title}} ({{sku}})" },
+    });
+    renderSaActionsEditor();
+  };
+}
+if ($("saForm")) {
+  $("saForm").onsubmit = async (e) => {
+    e.preventDefault();
+    syncSaDraftFromForm();
+    const payload = {
+      id: $("saId").value || undefined,
+      name: $("saName").value.trim() || "Untitled action",
+      enabled: $("saEnabled").checked,
+      runOnce: $("saRunOnce").checked,
+      notifications: $("saNotifications").checked,
+      runIntervalMs: Number($("saRunInterval").value) || 0,
+      trigger: { type: $("saTrigger").value || "product_monitor" },
+      filters: saDraftFilters.filter((f) => String(f.value || "").trim()),
+      actions: saDraftActions,
+    };
+    const res = await window.desktop.smartActionUpsert(payload);
+    if (res.snapshot) applyState(res.snapshot);
+    closeSaEditor();
+    appendLog(`Smart Action saved — ${esc(payload.name)}`, "ok");
+  };
+}
+if ($("btnSaLogClose")) {
+  $("btnSaLogClose").onclick = () => {
+    if ($("saLogPanel")) $("saLogPanel").hidden = true;
+  };
+}
+
+// Delegate feed + SA list clicks (extend existing body click handler via capture)
+document.body.addEventListener("click", async (e) => {
+  const t = e.target;
+  if (!(t instanceof HTMLElement)) return;
+
+  if (t.dataset.feedQt != null) {
+    const idx = Number(t.dataset.feedQt);
+    const hit = (state?.monitorFeed || [])[idx];
+    if (!hit) return;
+    await runQuickTask({ hit });
+    return;
+  }
+  if (t.dataset.feedSa != null) {
+    const idx = Number(t.dataset.feedSa);
+    const hit = (state?.monitorFeed || [])[idx];
+    if (!hit) return;
+    const res = await window.desktop.smartActionFromHit(hit);
+    if (res.ok && res.draft) {
+      setTab("smart");
+      openSaEditor(res.draft);
+      appendLog("Smart Action draft from feed hit — review & save", "muted");
+    }
+    return;
+  }
+  if (t.dataset.saToggle) {
+    const id = t.dataset.saToggle;
+    const row = (state?.smartActions?.actions || []).find((a) => a.id === id);
+    const res = await window.desktop.smartActionSetEnabled(id, row?.enabled === false);
+    if (res.snapshot) applyState(res.snapshot);
+    return;
+  }
+  if (t.dataset.saEdit) {
+    const row = (state?.smartActions?.actions || []).find((a) => a.id === t.dataset.saEdit);
+    if (row) openSaEditor(row);
+    return;
+  }
+  if (t.dataset.saLogs) {
+    const id = t.dataset.saLogs;
+    const row = (state?.smartActions?.actions || []).find((a) => a.id === id);
+    const res = await window.desktop.smartActionLogs(id);
+    const panel = $("saLogPanel");
+    const logEl = $("saLogList");
+    if (panel && logEl) {
+      panel.hidden = false;
+      $("saLogTitle").textContent = `Logs — ${row?.name || id}`;
+      const logs = res.logs || [];
+      logEl.innerHTML = logs.length
+        ? logs
+            .map((l) => {
+              const cls =
+                l.level === "err" ? "err" : l.level === "ok" ? "ok" : l.level === "warn" ? "warn" : "muted";
+              const ts = l.at ? new Date(l.at).toLocaleTimeString() : "";
+              return `<div class="${cls}">${esc(ts)} · ${esc(l.step)} · ${esc(l.message)}</div>`;
+            })
+            .join("")
+        : `<div class="muted">No runs yet</div>`;
+    }
+    return;
+  }
+  if (t.dataset.saDel) {
+    if (!confirm("Delete this Smart Action?")) return;
+    const res = await window.desktop.smartActionDelete(t.dataset.saDel);
+    if (res.snapshot) applyState(res.snapshot);
+    return;
+  }
+  if (t.dataset.saFdel != null) {
+    syncSaDraftFromForm();
+    saDraftFilters.splice(Number(t.dataset.saFdel), 1);
+    renderSaFiltersEditor();
+    return;
+  }
+  if (t.dataset.saAdel != null) {
+    syncSaDraftFromForm();
+    saDraftActions.splice(Number(t.dataset.saAdel), 1);
+    renderSaActionsEditor();
+    return;
+  }
+});
+
 if (!window.desktop) {
   console.error("desktop preload failed — UI bridge unavailable");
 } else {
 window.desktop.onEvent((evt) => {
   if (evt.type === "snapshot" && evt.data) applyState(evt.data);
+  if (evt.type === "monitorFeed") {
+    if (evt.cleared && state) {
+      state.monitorFeed = [];
+    } else if (evt.hit && state) {
+      state.monitorFeed = [evt.hit, ...(state.monitorFeed || [])].slice(0, 80);
+      if (state.bandaiGlobalMonitor) {
+        state.bandaiGlobalMonitor = {
+          ...state.bandaiGlobalMonitor,
+          hits: (state.bandaiGlobalMonitor.hits || 0) + 1,
+          feed: state.monitorFeed,
+        };
+      }
+    } else if (evt.feed && state) {
+      state.monitorFeed = evt.feed;
+    }
+    renderMonitorFeed();
+  }
+  if (evt.type === "smartActions" && evt.data && state) {
+    state.smartActions = evt.data;
+    renderSmartActions();
+  }
+  if (evt.type === "smartAction" && evt.phase === "done") {
+    if (evt.outcome === "Filtered") {
+      // Keep overview lastResult; skip live-log spam on busy feeds.
+    } else {
+      appendLog(
+        `SA ${esc(evt.outcome || "")} — ${esc(evt.message || evt.actionId || "")}`,
+        evt.outcome === "Failed" ? "err" : "ok",
+      );
+    }
+  }
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);

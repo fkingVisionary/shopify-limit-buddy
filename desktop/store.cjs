@@ -69,6 +69,23 @@ const DEFAULT_SETTINGS = {
    * Global restock pings are operator-only on the Railway monitor host.
    */
   discordCheckoutWebhook: "",
+  /**
+   * Quick Task defaults (Monitor Feed row / paste SKU → create+start).
+   * Used by Smart Actions Create Tasks when usePreset is on.
+   */
+  quickTaskPreset: {
+    store: "bandai",
+    bandaiMode: "checkout",
+    bandaiCheckoutMode: "fast",
+    profileId: null,
+    proxyGroupId: null,
+    qty: 1,
+    quantity: 1,
+    placeOrder: true,
+    accountAssign: "auto",
+    accountId: null,
+    startAfterCreate: true,
+  },
 };
 
 const DEFAULT_DB = {
@@ -78,16 +95,25 @@ const DEFAULT_DB = {
   results: [],
   /** Generated retailer accounts (Toymate account gen, etc.). */
   accounts: [],
+  /** Cybersole-style Smart Actions (desktop-local; not synced to web). */
+  smartActions: [],
 };
 
 function loadAll() {
   const settings = { ...DEFAULT_SETTINGS, ...readJson("settings.json", {}) };
+  settings.quickTaskPreset = {
+    ...DEFAULT_SETTINGS.quickTaskPreset,
+    ...(settings.quickTaskPreset && typeof settings.quickTaskPreset === "object"
+      ? settings.quickTaskPreset
+      : {}),
+  };
   const db = { ...DEFAULT_DB, ...readJson("db.json", {}) };
   db.profiles = Array.isArray(db.profiles) ? db.profiles : [];
   db.proxyGroups = Array.isArray(db.proxyGroups) ? db.proxyGroups : [];
   db.tasks = Array.isArray(db.tasks) ? db.tasks : [];
   db.results = Array.isArray(db.results) ? db.results.slice(-200) : [];
   db.accounts = Array.isArray(db.accounts) ? db.accounts : [];
+  db.smartActions = Array.isArray(db.smartActions) ? db.smartActions : [];
   return { settings, db };
 }
 
@@ -102,6 +128,7 @@ function saveDb(db) {
     tasks: db.tasks,
     results: (db.results || []).slice(-200),
     accounts: (db.accounts || []).slice(0, 500),
+    smartActions: Array.isArray(db.smartActions) ? db.smartActions.slice(0, 100) : [],
   });
 }
 

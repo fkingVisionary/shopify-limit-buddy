@@ -23,6 +23,8 @@
 
   <nav class="tabs">
     <button type="button" data-tab="tasks" class="active">Tasks</button>
+    <button type="button" data-tab="feed">Monitor Feed</button>
+    <button type="button" data-tab="smart">Smart Actions</button>
     <button type="button" data-tab="harvest">Harvest</button>
     <button type="button" data-tab="profiles">Profiles</button>
     <button type="button" data-tab="accounts">Accounts</button>
@@ -213,6 +215,93 @@
             <button type="submit">Save task</button>
             <button type="button" class="secondary" id="taskReset">Clear</button>
             <button type="button" id="taskRunOne">Run this</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- MONITOR FEED -->
+    <section id="tab-feed" class="panel">
+      <div class="split">
+        <div>
+          <h2>Monitor Feed</h2>
+          <p class="hint">Live Bandai global SSE hits while the engine is subscribed. Quick Task uses Settings → Quick Task preset. Discord restock pings also have a <strong>Quick Task</strong> button → localhost bridge (desktop must be open on this PC). Restock Discord stays on Railway (operator) — not your checkout webhook.</p>
+          <p id="feedStatusLine" class="harvest-bank-strip" aria-live="polite">Global monitor —</p>
+          <div class="feed-qt-row">
+            <input id="qtInput" placeholder="Paste Bandai SKU or PDP URL…" autocomplete="off" />
+            <button type="button" id="btnQuickTask">Quick Task</button>
+            <button type="button" class="secondary" id="btnFeedClear">Clear feed</button>
+          </div>
+          <div id="feedList" class="list"></div>
+        </div>
+        <div class="form-card">
+          <h3>Feed tips</h3>
+          <ol class="hint" style="padding-left:18px;line-height:1.6">
+            <li>Start engine with Bandai global monitor enabled (Settings).</li>
+            <li>Set Quick Task preset (profile + proxy) before using row actions.</li>
+            <li><strong>Quick Task</strong> on a feed row (or Discord ping) creates/starts from the preset.</li>
+            <li>Discord button opens <code>http://127.0.0.1:17865/quicktask</code> — only works with this app open.</li>
+            <li><strong>Use in Smart Action</strong> opens the creator with SKU/title filters prefilled.</li>
+          </ol>
+          <p class="field-hint">Existing Bandai → Monitor → Global watch tasks still checkout on match. Smart Actions only orchestrate Create/Start tasks.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- SMART ACTIONS -->
+    <section id="tab-smart" class="panel">
+      <div class="split">
+        <div>
+          <div class="sa-head">
+            <div>
+              <h2>Smart Actions</h2>
+              <p class="hint">Cybersole-style: 1 trigger → filters (AND) → ordered actions. Engine runs in the main process while the app stays open.</p>
+            </div>
+            <button type="button" id="btnSaNew">New Action</button>
+          </div>
+          <div id="saList" class="list"></div>
+          <div id="saLogPanel" class="form-card" hidden>
+            <h3 id="saLogTitle">Logs</h3>
+            <div id="saLogList" class="log sa-log"></div>
+            <button type="button" class="secondary" id="btnSaLogClose">Close logs</button>
+          </div>
+        </div>
+        <form id="saForm" class="form-card" hidden>
+          <h3 id="saFormTitle">New Smart Action</h3>
+          <input type="hidden" id="saId" />
+          <label>Name</label>
+          <input id="saName" placeholder="Bandai restock → ATC" />
+          <div class="grid2">
+            <label class="check"><input id="saEnabled" type="checkbox" checked /> Enabled</label>
+            <label class="check"><input id="saRunOnce" type="checkbox" /> Run once</label>
+          </div>
+          <label class="check"><input id="saNotifications" type="checkbox" checked /> Notifications</label>
+          <label>Run interval (ms) <span class="optional">debounce — 0 = every hit</span></label>
+          <input id="saRunInterval" type="number" min="0" step="1000" value="30000" />
+
+          <h3 class="sa-section">Trigger</h3>
+          <label>When</label>
+          <select id="saTrigger">
+            <option value="product_monitor">Product Monitor (Bandai SSE)</option>
+            <option value="quicktask">Quicktask</option>
+          </select>
+
+          <h3 class="sa-section">Filters <span class="optional">AND · empty = always</span></h3>
+          <p class="field-hint">Keyword syntax: comma AND, <code>a/b</code> OR, <code>-neg</code> negative.</p>
+          <div id="saFilters"></div>
+          <button type="button" class="secondary" id="btnSaAddFilter">Add filter</button>
+
+          <h3 class="sa-section">Actions <span class="optional">top → bottom</span></h3>
+          <div id="saActions"></div>
+          <div class="row" style="margin-top:8px">
+            <button type="button" class="secondary" id="btnSaAddCreate">+ Create Tasks</button>
+            <button type="button" class="secondary" id="btnSaAddStart">+ Start Tasks</button>
+            <button type="button" class="secondary" id="btnSaAddNotify">+ Notify Discord</button>
+          </div>
+
+          <div class="row" style="margin-top:14px">
+            <button type="submit">Save action</button>
+            <button type="button" class="secondary" id="btnSaCancel">Cancel</button>
           </div>
         </form>
       </div>
@@ -630,7 +719,36 @@
         <input id="setBandaiGlobalMonToken" placeholder="MONITOR_TOKEN from Railway" autocomplete="off" />
         <label>Discord webhook (your checkouts)</label>
         <input id="setDiscordWebhook" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-        <p class="hint">Pings <strong>successful / failed checkouts</strong> from your tasks only. Global restock alerts go to the operator channel on Railway — not this URL.</p>
+        <p class="hint">Pings <strong>successful / failed checkouts</strong> from your tasks only. Global restock alerts go to the operator channel on Railway — not this URL. Smart Action → Notify Discord also uses this webhook.</p>
+
+        <h3 style="margin-top:1.25rem">Quick Task preset</h3>
+        <p class="hint">Defaults for Monitor Feed → Quick Task and Smart Actions Create Tasks (when “Use Quick Task preset” is on).</p>
+        <label>Store</label>
+        <select id="qtPresetStore">
+          <option value="bandai">Premium Bandai AU</option>
+        </select>
+        <label>Bandai mode</label>
+        <select id="qtPresetMode">
+          <option value="checkout">Autocheckout</option>
+          <option value="monitor">Monitor (global + checkout on hit)</option>
+        </select>
+        <label>Profile</label>
+        <select id="qtPresetProfile"></select>
+        <label>Proxy group</label>
+        <select id="qtPresetProxy"></select>
+        <div class="grid2">
+          <div>
+            <label>Qty per checkout</label>
+            <input id="qtPresetQty" type="number" min="1" max="20" value="1" />
+          </div>
+          <div>
+            <label>Parallel tasks</label>
+            <input id="qtPresetQuantity" type="number" min="1" max="50" value="1" />
+          </div>
+        </div>
+        <label class="check"><input id="qtPresetPlaceOrder" type="checkbox" checked /> Place order</label>
+        <label class="check"><input id="qtPresetStart" type="checkbox" checked /> Start after create</label>
+
         <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
         <div class="row">
           <button type="button" id="btnSaveSettings">Save settings</button>

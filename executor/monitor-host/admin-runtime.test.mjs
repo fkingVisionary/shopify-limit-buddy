@@ -30,7 +30,7 @@ test("monitor setKeywords live", () => {
   assert.deepEqual(m.status().keywords, ["X", "Y"]);
 });
 
-test("oos discord is red; restock is black", () => {
+test("oos discord is red; restock is black + Quick Task button", () => {
   const body = vantaOosDiscordBody({
     productId: "N1",
     title: "Demo",
@@ -40,8 +40,19 @@ test("oos discord is red; restock is black", () => {
   assert.match(body.embeds[0].title, /^OOS ·/);
   assert.match(body.embeds[0].description, /OUT OF STOCK/i);
   assert.equal(body.embeds[0].color, 0xdc2626);
-  const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo" });
+  assert.equal(body.components, undefined);
+
+  const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo", areaItemNo: "NAI1" });
   assert.equal(restock.embeds[0].color, 0x000000);
+  assert.ok(Array.isArray(restock.components));
+  const btn = restock.components[0].components.find((c) => /Quick Task/i.test(c.label));
+  assert.ok(btn);
+  assert.equal(btn.style, 5);
+  assert.match(btn.url, /http:\/\/127\.0\.0\.1:17865\/quicktask\?sku=N1/);
+  assert.match(btn.url, /nai=NAI1/);
+  const desktopField = restock.embeds[0].fields.find((f) => f.name === "Desktop");
+  assert.ok(desktopField);
+  assert.match(desktopField.value, /Quick Task/);
 });
 
 test("runtime config round-trip", () => {

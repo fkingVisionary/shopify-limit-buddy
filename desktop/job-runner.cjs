@@ -968,6 +968,8 @@ function finishResult(job, res, summary) {
     loginCheck: Boolean(res?.loginCheck),
     atcWallMs: res?.atcWallMs ?? null,
     transactionId: res?.transactionId || res?.geTransactionId || null,
+    via: res?.via ?? null,
+    isSameCartToken: res?.isSameCartToken ?? null,
     note: res?.note ?? null,
     raw: {
       ok: res?.ok,
