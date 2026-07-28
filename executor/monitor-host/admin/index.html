@@ -164,6 +164,9 @@
       }
       .hits li strong { display: block; margin-bottom: 2px; }
       .hits .meta { color: var(--muted); font-size: 0.75rem; }
+      .hits li.err { border-color: rgba(248,113,113,0.35); }
+      .hits li.warn { border-color: rgba(251,191,36,0.3); }
+      .lvl { font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
       .toast {
         position: fixed;
         left: 50%;
@@ -225,6 +228,7 @@
       <div class="tabs">
         <button type="button" class="active" data-tab="monitor">Monitor</button>
         <button type="button" data-tab="bot">Bot</button>
+        <button type="button" data-tab="logs">Logs</button>
         <button type="button" data-tab="labs">Labs</button>
       </div>
 
@@ -233,9 +237,14 @@
           <h2>Monitor status</h2>
           <div class="grid" id="stats"></div>
           <div class="row">
+            <button id="btnMonStart" type="button">Start</button>
+            <button class="secondary danger" id="btnMonStop" type="button">Stop</button>
+          </div>
+          <div class="row">
             <button class="secondary" id="btnRefresh" type="button">Refresh</button>
             <button class="secondary" id="btnLogout" type="button">Lock</button>
           </div>
+          <p class="hint" id="monHint">Stop pauses polling (useful while testing launches). Start resumes.</p>
         </section>
         <section>
           <h2>Watch keywords / SKUs</h2>
@@ -348,6 +357,26 @@
         </section>
       </div>
 
+      <div class="panel" id="panel-logs">
+        <section>
+          <h2>Logs</h2>
+          <label for="logSource">Filter</label>
+          <select id="logSource">
+            <option value="">All</option>
+            <option value="monitor">Monitor</option>
+            <option value="bot">Bot / tasks</option>
+            <option value="discord">Discord</option>
+            <option value="system">System</option>
+          </select>
+          <div class="row">
+            <button class="secondary" id="btnLogsRefresh" type="button">Refresh logs</button>
+            <button class="secondary" id="btnLogsClear" type="button">Clear</button>
+          </div>
+          <p class="hint">In-memory on this Railway process — clears on redeploy.</p>
+          <ul class="hits" id="logList" style="margin-top:12px"></ul>
+        </section>
+      </div>
+
       <div class="panel" id="panel-labs">
         <section>
           <h2>Discord labs</h2>
@@ -431,6 +460,11 @@
         $("stats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
         const running = Boolean(m.running);
         $("conn").innerHTML = `<span class="dot${running ? " on" : ""}"></span>` + (running ? "live" : "stopped");
+        $("btnMonStart").disabled = running;
+        $("btnMonStop").disabled = !running;
+        $("monHint").textContent = running
+          ? "Monitor is polling. Stop pauses searches (useful while testing launches)."
+          : "Monitor is stopped. Start resumes polling.";
         $("keywords").value = cfg.keywords || "";
         $("isp").value = cfg.ispProxies || "";
         $("dc").value = cfg.dcProxies || "";
@@ -519,10 +553,6 @@
         renderBot(bot);
       }
 
-      document.querySelectorAll(".tabs button").forEach((b) => {
-        b.onclick = () => setTab(b.dataset.tab);
-      });
-
       $("btnLogin").onclick = async () => {
         const t = $("token").value.trim();
         if (!t) return toast("Enter token", "bad");
@@ -539,6 +569,62 @@
       };
       $("btnLogout").onclick = () => { sessionStorage.removeItem(KEY); showApp(false); };
       $("btnRefresh").onclick = async () => { try { await loadAll(); toast("Refreshed","ok"); } catch(e){ toast(e.message,"bad"); } };
+
+      $("btnMonStart").onclick = async () => {
+        try {
+          await api("/monitor/start", { method: "POST" });
+          await loadAll();
+          toast("Monitor started", "ok");
+        } catch (e) { toast(e.message, "bad"); }
+      };
+      $("btnMonStop").onclick = async () => {
+        try {
+          await api("/monitor/stop", { method: "POST" });
+          await loadAll();
+          toast("Monitor stopped", "ok");
+        } catch (e) { toast(e.message, "bad"); }
+      };
+
+      async function loadLogs() {
+        const source = $("logSource").value || "";
+        const q = source ? `?limit=120&source=${encodeURIComponent(source)}` : "?limit=120";
+        const r = await api("/logs" + q);
+        const logs = r.logs || [];
+        $("logList").innerHTML = logs.length
+          ? logs.map((l) => {
+              const cls = l.level === "err" ? "err" : l.level === "warn" ? "warn" : "";
+              const meta = l.meta
+                ? Object.entries(l.meta)
+                    .slice(0, 6)
+                    .map(([k, v]) => `${k}=${v}`)
+                    .join(" · ")
+                : "";
+              return `<li class="${cls}"><span class="lvl">${escapeHtml(l.source)} · ${escapeHtml(l.level)}</span>
+                <strong>${escapeHtml(l.message)}</strong>
+                <div class="meta">${escapeHtml((l.at || "").replace("T", " ").slice(0, 19))}${meta ? " · " + escapeHtml(meta) : ""}</div></li>`;
+            }).join("")
+          : `<li><div class="meta">No logs yet.</div></li>`;
+      }
+      $("btnLogsRefresh").onclick = async () => {
+        try { await loadLogs(); toast("Logs refreshed", "ok"); } catch (e) { toast(e.message, "bad"); }
+      };
+      $("btnLogsClear").onclick = async () => {
+        try {
+          await api("/logs", { method: "DELETE" });
+          await loadLogs();
+          toast("Logs cleared", "ok");
+        } catch (e) { toast(e.message, "bad"); }
+      };
+      $("logSource").onchange = () => { loadLogs().catch(() => {}); };
+
+      // When opening Logs tab, refresh
+      document.querySelectorAll(".tabs button").forEach((b) => {
+        const prev = b.onclick;
+        b.onclick = () => {
+          setTab(b.dataset.tab);
+          if (b.dataset.tab === "logs") loadLogs().catch(() => {});
+        };
+      });
       $("btnBotRefresh").onclick = async () => {
         try {
           const bot = await api("/bot/status");

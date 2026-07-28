@@ -13,6 +13,7 @@ COPY monitor-host/vanta-discord.mjs ./monitor-host/vanta-discord.mjs
 COPY monitor-host/runtime-config.mjs ./monitor-host/runtime-config.mjs
 COPY monitor-host/bot-vault.mjs ./monitor-host/bot-vault.mjs
 COPY monitor-host/bot-executor.mjs ./monitor-host/bot-executor.mjs
+COPY monitor-host/lab-log.mjs ./monitor-host/lab-log.mjs
 COPY monitor-host/admin ./monitor-host/admin
 
 ENV PORT=8080
