@@ -184,6 +184,12 @@ export function createMonitorProxyPool(opts = {}) {
     return stats();
   }
 
+  /** Drop soft cooldowns (watchdog / pool-exhausted recovery). */
+  function clearCooldowns() {
+    coolUntil.clear();
+    return stats();
+  }
+
   function stats() {
     return {
       isp: isp.length,
@@ -201,6 +207,7 @@ export function createMonitorProxyPool(opts = {}) {
     markFail,
     markOk,
     replaceLists,
+    clearCooldowns,
     stats,
   };
 }

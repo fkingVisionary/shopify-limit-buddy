@@ -39,10 +39,18 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 | `BANDAI_MONITOR_KEYWORDS` | Bootstrap keywords |
 | `BANDAI_MONITOR_INTERVAL_MS` | Bootstrap interval |
 | `BANDAI_MONITOR_NOTIFY_OOS` | `0` to disable OOS Discord |
+| `MONITOR_STALE_LIMIT_MS` | Watchdog: max quiet time before restart (default ~6× interval, ≥120s) |
 | `EXECUTOR_URL` | Fly origin, e.g. `https://j1ms-bot-executor.fly.dev` |
 | `EXECUTOR_TOKEN` | Same Bearer as Fly executor (required for Bot tab launches) |
 | `MONITOR_DATA_DIR` / `MONITOR_STATE_PATH` / `BOT_VAULT_PATH` | Durable JSON paths |
 | `RAILWAY_VOLUME_MOUNT_PATH` | Set automatically when a Railway volume is attached |
+
+### Overnight hangs
+
+If polls go quiet (proxy tunnel stuck, Discord webhook hang, loop exit), a **watchdog**
+restarts the monitor in-process and clears proxy cooldowns. `/health` reports
+`healthy:false` + HTTP **503** when stale so Railway can bounce the service as a
+backstop. Admin **Stop** is intentional — health stays green while stopped.
 
 ### Proxy persistence (important)
 

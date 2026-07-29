@@ -24,6 +24,7 @@ import {
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
+import { computeMonitorStale, shouldWatchdogRestart } from "./monitor-watchdog.mjs";
 import {
   parsePresetCatalogBulk,
   normalizePresetCatalogRaw,
@@ -178,19 +179,32 @@ function hitPayload(ev) {
 async function postDiscord(body) {
   const hook = discordHook();
   if (!hook) return { ok: false, skipped: true, error: "no_webhook" };
-  const res = await fetch(hook, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await res.text().catch(() => "");
-  if (!res.ok) {
-    labLog("discord", "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
-    return { ok: false, status: res.status, error: text.slice(0, 200) };
+  const timeoutMs = Math.max(
+    3_000,
+    Number(process.env.DISCORD_WEBHOOK_TIMEOUT_MS) || 12_000,
+  );
+  try {
+    const res = await fetch(hook, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const text = await res.text().catch(() => "");
+    if (!res.ok) {
+      labLog("discord", "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
+      return { ok: false, status: res.status, error: text.slice(0, 200) };
+    }
+    const title = body?.embeds?.[0]?.title || body?.username || "ping";
+    labLog("discord", "info", `sent · ${title}`.slice(0, 200));
+    return { ok: true, status: res.status };
+  } catch (e) {
+    const msg = e?.name === "TimeoutError" || e?.name === "AbortError"
+      ? `webhook_timeout_${timeoutMs}ms`
+      : e?.message || String(e);
+    labLog("discord", "err", msg);
+    return { ok: false, error: msg };
   }
-  const title = body?.embeds?.[0]?.title || body?.username || "ping";
-  labLog("discord", "info", `sent · ${title}`.slice(0, 200));
-  return { ok: true, status: res.status };
 }
 
 /** Post Discord; if components are rejected, retry embed-only (QT link stays in description). */
@@ -342,6 +356,90 @@ hub.monitor.on("error", (e) => {
   console.warn(`[monitor:error] ${e.error || e}`);
   labLog("monitor", "err", String(e.error || e), { polls: e.polls });
 });
+hub.monitor.on("watchdog", (e) => {
+  console.warn(`[monitor:watchdog] ${e.reason || "restart"} restarts=${e.restarts ?? "?"}`);
+  labLog("monitor", "warn", `watchdog ${e.reason || "restart"}`, {
+    restarts: e.restarts,
+  });
+});
+
+/** Prefer in-process heal overnight; Railway 503 is the backstop. */
+let monitorExpectRunning = true;
+let watchdogBusy = false;
+let lastWatchdogAt = 0;
+const WATCHDOG_EVERY_MS = Math.max(
+  15_000,
+  Number(process.env.MONITOR_WATCHDOG_EVERY_MS) || 30_000,
+);
+const WATCHDOG_MIN_GAP_MS = Math.max(
+  30_000,
+  Number(process.env.MONITOR_WATCHDOG_MIN_GAP_MS) || 90_000,
+);
+
+function monitorHealthSnapshot() {
+  const m = hub.monitor.status();
+  if (!monitorExpectRunning) {
+    return {
+      monitor: m,
+      stale: {
+        healthy: true,
+        reason: null,
+        staleMs: m.staleMs ?? null,
+        staleLimitMs: null,
+        running: Boolean(m.running),
+        intentionalStop: true,
+      },
+    };
+  }
+  const stale = computeMonitorStale({
+    running: m.running,
+    lastPollAt: m.lastPollAt,
+    startedAt: m.startedAt,
+    intervalMs: m.intervalMs ?? runtime.intervalMs,
+    staleLimitMs: Number(process.env.MONITOR_STALE_LIMIT_MS) || undefined,
+  });
+  return { monitor: m, stale };
+}
+
+async function runMonitorWatchdog(reason = "tick") {
+  if (watchdogBusy) return null;
+  const { monitor: m, stale } = monitorHealthSnapshot();
+  const decision = shouldWatchdogRestart(stale, { expectRunning: monitorExpectRunning });
+  if (!decision.restart) return { ok: true, restarted: false, stale };
+  const now = Date.now();
+  if (now - lastWatchdogAt < WATCHDOG_MIN_GAP_MS) {
+    return { ok: true, restarted: false, throttled: true, stale };
+  }
+  watchdogBusy = true;
+  lastWatchdogAt = now;
+  try {
+    console.warn(
+      `[watchdog] restarting monitor reason=${decision.reason} via=${reason} staleMs=${stale.staleMs}`,
+    );
+    labLog("monitor", "warn", `watchdog restart · ${decision.reason}`, {
+      via: reason,
+      staleMs: stale.staleMs,
+      limit: stale.staleLimitMs,
+    });
+    if (typeof hub.monitor.restart === "function") {
+      await hub.monitor.restart(decision.reason);
+    } else {
+      await hub.monitor.stop();
+      hub.monitor.start();
+    }
+    monitorExpectRunning = true;
+    return { ok: true, restarted: true, reason: decision.reason, stale };
+  } catch (e) {
+    labLog("monitor", "err", `watchdog restart failed: ${e?.message || e}`);
+    return { ok: false, error: e?.message || String(e), stale };
+  } finally {
+    watchdogBusy = false;
+  }
+}
+
+setInterval(() => {
+  void runMonitorWatchdog("interval");
+}, WATCHDOG_EVERY_MS);
 
 const app = Fastify({ logger: false });
 
@@ -471,22 +569,32 @@ app.get("/qt-setup", async (_req, reply) => {
     );
 });
 
-app.get("/health", async () => {
-  const st = hub.status();
-  return {
-    ok: true,
+app.get("/health", async (_req, reply) => {
+  const { monitor: m, stale } = monitorHealthSnapshot();
+  // Soft-heal on health probe when Railway/desktop pings a dead loop.
+  if (monitorExpectRunning && !stale.healthy) {
+    void runMonitorWatchdog("health");
+  }
+  const payload = {
+    ok: stale.healthy,
     service: "bandai-monitor",
     gitSha: process.env.GIT_SHA || process.env.RAILWAY_GIT_COMMIT_SHA || null,
     area: AREA,
-    intervalMs: st.monitor?.intervalMs ?? runtime.intervalMs,
-    keywords: st.monitor?.keywords || [],
-    monitor: st.monitor,
+    intervalMs: m.intervalMs ?? runtime.intervalMs,
+    keywords: m.keywords || [],
+    monitor: m,
+    healthy: stale.healthy,
+    staleMs: stale.staleMs,
+    staleLimitMs: stale.staleLimitMs,
+    staleReason: stale.reason,
     hitsBuffered: recentHits.length,
     sseClients: sseClients.size,
     authRequired: Boolean(TOKEN),
     admin: "/admin/",
     quickTask: "/qt",
   };
+  // 503 lets Railway restart the service if in-process bounce fails overnight.
+  return reply.code(stale.healthy ? 200 : 503).send(payload);
 });
 
 app.get("/status", async (req, reply) => {
@@ -696,6 +804,7 @@ app.post("/lab/poll", async (req, reply) => {
 
 app.post("/monitor/start", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  monitorExpectRunning = true;
   const st = hub.monitor.status();
   if (st.running) {
     return { ok: true, already: true, monitor: st };
@@ -707,6 +816,7 @@ app.post("/monitor/start", async (req, reply) => {
 
 app.post("/monitor/stop", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  monitorExpectRunning = false;
   const st = hub.monitor.status();
   if (!st.running) {
     return { ok: true, already: true, monitor: st };
@@ -714,6 +824,23 @@ app.post("/monitor/stop", async (req, reply) => {
   await hub.monitor.stop();
   labLog("system", "warn", "Monitor stop requested from admin", { polls: st.polls });
   return { ok: true, monitor: hub.monitor.status() };
+});
+
+app.post("/monitor/restart", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  monitorExpectRunning = true;
+  try {
+    if (typeof hub.monitor.restart === "function") {
+      await hub.monitor.restart("admin");
+    } else {
+      await hub.monitor.stop();
+      hub.monitor.start();
+    }
+    labLog("system", "warn", "Monitor restart requested from admin");
+    return { ok: true, restarted: true, reason: "admin", monitor: hub.monitor.status() };
+  } catch (e) {
+    return reply.code(500).send({ ok: false, error: e?.message || String(e) });
+  }
 });
 
 app.get("/logs", async (req, reply) => {
