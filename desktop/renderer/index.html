@@ -262,6 +262,26 @@
             </div>
             <button type="button" id="btnSaNew">New Action</button>
           </div>
+
+          <div class="form-card" id="saCatalogCard">
+            <h3>Preset catalog</h3>
+            <p class="field-hint">
+              Curated default templates × your store/SKU list. Apply creates one Smart Action per template per SKU
+              (idempotent — re-apply updates, no dupes).
+            </p>
+            <label>Templates</label>
+            <div id="saCatalogTemplates" class="sa-catalog-templates"></div>
+            <label>SKU list <span class="optional">one per line</span></label>
+            <textarea id="saCatalogBulk" rows="4" placeholder="N2890904001 Gundam RX-78&#10;bandai N2903432003 ONE PIECE&#10;kmart,SKU123,Kmart Drop"></textarea>
+            <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
+              <button type="button" id="btnSaCatalogAdd">Add SKUs</button>
+              <button type="button" id="btnSaCatalogApply">Apply catalog</button>
+              <button type="button" class="secondary" id="btnSaCatalogRemove">Remove catalog actions</button>
+            </div>
+            <div id="saCatalogRows" class="list" style="margin-top:10px"></div>
+            <p id="saCatalogMeta" class="field-hint"></p>
+          </div>
+
           <div id="saList" class="list"></div>
           <div id="saLogPanel" class="form-card" hidden>
             <h3 id="saLogTitle">Logs</h3>

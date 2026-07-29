@@ -181,6 +181,10 @@ function normalizeSmartAction(raw = {}, idFn) {
     lastLog: Array.isArray(raw.lastLog) ? raw.lastLog.slice(-80) : [],
     firedOnce: raw.firedOnce === true,
     lastScheduleKey: raw.lastScheduleKey || null,
+    // Preset catalog provenance (template × SKU matrix)
+    catalogKey: raw.catalogKey ? String(raw.catalogKey) : null,
+    catalogTemplateId: raw.catalogTemplateId ? String(raw.catalogTemplateId) : null,
+    catalogRowId: raw.catalogRowId ? String(raw.catalogRowId) : null,
     createdAt: raw.createdAt || now,
     updatedAt: now,
   };

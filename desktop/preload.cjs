@@ -59,6 +59,17 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.invoke("desktop:smart-action-set-enabled", id, enabled),
   smartActionLogs: (id) => ipcRenderer.invoke("desktop:smart-action-logs", id),
   smartActionFromHit: (hit) => ipcRenderer.invoke("desktop:smart-action-from-hit", hit || {}),
+  smartActionCatalogGet: () => ipcRenderer.invoke("desktop:smart-action-catalog-get"),
+  smartActionCatalogSave: (patch) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-save", patch || {}),
+  smartActionCatalogAddBulk: (text, opts) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-add-bulk", text, opts || {}),
+  smartActionCatalogApply: (opts) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-apply", opts || {}),
+  smartActionCatalogRemoveActions: (opts) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-remove-actions", opts || {}),
+  smartActionCatalogDeleteRow: (rowId) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-delete-row", rowId),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

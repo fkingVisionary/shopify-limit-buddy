@@ -1794,12 +1794,86 @@ function saTriggerLabel(a) {
   return "Product Monitor";
 }
 
+function saCatalogState() {
+  return state?.smartActionCatalog || { rows: [], templates: [], enabledTemplateIds: null };
+}
+
+function renderSaCatalog() {
+  const cat = saCatalogState();
+  const templates = cat.templates || [];
+  const enabled = Array.isArray(cat.enabledTemplateIds) ? cat.enabledTemplateIds : null;
+  const tmplEl = $("saCatalogTemplates");
+  if (tmplEl) {
+    if (!templates.length) {
+      tmplEl.innerHTML = `<p class="field-hint">Templates load with app state.</p>`;
+    } else {
+      tmplEl.innerHTML = templates
+        .map((t) => {
+          const on = !enabled || !enabled.length || enabled.includes(t.id);
+          return `<label class="check sa-catalog-tmpl">
+            <input type="checkbox" data-sa-tmpl="${esc(t.id)}" ${on ? "checked" : ""} />
+            <span><strong>${esc(String(t.name).replace(/\{\{.*?\}\}/g, "…"))}</strong>
+            <span class="meta">${esc(t.blurb || t.id)}</span></span>
+          </label>`;
+        })
+        .join("");
+    }
+  }
+  const rowsEl = $("saCatalogRows");
+  if (rowsEl) {
+    const rows = cat.rows || [];
+    if (!rows.length) {
+      rowsEl.innerHTML = `<div class="empty muted">No catalog SKUs yet — paste above and Add SKUs.</div>`;
+    } else {
+      rowsEl.innerHTML = rows
+        .map(
+          (r) => `<div class="item">
+          <div>
+            <strong>${esc(r.title || r.sku)}</strong>
+            ${r.enabled === false ? `<span class="badge">off</span>` : ""}
+            <div class="meta">${esc(r.store)} · <code>${esc(r.sku)}</code> · group ${esc(
+              r.taskGroup || "—",
+            )}</div>
+          </div>
+          <div class="actions">
+            <button type="button" class="secondary" data-sa-cat-del="${esc(r.id)}">Remove</button>
+          </div>
+        </div>`,
+        )
+        .join("");
+    }
+  }
+  const meta = $("saCatalogMeta");
+  if (meta) {
+    const nT =
+      enabled && enabled.length
+        ? enabled.length
+        : templates.length || 6;
+    const nR = (cat.rows || []).filter((r) => r.enabled !== false).length;
+    meta.textContent =
+      nR > 0
+        ? `${nR} SKU(s) × ${nT} template(s) ≈ ${nR * nT} Smart Actions on Apply`
+        : "Add SKUs, pick templates, then Apply catalog.";
+  }
+}
+
+function readSaCatalogEnabledTemplates() {
+  const boxes = document.querySelectorAll("[data-sa-tmpl]");
+  if (!boxes.length) return null;
+  const ids = [];
+  boxes.forEach((el) => {
+    if (el.checked) ids.push(el.getAttribute("data-sa-tmpl"));
+  });
+  return ids;
+}
+
 function renderSmartActions() {
+  renderSaCatalog();
   const list = $("saList");
   if (!list) return;
   const rows = state?.smartActions?.actions || [];
   if (!rows.length) {
-    list.innerHTML = `<div class="empty muted">No Smart Actions yet — click New Action.</div>`;
+    list.innerHTML = `<div class="empty muted">No Smart Actions yet — use Preset catalog or New Action.</div>`;
     return;
   }
   list.innerHTML = rows
@@ -1807,9 +1881,13 @@ function renderSmartActions() {
       const trig = saTriggerLabel(a);
       const filt = (a.filters || []).length;
       const acts = (a.actions || []).map((x) => x.type).join(" → ") || "—";
+      const catBadge = a.catalogTemplateId
+        ? `<span class="badge">catalog</span>`
+        : "";
       return `<div class="item">
         <div>
           ${saOutcomeBadge(a.lastResult)}
+          ${catBadge}
           <strong>${esc(a.name)}</strong>
           ${a.enabled === false ? `<span class="badge">off</span>` : ""}
           <div class="meta">${esc(trig)} · ${filt} filter(s) · ${esc(acts)}${
@@ -2103,6 +2181,43 @@ function closeSaEditor() {
 if ($("btnSaNew")) {
   $("btnSaNew").onclick = () => openSaEditor(null);
 }
+if ($("btnSaCatalogAdd")) {
+  $("btnSaCatalogAdd").onclick = async () => {
+    const text = $("saCatalogBulk")?.value || "";
+    if (!text.trim()) {
+      appendLog("Paste SKUs first", "err");
+      return;
+    }
+    const res = await window.desktop.smartActionCatalogAddBulk(text, {
+      defaultStore: "bandai",
+    });
+    if (res.snapshot) applyState(res.snapshot);
+    if ($("saCatalogBulk")) $("saCatalogBulk").value = "";
+    appendLog(`Catalog: added ${res.added ?? 0} SKU(s) (${res.total ?? 0} total)`, "ok");
+  };
+}
+if ($("btnSaCatalogApply")) {
+  $("btnSaCatalogApply").onclick = async () => {
+    const enabledTemplateIds = readSaCatalogEnabledTemplates();
+    await window.desktop.smartActionCatalogSave({ enabledTemplateIds });
+    const res = await window.desktop.smartActionCatalogApply({
+      enabledTemplateIds,
+      pruneMissing: false,
+    });
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(
+      `Catalog applied — ${res.createdOrUpdated ?? 0} action(s) (${res.rowCount ?? 0}×${res.templateCount ?? 0})`,
+      "ok",
+    );
+  };
+}
+if ($("btnSaCatalogRemove")) {
+  $("btnSaCatalogRemove").onclick = async () => {
+    const res = await window.desktop.smartActionCatalogRemoveActions({});
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(`Removed ${res.removed ?? 0} catalog Smart Action(s)`, "ok");
+  };
+}
 if ($("btnSaCancel")) {
   $("btnSaCancel").onclick = () => closeSaEditor();
 }
@@ -2294,6 +2409,12 @@ document.body.addEventListener("click", async (e) => {
             .join("")
         : `<div class="muted">No runs yet</div>`;
     }
+    return;
+  }
+  if (t.dataset.saCatDel) {
+    const res = await window.desktop.smartActionCatalogDeleteRow(t.dataset.saCatDel);
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(`Catalog SKU removed (${res.removedActions || 0} action(s) cleared)`, "ok");
     return;
   }
   if (t.dataset.saDel) {
