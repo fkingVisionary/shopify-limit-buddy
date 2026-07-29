@@ -8,12 +8,10 @@ COPY monitor-host/package.json monitor-host/package-lock.json ./
 RUN npm install --omit=dev
 
 COPY monitor ./monitor
-COPY monitor-host/server.js ./monitor-host/server.js
-COPY monitor-host/vanta-discord.mjs ./monitor-host/vanta-discord.mjs
-COPY monitor-host/runtime-config.mjs ./monitor-host/runtime-config.mjs
-COPY monitor-host/bot-vault.mjs ./monitor-host/bot-vault.mjs
-COPY monitor-host/bot-executor.mjs ./monitor-host/bot-executor.mjs
-COPY monitor-host/lab-log.mjs ./monitor-host/lab-log.mjs
+# Bake every runtime module — missing one (e.g. preset-catalog.mjs) crashes boot.
+COPY monitor-host/server.js \
+     monitor-host/*.mjs \
+     ./monitor-host/
 COPY monitor-host/admin ./monitor-host/admin
 
 ARG GIT_SHA=unknown
