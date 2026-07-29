@@ -2,7 +2,7 @@
 // Owns: BrowserWindow, local store, executor sidecar, job runner, license IPC.
 // Does NOT execute Kmart checkout in-process — that stays in executor/ via sidecar.
 
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron");
 const path = require("path");
 const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
@@ -26,6 +26,13 @@ const {
   parseTasksImport,
   formatTasksExport,
 } = require("./data-import-export.cjs");
+const {
+  colorForTaskGroup,
+  groupKey,
+  duplicateProfileDraft,
+  duplicateTaskDraft,
+  duplicateTaskGroupDrafts,
+} = require("./task-group-style.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 const { createBandaiHarvestAutoArm } = require("./bandai-harvest-autoarm.cjs");
@@ -95,6 +102,9 @@ if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "obje
   state.db.smartActionCatalog = normalizeCatalogState(state.db.smartActionCatalog);
 }
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
+  state.db.taskGroupColors = {};
+}
 
 /** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
 let dropSchedule = null;
@@ -405,6 +415,53 @@ async function notifyUserCheckoutDiscord(result) {
   }
 }
 
+/** Flash taskbar + OS notification + renderer sound on checkout win. */
+function celebrateCheckoutWin(result) {
+  if (state.settings.successAlertEnabled === false) return;
+  if (classifyCheckoutDiscordKind(result) !== "success") return;
+  const title = "Checkout secured";
+  const body = String(
+    result.orderNumber ||
+      result.consumerLabel ||
+      result.taskLabel ||
+      result.taskId ||
+      "Order placed",
+  ).slice(0, 160);
+  try {
+    if (win && !win.isDestroyed()) {
+      win.flashFrame(true);
+      try {
+        win.setProgressBar(1);
+        setTimeout(() => {
+          try {
+            if (win && !win.isDestroyed()) win.setProgressBar(-1);
+          } catch {
+            /* ignore */
+          }
+        }, 2800);
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (Notification.isSupported()) {
+      const n = new Notification({ title, body });
+      n.show();
+    }
+  } catch {
+    /* ignore */
+  }
+  send({
+    type: "checkoutWin",
+    taskId: result.taskId || null,
+    orderNumber: result.orderNumber || null,
+    label: body,
+  });
+}
+
 function tasksInGroup(taskGroup) {
   const g = String(taskGroup || "").trim().toLowerCase();
   if (!g) return [];
@@ -594,6 +651,7 @@ function snapshot() {
     profiles: state.db.profiles,
     proxyGroups: state.db.proxyGroups,
     tasks: state.db.tasks,
+    taskGroupColors: state.db.taskGroupColors || {},
     results: state.db.results.slice(-50),
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
@@ -631,6 +689,13 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, "renderer", "index.html"));
+  win.on("focus", () => {
+    try {
+      win.flashFrame(false);
+    } catch {
+      /* ignore */
+    }
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
@@ -659,6 +724,7 @@ runner.setFinishedHandler((result) => {
 
   // Per-user Discord: checkout success/fail only (not global restocks).
   void notifyUserCheckoutDiscord(result);
+  celebrateCheckoutWin(result);
 
   // Vault login_check — stamp same-day proof even without a real task row.
   if (result.loginCheck && result.ok) {
@@ -1173,6 +1239,15 @@ ipcMain.handle("desktop:delete-profile", (_e, profileId) => {
   return snapshot();
 });
 
+ipcMain.handle("desktop:duplicate-profile", (_e, profileId) => {
+  const src = (state.db.profiles || []).find((p) => p.id === String(profileId || ""));
+  if (!src) return { ok: false, error: "profile not found", snapshot: snapshot() };
+  const draft = duplicateProfileDraft(src, (p) => store.id(p));
+  state.db.profiles.push(draft);
+  persistDb();
+  return { ok: true, profile: draft, snapshot: snapshot() };
+});
+
 // Proxy groups — entries may include 127.0.0.1:PORT
 ipcMain.handle("desktop:upsert-proxy-group", (_e, group) => {
   const now = Date.now();
@@ -1272,13 +1347,11 @@ function upsertTaskRow(task) {
         ? task.bandaiWatchKeywords.trim()
         : undefined,
     bandaiMonitorIntervalMs:
-      storeId === "bandai" && task.bandaiMode === "monitor"
+      storeId === "bandai"
         ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
         : undefined,
     bandaiMonitorDelayMs:
-      storeId === "bandai" && task.bandaiMode === "monitor"
-        ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0)
-        : undefined,
+      storeId === "bandai" ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0) : undefined,
     bandaiCheckoutOnHit:
       storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
         ? task.bandaiCheckoutOnHit !== false
@@ -1361,6 +1434,15 @@ ipcMain.handle("desktop:delete-task", (_e, taskId) => {
   state.db.tasks = state.db.tasks.filter((t) => t.id !== taskId);
   persistDb();
   return snapshot();
+});
+
+ipcMain.handle("desktop:duplicate-task", (_e, taskId) => {
+  const src = (state.db.tasks || []).find((t) => t.id === String(taskId || ""));
+  if (!src) return { ok: false, error: "task not found", snapshot: snapshot() };
+  const draft = duplicateTaskDraft(src, (p) => store.id(p));
+  state.db.tasks.push(draft);
+  persistDb();
+  return { ok: true, task: draft, snapshot: snapshot() };
 });
 
 ipcMain.handle("desktop:delete-account", (_e, accountId) => {
@@ -1649,6 +1731,88 @@ ipcMain.handle("desktop:patch-task-group", (_e, opts = {}) => {
     updated += 1;
   }
   return { ok: true, taskGroup: group, updated, patch, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:duplicate-task-group", (_e, opts = {}) => {
+  const sourceGroup = String(opts.taskGroup || opts.sourceGroup || "").trim();
+  const destGroup = String(opts.destGroup || "").trim() || undefined;
+  const built = duplicateTaskGroupDrafts(
+    state.db.tasks || [],
+    sourceGroup,
+    destGroup,
+    (p) => store.id(p),
+  );
+  if (!built.ok) return { ok: false, error: built.error, snapshot: snapshot() };
+  for (const draft of built.tasks) {
+    state.db.tasks.push(draft);
+  }
+  // Carry color to the copy when source had an override.
+  const srcKey = groupKey(sourceGroup);
+  const destKey = groupKey(built.destGroup);
+  const srcColor = state.db.taskGroupColors?.[srcKey];
+  if (srcColor && destKey) {
+    state.db.taskGroupColors[destKey] = srcColor;
+  }
+  persistDb();
+  return {
+    ok: true,
+    sourceGroup,
+    destGroup: built.destGroup,
+    duplicated: built.tasks.length,
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:set-task-group-color", (_e, opts = {}) => {
+  const key = groupKey(opts.taskGroup || opts.group || "");
+  if (!key) return { ok: false, error: "task group required", snapshot: snapshot() };
+  const color = String(opts.color || "").trim();
+  if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
+    state.db.taskGroupColors = {};
+  }
+  if (!color || color === "auto") {
+    delete state.db.taskGroupColors[key];
+  } else if (/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+    state.db.taskGroupColors[key] = color;
+  } else {
+    return { ok: false, error: "color must be #hex", snapshot: snapshot() };
+  }
+  persistDb();
+  return {
+    ok: true,
+    taskGroup: key,
+    color: colorForTaskGroup(key, state.db.taskGroupColors),
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
+  const kind = ["success", "fail", "threeds", "monitor"].includes(String(opts.kind || ""))
+    ? String(opts.kind)
+    : "success";
+  const url =
+    resolveDiscordWebhookUrl(state.settings, kind) ||
+    String(opts.url || "").trim() ||
+    null;
+  if (!url) {
+    return { ok: false, error: `No webhook configured for ${kind}` };
+  }
+  const colors = { success: 0x2ecc71, fail: 0xe74c3c, threeds: 0xf1c40f, monitor: 0x7c3aed };
+  const payload = {
+    username: "J1m's Bot",
+    embeds: [
+      {
+        title: `Webhook test · ${kind}`,
+        description: "Desktop Settings ping — routing works if you see this.",
+        color: colors[kind] || 0x3dd6c6,
+        fields: [{ name: "Route", value: kind, inline: true }],
+        timestamp: new Date().toISOString(),
+        footer: { text: "J1m's Bot · desktop" },
+      },
+    ],
+  };
+  const res = await postDiscordWebhook(url, payload);
+  return { ...res, kind, urlHost: (() => { try { return new URL(url).host; } catch { return ""; } })() };
 });
 
 /**

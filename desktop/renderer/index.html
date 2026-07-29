@@ -64,8 +64,11 @@
           <div class="task-group-ops" id="taskGroupOps">
             <label class="drop-fire-label">Group ops</label>
             <input id="massTaskGroup" list="taskGroupList" placeholder="Task group" autocomplete="off" />
+            <input id="massGroupColor" type="color" value="#3dd6c6" title="Group color tag" aria-label="Group color" />
+            <button type="button" id="btnGroupColor" class="secondary">Set color</button>
             <button type="button" id="btnGroupStart">Start group</button>
             <button type="button" id="btnGroupStop" class="secondary">Stop group</button>
+            <button type="button" id="btnGroupDup" class="secondary">Duplicate group</button>
             <input id="massQty" type="number" min="1" max="20" placeholder="Qty" title="Qty per checkout" style="width:4.5rem" />
             <input id="massQuantity" type="number" min="1" max="50" placeholder="Parallel" title="Parallel jobs" style="width:5rem" />
             <input id="massDelay" type="number" min="0" step="500" placeholder="Delay ms" title="Monitor start delay (ms)" style="width:6rem" />
@@ -811,14 +814,29 @@
           Global Bandai restock alerts stay on the operator Railway channel — not these URLs.
         </p>
         <label>Success (checkouts OK)</label>
-        <input id="setDiscordSuccess" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        <div class="row webhook-row">
+          <input id="setDiscordSuccess" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+          <button type="button" class="secondary" id="btnDiscordTestSuccess" data-discord-test="success">Test</button>
+        </div>
         <label>Fail (checkout errors)</label>
-        <input id="setDiscordFail" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        <div class="row webhook-row">
+          <input id="setDiscordFail" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+          <button type="button" class="secondary" id="btnDiscordTestFail" data-discord-test="fail">Test</button>
+        </div>
         <label>3DS / bank approval</label>
-        <input id="setDiscord3ds" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+        <div class="row webhook-row">
+          <input id="setDiscord3ds" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+          <button type="button" class="secondary" id="btnDiscordTest3ds" data-discord-test="threeds">Test</button>
+        </div>
         <label>Monitor / Smart Action notify</label>
-        <input id="setDiscordMonitor" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-        <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty.</p>
+        <div class="row webhook-row">
+          <input id="setDiscordMonitor" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+          <button type="button" class="secondary" id="btnDiscordTestMonitor" data-discord-test="monitor">Test</button>
+        </div>
+        <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty. Test sends a small embed to that route.</p>
+
+        <h3 style="margin-top:1.25rem">Win alerts</h3>
+        <label class="check"><input id="setSuccessAlert" type="checkbox" checked /> Sound + taskbar flash + toast on checkout win</label>
 
         <h3 style="margin-top:1.25rem">Quick Task preset</h3>
         <p class="hint">Defaults for Monitor Feed → Quick Task and Smart Actions Create Tasks (when “Use Quick Task preset” is on).</p>

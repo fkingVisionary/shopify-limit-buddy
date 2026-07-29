@@ -5,6 +5,63 @@ let state = null;
 /** @type {Record<string, object>} last proxy test results by group id */
 const proxyTestResults = {};
 
+const GROUP_PALETTE = [
+  "#3dd6c6",
+  "#7c9cff",
+  "#e6b450",
+  "#f07178",
+  "#c3e88d",
+  "#c792ea",
+  "#89ddff",
+  "#ffcb6b",
+  "#f78c6c",
+  "#82aaff",
+];
+
+function groupKey(name) {
+  return String(name || "")
+    .trim()
+    .toLowerCase();
+}
+
+function colorForGroup(name) {
+  const key = groupKey(name);
+  if (!key) return GROUP_PALETTE[0];
+  const overrides = state?.taskGroupColors || {};
+  const raw = overrides[key];
+  if (raw && /^#[0-9a-fA-F]{3,8}$/.test(String(raw))) return String(raw);
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return GROUP_PALETTE[h % GROUP_PALETTE.length];
+}
+
+/** Short win chirp via Web Audio (no asset file). */
+function playWinSound() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    const notes = [523.25, 659.25, 783.99];
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.18, now + 0.02 + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.28 + i * 0.08);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + i * 0.08);
+      osc.stop(now + 0.35 + i * 0.08);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 900);
+  } catch {
+    /* ignore */
+  }
+}
+
 function setTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === name);
@@ -335,17 +392,22 @@ function renderTasks() {
         t.store === "bandai" && t.lastDropSummary
           ? `<div class="meta drop-summary">${esc(t.lastDropSummary)}</div>`
           : "";
-      const groupMeta = t.taskGroup ? ` · group ${esc(t.taskGroup)}` : "";
+      const groupName = String(t.taskGroup || "").trim();
+      const groupChip = groupName
+        ? `<span class="group-chip" style="--g:${esc(colorForGroup(groupName))}">${esc(groupName)}</span>`
+        : "";
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
-          <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}${groupMeta}</div>
+          ${groupChip}
+          <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
           <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
           ${dropSummary}
         </div>
         <div class="actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
+          <button type="button" class="secondary" data-dup-task="${t.id}">Dup</button>
           ${retryPayBtn}
           <button type="button" data-run-task="${t.id}">Run</button>
           <button type="button" class="danger" data-del-task="${t.id}">Del</button>
@@ -482,6 +544,7 @@ function renderProfiles() {
       </div>
       <div class="actions">
         <button type="button" class="secondary" data-edit-prof="${p.id}">Edit</button>
+        <button type="button" class="secondary" data-dup-prof="${p.id}">Dup</button>
         <button type="button" class="danger" data-del-prof="${p.id}">Del</button>
       </div>
     </div>`,
@@ -589,6 +652,7 @@ function renderSettings() {
   if ($("setDiscordFail")) $("setDiscordFail").value = s.discordFailWebhook || "";
   if ($("setDiscord3ds")) $("setDiscord3ds").value = s.discord3dsWebhook || "";
   if ($("setDiscordMonitor")) $("setDiscordMonitor").value = s.discordMonitorWebhook || "";
+  if ($("setSuccessAlert")) $("setSuccessAlert").checked = s.successAlertEnabled !== false;
   // Legacy single field if still present in DOM
   if ($("setDiscordWebhook")) $("setDiscordWebhook").value = successHook;
   fillQuickTaskPresetSelects();
@@ -1073,6 +1137,14 @@ document.body.addEventListener("click", async (e) => {
   if (t.dataset.delTask) {
     applyState(await window.desktop.deleteTask(t.dataset.delTask));
   }
+  if (t.dataset.dupTask) {
+    const res = await window.desktop.duplicateTask(t.dataset.dupTask);
+    if (!res.ok) appendLog(esc(res.error || "dup failed"), "err");
+    else {
+      appendLog(`Duplicated task → ${esc(res.task?.label || "")}`, "ok");
+      if (res.snapshot) applyState(res.snapshot);
+    }
+  }
   if (t.dataset.runTask) {
     const res = await window.desktop.runTasks([t.dataset.runTask]);
     if (!res.ok) appendLog(esc(res.error), "err");
@@ -1107,6 +1179,14 @@ document.body.addEventListener("click", async (e) => {
   }
   if (t.dataset.delProf) {
     applyState(await window.desktop.deleteProfile(t.dataset.delProf));
+  }
+  if (t.dataset.dupProf) {
+    const res = await window.desktop.duplicateProfile(t.dataset.dupProf);
+    if (!res.ok) appendLog(esc(res.error || "dup failed"), "err");
+    else {
+      appendLog(`Duplicated profile → ${esc(res.profile?.name || "")}`, "ok");
+      if (res.snapshot) applyState(res.snapshot);
+    }
   }
   if (t.dataset.testPx) {
     const id = t.dataset.testPx;
@@ -1518,6 +1598,47 @@ if ($("btnGroupPatch")) {
     if (res.snapshot) applyState(res.snapshot);
   };
 }
+if ($("btnGroupDup")) {
+  $("btnGroupDup").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    const res = await window.desktop.duplicateTaskGroup({ taskGroup: opts.taskGroup });
+    if (!res.ok) appendLog(esc(res.error || "dup group failed"), "err");
+    else {
+      appendLog(
+        `Duplicated group “${esc(opts.taskGroup)}” → “${esc(res.destGroup)}” · ${res.duplicated} task(s)`,
+        "ok",
+      );
+      if ($("massTaskGroup")) $("massTaskGroup").value = res.destGroup || opts.taskGroup;
+      if (res.snapshot) applyState(res.snapshot);
+    }
+  };
+}
+if ($("btnGroupColor")) {
+  $("btnGroupColor").onclick = async () => {
+    const group = $("massTaskGroup")?.value?.trim() || "";
+    if (!group) return appendLog("Pick a task group", "err");
+    const color = $("massGroupColor")?.value || "#3dd6c6";
+    const res = await window.desktop.setTaskGroupColor({ taskGroup: group, color });
+    if (!res.ok) appendLog(esc(res.error || "color failed"), "err");
+    else {
+      appendLog(`Group “${esc(group)}” color ${esc(res.color)}`, "ok");
+      if (res.snapshot) applyState(res.snapshot);
+    }
+  };
+}
+
+// Sync color picker when group name changes
+if ($("massTaskGroup")) {
+  $("massTaskGroup").addEventListener("change", () => {
+    const g = $("massTaskGroup").value.trim();
+    if (g && $("massGroupColor")) $("massGroupColor").value = colorForGroup(g);
+  });
+  $("massTaskGroup").addEventListener("input", () => {
+    const g = $("massTaskGroup").value.trim();
+    if (g && $("massGroupColor")) $("massGroupColor").value = colorForGroup(g);
+  });
+}
 
 $("btnSaveSettings").onclick = async () => {
   applyState(
@@ -1548,6 +1669,7 @@ $("btnSaveSettings").onclick = async () => {
       discordFailWebhook: $("setDiscordFail")?.value?.trim() || "",
       discord3dsWebhook: $("setDiscord3ds")?.value?.trim() || "",
       discordMonitorWebhook: $("setDiscordMonitor")?.value?.trim() || "",
+      successAlertEnabled: $("setSuccessAlert")?.checked !== false,
       quickTaskPreset: readQuickTaskPresetFromForm(),
     }),
   );
@@ -1566,6 +1688,17 @@ $("btnValidate").onclick = async () => {
   if (res.snapshot) applyState(res.snapshot);
   appendLog(esc(res.message || (res.ok ? "OK" : "Invalid")), res.ok ? "ok" : "err");
 };
+
+document.body.addEventListener("click", async (e) => {
+  const btn = e.target instanceof HTMLElement ? e.target.closest("[data-discord-test]") : null;
+  if (!btn) return;
+  e.preventDefault();
+  await $("btnSaveSettings").onclick();
+  const kind = btn.getAttribute("data-discord-test") || "success";
+  const res = await window.desktop.discordTest({ kind });
+  if (!res.ok) appendLog(`Discord ${esc(kind)} test failed: ${esc(res.error || "unknown")}`, "err");
+  else appendLog(`Discord ${esc(kind)} test sent${res.urlHost ? ` → ${esc(res.urlHost)}` : ""}`, "ok");
+});
 
 if ($("btnRetryEngine")) {
   $("btnRetryEngine").onclick = async () => {
@@ -2730,6 +2863,11 @@ window.desktop.onEvent((evt) => {
         evt.outcome === "Failed" ? "err" : "ok",
       );
     }
+  }
+  if (evt.type === "checkoutWin") {
+    if (state?.settings?.successAlertEnabled === false) return;
+    playWinSound();
+    appendLog(`WIN · ${esc(evt.label || evt.orderNumber || evt.taskId || "checkout")}`, "ok");
   }
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
