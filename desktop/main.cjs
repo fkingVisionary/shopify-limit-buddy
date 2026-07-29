@@ -1836,18 +1836,6 @@ ipcMain.handle("desktop:smart-action-logs", (_e, actionId) => ({
   logs: smartActions.getLogs(String(actionId || "")),
 }));
 
-function catalogTemplatePublic(t) {
-  return {
-    id: t.id,
-    name: t.name,
-    displayName: t.displayName || t.name,
-    category: t.category || "Preset",
-    glyph: t.glyph || "SA",
-    accent: t.accent || "silver",
-    blurb: t.blurb || "",
-  };
-}
-
 ipcMain.handle("desktop:smart-action-catalog-get", () => ({
   ok: true,
   catalog: normalizeCatalogState(state.db.smartActionCatalog),
@@ -1911,6 +1899,65 @@ ipcMain.handle("desktop:smart-action-catalog-apply", (_e, opts = {}) => {
     pruneMissing: opts.pruneMissing === true,
   });
   return { ok: true, ...result, snapshot: snapshot() };
+});
+
+/**
+ * Toggle packs on/off: persist selection, upsert actions for ON packs,
+ * enable/disable existing catalog actions to match (no install step).
+ */
+ipcMain.handle("desktop:smart-action-catalog-sync", (_e, opts = {}) => {
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  if (Array.isArray(opts.enabledTemplateIds)) {
+    catalog.enabledTemplateIds = opts.enabledTemplateIds.map(String);
+  } else if (opts.enabledTemplateIds === null) {
+    catalog.enabledTemplateIds = null;
+  }
+  state.db.smartActionCatalog = catalog;
+  persistDb();
+
+  const enabledSet = new Set(
+    Array.isArray(catalog.enabledTemplateIds) && catalog.enabledTemplateIds.length
+      ? catalog.enabledTemplateIds
+      : listTemplates()
+          .filter((t) => t.enabled !== false)
+          .map((t) => t.id),
+  );
+
+  let applied = { createdOrUpdated: 0, rowCount: 0, templateCount: 0 };
+  if ((catalog.rows || []).some((r) => r.enabled !== false && r.sku)) {
+    applied = applyCatalog({
+      catalog: {
+        ...catalog,
+        // Only materialize currently-on packs
+        enabledTemplateIds: [...enabledSet],
+      },
+      upsert: (draft) => smartActions.upsert({ ...draft, enabled: true }),
+      list: () => smartActions.list(),
+      remove: (id) => smartActions.remove(id),
+      pruneMissing: false,
+    });
+  }
+
+  let enabled = 0;
+  let disabled = 0;
+  for (const sa of smartActions.list()) {
+    const tid = sa.catalogTemplateId;
+    if (!tid && !String(sa.id || "").startsWith("sa_cat_")) continue;
+    const on = tid ? enabledSet.has(tid) : false;
+    smartActions.setEnabled(sa.id, on);
+    if (on) enabled += 1;
+    else disabled += 1;
+  }
+
+  return {
+    ok: true,
+    enabled,
+    disabled,
+    createdOrUpdated: applied.createdOrUpdated || 0,
+    rowCount: applied.rowCount || catalog.rows.length,
+    templateCount: enabledSet.size,
+    snapshot: snapshot(),
+  };
 });
 
 ipcMain.handle("desktop:smart-action-catalog-remove-actions", (_e, opts = {}) => {

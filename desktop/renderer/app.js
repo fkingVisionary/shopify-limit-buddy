@@ -1836,22 +1836,21 @@ function renderSaCatalog() {
         box.addEventListener("change", () => {
           tile.classList.toggle("is-on", box.checked);
           refreshSaCatalogMeta();
+          void syncSaCatalogFromTiles();
         });
       });
     }
   }
   const countEl = $("saCatalogTmplCount");
   if (countEl) {
-    const selected = readSaCatalogEnabledTemplates()?.length ?? templates.length;
-    countEl.textContent = templates.length
-      ? `${selected} of ${templates.length} selected`
-      : "";
+    const onCount = readSaCatalogEnabledTemplates()?.length ?? templates.length;
+    countEl.textContent = templates.length ? `${onCount} on · ${templates.length} packs` : "";
   }
   const rowsEl = $("saCatalogRows");
   if (rowsEl) {
     const rows = cat.rows || [];
     if (!rows.length) {
-      rowsEl.innerHTML = `<div class="sa-store-empty">Add SKUs to your library, then Install selected.</div>`;
+      rowsEl.innerHTML = `<div class="sa-store-empty">Add SKUs — on packs apply automatically.</div>`;
     } else {
       rowsEl.innerHTML = rows
         .map(
@@ -1878,16 +1877,19 @@ function refreshSaCatalogMeta() {
   const meta = $("saCatalogMeta");
   if (meta) {
     meta.textContent =
-      nR > 0
-        ? `${nR} SKUs · ${nT} packs → ${nR * nT} installs`
-        : nT
-          ? `${nT} packs ready`
-          : "Select packs";
+      nR > 0 ? `${nR} SKUs · ${nT} packs on` : nT ? `${nT} packs on` : "All packs off";
   }
   const countEl = $("saCatalogTmplCount");
   if (countEl && templates.length) {
-    countEl.textContent = `${nT} of ${templates.length} selected`;
+    countEl.textContent = `${nT} on · ${templates.length} packs`;
   }
+}
+
+async function syncSaCatalogFromTiles() {
+  if (!window.desktop?.smartActionCatalogSync) return;
+  const enabledTemplateIds = readSaCatalogEnabledTemplates() || [];
+  const res = await window.desktop.smartActionCatalogSync({ enabledTemplateIds });
+  if (res?.snapshot) applyState(res.snapshot);
 }
 
 function readSaCatalogEnabledTemplates() {
@@ -2226,29 +2228,8 @@ if ($("btnSaCatalogAdd")) {
     });
     if (res.snapshot) applyState(res.snapshot);
     if ($("saCatalogBulk")) $("saCatalogBulk").value = "";
-    appendLog(`Catalog: added ${res.added ?? 0} SKU(s) (${res.total ?? 0} total)`, "ok");
-  };
-}
-if ($("btnSaCatalogApply")) {
-  $("btnSaCatalogApply").onclick = async () => {
-    const enabledTemplateIds = readSaCatalogEnabledTemplates();
-    await window.desktop.smartActionCatalogSave({ enabledTemplateIds });
-    const res = await window.desktop.smartActionCatalogApply({
-      enabledTemplateIds,
-      pruneMissing: false,
-    });
-    if (res.snapshot) applyState(res.snapshot);
-    appendLog(
-      `Action Store installed — ${res.createdOrUpdated ?? 0} action(s) (${res.rowCount ?? 0}×${res.templateCount ?? 0})`,
-      "ok",
-    );
-  };
-}
-if ($("btnSaCatalogRemove")) {
-  $("btnSaCatalogRemove").onclick = async () => {
-    const res = await window.desktop.smartActionCatalogRemoveActions({});
-    if (res.snapshot) applyState(res.snapshot);
-    appendLog(`Removed ${res.removed ?? 0} catalog Smart Action(s)`, "ok");
+    await syncSaCatalogFromTiles();
+    appendLog(`Library: +${res.added ?? 0} SKU(s) · packs synced`, "ok");
   };
 }
 if ($("btnSaCancel")) {
@@ -2447,7 +2428,8 @@ document.body.addEventListener("click", async (e) => {
   if (t.dataset.saCatDel) {
     const res = await window.desktop.smartActionCatalogDeleteRow(t.dataset.saCatDel);
     if (res.snapshot) applyState(res.snapshot);
-    appendLog(`Catalog SKU removed (${res.removedActions || 0} action(s) cleared)`, "ok");
+    await syncSaCatalogFromTiles();
+    appendLog(`Library SKU removed`, "ok");
     return;
   }
   if (t.dataset.saDel) {

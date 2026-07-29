@@ -206,7 +206,7 @@ const DEFAULT_TEMPLATES = [
 function defaultCatalogState() {
   return {
     rows: [],
-    /** null / empty = all default templates enabled */
+    /** null = all packs on; [] = all off; string[] = allow-list */
     enabledTemplateIds: null,
   };
 }
@@ -385,7 +385,9 @@ function expandCatalog(catalog, opts = {}) {
   const enabledIds = state.enabledTemplateIds;
   const activeTemplates = templates.filter((t) => {
     if (t.enabled === false) return false;
-    if (!enabledIds || !enabledIds.length) return true;
+    // null/undefined = all packs on; [] = all off; otherwise explicit allow-list
+    if (enabledIds == null) return true;
+    if (!enabledIds.length) return false;
     return enabledIds.includes(t.id);
   });
   const rows = state.rows.filter((r) => r.enabled !== false && r.sku);
