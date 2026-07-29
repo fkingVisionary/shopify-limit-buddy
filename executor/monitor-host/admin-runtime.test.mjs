@@ -109,5 +109,82 @@ bandai N2903432003 ONE PIECE
 `);
   assert.equal(rows.length, 2);
   assert.equal(rows[0].sku, "N2890904001");
+  assert.equal(rows[0].needsTitle, false);
   assert.equal(rows[1].store, "bandai");
+});
+
+test("preset catalog accepts SKU-only and Bandai PDP links", async () => {
+  const { parsePresetCatalogBulk, serializePresetCatalogRows } = await import(
+    "./preset-catalog.mjs"
+  );
+  const rows = parsePresetCatalogBulk(`
+N2890904001
+bandai N2903432003
+https://p-bandai.com/au/item/N2890904001
+`);
+  assert.equal(rows.length, 2); // URL dedupes with first SKU
+  assert.equal(rows[0].sku, "N2890904001");
+  assert.equal(rows[0].needsTitle, true);
+  assert.equal(rows[1].sku, "N2903432003");
+  assert.equal(rows[1].store, "bandai");
+  const linkOnly = parsePresetCatalogBulk("https://p-bandai.com/us/item/N1111222333");
+  assert.equal(linkOnly[0].sku, "N1111222333");
+  assert.equal(linkOnly[0].area, "us");
+  assert.equal(linkOnly[0].needsTitle, true);
+  assert.match(serializePresetCatalogRows(linkOnly), /bandai N1111222333/);
+});
+
+test("enrich preset titles fills from site fetch", async () => {
+  const { parsePresetCatalogBulk } = await import("./preset-catalog.mjs");
+  const { enrichPresetTitles, coerceBandaiTitle } = await import(
+    "./enrich-preset-titles.mjs"
+  );
+  assert.equal(coerceBandaiTitle({ en: "GUNDAM CARD GAME 1st Anniversary Set" }), "GUNDAM CARD GAME 1st Anniversary Set");
+  const rows = parsePresetCatalogBulk("N2890904001\nbandai N2903432003 Manual Keep");
+  const out = await enrichPresetTitles(rows, {
+    area: "au",
+    fetchMeta: async (sku) =>
+      sku === "N2890904001"
+        ? { title: "Gundam Anniversary Set", areaItemNo: "NAI0859145AU", areaItemNos: ["NAI0859145AU"] }
+        : null,
+  });
+  assert.ok(out.resolved >= 1);
+  assert.equal(out.rows[0].title, "Gundam Anniversary Set");
+  assert.equal(out.rows[0].areaItemNo, "NAI0859145AU");
+  assert.equal(out.rows[0].titleSource, "site");
+  assert.equal(out.rows[1].title, "Manual Keep"); // manual title kept
+  assert.match(out.raw, /bandai N2890904001 Gundam Anniversary Set/);
+  assert.match(out.raw, /bandai N2903432003 Manual Keep/);
+  assert.ok(out.cacheEntries.some((e) => e.areaItemNo === "NAI0859145AU"));
+});
+
+test("shared product cache upsert + lookup", async () => {
+  const {
+    emptyProductCache,
+    upsertProductEntries,
+    lookupProduct,
+    mergeRowsWithProductCache,
+    isBackendPid,
+  } = await import("./product-cache.mjs");
+  assert.equal(isBackendPid("NAI0859145AU"), true);
+  assert.equal(isBackendPid("NAP0458105001AU"), false);
+  let cache = emptyProductCache();
+  const up = upsertProductEntries(cache, {
+    sku: "N2890904001",
+    areaItemNo: "NAI0859145AU",
+    title: "GUNDAM CARD GAME 1st Anniversary Set",
+    area: "au",
+    source: "enrich",
+  });
+  cache = up.cache;
+  assert.equal(up.changed, 1);
+  const hit = lookupProduct(cache, { sku: "N2890904001", area: "au" });
+  assert.equal(hit.areaItemNo, "NAI0859145AU");
+  const rows = mergeRowsWithProductCache(
+    [{ store: "bandai", sku: "N2890904001", title: "N2890904001", needsTitle: true }],
+    cache,
+    "au",
+  );
+  assert.equal(rows[0].areaItemNo, "NAI0859145AU");
+  assert.match(rows[0].title, /GUNDAM/i);
 });

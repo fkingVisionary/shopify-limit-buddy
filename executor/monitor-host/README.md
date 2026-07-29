@@ -21,6 +21,11 @@ Unlock with `MONITOR_TOKEN`.
 **Watch keywords** = what the poller searches. **Action Store presets** = SKU library
 Desktop pulls via `GET /preset-catalog` (Bearer) for Smart Action packs.
 
+Paste SKU / `bandai SKU` / Bandai PDP link — **Save & fetch names** pulls product
+titles + backend PIDs (NAI) from `p-bandai.com` into a **shared product cache**
+(`GET/POST /product-cache`). Every Desktop member pulls that cache on engine start /
+Action Store refresh so task start can skip public N→NAI resolve.
+
 Bot launches call Fly `POST /run` asynchronously and show recent run status on the phone.
 
 ## Railway env

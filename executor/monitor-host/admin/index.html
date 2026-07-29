@@ -257,13 +257,13 @@
         <section>
           <h2>Action Store presets</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Admin SKU library for Desktop Smart Action packs (Instant Checkout, +30m, etc.).
-            One per line: <code>SKU Title</code> or <code>bandai SKU Title</code>.
-            Desktop pulls this list when packs sync.
+            SKU library for Desktop Smart Action packs. Paste a <strong>SKU</strong>,
+            <code>bandai SKU</code>, or Bandai product link — names + backend PIDs (NAI) are pulled on Save
+            and cached for every Desktop member.
           </p>
-          <textarea id="presetCatalog" placeholder="N2890904001 Gundam Card Game Anniversary&#10;bandai N2903432003 ONE PIECE"></textarea>
+          <textarea id="presetCatalog" placeholder="N2890904001&#10;bandai N2903432003&#10;https://p-bandai.com/au/item/N2890904001"></textarea>
           <div class="row">
-            <button id="btnSavePresets" type="button">Save Action Store SKUs</button>
+            <button id="btnSavePresets" type="button">Save &amp; fetch names</button>
             <button class="secondary" id="btnCopyKwToPresets" type="button">Copy keywords → presets</button>
           </div>
           <p class="hint" id="presetCatalogHint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
@@ -672,15 +672,27 @@
       if ($("btnSavePresets")) {
         $("btnSavePresets").onclick = async () => {
           try {
+            toast("Fetching product names…", "ok");
             const r = await api("/admin/config", {
               method: "PUT",
               body: JSON.stringify({ presetCatalog: $("presetCatalog").value }),
             });
+            if (r.presetCatalog != null) $("presetCatalog").value = r.presetCatalog;
             const n = Array.isArray(r.presetCatalogRows) ? r.presetCatalogRows.length : 0;
+            const en = r.presetEnrich || {};
             if ($("presetCatalogHint")) {
-              $("presetCatalogHint").textContent = `${n} Action Store SKU(s) · Desktop pulls via /preset-catalog`;
+              const bits = [`${n} Action Store SKU(s)`];
+              if (en.resolved) bits.push(`${en.resolved} named from site`);
+              if (en.failed) bits.push(`${en.failed} name lookup failed`);
+              bits.push("Desktop pulls via /preset-catalog");
+              $("presetCatalogHint").textContent = bits.join(" · ");
             }
-            toast(`Action Store SKUs saved (${n})`, "ok");
+            toast(
+              en.failed
+                ? `Saved ${n} — ${en.resolved || 0} named, ${en.failed} still need a retry`
+                : `Saved ${n} SKU(s)${en.resolved ? ` · ${en.resolved} named from site` : ""}`,
+              en.failed ? "bad" : "ok",
+            );
           } catch (e) { toast(e.message, "bad"); }
         };
       }

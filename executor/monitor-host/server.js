@@ -28,6 +28,16 @@ import {
   parsePresetCatalogBulk,
   normalizePresetCatalogRaw,
 } from "./preset-catalog.mjs";
+import { enrichPresetTitles } from "./enrich-preset-titles.mjs";
+import {
+  loadProductCache,
+  saveProductCache,
+  upsertProductEntries,
+  lookupProduct,
+  mergeRowsWithProductCache,
+  listProductCache,
+  isBackendPid,
+} from "./product-cache.mjs";
 import { loadBotVault, saveBotVault, vaultPublicView } from "./bot-vault.mjs";
 import {
   executorFetch,
@@ -46,6 +56,37 @@ const MAX_HITS = Math.max(20, Math.min(500, Number(process.env.MONITOR_HIT_BUFFE
 
 /** @type {ReturnType<typeof loadRuntimeConfig>} */
 let runtime = loadRuntimeConfig();
+
+/** Shared SKU → NAI cache for all Desktop members. */
+let productCache = loadProductCache();
+let productCacheDirty = false;
+let productCacheFlushTimer = null;
+
+function rememberProducts(incoming, source = "monitor") {
+  const { cache, changed } = upsertProductEntries(productCache, incoming, { source, area: AREA });
+  if (!changed) return 0;
+  productCache = cache;
+  productCacheDirty = true;
+  if (!productCacheFlushTimer) {
+    productCacheFlushTimer = setTimeout(() => {
+      productCacheFlushTimer = null;
+      flushProductCache();
+    }, 2_000);
+  }
+  return changed;
+}
+
+function flushProductCache() {
+  if (!productCacheDirty) return productCache;
+  productCache = saveProductCache(productCache, productCache._path);
+  productCacheDirty = false;
+  return productCache;
+}
+
+function presetRowsForResponse(raw) {
+  const parsed = parsePresetCatalogBulk(raw, { defaultArea: AREA });
+  return mergeRowsWithProductCache(parsed, productCache, AREA);
+}
 
 /** @type {object[]} */
 const recentHits = [];
@@ -192,6 +233,23 @@ hub.monitor.on("stock_changed", async (ev) => {
     `${ev.reason || "stock"} ${ev.productId}${ev.title || ev.meta?.title ? ` · ${ev.title || ev.meta?.title}` : ""}`,
     { productId: ev.productId, inStock: ev.inStock, reason: ev.reason },
   );
+  if (ev?.productId) {
+    const nai = isBackendPid(ev.areaItemNo)
+      ? ev.areaItemNo
+      : isBackendPid(ev.meta?.areaItemNo)
+        ? ev.meta.areaItemNo
+        : "";
+    rememberProducts(
+      {
+        sku: ev.productId,
+        areaItemNo: nai,
+        areaItemNos: ev.areaItemNos || ev.meta?.areaItemNos,
+        title: ev.title || ev.meta?.title || "",
+        area: AREA,
+      },
+      "poll",
+    );
+  }
   pushHit(ev);
 
   const reason = String(ev?.reason || "");
@@ -226,6 +284,27 @@ hub.monitor.on("poll", (s) => {
     console.log(
       `[poll] #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events} ms=${s.ms} tier=${s.proxyTier} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
     );
+  }
+  // Harvest NAI/title from the live search snapshot into the shared cache.
+  try {
+    const catalog = hub.monitor.getCatalog?.();
+    if (catalog?.size) {
+      const batch = [];
+      for (const row of catalog.values()) {
+        if (!row?.productId) continue;
+        const nai = isBackendPid(row.areaItemNo) ? row.areaItemNo : "";
+        batch.push({
+          sku: row.productId,
+          areaItemNo: nai,
+          areaItemNos: row.areaItemNos,
+          title: row.title || "",
+          area: AREA,
+        });
+      }
+      if (batch.length) rememberProducts(batch, "poll");
+    }
+  } catch {
+    /* ignore */
   }
   // Keep every poll in the lab buffer (ring-capped) so phone Logs stays useful.
   labLog("monitor", s.events > 0 ? "info" : "info", `poll #${s.polls}`, {
@@ -419,7 +498,8 @@ app.get("/admin/config", async (req, reply) => {
     ok: true,
     keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
     presetCatalog: presetRaw,
-    presetCatalogRows: parsePresetCatalogBulk(presetRaw),
+    presetCatalogRows: presetRowsForResponse(presetRaw),
+    productCacheCount: Object.keys(productCache.entries || {}).length,
     ispProxies: runtime.ispProxies || "",
     dcProxies: runtime.dcProxies || "",
     intervalMs: m.intervalMs ?? runtime.intervalMs,
@@ -433,13 +513,57 @@ app.get("/admin/config", async (req, reply) => {
 app.get("/preset-catalog", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const raw = normalizePresetCatalogRaw(runtime.presetCatalog);
-  const rows = parsePresetCatalogBulk(raw);
+  const rows = presetRowsForResponse(raw);
   return {
     ok: true,
     raw,
     rows,
     count: rows.length,
+    productCacheCount: Object.keys(productCache.entries || {}).length,
     updatedAt: runtime.updatedAt || null,
+  };
+});
+
+/** Shared Bandai product cache (SKU ↔ NAI ↔ title) for all Desktop members. */
+app.get("/product-cache", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const entries = listProductCache(productCache);
+  return {
+    ok: true,
+    updatedAt: productCache.updatedAt || null,
+    count: entries.length,
+    entries,
+  };
+});
+
+app.get("/product-cache/lookup", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const sku = String(req.query?.sku || "").trim();
+  if (!sku) return reply.code(400).send({ ok: false, error: "sku required" });
+  const area = String(req.query?.area || AREA).toLowerCase().slice(0, 2);
+  const entry = lookupProduct(productCache, { sku, area });
+  if (!entry) return { ok: true, found: false, entry: null };
+  return { ok: true, found: true, entry };
+});
+
+app.post("/product-cache", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const incoming = Array.isArray(body.entries)
+    ? body.entries
+    : body.sku || body.productId
+      ? [body]
+      : [];
+  if (!incoming.length) {
+    return reply.code(400).send({ ok: false, error: "entries required" });
+  }
+  const changed = rememberProducts(incoming, body.source || "desktop");
+  flushProductCache();
+  return {
+    ok: true,
+    changed,
+    count: Object.keys(productCache.entries || {}).length,
+    updatedAt: productCache.updatedAt,
   };
 });
 
@@ -451,8 +575,37 @@ app.put("/admin/config", async (req, reply) => {
       const list = hub.monitor.setKeywords(body.keywords);
       runtime.keywords = list.join("\n");
     }
+    let presetEnrich = null;
     if (body.presetCatalog != null) {
-      runtime.presetCatalog = normalizePresetCatalogRaw(body.presetCatalog);
+      const parsed = parsePresetCatalogBulk(body.presetCatalog, { defaultArea: AREA });
+      const enrich =
+        body.enrichTitles === false
+          ? {
+              rows: parsed,
+              raw: normalizePresetCatalogRaw(body.presetCatalog),
+              resolved: 0,
+              failed: 0,
+              skipped: parsed.length,
+              cacheEntries: [],
+            }
+          : await enrichPresetTitles(parsed, {
+              area: AREA,
+              proxyRaw: runtime.ispProxies || body.ispProxies || "",
+              getProduct: (sku) => hub.monitor.getProduct?.(sku) || null,
+              lookupCache: (sku, area) => lookupProduct(productCache, { sku, area }),
+              enrich: true,
+            });
+      runtime.presetCatalog = normalizePresetCatalogRaw(enrich.raw);
+      if (enrich.cacheEntries?.length) {
+        rememberProducts(enrich.cacheEntries, "enrich");
+        flushProductCache();
+      }
+      presetEnrich = {
+        resolved: enrich.resolved,
+        failed: enrich.failed,
+        skipped: enrich.skipped,
+        cached: enrich.cacheEntries?.filter((e) => isBackendPid(e.areaItemNo)).length || 0,
+      };
     }
     if (body.intervalMs != null) {
       runtime.intervalMs = hub.monitor.setIntervalMs(body.intervalMs);
@@ -478,7 +631,9 @@ app.put("/admin/config", async (req, reply) => {
       ok: true,
       keywords: hub.monitor.status().keywords,
       presetCatalog: presetRaw,
-      presetCatalogRows: parsePresetCatalogBulk(presetRaw),
+      presetCatalogRows: presetRowsForResponse(presetRaw),
+      presetEnrich,
+      productCacheCount: Object.keys(productCache.entries || {}).length,
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
       pool: hub.monitor.status().pool,
