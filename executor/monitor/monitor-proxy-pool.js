@@ -107,6 +107,7 @@ export function createMonitorProxyPool(opts = {}) {
   let ispIdx = 0;
   let dcIdx = 0;
   let picks = 0;
+  let exhaustedRecoveries = 0;
 
   function available(list) {
     const now = Date.now();
@@ -124,7 +125,7 @@ export function createMonitorProxyPool(opts = {}) {
     return live[i];
   }
 
-  function next() {
+  function pickOnce() {
     picks += 1;
     const wantIsp = Math.random() < ispRatio;
     const ispRef = { value: ispIdx };
@@ -152,6 +153,23 @@ export function createMonitorProxyPool(opts = {}) {
       return { ok: false, error: "monitor_proxy_pool_exhausted", url: null, tier: null };
     }
     return { ok: true, url, tier, picks };
+  }
+
+  /**
+   * Pick next exit. If every line is cooling, clear cooldowns once and retry
+   * so overnight soft-fails don't leave the monitor dead for a full cooldown window.
+   */
+  function next() {
+    const first = pickOnce();
+    if (first.ok) return first;
+    if (coolUntil.size === 0 && !isp.length && !dc.length) return first;
+    coolUntil.clear();
+    exhaustedRecoveries += 1;
+    const second = pickOnce();
+    if (second.ok) {
+      return { ...second, recoveredFromExhaustion: true };
+    }
+    return first;
   }
 
   function markFail(url, ms = cooldownMs) {
@@ -199,6 +217,7 @@ export function createMonitorProxyPool(opts = {}) {
       cooldownMs,
       cooling: [...coolUntil.entries()].filter(([, t]) => t > Date.now()).length,
       picks,
+      exhaustedRecoveries,
     };
   }
 

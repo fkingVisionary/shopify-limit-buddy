@@ -171,7 +171,12 @@ export function createBandaiStockMonitor(opts = {}) {
   );
   const stickyPolls = Math.max(
     1,
-    Number(opts.stickyPolls || process.env.BANDAI_MONITOR_STICKY_POLLS) || 6,
+    Number(opts.stickyPolls || process.env.BANDAI_MONITOR_STICKY_POLLS) || 3,
+  );
+  /** Wall-clock cap on one exit — thin rotate even if poll count is under stickyPolls. */
+  const stickyMaxMs = Math.max(
+    15_000,
+    Number(opts.stickyMaxMs || process.env.BANDAI_MONITOR_STICKY_MAX_MS) || 75_000,
   );
   const searchLimit = Math.min(
     60,
@@ -192,10 +197,18 @@ export function createBandaiStockMonitor(opts = {}) {
   let lastPollAt = null;
   let startedAt = null;
   let restarts = 0;
-  let sticky = null; // { url, tier, jar, dispatcher, used }
+  let sticky = null; // { url, tier, jar, dispatcher, used, openedAt }
   /** Serialize proxy sessions so force-poll can't race the loop mid-request. */
   let proxyGate = Promise.resolve();
   let autoRestartTimer = null;
+  let rotates = 0;
+
+  function stickyExpired() {
+    if (!sticky) return true;
+    if (sticky.used >= stickyPolls) return true;
+    const age = Date.now() - (sticky.openedAt || 0);
+    return age >= stickyMaxMs;
+  }
 
   async function withProxyCtx(fn) {
     const prev = proxyGate;
@@ -205,12 +218,15 @@ export function createBandaiStockMonitor(opts = {}) {
     });
     await prev;
     try {
-      if (!sticky || sticky.used >= stickyPolls) {
+      if (stickyExpired()) {
+        const prevHost = sticky?.url || null;
         await closeSticky();
         const pick = pool.next();
         if (!pick.ok) {
           throw new Error(pick.error || "monitor_proxy_pool_exhausted");
         }
+        if (prevHost && pick.url !== prevHost) rotates += 1;
+        else if (!prevHost) rotates += 1;
         const jar = createJar();
         const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
         sticky = {
@@ -219,6 +235,8 @@ export function createBandaiStockMonitor(opts = {}) {
           jar,
           dispatcher,
           used: 0,
+          openedAt: Date.now(),
+          recoveredFromExhaustion: Boolean(pick.recoveredFromExhaustion),
           ctx: { jar, dispatcher },
         };
         // Warm once per sticky window — cheap guest HTML for cookies.
@@ -556,6 +574,8 @@ export function createBandaiStockMonitor(opts = {}) {
         polls,
         intervalMs,
         stickyPolls,
+        stickyMaxMs,
+        rotates,
         area,
         keywords,
         products: snapshot.size,

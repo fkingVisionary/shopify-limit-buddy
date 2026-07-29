@@ -483,6 +483,7 @@
           ["Interval", (m.intervalMs ?? "—") + "ms"],
           ["Last poll", staleSec],
           ["Restarts", m.restarts ?? 0],
+          ["Rotates", m.rotates ?? 0],
         ];
         $("stats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
         const running = Boolean(m.running);

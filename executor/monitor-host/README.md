@@ -52,6 +52,14 @@ restarts the monitor in-process and clears proxy cooldowns. `/health` reports
 `healthy:false` + HTTP **503** when stale so Railway can bounce the service as a
 backstop. Admin **Stop** is intentional — health stays green while stopped.
 
+### Proxy rotation (thin)
+
+- Round-robin ISP/DC (default **80% ISP / 20% DC**)
+- Sticky window: **3 polls** or **75s** wall-clock (whichever first), then rotate + re-warm
+- Fail → cooldown that exit (~5 min) and pick the next
+- If the whole pool is cooling → clear cooldowns once and keep polling (no dead wait)
+- Env knobs: `BANDAI_MONITOR_STICKY_POLLS`, `BANDAI_MONITOR_STICKY_MAX_MS`, `BANDAI_MONITOR_ISP_RATIO`, `BANDAI_MONITOR_COOLDOWN_MS`
+
 ### Proxy persistence (important)
 
 Admin **ISP / DC** lines are saved to disk (`vanta-monitor-state.json`), not into Railway env.
