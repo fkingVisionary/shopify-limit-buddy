@@ -23,15 +23,20 @@ function engineUi() {
   const run = state?.runner || {};
   const dot = $("engineDot");
   const label = $("engineLabel");
+  const retry = $("btnRetryEngine");
   if (eng.running && run.inflight > 0) {
     dot.className = "dot busy";
     label.textContent = `Engine on · ${run.inflight} in flight · ${run.queued} queued`;
+    if (retry) retry.hidden = true;
   } else if (eng.running) {
     dot.className = "dot on";
     label.textContent = `Engine on · port ${eng.port} · Hyper ${eng.hyperConfigured ? "ready" : "missing"}`;
+    if (retry) retry.hidden = true;
   } else {
     dot.className = "dot";
-    label.textContent = "Engine offline — app must stay open to run";
+    const why = state?.settings?.licenseMessage || "add API key in Settings if needed";
+    label.textContent = `Engine starting… (${why})`;
+    if (retry) retry.hidden = false;
   }
 }
 
@@ -1473,6 +1478,12 @@ $("btnSaveSettings").onclick = async () => {
     }),
   );
   appendLog("Settings saved", "muted");
+  if (!state?.engine?.running) {
+    const res = await window.desktop.startEngine();
+    if (res.snapshot) applyState(res.snapshot);
+    if (res.ok) appendLog("Engine started", "ok");
+    else if (res.error) appendLog(esc(res.error), "err");
+  }
 };
 
 $("btnValidate").onclick = async () => {
@@ -1482,18 +1493,14 @@ $("btnValidate").onclick = async () => {
   appendLog(esc(res.message || (res.ok ? "OK" : "Invalid")), res.ok ? "ok" : "err");
 };
 
-$("btnStartEngine").onclick = async () => {
-  await $("btnSaveSettings").onclick();
-  const res = await window.desktop.startEngine();
-  if (res.snapshot) applyState(res.snapshot);
-  appendLog(res.ok ? "Engine started" : esc(res.error || "Failed"), res.ok ? "ok" : "err");
-};
-
-$("btnStopEngine").onclick = async () => {
-  const res = await window.desktop.stopEngine();
-  if (res.snapshot) applyState(res.snapshot);
-  appendLog("Engine stopped", "muted");
-};
+if ($("btnRetryEngine")) {
+  $("btnRetryEngine").onclick = async () => {
+    await $("btnSaveSettings").onclick();
+    const res = await window.desktop.startEngine();
+    if (res.snapshot) applyState(res.snapshot);
+    appendLog(res.ok ? "Engine started" : esc(res.error || "Failed"), res.ok ? "ok" : "err");
+  };
+}
 
 $("btnRunAll").onclick = async () => {
   const res = await window.desktop.runTasks([]);
@@ -1815,7 +1822,7 @@ function renderMonitorFeed() {
   if (!list) return;
   const rows = state?.monitorFeed || mon.feed || [];
   if (!rows.length) {
-    list.innerHTML = `<div class="empty muted">No events yet — start the engine with Bandai global monitor enabled.</div>`;
+    list.innerHTML = `<div class="empty muted">No events yet — keep the app open with Bandai global monitor enabled.</div>`;
     return;
   }
   list.innerHTML = rows

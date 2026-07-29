@@ -16,9 +16,9 @@ npm run setup          # install Electron + executor deps + Chromium
 npm start
 ```
 
-1. **Settings** — paste any API key (local/open mode), paste your **Hyper API key** (BYO).
-2. **Start engine** — boots local executor on `127.0.0.1`.
-3. Add a **profile**, optional **proxy group** (`127.0.0.1:PORT` OK), **Kmart task**.
+1. **Settings** — paste any API key (local/open mode), paste store keys as needed (Hyper / CapSolver).
+2. Engine **starts automatically** when the app launches (local executor on `127.0.0.1`).
+3. Add a **profile**, optional **proxy group** (`127.0.0.1:PORT` OK), **task**.
 4. **Run** — watch stages in Results. Close the app → nothing runs.
 
 ## Bandai F5 Harvest (opt-in)
