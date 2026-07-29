@@ -58,6 +58,8 @@ const DEFAULT_SETTINGS = {
   imapMailbox: "INBOX",
   maxConcurrent: 5,
   placeOrderDefault: true,
+  /** Flash taskbar + play sound + OS toast on checkout win. */
+  successAlertEnabled: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
   /** Always-on Bandai Railway global monitor (SSE) while engine is running. */

@@ -151,6 +151,38 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .badge.err { color: var(--err); border-color: #5a3035; }
 .badge.warn { color: #d4a017; border-color: #5a4a20; }
 .badge.run { color: var(--accent); border-color: #2a5a55; }
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 1px 8px 1px 6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--g, var(--accent)) 45%, var(--border));
+  background: color-mix(in srgb, var(--g, var(--accent)) 16%, transparent);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.group-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--g, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--g, var(--accent)) 25%, transparent);
+}
+.webhook-row { align-items: center; }
+.webhook-row input { flex: 1; min-width: 0; }
+.task-group-ops input[type="color"] {
+  width: 2.2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  cursor: pointer;
+}
 
 .log {
   font-family: var(--mono);
