@@ -215,9 +215,23 @@ function esc(s) {
     .replace(/"/g, "&quot;");
 }
 
+function refreshTaskGroupList() {
+  const dl = $("taskGroupList");
+  if (!dl) return;
+  const names = [
+    ...new Set(
+      (state.tasks || [])
+        .map((t) => String(t.taskGroup || "").trim())
+        .filter(Boolean),
+    ),
+  ].sort((a, b) => a.localeCompare(b));
+  dl.innerHTML = names.map((n) => `<option value="${esc(n)}"></option>`).join("");
+}
+
 function renderTasks() {
   renderHarvestBankStrip();
   renderDropPrep();
+  refreshTaskGroupList();
   const el = $("taskList");
   const tasks = state.tasks || [];
   if (!tasks.length) {
@@ -314,11 +328,12 @@ function renderTasks() {
         t.store === "bandai" && t.lastDropSummary
           ? `<div class="meta drop-summary">${esc(t.lastDropSummary)}</div>`
           : "";
+      const groupMeta = t.taskGroup ? ` · group ${esc(t.taskGroup)}` : "";
       return `<div class="item">
         <div>
           <strong>${esc(t.label || "Task")}</strong>
           <span class="badge ${badge}">${esc(statusLabel)}</span>
-          <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
+          <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}${groupMeta}</div>
           <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
           ${dropSummary}
         </div>
@@ -958,6 +973,7 @@ document.body.addEventListener("click", async (e) => {
     $("taskId").value = task.id;
     $("taskFormTitle").textContent = "Edit task";
     $("taskLabel").value = task.label || "";
+    if ($("taskGroup")) $("taskGroup").value = task.taskGroup || "";
     $("taskStore").value = task.store || "kmart";
     if ($("taskToymateMode")) $("taskToymateMode").value = task.toymateMode || "checkout";
     if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
@@ -1084,6 +1100,7 @@ function readTaskForm() {
   return {
     id: $("taskId").value || undefined,
     label: $("taskLabel").value,
+    taskGroup: $("taskGroup")?.value?.trim() || "",
     store,
     pdpUrl: $("taskPdp").value,
     qty: Number($("taskQty").value),
@@ -1766,6 +1783,17 @@ function saOutcomeBadge(result) {
   return `<span class="badge">${esc(r)}</span>`;
 }
 
+function saTriggerLabel(a) {
+  const t = a?.trigger?.type;
+  if (t === "quicktask") return "Quicktask";
+  if (t === "schedule") {
+    const at = a.trigger?.at || "??:??";
+    const rep = a.trigger?.repeat === "once" ? "once" : "daily";
+    return `Schedule ${at} (${rep})`;
+  }
+  return "Product Monitor";
+}
+
 function renderSmartActions() {
   const list = $("saList");
   if (!list) return;
@@ -1776,8 +1804,7 @@ function renderSmartActions() {
   }
   list.innerHTML = rows
     .map((a) => {
-      const trig =
-        a.trigger?.type === "quicktask" ? "Quicktask" : "Product Monitor";
+      const trig = saTriggerLabel(a);
       const filt = (a.filters || []).length;
       const acts = (a.actions || []).map((x) => x.type).join(" → ") || "—";
       return `<div class="item">
@@ -1800,6 +1827,28 @@ function renderSmartActions() {
       </div>`;
     })
     .join("");
+}
+
+function saTargetEditorHtml(i, cfg, { allowCreated = true } = {}) {
+  const t = cfg.target || {};
+  const scope = t.scope || "created";
+  return `<label>Target</label>
+    <select data-sa-ac="${i}" data-k="target.scope">
+      ${allowCreated ? `<option value="created" ${scope === "created" ? "selected" : ""}>Tasks created above</option>` : ""}
+      <option value="group" ${scope === "group" ? "selected" : ""}>Task group</option>
+      <option value="all" ${scope === "all" ? "selected" : ""}>All enabled tasks</option>
+    </select>
+    <label>Task group name</label>
+    <input data-sa-ac="${i}" data-k="target.taskGroup" list="taskGroupList" value="${esc(
+      t.taskGroup || "",
+    )}" placeholder="Drop A" />
+    <p class="field-hint">Group matching is case-insensitive. Set Task group on each task.</p>`;
+}
+
+function syncSaScheduleVisibility() {
+  const opts = $("saScheduleOpts");
+  if (!opts) return;
+  opts.hidden = ($("saTrigger")?.value || "") !== "schedule";
 }
 
 function renderSaFiltersEditor() {
@@ -1848,7 +1897,7 @@ function renderSaActionsEditor() {
   const el = $("saActions");
   if (!el) return;
   if (!saDraftActions.length) {
-    el.innerHTML = `<p class="field-hint">Add Create Tasks then Start Tasks (order matters).</p>`;
+    el.innerHTML = `<p class="field-hint">Add actions in order — e.g. Start Harvester → Wait → Start Tasks (group).</p>`;
     return;
   }
   el.innerHTML = saDraftActions
@@ -1866,6 +1915,10 @@ function renderSaActionsEditor() {
             <option value="checkout" ${cfg.bandaiMode !== "monitor" ? "selected" : ""}>Autocheckout</option>
             <option value="monitor" ${cfg.bandaiMode === "monitor" ? "selected" : ""}>Monitor</option>
           </select>
+          <label>Task group</label>
+          <input data-sa-ac="${i}" data-k="taskGroup" list="taskGroupList" value="${esc(
+            cfg.taskGroup || "",
+          )}" placeholder="optional — tag created tasks" />
           <label>Label template</label>
           <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(
             cfg.labelTemplate || "{{title}}",
@@ -1886,11 +1939,61 @@ function renderSaActionsEditor() {
           </div>
         </div>`;
       }
+      if (a.type === "update_tasks") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Update Tasks</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          ${saTargetEditorHtml(i, cfg)}
+          <label>Product SKU / URL <span class="optional">templates ok</span></label>
+          <input data-sa-ac="${i}" data-k="product" value="${esc(
+            cfg.product || "{{sku}}",
+          )}" placeholder="{{sku}} or PDP URL" />
+          <label>PDP URL override</label>
+          <input data-sa-ac="${i}" data-k="pdpUrl" value="${esc(cfg.pdpUrl || "")}" placeholder="optional {{url}}" />
+          <label>Qty <span class="optional">blank = keep</span></label>
+          <input type="number" min="1" max="20" data-sa-ac="${i}" data-k="qty" value="${
+            cfg.qty != null && cfg.qty !== "" ? cfg.qty : ""
+          }" />
+          <label>Label template <span class="optional">blank = keep</span></label>
+          <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(cfg.labelTemplate || "")}" />
+        </div>`;
+      }
       if (a.type === "start_tasks") {
         return `<div class="sa-action-row">
           <div class="sa-action-head"><strong>Start Tasks</strong>
             <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
-          <p class="field-hint">Consumes task IDs from Create Tasks above.</p>
+          ${saTargetEditorHtml(i, cfg)}
+        </div>`;
+      }
+      if (a.type === "stop_tasks") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Stop Tasks</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          ${saTargetEditorHtml(i, cfg)}
+        </div>`;
+      }
+      if (a.type === "wait") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Wait</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          <label>Delay (seconds)</label>
+          <input type="number" min="0" max="1800" data-sa-ac="${i}" data-k="delaySec" value="${
+            cfg.delaySec ?? 60
+          }" />
+          <p class="field-hint">Max 30 minutes. Use between Start Harvester and Start Tasks.</p>
+        </div>`;
+      }
+      if (a.type === "start_harvester") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Start Harvester</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
+          <p class="field-hint">Starts Bandai harvest pool (engine must be on; proxy group set on Harvest tab).</p>
+        </div>`;
+      }
+      if (a.type === "stop_harvester") {
+        return `<div class="sa-action-row">
+          <div class="sa-action-head"><strong>Stop Harvester</strong>
+            <button type="button" class="secondary" data-sa-adel="${i}">Remove</button></div>
         </div>`;
       }
       if (a.type === "notify_discord") {
@@ -1912,26 +2015,38 @@ function renderSaActionsEditor() {
     .join("");
 }
 
+function setSaConfigPath(cfg, path, value) {
+  const parts = String(path).split(".");
+  let cur = cfg;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const p = parts[i];
+    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+    cur = cur[p];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
 function syncSaDraftFromForm() {
-  // Pull filter values from DOM before rebuilds
   saDraftFilters = saDraftFilters.map((f, i) => ({
     field: document.querySelector(`[data-sa-ff="${i}"]`)?.value || f.field || "title",
     op: document.querySelector(`[data-sa-fo="${i}"]`)?.value || f.op || "matches",
     value: document.querySelector(`[data-sa-fv="${i}"]`)?.value ?? f.value ?? "",
   }));
   saDraftActions = saDraftActions.map((a, i) => {
-    if (a.type === "create_tasks" || a.type === "notify_discord") {
-      const cfg = { ...(a.config || {}) };
-      document.querySelectorAll(`[data-sa-ac="${i}"]`).forEach((node) => {
-        const k = node.getAttribute("data-k");
-        if (!k) return;
-        if (node.type === "checkbox") cfg[k] = node.checked;
-        else if (node.type === "number") cfg[k] = Number(node.value);
-        else cfg[k] = node.value;
-      });
-      return { type: a.type, config: cfg };
-    }
-    return a;
+    const cfg = { ...(a.config || {}) };
+    if (cfg.target) cfg.target = { ...cfg.target };
+    document.querySelectorAll(`[data-sa-ac="${i}"]`).forEach((node) => {
+      const k = node.getAttribute("data-k");
+      if (!k) return;
+      let val;
+      if (node.type === "checkbox") val = node.checked;
+      else if (node.type === "number") {
+        val = node.value === "" ? "" : Number(node.value);
+      } else val = node.value;
+      if (k.includes(".")) setSaConfigPath(cfg, k, val);
+      else cfg[k] = val;
+    });
+    return { type: a.type, config: cfg };
   });
 }
 
@@ -1946,8 +2061,16 @@ function openSaEditor(action) {
   $("saRunOnce").checked = action?.runOnce === true;
   $("saNotifications").checked = action?.notifications !== false;
   $("saRunInterval").value = action?.runIntervalMs ?? 30000;
-  $("saTrigger").value =
-    action?.trigger?.type === "quicktask" ? "quicktask" : "product_monitor";
+  const trigType = action?.trigger?.type || "product_monitor";
+  $("saTrigger").value = ["quicktask", "schedule", "product_monitor"].includes(trigType)
+    ? trigType
+    : "product_monitor";
+  if ($("saScheduleAt")) $("saScheduleAt").value = action?.trigger?.at || "07:00";
+  if ($("saScheduleRepeat"))
+    $("saScheduleRepeat").value = action?.trigger?.repeat === "once" ? "once" : "daily";
+  if ($("saScheduleTz"))
+    $("saScheduleTz").value = action?.trigger?.tz || "Australia/Sydney";
+  syncSaScheduleVisibility();
   saDraftFilters = Array.isArray(action?.filters)
     ? action.filters.map((f) => ({ ...f }))
     : [];
@@ -1962,9 +2085,10 @@ function openSaEditor(action) {
             labelTemplate: "{{title}}",
             count: 1,
             qty: 1,
+            taskGroup: "",
           },
         },
-        { type: "start_tasks", config: {} },
+        { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
       ];
   renderSaFiltersEditor();
   renderSaActionsEditor();
@@ -2000,6 +2124,7 @@ if ($("btnSaAddCreate")) {
         labelTemplate: "{{title}}",
         count: 1,
         qty: 1,
+        taskGroup: "",
       },
     });
     renderSaActionsEditor();
@@ -2008,7 +2133,57 @@ if ($("btnSaAddCreate")) {
 if ($("btnSaAddStart")) {
   $("btnSaAddStart").onclick = () => {
     syncSaDraftFromForm();
-    saDraftActions.push({ type: "start_tasks", config: {} });
+    saDraftActions.push({
+      type: "start_tasks",
+      config: { target: { scope: "created", taskGroup: "" } },
+    });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddStop")) {
+  $("btnSaAddStop").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({
+      type: "stop_tasks",
+      config: { target: { scope: "group", taskGroup: "" } },
+    });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddUpdate")) {
+  $("btnSaAddUpdate").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({
+      type: "update_tasks",
+      config: {
+        target: { scope: "group", taskGroup: "" },
+        product: "{{sku}}",
+        pdpUrl: "",
+        qty: "",
+        labelTemplate: "",
+      },
+    });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddWait")) {
+  $("btnSaAddWait").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({ type: "wait", config: { delaySec: 60 } });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddHarvestStart")) {
+  $("btnSaAddHarvestStart").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({ type: "start_harvester", config: {} });
+    renderSaActionsEditor();
+  };
+}
+if ($("btnSaAddHarvestStop")) {
+  $("btnSaAddHarvestStop").onclick = () => {
+    syncSaDraftFromForm();
+    saDraftActions.push({ type: "stop_harvester", config: {} });
     renderSaActionsEditor();
   };
 }
@@ -2022,10 +2197,23 @@ if ($("btnSaAddNotify")) {
     renderSaActionsEditor();
   };
 }
+if ($("saTrigger")) {
+  $("saTrigger").onchange = () => syncSaScheduleVisibility();
+}
 if ($("saForm")) {
   $("saForm").onsubmit = async (e) => {
     e.preventDefault();
     syncSaDraftFromForm();
+    const trigType = $("saTrigger").value || "product_monitor";
+    const trigger =
+      trigType === "schedule"
+        ? {
+            type: "schedule",
+            at: $("saScheduleAt")?.value || "07:00",
+            repeat: $("saScheduleRepeat")?.value || "daily",
+            tz: $("saScheduleTz")?.value || "Australia/Sydney",
+          }
+        : { type: trigType };
     const payload = {
       id: $("saId").value || undefined,
       name: $("saName").value.trim() || "Untitled action",
@@ -2033,7 +2221,7 @@ if ($("saForm")) {
       runOnce: $("saRunOnce").checked,
       notifications: $("saNotifications").checked,
       runIntervalMs: Number($("saRunInterval").value) || 0,
-      trigger: { type: $("saTrigger").value || "product_monitor" },
+      trigger,
       filters: saDraftFilters.filter((f) => String(f.value || "").trim()),
       actions: saDraftActions,
     };
