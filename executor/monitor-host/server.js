@@ -23,7 +23,7 @@ import {
   buildQuickTaskLocalUrl,
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
-import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config.mjs";
+import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
 import {
   parsePresetCatalogBulk,
   normalizePresetCatalogRaw,
@@ -56,6 +56,20 @@ const MAX_HITS = Math.max(20, Math.min(500, Number(process.env.MONITOR_HIT_BUFFE
 
 /** @type {ReturnType<typeof loadRuntimeConfig>} */
 let runtime = loadRuntimeConfig();
+const persistence = () => runtimePersistenceInfo(runtime._path);
+console.log(
+  JSON.stringify({
+    event: "runtime_persistence",
+    ...persistence(),
+    fromDisk: Boolean(runtime._fromDisk),
+    ispLines: String(runtime.ispProxies || "")
+      .split(/\r?\n/)
+      .filter((l) => l.trim() && !l.trim().startsWith("#")).length,
+    dcLines: String(runtime.dcProxies || "")
+      .split(/\r?\n/)
+      .filter((l) => l.trim() && !l.trim().startsWith("#")).length,
+  }),
+);
 
 /** Shared SKU → NAI cache for all Desktop members. */
 let productCache = loadProductCache();
@@ -480,6 +494,7 @@ app.get("/status", async (req, reply) => {
       updatedAt: runtime.updatedAt || null,
       statePath: runtime._path || null,
       fromDisk: Boolean(runtime._fromDisk),
+      persistence: persistence(),
     },
   };
 });
@@ -506,6 +521,7 @@ app.get("/admin/config", async (req, reply) => {
     notifyOos: runtime.notifyOos !== false,
     updatedAt: runtime.updatedAt || null,
     pool: m.pool || null,
+    persistence: persistence(),
   };
 });
 
@@ -636,8 +652,11 @@ app.put("/admin/config", async (req, reply) => {
       productCacheCount: Object.keys(productCache.entries || {}).length,
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
+      ispProxies: runtime.ispProxies || "",
+      dcProxies: runtime.dcProxies || "",
       pool: hub.monitor.status().pool,
       updatedAt: runtime.updatedAt,
+      persistence: persistence(),
     };
   } catch (e) {
     return reply.code(400).send({ ok: false, error: e?.message || String(e) });
@@ -1032,6 +1051,7 @@ console.log(
     admin: "/admin/",
     statePath: runtime._path,
     fromDisk: Boolean(runtime._fromDisk),
+    persistence: persistence(),
     executorConfigured: executorStatus().configured,
   }),
 );

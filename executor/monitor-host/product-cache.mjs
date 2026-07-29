@@ -5,16 +5,11 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveStateFile } from "./data-dir.mjs";
 
 function defaultCachePath() {
   if (process.env.MONITOR_PRODUCT_CACHE_PATH) return process.env.MONITOR_PRODUCT_CACHE_PATH;
-  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) {
-    return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "vanta-product-cache.json");
-  }
-  if (process.env.MONITOR_STATE_PATH) {
-    return path.join(path.dirname(process.env.MONITOR_STATE_PATH), "vanta-product-cache.json");
-  }
-  return "/tmp/vanta-product-cache.json";
+  return resolveStateFile("vanta-product-cache.json").path;
 }
 
 export function isBackendPid(code) {

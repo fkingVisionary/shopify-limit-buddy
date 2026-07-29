@@ -34,14 +34,27 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 |---|---|
 | `MONITOR_TOKEN` | Bearer for admin + APIs |
 | `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
-| `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap) |
-| `BANDAI_MONITOR_DC_PROXIES` | Monitor DC (optional) |
+| `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap / env OSPs) |
+| `BANDAI_MONITOR_DC_PROXIES` | Monitor DC (optional bootstrap) |
 | `BANDAI_MONITOR_KEYWORDS` | Bootstrap keywords |
 | `BANDAI_MONITOR_INTERVAL_MS` | Bootstrap interval |
 | `BANDAI_MONITOR_NOTIFY_OOS` | `0` to disable OOS Discord |
 | `EXECUTOR_URL` | Fly origin, e.g. `https://j1ms-bot-executor.fly.dev` |
 | `EXECUTOR_TOKEN` | Same Bearer as Fly executor (required for Bot tab launches) |
-| `MONITOR_STATE_PATH` / `BOT_VAULT_PATH` | Optional durable JSON paths (or Railway volume) |
+| `MONITOR_DATA_DIR` / `MONITOR_STATE_PATH` / `BOT_VAULT_PATH` | Durable JSON paths |
+| `RAILWAY_VOLUME_MOUNT_PATH` | Set automatically when a Railway volume is attached |
+
+### Proxy persistence (important)
+
+Admin **ISP / DC** lines are saved to disk (`vanta-monitor-state.json`), not into Railway env.
+Hardcoded env OSPs (`BANDAI_MONITOR_ISP_PROXIES`) always come back on boot as the bootstrap list.
+
+Default write path is **`/data`** (container layer → survives process restart). **`/tmp` is ephemeral**
+and will drop admin-added proxies after a restart — only env OSPs remain.
+
+For **redeploy-safe** saves: Railway → service → **Volumes** → mount at `/data`
+(or set `MONITOR_DATA_DIR` / `RAILWAY_VOLUME_MOUNT_PATH`). The admin Monitor tab shows a
+persistence warning when saves would not survive.
 
 Without `EXECUTOR_TOKEN`, Monitor + Discord labs still work; Bot launches show a setup warning.
 

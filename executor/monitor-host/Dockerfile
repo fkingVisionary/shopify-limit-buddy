@@ -18,5 +18,8 @@ ARG GIT_SHA=unknown
 ENV GIT_SHA=$GIT_SHA
 ENV PORT=8080
 ENV NODE_ENV=production
+# Container-writable dir for admin ISP/DC + keywords (survives process restart).
+# Attach a Railway volume mounted at /data (or set RAILWAY_VOLUME_MOUNT_PATH) to survive redeploys.
+RUN mkdir -p /data
 EXPOSE 8080
 CMD ["node", "monitor-host/server.js"]

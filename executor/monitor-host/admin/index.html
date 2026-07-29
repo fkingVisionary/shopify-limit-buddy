@@ -270,6 +270,7 @@
         </section>
         <section>
           <h2>Monitor proxies</h2>
+          <p id="persistWarn" class="warn" style="display:none;margin:0 0 10px"></p>
           <label for="isp">ISP lines</label>
           <textarea id="isp"></textarea>
           <label for="dc">DC lines (optional)</label>
@@ -281,6 +282,7 @@
             <input id="notifyOos" type="checkbox" />
           </div>
           <div class="row"><button id="btnSaveProx" type="button">Save proxies &amp; settings</button></div>
+          <p id="persistHint" class="hint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
         </section>
         <section>
           <h2>Recent hits</h2>
@@ -500,11 +502,43 @@
         $("dc").value = cfg.dcProxies || "";
         $("interval").value = cfg.intervalMs || 5000;
         $("notifyOos").checked = cfg.notifyOos !== false;
+        applyPersistence(cfg.persistence);
         const hits = st.recentHits || [];
         $("hits").innerHTML = hits.length
           ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>
               <div class="meta">${escapeHtml(h.productId||"")} · ${escapeHtml(h.reason||"")} · ${escapeHtml((h.at||"").replace("T"," ").slice(0,19))}</div></li>`).join("")
           : `<li><div class="meta">No monitor hits yet.</div></li>`;
+      }
+
+      function applyPersistence(p) {
+        const warn = $("persistWarn");
+        const hint = $("persistHint");
+        if (!p) {
+          if (warn) warn.style.display = "none";
+          if (hint) hint.textContent = "";
+          return;
+        }
+        const path = p.statePath || p.dataDir || "";
+        if (hint) {
+          hint.textContent = p.survivesRedeploy
+            ? `Saved to volume · ${path}`
+            : p.survivesRestart
+              ? `Saved under ${path} (survives restart; attach Railway volume at /data for redeploys)`
+              : `Ephemeral ${path} — env OSPs only after restart. Attach Railway volume at /data.`;
+        }
+        if (warn) {
+          if (p.ephemeral) {
+            warn.style.display = "block";
+            warn.textContent =
+              "Proxy saves will not survive a restart (state is in /tmp). Env OSPs come back; admin ISP/DC lines do not. Attach a Railway volume mounted at /data.";
+          } else if (!p.survivesRedeploy) {
+            warn.style.display = "block";
+            warn.textContent =
+              "Proxy saves survive process restart, but a Railway redeploy still wipes them unless you attach a volume at /data.";
+          } else {
+            warn.style.display = "none";
+          }
+        }
       }
 
       function fillAccounts(vault) {
@@ -706,7 +740,7 @@
       }
       $("btnSaveProx").onclick = async () => {
         try {
-          await api("/admin/config", {
+          const r = await api("/admin/config", {
             method: "PUT",
             body: JSON.stringify({
               ispProxies: $("isp").value,
@@ -715,7 +749,13 @@
               notifyOos: $("notifyOos").checked,
             }),
           });
-          toast("Monitor settings live", "ok");
+          applyPersistence(r.persistence);
+          toast(
+            r.persistence?.ephemeral
+              ? "Saved live — but ephemeral (will reset on restart)"
+              : "Monitor settings live",
+            r.persistence?.ephemeral ? "bad" : "ok",
+          );
         } catch (e) { toast(e.message, "bad"); }
       };
 

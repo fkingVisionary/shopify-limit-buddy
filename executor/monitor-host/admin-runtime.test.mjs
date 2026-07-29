@@ -87,7 +87,7 @@ test("runtime config round-trip", () => {
       keywords: "GUNDAM",
       presetCatalog: "N2890904001 Gundam Anniversary",
       ispProxies: "1.1.1.1:80:u:p",
-      dcProxies: "",
+      dcProxies: "4.4.4.4:80:e:f",
       intervalMs: 4000,
       notifyOos: true,
     },
@@ -96,9 +96,54 @@ test("runtime config round-trip", () => {
   const loaded = loadRuntimeConfig(file);
   assert.equal(loaded.keywords, "GUNDAM");
   assert.match(loaded.presetCatalog, /N2890904001/);
+  assert.equal(loaded.ispProxies, "1.1.1.1:80:u:p");
+  assert.equal(loaded.dcProxies, "4.4.4.4:80:e:f");
   assert.equal(loaded.intervalMs, 4000);
   assert.equal(loaded._fromDisk, true);
   fs.unlinkSync(file);
+});
+
+test("disk proxy lists win over env bootstrap after save", () => {
+  const file = path.join(os.tmpdir(), `vanta-cfg-env-${Date.now()}.json`);
+  const prevIsp = process.env.BANDAI_MONITOR_ISP_PROXIES;
+  const prevDc = process.env.BANDAI_MONITOR_DC_PROXIES;
+  process.env.BANDAI_MONITOR_ISP_PROXIES = "osp.example:80:u:p";
+  process.env.BANDAI_MONITOR_DC_PROXIES = "osp-dc.example:80:u:p";
+  try {
+    saveRuntimeConfig(
+      {
+        keywords: "X",
+        ispProxies: "admin-isp:80:a:b\nadmin-isp2:80:c:d",
+        dcProxies: "admin-dc:80:e:f",
+        intervalMs: 5000,
+        notifyOos: true,
+      },
+      file,
+    );
+    const loaded = loadRuntimeConfig(file);
+    assert.match(loaded.ispProxies, /admin-isp/);
+    assert.doesNotMatch(loaded.ispProxies, /osp\.example/);
+    assert.match(loaded.dcProxies, /admin-dc/);
+    assert.doesNotMatch(loaded.dcProxies, /osp-dc/);
+  } finally {
+    if (prevIsp == null) delete process.env.BANDAI_MONITOR_ISP_PROXIES;
+    else process.env.BANDAI_MONITOR_ISP_PROXIES = prevIsp;
+    if (prevDc == null) delete process.env.BANDAI_MONITOR_DC_PROXIES;
+    else process.env.BANDAI_MONITOR_DC_PROXIES = prevDc;
+    try {
+      fs.unlinkSync(file);
+    } catch {
+      /* ignore */
+    }
+  }
+});
+
+test("data-dir marks tmp as ephemeral", async () => {
+  const { isEphemeralPath, persistenceMeta } = await import("./data-dir.mjs");
+  assert.equal(isEphemeralPath("/tmp/vanta-monitor-state.json"), true);
+  const meta = persistenceMeta(path.join(os.tmpdir(), "x.json"));
+  assert.equal(meta.ephemeral, true);
+  assert.equal(meta.survivesRestart, false);
 });
 
 test("preset catalog bulk parse", async () => {
