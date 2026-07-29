@@ -52,10 +52,18 @@ export function normalizeCatalogCard(p) {
   if (!p || typeof p !== "object") return null;
   const productId = String(p.productCode || p.code || p.productSn || "").trim();
   if (!productId) return null;
-  const purchaseAvailable = Boolean(p.purchaseAvailable);
   const flags = Array.isArray(p.flags) ? p.flags.map(String) : [];
   const oos = flags.some((f) => /OUT_OF_STOCK/i.test(f));
-  const inStock = purchaseAvailable && !oos;
+  // Search/list cards often OMIT purchaseAvailable entirely — stock is signaled by
+  // the OUT_OF_STOCK flag (and saleStatus). Requiring Boolean(purchaseAvailable)
+  // made every search card look OOS forever → no Discord restock pings.
+  const hasPurchaseField =
+    Object.prototype.hasOwnProperty.call(p, "purchaseAvailable") &&
+    p.purchaseAvailable != null;
+  const saleOn =
+    !p.saleStatus || /^(on|sale|available)$/i.test(String(p.saleStatus).trim());
+  const purchaseAvailable = hasPurchaseField ? Boolean(p.purchaseAvailable) : !oos && saleOn;
+  const inStock = purchaseAvailable && !oos && saleOn;
   const areaItemNos = Array.isArray(p.areaItemNos)
     ? p.areaItemNos.map(String).filter(Boolean)
     : [];

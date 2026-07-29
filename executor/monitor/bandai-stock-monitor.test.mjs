@@ -50,6 +50,37 @@ test("normalizeCatalogCard treats OUT_OF_STOCK flag as oos", () => {
   assert.equal(row.inStock, false);
 });
 
+test("normalizeCatalogCard: search cards without purchaseAvailable use flags", () => {
+  // Live AU search shape for N2890904001 — no purchaseAvailable field.
+  const oos = normalizeCatalogCard({
+    productCode: "N2890904001",
+    saleStatus: "On",
+    flags: ["OUT_OF_STOCK"],
+    productName: { en: "GUNDAM CARD GAME 1st Anniversary Set" },
+  });
+  assert.equal(oos.inStock, false);
+  assert.equal(oos.purchaseAvailable, false);
+
+  const live = normalizeCatalogCard({
+    productCode: "N2890904001",
+    saleStatus: "On",
+    flags: [],
+    productName: { en: "GUNDAM CARD GAME 1st Anniversary Set" },
+  });
+  assert.equal(live.inStock, true);
+  assert.equal(live.purchaseAvailable, true);
+});
+
+test("normalizeCatalogCard: explicit purchaseAvailable false stays oos", () => {
+  const row = normalizeCatalogCard({
+    productCode: "N1",
+    purchaseAvailable: false,
+    saleStatus: "On",
+    flags: [],
+  });
+  assert.equal(row.inStock, false);
+});
+
 test("diffCatalog emits restock and new_in_stock", () => {
   const prev = new Map([
     ["A", { productId: "A", inStock: false }],
