@@ -807,7 +807,11 @@ ipcMain.handle("desktop:validate-license", async () => {
   return { ...res, snapshot: snapshot() };
 });
 
-ipcMain.handle("desktop:start-engine", async () => {
+async function bootEngine() {
+  if (sidecar.status().running) {
+    return { ok: true, already: true, snapshot: snapshot() };
+  }
+
   const lic = await license.validateApiKey({
     controlPlaneUrl: state.settings.controlPlaneUrl,
     apiKey: state.settings.apiKey,
@@ -828,13 +832,14 @@ ipcMain.handle("desktop:start-engine", async () => {
     if (prov.ok) hyper = prov.hyperApiKey;
   }
   const capsolver = String(state.settings.capsolverApiKey || "").trim();
+  // Bandai F5 does not require Hyper/CapSolver — don't block boot for Bandai-only setups.
   if (!hyper && !capsolver) {
-    return {
-      ok: false,
-      error:
-        "Need Hyper (Kmart) and/or CapSolver (Toymate) in Settings before starting the engine",
-      snapshot: snapshot(),
-    };
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      message: "Engine starting without Hyper/CapSolver — Kmart/Toymate/Disney need those keys in Settings",
+    });
   }
 
   const started = await sidecar.startSidecar({
@@ -898,8 +903,15 @@ ipcMain.handle("desktop:start-engine", async () => {
     });
   }
   send({ type: "snapshot", data: snapshot() });
-  return { ok: true, snapshot: snapshot(), hyperConfigured: Boolean(hyper), capsolverConfigured: Boolean(capsolver) };
-});
+  return {
+    ok: true,
+    snapshot: snapshot(),
+    hyperConfigured: Boolean(hyper),
+    capsolverConfigured: Boolean(capsolver),
+  };
+}
+
+ipcMain.handle("desktop:start-engine", async () => bootEngine());
 
 ipcMain.handle("desktop:stop-engine", async () => {
   bandaiGlobalMonitor.stop();
@@ -2609,6 +2621,28 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  // Engine boots with the app — users shouldn't manage Start/Stop.
+  setTimeout(() => {
+    void bootEngine().then((res) => {
+      if (res?.ok) {
+        send({
+          type: "job",
+          phase: "log",
+          level: "info",
+          message: res.already ? "Engine already running" : "Engine started with app",
+        });
+      } else if (res?.error) {
+        send({
+          type: "job",
+          phase: "log",
+          level: "err",
+          message: `Engine auto-start: ${res.error}`,
+        });
+        send({ type: "snapshot", data: res.snapshot || snapshot() });
+      }
+    });
+  }, 400);
 
   // Cold-start from j1ms:// or argv URL
   const argvUrl = [...process.argv, pendingQuickTaskUrl].find(
