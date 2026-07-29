@@ -4,6 +4,19 @@
 
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
+const os = require("os");
+const fs = require("fs");
+
+// Isolated profile for DESKTOP_FEATURE_SMOKE (must run before store.loadAll).
+if (process.env.DESKTOP_FEATURE_SMOKE === "1") {
+  const smokeDir =
+    process.env.DESKTOP_SMOKE_DIR ||
+    path.join(os.tmpdir(), `j1ms-feature-smoke-${Date.now()}`);
+  fs.mkdirSync(smokeDir, { recursive: true });
+  app.setPath("userData", smokeDir);
+  console.log("[feature-smoke] userData →", smokeDir);
+}
+
 const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
@@ -260,7 +273,12 @@ function disneyHarvestEntries() {
 }
 
 function send(evt) {
-  win?.webContents.send("desktop:event", evt);
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.webContents.send("desktop:event", evt);
+  } catch {
+    /* window tearing down */
+  }
 }
 
 function persistDb() {
@@ -1272,13 +1290,11 @@ function upsertTaskRow(task) {
         ? task.bandaiWatchKeywords.trim()
         : undefined,
     bandaiMonitorIntervalMs:
-      storeId === "bandai" && task.bandaiMode === "monitor"
+      storeId === "bandai"
         ? Math.max(2000, Number(task.bandaiMonitorIntervalMs) || 10000)
         : undefined,
     bandaiMonitorDelayMs:
-      storeId === "bandai" && task.bandaiMode === "monitor"
-        ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0)
-        : undefined,
+      storeId === "bandai" ? Math.max(0, Number(task.bandaiMonitorDelayMs) || 0) : undefined,
     bandaiCheckoutOnHit:
       storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
         ? task.bandaiCheckoutOnHit !== false
@@ -2529,6 +2545,226 @@ ipcMain.handle("desktop:smart-action-from-hit", (_e, hit = {}) => {
   return { ok: true, draft, context: ctx };
 });
 
+async function featureSmokeToday() {
+  // DESKTOP_FEATURE_SMOKE=1 — exercise today's Desktop builds then quit.
+  const outPath =
+    process.env.DESKTOP_SMOKE_OUT ||
+    path.join(app.getPath("userData"), "j1ms-desktop", "feature-smoke.json");
+  const checks = [];
+  const pass = (name, ok, detail = "") => {
+    checks.push({ name, ok: Boolean(ok), detail: String(detail || "") });
+    console.log(`[feature-smoke] ${ok ? "PASS" : "FAIL"} ${name}${detail ? ` — ${detail}` : ""}`);
+  };
+
+  try {
+    // Seed local license so engine can boot.
+    if (!String(state.settings.apiKey || "").trim()) {
+      state.settings.apiKey = "smoke-local-key";
+      state.settings.controlPlaneUrl = "";
+      persistSettings();
+    }
+
+    // ── Bulk import / export ──────────────────────────────────────────
+    const profCsv =
+      "name,email,first_name,last_name,phone,address1,address2,city,province,zip,country\n" +
+      "Smoke,smoke@test.com,Smoke,Test,0400000000,1 Test St,,Sydney,NSW,2000,AU\n";
+    const profParsed = parseProfilesImport(profCsv);
+    pass("import_profiles_parse", profParsed.ok && profParsed.profiles.length === 1);
+    for (const draft of profParsed.profiles) {
+      state.db.profiles.push({
+        ...draft,
+        id: draft.id || store.id("prof"),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+    const pxParsed = parseProxyGroupsImport("name: Smoke ISP\n127.0.0.1:60000:u:p");
+    pass("import_proxy_groups_parse", pxParsed.ok && pxParsed.groups[0]?.entries?.length === 1);
+    for (const draft of pxParsed.groups) {
+      state.db.proxyGroups.push({
+        ...draft,
+        id: draft.id || store.id("px"),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+    const taskParsed = parseTasksImport(
+      "label,store,bandaiWatchSku,profileName,proxyGroupName,qty,bandaiMonitorDelayMs\nSmoke Gundam,bandai,N2890904001,Smoke,Smoke ISP,1,15000\n",
+      {
+        profilesByName: new Map([["smoke", state.db.profiles[0].id]]),
+        proxiesByName: new Map([["smoke isp", state.db.proxyGroups[0].id]]),
+      },
+    );
+    pass(
+      "import_tasks_parse",
+      taskParsed.ok &&
+        taskParsed.tasks[0]?.bandaiWatchSku === "N2890904001" &&
+        taskParsed.tasks[0]?.bandaiMonitorDelayMs === 15000,
+      `sku=${taskParsed.tasks[0]?.bandaiWatchSku} delay=${taskParsed.tasks[0]?.bandaiMonitorDelayMs}`,
+    );
+    for (const draft of taskParsed.tasks) {
+      state.db.tasks.push({
+        ...draft,
+        id: draft.id || store.id("task"),
+        enabled: true,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    }
+    persistDb();
+    const expTasks = formatTasksExport(state.db.tasks, "csv", {
+      profileName: (id) => state.db.profiles.find((p) => p.id === id)?.name || "",
+      proxyGroupName: (id) => state.db.proxyGroups.find((g) => g.id === id)?.name || "",
+    });
+    pass("export_tasks_csv", /N2890904001/.test(expTasks) && /bandaiMonitorDelayMs/.test(expTasks));
+
+    // ── Richer QT (Create only) ───────────────────────────────────────
+    const { buildQuickTaskDeepLink, quickTaskDiscordComponents } = require("./deep-link.cjs");
+    const createUrl = buildQuickTaskDeepLink(
+      { productId: "N2890904001", title: "Smoke Gundam", area: "au" },
+      { start: false },
+    );
+    pass("qt_create_only_url", /start=0/.test(createUrl), createUrl);
+    const comps = quickTaskDiscordComponents({
+      productId: "N2890904001",
+      title: "Smoke Gundam",
+      area: "au",
+    });
+    const labels = (comps?.[0]?.components || []).map((c) => c.label);
+    pass(
+      "qt_discord_create_only_button",
+      labels.some((l) => /Create only/i.test(l)) &&
+        /start=0/.test(comps[0].components.find((c) => /Create only/i.test(c.label))?.url || ""),
+      labels.join(", "),
+    );
+
+    // ── Pre-drop delay tighten ────────────────────────────────────────
+    const templates = listTemplates();
+    const tighten = templates.find((t) => t.id === "drop_delay_tighten");
+    pass(
+      "sa_catalog_delay_tighten",
+      Boolean(tighten) && String(tighten.trigger?.at || "") === "12:59:30",
+      tighten?.trigger?.at || "missing",
+    );
+    const taskRow = state.db.tasks[0];
+    taskRow.taskGroup = "SmokeDrop";
+    taskRow.bandaiMonitorDelayMs = 15000;
+    persistDb();
+    smartActions.upsert({
+      id: "sa_smoke_tighten",
+      name: "Smoke delay tighten",
+      enabled: true,
+      runIntervalMs: 0,
+      trigger: { type: "schedule", at: "12:59:30", tz: "UTC", repeat: "once" },
+      actions: [
+        {
+          type: "update_tasks",
+          config: {
+            target: { scope: "group", taskGroup: "SmokeDrop" },
+            bandaiMonitorDelayMs: 0,
+          },
+        },
+      ],
+    });
+    const r2 = await smartActions.evaluateOne(
+      smartActions.list().find((a) => a.id === "sa_smoke_tighten"),
+      { source: "schedule", reason: "schedule" },
+    );
+    const after = state.db.tasks.find((t) => t.id === taskRow.id);
+    pass(
+      "sa_update_delay_zero",
+      after?.bandaiMonitorDelayMs === 0 && r2?.outcome,
+      `delay=${after?.bandaiMonitorDelayMs} outcome=${r2?.outcome}`,
+    );
+
+    const now = Date.UTC(2026, 6, 29, 12, 59, 30);
+    smartActions.upsert({
+      id: "sa_smoke_sec",
+      name: "Smoke sec",
+      enabled: true,
+      runIntervalMs: 0,
+      trigger: { type: "schedule", at: "12:59:30", tz: "UTC", repeat: "once" },
+      actions: [{ type: "wait", config: { delayMs: 1 } }],
+    });
+    const miss = await smartActions.tickSchedule(now - 1000);
+    const hit = await smartActions.tickSchedule(now);
+    pass(
+      "schedule_hhmmss",
+      miss.length === 0 && hit.some((x) => x && !x.skipped),
+      `miss=${miss.length} hit=${hit.length}`,
+    );
+
+    // ── Engine auto-start + UI chrome ─────────────────────────────────
+    let engineOk = false;
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (sidecar.status().running) {
+        engineOk = true;
+        break;
+      }
+      // Kick boot if auto-start hasn't landed yet.
+      if (i === 2) await bootEngine();
+    }
+    pass("engine_running", engineOk, JSON.stringify(sidecar.status()));
+
+    if (win && !win.isDestroyed()) {
+      const dom = await win.webContents.executeJavaScript(`({
+        exportTasks: !!document.getElementById("btnExportTasks"),
+        exportProfiles: !!document.getElementById("btnExportProfiles"),
+        exportProxies: !!document.getElementById("btnExportProxies"),
+        importTasks: !!document.getElementById("btnImportTasks"),
+        schedulePh: document.getElementById("saScheduleAt")?.getAttribute("placeholder") || "",
+        scheduleLabel: document.querySelector("label[for=saScheduleAt], #saScheduleOpts label")?.textContent || "",
+        delayHint: Array.from(document.querySelectorAll(".field-hint")).some(el => /pre-drop tighten|HH:MM:SS/i.test(el.textContent||"")),
+      })`);
+      pass(
+        "ui_import_export_buttons",
+        dom.exportTasks && dom.exportProfiles && dom.exportProxies && dom.importTasks,
+        JSON.stringify(dom),
+      );
+      pass(
+        "ui_schedule_seconds",
+        /12:59:30/.test(dom.schedulePh) || /HH:MM:SS/i.test(dom.scheduleLabel) || dom.delayHint,
+        JSON.stringify({ ph: dom.schedulePh, label: dom.scheduleLabel, hint: dom.delayHint }),
+      );
+    } else {
+      pass("ui_import_export_buttons", false, "no window");
+      pass("ui_schedule_seconds", false, "no window");
+    }
+
+    const failed = checks.filter((c) => !c.ok);
+    const payload = {
+      ok: failed.length === 0,
+      at: new Date().toISOString(),
+      checks,
+      failed: failed.map((c) => c.name),
+    };
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
+    console.log("[feature-smoke] wrote", outPath, "ok=", payload.ok);
+    if (process.env.DESKTOP_SMOKE_OUT) {
+      try {
+        fs.writeFileSync(process.env.DESKTOP_SMOKE_OUT, JSON.stringify(payload, null, 2));
+      } catch {
+        /* ignore */
+      }
+    }
+  } catch (e) {
+    const payload = { ok: false, error: e?.stack || String(e), checks };
+    try {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
+      if (process.env.DESKTOP_SMOKE_OUT) {
+        fs.writeFileSync(process.env.DESKTOP_SMOKE_OUT, JSON.stringify(payload, null, 2));
+      }
+    } catch {
+      /* ignore */
+    }
+    console.error("[feature-smoke] fatal", e);
+  }
+  app.quit();
+}
+
 // ── Lifecycle ──────────────────────────────────────────────────────────────
 
 async function e2eAutorun() {
@@ -2807,7 +3043,12 @@ app.whenReady().then(async () => {
   }
   pendingQuickTaskUrl = null;
 
-  if (process.env.DESKTOP_E2E_AUTORUN === "1") {
+  if (process.env.DESKTOP_FEATURE_SMOKE === "1") {
+    // Let window + auto engine boot settle, then exercise today's features.
+    setTimeout(() => {
+      void featureSmokeToday();
+    }, 2500);
+  } else if (process.env.DESKTOP_E2E_AUTORUN === "1") {
     try {
       await e2eAutorun();
     } catch (e) {
