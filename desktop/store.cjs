@@ -65,10 +65,15 @@ const DEFAULT_SETTINGS = {
   bandaiGlobalMonitorUrl: "https://j1ms-bandai-monitor-production.up.railway.app",
   bandaiGlobalMonitorToken: "",
   /**
-   * Per-user Discord webhook for checkout success/fail only.
-   * Global restock pings are operator-only on the Railway monitor host.
+   * Per-user Discord webhook for checkout success (also fallback for other routes).
+   * Prefer discordSuccessWebhook when set; discordCheckoutWebhook kept for compat.
    */
   discordCheckoutWebhook: "",
+  discordSuccessWebhook: "",
+  discordFailWebhook: "",
+  discord3dsWebhook: "",
+  /** Smart Actions Notify Discord + optional monitor-task pings (not Railway restock). */
+  discordMonitorWebhook: "",
   /**
    * Quick Task defaults (Monitor Feed row / paste SKU → create+start).
    * Used by Smart Actions Create Tasks when usePreset is on.
