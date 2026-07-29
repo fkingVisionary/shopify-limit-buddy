@@ -80,6 +80,9 @@ function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
         product: "{{sku}}",
         pdpUrl: "",
         qty: null,
+        quantity: null,
+        bandaiMonitorDelayMs: null,
+        bandaiMonitorIntervalMs: null,
         labelTemplate: "",
       },
     };
@@ -124,13 +127,18 @@ function normalizeTrigger(raw = {}) {
   }
   if (type === "schedule" || type === "timer" || type === "cron") {
     const at = String(raw.at || raw.time || "00:00").trim();
-    const m = at.match(/^(\d{1,2}):(\d{2})$/);
+    const m = at.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
     const hh = m ? Math.min(23, Math.max(0, Number(m[1]))) : 0;
     const mm = m ? Math.min(59, Math.max(0, Number(m[2]))) : 0;
+    const ss = m && m[3] != null ? Math.min(59, Math.max(0, Number(m[3]))) : null;
     const repeat = String(raw.repeat || "daily").toLowerCase() === "once" ? "once" : "daily";
+    const atNorm =
+      ss != null
+        ? `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`
+        : `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
     return {
       type: TRIGGERS.SCHEDULE,
-      at: `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`,
+      at: atNorm,
       tz: String(raw.tz || "Australia/Sydney").trim() || "Australia/Sydney",
       repeat,
     };
@@ -205,6 +213,7 @@ function clockPartsInTz(tz, atMs = Date.now()) {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   });
   const parts = Object.fromEntries(
@@ -212,11 +221,15 @@ function clockPartsInTz(tz, atMs = Date.now()) {
   );
   // en-CA can yield hour "24" at midnight in some engines — normalize
   let hour = parts.hour === "24" ? "00" : parts.hour;
+  const minute = parts.minute || "00";
+  const second = parts.second || "00";
   return {
     date: `${parts.year}-${parts.month}-${parts.day}`,
-    time: `${hour}:${parts.minute}`,
+    time: `${hour}:${minute}`,
+    timeSec: `${hour}:${minute}:${second}`,
     hour: Number(hour),
-    minute: Number(parts.minute),
+    minute: Number(minute),
+    second: Number(second),
   };
 }
 
@@ -585,6 +598,30 @@ function createSmartActionsEngine(deps = {}) {
     if (config.qty != null && config.qty !== "" && Number.isFinite(Number(config.qty))) {
       patch.qty = Math.max(1, Math.min(20, Number(config.qty)));
     }
+    if (
+      config.quantity != null &&
+      config.quantity !== "" &&
+      Number.isFinite(Number(config.quantity))
+    ) {
+      patch.quantity = Math.max(1, Math.min(50, Number(config.quantity)));
+    }
+    if (
+      config.bandaiMonitorDelayMs != null &&
+      config.bandaiMonitorDelayMs !== "" &&
+      Number.isFinite(Number(config.bandaiMonitorDelayMs))
+    ) {
+      patch.bandaiMonitorDelayMs = Math.max(0, Number(config.bandaiMonitorDelayMs) || 0);
+    }
+    if (
+      config.bandaiMonitorIntervalMs != null &&
+      config.bandaiMonitorIntervalMs !== "" &&
+      Number.isFinite(Number(config.bandaiMonitorIntervalMs))
+    ) {
+      patch.bandaiMonitorIntervalMs = Math.max(
+        2000,
+        Number(config.bandaiMonitorIntervalMs) || 10000,
+      );
+    }
     const labelT = String(config.labelTemplate || "").trim();
     if (labelT) patch.label = applyTemplate(labelT, runCtx).slice(0, 120);
     const group = String(config.taskGroup || "").trim();
@@ -730,7 +767,9 @@ function createSmartActionsEngine(deps = {}) {
       const trig = normalizeTrigger(sa.trigger);
       if (trig.type !== TRIGGERS.SCHEDULE) continue;
       const clock = clockPartsInTz(trig.tz, nowMs);
-      if (clock.time !== trig.at) continue;
+      const due =
+        trig.at.length === 8 ? clock.timeSec === trig.at : clock.time === trig.at;
+      if (!due) continue;
       const key = `${clock.date}T${trig.at}`;
       if (sa.lastScheduleKey === key) continue;
       if (trig.repeat === "once" && sa.firedOnce) continue;

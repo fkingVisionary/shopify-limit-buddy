@@ -75,6 +75,9 @@ export function buildQuickTaskQuery(hit, opts = {}) {
   if (opts.sku && String(opts.sku).trim()) {
     params.set("sku", String(opts.sku).trim());
   }
+  if (opts.start === false || opts.start === 0 || opts.start === "0") {
+    params.set("start", "0");
+  }
   let qs = params.toString();
   if (`http://127.0.0.1:${QUICKTASK_BRIDGE_PORT}/quicktask?${qs}`.length > 480) {
     const slim = new URLSearchParams();
@@ -82,6 +85,7 @@ export function buildQuickTaskQuery(hit, opts = {}) {
     if (sku) slim.set("sku", sku);
     if (nai) slim.set("nai", String(nai));
     slim.set("area", area);
+    if (params.get("start") === "0") slim.set("start", "0");
     qs = slim.toString();
   }
   return qs;
@@ -141,24 +145,23 @@ export function buildEbaySoldUrl(hit, opts = {}) {
 
 function restockActionLinks(hit, area) {
   const qtUrl = buildQuickTaskBridgeUrl(hit, { area });
+  const createUrl = buildQuickTaskBridgeUrl(hit, { area, start: false });
   const setupUrl = buildQuickTaskSetupUrl();
   const ebayUrl = buildEbaySoldUrl(hit);
-  return { qtUrl, setupUrl, ebayUrl };
+  return { qtUrl, createUrl, setupUrl, ebayUrl };
 }
 
 function quickTaskComponents(hit, area) {
-  const { qtUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
-  const productId = String(hit?.productId || "?").trim() || "?";
-  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
-  // Discord: max 5 buttons per row. QT + Setup + eBay + PDP.
+  const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
+  // Discord: max 5 buttons/row. QT + Create only + Setup + eBay (PDP in fields).
   return [
     {
       type: 1,
       components: [
         { type: 2, style: 5, label: "⚡ Quick Task", url: qtUrl.slice(0, 512) },
+        { type: 2, style: 5, label: "Create only", url: createUrl.slice(0, 512) },
         { type: 2, style: 5, label: "Setup presets", url: setupUrl.slice(0, 512) },
         { type: 2, style: 5, label: "eBay sold", url: ebayUrl.slice(0, 512) },
-        { type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) },
       ],
     },
   ];
@@ -201,13 +204,13 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
 
   const reasonLabel =
     reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
-  const { qtUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
+  const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
 
   // One QT mention in description (not duplicated in fields). Buttons mirror the same links.
   const description = [
     `**${reasonLabel}** · Premium Bandai AU`,
     "",
-    `[⚡ Quick Task](${qtUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
+    `[⚡ Quick Task](${qtUrl}) · [Create only](${createUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
   ].join("\n");
 
   return {

@@ -72,12 +72,13 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
     };
     components = quickTaskDiscordComponents(qtHit, { area });
     const qtUrl = buildQuickTaskDeepLink(qtHit);
+    const createUrl = buildQuickTaskDeepLink(qtHit, { start: false });
     const setupUrl = buildQuickTaskSetupDeepLink();
     const ebayUrl = buildEbaySoldUrl(qtHit);
     description = [
       `**${reasonLabel}** detected on Premium Bandai AU`,
       "",
-      `[⚡ Quick Task](${qtUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
+      `[⚡ Quick Task](${qtUrl}) · [Create only](${createUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
     ].join("\n");
   } catch {
     components = undefined;

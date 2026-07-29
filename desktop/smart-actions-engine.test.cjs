@@ -258,3 +258,66 @@ test("tickSchedule fires once per minute slot", async () => {
   assert.equal(b.length, 0);
   assert.equal(harvest.length, 1);
 });
+
+test("update_tasks can slash bandaiMonitorDelayMs for pre-drop tighten", async () => {
+  const { engine, patched, tasks } = makeEngine({
+    tasks: [
+      {
+        id: "t_delay",
+        store: "bandai",
+        taskGroup: "Drop A",
+        enabled: true,
+        bandaiMonitorDelayMs: 15000,
+      },
+    ],
+  });
+  engine.upsert({
+    id: "sa_tighten",
+    name: "Delay tighten",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "schedule", at: "12:59:30", tz: "UTC", repeat: "daily" },
+    filters: [],
+    actions: [
+      {
+        type: "update_tasks",
+        config: {
+          target: { scope: "group", taskGroup: "Drop A" },
+          bandaiMonitorDelayMs: 0,
+        },
+      },
+    ],
+  });
+  const r = await engine.evaluateOne(engine.list()[0], {
+    source: "schedule",
+    reason: "schedule",
+  });
+  assert.equal(r.outcome, OUTCOMES.COMPLETED);
+  assert.equal(patched.length, 1);
+  assert.deepEqual(patched[0].ids, ["t_delay"]);
+  assert.equal(patched[0].patch.bandaiMonitorDelayMs, 0);
+  assert.equal(tasks.find((t) => t.id === "t_delay").bandaiMonitorDelayMs, 0);
+});
+
+test("tickSchedule honors HH:MM:SS second precision", async () => {
+  const { engine, harvest } = makeEngine();
+  const now = Date.UTC(2026, 6, 29, 12, 59, 30);
+  const parts = clockPartsInTz("UTC", now);
+  assert.equal(parts.timeSec, "12:59:30");
+  engine.upsert({
+    id: "sa_sec",
+    name: "T-30",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "schedule", at: "12:59:30", tz: "UTC", repeat: "daily" },
+    actions: [{ type: "start_harvester", config: {} }],
+  });
+  const miss = await engine.tickSchedule(now - 1_000);
+  assert.equal(miss.length, 0);
+  const hit = await engine.tickSchedule(now);
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(harvest, ["start"]);
+  const again = await engine.tickSchedule(now + 500);
+  assert.equal(again.length, 0);
+});

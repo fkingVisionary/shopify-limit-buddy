@@ -58,11 +58,14 @@ test("oos discord is red; restock is black + Quick Task once", () => {
   assert.ok(Array.isArray(restock.components));
   const labels = restock.components[0].components.map((c) => c.label);
   assert.ok(labels.some((l) => /Quick Task/i.test(l)));
+  assert.ok(labels.some((l) => /Create only/i.test(l)));
   assert.ok(labels.some((l) => /Setup presets/i.test(l)));
   assert.ok(labels.some((l) => /eBay sold/i.test(l)));
   const btn = restock.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.match(btn.url, /^https:\/\/.+\/qt\?/);
   assert.match(btn.url, /sku=N1/);
+  const create = restock.components[0].components.find((c) => /Create only/i.test(c.label));
+  assert.match(create.url, /start=0/);
 });
 
 test("admin lab test restock also includes Quick Task", () => {

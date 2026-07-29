@@ -1301,6 +1301,80 @@ if ($("btnExportAccounts")) {
   };
 }
 
+function wireBulkIo({ exportBtn, importBtn, fileInput, exportFn, importFn, noun, countKey }) {
+  if ($(exportBtn)) {
+    $(exportBtn).onclick = async () => {
+      const fmt = window.confirm("OK = JSON export\nCancel = CSV export") ? "json" : "csv";
+      const res = await exportFn({ format: fmt });
+      if (!res.ok) {
+        appendLog(esc(res.error || "export failed"), "err");
+        return;
+      }
+      downloadTextFile(
+        res.filename || `${noun}.${fmt === "csv" ? "csv" : "json"}`,
+        res.body || "",
+        fmt === "csv" ? "text/csv" : "application/json",
+      );
+      appendLog(`Exported ${res.count} ${noun} (${fmt})`, "ok");
+    };
+  }
+  if ($(importBtn) && $(fileInput)) {
+    $(importBtn).onclick = () => $(fileInput).click();
+    $(fileInput).onchange = async () => {
+      const file = $(fileInput).files?.[0];
+      $(fileInput).value = "";
+      if (!file) return;
+      let text = "";
+      try {
+        text = await file.text();
+      } catch (e) {
+        appendLog(`Import read failed: ${esc(e?.message || e)}`, "err");
+        return;
+      }
+      if (!window.confirm(`Import ${noun} from ${file.name}?`)) return;
+      const existing = Number(countKey?.() || 0);
+      const replace =
+        existing > 0 &&
+        window.confirm(`Wipe existing ${noun} first?\n\nOK = replace all\nCancel = merge`);
+      const res = await importFn(text, { replace });
+      if (res.snapshot) applyState(res.snapshot);
+      if (!res.ok) {
+        appendLog(esc(res.error || "import failed"), "err");
+        return;
+      }
+      appendLog(`Imported ${res.imported} ${noun}${res.errors?.length ? ` · ${res.errors.length} warn` : ""}`, "ok");
+    };
+  }
+}
+
+wireBulkIo({
+  exportBtn: "btnExportProfiles",
+  importBtn: "btnImportProfiles",
+  fileInput: "profImportFile",
+  exportFn: (o) => window.desktop.exportProfiles(o),
+  importFn: (t, o) => window.desktop.importProfiles(t, o),
+  noun: "profile(s)",
+  countKey: () => (state.profiles || []).length,
+});
+wireBulkIo({
+  exportBtn: "btnExportProxies",
+  importBtn: "btnImportProxies",
+  fileInput: "pxImportFile",
+  exportFn: (o) => window.desktop.exportProxyGroups(o),
+  importFn: (t, o) => window.desktop.importProxyGroups(t, o),
+  noun: "proxy group(s)",
+  countKey: () => (state.proxyGroups || []).length,
+});
+wireBulkIo({
+  exportBtn: "btnExportTasks",
+  importBtn: "btnImportTasks",
+  fileInput: "taskImportFile",
+  exportFn: (o) => window.desktop.exportTasks(o),
+  importFn: (t, o) => window.desktop.importTasks(t, o),
+  noun: "task(s)",
+  countKey: () => (state.tasks || []).length,
+});
+
 if ($("btnImportAccounts") && $("accImportFile")) {
   $("btnImportAccounts").onclick = () => $("accImportFile").click();
   $("accImportFile").onchange = async () => {
@@ -2196,12 +2270,41 @@ function renderSaActionsEditor() {
           )}" placeholder="{{sku}} or PDP URL" />
           <label>PDP URL override</label>
           <input data-sa-ac="${i}" data-k="pdpUrl" value="${esc(cfg.pdpUrl || "")}" placeholder="optional {{url}}" />
-          <label>Qty <span class="optional">blank = keep</span></label>
-          <input type="number" min="1" max="20" data-sa-ac="${i}" data-k="qty" value="${
-            cfg.qty != null && cfg.qty !== "" ? cfg.qty : ""
-          }" />
+          <div class="grid2">
+            <div>
+              <label>Qty <span class="optional">blank = keep</span></label>
+              <input type="number" min="1" max="20" data-sa-ac="${i}" data-k="qty" value="${
+                cfg.qty != null && cfg.qty !== "" ? cfg.qty : ""
+              }" />
+            </div>
+            <div>
+              <label>Parallel <span class="optional">blank = keep</span></label>
+              <input type="number" min="1" max="50" data-sa-ac="${i}" data-k="quantity" value="${
+                cfg.quantity != null && cfg.quantity !== "" ? cfg.quantity : ""
+              }" />
+            </div>
+          </div>
+          <div class="grid2">
+            <div>
+              <label>Monitor delay ms <span class="optional">pre-drop tighten → 0</span></label>
+              <input type="number" min="0" step="100" data-sa-ac="${i}" data-k="bandaiMonitorDelayMs" value="${
+                cfg.bandaiMonitorDelayMs != null && cfg.bandaiMonitorDelayMs !== ""
+                  ? cfg.bandaiMonitorDelayMs
+                  : ""
+              }" placeholder="blank = keep" />
+            </div>
+            <div>
+              <label>Poll interval ms <span class="optional">blank = keep</span></label>
+              <input type="number" min="2000" step="500" data-sa-ac="${i}" data-k="bandaiMonitorIntervalMs" value="${
+                cfg.bandaiMonitorIntervalMs != null && cfg.bandaiMonitorIntervalMs !== ""
+                  ? cfg.bandaiMonitorIntervalMs
+                  : ""
+              }" />
+            </div>
+          </div>
           <label>Label template <span class="optional">blank = keep</span></label>
           <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(cfg.labelTemplate || "")}" />
+          <p class="field-hint">Schedule at <code>HH:MM:SS</code> (e.g. 12:59:30) + set delay to 0 = pre-drop tighten.</p>
         </div>`;
       }
       if (a.type === "start_tasks") {
@@ -2421,6 +2524,9 @@ if ($("btnSaAddUpdate")) {
         product: "{{sku}}",
         pdpUrl: "",
         qty: "",
+        quantity: "",
+        bandaiMonitorDelayMs: "",
+        bandaiMonitorIntervalMs: "",
         labelTemplate: "",
       },
     });
