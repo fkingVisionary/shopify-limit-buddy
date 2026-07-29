@@ -24,6 +24,10 @@ import {
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig } from "./runtime-config.mjs";
+import {
+  parsePresetCatalogBulk,
+  normalizePresetCatalogRaw,
+} from "./preset-catalog.mjs";
 import { loadBotVault, saveBotVault, vaultPublicView } from "./bot-vault.mjs";
 import {
   executorFetch,
@@ -410,15 +414,32 @@ app.get("/hits", async (req, reply) => {
 app.get("/admin/config", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const m = hub.monitor.status();
+  const presetRaw = normalizePresetCatalogRaw(runtime.presetCatalog);
   return {
     ok: true,
     keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
+    presetCatalog: presetRaw,
+    presetCatalogRows: parsePresetCatalogBulk(presetRaw),
     ispProxies: runtime.ispProxies || "",
     dcProxies: runtime.dcProxies || "",
     intervalMs: m.intervalMs ?? runtime.intervalMs,
     notifyOos: runtime.notifyOos !== false,
     updatedAt: runtime.updatedAt || null,
     pool: m.pool || null,
+  };
+});
+
+/** Desktop Action Store — curated SKU library (Bearer MONITOR_TOKEN). */
+app.get("/preset-catalog", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const raw = normalizePresetCatalogRaw(runtime.presetCatalog);
+  const rows = parsePresetCatalogBulk(raw);
+  return {
+    ok: true,
+    raw,
+    rows,
+    count: rows.length,
+    updatedAt: runtime.updatedAt || null,
   };
 });
 
@@ -429,6 +450,9 @@ app.put("/admin/config", async (req, reply) => {
     if (body.keywords != null) {
       const list = hub.monitor.setKeywords(body.keywords);
       runtime.keywords = list.join("\n");
+    }
+    if (body.presetCatalog != null) {
+      runtime.presetCatalog = normalizePresetCatalogRaw(body.presetCatalog);
     }
     if (body.intervalMs != null) {
       runtime.intervalMs = hub.monitor.setIntervalMs(body.intervalMs);
@@ -449,9 +473,12 @@ app.put("/admin/config", async (req, reply) => {
       hub.monitor.replaceProxies(proxPatch);
     }
     runtime = { ...runtime, ...saveRuntimeConfig(runtime, runtime._path) };
+    const presetRaw = normalizePresetCatalogRaw(runtime.presetCatalog);
     return {
       ok: true,
       keywords: hub.monitor.status().keywords,
+      presetCatalog: presetRaw,
+      presetCatalogRows: parsePresetCatalogBulk(presetRaw),
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
       pool: hub.monitor.status().pool,

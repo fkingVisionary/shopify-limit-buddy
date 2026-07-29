@@ -1846,11 +1846,20 @@ function renderSaCatalog() {
     const onCount = readSaCatalogEnabledTemplates()?.length ?? templates.length;
     countEl.textContent = templates.length ? `${onCount} on · ${templates.length} packs` : "";
   }
+  const srcHint = $("saCatalogSourceHint");
+  if (srcHint) {
+    srcHint.textContent =
+      cat.source === "monitor"
+        ? cat.pulledAt
+          ? `monitor · ${new Date(cat.pulledAt).toLocaleString()}`
+          : "from monitor admin"
+        : "not synced yet";
+  }
   const rowsEl = $("saCatalogRows");
   if (rowsEl) {
     const rows = cat.rows || [];
     if (!rows.length) {
-      rowsEl.innerHTML = `<div class="sa-store-empty">Add SKUs — on packs apply automatically.</div>`;
+      rowsEl.innerHTML = `<div class="sa-store-empty">No SKUs yet — add them in monitor admin, then Refresh.</div>`;
     } else {
       rowsEl.innerHTML = rows
         .map(
@@ -1859,7 +1868,6 @@ function renderSaCatalog() {
               <strong>${esc(r.title || r.sku)}</strong>
               <div class="meta">${esc(r.store)} · ${esc(r.sku)}</div>
             </div>
-            <button type="button" data-sa-cat-del="${esc(r.id)}">Remove</button>
           </div>`,
         )
         .join("");
@@ -2216,20 +2224,19 @@ function closeSaEditor() {
 if ($("btnSaNew")) {
   $("btnSaNew").onclick = () => openSaEditor(null);
 }
-if ($("btnSaCatalogAdd")) {
-  $("btnSaCatalogAdd").onclick = async () => {
-    const text = $("saCatalogBulk")?.value || "";
-    if (!text.trim()) {
-      appendLog("Paste SKUs first", "err");
+if ($("btnSaCatalogPull")) {
+  $("btnSaCatalogPull").onclick = async () => {
+    if (!window.desktop?.smartActionCatalogPull) {
+      appendLog("Catalog pull unavailable — restart Desktop", "err");
       return;
     }
-    const res = await window.desktop.smartActionCatalogAddBulk(text, {
-      defaultStore: "bandai",
-    });
+    const res = await window.desktop.smartActionCatalogPull();
     if (res.snapshot) applyState(res.snapshot);
-    if ($("saCatalogBulk")) $("saCatalogBulk").value = "";
-    await syncSaCatalogFromTiles();
-    appendLog(`Library: +${res.added ?? 0} SKU(s) · packs synced`, "ok");
+    if (!res.ok) {
+      appendLog(`Monitor library pull failed: ${esc(res.error || "error")}`, "err");
+      return;
+    }
+    appendLog(`Library synced from monitor — ${res.count ?? 0} SKU(s)`, "ok");
   };
 }
 if ($("btnSaCancel")) {
@@ -2423,13 +2430,6 @@ document.body.addEventListener("click", async (e) => {
             .join("")
         : `<div class="muted">No runs yet</div>`;
     }
-    return;
-  }
-  if (t.dataset.saCatDel) {
-    const res = await window.desktop.smartActionCatalogDeleteRow(t.dataset.saCatDel);
-    if (res.snapshot) applyState(res.snapshot);
-    await syncSaCatalogFromTiles();
-    appendLog(`Library SKU removed`, "ok");
     return;
   }
   if (t.dataset.saDel) {

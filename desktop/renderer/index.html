@@ -283,12 +283,14 @@
 
             <section class="sa-store-section sa-store-library">
               <div class="sa-store-section-head">
-                <h4>Your library</h4>
-                <span class="optional">store · sku · title</span>
+                <h4>Library</h4>
+                <span class="optional" id="saCatalogSourceHint">from monitor admin</span>
               </div>
-              <textarea id="saCatalogBulk" class="sa-store-bulk" rows="3" placeholder="N2890904001 Gundam RX-78&#10;bandai N2903432003 ONE PIECE"></textarea>
+              <p class="sa-store-sub" style="margin:0 0 10px">
+                SKUs are curated in the Bandai monitor admin → <strong>Action Store presets</strong>. Refresh to pull.
+              </p>
               <div class="sa-store-actions">
-                <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaCatalogAdd">Add SKUs</button>
+                <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaCatalogPull">Refresh from monitor</button>
               </div>
               <div id="saCatalogRows" class="sa-store-chips"></div>
             </section>

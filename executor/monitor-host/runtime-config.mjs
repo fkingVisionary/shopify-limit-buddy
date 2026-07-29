@@ -16,6 +16,7 @@ function defaultStatePath() {
 /**
  * @returns {{
  *   keywords: string,
+ *   presetCatalog: string,
  *   ispProxies: string,
  *   dcProxies: string,
  *   intervalMs: number,
@@ -29,6 +30,8 @@ export function defaultConfigFromEnv() {
       process.env.BANDAI_MONITOR_KEYWORDS ||
       process.env.MONITOR_KEYWORDS ||
       "GUNDAM,ONE PIECE,N2890904001",
+    /** Action Store SKUs for Desktop (admin-curated). */
+    presetCatalog: String(process.env.BANDAI_PRESET_CATALOG || ""),
     ispProxies: String(process.env.BANDAI_MONITOR_ISP_PROXIES || ""),
     dcProxies: String(process.env.BANDAI_MONITOR_DC_PROXIES || ""),
     intervalMs: Number(process.env.BANDAI_MONITOR_INTERVAL_MS) || 5000,
@@ -56,6 +59,7 @@ export function loadRuntimeConfig(filePath = defaultStatePath()) {
 export function saveRuntimeConfig(cfg, filePath = defaultStatePath()) {
   const out = {
     keywords: String(cfg.keywords || ""),
+    presetCatalog: String(cfg.presetCatalog || ""),
     ispProxies: String(cfg.ispProxies || ""),
     dcProxies: String(cfg.dcProxies || ""),
     intervalMs: Number(cfg.intervalMs) || 5000,

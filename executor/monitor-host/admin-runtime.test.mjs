@@ -85,6 +85,7 @@ test("runtime config round-trip", () => {
   saveRuntimeConfig(
     {
       keywords: "GUNDAM",
+      presetCatalog: "N2890904001 Gundam Anniversary",
       ispProxies: "1.1.1.1:80:u:p",
       dcProxies: "",
       intervalMs: 4000,
@@ -94,7 +95,19 @@ test("runtime config round-trip", () => {
   );
   const loaded = loadRuntimeConfig(file);
   assert.equal(loaded.keywords, "GUNDAM");
+  assert.match(loaded.presetCatalog, /N2890904001/);
   assert.equal(loaded.intervalMs, 4000);
   assert.equal(loaded._fromDisk, true);
   fs.unlinkSync(file);
+});
+
+test("preset catalog bulk parse", async () => {
+  const { parsePresetCatalogBulk } = await import("./preset-catalog.mjs");
+  const rows = parsePresetCatalogBulk(`
+N2890904001 Gundam Anniversary
+bandai N2903432003 ONE PIECE
+`);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].sku, "N2890904001");
+  assert.equal(rows[1].store, "bandai");
 });
