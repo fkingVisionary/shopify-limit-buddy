@@ -12,9 +12,17 @@ const {
 } = require("./smart-action-catalog.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
 
-test("default templates are five curated packs", () => {
-  assert.equal(DEFAULT_TEMPLATES.length, 5);
+test("default templates include full checkout + Bandai +30m", () => {
+  assert.ok(DEFAULT_TEMPLATES.length >= 6);
   assert.ok(DEFAULT_TEMPLATES.every((t) => t.id && t.actions?.length));
+  const checkout = DEFAULT_TEMPLATES.find((t) => t.id === "monitor_atc");
+  assert.equal(checkout.actions[0].config.placeOrder, true);
+  assert.equal(checkout.actions[0].config.bandaiMode, "checkout");
+  assert.match(checkout.name, /Checkout/i);
+  const delay = DEFAULT_TEMPLATES.find((t) => t.id === "monitor_checkout_delay_30m");
+  assert.ok(delay);
+  assert.equal(delay.actions.find((a) => a.type === "wait")?.config?.delaySec, 1800);
+  assert.deepEqual(delay.stores, ["bandai"]);
 });
 
 test("parse bulk SKU lines", () => {
@@ -32,26 +40,30 @@ kmart,SKU123,Kmart Drop
   assert.equal(rows[2].store, "kmart");
 });
 
-test("5 templates × 2 SKUs = 10 actions; idempotent ids", () => {
+test("templates × SKUs expands; Bandai +30m only for bandai rows", () => {
   const catalog = {
     rows: [
       { id: "r1", store: "bandai", sku: "N1", title: "Alpha", taskGroup: "Alpha" },
       { id: "r2", store: "bandai", sku: "N2", title: "Beta", taskGroup: "Beta" },
+      { id: "r3", store: "kmart", sku: "K1", title: "Kmart", taskGroup: "Kmart" },
     ],
   };
   const a = expandCatalog(catalog);
-  assert.equal(a.pairs, 10);
-  assert.equal(a.templateCount, 5);
-  assert.equal(a.rowCount, 2);
-
-  const ids = a.drafts.map((d) => d.id);
-  assert.equal(new Set(ids).size, 10);
-  assert.equal(catalogActionId("monitor_atc", "bandai", "N1"), a.drafts[0].id);
+  // 6 templates × 2 bandai + 5 templates × 1 kmart (+30m skipped) = 12 + 5 = 17
+  assert.equal(a.templateCount, 6);
+  assert.equal(a.rowCount, 3);
+  assert.equal(a.pairs, 17);
+  assert.ok(a.drafts.every((d) => d.id));
+  assert.equal(
+    a.drafts.filter((d) => d.catalogTemplateId === "monitor_checkout_delay_30m").length,
+    2,
+  );
+  assert.equal(catalogActionId("monitor_atc", "bandai", "N1"), a.drafts.find((d) => d.catalogTemplateId === "monitor_atc" && d.catalogKey.includes("N1")).id);
 
   const again = expandCatalog(catalog);
   assert.deepEqual(
     again.drafts.map((d) => d.id).sort(),
-    ids.slice().sort(),
+    a.drafts.map((d) => d.id).sort(),
   );
 });
 

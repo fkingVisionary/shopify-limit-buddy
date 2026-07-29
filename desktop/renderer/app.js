@@ -1848,7 +1848,7 @@ function renderSaCatalog() {
     const nT =
       enabled && enabled.length
         ? enabled.length
-        : templates.length || 5;
+        : templates.length || 6;
     const nR = (cat.rows || []).filter((r) => r.enabled !== false).length;
     meta.textContent =
       nR > 0

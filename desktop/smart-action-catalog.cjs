@@ -5,11 +5,26 @@
  * Built-in templates. Placeholders: {{sku}} {{store}} {{title}} {{taskGroup}} {{group}}
  * Keep these opinionated and few — curation is the product.
  */
+/** Full Bandai/store checkout task config (place order — not ATC-only). */
+function checkoutCreateConfig(labelTemplate) {
+  return {
+    usePreset: true,
+    store: "{{store}}",
+    bandaiMode: "checkout",
+    bandaiCheckoutMode: "fast",
+    placeOrder: true,
+    labelTemplate,
+    count: 1,
+    qty: 1,
+    taskGroup: "{{taskGroup}}",
+  };
+}
+
 const DEFAULT_TEMPLATES = [
   {
-    id: "monitor_atc",
-    name: "{{title}} · Monitor → ATC",
-    blurb: "Global monitor restock for this SKU → create + start checkout tasks",
+    id: "monitor_atc", // stable id (was named ATC; now full checkout)
+    name: "{{title}} · Monitor → Checkout",
+    blurb: "Restock ping → create + start full checkout (place order)",
     enabled: true,
     runOnce: false,
     runIntervalMs: 30000,
@@ -20,21 +35,46 @@ const DEFAULT_TEMPLATES = [
       { field: "sku", op: "matches", value: "{{sku}}" },
     ],
     actions: [
+      { type: "create_tasks", config: checkoutCreateConfig("{{title}}") },
+      { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
+      {
+        type: "notify_discord",
+        config: { message: "SA Monitor Checkout: {{title}} (`{{sku}}`)" },
+      },
+    ],
+  },
+  {
+    id: "monitor_checkout_delay_30m",
+    name: "{{title}} · Monitor → Checkout +30m",
+    blurb:
+      "Bandai unpaid-cart expiry window: on restock ping wait 30 minutes, then full checkout (Desktop must stay open)",
+    /** Only materialize for these stores (Bandai cart-hold expiry pattern). */
+    stores: ["bandai"],
+    enabled: true,
+    runOnce: false,
+    runIntervalMs: 0,
+    notifications: true,
+    trigger: { type: "product_monitor" },
+    filters: [
+      { field: "store", op: "equals", value: "bandai" },
+      { field: "sku", op: "matches", value: "{{sku}}" },
+    ],
+    actions: [
+      {
+        type: "notify_discord",
+        config: {
+          message: "SA +30m armed: **{{title}}** (`{{sku}}`) — waiting 30m for cart-expiry restock",
+        },
+      },
+      { type: "wait", config: { delaySec: 1800 } },
       {
         type: "create_tasks",
-        config: {
-          usePreset: true,
-          bandaiMode: "checkout",
-          labelTemplate: "{{title}}",
-          count: 1,
-          qty: 1,
-          taskGroup: "{{taskGroup}}",
-        },
+        config: checkoutCreateConfig("{{title}} +30m"),
       },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
       {
         type: "notify_discord",
-        config: { message: "SA Monitor ATC: {{title}} (`{{sku}}`)" },
+        config: { message: "SA +30m Checkout firing: {{title}} (`{{sku}}`)" },
       },
     ],
   },
@@ -56,6 +96,7 @@ const DEFAULT_TEMPLATES = [
         type: "create_tasks",
         config: {
           usePreset: true,
+          store: "{{store}}",
           bandaiMode: "monitor",
           labelTemplate: "Watch {{title}}",
           count: 1,
@@ -66,9 +107,9 @@ const DEFAULT_TEMPLATES = [
     ],
   },
   {
-    id: "quicktask_atc",
-    name: "{{title}} · Quick Task ATC",
-    blurb: "When this SKU is quick-tasked (Discord / Feed), create + start checkout",
+    id: "quicktask_atc", // stable id; full checkout
+    name: "{{title}} · Quick Task Checkout",
+    blurb: "Discord / Feed Quick Task for this SKU → full checkout (place order)",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -79,24 +120,15 @@ const DEFAULT_TEMPLATES = [
       { field: "sku", op: "matches", value: "{{sku}}" },
     ],
     actions: [
-      {
-        type: "create_tasks",
-        config: {
-          usePreset: true,
-          bandaiMode: "checkout",
-          labelTemplate: "QT {{title}}",
-          count: 1,
-          qty: 1,
-          taskGroup: "{{taskGroup}}",
-        },
-      },
+      { type: "create_tasks", config: checkoutCreateConfig("QT {{title}}") },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
     ],
   },
   {
     id: "drop_harvest_chain",
-    name: "{{title}} · Drop: harvest → start group",
-    blurb: "Schedule: start Bandai harvester, wait, then start tasks in this SKU's group",
+    name: "{{title}} · Drop: harvest → checkout group",
+    blurb:
+      "Schedule: start Bandai harvester, wait, update group SKU, start full checkout tasks",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -338,6 +370,10 @@ function expandCatalog(catalog, opts = {}) {
   const drafts = [];
   for (const row of rows) {
     for (const tmpl of activeTemplates) {
+      if (Array.isArray(tmpl.stores) && tmpl.stores.length) {
+        const allowed = tmpl.stores.map((s) => String(s).toLowerCase());
+        if (!allowed.includes(String(row.store || "").toLowerCase())) continue;
+      }
       drafts.push(materializeAction(tmpl, row));
     }
   }
