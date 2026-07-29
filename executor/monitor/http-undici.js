@@ -93,13 +93,29 @@ class UndiciDispatcher {
   }
 
   async close() {
-    if (!this._proxyAgent) return;
-    try {
-      await this._proxyAgent.close();
-    } catch {
-      /* ignore */
-    }
+    // ProxyAgent.close() can wait forever for in-flight sockets to drain.
+    // Never block the monitor loop / sticky rotation on that.
+    const agent = this._proxyAgent;
     this._proxyAgent = null;
+    if (!agent) return;
+    await closeWithTimeout(agent, 1_500);
+  }
+}
+
+/**
+ * Await a close()-able resource, but never hang the caller.
+ * Used when undici ProxyAgent.close() stalls draining sockets.
+ */
+export async function closeWithTimeout(closable, timeoutMs = 1_500) {
+  if (!closable?.close) return;
+  const ms = Math.max(100, Number(timeoutMs) || 1_500);
+  try {
+    await Promise.race([
+      Promise.resolve(closable.close()).catch(() => {}),
+      new Promise((r) => setTimeout(r, ms)),
+    ]);
+  } catch {
+    /* ignore */
   }
 }
 

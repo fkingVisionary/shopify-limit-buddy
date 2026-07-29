@@ -2,9 +2,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createBandaiStockMonitor,
   normalizeCatalogCard,
   diffCatalog,
 } from "./bandai-stock-monitor.js";
+import { closeWithTimeout } from "./http-undici.js";
 import { parseMonitorProxyList, createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { createTaskStateMachine } from "./task-state-machine.js";
 
@@ -147,4 +149,41 @@ test("task state machine monitoring → triggered", () => {
   sm.transition("t1", "triggered", "stock");
   assert.equal(sm.get("t1").status, "triggered");
   assert.equal(sm.transitions().length >= 2, true);
+});
+
+test("closeWithTimeout returns even when close never resolves", async () => {
+  const t0 = Date.now();
+  await closeWithTimeout(
+    {
+      close: () => new Promise(() => {}),
+    },
+    200,
+  );
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed >= 180, `expected ~200ms, got ${elapsed}`);
+  assert.ok(elapsed < 1_500, `hung too long: ${elapsed}ms`);
+});
+
+test("stop does not hang on stuck sticky dispatcher.close", async () => {
+  const mon = createBandaiStockMonitor({
+    intervalMs: 60_000,
+    proxyPool: {
+      next: () => ({ ok: false, error: "none" }),
+      markFail() {},
+      markOk() {},
+      clearCooldowns() {},
+      stats: () => ({}),
+    },
+  });
+  mon._setStickyForTest({
+    url: "http://u:p@hung.example:1000",
+    tier: "isp",
+    dispatcher: {
+      close: () => new Promise(() => {}),
+    },
+  });
+  const t0 = Date.now();
+  await mon.stop();
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 3_000, `stop hung ${elapsed}ms on ProxyAgent.close`);
 });
