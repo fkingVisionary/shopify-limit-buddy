@@ -109,5 +109,43 @@ bandai N2903432003 ONE PIECE
 `);
   assert.equal(rows.length, 2);
   assert.equal(rows[0].sku, "N2890904001");
+  assert.equal(rows[0].needsTitle, false);
   assert.equal(rows[1].store, "bandai");
+});
+
+test("preset catalog accepts SKU-only and Bandai PDP links", async () => {
+  const { parsePresetCatalogBulk, serializePresetCatalogRows } = await import(
+    "./preset-catalog.mjs"
+  );
+  const rows = parsePresetCatalogBulk(`
+N2890904001
+bandai N2903432003
+https://p-bandai.com/au/item/N2890904001
+`);
+  assert.equal(rows.length, 2); // URL dedupes with first SKU
+  assert.equal(rows[0].sku, "N2890904001");
+  assert.equal(rows[0].needsTitle, true);
+  assert.equal(rows[1].sku, "N2903432003");
+  assert.equal(rows[1].store, "bandai");
+  const linkOnly = parsePresetCatalogBulk("https://p-bandai.com/us/item/N1111222333");
+  assert.equal(linkOnly[0].sku, "N1111222333");
+  assert.equal(linkOnly[0].area, "us");
+  assert.equal(linkOnly[0].needsTitle, true);
+  assert.match(serializePresetCatalogRows(linkOnly), /bandai N1111222333/);
+});
+
+test("enrich preset titles fills from site fetch", async () => {
+  const { parsePresetCatalogBulk } = await import("./preset-catalog.mjs");
+  const { enrichPresetTitles } = await import("./enrich-preset-titles.mjs");
+  const rows = parsePresetCatalogBulk("N2890904001\nbandai N2903432003 Manual Keep");
+  const out = await enrichPresetTitles(rows, {
+    area: "au",
+    fetchTitle: async (sku) => (sku === "N2890904001" ? "Gundam Anniversary Set" : null),
+  });
+  assert.equal(out.resolved, 1);
+  assert.equal(out.rows[0].title, "Gundam Anniversary Set");
+  assert.equal(out.rows[0].titleSource, "site");
+  assert.equal(out.rows[1].title, "Manual Keep");
+  assert.match(out.raw, /bandai N2890904001 Gundam Anniversary Set/);
+  assert.match(out.raw, /bandai N2903432003 Manual Keep/);
 });

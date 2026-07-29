@@ -28,6 +28,7 @@ import {
   parsePresetCatalogBulk,
   normalizePresetCatalogRaw,
 } from "./preset-catalog.mjs";
+import { enrichPresetTitles } from "./enrich-preset-titles.mjs";
 import { loadBotVault, saveBotVault, vaultPublicView } from "./bot-vault.mjs";
 import {
   executorFetch,
@@ -419,7 +420,7 @@ app.get("/admin/config", async (req, reply) => {
     ok: true,
     keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
     presetCatalog: presetRaw,
-    presetCatalogRows: parsePresetCatalogBulk(presetRaw),
+    presetCatalogRows: parsePresetCatalogBulk(presetRaw, { defaultArea: AREA }),
     ispProxies: runtime.ispProxies || "",
     dcProxies: runtime.dcProxies || "",
     intervalMs: m.intervalMs ?? runtime.intervalMs,
@@ -433,7 +434,7 @@ app.get("/admin/config", async (req, reply) => {
 app.get("/preset-catalog", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const raw = normalizePresetCatalogRaw(runtime.presetCatalog);
-  const rows = parsePresetCatalogBulk(raw);
+  const rows = parsePresetCatalogBulk(raw, { defaultArea: AREA });
   return {
     ok: true,
     raw,
@@ -451,8 +452,30 @@ app.put("/admin/config", async (req, reply) => {
       const list = hub.monitor.setKeywords(body.keywords);
       runtime.keywords = list.join("\n");
     }
+    let presetEnrich = null;
     if (body.presetCatalog != null) {
-      runtime.presetCatalog = normalizePresetCatalogRaw(body.presetCatalog);
+      const parsed = parsePresetCatalogBulk(body.presetCatalog, { defaultArea: AREA });
+      const enrich =
+        body.enrichTitles === false
+          ? {
+              rows: parsed,
+              raw: normalizePresetCatalogRaw(body.presetCatalog),
+              resolved: 0,
+              failed: 0,
+              skipped: parsed.length,
+            }
+          : await enrichPresetTitles(parsed, {
+              area: AREA,
+              proxyRaw: runtime.ispProxies || body.ispProxies || "",
+              getProduct: (sku) => hub.monitor.getProduct?.(sku) || null,
+              enrich: true,
+            });
+      runtime.presetCatalog = normalizePresetCatalogRaw(enrich.raw);
+      presetEnrich = {
+        resolved: enrich.resolved,
+        failed: enrich.failed,
+        skipped: enrich.skipped,
+      };
     }
     if (body.intervalMs != null) {
       runtime.intervalMs = hub.monitor.setIntervalMs(body.intervalMs);
@@ -478,7 +501,8 @@ app.put("/admin/config", async (req, reply) => {
       ok: true,
       keywords: hub.monitor.status().keywords,
       presetCatalog: presetRaw,
-      presetCatalogRows: parsePresetCatalogBulk(presetRaw),
+      presetCatalogRows: parsePresetCatalogBulk(presetRaw, { defaultArea: AREA }),
+      presetEnrich,
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
       pool: hub.monitor.status().pool,
