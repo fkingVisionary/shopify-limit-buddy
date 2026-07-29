@@ -4,13 +4,11 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { resolveStateFile } from "./data-dir.mjs";
 
 function defaultVaultPath() {
   if (process.env.BOT_VAULT_PATH) return process.env.BOT_VAULT_PATH;
-  if (process.env.RAILWAY_VOLUME_MOUNT_PATH) {
-    return path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "vanta-bot-vault.json");
-  }
-  return "/tmp/vanta-bot-vault.json";
+  return resolveStateFile("vanta-bot-vault.json").path;
 }
 
 export function emptyVault() {
