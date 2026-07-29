@@ -38,6 +38,11 @@
       <div class="split">
         <div>
           <h2>Tasks</h2>
+          <div class="row" style="margin-bottom:8px">
+            <button type="button" class="secondary" id="btnExportTasks">Export</button>
+            <button type="button" class="secondary" id="btnImportTasks">Import</button>
+            <input type="file" id="taskImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+          </div>
           <p id="harvestBankStrip" class="harvest-bank-strip" aria-live="polite">Harvest banks —</p>
           <div id="dropPrepCard" class="drop-prep-card">
             <div class="drop-prep-head">
@@ -335,8 +340,8 @@
           <div id="saScheduleOpts" hidden>
             <div class="grid2">
               <div>
-                <label>Time (HH:MM)</label>
-                <input id="saScheduleAt" placeholder="07:00" />
+                <label>Time (HH:MM or HH:MM:SS)</label>
+                <input id="saScheduleAt" placeholder="12:59:30" />
               </div>
               <div>
                 <label>Repeat</label>
@@ -348,7 +353,7 @@
             </div>
             <label>Timezone</label>
             <input id="saScheduleTz" value="Australia/Sydney" />
-            <p class="field-hint">Fires while Desktop is open (checks every ~15s). Pair with Wait + Start Harvester / Start Tasks by group.</p>
+            <p class="field-hint">Fires while Desktop is open (1s tick). Use <code>HH:MM:SS</code> for pre-drop delay tighten (e.g. 12:59:30 → delay 0).</p>
           </div>
 
           <h3 class="sa-section">Filters <span class="optional">AND · empty = always</span></h3>
@@ -567,6 +572,11 @@
       <div class="split">
         <div>
           <h2>Profiles</h2>
+          <div class="row" style="margin-bottom:12px">
+            <button type="button" class="secondary" id="btnExportProfiles">Export</button>
+            <button type="button" class="secondary" id="btnImportProfiles">Import</button>
+            <input type="file" id="profImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+          </div>
           <p class="hint">Stored only on this computer. Used for address + card on checkout.</p>
           <div id="profileList" class="list"></div>
         </div>
@@ -684,6 +694,11 @@
         <div>
           <h2>Proxy groups</h2>
           <p class="hint">One entry per line. Supports <code>127.0.0.1:PORT</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>. Use <strong>Test</strong> to check latency + exit IP before a drop.</p>
+          <div class="row" style="margin-bottom:12px">
+            <button type="button" class="secondary" id="btnExportProxies">Export</button>
+            <button type="button" class="secondary" id="btnImportProxies">Import</button>
+            <input type="file" id="pxImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+          </div>
           <div id="proxyList" class="list"></div>
         </div>
         <form id="proxyForm" class="form-card">

@@ -45,9 +45,15 @@ test("parse bridge + protocol links", () => {
   const b = parseQuickTaskDeepLink("j1ms://quicktask?sku=N2&title=X");
   assert.equal(b.ok, true);
   assert.equal(b.payload.sku, "N2");
+
+  const c = parseQuickTaskDeepLink(
+    `http://127.0.0.1:${BRIDGE_PORT}/quicktask?sku=N3&start=0`,
+  );
+  assert.equal(c.ok, true);
+  assert.equal(c.payload.start, false);
 });
 
-test("discord components include Quick Task + Setup + eBay", () => {
+test("discord components include Quick Task + Create only + Setup + eBay", () => {
   const comps = quickTaskDiscordComponents({
     productId: "N2890904001",
     title: "Gundam",
@@ -56,13 +62,17 @@ test("discord components include Quick Task + Setup + eBay", () => {
   assert.equal(comps[0].type, 1);
   const labels = comps[0].components.map((c) => c.label);
   assert.ok(labels.some((l) => /Quick Task/i.test(l)));
+  assert.ok(labels.some((l) => /Create only/i.test(l)));
   assert.ok(labels.some((l) => /Setup presets/i.test(l)));
   assert.ok(labels.some((l) => /eBay sold/i.test(l)));
+  const create = comps[0].components.find((c) => /Create only/i.test(c.label));
+  assert.match(create.url, /start=0/);
   const btn = comps[0].components.find((c) => c.label.includes("Quick Task"));
   assert.ok(btn);
   assert.equal(btn.style, 5);
   assert.match(btn.url, /\/qt\?/);
   assert.match(btn.url, /^https:\/\//);
+  assert.equal(/start=0/.test(btn.url), false);
 });
 
 test("setup deep link and ebay sold url", () => {

@@ -31,6 +31,13 @@ contextBridge.exposeInMainWorld("desktop", {
   upsertAccount: (a) => ipcRenderer.invoke("desktop:upsert-account", a || {}),
   importAccounts: (raw, opts) => ipcRenderer.invoke("desktop:import-accounts", raw, opts || {}),
   exportAccounts: (opts) => ipcRenderer.invoke("desktop:export-accounts", opts || {}),
+  importProfiles: (raw, opts) => ipcRenderer.invoke("desktop:import-profiles", raw, opts || {}),
+  exportProfiles: (opts) => ipcRenderer.invoke("desktop:export-profiles", opts || {}),
+  importProxyGroups: (raw, opts) =>
+    ipcRenderer.invoke("desktop:import-proxy-groups", raw, opts || {}),
+  exportProxyGroups: (opts) => ipcRenderer.invoke("desktop:export-proxy-groups", opts || {}),
+  importTasks: (raw, opts) => ipcRenderer.invoke("desktop:import-tasks", raw, opts || {}),
+  exportTasks: (opts) => ipcRenderer.invoke("desktop:export-tasks", opts || {}),
   deleteAccount: (id) => ipcRenderer.invoke("desktop:delete-account", id),
   clearAccounts: (storeId) => ipcRenderer.invoke("desktop:clear-accounts", storeId),
   // Toymate CF + spam harvest

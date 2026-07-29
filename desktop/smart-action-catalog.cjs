@@ -176,6 +176,36 @@ const DEFAULT_TEMPLATES = [
     ],
   },
   {
+    id: "drop_delay_tighten",
+    name: "{{title}} · Pre-drop delay tighten",
+    displayName: "Delay Tighten",
+    category: "Schedule",
+    glyph: "DT",
+    accent: "steel",
+    blurb: "At T−30s, slash monitor start delay on a task group for a tight fire",
+    enabled: true,
+    runOnce: false,
+    runIntervalMs: 0,
+    notifications: true,
+    trigger: {
+      type: "schedule",
+      at: "12:59:30",
+      tz: "Australia/Sydney",
+      repeat: "daily",
+    },
+    filters: [],
+    actions: [
+      {
+        type: "update_tasks",
+        config: {
+          target: { scope: "group", taskGroup: "{{taskGroup}}" },
+          bandaiMonitorDelayMs: 0,
+        },
+      },
+    ],
+    stores: ["bandai"],
+  },
+  {
     id: "monitor_alert",
     name: "{{title}} · Restock alert",
     displayName: "Restock Alert",

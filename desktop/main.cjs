@@ -18,6 +18,14 @@ const {
   parseAccountsImport,
   formatAccountsExport,
 } = require("./account-vault.cjs");
+const {
+  parseProfilesImport,
+  formatProfilesExport,
+  parseProxyGroupsImport,
+  formatProxyGroupsExport,
+  parseTasksImport,
+  formatTasksExport,
+} = require("./data-import-export.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 const { createBandaiHarvestAutoArm } = require("./bandai-harvest-autoarm.cjs");
@@ -191,7 +199,7 @@ const smartActions = createSmartActionsEngine({
   emit: (evt) => send(evt),
 });
 
-/** Smart Action schedule trigger — fires at HH:MM in trigger tz while app is open. */
+/** Smart Action schedule trigger — fires at HH:MM or HH:MM:SS in trigger tz while app is open. */
 let smartActionScheduleTimer = null;
 function startSmartActionScheduleTicker() {
   if (smartActionScheduleTimer) return;
@@ -201,7 +209,7 @@ function startSmartActionScheduleTicker() {
         send({ type: "snapshot", data: snapshot() });
       }
     });
-  }, 15_000);
+  }, 1_000);
 }
 function stopSmartActionScheduleTicker() {
   if (smartActionScheduleTimer) clearInterval(smartActionScheduleTimer);
@@ -1433,6 +1441,150 @@ ipcMain.handle("desktop:export-accounts", (_e, opts = {}) => {
     filename: `j1ms-accounts-${sid || "all"}-${new Date().toISOString().slice(0, 10)}.${
       format === "csv" ? "csv" : format === "lines" ? "txt" : "json"
     }`,
+  };
+});
+
+ipcMain.handle("desktop:import-profiles", (_e, raw, opts = {}) => {
+  const parsed = parseProfilesImport(raw);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: parsed.errors.join("; ") || "import failed",
+      errors: parsed.errors,
+      imported: 0,
+      snapshot: snapshot(),
+    };
+  }
+  if (opts.replace === true) state.db.profiles = [];
+  let imported = 0;
+  for (const draft of parsed.profiles) {
+    const now = Date.now();
+    const existing =
+      (draft.id && state.db.profiles.find((p) => p.id === draft.id)) ||
+      (draft.email &&
+        state.db.profiles.find(
+          (p) => String(p.email || "").toLowerCase() === String(draft.email).toLowerCase(),
+        ));
+    if (existing) {
+      Object.assign(existing, draft, { id: existing.id, updatedAt: now });
+    } else {
+      state.db.profiles.push({ ...draft, id: draft.id || store.id("prof"), createdAt: now, updatedAt: now });
+    }
+    imported += 1;
+  }
+  persistDb();
+  return { ok: true, imported, errors: parsed.errors, skipped: parsed.skipped, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:export-profiles", (_e, opts = {}) => {
+  const list = Array.isArray(state.db.profiles) ? state.db.profiles : [];
+  const format = opts.format || "json";
+  return {
+    ok: true,
+    format,
+    count: list.length,
+    body: formatProfilesExport(list, format),
+    filename: `j1ms-profiles-${new Date().toISOString().slice(0, 10)}.${format === "csv" ? "csv" : "json"}`,
+  };
+});
+
+ipcMain.handle("desktop:import-proxy-groups", (_e, raw, opts = {}) => {
+  const parsed = parseProxyGroupsImport(raw);
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: parsed.errors.join("; ") || "import failed",
+      errors: parsed.errors,
+      imported: 0,
+      snapshot: snapshot(),
+    };
+  }
+  if (opts.replace === true) state.db.proxyGroups = [];
+  let imported = 0;
+  for (const draft of parsed.groups) {
+    const now = Date.now();
+    const existing =
+      (draft.id && state.db.proxyGroups.find((g) => g.id === draft.id)) ||
+      state.db.proxyGroups.find(
+        (g) => String(g.name || "").toLowerCase() === String(draft.name || "").toLowerCase(),
+      );
+    if (existing) {
+      existing.name = draft.name;
+      existing.entries = draft.entries;
+      existing.updatedAt = now;
+    } else {
+      state.db.proxyGroups.push({
+        ...draft,
+        id: draft.id || store.id("px"),
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    imported += 1;
+  }
+  persistDb();
+  return { ok: true, imported, errors: parsed.errors, skipped: parsed.skipped, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:export-proxy-groups", (_e, opts = {}) => {
+  const list = Array.isArray(state.db.proxyGroups) ? state.db.proxyGroups : [];
+  const format = opts.format || "json";
+  return {
+    ok: true,
+    format,
+    count: list.length,
+    body: formatProxyGroupsExport(list, format),
+    filename: `j1ms-proxies-${new Date().toISOString().slice(0, 10)}.${format === "csv" ? "csv" : "json"}`,
+  };
+});
+
+ipcMain.handle("desktop:import-tasks", (_e, raw, opts = {}) => {
+  const profilesByName = new Map(
+    (state.db.profiles || []).map((p) => [String(p.name || "").toLowerCase(), p.id]),
+  );
+  const proxiesByName = new Map(
+    (state.db.proxyGroups || []).map((g) => [String(g.name || "").toLowerCase(), g.id]),
+  );
+  const parsed = parseTasksImport(raw, { profilesByName, proxiesByName });
+  if (!parsed.ok) {
+    return {
+      ok: false,
+      error: parsed.errors.join("; ") || "import failed",
+      errors: parsed.errors,
+      imported: 0,
+      snapshot: snapshot(),
+    };
+  }
+  if (opts.replace === true) state.db.tasks = [];
+  let imported = 0;
+  for (const draft of parsed.tasks) {
+    const existing =
+      (draft.id && state.db.tasks.find((t) => t.id === draft.id)) ||
+      state.db.tasks.find(
+        (t) =>
+          String(t.label || "") === String(draft.label || "") &&
+          String(t.taskGroup || "") === String(draft.taskGroup || "") &&
+          String(t.store || "") === String(draft.store || ""),
+      );
+    upsertTaskRow({ ...draft, id: existing?.id || draft.id });
+    imported += 1;
+  }
+  return { ok: true, imported, errors: parsed.errors, skipped: parsed.skipped, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:export-tasks", (_e, opts = {}) => {
+  const list = Array.isArray(state.db.tasks) ? state.db.tasks : [];
+  const format = opts.format || "json";
+  const body = formatTasksExport(list, format, {
+    profileName: (id) => (state.db.profiles || []).find((p) => p.id === id)?.name || "",
+    proxyGroupName: (id) => (state.db.proxyGroups || []).find((g) => g.id === id)?.name || "",
+  });
+  return {
+    ok: true,
+    format,
+    count: list.length,
+    body,
+    filename: `j1ms-tasks-${new Date().toISOString().slice(0, 10)}.${format === "csv" ? "csv" : "json"}`,
   };
 });
 

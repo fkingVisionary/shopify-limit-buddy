@@ -144,12 +144,19 @@ function pushHit(ev) {
 }
 
 function hitPayload(ev) {
+  const sku = String(ev?.productId || ev?.sku || "").trim();
+  const cached = sku ? lookupProduct(productCache, { sku, area: AREA }) : null;
+  const nai =
+    ev.areaItemNo ||
+    ev.meta?.areaItemNo ||
+    (cached?.areaItemNo && /^NAI|^AAI/i.test(cached.areaItemNo) ? cached.areaItemNo : null);
+  const title = ev.title || ev.meta?.title || cached?.title || null;
   return {
     ...ev,
-    title: ev.title || ev.meta?.title,
+    title,
     imageUrl: ev.imageUrl || ev.meta?.imageUrl,
     price: ev.price || ev.meta?.price,
-    areaItemNo: ev.areaItemNo || ev.meta?.areaItemNo,
+    areaItemNo: nai,
     productType: ev.productType || ev.meta?.productType,
   };
 }

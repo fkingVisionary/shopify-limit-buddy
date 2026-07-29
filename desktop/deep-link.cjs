@@ -30,6 +30,10 @@ function buildQuickTaskDeepLink(hit = {}, opts = {}) {
   if (reason) params.set("reason", reason.slice(0, 40));
   const pdp = hit.pdpUrl || hit.url || "";
   if (pdp && /^https?:\/\//i.test(pdp)) params.set("url", pdp);
+  // start=0 → create tasks from preset without auto-starting
+  if (opts.start === false || opts.start === 0 || opts.start === "0") {
+    params.set("start", "0");
+  }
 
   const qs = params.toString();
   if (opts.scheme === "protocol") {
@@ -83,6 +87,8 @@ function parseQuickTaskDeepLink(rawUrl) {
   const area = (url.searchParams.get("area") || "au").trim().toLowerCase() || "au";
   const reason = (url.searchParams.get("reason") || "discord").trim();
   const pdpUrl = (url.searchParams.get("url") || "").trim();
+  const startRaw = String(url.searchParams.get("start") || "1").trim().toLowerCase();
+  const start = !(startRaw === "0" || startRaw === "false" || startRaw === "no");
 
   if (!sku && !pdpUrl) {
     return { ok: false, error: "missing sku" };
@@ -106,7 +112,7 @@ function parseQuickTaskDeepLink(rawUrl) {
       title: title || undefined,
       area,
       label: title || sku || undefined,
-      start: true,
+      start,
       source: "deep_link",
     },
   };
@@ -136,35 +142,39 @@ function buildEbaySoldUrl(hit = {}, opts = {}) {
 }
 
 /**
- * Discord LINK buttons: Quick Task + Setup presets + eBay sold + PDP.
+ * Discord LINK buttons: Quick Task + Create only + Setup + eBay.
+ * (PDP stays in embed fields — Discord max 5 buttons/row.)
  */
 function quickTaskDiscordComponents(hit, opts = {}) {
   let qtUrl = buildQuickTaskDeepLink(hit, { port: opts.port || BRIDGE_PORT });
   if (qtUrl.length > 512) {
     qtUrl = buildQuickTaskDeepLink({ ...hit, title: "" }, { port: opts.port || BRIDGE_PORT });
   }
-  return buildComponents(qtUrl, hit, opts);
+  let createUrl = buildQuickTaskDeepLink(hit, {
+    port: opts.port || BRIDGE_PORT,
+    start: false,
+  });
+  if (createUrl.length > 512) {
+    createUrl = buildQuickTaskDeepLink(
+      { ...hit, title: "" },
+      { port: opts.port || BRIDGE_PORT, start: false },
+    );
+  }
+  return buildComponents(qtUrl, createUrl, hit, opts);
 }
 
-function buildComponents(qtUrl, hit, opts = {}) {
-  const area = String(opts.area || hit.area || "au").toLowerCase();
-  const productId = String(hit.productId || hit.sku || "").trim();
-  const pdp =
-    hit.pdpUrl ||
-    (productId ? `https://p-bandai.com/${area}/item/${productId}` : null);
+function buildComponents(qtUrl, createUrl, hit, opts = {}) {
   const setupUrl = buildQuickTaskSetupDeepLink(opts);
   const ebayUrl = buildEbaySoldUrl(hit, opts);
   const row = {
     type: 1,
     components: [
       { type: 2, style: 5, label: "⚡ Quick Task", url: String(qtUrl).slice(0, 512) },
+      { type: 2, style: 5, label: "Create only", url: String(createUrl).slice(0, 512) },
       { type: 2, style: 5, label: "Setup presets", url: String(setupUrl).slice(0, 512) },
       { type: 2, style: 5, label: "eBay sold", url: String(ebayUrl).slice(0, 512) },
     ],
   };
-  if (pdp && String(pdp).length <= 512) {
-    row.components.push({ type: 2, style: 5, label: "Open PDP", url: pdp });
-  }
   return [row];
 }
 
