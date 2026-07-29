@@ -124,12 +124,20 @@ function checkoutResultDiscordPayload(result, opts = {}) {
   const err = String(result?.consumerLabel || result?.error || result?.debugError || "").slice(0, 300);
   const order = result?.orderNumber || null;
   const email = result?.account?.email || result?.resolvedAccountEmail || null;
+  const kind = opts.kind || classifyCheckoutDiscordKind(result);
+  const title =
+    kind === "success"
+      ? `${store} checkout OK`
+      : kind === "threeds"
+        ? `${store} waiting 3DS`
+        : `${store} checkout failed`;
+  const color = kind === "success" ? 0x2ecc71 : kind === "threeds" ? 0xf1c40f : 0xe74c3c;
   return {
     embeds: [
       {
-        title: ok ? `${store} checkout OK` : `${store} checkout failed`,
+        title,
         description: label,
-        color: ok ? 0x2ecc71 : 0xe74c3c,
+        color,
         fields: [
           { name: "Stage", value: String(stage), inline: true },
           ...(order ? [{ name: "Order", value: String(order), inline: true }] : []),
@@ -142,8 +150,64 @@ function checkoutResultDiscordPayload(result, opts = {}) {
   };
 }
 
+/**
+ * Route checkout / monitor pings to the right user webhook.
+ * Falls back: specific → success/checkout → legacy keys.
+ *
+ * @param {object} settings
+ * @param {"success"|"fail"|"threeds"|"monitor"} kind
+ */
+function resolveDiscordWebhookUrl(settings, kind) {
+  const s = settings || {};
+  const success =
+    String(s.discordSuccessWebhook || "").trim() ||
+    String(s.discordCheckoutWebhook || "").trim() ||
+    String(s.discordWebhookUrl || "").trim() ||
+    // Legacy installs used discordMonitorWebhook as the only checkout hook.
+    String(s.discordMonitorWebhook || "").trim();
+  const fail = String(s.discordFailWebhook || "").trim();
+  const threeds = String(s.discord3dsWebhook || "").trim();
+  const monitor = String(s.discordMonitorWebhook || "").trim() || success;
+
+  if (kind === "success") return success || null;
+  if (kind === "threeds") return threeds || fail || success || null;
+  if (kind === "fail") return fail || success || null;
+  if (kind === "monitor") return monitor || null;
+  return success || null;
+}
+
+/**
+ * Classify a finished job for webhook routing.
+ * @returns {"success"|"fail"|"threeds"|"skip"}
+ */
+function classifyCheckoutDiscordKind(result) {
+  if (!result) return "skip";
+  if (result.accountGen || result.loginCheck) return "skip";
+  // Pure monitor poll finish with no checkout attempt — not a checkout ping
+  if (result.monitor === true && !result.checkout) return "skip";
+  if (Boolean(result.ok)) return "success";
+  if (looksLike3ds(result)) return "threeds";
+  return "fail";
+}
+
+function looksLike3ds(result) {
+  if (!result || result.ok) return false;
+  const stage = String(result.checkoutStage || result.failedStep || "");
+  const status = String(result.paymentStatus || result.consumerCode || "");
+  const label = String(result.consumerLabel || result.error || "");
+  const blob = `${stage} ${status} ${label}`;
+  if (/threeds|3ds|acs|waiting for bank|bank approval/i.test(blob)) return true;
+  const ps = result.paymentSummary || {};
+  if (ps.charge3dsId || ps.acsOk === true) return true;
+  if (ps.oneTimeToken && /threeds|3ds|acs/i.test(String(ps.processStatus || ""))) return true;
+  return false;
+}
+
 module.exports = {
   postDiscordWebhook,
   bandaiRestockDiscordPayload,
   checkoutResultDiscordPayload,
+  resolveDiscordWebhookUrl,
+  classifyCheckoutDiscordKind,
+  looksLike3ds,
 };

@@ -32,7 +32,8 @@ const {
   formatLaneAfterAction,
 } = require("./bandai-drop-ops.cjs");
 const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
-const { postDiscordWebhook, checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
+const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
+const { testProxyEntries } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
 const {
   defaultCatalogState,
@@ -181,7 +182,10 @@ const smartActions = createSmartActionsEngine({
     return { ok: true };
   },
   notifyDiscord: async (payload) => {
-    const url = state.settings.discordCheckoutWebhook || "";
+    const url =
+      resolveDiscordWebhookUrl(state.settings, "monitor") ||
+      resolveDiscordWebhookUrl(state.settings, "success") ||
+      "";
     return postDiscordWebhook(url, payload);
   },
   emit: (evt) => send(evt),
@@ -371,31 +375,34 @@ function persistSettings() {
 }
 
 /**
- * User Discord webhook — checkout success/fail only.
+ * User Discord webhooks — route success / fail / 3DS.
  * Global restock pings stay on the operator Railway webhook.
  */
 async function notifyUserCheckoutDiscord(result) {
-  if (!result || result.monitor === true && !result.checkout) return;
-  if (result.accountGen || result.loginCheck) return;
-  const url =
-    state.settings.discordCheckoutWebhook ||
-    state.settings.discordMonitorWebhook || // legacy key
-    state.settings.discordWebhookUrl ||
-    "";
+  const kind = classifyCheckoutDiscordKind(result);
+  if (kind === "skip") return;
+  const url = resolveDiscordWebhookUrl(state.settings, kind);
   if (!url) return;
   const task = (state.db.tasks || []).find((t) => t.id === result.taskId);
   const storeId = task?.store || result.store || "checkout";
-  // Skip pure monitor poll finishes with no checkout attempt.
-  if (String(task?.bandaiMode || "") === "monitor" && !result.checkout && result.monitor) return;
   try {
     const payload = checkoutResultDiscordPayload(result, {
       store: storeId,
       label: task?.label || result.taskId,
+      kind,
     });
     await postDiscordWebhook(url, payload);
   } catch {
     /* ignore webhook errors */
   }
+}
+
+function tasksInGroup(taskGroup) {
+  const g = String(taskGroup || "").trim().toLowerCase();
+  if (!g) return [];
+  return (state.db.tasks || []).filter(
+    (t) => String(t.taskGroup || "").trim().toLowerCase() === g,
+  );
 }
 
 function storeDisplayName(sid) {
@@ -1172,6 +1179,38 @@ ipcMain.handle("desktop:delete-proxy-group", (_e, groupId) => {
   return snapshot();
 });
 
+ipcMain.handle("desktop:test-proxy-group", async (_e, groupId, opts = {}) => {
+  const group = (state.db.proxyGroups || []).find((g) => g.id === groupId);
+  if (!group) return { ok: false, error: "Proxy group not found" };
+  const tested = await testProxyEntries(group.entries || [], {
+    timeoutMs: opts.timeoutMs,
+    concurrency: opts.concurrency,
+  });
+  let removed = 0;
+  if (opts.removeDead === true && tested.results?.length) {
+    const alive = tested.results.filter((r) => r.ok).map((r) => r.entry);
+    removed = (group.entries || []).length - alive.length;
+    group.entries = alive;
+    group.updatedAt = Date.now();
+    persistDb();
+  }
+  return {
+    ...tested,
+    groupId,
+    name: group.name,
+    removed,
+    snapshot: snapshot(),
+  };
+});
+
+ipcMain.handle("desktop:test-proxy-entries", async (_e, entriesText, opts = {}) => {
+  const entries = String(entriesText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return testProxyEntries(entries, opts);
+});
+
 // Tasks
 function upsertTaskRow(task) {
   const now = Date.now();
@@ -1386,6 +1425,67 @@ ipcMain.handle("desktop:export-accounts", (_e, opts = {}) => {
 });
 
 ipcMain.handle("desktop:run-tasks", (_e, taskIds, opts = {}) => enqueueTaskIds(taskIds, opts));
+
+ipcMain.handle("desktop:run-task-group", (_e, opts = {}) => {
+  const group = String(opts.taskGroup || "").trim();
+  if (!group) return { ok: false, error: "Pick a task group" };
+  const ids = tasksInGroup(group).map((t) => t.id);
+  if (!ids.length) return { ok: false, error: `No tasks in group “${group}”` };
+  // Re-enable before start so soft-stopped groups can fire again.
+  for (const t of state.db.tasks || []) {
+    if (ids.includes(t.id)) {
+      t.enabled = true;
+      t.updatedAt = Date.now();
+    }
+  }
+  persistDb();
+  const res = enqueueTaskIds(ids, opts);
+  return { ...res, taskGroup: group, matched: ids.length, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:stop-task-group", (_e, opts = {}) => {
+  const group = String(opts.taskGroup || "").trim();
+  if (!group) return { ok: false, error: "Pick a task group" };
+  const ids = tasksInGroup(group).map((t) => t.id);
+  if (!ids.length) return { ok: false, error: `No tasks in group “${group}”` };
+  const set = new Set(ids);
+  for (const t of state.db.tasks || []) {
+    if (set.has(t.id)) {
+      t.enabled = false;
+      t.updatedAt = Date.now();
+    }
+  }
+  persistDb();
+  return { ok: true, taskGroup: group, stopped: ids.length, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:patch-task-group", (_e, opts = {}) => {
+  const group = String(opts.taskGroup || "").trim();
+  if (!group) return { ok: false, error: "Pick a task group" };
+  const ids = tasksInGroup(group).map((t) => t.id);
+  if (!ids.length) return { ok: false, error: `No tasks in group “${group}”` };
+  const patch = {};
+  if (opts.qty != null && opts.qty !== "") {
+    patch.qty = Math.max(1, Math.min(20, Number(opts.qty) || 1));
+  }
+  if (opts.quantity != null && opts.quantity !== "") {
+    patch.quantity = Math.max(1, Math.min(50, Number(opts.quantity) || 1));
+  }
+  if (opts.bandaiMonitorDelayMs != null && opts.bandaiMonitorDelayMs !== "") {
+    patch.bandaiMonitorDelayMs = Math.max(0, Number(opts.bandaiMonitorDelayMs) || 0);
+  }
+  if (!Object.keys(patch).length) {
+    return { ok: false, error: "Set qty, parallel, or delay to apply" };
+  }
+  const set = new Set(ids);
+  let updated = 0;
+  for (const t of state.db.tasks || []) {
+    if (!set.has(t.id)) continue;
+    upsertTaskRow({ ...t, ...patch, id: t.id });
+    updated += 1;
+  }
+  return { ok: true, taskGroup: group, updated, patch, snapshot: snapshot() };
+});
 
 /**
  * Fire Autocheckout from a Railway global-monitor SSE hit (task already switched to checkout).

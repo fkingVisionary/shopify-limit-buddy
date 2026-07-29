@@ -2,6 +2,8 @@
 const $ = (id) => document.getElementById(id);
 
 let state = null;
+/** @type {Record<string, object>} last proxy test results by group id */
+const proxyTestResults = {};
 
 function setTab(name) {
   document.querySelectorAll(".tabs button").forEach((b) => {
@@ -490,19 +492,39 @@ function renderProxies() {
     return;
   }
   el.innerHTML = rows
-    .map(
-      (g) => `<div class="item">
+    .map((g) => {
+      const test = proxyTestResults[g.id];
+      let testMeta = "";
+      if (test) {
+        if (test.error && !test.results) {
+          testMeta = `<div class="meta proxy-test-meta"><span class="badge err">test failed</span> ${esc(test.error)}</div>`;
+        } else {
+          testMeta = `<div class="meta proxy-test-meta"><span class="badge ${test.dead ? "warn" : "ok"}">${test.alive}/${test.total} alive</span>${
+            (test.results || [])
+              .slice(0, 6)
+              .map((r) =>
+                r.ok
+                  ? ` · ${esc(r.ip)} ${r.ms}ms`
+                  : ` · <span class="badge err">${esc(r.error || "dead")}</span>`,
+              )
+              .join("")
+          }${(test.results || []).length > 6 ? " …" : ""}</div>`;
+        }
+      }
+      return `<div class="item">
       <div>
         <strong>${esc(g.name)}</strong>
         <div class="meta">${g.entries?.length || 0} entries</div>
         <div class="meta">${esc((g.entries || []).slice(0, 3).join(" · "))}${(g.entries || []).length > 3 ? "…" : ""}</div>
+        ${testMeta}
       </div>
       <div class="actions">
+        <button type="button" data-test-px="${g.id}">Test</button>
         <button type="button" class="secondary" data-edit-px="${g.id}">Edit</button>
         <button type="button" class="danger" data-del-px="${g.id}">Del</button>
       </div>
-    </div>`,
-    )
+    </div>`;
+    })
     .join("");
 }
 
@@ -556,9 +578,14 @@ function renderSettings() {
       s.bandaiGlobalMonitorUrl || "https://j1ms-bandai-monitor-production.up.railway.app";
   }
   if ($("setBandaiGlobalMonToken")) $("setBandaiGlobalMonToken").value = s.bandaiGlobalMonitorToken || "";
-  if ($("setDiscordWebhook")) {
-    $("setDiscordWebhook").value = s.discordCheckoutWebhook || s.discordMonitorWebhook || "";
-  }
+  const successHook =
+    s.discordSuccessWebhook || s.discordCheckoutWebhook || s.discordWebhookUrl || "";
+  if ($("setDiscordSuccess")) $("setDiscordSuccess").value = successHook;
+  if ($("setDiscordFail")) $("setDiscordFail").value = s.discordFailWebhook || "";
+  if ($("setDiscord3ds")) $("setDiscord3ds").value = s.discord3dsWebhook || "";
+  if ($("setDiscordMonitor")) $("setDiscordMonitor").value = s.discordMonitorWebhook || "";
+  // Legacy single field if still present in DOM
+  if ($("setDiscordWebhook")) $("setDiscordWebhook").value = successHook;
   fillQuickTaskPresetSelects();
   const qt = s.quickTaskPreset || {};
   if ($("qtPresetStore")) $("qtPresetStore").value = qt.store || "bandai";
@@ -1076,6 +1103,25 @@ document.body.addEventListener("click", async (e) => {
   if (t.dataset.delProf) {
     applyState(await window.desktop.deleteProfile(t.dataset.delProf));
   }
+  if (t.dataset.testPx) {
+    const id = t.dataset.testPx;
+    appendLog(`Testing proxy group…`, "muted");
+    const res = await window.desktop.testProxyGroup(id, {
+      removeDead: Boolean($("pxRemoveDead")?.checked),
+    });
+    if (!res.ok && res.error && !res.results) {
+      proxyTestResults[id] = { error: res.error };
+      appendLog(esc(res.error), "err");
+    } else {
+      proxyTestResults[id] = res;
+      appendLog(
+        `Proxy test · ${res.alive}/${res.total} alive${res.removed ? ` · removed ${res.removed} dead` : ""}`,
+        res.dead ? "err" : "ok",
+      );
+      if (res.snapshot) applyState(res.snapshot);
+    }
+    renderProxies();
+  }
   if (t.dataset.editPx) {
     const g = state.proxyGroups.find((x) => x.id === t.dataset.editPx);
     if (!g) return;
@@ -1324,7 +1370,75 @@ $("proxyForm").onsubmit = async (e) => {
 $("pxReset").onclick = () => {
   $("pxId").value = "";
   $("proxyForm").reset();
+  if ($("pxTestHint")) $("pxTestHint").textContent = "";
 };
+
+if ($("pxTestForm")) {
+  $("pxTestForm").onclick = async () => {
+    const text = $("pxEntries")?.value || "";
+    if (!text.trim()) {
+      appendLog("Paste proxy lines first", "err");
+      return;
+    }
+    appendLog("Testing form entries…", "muted");
+    const res = await window.desktop.testProxyEntries(text);
+    if ($("pxTestHint")) {
+      $("pxTestHint").textContent = res.ok
+        ? `${res.alive}/${res.total} alive · dead ${res.dead}`
+        : res.error || "test failed";
+    }
+    appendLog(
+      `Form proxy test · ${res.alive}/${res.total} alive`,
+      res.dead ? "err" : "ok",
+    );
+    if ($("pxRemoveDead")?.checked && res.results) {
+      $("pxEntries").value = res.results
+        .filter((r) => r.ok)
+        .map((r) => r.entry)
+        .join("\n");
+    }
+  };
+}
+
+async function massGroupOpts() {
+  return {
+    taskGroup: $("massTaskGroup")?.value?.trim() || "",
+    qty: $("massQty")?.value,
+    quantity: $("massQuantity")?.value,
+    bandaiMonitorDelayMs: $("massDelay")?.value,
+  };
+}
+
+if ($("btnGroupStart")) {
+  $("btnGroupStart").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    const res = await window.desktop.runTaskGroup(opts);
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog(`Started group “${esc(opts.taskGroup)}” · ${res.enqueued || 0} job(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  };
+}
+if ($("btnGroupStop")) {
+  $("btnGroupStop").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    const res = await window.desktop.stopTaskGroup(opts);
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog(`Stopped group “${esc(opts.taskGroup)}” · ${res.stopped} task(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  };
+}
+if ($("btnGroupPatch")) {
+  $("btnGroupPatch").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    const res = await window.desktop.patchTaskGroup(opts);
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog(`Patched group “${esc(opts.taskGroup)}” · ${res.updated} task(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  };
+}
 
 $("btnSaveSettings").onclick = async () => {
   applyState(
@@ -1350,7 +1464,11 @@ $("btnSaveSettings").onclick = async () => {
       bandaiGlobalMonitorEnabled: $("setBandaiGlobalMon")?.checked !== false,
       bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
       bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
-      discordCheckoutWebhook: $("setDiscordWebhook")?.value?.trim() || "",
+      discordSuccessWebhook: $("setDiscordSuccess")?.value?.trim() || "",
+      discordCheckoutWebhook: $("setDiscordSuccess")?.value?.trim() || "",
+      discordFailWebhook: $("setDiscordFail")?.value?.trim() || "",
+      discord3dsWebhook: $("setDiscord3ds")?.value?.trim() || "",
+      discordMonitorWebhook: $("setDiscordMonitor")?.value?.trim() || "",
       quickTaskPreset: readQuickTaskPresetFromForm(),
     }),
   );
