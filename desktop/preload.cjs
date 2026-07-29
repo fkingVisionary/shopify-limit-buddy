@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.invoke("desktop:smart-action-catalog-apply", opts || {}),
   smartActionCatalogSync: (opts) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-sync", opts || {}),
+  smartActionCatalogPull: () => ipcRenderer.invoke("desktop:smart-action-catalog-pull"),
   smartActionCatalogRemoveActions: (opts) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-remove-actions", opts || {}),
   smartActionCatalogDeleteRow: (rowId) =>

@@ -248,8 +248,25 @@
         </section>
         <section>
           <h2>Watch keywords / SKUs</h2>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem">
+            What the poller searches. Separate from the Desktop Action Store list below.
+          </p>
           <textarea id="keywords" placeholder="GUNDAM&#10;ONE PIECE&#10;N2890904001"></textarea>
           <div class="row"><button id="btnSaveKw" type="button">Save keywords</button></div>
+        </section>
+        <section>
+          <h2>Action Store presets</h2>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Admin SKU library for Desktop Smart Action packs (Instant Checkout, +30m, etc.).
+            One per line: <code>SKU Title</code> or <code>bandai SKU Title</code>.
+            Desktop pulls this list when packs sync.
+          </p>
+          <textarea id="presetCatalog" placeholder="N2890904001 Gundam Card Game Anniversary&#10;bandai N2903432003 ONE PIECE"></textarea>
+          <div class="row">
+            <button id="btnSavePresets" type="button">Save Action Store SKUs</button>
+            <button class="secondary" id="btnCopyKwToPresets" type="button">Copy keywords → presets</button>
+          </div>
+          <p class="hint" id="presetCatalogHint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
         </section>
         <section>
           <h2>Monitor proxies</h2>
@@ -472,6 +489,13 @@
           ? "Monitor is polling. Stop pauses searches (useful while testing launches)."
           : "Monitor is stopped. Start resumes polling.";
         $("keywords").value = cfg.keywords || "";
+        if ($("presetCatalog")) $("presetCatalog").value = cfg.presetCatalog || "";
+        if ($("presetCatalogHint")) {
+          const n = Array.isArray(cfg.presetCatalogRows) ? cfg.presetCatalogRows.length : 0;
+          $("presetCatalogHint").textContent = n
+            ? `${n} Action Store SKU(s) · Desktop pulls via /preset-catalog`
+            : "No Action Store SKUs yet — paste products above and save.";
+        }
         $("isp").value = cfg.ispProxies || "";
         $("dc").value = cfg.dcProxies || "";
         $("interval").value = cfg.intervalMs || 5000;
@@ -645,6 +669,29 @@
           toast("Keywords live", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      if ($("btnSavePresets")) {
+        $("btnSavePresets").onclick = async () => {
+          try {
+            const r = await api("/admin/config", {
+              method: "PUT",
+              body: JSON.stringify({ presetCatalog: $("presetCatalog").value }),
+            });
+            const n = Array.isArray(r.presetCatalogRows) ? r.presetCatalogRows.length : 0;
+            if ($("presetCatalogHint")) {
+              $("presetCatalogHint").textContent = `${n} Action Store SKU(s) · Desktop pulls via /preset-catalog`;
+            }
+            toast(`Action Store SKUs saved (${n})`, "ok");
+          } catch (e) { toast(e.message, "bad"); }
+        };
+      }
+      if ($("btnCopyKwToPresets")) {
+        $("btnCopyKwToPresets").onclick = () => {
+          const kw = ($("keywords").value || "").trim();
+          const cur = ($("presetCatalog").value || "").trim();
+          $("presetCatalog").value = cur ? `${cur}\n${kw}` : kw;
+          toast("Copied keywords into presets — Save to publish", "ok");
+        };
+      }
       $("btnSaveProx").onclick = async () => {
         try {
           await api("/admin/config", {

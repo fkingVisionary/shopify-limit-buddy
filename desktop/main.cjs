@@ -479,6 +479,9 @@ function snapshot() {
     smartActionCatalog: {
       ...normalizeCatalogState(state.db.smartActionCatalog),
       templates: listTemplates().map(catalogTemplatePublic),
+      source: state.db.smartActionCatalog?.source || "local",
+      remoteUpdatedAt: state.db.smartActionCatalog?.remoteUpdatedAt || null,
+      pulledAt: state.db.smartActionCatalog?.pulledAt || null,
     },
     monitorFeed: bandaiGlobalMonitor.getFeed?.() || bandaiGlobalMonitor.snapshot().feed || [],
     quickTaskBridge: typeof quickTaskBridge !== "undefined" ? quickTaskBridge.snapshot() : null,
@@ -1905,6 +1908,86 @@ ipcMain.handle("desktop:smart-action-catalog-apply", (_e, opts = {}) => {
  * Toggle packs on/off: persist selection, upsert actions for ON packs,
  * enable/disable existing catalog actions to match (no install step).
  */
+/**
+ * Pull Action Store SKU library from Railway monitor admin (source of truth).
+ */
+async function pullPresetCatalogFromMonitor() {
+  const s = state.settings || {};
+  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
+  const token = String(s.bandaiGlobalMonitorToken || "").trim();
+  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
+  const url = `${base}/preset-catalog`;
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: e?.message || "fetch failed" };
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: body.error || `HTTP ${res.status}`, status: res.status };
+  }
+  const rows = Array.isArray(body.rows) ? body.rows : [];
+  const cur = normalizeCatalogState(state.db.smartActionCatalog);
+  cur.rows = rows.map((r) =>
+    normalizeCatalogRow(
+      {
+        ...r,
+        id: r.id || store.id("cat"),
+      },
+      (p) => store.id(p),
+    ),
+  );
+  cur.source = "monitor";
+  cur.remoteUpdatedAt = body.updatedAt || null;
+  cur.pulledAt = Date.now();
+  state.db.smartActionCatalog = cur;
+  persistDb();
+  return {
+    ok: true,
+    count: cur.rows.length,
+    updatedAt: cur.remoteUpdatedAt,
+    rows: cur.rows,
+  };
+}
+
+ipcMain.handle("desktop:smart-action-catalog-pull", async () => {
+  const pulled = await pullPresetCatalogFromMonitor();
+  if (!pulled.ok) return { ...pulled, snapshot: snapshot() };
+  // Re-sync packs against the new library
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  const enabledSet = new Set(
+    Array.isArray(catalog.enabledTemplateIds) && catalog.enabledTemplateIds.length
+      ? catalog.enabledTemplateIds
+      : listTemplates()
+          .filter((t) => t.enabled !== false)
+          .map((t) => t.id),
+  );
+  if (catalog.rows.some((r) => r.enabled !== false && r.sku)) {
+    applyCatalog({
+      catalog: { ...catalog, enabledTemplateIds: [...enabledSet] },
+      upsert: (draft) => smartActions.upsert({ ...draft, enabled: true }),
+      list: () => smartActions.list(),
+      remove: (id) => smartActions.remove(id),
+      pruneMissing: false,
+    });
+  }
+  for (const sa of smartActions.list()) {
+    const tid = sa.catalogTemplateId;
+    if (!tid && !String(sa.id || "").startsWith("sa_cat_")) continue;
+    smartActions.setEnabled(sa.id, tid ? enabledSet.has(tid) : false);
+  }
+  return { ok: true, count: pulled.count, updatedAt: pulled.updatedAt, snapshot: snapshot() };
+});
+
 ipcMain.handle("desktop:smart-action-catalog-sync", (_e, opts = {}) => {
   const catalog = normalizeCatalogState(state.db.smartActionCatalog);
   if (Array.isArray(opts.enabledTemplateIds)) {
