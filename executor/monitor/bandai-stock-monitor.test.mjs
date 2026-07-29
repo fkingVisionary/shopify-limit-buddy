@@ -121,6 +121,24 @@ test("proxy pool respects cooldown after markFail", () => {
   assert.notEqual(second.url, first.url);
 });
 
+test("proxy pool recovers once when every exit is cooling", () => {
+  const pool = createMonitorProxyPool({
+    ispRaw: "only.example:1000:u:p",
+    dcRaw: "",
+    ispRatio: 1,
+    rotateMode: "roundrobin",
+    cooldownMs: 60_000,
+  });
+  const a = pool.next();
+  assert.equal(a.ok, true);
+  pool.markFail(a.url);
+  const b = pool.next();
+  assert.equal(b.ok, true);
+  assert.equal(b.recoveredFromExhaustion, true);
+  assert.equal(b.url, a.url);
+  assert.equal(pool.stats().exhaustedRecoveries, 1);
+});
+
 test("task state machine monitoring → triggered", () => {
   const sm = createTaskStateMachine();
   sm.startMonitoring("t1", "N123");

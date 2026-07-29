@@ -171,7 +171,12 @@ export function createBandaiStockMonitor(opts = {}) {
   );
   const stickyPolls = Math.max(
     1,
-    Number(opts.stickyPolls || process.env.BANDAI_MONITOR_STICKY_POLLS) || 6,
+    Number(opts.stickyPolls || process.env.BANDAI_MONITOR_STICKY_POLLS) || 3,
+  );
+  /** Wall-clock cap on one exit — thin rotate even if poll count is under stickyPolls. */
+  const stickyMaxMs = Math.max(
+    15_000,
+    Number(opts.stickyMaxMs || process.env.BANDAI_MONITOR_STICKY_MAX_MS) || 75_000,
   );
   const searchLimit = Math.min(
     60,
@@ -190,9 +195,20 @@ export function createBandaiStockMonitor(opts = {}) {
   let polls = 0;
   let lastError = null;
   let lastPollAt = null;
-  let sticky = null; // { url, tier, jar, dispatcher, used }
+  let startedAt = null;
+  let restarts = 0;
+  let sticky = null; // { url, tier, jar, dispatcher, used, openedAt }
   /** Serialize proxy sessions so force-poll can't race the loop mid-request. */
   let proxyGate = Promise.resolve();
+  let autoRestartTimer = null;
+  let rotates = 0;
+
+  function stickyExpired() {
+    if (!sticky) return true;
+    if (sticky.used >= stickyPolls) return true;
+    const age = Date.now() - (sticky.openedAt || 0);
+    return age >= stickyMaxMs;
+  }
 
   async function withProxyCtx(fn) {
     const prev = proxyGate;
@@ -202,12 +218,15 @@ export function createBandaiStockMonitor(opts = {}) {
     });
     await prev;
     try {
-      if (!sticky || sticky.used >= stickyPolls) {
+      if (stickyExpired()) {
+        const prevHost = sticky?.url || null;
         await closeSticky();
         const pick = pool.next();
         if (!pick.ok) {
           throw new Error(pick.error || "monitor_proxy_pool_exhausted");
         }
+        if (prevHost && pick.url !== prevHost) rotates += 1;
+        else if (!prevHost) rotates += 1;
         const jar = createJar();
         const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
         sticky = {
@@ -216,6 +235,8 @@ export function createBandaiStockMonitor(opts = {}) {
           jar,
           dispatcher,
           used: 0,
+          openedAt: Date.now(),
+          recoveredFromExhaustion: Boolean(pick.recoveredFromExhaustion),
           ctx: { jar, dispatcher },
         };
         // Warm once per sticky window — cheap guest HTML for cookies.
@@ -283,8 +304,21 @@ export function createBandaiStockMonitor(opts = {}) {
     ctx.jar?.ingest?.(res.headers);
     let json = null;
     try {
-      json = await res.json();
-    } catch {
+      // Body read can hang even after headers — hard-cap it.
+      const bodyMs = Math.max(
+        5_000,
+        Number(process.env.BANDAI_MONITOR_BODY_TIMEOUT_MS) || 20_000,
+      );
+      json = await Promise.race([
+        res.json(),
+        sleep(bodyMs).then(() => {
+          const err = new Error(`body_timeout_${bodyMs}ms`);
+          err.code = "BODY_TIMEOUT";
+          throw err;
+        }),
+      ]);
+    } catch (e) {
+      if (e?.code === "BODY_TIMEOUT") throw e;
       json = null;
     }
     if (res.status >= 400) {
@@ -376,7 +410,7 @@ export function createBandaiStockMonitor(opts = {}) {
       // Drop sticky session so the next attempt doesn't reuse a dead tunnel.
       if (sticky?.url) pool.markFail(sticky.url);
       await closeSticky();
-      if (ac.signal.aborted || e?.code === "POLL_TIMEOUT" || e?.name === "AbortError") {
+      if (ac.signal.aborted || e?.code === "POLL_TIMEOUT" || e?.code === "BODY_TIMEOUT" || e?.name === "AbortError") {
         const err = new Error(`poll_timeout_${pollBudgetMs}ms`);
         err.code = "POLL_TIMEOUT";
         throw err;
@@ -455,21 +489,70 @@ export function createBandaiStockMonitor(opts = {}) {
 
   function start() {
     if (running) return;
+    if (autoRestartTimer) {
+      clearTimeout(autoRestartTimer);
+      autoRestartTimer = null;
+    }
     running = true;
     stopping = false;
-    loopPromise = loop().finally(() => {
-      running = false;
-      loopPromise = null;
-    });
+    startedAt = Date.now();
+    loopPromise = loop()
+      .catch((e) => {
+        lastError = e?.message || String(e);
+        bus.emit("error", { at: Date.now(), error: lastError, polls, fatal: true });
+      })
+      .finally(() => {
+        const intentional = stopping;
+        running = false;
+        loopPromise = null;
+        // Unexpected exit — schedule a soft restart so overnight hangs don't stay dead.
+        if (!intentional) {
+          bus.emit("error", {
+            at: Date.now(),
+            error: "loop_exited",
+            polls,
+          });
+          autoRestartTimer = setTimeout(() => {
+            autoRestartTimer = null;
+            if (!running && !stopping) {
+              restarts += 1;
+              bus.emit("watchdog", { at: Date.now(), reason: "loop_exited", restarts });
+              start();
+            }
+          }, 1_500);
+        }
+      });
     bus.emit("started", { at: Date.now(), intervalMs, keywords, area, pool: pool.stats() });
   }
 
   async function stop() {
     stopping = true;
     running = false;
+    if (autoRestartTimer) {
+      clearTimeout(autoRestartTimer);
+      autoRestartTimer = null;
+    }
     await loopPromise?.catch?.(() => {});
     await closeSticky();
     bus.emit("stopped", { at: Date.now(), polls });
+  }
+
+  /**
+   * Hard bounce: stop → clear proxy cooldowns → start.
+   * Used by host watchdog when polls go quiet.
+   */
+  async function restart(reason = "manual") {
+    restarts += 1;
+    bus.emit("watchdog", { at: Date.now(), reason: String(reason || "restart"), restarts });
+    await stop();
+    try {
+      pool.clearCooldowns?.();
+    } catch {
+      /* ignore */
+    }
+    stopping = false;
+    start();
+    return status();
   }
 
   return {
@@ -479,6 +562,7 @@ export function createBandaiStockMonitor(opts = {}) {
     emit: (...a) => bus.emit(...a),
     start,
     stop,
+    restart,
     pollOnce,
     /** Test/helper: replace snapshot without polling. */
     _setSnapshotForTest(map) {
@@ -490,13 +574,21 @@ export function createBandaiStockMonitor(opts = {}) {
         polls,
         intervalMs,
         stickyPolls,
+        stickyMaxMs,
+        rotates,
         area,
         keywords,
         products: snapshot.size,
         inStock: [...snapshot.values()].filter((r) => r.inStock).length,
         lastError,
         lastPollAt,
-        staleMs: lastPollAt ? Date.now() - lastPollAt : null,
+        startedAt,
+        restarts,
+        staleMs: lastPollAt
+          ? Date.now() - lastPollAt
+          : startedAt
+            ? Date.now() - startedAt
+            : null,
         pool: pool.stats(),
       };
     },

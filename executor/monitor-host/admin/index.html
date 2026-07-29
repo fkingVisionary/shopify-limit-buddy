@@ -238,6 +238,7 @@
           <div class="grid" id="stats"></div>
           <div class="row">
             <button id="btnMonStart" type="button">Start</button>
+            <button class="secondary" id="btnMonRestart" type="button">Restart</button>
             <button class="secondary danger" id="btnMonStop" type="button">Stop</button>
           </div>
           <div class="row">
@@ -481,14 +482,17 @@
           ["ISP / DC", `${pool.isp ?? 0} / ${pool.dc ?? 0}`],
           ["Interval", (m.intervalMs ?? "—") + "ms"],
           ["Last poll", staleSec],
+          ["Restarts", m.restarts ?? 0],
+          ["Rotates", m.rotates ?? 0],
         ];
         $("stats").innerHTML = cells.map(([k,v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
         const running = Boolean(m.running);
         $("conn").innerHTML = `<span class="dot${running ? " on" : ""}"></span>` + (running ? "live" : "stopped");
         $("btnMonStart").disabled = running;
         $("btnMonStop").disabled = !running;
+        if ($("btnMonRestart")) $("btnMonRestart").disabled = false;
         $("monHint").textContent = running
-          ? "Monitor is polling. Stop pauses searches (useful while testing launches)."
+          ? "Monitor is polling. Restart clears stuck proxies; Stop pauses searches."
           : "Monitor is stopped. Start resumes polling.";
         $("keywords").value = cfg.keywords || "";
         if ($("presetCatalog")) $("presetCatalog").value = cfg.presetCatalog || "";
@@ -648,6 +652,15 @@
           toast("Monitor stopped", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      if ($("btnMonRestart")) {
+        $("btnMonRestart").onclick = async () => {
+          try {
+            await api("/monitor/restart", { method: "POST" });
+            await loadAll();
+            toast("Monitor restarted", "ok");
+          } catch (e) { toast(e.message, "bad"); }
+        };
+      }
 
       async function loadLogs() {
         const source = $("logSource").value || "";
