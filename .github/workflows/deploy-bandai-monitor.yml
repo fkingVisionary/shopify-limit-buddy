@@ -41,7 +41,10 @@ jobs:
       - name: Check Railway token
         run: |
           if [ -z "$RAILWAY_TOKEN" ]; then
-            echo "::error::Missing RAILWAY_TOKEN secret. Add it in GitHub → Settings → Secrets, or Redeploy manually in Railway dashboard."
+            echo "::error::Missing RAILWAY_TOKEN secret — GitHub Actions cannot push to Railway."
+            echo "Fix (pick one):"
+            echo "  1) Repo → Settings → Secrets → Actions → add RAILWAY_TOKEN (railway.app → Account → Tokens), then re-run this workflow."
+            echo "  2) Railway dashboard → j1ms-bandai-monitor → Deployments → Deploy latest from main (Root Directory = executor)."
             exit 1
           fi
 

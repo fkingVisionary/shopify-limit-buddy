@@ -13,10 +13,13 @@ Unlock with `MONITOR_TOKEN`.
 
 | Tab | What |
 |---|---|
-| **Monitor** | Start/stop polling, keywords/SKUs, ISP/DC, interval, OOS toggle, hits |
+| **Monitor** | Start/stop polling, watch keywords/SKUs, **Action Store presets**, ISP/DC, interval, OOS toggle, hits |
 | **Bot** | Fly executor health, vault (accounts/profile/checkout proxies), launch Bandai / Kmart |
 | **Logs** | In-memory monitor / bot / Discord event stream (clears on redeploy) |
 | **Labs** | Discord restock/OOS test pings, force monitor poll |
+
+**Watch keywords** = what the poller searches. **Action Store presets** = SKU library
+Desktop pulls via `GET /preset-catalog` (Bearer) for Smart Action packs.
 
 Bot launches call Fly `POST /run` asynchronously and show recent run status on the phone.
 
