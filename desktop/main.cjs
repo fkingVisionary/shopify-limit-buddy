@@ -43,6 +43,18 @@ const {
   removeCatalogActions,
   listTemplates,
 } = require("./smart-action-catalog.cjs");
+
+function catalogTemplatePublic(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    displayName: t.displayName || t.name,
+    category: t.category || "Preset",
+    glyph: t.glyph || "SA",
+    accent: t.accent || "silver",
+    blurb: t.blurb || "",
+  };
+}
 const {
   normalizeQuickTaskPreset,
   parseBandaiProductInput,
@@ -466,11 +478,7 @@ function snapshot() {
     smartActions: smartActions.snapshot(),
     smartActionCatalog: {
       ...normalizeCatalogState(state.db.smartActionCatalog),
-      templates: listTemplates().map((t) => ({
-        id: t.id,
-        name: t.name,
-        blurb: t.blurb || "",
-      })),
+      templates: listTemplates().map(catalogTemplatePublic),
     },
     monitorFeed: bandaiGlobalMonitor.getFeed?.() || bandaiGlobalMonitor.snapshot().feed || [],
     quickTaskBridge: typeof quickTaskBridge !== "undefined" ? quickTaskBridge.snapshot() : null,
@@ -1828,14 +1836,22 @@ ipcMain.handle("desktop:smart-action-logs", (_e, actionId) => ({
   logs: smartActions.getLogs(String(actionId || "")),
 }));
 
+function catalogTemplatePublic(t) {
+  return {
+    id: t.id,
+    name: t.name,
+    displayName: t.displayName || t.name,
+    category: t.category || "Preset",
+    glyph: t.glyph || "SA",
+    accent: t.accent || "silver",
+    blurb: t.blurb || "",
+  };
+}
+
 ipcMain.handle("desktop:smart-action-catalog-get", () => ({
   ok: true,
   catalog: normalizeCatalogState(state.db.smartActionCatalog),
-  templates: listTemplates().map((t) => ({
-    id: t.id,
-    name: t.name,
-    blurb: t.blurb || "",
-  })),
+  templates: listTemplates().map(catalogTemplatePublic),
 }));
 
 ipcMain.handle("desktop:smart-action-catalog-save", (_e, patch = {}) => {

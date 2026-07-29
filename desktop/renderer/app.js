@@ -1798,6 +1798,11 @@ function saCatalogState() {
   return state?.smartActionCatalog || { rows: [], templates: [], enabledTemplateIds: null };
 }
 
+function saCatalogDisplayName(t) {
+  if (t?.displayName) return String(t.displayName);
+  return String(t?.name || t?.id || "Preset").replace(/\{\{.*?\}\}/g, "").replace(/^·\s*/, "").trim() || "Preset";
+}
+
 function renderSaCatalog() {
   const cat = saCatalogState();
   const templates = cat.templates || [];
@@ -1805,60 +1810,88 @@ function renderSaCatalog() {
   const tmplEl = $("saCatalogTemplates");
   if (tmplEl) {
     if (!templates.length) {
-      tmplEl.innerHTML = `<p class="field-hint">Templates load with app state.</p>`;
+      tmplEl.innerHTML = `<div class="sa-store-empty">Presets load with the engine…</div>`;
     } else {
       tmplEl.innerHTML = templates
         .map((t) => {
           const on = !enabled || !enabled.length || enabled.includes(t.id);
-          return `<label class="check sa-catalog-tmpl">
+          const accent = esc(t.accent || "silver");
+          return `<label class="sa-store-tile ${on ? "is-on" : ""}" data-accent="${accent}" role="listitem" title="${esc(
+            t.blurb || "",
+          )}">
             <input type="checkbox" data-sa-tmpl="${esc(t.id)}" ${on ? "checked" : ""} />
-            <span><strong>${esc(String(t.name).replace(/\{\{.*?\}\}/g, "…"))}</strong>
-            <span class="meta">${esc(t.blurb || t.id)}</span></span>
+            <span class="sa-store-check" aria-hidden="true"></span>
+            <span class="sa-store-glyph">${esc(t.glyph || "SA")}</span>
+            <span class="sa-store-tile-body">
+              <span class="sa-store-cat">${esc(t.category || "Preset")}</span>
+              <span class="sa-store-name">${esc(saCatalogDisplayName(t))}</span>
+              <span class="sa-store-blurb">${esc(t.blurb || "")}</span>
+            </span>
           </label>`;
         })
         .join("");
+      tmplEl.querySelectorAll(".sa-store-tile").forEach((tile) => {
+        const box = tile.querySelector('input[type="checkbox"]');
+        if (!box) return;
+        box.addEventListener("change", () => {
+          tile.classList.toggle("is-on", box.checked);
+          refreshSaCatalogMeta();
+        });
+      });
     }
+  }
+  const countEl = $("saCatalogTmplCount");
+  if (countEl) {
+    const selected = readSaCatalogEnabledTemplates()?.length ?? templates.length;
+    countEl.textContent = templates.length
+      ? `${selected} of ${templates.length} selected`
+      : "";
   }
   const rowsEl = $("saCatalogRows");
   if (rowsEl) {
     const rows = cat.rows || [];
     if (!rows.length) {
-      rowsEl.innerHTML = `<div class="empty muted">No catalog SKUs yet — paste above and Add SKUs.</div>`;
+      rowsEl.innerHTML = `<div class="sa-store-empty">Add SKUs to your library, then Install selected.</div>`;
     } else {
       rowsEl.innerHTML = rows
         .map(
-          (r) => `<div class="item">
-          <div>
-            <strong>${esc(r.title || r.sku)}</strong>
-            ${r.enabled === false ? `<span class="badge">off</span>` : ""}
-            <div class="meta">${esc(r.store)} · <code>${esc(r.sku)}</code> · group ${esc(
-              r.taskGroup || "—",
-            )}</div>
-          </div>
-          <div class="actions">
-            <button type="button" class="secondary" data-sa-cat-del="${esc(r.id)}">Remove</button>
-          </div>
-        </div>`,
+          (r) => `<div class="sa-store-chip">
+            <div>
+              <strong>${esc(r.title || r.sku)}</strong>
+              <div class="meta">${esc(r.store)} · ${esc(r.sku)}</div>
+            </div>
+            <button type="button" data-sa-cat-del="${esc(r.id)}">Remove</button>
+          </div>`,
         )
         .join("");
     }
   }
+  refreshSaCatalogMeta();
+}
+
+function refreshSaCatalogMeta() {
+  const cat = saCatalogState();
+  const templates = cat.templates || [];
+  const selected = readSaCatalogEnabledTemplates();
+  const nT = selected?.length ?? templates.length ?? 0;
+  const nR = (cat.rows || []).filter((r) => r.enabled !== false).length;
   const meta = $("saCatalogMeta");
   if (meta) {
-    const nT =
-      enabled && enabled.length
-        ? enabled.length
-        : templates.length || 6;
-    const nR = (cat.rows || []).filter((r) => r.enabled !== false).length;
     meta.textContent =
       nR > 0
-        ? `${nR} SKU(s) × ${nT} template(s) ≈ ${nR * nT} Smart Actions on Apply`
-        : "Add SKUs, pick templates, then Apply catalog.";
+        ? `${nR} SKUs · ${nT} packs → ${nR * nT} installs`
+        : nT
+          ? `${nT} packs ready`
+          : "Select packs";
+  }
+  const countEl = $("saCatalogTmplCount");
+  if (countEl && templates.length) {
+    countEl.textContent = `${nT} of ${templates.length} selected`;
   }
 }
 
 function readSaCatalogEnabledTemplates() {
-  const boxes = document.querySelectorAll("[data-sa-tmpl]");
+  const boxes = document.querySelectorAll("#saCatalogTemplates [data-sa-tmpl]");
   if (!boxes.length) return null;
   const ids = [];
   boxes.forEach((el) => {
@@ -2206,7 +2239,7 @@ if ($("btnSaCatalogApply")) {
     });
     if (res.snapshot) applyState(res.snapshot);
     appendLog(
-      `Catalog applied — ${res.createdOrUpdated ?? 0} action(s) (${res.rowCount ?? 0}×${res.templateCount ?? 0})`,
+      `Action Store installed — ${res.createdOrUpdated ?? 0} action(s) (${res.rowCount ?? 0}×${res.templateCount ?? 0})`,
       "ok",
     );
   };
