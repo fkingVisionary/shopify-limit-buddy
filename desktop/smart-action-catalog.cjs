@@ -24,7 +24,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "monitor_atc", // stable id (was named ATC; now full checkout)
     name: "{{title}} · Monitor → Checkout",
-    blurb: "Restock ping → create + start full checkout (place order)",
+    displayName: "Instant Checkout",
+    category: "Bandai",
+    glyph: "IC",
+    accent: "silver",
+    blurb: "Restock ping → full checkout (place order)",
     enabled: true,
     runOnce: false,
     runIntervalMs: 30000,
@@ -46,8 +50,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "monitor_checkout_delay_30m",
     name: "{{title}} · Monitor → Checkout +30m",
-    blurb:
-      "Bandai unpaid-cart expiry window: on restock ping wait 30 minutes, then full checkout (Desktop must stay open)",
+    displayName: "Checkout +30m",
+    category: "Bandai",
+    glyph: "+30",
+    accent: "steel",
+    blurb: "Wait 30m after ping for unpaid cart-expiry restocks",
     /** Only materialize for these stores (Bandai cart-hold expiry pattern). */
     stores: ["bandai"],
     enabled: true,
@@ -81,7 +88,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "monitor_watch",
     name: "{{title}} · Monitor → Watch task",
-    blurb: "On restock, create a Bandai global watch task tagged to the group",
+    displayName: "Watch Task",
+    category: "Monitor",
+    glyph: "WT",
+    accent: "graphite",
+    blurb: "Spawn a global watch task on restock",
     enabled: true,
     runOnce: false,
     runIntervalMs: 60000,
@@ -109,7 +120,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "quicktask_atc", // stable id; full checkout
     name: "{{title}} · Quick Task Checkout",
-    blurb: "Discord / Feed Quick Task for this SKU → full checkout (place order)",
+    displayName: "Quick Task",
+    category: "Discord",
+    glyph: "QT",
+    accent: "silver",
+    blurb: "Discord / Feed Quick Task → full checkout",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -127,8 +142,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "drop_harvest_chain",
     name: "{{title}} · Drop: harvest → checkout group",
-    blurb:
-      "Schedule: start Bandai harvester, wait, update group SKU, start full checkout tasks",
+    displayName: "Drop Chain",
+    category: "Schedule",
+    glyph: "DC",
+    accent: "steel",
+    blurb: "Harvest → wait → start checkout group on schedule",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -160,7 +178,11 @@ const DEFAULT_TEMPLATES = [
   {
     id: "monitor_alert",
     name: "{{title}} · Restock alert",
-    blurb: "Discord-only ping on monitor restock (no tasks)",
+    displayName: "Restock Alert",
+    category: "Notify",
+    glyph: "RA",
+    accent: "graphite",
+    blurb: "Discord ping only — no tasks created",
     enabled: true,
     runOnce: false,
     runIntervalMs: 15000,
@@ -184,7 +206,7 @@ const DEFAULT_TEMPLATES = [
 function defaultCatalogState() {
   return {
     rows: [],
-    /** null / empty = all default templates enabled */
+    /** null = all packs on; [] = all off; string[] = allow-list */
     enabledTemplateIds: null,
   };
 }
@@ -363,7 +385,9 @@ function expandCatalog(catalog, opts = {}) {
   const enabledIds = state.enabledTemplateIds;
   const activeTemplates = templates.filter((t) => {
     if (t.enabled === false) return false;
-    if (!enabledIds || !enabledIds.length) return true;
+    // null/undefined = all packs on; [] = all off; otherwise explicit allow-list
+    if (enabledIds == null) return true;
+    if (!enabledIds.length) return false;
     return enabledIds.includes(t.id);
   });
   const rows = state.rows.filter((r) => r.enabled !== false && r.sku);

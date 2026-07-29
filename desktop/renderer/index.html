@@ -263,23 +263,35 @@
             <button type="button" id="btnSaNew">New Action</button>
           </div>
 
-          <div class="form-card" id="saCatalogCard">
-            <h3>Preset catalog</h3>
-            <p class="field-hint">
-              Curated default templates × your store/SKU list. Apply creates one Smart Action per template per SKU
-              (idempotent — re-apply updates, no dupes).
-            </p>
-            <label>Templates</label>
-            <div id="saCatalogTemplates" class="sa-catalog-templates"></div>
-            <label>SKU list <span class="optional">one per line</span></label>
-            <textarea id="saCatalogBulk" rows="4" placeholder="N2890904001 Gundam RX-78&#10;bandai N2903432003 ONE PIECE&#10;kmart,SKU123,Kmart Drop"></textarea>
-            <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
-              <button type="button" id="btnSaCatalogAdd">Add SKUs</button>
-              <button type="button" id="btnSaCatalogApply">Apply catalog</button>
-              <button type="button" class="secondary" id="btnSaCatalogRemove">Remove catalog actions</button>
-            </div>
-            <div id="saCatalogRows" class="list" style="margin-top:10px"></div>
-            <p id="saCatalogMeta" class="field-hint"></p>
+          <div class="sa-store" id="saCatalogCard">
+            <header class="sa-store-hero">
+              <div>
+                <p class="sa-store-kicker">J1m Presets</p>
+                <h3 class="sa-store-title">Action Store</h3>
+                <p class="sa-store-sub">Curated packs × your SKUs. Tap a tile to turn it on or off.</p>
+              </div>
+              <div class="sa-store-meta" id="saCatalogMeta"></div>
+            </header>
+
+            <section class="sa-store-section">
+              <div class="sa-store-section-head">
+                <h4>Featured actions</h4>
+                <span class="sa-store-count" id="saCatalogTmplCount"></span>
+              </div>
+              <div id="saCatalogTemplates" class="sa-store-grid" role="list"></div>
+            </section>
+
+            <section class="sa-store-section sa-store-library">
+              <div class="sa-store-section-head">
+                <h4>Your library</h4>
+                <span class="optional">store · sku · title</span>
+              </div>
+              <textarea id="saCatalogBulk" class="sa-store-bulk" rows="3" placeholder="N2890904001 Gundam RX-78&#10;bandai N2903432003 ONE PIECE"></textarea>
+              <div class="sa-store-actions">
+                <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaCatalogAdd">Add SKUs</button>
+              </div>
+              <div id="saCatalogRows" class="sa-store-chips"></div>
+            </section>
           </div>
 
           <div id="saList" class="list"></div>
