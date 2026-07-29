@@ -232,6 +232,12 @@ function normalizeCatalogRow(raw = {}, idFn) {
   const taskGroup = String(raw.taskGroup || raw.group || title || sku)
     .trim()
     .slice(0, 80);
+  const areaItemNo = String(raw.areaItemNo || raw.bandaiAreaItemNo || "").trim();
+  const areaItemNos = Array.isArray(raw.areaItemNos)
+    ? raw.areaItemNos.map(String).filter(Boolean)
+    : areaItemNo
+      ? [areaItemNo]
+      : [];
   const id =
     raw.id ||
     (idFn ? idFn("cat") : `cat_${store}_${sku}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80));
@@ -241,6 +247,9 @@ function normalizeCatalogRow(raw = {}, idFn) {
     sku,
     title: title || sku,
     taskGroup: taskGroup || sku,
+    area: String(raw.area || "au").toLowerCase().slice(0, 2),
+    areaItemNo: /^NAI|^AAI/i.test(areaItemNo) ? areaItemNo : "",
+    areaItemNos,
     enabled: raw.enabled !== false,
     notes: String(raw.notes || "").slice(0, 200),
   };

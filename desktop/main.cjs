@@ -43,6 +43,7 @@ const {
   removeCatalogActions,
   listTemplates,
 } = require("./smart-action-catalog.cjs");
+const productCacheLib = require("./bandai-product-cache.cjs");
 
 function catalogTemplatePublic(t) {
   return {
@@ -252,6 +253,117 @@ function send(evt) {
 
 function persistDb() {
   store.saveDb(state.db);
+}
+
+function ensureProductCache() {
+  if (!state.db.bandaiProductCache) {
+    state.db.bandaiProductCache = productCacheLib.emptyCache();
+  }
+  return state.db.bandaiProductCache;
+}
+
+function lookupSharedProduct(sku, area = "au") {
+  return productCacheLib.lookup(ensureProductCache(), { sku, area });
+}
+
+function rememberLocalProduct(entry) {
+  if (!entry) return;
+  const { cache, changed } = productCacheLib.mergeEntries(ensureProductCache(), entry);
+  if (!changed) return;
+  state.db.bandaiProductCache = cache;
+  persistDb();
+}
+
+async function pushProductToMonitor(entry) {
+  if (!entry?.sku || !productCacheLib.isBackendPid(entry.areaItemNo)) return;
+  const s = state.settings || {};
+  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  const token = String(s.bandaiGlobalMonitorToken || "").trim();
+  if (!base || !token) return;
+  try {
+    await fetch(`${base}/product-cache`, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ ...entry, source: entry.source || "desktop" }),
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Pull shared Bandai SKU↔NAI cache from Railway monitor.
+ */
+async function pullProductCacheFromMonitor() {
+  const s = state.settings || {};
+  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
+  const token = String(s.bandaiGlobalMonitorToken || "").trim();
+  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
+  let res;
+  try {
+    res = await fetch(`${base}/product-cache`, {
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+    });
+  } catch (e) {
+    return { ok: false, error: e?.message || "fetch failed" };
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return { ok: false, error: body.error || `HTTP ${res.status}`, status: res.status };
+  }
+  const { cache, changed } = productCacheLib.mergeEntries(
+    ensureProductCache(),
+    Array.isArray(body.entries) ? body.entries : [],
+  );
+  cache.pulledAt = Date.now();
+  cache.updatedAt = body.updatedAt || cache.updatedAt;
+  state.db.bandaiProductCache = cache;
+  persistDb();
+  // Stamp known NAIs onto local Bandai tasks missing backend PID.
+  let stamped = 0;
+  for (const t of state.db.tasks || []) {
+    if (t.store !== "bandai") continue;
+    if (productCacheLib.isBackendPid(t.bandaiAreaItemNo)) continue;
+    const sku = String(t.bandaiWatchSku || t.input || t.pdpUrl || "").match(
+      /\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i,
+    )?.[1];
+    if (!sku) continue;
+    const hit = lookupSharedProduct(sku, t.bandaiArea || "au");
+    if (hit?.areaItemNo) {
+      t.bandaiAreaItemNo = hit.areaItemNo;
+      stamped += 1;
+    }
+  }
+  if (stamped) persistDb();
+  return {
+    ok: true,
+    count: Object.keys(cache.entries || {}).length,
+    changed,
+    stamped,
+    updatedAt: cache.updatedAt,
+  };
+}
+
+function wireProductCacheIntoRunner() {
+  runner.configure({
+    lookupBandaiProduct: (sku, area) => lookupSharedProduct(sku, area),
+    publishBandaiProduct: (entry) => {
+      rememberLocalProduct({ ...entry, source: entry.source || "resolve" });
+      void pushProductToMonitor(entry);
+    },
+  });
 }
 
 function persistSettings() {
@@ -595,6 +707,20 @@ runner.setFinishedHandler((result) => {
           t.store === "bandai"
         ) {
           t.bandaiAreaItemNo = String(result.areaItemNo).trim();
+          const sku = String(t.bandaiWatchSku || t.input || t.pdpUrl || "").match(
+            /\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i,
+          )?.[1];
+          if (sku) {
+            const entry = {
+              sku,
+              areaItemNo: t.bandaiAreaItemNo,
+              title: t.title || "",
+              area: t.bandaiArea || "au",
+              source: "checkout",
+            };
+            rememberLocalProduct(entry);
+            void pushProductToMonitor(entry);
+          }
         }
         // Compact lane after-action for Tasks list.
         if (t.store === "bandai") {
@@ -715,6 +841,18 @@ ipcMain.handle("desktop:start-engine", async () => {
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
     ...runnerHarvestHooks(),
+  });
+  wireProductCacheIntoRunner();
+  // Best-effort shared NAI pull so task starts skip public resolve.
+  void pullProductCacheFromMonitor().then((r) => {
+    if (r?.ok) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "info",
+        message: `Bandai product cache · ${r.count} SKU(s)${r.stamped ? ` · stamped ${r.stamped} task(s)` : ""}`,
+      });
+    }
   });
   runner.start();
   const mon = bandaiGlobalMonitor.start();
@@ -1086,12 +1224,21 @@ function upsertTaskRow(task) {
       storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
         ? task.bandaiCheckoutOnHit !== false
         : undefined,
-    bandaiAreaItemNo:
-      storeId === "bandai" && typeof task.bandaiAreaItemNo === "string"
-        ? task.bandaiAreaItemNo.trim()
-        : storeId === "bandai" && typeof task.bandaiBackendPid === "string"
-          ? task.bandaiBackendPid.trim()
-          : undefined,
+    bandaiAreaItemNo: (() => {
+      if (storeId !== "bandai") return undefined;
+      const raw =
+        typeof task.bandaiAreaItemNo === "string"
+          ? task.bandaiAreaItemNo.trim()
+          : typeof task.bandaiBackendPid === "string"
+            ? task.bandaiBackendPid.trim()
+            : "";
+      if (productCacheLib.isBackendPid(raw)) return raw;
+      const sku = String(task.bandaiWatchSku || task.input || task.pdpUrl || "").match(
+        /\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i,
+      )?.[1];
+      const hit = sku ? lookupSharedProduct(sku, task.bandaiArea || "au") : null;
+      return hit?.areaItemNo || raw || undefined;
+    })(),
     campaignSn:
       storeId === "bandai" && typeof task.campaignSn === "string" ? task.campaignSn.trim() : undefined,
     // Disney Store AU fields (ignored by other stores).
@@ -1936,16 +2083,33 @@ async function pullPresetCatalogFromMonitor() {
     return { ok: false, error: body.error || `HTTP ${res.status}`, status: res.status };
   }
   const rows = Array.isArray(body.rows) ? body.rows : [];
+  // Also refresh shared NAI cache so members skip public resolve.
+  const cachePull = await pullProductCacheFromMonitor().catch(() => ({ ok: false }));
   const cur = normalizeCatalogState(state.db.smartActionCatalog);
-  cur.rows = rows.map((r) =>
-    normalizeCatalogRow(
+  cur.rows = rows.map((r) => {
+    const hit = lookupSharedProduct(r.sku, r.area || "au");
+    return normalizeCatalogRow(
       {
         ...r,
+        areaItemNo: r.areaItemNo || hit?.areaItemNo || "",
+        title: r.title || hit?.title || r.sku,
         id: r.id || store.id("cat"),
       },
       (p) => store.id(p),
-    ),
-  );
+    );
+  });
+  // Seed local cache from catalog rows that already carry NAI.
+  for (const r of cur.rows) {
+    if (r.store === "bandai" && r.sku && productCacheLib.isBackendPid(r.areaItemNo)) {
+      rememberLocalProduct({
+        sku: r.sku,
+        areaItemNo: r.areaItemNo,
+        title: r.title,
+        area: r.area || "au",
+        source: "catalog",
+      });
+    }
+  }
   cur.source = "monitor";
   cur.remoteUpdatedAt = body.updatedAt || null;
   cur.pulledAt = Date.now();
@@ -1956,6 +2120,7 @@ async function pullPresetCatalogFromMonitor() {
     count: cur.rows.length,
     updatedAt: cur.remoteUpdatedAt,
     rows: cur.rows,
+    productCacheCount: cachePull.ok ? cachePull.count : Object.keys(ensureProductCache().entries || {}).length,
   };
 }
 

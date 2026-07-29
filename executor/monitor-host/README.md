@@ -22,7 +22,9 @@ Unlock with `MONITOR_TOKEN`.
 Desktop pulls via `GET /preset-catalog` (Bearer) for Smart Action packs.
 
 Paste SKU / `bandai SKU` / Bandai PDP link — **Save & fetch names** pulls product
-titles from `p-bandai.com` (manual titles kept if you already typed one).
+titles + backend PIDs (NAI) from `p-bandai.com` into a **shared product cache**
+(`GET/POST /product-cache`). Every Desktop member pulls that cache on engine start /
+Action Store refresh so task start can skip public N→NAI resolve.
 
 Bot launches call Fly `POST /run` asynchronously and show recent run status on the phone.
 

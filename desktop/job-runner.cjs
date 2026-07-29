@@ -42,6 +42,10 @@ let takeBandaiHarvestFn = null;
 let pauseBandaiHarvestRefillFn = null;
 /** @type {null | (() => void)} */
 let resumeBandaiHarvestRefillFn = null;
+/** @type {null | ((sku: string, area?: string) => object|null)} */
+let lookupBandaiProductFn = null;
+/** @type {null | ((entry: object) => void)} */
+let publishBandaiProductFn = null;
 
 function setEmitter(fn) {
   emit = typeof fn === "function" ? fn : () => {};
@@ -64,6 +68,14 @@ function configure(opts = {}) {
   if (Object.prototype.hasOwnProperty.call(opts, "resumeBandaiHarvestRefill")) {
     resumeBandaiHarvestRefillFn =
       typeof opts.resumeBandaiHarvestRefill === "function" ? opts.resumeBandaiHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "lookupBandaiProduct")) {
+    lookupBandaiProductFn =
+      typeof opts.lookupBandaiProduct === "function" ? opts.lookupBandaiProduct : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "publishBandaiProduct")) {
+    publishBandaiProductFn =
+      typeof opts.publishBandaiProduct === "function" ? opts.publishBandaiProduct : null;
   }
 }
 
@@ -1106,14 +1118,41 @@ async function ensureBandaiNaiForTask(task, { proxy, area, log } = {}) {
   }
   if (!isFrontendProductCode(sku)) return { ok: false, skipped: true, error: "not frontend SKU" };
 
+  const region = area || task.bandaiArea || "au";
+  // Shared monitor / local cache — skip public resolve when another member already resolved.
+  try {
+    const shared = lookupBandaiProductFn?.(sku, region);
+    if (shared && isBackendAreaItemNo(shared.areaItemNo)) {
+      task.bandaiAreaItemNo = shared.areaItemNo;
+      task.areaItemNo = shared.areaItemNo;
+      if (typeof log === "function") {
+        log(`Backend PID from shared cache ${shared.areaItemNo} for ${sku}`);
+      }
+      return { ok: true, areaItemNo: shared.areaItemNo, cached: "shared" };
+    }
+  } catch {
+    /* ignore */
+  }
+
   const resolved = await resolveAreaItemNoHttp({
     productCode: sku,
-    area: area || task.bandaiArea || "au",
+    area: region,
     proxy: proxy || task.proxyOverride || null,
   });
   if (resolved.ok && resolved.areaItemNo) {
     task.bandaiAreaItemNo = resolved.areaItemNo;
     task.areaItemNo = resolved.areaItemNo;
+    try {
+      publishBandaiProductFn?.({
+        sku,
+        areaItemNo: resolved.areaItemNo,
+        title: resolved.title || task.title || "",
+        area: region,
+        source: "resolve",
+      });
+    } catch {
+      /* ignore */
+    }
     if (typeof log === "function") {
       log(
         `Pre-resolved Backend PID ${resolved.areaItemNo} for ${sku}${resolved.ms != null ? ` (${resolved.ms}ms)` : ""}`,

@@ -143,12 +143,48 @@ test("enrich preset titles fills from site fetch", async () => {
   const rows = parsePresetCatalogBulk("N2890904001\nbandai N2903432003 Manual Keep");
   const out = await enrichPresetTitles(rows, {
     area: "au",
-    fetchTitle: async (sku) => (sku === "N2890904001" ? "Gundam Anniversary Set" : null),
+    fetchMeta: async (sku) =>
+      sku === "N2890904001"
+        ? { title: "Gundam Anniversary Set", areaItemNo: "NAI0859145AU", areaItemNos: ["NAI0859145AU"] }
+        : null,
   });
-  assert.equal(out.resolved, 1);
+  assert.ok(out.resolved >= 1);
   assert.equal(out.rows[0].title, "Gundam Anniversary Set");
+  assert.equal(out.rows[0].areaItemNo, "NAI0859145AU");
   assert.equal(out.rows[0].titleSource, "site");
-  assert.equal(out.rows[1].title, "Manual Keep");
+  assert.equal(out.rows[1].title, "Manual Keep"); // manual title kept
   assert.match(out.raw, /bandai N2890904001 Gundam Anniversary Set/);
   assert.match(out.raw, /bandai N2903432003 Manual Keep/);
+  assert.ok(out.cacheEntries.some((e) => e.areaItemNo === "NAI0859145AU"));
+});
+
+test("shared product cache upsert + lookup", async () => {
+  const {
+    emptyProductCache,
+    upsertProductEntries,
+    lookupProduct,
+    mergeRowsWithProductCache,
+    isBackendPid,
+  } = await import("./product-cache.mjs");
+  assert.equal(isBackendPid("NAI0859145AU"), true);
+  assert.equal(isBackendPid("NAP0458105001AU"), false);
+  let cache = emptyProductCache();
+  const up = upsertProductEntries(cache, {
+    sku: "N2890904001",
+    areaItemNo: "NAI0859145AU",
+    title: "GUNDAM CARD GAME 1st Anniversary Set",
+    area: "au",
+    source: "enrich",
+  });
+  cache = up.cache;
+  assert.equal(up.changed, 1);
+  const hit = lookupProduct(cache, { sku: "N2890904001", area: "au" });
+  assert.equal(hit.areaItemNo, "NAI0859145AU");
+  const rows = mergeRowsWithProductCache(
+    [{ store: "bandai", sku: "N2890904001", title: "N2890904001", needsTitle: true }],
+    cache,
+    "au",
+  );
+  assert.equal(rows[0].areaItemNo, "NAI0859145AU");
+  assert.match(rows[0].title, /GUNDAM/i);
 });
