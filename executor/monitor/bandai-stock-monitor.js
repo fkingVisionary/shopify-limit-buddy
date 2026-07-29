@@ -5,7 +5,13 @@
 // Has zero knowledge of tasks / profiles / payment.
 
 import { EventEmitter } from "node:events";
-import { createJar, makeDispatcher, request, UA } from "./http-undici.js";
+import {
+  closeWithTimeout,
+  createJar,
+  makeDispatcher,
+  request,
+  UA,
+} from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 
 const ORIGIN = "https://p-bandai.com";
@@ -202,6 +208,10 @@ export function createBandaiStockMonitor(opts = {}) {
   let proxyGate = Promise.resolve();
   let autoRestartTimer = null;
   let rotates = 0;
+  /** Bumps on stop so a stuck loop's finally cannot auto-restart / clobber a new loop. */
+  let loopGeneration = 0;
+  /** In-flight poll abort — stop()/restart() must cancel, not wait forever. */
+  let activePollAbort = null;
 
   function stickyExpired() {
     if (!sticky) return true;
@@ -280,13 +290,13 @@ export function createBandaiStockMonitor(opts = {}) {
   }
 
   async function closeSticky() {
-    if (!sticky) return;
-    try {
-      await sticky.dispatcher?.close?.();
-    } catch {
-      /* ignore */
-    }
+    // Drop the sticky ref first so the next withProxyCtx can open a new exit
+    // even if undici's ProxyAgent.close() never resolves (common hang ~every
+    // sticky rotate — e.g. poll ~90 at 5s / 3-poll sticky).
+    const s = sticky;
     sticky = null;
+    if (!s?.dispatcher) return;
+    await closeWithTimeout(s.dispatcher, 1_500);
   }
 
   async function apiGet(ctx, path, referer, signal) {
@@ -395,6 +405,7 @@ export function createBandaiStockMonitor(opts = {}) {
       Number(process.env.BANDAI_MONITOR_POLL_TIMEOUT_MS) || 90_000,
     );
     const ac = new AbortController();
+    activePollAbort = ac;
     const timer = setTimeout(() => ac.abort(), pollBudgetMs);
     let catalog;
     let sources;
@@ -418,6 +429,7 @@ export function createBandaiStockMonitor(opts = {}) {
       throw e;
     } finally {
       clearTimeout(timer);
+      if (activePollAbort === ac) activePollAbort = null;
     }
     const prev = snapshot;
     const first = prev.size === 0;
@@ -496,12 +508,15 @@ export function createBandaiStockMonitor(opts = {}) {
     running = true;
     stopping = false;
     startedAt = Date.now();
+    const myGen = ++loopGeneration;
     loopPromise = loop()
       .catch((e) => {
         lastError = e?.message || String(e);
         bus.emit("error", { at: Date.now(), error: lastError, polls, fatal: true });
       })
       .finally(() => {
+        // Ignore finally from a loop that stop() already abandoned.
+        if (myGen !== loopGeneration) return;
         const intentional = stopping;
         running = false;
         loopPromise = null;
@@ -528,11 +543,23 @@ export function createBandaiStockMonitor(opts = {}) {
   async function stop() {
     stopping = true;
     running = false;
+    // Invalidate current loop so a late finally cannot auto-restart on top of us.
+    loopGeneration += 1;
     if (autoRestartTimer) {
       clearTimeout(autoRestartTimer);
       autoRestartTimer = null;
     }
-    await loopPromise?.catch?.(() => {});
+    try {
+      activePollAbort?.abort();
+    } catch {
+      /* ignore */
+    }
+    const pending = loopPromise;
+    loopPromise = null;
+    // Never block restart/watchdog on a stuck poll or ProxyAgent.close().
+    if (pending) {
+      await Promise.race([pending.catch(() => {}), sleep(5_000)]);
+    }
     await closeSticky();
     bus.emit("stopped", { at: Date.now(), polls });
   }
@@ -567,6 +594,10 @@ export function createBandaiStockMonitor(opts = {}) {
     /** Test/helper: replace snapshot without polling. */
     _setSnapshotForTest(map) {
       snapshot = map instanceof Map ? map : new Map(Object.entries(map || {}));
+    },
+    /** Test/helper: inject sticky session (e.g. hung dispatcher.close). */
+    _setStickyForTest(value) {
+      sticky = value;
     },
     status() {
       return {
