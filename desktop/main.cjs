@@ -35,6 +35,15 @@ const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-cli
 const { postDiscordWebhook, checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
 const {
+  defaultCatalogState,
+  normalizeCatalogState,
+  normalizeCatalogRow,
+  parseCatalogBulk,
+  applyCatalog,
+  removeCatalogActions,
+  listTemplates,
+} = require("./smart-action-catalog.cjs");
+const {
   normalizeQuickTaskPreset,
   parseBandaiProductInput,
   targetFromMonitorHit,
@@ -58,6 +67,11 @@ if (!gotLock) {
 let win = null;
 let state = store.loadAll();
 if (!Array.isArray(state.db.smartActions)) state.db.smartActions = [];
+if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "object") {
+  state.db.smartActionCatalog = defaultCatalogState();
+} else {
+  state.db.smartActionCatalog = normalizeCatalogState(state.db.smartActionCatalog);
+}
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
 
 /** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
@@ -450,6 +464,14 @@ function snapshot() {
     disneyHarvest: disneyHarvest.snapshot(),
     bandaiGlobalMonitor: bandaiGlobalMonitor.snapshot(),
     smartActions: smartActions.snapshot(),
+    smartActionCatalog: {
+      ...normalizeCatalogState(state.db.smartActionCatalog),
+      templates: listTemplates().map((t) => ({
+        id: t.id,
+        name: t.name,
+        blurb: t.blurb || "",
+      })),
+    },
     monitorFeed: bandaiGlobalMonitor.getFeed?.() || bandaiGlobalMonitor.snapshot().feed || [],
     quickTaskBridge: typeof quickTaskBridge !== "undefined" ? quickTaskBridge.snapshot() : null,
     dropSchedule: schedule,
@@ -1805,6 +1827,93 @@ ipcMain.handle("desktop:smart-action-logs", (_e, actionId) => ({
   ok: true,
   logs: smartActions.getLogs(String(actionId || "")),
 }));
+
+ipcMain.handle("desktop:smart-action-catalog-get", () => ({
+  ok: true,
+  catalog: normalizeCatalogState(state.db.smartActionCatalog),
+  templates: listTemplates().map((t) => ({
+    id: t.id,
+    name: t.name,
+    blurb: t.blurb || "",
+  })),
+}));
+
+ipcMain.handle("desktop:smart-action-catalog-save", (_e, patch = {}) => {
+  const cur = normalizeCatalogState(state.db.smartActionCatalog);
+  if (Array.isArray(patch.rows)) {
+    cur.rows = patch.rows.map((r) => normalizeCatalogRow(r, (p) => store.id(p)));
+  }
+  if (patch.enabledTemplateIds !== undefined) {
+    cur.enabledTemplateIds = Array.isArray(patch.enabledTemplateIds)
+      ? patch.enabledTemplateIds.map(String)
+      : null;
+  }
+  state.db.smartActionCatalog = cur;
+  persistDb();
+  return { ok: true, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-catalog-add-bulk", (_e, text = "", opts = {}) => {
+  const cur = normalizeCatalogState(state.db.smartActionCatalog);
+  const parsed = parseCatalogBulk(text, { defaultStore: opts.defaultStore || "bandai" });
+  const byKey = new Map(cur.rows.map((r) => [`${r.store}::${r.sku}`, r]));
+  let added = 0;
+  for (const row of parsed) {
+    const key = `${row.store}::${row.sku}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      existing.title = row.title || existing.title;
+      existing.taskGroup = row.taskGroup || existing.taskGroup;
+      existing.enabled = true;
+    } else {
+      const next = normalizeCatalogRow(
+        { ...row, id: store.id("cat") },
+        (p) => store.id(p),
+      );
+      cur.rows.push(next);
+      byKey.set(key, next);
+      added += 1;
+    }
+  }
+  state.db.smartActionCatalog = cur;
+  persistDb();
+  return { ok: true, added, total: cur.rows.length, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-catalog-apply", (_e, opts = {}) => {
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  if (Array.isArray(opts.enabledTemplateIds)) {
+    catalog.enabledTemplateIds = opts.enabledTemplateIds.map(String);
+    state.db.smartActionCatalog = catalog;
+    persistDb();
+  }
+  const result = applyCatalog({
+    catalog,
+    upsert: (draft) => smartActions.upsert(draft),
+    list: () => smartActions.list(),
+    remove: (id) => smartActions.remove(id),
+    pruneMissing: opts.pruneMissing === true,
+  });
+  return { ok: true, ...result, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-catalog-remove-actions", (_e, opts = {}) => {
+  const ids = removeCatalogActions(smartActions.list(), opts || {});
+  for (const id of ids) smartActions.remove(id);
+  return { ok: true, removed: ids.length, ids, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:smart-action-catalog-delete-row", (_e, rowId) => {
+  const cur = normalizeCatalogState(state.db.smartActionCatalog);
+  const id = String(rowId || "");
+  cur.rows = cur.rows.filter((r) => r.id !== id);
+  state.db.smartActionCatalog = cur;
+  // Also remove materialized actions for this row
+  const ids = removeCatalogActions(smartActions.list(), { rowId: id });
+  for (const saId of ids) smartActions.remove(saId);
+  persistDb();
+  return { ok: true, removedActions: ids.length, snapshot: snapshot() };
+});
 
 /** Seed creator from a feed hit (returns draft filters — UI opens SA editor). */
 ipcMain.handle("desktop:smart-action-from-hit", (_e, hit = {}) => {

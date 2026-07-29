@@ -302,6 +302,28 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   font-size: 12px;
   padding: 6px 10px;
 }
+.sa-catalog-templates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.sa-catalog-tmpl {
+  align-items: flex-start;
+  gap: 8px;
+}
+.sa-catalog-tmpl .meta {
+  display: block;
+  font-weight: 400;
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+#saCatalogBulk {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .sa-head {
   display: flex;
   align-items: flex-start;
