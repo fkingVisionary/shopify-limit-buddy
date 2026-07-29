@@ -136,7 +136,10 @@ https://p-bandai.com/au/item/N2890904001
 
 test("enrich preset titles fills from site fetch", async () => {
   const { parsePresetCatalogBulk } = await import("./preset-catalog.mjs");
-  const { enrichPresetTitles } = await import("./enrich-preset-titles.mjs");
+  const { enrichPresetTitles, coerceBandaiTitle } = await import(
+    "./enrich-preset-titles.mjs"
+  );
+  assert.equal(coerceBandaiTitle({ en: "GUNDAM CARD GAME 1st Anniversary Set" }), "GUNDAM CARD GAME 1st Anniversary Set");
   const rows = parsePresetCatalogBulk("N2890904001\nbandai N2903432003 Manual Keep");
   const out = await enrichPresetTitles(rows, {
     area: "au",

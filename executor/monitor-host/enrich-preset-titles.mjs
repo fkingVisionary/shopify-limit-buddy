@@ -107,17 +107,30 @@ function firstProxyUrl(raw) {
   return null;
 }
 
+/** Bandai returns localized `{ en: "…" }` objects for names. */
+export function coerceBandaiTitle(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "object") {
+    const v =
+      value.en ||
+      value["en-AU"] ||
+      value["en-US"] ||
+      value.fr ||
+      value.ja ||
+      Object.values(value).find((x) => typeof x === "string" && x.trim());
+    return String(v || "").trim();
+  }
+  return String(value).trim();
+}
+
 /**
- * Warm home + GET /api/products/{code} — title only (NAI optional).
+ * Warm home + product API, then search fallback (same path the poller uses).
  * @returns {Promise<string|null>}
  */
 export async function fetchBandaiProductTitle(productCode, opts = {}) {
   const code = String(productCode || "").trim();
   if (!code) return null;
-  if (/^NAI/i.test(code) || /^AAI/i.test(code)) {
-    // Backend PIDs rarely resolve on the public product endpoint as titles.
-    return null;
-  }
 
   const area = String(opts.area || "au").toLowerCase().slice(0, 2);
   const timeoutMs = Math.max(3_000, Number(opts.timeoutMs) || 12_000);
@@ -129,6 +142,16 @@ export async function fetchBandaiProductTitle(productCode, opts = {}) {
     typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
       ? AbortSignal.timeout(timeoutMs)
       : undefined;
+
+  const apiHeaders = (referer) => ({
+    "user-agent": UA,
+    accept: "application/json, text/plain, */*",
+    "accept-language": "en",
+    "x-g1-area-code": area,
+    "x-requested-with": "XMLHttpRequest",
+    origin: "https://p-bandai.com",
+    referer: referer || `${base}/`,
+  });
 
   try {
     const warm = await request(
@@ -146,36 +169,64 @@ export async function fetchBandaiProductTitle(productCode, opts = {}) {
       ctx,
     );
     jar.ingest?.(warm.headers);
-    if (warm.status >= 400) return null;
 
-    const prod = await request(
-      `https://p-bandai.com/api/products/${encodeURIComponent(code)}`,
+    if (!/^NAI/i.test(code) && !/^AAI/i.test(code)) {
+      try {
+        const prod = await request(
+          `https://p-bandai.com/api/products/${encodeURIComponent(code)}`,
+          {
+            method: "GET",
+            headers: apiHeaders(`${base}/item/${code}`),
+            timeoutMs,
+            ...(signal ? { signal } : {}),
+          },
+          ctx,
+        );
+        jar.ingest?.(prod.headers);
+        const json = await prod.json().catch(() => null);
+        const title = coerceBandaiTitle(json?.productName || json?.name);
+        if (title) return title;
+      } catch {
+        /* try search */
+      }
+    }
+
+    const q = encodeURIComponent(code);
+    const search = await request(
+      `https://p-bandai.com/api/search?keyword=${q}&offset=0&limit=20`,
       {
         method: "GET",
-        headers: {
-          "user-agent": UA,
-          accept: "application/json, text/plain, */*",
-          "accept-language": "en",
-          "x-g1-area-code": area,
-          "x-requested-with": "XMLHttpRequest",
-          origin: "https://p-bandai.com",
-          referer: `${base}/item/${code}`,
-        },
+        headers: apiHeaders(`${base}/search?keyword=${q}`),
         timeoutMs,
         ...(signal ? { signal } : {}),
       },
       ctx,
     );
-    jar.ingest?.(prod.headers);
-
-    let json = null;
-    try {
-      json = await prod.json();
-    } catch {
-      return null;
+    jar.ingest?.(search.headers);
+    const json = await search.json().catch(() => null);
+    const products =
+      json?.productResults?.products || json?.products || json?.items || [];
+    const upper = code.toUpperCase();
+    for (const p of Array.isArray(products) ? products : []) {
+      const pid = String(p?.productCode || p?.code || p?.productId || "").trim();
+      const nais = [
+        ...(Array.isArray(p?.areaItemNos) ? p.areaItemNos : []),
+        p?.areaItemNo,
+      ]
+        .filter(Boolean)
+        .map((x) => String(x).toUpperCase());
+      if (pid.toUpperCase() !== upper && !nais.includes(upper)) continue;
+      const title = coerceBandaiTitle(p?.productName || p?.name || p?.title);
+      if (title) return title;
     }
-    const title = String(json?.productName || json?.name || "").trim();
-    return title || null;
+    // Only soft-match when search returned a single card for this keyword
+    if (Array.isArray(products) && products.length === 1) {
+      const soft = coerceBandaiTitle(
+        products[0]?.productName || products[0]?.name || products[0]?.title,
+      );
+      if (soft) return soft;
+    }
+    return null;
   } catch {
     return null;
   } finally {
