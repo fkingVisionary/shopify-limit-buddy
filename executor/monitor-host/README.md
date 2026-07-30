@@ -7,7 +7,11 @@ phone **Vanta Lab** for monitor control and remote Bot launches via Fly.
 
 Open **`/admin/`** (e.g. `https://j1ms-bandai-monitor-production.up.railway.app/admin/`).
 
-Unlock with `MONITOR_TOKEN`.
+Unlock with `MONITOR_TOKEN` (operator/admin only).
+
+Desktop consumers need **no token**: `GET /events` (SSE), `GET /hits`,
+`GET /preset-catalog`, and `GET /product-cache` are public by default
+(`MONITOR_FEED_PUBLIC=1`). Set `MONITOR_FEED_PUBLIC=0` to lock those behind Bearer.
 
 ### Tabs
 
@@ -19,7 +23,7 @@ Unlock with `MONITOR_TOKEN`.
 | **Labs** | Discord restock/OOS test pings, force monitor poll |
 
 **Watch keywords** = what the poller searches. **Action Store presets** = SKU library
-Desktop pulls via `GET /preset-catalog` (Bearer) for Smart Action packs.
+Desktop pulls via public `GET /preset-catalog` for Smart Action packs.
 
 Paste SKU / `bandai SKU` / Bandai PDP link — **Save & fetch names** pulls product
 titles + backend PIDs (NAI) from `p-bandai.com` into a **shared product cache**
@@ -32,7 +36,8 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 
 | Var | Purpose |
 |---|---|
-| `MONITOR_TOKEN` | Bearer for admin + APIs |
+| `MONITOR_TOKEN` | Bearer for admin / bot / writes (not required for Desktop SSE) |
+| `MONITOR_FEED_PUBLIC` | `1` (default) = public SSE + catalog/cache reads; `0` = require Bearer |
 | `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
 | `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap / env OSPs) |
 | `BANDAI_MONITOR_DC_PROXIES` | Monitor DC (optional bootstrap) |

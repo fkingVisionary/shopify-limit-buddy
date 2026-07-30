@@ -65,7 +65,14 @@ const DEFAULT_SETTINGS = {
   /** Always-on Bandai Railway global monitor (SSE) while engine is running. */
   bandaiGlobalMonitorEnabled: true,
   bandaiGlobalMonitorUrl: "https://j1ms-bandai-monitor-production.up.railway.app",
+  /** Optional operator override only — feed/catalog reads are public on Railway. */
   bandaiGlobalMonitorToken: "",
+  /**
+   * Watchdog: Railway restock hit → auto-start matching Bandai Autocheckout tasks
+   * (PDP / Watch SKU / keywords). Per-task opt-out via bandaiWatchdog=false.
+   */
+  desktopWatchdogEnabled: true,
+  desktopWatchdogCooldownMs: 60_000,
   /**
    * Per-user Discord webhook for checkout success (also fallback for other routes).
    * Prefer discordSuccessWebhook when set; discordCheckoutWebhook kept for compat.

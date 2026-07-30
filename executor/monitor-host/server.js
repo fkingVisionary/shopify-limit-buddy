@@ -7,9 +7,13 @@
  * - Phone admin UI at /admin (keywords, proxies, Discord labs)
  * - Does NOT run checkout (Desktop / executor claim ATC later)
  *
- * Auth: set MONITOR_TOKEN → require Bearer on /status /events /hits /admin APIs
- *       /health stays open for Railway healthchecks. /admin HTML is public;
- *       API calls still need the token.
+ * Auth:
+ *   MONITOR_TOKEN → Bearer for /status, admin, bot, writes.
+ *   Consumer feed reads (/events, /hits, GET product-cache, GET preset-catalog)
+ *   are public by default (MONITOR_FEED_PUBLIC unset/true) so Desktop needs zero
+ *   Settings token. Set MONITOR_FEED_PUBLIC=0 to require Bearer on those too.
+ *   /health stays open for Railway healthchecks. /admin HTML is public;
+ *   admin API calls still need the token.
  */
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +56,8 @@ import { labLog, getLabLogs, clearLabLogs, labLogStats } from "./lab-log.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
 const TOKEN = String(process.env.MONITOR_TOKEN || process.env.EXECUTOR_TOKEN || "").trim();
+// Desktop SSE / catalog / product-cache reads — public unless explicitly locked.
+const FEED_PUBLIC = !/^(0|false|no|off)$/i.test(String(process.env.MONITOR_FEED_PUBLIC ?? "1").trim());
 const AREA = process.env.BANDAI_MONITOR_AREA || "au";
 const MAX_HITS = Math.max(20, Math.min(500, Number(process.env.MONITOR_HIT_BUFFER) || 100));
 
@@ -121,6 +127,12 @@ function authOk(req) {
   if (m && m[1].trim() === TOKEN) return true;
   const q = String(req.query?.token || "").trim();
   return Boolean(q && q === TOKEN);
+}
+
+/** Stock feed + Desktop read APIs — public by default (no per-user MONITOR_TOKEN). */
+function feedAuthOk(req) {
+  if (FEED_PUBLIC) return true;
+  return authOk(req);
 }
 
 function discordHook() {
@@ -590,6 +602,7 @@ app.get("/health", async (_req, reply) => {
     hitsBuffered: recentHits.length,
     sseClients: sseClients.size,
     authRequired: Boolean(TOKEN),
+    feedPublic: FEED_PUBLIC,
     admin: "/admin/",
     quickTask: "/qt",
   };
@@ -615,7 +628,7 @@ app.get("/status", async (req, reply) => {
 });
 
 app.get("/hits", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const limit = Math.max(1, Math.min(MAX_HITS, Number(req.query?.limit) || 50));
   return { ok: true, hits: recentHits.slice(0, limit) };
 });
@@ -640,9 +653,9 @@ app.get("/admin/config", async (req, reply) => {
   };
 });
 
-/** Desktop Action Store — curated SKU library (Bearer MONITOR_TOKEN). */
+/** Desktop Action Store — curated SKU library (public read; writes stay authed). */
 app.get("/preset-catalog", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const raw = normalizePresetCatalogRaw(runtime.presetCatalog);
   const rows = presetRowsForResponse(raw);
   return {
@@ -657,7 +670,7 @@ app.get("/preset-catalog", async (req, reply) => {
 
 /** Shared Bandai product cache (SKU ↔ NAI ↔ title) for all Desktop members. */
 app.get("/product-cache", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const entries = listProductCache(productCache);
   return {
     ok: true,
@@ -668,7 +681,7 @@ app.get("/product-cache", async (req, reply) => {
 });
 
 app.get("/product-cache/lookup", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const sku = String(req.query?.sku || "").trim();
   if (!sku) return reply.code(400).send({ ok: false, error: "sku required" });
   const area = String(req.query?.area || AREA).toLowerCase().slice(0, 2);
@@ -1150,7 +1163,7 @@ app.post("/bot/run", async (req, reply) => {
 });
 
 app.get("/events", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   reply.hijack();
   const res = reply.raw;
   res.writeHead(200, {
@@ -1182,6 +1195,7 @@ console.log(
     intervalMs: runtime.intervalMs,
     keywords: runtime.keywords,
     authRequired: Boolean(TOKEN),
+    feedPublic: FEED_PUBLIC,
     admin: "/admin/",
     statePath: runtime._path,
     fromDisk: Boolean(runtime._fromDisk),

@@ -336,7 +336,12 @@ function renderTasks() {
           : t.store === "bandai"
             ? `Bandai · ${t.bandaiMode || "checkout"}${
                 String(t.bandaiMode || "checkout") === "checkout"
-                  ? ` · ${t.bandaiCheckoutMode || "fast"}`
+                  ? ` · ${t.bandaiCheckoutMode || "fast"}${
+                      t.bandaiWatchdog !== false &&
+                      (t.bandaiWatchSku || t.pdpUrl || t.bandaiWatchKeywords)
+                        ? " · watchdog"
+                        : ""
+                    }`
                   : ""
               }${t.bandaiAreaItemNo ? ` · ${t.bandaiAreaItemNo}` : ""}`
             : t.store === "disney"
@@ -646,6 +651,7 @@ function renderSettings() {
       s.bandaiGlobalMonitorUrl || "https://j1ms-bandai-monitor-production.up.railway.app";
   }
   if ($("setBandaiGlobalMonToken")) $("setBandaiGlobalMonToken").value = s.bandaiGlobalMonitorToken || "";
+  if ($("setDesktopWatchdog")) $("setDesktopWatchdog").checked = s.desktopWatchdogEnabled !== false;
   const successHook =
     s.discordSuccessWebhook || s.discordCheckoutWebhook || s.discordWebhookUrl || "";
   if ($("setDiscordSuccess")) $("setDiscordSuccess").value = successHook;
@@ -1085,6 +1091,12 @@ document.body.addEventListener("click", async (e) => {
     if ($("taskBandaiWatchSku")) $("taskBandaiWatchSku").value = task.bandaiWatchSku || "";
     if ($("taskBandaiWatchKeywords"))
       $("taskBandaiWatchKeywords").value = task.bandaiWatchKeywords || "";
+    if ($("taskBandaiCheckoutWatchSku"))
+      $("taskBandaiCheckoutWatchSku").value = task.bandaiWatchSku || "";
+    if ($("taskBandaiCheckoutWatchKeywords"))
+      $("taskBandaiCheckoutWatchKeywords").value = task.bandaiWatchKeywords || "";
+    if ($("taskBandaiWatchdog"))
+      $("taskBandaiWatchdog").checked = task.bandaiWatchdog !== false;
     if ($("taskBandaiMonitorIntervalMs"))
       $("taskBandaiMonitorIntervalMs").value = task.bandaiMonitorIntervalMs || 10000;
     if ($("taskBandaiMonitorDelayMs"))
@@ -1249,9 +1261,17 @@ function readTaskForm() {
         ? $("taskBandaiMonitorMode")?.value || "local"
         : undefined,
     bandaiWatchSku:
-      store === "bandai" ? $("taskBandaiWatchSku")?.value?.trim() || "" : undefined,
+      store === "bandai"
+        ? ($("taskBandaiMode")?.value || "") === "checkout"
+          ? $("taskBandaiCheckoutWatchSku")?.value?.trim() || ""
+          : $("taskBandaiWatchSku")?.value?.trim() || ""
+        : undefined,
     bandaiWatchKeywords:
-      store === "bandai" ? $("taskBandaiWatchKeywords")?.value?.trim() || "" : undefined,
+      store === "bandai"
+        ? ($("taskBandaiMode")?.value || "") === "checkout"
+          ? $("taskBandaiCheckoutWatchKeywords")?.value?.trim() || ""
+          : $("taskBandaiWatchKeywords")?.value?.trim() || ""
+        : undefined,
     bandaiMonitorIntervalMs:
       store === "bandai"
         ? Number($("taskBandaiMonitorIntervalMs")?.value) || 10000
@@ -1261,6 +1281,10 @@ function readTaskForm() {
     bandaiCheckoutOnHit:
       store === "bandai" && ($("taskBandaiMode")?.value || "") === "monitor"
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
+        : undefined,
+    bandaiWatchdog:
+      store === "bandai" && ($("taskBandaiMode")?.value || "") === "checkout"
+        ? $("taskBandaiWatchdog")?.checked !== false
         : undefined,
     bandaiAreaItemNo:
       store === "bandai" ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
@@ -1662,8 +1686,11 @@ $("btnSaveSettings").onclick = async () => {
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
       bandaiGlobalMonitorEnabled: $("setBandaiGlobalMon")?.checked !== false,
-      bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
+      bandaiGlobalMonitorUrl:
+        $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") ||
+        "https://j1ms-bandai-monitor-production.up.railway.app",
       bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
+      desktopWatchdogEnabled: $("setDesktopWatchdog")?.checked !== false,
       discordSuccessWebhook: $("setDiscordSuccess")?.value?.trim() || "",
       discordCheckoutWebhook: $("setDiscordSuccess")?.value?.trim() || "",
       discordFailWebhook: $("setDiscordFail")?.value?.trim() || "",

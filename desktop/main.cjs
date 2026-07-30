@@ -60,6 +60,10 @@ const {
   formatLaneAfterAction,
 } = require("./bandai-drop-ops.cjs");
 const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
+const {
+  createWatchdogCooldown,
+  planWatchdogStarts,
+} = require("./desktop-watchdog.cjs");
 const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
 const { testProxyEntries } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
@@ -240,6 +244,49 @@ function stopSmartActionScheduleTicker() {
 }
 startSmartActionScheduleTicker();
 
+/** Railway restock → Autocheckout auto-start (cooldown per task+SKU). */
+const desktopWatchdogCooldown = createWatchdogCooldown({
+  cooldownMs: 60_000,
+});
+
+function handleDesktopWatchdog(hit) {
+  if (!sidecar.status().running) return { ok: false, started: 0, reason: "engine_off" };
+  desktopWatchdogCooldown.setCooldownMs(
+    Number(state.settings.desktopWatchdogCooldownMs) || 60_000,
+  );
+  const starts = planWatchdogStarts({
+    tasks: state.db.tasks,
+    hit,
+    settings: state.settings,
+    cooldown: desktopWatchdogCooldown,
+  });
+  let started = 0;
+  for (const row of starts) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "info",
+      taskId: row.taskId,
+      message: `Watchdog → start ${row.label} (${row.productId})`,
+    });
+    const res = enqueueGlobalMonitorCheckout(row.checkoutTask);
+    if (res?.ok !== false) {
+      started += 1;
+      const t = state.db.tasks.find((x) => x.id === row.taskId);
+      if (t) {
+        t.lastStatus = "queued";
+        t.lastLabel = `Watchdog · ${row.productId}`;
+        t.updatedAt = Date.now();
+      }
+    }
+  }
+  if (started) {
+    persistDb();
+    send({ type: "snapshot", data: snapshot() });
+  }
+  return { ok: true, started, matched: starts.length };
+}
+
 /** Railway global monitor SSE — subscribed while engine is running. */
 const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
   getSettings: () => state.settings,
@@ -253,6 +300,17 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
     void smartActions.handleMonitorHit(hit).then(() => {
       send({ type: "snapshot", data: snapshot() });
     });
+    // Watchdog: idle Autocheckout tasks matching this SKU/keywords → start now.
+    try {
+      handleDesktopWatchdog(hit);
+    } catch (e) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "err",
+        message: `Watchdog error: ${e?.message || e}`,
+      });
+    }
   },
 });
 
@@ -342,18 +400,18 @@ async function pushProductToMonitor(entry) {
  */
 async function pullProductCacheFromMonitor() {
   const s = state.settings || {};
-  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
+  const base =
+    String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+      .trim()
+      .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
   if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
-  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
   let res;
   try {
     res = await fetch(`${base}/product-cache`, {
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     });
   } catch (e) {
@@ -1373,6 +1431,10 @@ function upsertTaskRow(task) {
     bandaiCheckoutOnHit:
       storeId === "bandai" && String(task.bandaiMode || "") === "monitor"
         ? task.bandaiCheckoutOnHit !== false
+        : undefined,
+    bandaiWatchdog:
+      storeId === "bandai" && String(task.bandaiMode || "checkout") === "checkout"
+        ? task.bandaiWatchdog !== false
         : undefined,
     bandaiAreaItemNo: (() => {
       if (storeId !== "bandai") return undefined;
@@ -2506,19 +2568,19 @@ ipcMain.handle("desktop:smart-action-catalog-apply", (_e, opts = {}) => {
  */
 async function pullPresetCatalogFromMonitor() {
   const s = state.settings || {};
-  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
+  const base =
+    String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+      .trim()
+      .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
   if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
-  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
   const url = `${base}/preset-catalog`;
   let res;
   try {
     res = await fetch(url, {
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     });
   } catch (e) {

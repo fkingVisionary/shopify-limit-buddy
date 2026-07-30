@@ -1,6 +1,7 @@
 // Desktop → Railway Bandai global monitor SSE subscriber.
 // Lifecycle: start with engine, stop with engine. Matches local watch tasks.
 // Restock Discord is operator-only on Railway — never fan out to user webhooks.
+// Feed reads are public on Railway (no MONITOR_TOKEN) — token is optional override.
 
 const { EventEmitter } = require("node:events");
 const {
@@ -8,10 +9,20 @@ const {
   taskForMonitorCheckout,
 } = require("./bandai-monitor-checkout.cjs");
 
+const DEFAULT_BANDAI_GLOBAL_MONITOR_URL =
+  "https://j1ms-bandai-monitor-production.up.railway.app";
+
 function normalizeMonitorBase(url) {
   return String(url || "")
     .trim()
     .replace(/\/+$/, "");
+}
+
+function resolveMonitorBase(settings = {}) {
+  return (
+    normalizeMonitorBase(settings.bandaiGlobalMonitorUrl || settings.globalMonitorUrl) ||
+    DEFAULT_BANDAI_GLOBAL_MONITOR_URL
+  );
 }
 
 function parseWatch(task = {}) {
@@ -184,7 +195,7 @@ function createBandaiGlobalMonitorClient({
   async function loop() {
     while (running) {
       const s = settings();
-      const base = normalizeMonitorBase(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl);
+      const base = resolveMonitorBase(s);
       const token = String(s.bandaiGlobalMonitorToken || s.monitorToken || "").trim();
       if (!base) {
         lastError = "missing_monitor_url";
@@ -235,7 +246,7 @@ function createBandaiGlobalMonitorClient({
     if (s.bandaiGlobalMonitorEnabled === false) {
       return { ok: false, skipped: true, reason: "disabled" };
     }
-    const base = normalizeMonitorBase(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl);
+    const base = resolveMonitorBase(s);
     if (!base) return { ok: false, skipped: true, reason: "missing_url" };
     if (running) return { ok: true, already: true };
     running = true;
@@ -265,7 +276,7 @@ function createBandaiGlobalMonitorClient({
       hits,
       lastError,
       startedAt,
-      url: normalizeMonitorBase(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl) || null,
+      url: resolveMonitorBase(s) || null,
       watchTasks: listGlobalWatchTasks(getTasks?.() || []).length,
       feed: feed.slice(0, 80),
     };
@@ -310,4 +321,6 @@ module.exports = {
   parseWatch,
   eventMatchesWatch,
   normalizeMonitorBase,
+  resolveMonitorBase,
+  DEFAULT_BANDAI_GLOBAL_MONITOR_URL,
 };
