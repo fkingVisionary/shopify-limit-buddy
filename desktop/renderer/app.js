@@ -242,8 +242,12 @@ function syncTaskFormForStore() {
   const bAssign = $("taskBandaiAssignWrap");
   if (bAssign) {
     const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
-    bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance" && !monCheckout);
+    bAssign.hidden =
+      !bandai ||
+      (mode !== "checkout" && mode !== "atc" && mode !== "chance" && !monCheckout);
   }
+  const bAtcHint = $("taskBandaiAtcHint");
+  if (bAtcHint) bAtcHint.hidden = !bandai || mode !== "atc";
   const bChance = $("taskBandaiChanceWrap");
   if (bChance) bChance.hidden = !bandai || mode !== "chance";
   const bPayPath = $("taskBandaiCheckoutModeWrap");
@@ -268,7 +272,7 @@ function syncTaskFormForStore() {
       (pc && mode !== "checkout");
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
-  if (bandai && (mode === "checkout" || mode === "chance" || mode === "monitor"))
+  if (bandai && (mode === "checkout" || mode === "atc" || mode === "chance" || mode === "monitor"))
     syncBandaiAccountAssignUi();
 }
 
@@ -292,6 +296,46 @@ function refreshTaskGroupList() {
   dl.innerHTML = names.map((n) => `<option value="${esc(n)}"></option>`).join("");
 }
 
+function formatCartHoldCountdown(ms) {
+  const s = Math.max(0, Math.floor(Number(ms) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
+function heldCartCountdownHtml(t) {
+  if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
+  const start = Number(t.heldCart.cartHoldAt) || 0;
+  const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
+  if (!start) {
+    return ` · <span class="cart-countdown">cart held — retry pay</span>`;
+  }
+  const left = Math.max(0, start + win - Date.now());
+  if (left <= 0) {
+    return ` · <span class="cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}">cart held? (window may be up)</span>`;
+  }
+  return ` · <span class="cart-countdown" data-hold-at="${start}" data-hold-win="${win}">cart held · ${formatCartHoldCountdown(left)}</span>`;
+}
+
+function tickHeldCartCountdowns() {
+  document.querySelectorAll(".cart-countdown[data-hold-at]").forEach((el) => {
+    const start = Number(el.dataset.holdAt) || 0;
+    const win = Number(el.dataset.holdWin) || 30 * 60_000;
+    if (!start) return;
+    const left = Math.max(0, start + win - Date.now());
+    if (left <= 0) {
+      el.textContent = "cart held? (window may be up)";
+      el.classList.add("expired");
+    } else {
+      el.textContent = `cart held · ${formatCartHoldCountdown(left)}`;
+      el.classList.remove("expired");
+    }
+  });
+}
+
 function renderTasks() {
   renderHarvestBankStrip();
   renderDropPrep();
@@ -308,7 +352,7 @@ function renderTasks() {
       const badge =
         t.lastStatus === "confirmed" || t.lastStatus === "complete" || t.lastStatus === "ok" || t.lastStatus === "login_ok"
           ? "ok"
-          : t.lastStatus === "held_pay_retry"
+          : t.lastStatus === "held_pay_retry" || t.lastStatus === "cart_held"
             ? "run"
           : t.lastStatus === "failed" ||
               t.lastStatus === "error" ||
@@ -321,15 +365,7 @@ function renderTasks() {
             : t.lastStatus === "queued"
               ? "run"
               : "";
-      const heldHint = (() => {
-        if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
-        const start = Number(t.heldCart.cartHoldAt) || 0;
-        const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
-        if (!start) return " · cart held — retry pay";
-        const left = Math.max(0, start + win - Date.now());
-        if (left <= 0) return " · cart held? (window may be up — verify on retry)";
-        return ` · cart held · ~${Math.ceil(left / 60_000)}m left`;
-      })();
+      const heldHint = heldCartCountdownHtml(t);
       const storeLabel =
         t.store === "toymate"
           ? `Toymate · ${t.toymateMode || "checkout"}`
@@ -367,7 +403,7 @@ function renderTasks() {
       }
       if (
         t.store === "bandai" &&
-        ["checkout", "chance"].includes(String(t.bandaiMode || "checkout"))
+        ["checkout", "atc", "chance"].includes(String(t.bandaiMode || "checkout"))
       ) {
         const assign = t.accountAssign || "auto";
         if (assign === "manual") {
@@ -407,7 +443,7 @@ function renderTasks() {
           <span class="badge ${badge}">${esc(statusLabel)}</span>
           ${groupChip}
           <div class="meta">${esc(storeLabel)} · ${esc(pdpMeta)}</div>
-          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${esc(heldHint)}</div>
+          <div class="meta">qty ${t.qty} × ${t.quantity} jobs${t.lastOrderNumber ? ` · ${esc(t.lastOrderNumber)}` : ""}${accountMeta ? ` · ${esc(accountMeta)}` : ""}${heldHint}</div>
           ${dropSummary}
         </div>
         <div class="actions">
@@ -2946,4 +2982,5 @@ window.desktop.onEvent((evt) => {
 });
 
 refresh();
+setInterval(tickHeldCartCountdowns, 1000);
 }

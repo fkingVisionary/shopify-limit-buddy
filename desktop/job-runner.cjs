@@ -394,7 +394,7 @@ function buildBandaiPayload({
 
   let resolvedAccount = null;
   let accountAssignSource = null;
-  if (mode === "checkout" || mode === "chance" || mode === "login_check") {
+  if (mode === "checkout" || mode === "atc" || mode === "chance" || mode === "login_check") {
     if (task.account?.email && task.account?.password) {
       resolvedAccount = {
         email: task.account.email,
@@ -525,6 +525,7 @@ function buildBandaiPayload({
           : undefined,
       bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
       bandaiPayFromCart: task.bandaiPayFromCart === true,
+      bandaiStopAtCart: mode === "atc" || mode === "atc_only" || task.bandaiStopAtCart === true,
       heldCart:
         task.heldCart && typeof task.heldCart === "object"
           ? {
@@ -966,6 +967,7 @@ function finishResult(job, res, summary) {
     accountGen: Boolean(res?.accountGen),
     paypalApproveUrl: res?.paypalApproveUrl ?? null,
     attempt: "undici",
+    atcOnly: Boolean(res?.atcOnly),
     // Bandai held-cart / pay-window (Retry pay)
     paymentStatus: res?.paymentStatus ?? null,
     cartSn: res?.cartSn ?? null,
@@ -1414,11 +1416,11 @@ function pathToFileUrl(p) {
 }
 
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
-  // Bandai Autocheckout / chance: claim F5 at run-start (not enqueue) so bank TTL
+  // Bandai Autocheckout / ATC / chance: claim F5 at run-start (not enqueue) so bank TTL
   // stays fresh through the queue — matches Monitor restock claim timing.
   if (
     job.task?.store === "bandai" &&
-    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    ["checkout", "atc", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
     !job.task.harvestedBridgeId &&
     typeof takeBandaiHarvestFn === "function"
   ) {
@@ -1441,10 +1443,10 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
-  // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
+  // Autocheckout / ATC: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
   if (
     job.task?.store === "bandai" &&
-    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
+    ["checkout", "atc", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
     !job.task.bandaiPayFromCart &&
     !pickAreaItemNo({
       bandaiAreaItemNo: job.task.bandaiAreaItemNo,

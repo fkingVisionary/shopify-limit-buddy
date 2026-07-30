@@ -2027,7 +2027,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       const needsVault =
         (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
         (task.store === "bandai" &&
-          (["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")) ||
+          (["checkout", "atc", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")) ||
             (String(task.bandaiMode || "") === "monitor" &&
               task.bandaiCheckoutOnHit !== false &&
               task.placeOrder !== false)));
@@ -3052,7 +3052,7 @@ async function e2eAutorun() {
     const needsVault =
       (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
       (task.store === "bandai" &&
-        ["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")));
+        ["checkout", "atc", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")));
     if (needsVault) {
       const resolved = resolveAccountForTask({
         task,

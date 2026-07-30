@@ -29,10 +29,12 @@ drop win-con. Do not trade ATC speed for pay polish.
 | P1 | `checkoutSn` + `merchantCartToken` ready to pay |
 | P2 | GE issuer / bank (within ~30 min of cart) |
 
-Flags: `bandaiStopAtCart` (hold after ATC), `bandaiFastAtc` (default on —
-skip pre-ATC cart peek + skip Playwright `/item/*` nudge; mint ATC sensors from
-`/login` or `/cart`). **Do not mint `addToCart` sensors on `/item/*`** — lab
-showed zero `p8komysnbc-*` there when PDP `avail=false`.
+Flags: `bandaiMode=atc` (or `bandaiStopAtCart`) holds after ATC with no
+checkout/GE; desktop shows a live ~30 min countdown + **Retry pay**.
+`bandaiFastAtc` (default on — skip pre-ATC cart peek + skip Playwright
+`/item/*` nudge; mint ATC sensors from `/login` or `/cart`). **Do not mint
+`addToCart` sensors on `/item/*`** — lab showed zero `p8komysnbc-*` there when
+PDP `avail=false`.
 
 Lab wall→ATC (`bandaiFastAtc`, sticky AU ISP): ~**15–25s** to `cart_hold`.
 
