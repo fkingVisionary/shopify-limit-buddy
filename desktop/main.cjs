@@ -400,18 +400,18 @@ async function pushProductToMonitor(entry) {
  */
 async function pullProductCacheFromMonitor() {
   const s = state.settings || {};
-  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
+  const base =
+    String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+      .trim()
+      .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
   if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
-  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
   let res;
   try {
     res = await fetch(`${base}/product-cache`, {
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     });
   } catch (e) {
@@ -2568,19 +2568,19 @@ ipcMain.handle("desktop:smart-action-catalog-apply", (_e, opts = {}) => {
  */
 async function pullPresetCatalogFromMonitor() {
   const s = state.settings || {};
-  const base = String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
-    .trim()
-    .replace(/\/+$/, "");
+  const base =
+    String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
+      .trim()
+      .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
   if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
-  if (!token) return { ok: false, error: "Set Bandai global monitor token in Settings" };
   const url = `${base}/preset-catalog`;
   let res;
   try {
     res = await fetch(url, {
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
     });
   } catch (e) {

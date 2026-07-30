@@ -811,12 +811,12 @@
         <input id="setMax" type="number" min="1" max="50" value="5" />
         <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
         <h3 style="margin-top:1.25rem">Bandai global monitor (Railway)</h3>
-        <p class="hint">While the engine is on, Desktop stays subscribed to the always-on Railway poller. Create Bandai → Monitor → <strong>Global</strong> tasks with watch SKU; Checkout on restock fires ATC without running a local poll loop.</p>
+        <p class="hint">While the engine is on, Desktop stays subscribed to the always-on Railway poller (no token needed). Create Bandai → Monitor → <strong>Global</strong> tasks with watch SKU; Checkout on restock fires ATC without running a local poll loop.</p>
         <label class="check"><input id="setBandaiGlobalMon" type="checkbox" checked /> Subscribe when engine starts</label>
         <label>Monitor URL</label>
         <input id="setBandaiGlobalMonUrl" placeholder="https://j1ms-bandai-monitor-production.up.railway.app" />
-        <label>Monitor token (Bearer)</label>
-        <input id="setBandaiGlobalMonToken" placeholder="MONITOR_TOKEN from Railway" autocomplete="off" />
+        <label>Operator token (optional)</label>
+        <input id="setBandaiGlobalMonToken" placeholder="Only for cache push / admin overrides — leave blank" autocomplete="off" />
         <label class="check"><input id="setDesktopWatchdog" type="checkbox" checked /> Watchdog — auto-start Autocheckout tasks on restock match</label>
         <p class="hint">Armed Bandai Autocheckout tasks (Watchdog on + PDP/SKU/keywords) start when the Railway feed reports in-stock. Separate from Monitor → Checkout on hit.</p>
         <h3 style="margin-top:1.25rem">Discord webhooks (routing)</h3>

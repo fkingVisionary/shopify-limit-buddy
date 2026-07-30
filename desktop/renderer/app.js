@@ -1686,7 +1686,9 @@ $("btnSaveSettings").onclick = async () => {
       maxConcurrent: Number($("setMax").value) || 5,
       placeOrderDefault: $("setPlaceOrder").checked,
       bandaiGlobalMonitorEnabled: $("setBandaiGlobalMon")?.checked !== false,
-      bandaiGlobalMonitorUrl: $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") || "",
+      bandaiGlobalMonitorUrl:
+        $("setBandaiGlobalMonUrl")?.value?.trim().replace(/\/$/, "") ||
+        "https://j1ms-bandai-monitor-production.up.railway.app",
       bandaiGlobalMonitorToken: $("setBandaiGlobalMonToken")?.value?.trim() || "",
       desktopWatchdogEnabled: $("setDesktopWatchdog")?.checked !== false,
       discordSuccessWebhook: $("setDiscordSuccess")?.value?.trim() || "",
