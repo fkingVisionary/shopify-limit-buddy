@@ -4,6 +4,7 @@
 //
 // Modes (task.bandaiMode):
 //   checkout      — login → ATC → cart → checkoutSn (HTTP + F5 sensor bridge)
+//   atc           — login → ATC → cart hold only (no checkout / GE pay)
 //   account_gen   — bandai-agen (IMAP + SMSPool/OnlineSim → registerVerification → vault)
 //   login_check   — F5 + login + member_refresh only (vault same-day proof)
 //   monitor       — poll search/PDP for purchaseAvailable / Chance
@@ -1472,16 +1473,18 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   }
 
   // Optional early stop before checkout POST (default continues to checkoutSn).
-  if (
-    task.bandaiStopAtCart === true &&
-    !(placeOrder && (opts.placeOrderGe || opts.placeOrderGeHttp))
-  ) {
+  // Modes: bandaiMode=atc|atc_only, or explicit bandaiStopAtCart.
+  const modeLc = String(task.bandaiMode || task.mode || "").toLowerCase();
+  const atcOnly =
+    modeLc === "atc" || modeLc === "atc_only" || task.bandaiStopAtCart === true;
+  if (atcOnly && !(placeOrder && (opts.placeOrderGe || opts.placeOrderGeHttp))) {
     await closeBridge();
     return {
       ok: true,
       steps,
       atcWallMs,
-      checkoutStage: "cart",
+      atcOnly: true,
+      checkoutStage: "cart_hold",
       dryRun: true,
       areaItemNo: pdp.areaItemNo,
       productCode,
@@ -1491,11 +1494,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       title: pdp.title,
       finalUrl: `${session.base}/cart`,
       cookies: ctx.jar?.dump?.() ?? {},
-      note: "HTTP ATC + cart ok — stopped before checkout (bandaiStopAtCart)",
+      note:
+        modeLc === "atc" || modeLc === "atc_only"
+          ? "HTTP ATC + cart ok — ATC-only mode (no checkout)"
+          : "HTTP ATC + cart ok — stopped before checkout (bandaiStopAtCart)",
       via: "http",
       globaleMid: GLOBALE_MID,
       cartHoldAt,
       payWindowMs: BANDAI_PAY_WINDOW_MS,
+      // ok:true + heldPayRetry → desktop persists cart + shows pay-window countdown / Retry pay.
       heldPayRetry: true,
       heldCart: {
         cartSn,
@@ -2206,7 +2213,9 @@ export const bandaiAdapter = {
     const normalized =
       mode === "bandai-agen" || mode === "agen" || mode === "account_gen"
         ? "account_gen"
-        : mode;
+        : mode === "atc_only"
+          ? "atc"
+          : mode;
 
     const area = resolveBandaiArea(task);
     task.bandaiArea = area;
@@ -2219,6 +2228,15 @@ export const bandaiAdapter = {
 
     if (normalized === "account_gen") {
       return createBandaiAccount(task, ctx, { tStep, area });
+    }
+
+    if (normalized === "atc") {
+      // Login → ATC → cart hold only. Never place order / GE.
+      task.bandaiMode = "atc";
+      task.bandaiStopAtCart = true;
+      task.placeOrder = false;
+      task.dryRun = true;
+      return runCheckout(task, ctx, session, tStep, steps);
     }
 
     if (normalized === "login_check") {

@@ -141,10 +141,14 @@
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
               <option value="checkout">Bandai — Autocheckout</option>
+              <option value="atc">Bandai — ATC only (hold cart)</option>
               <option value="account_gen">Bandai — Account gen</option>
               <option value="monitor">Bandai — Monitor</option>
               <option value="chance">Chance applyDraw</option>
             </select>
+            <p id="taskBandaiAtcHint" class="field-hint" hidden>
+              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Retry pay</strong> to checkout later.
+            </p>
             <div id="taskBandaiMonitorWrap" hidden>
               <label>Monitor source</label>
               <select id="taskBandaiMonitorMode">
@@ -858,6 +862,7 @@
         <label>Bandai mode</label>
         <select id="qtPresetMode">
           <option value="checkout">Autocheckout</option>
+          <option value="atc">ATC only (hold cart)</option>
           <option value="monitor">Monitor (global + checkout on hit)</option>
         </select>
         <label>Profile</label>

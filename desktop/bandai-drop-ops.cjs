@@ -391,13 +391,15 @@ function formatLaneAfterAction(result = {}) {
 
   const bits = [];
   if (result.ok && result.orderNumber) bits.push(`order ${result.orderNumber}`);
+  else if (result.atcOnly || result.consumerCode === "cart_held") bits.push("ATC held");
   else if (stage) bits.push(String(stage));
   if (fail && !result.ok) bits.push(`fail:${fail}`);
   if (area) bits.push(String(area));
   if (cart) bits.push(`cart ${cart}`);
   if (tx) bits.push(`tx=${tx}`);
   if (wall) bits.push(wall);
-  if (result.heldPayRetry || result.consumerCode === "held_pay_retry") bits.push("Retry pay");
+  if (result.heldPayRetry || result.consumerCode === "held_pay_retry" || result.consumerCode === "cart_held")
+    bits.push("Retry pay");
   if (!bits.length) {
     bits.push(result.consumerLabel || result.error || (result.ok ? "ok" : "failed"));
   }
