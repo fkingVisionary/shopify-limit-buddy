@@ -27,7 +27,15 @@ import {
   buildQuickTaskLocalUrl,
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
-import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
+import {
+  loadRuntimeConfig,
+  saveRuntimeConfig,
+  runtimePersistenceInfo,
+  normalizeDiscordWebhooks,
+  isDiscordWebhookUrl,
+} from "./runtime-config.mjs";
+import { resolveStateFile } from "./data-dir.mjs";
+import fs from "node:fs";
 import { computeMonitorStale, shouldWatchdogRestart } from "./monitor-watchdog.mjs";
 import {
   parsePresetCatalogBulk,
@@ -106,11 +114,50 @@ function flushProductCache() {
 
 function presetRowsForResponse(raw) {
   const parsed = parsePresetCatalogBulk(raw, { defaultArea: AREA });
-  return mergeRowsWithProductCache(parsed, productCache, AREA);
+  const merged = mergeRowsWithProductCache(parsed, productCache, AREA);
+  // Attach live catalog images when the stock snapshot already has them.
+  return merged.map((row) => {
+    if (row.imageUrl || String(row.store || "").toLowerCase() !== "bandai") return row;
+    try {
+      const live = hub.monitor.getProduct?.(row.sku) || null;
+      const imageUrl = String(live?.imageUrl || "").trim();
+      if (!imageUrl) return row;
+      return { ...row, imageUrl };
+    } catch {
+      return row;
+    }
+  });
+}
+
+const recentHitsPath = resolveStateFile("vanta-recent-hits.json").path;
+
+function loadRecentHitsFromDisk() {
+  try {
+    const raw = fs.readFileSync(recentHitsPath, "utf8");
+    const j = JSON.parse(raw);
+    const rows = Array.isArray(j?.hits) ? j.hits : Array.isArray(j) ? j : [];
+    return rows
+      .filter((h) => h && h.productId)
+      .slice(0, MAX_HITS);
+  } catch {
+    return [];
+  }
+}
+
+function persistRecentHits() {
+  try {
+    fs.mkdirSync(path.dirname(recentHitsPath), { recursive: true });
+    fs.writeFileSync(
+      recentHitsPath,
+      JSON.stringify({ updatedAt: new Date().toISOString(), hits: recentHits.slice(0, MAX_HITS) }, null, 2),
+    );
+  } catch {
+    /* volume/tmp write failure — in-memory buffer still works */
+  }
 }
 
 /** @type {object[]} */
-const recentHits = [];
+const recentHits = loadRecentHitsFromDisk();
 /** @type {Set<import('node:http').ServerResponse>} */
 const sseClients = new Set();
 
@@ -135,12 +182,25 @@ function feedAuthOk(req) {
   return authOk(req);
 }
 
+/** All Discord webhook URLs (admin list + env bootstrap). */
+function discordHooks() {
+  const fromRuntime = normalizeDiscordWebhooks(runtime?.discordWebhooks);
+  if (fromRuntime.length) return fromRuntime.map((w) => w.url);
+  const env = String(process.env.DISCORD_WEBHOOK_URL || "").trim().replace(/\/+$/, "");
+  return isDiscordWebhookUrl(env) ? [env] : [];
+}
+
 function discordHook() {
-  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
-  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) {
-    return null;
-  }
-  return hook;
+  return discordHooks()[0] || null;
+}
+
+function maskWebhookUrl(url) {
+  const u = String(url || "");
+  const m = u.match(/^(https:\/\/(?:discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/)([\w-]+)/i);
+  if (!m) return u.slice(0, 40) + "…";
+  const token = m[2];
+  const tail = token.slice(-4);
+  return `${m[1]}…${tail}`;
 }
 
 function pushHit(ev) {
@@ -158,6 +218,7 @@ function pushHit(ev) {
   };
   recentHits.unshift(row);
   if (recentHits.length > MAX_HITS) recentHits.length = MAX_HITS;
+  persistRecentHits();
   // Desktop checkout only cares about in-stock; still stream OOS for operators.
   const payload = `event: stock_changed\ndata: ${JSON.stringify(row)}\n\n`;
   for (const res of sseClients) {
@@ -188,35 +249,63 @@ function hitPayload(ev) {
   };
 }
 
+async function postDiscordOne(hook, body, timeoutMs) {
+  const res = await fetch(hook, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await res.text().catch(() => "");
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: text.slice(0, 200), url: maskWebhookUrl(hook) };
+  }
+  return { ok: true, status: res.status, url: maskWebhookUrl(hook) };
+}
+
 async function postDiscord(body) {
-  const hook = discordHook();
-  if (!hook) return { ok: false, skipped: true, error: "no_webhook" };
+  const hooks = discordHooks();
+  if (!hooks.length) return { ok: false, skipped: true, error: "no_webhook" };
   const timeoutMs = Math.max(
     3_000,
     Number(process.env.DISCORD_WEBHOOK_TIMEOUT_MS) || 12_000,
   );
-  try {
-    const res = await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const text = await res.text().catch(() => "");
-    if (!res.ok) {
-      labLog("discord", "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
-      return { ok: false, status: res.status, error: text.slice(0, 200) };
+  const title = body?.embeds?.[0]?.title || body?.username || "ping";
+  const results = [];
+  for (const hook of hooks) {
+    try {
+      const r = await postDiscordOne(hook, body, timeoutMs);
+      results.push(r);
+      if (!r.ok) {
+        labLog("discord", "err", `webhook ${r.status || "err"} · ${r.url}`, {
+          detail: String(r.error || "").slice(0, 120),
+        });
+      }
+    } catch (e) {
+      const msg =
+        e?.name === "TimeoutError" || e?.name === "AbortError"
+          ? `webhook_timeout_${timeoutMs}ms`
+          : e?.message || String(e);
+      labLog("discord", "err", `${msg} · ${maskWebhookUrl(hook)}`);
+      results.push({ ok: false, error: msg, url: maskWebhookUrl(hook) });
     }
-    const title = body?.embeds?.[0]?.title || body?.username || "ping";
-    labLog("discord", "info", `sent · ${title}`.slice(0, 200));
-    return { ok: true, status: res.status };
-  } catch (e) {
-    const msg = e?.name === "TimeoutError" || e?.name === "AbortError"
-      ? `webhook_timeout_${timeoutMs}ms`
-      : e?.message || String(e);
-    labLog("discord", "err", msg);
-    return { ok: false, error: msg };
   }
+  const okCount = results.filter((r) => r.ok).length;
+  if (okCount) {
+    labLog(
+      "discord",
+      "info",
+      `sent · ${title} · ${okCount}/${results.length} webhook(s)`.slice(0, 200),
+    );
+  }
+  return {
+    ok: okCount > 0,
+    status: results.find((r) => r.ok)?.status || results[0]?.status || null,
+    sent: okCount,
+    total: results.length,
+    results,
+    error: okCount ? null : results[0]?.error || "all_webhooks_failed",
+  };
 }
 
 /** Post Discord; if components are rejected, retry embed-only (QT link stays in description). */
@@ -633,6 +722,16 @@ app.get("/hits", async (req, reply) => {
   return { ok: true, hits: recentHits.slice(0, limit) };
 });
 
+function discordWebhooksPublic() {
+  return normalizeDiscordWebhooks(runtime.discordWebhooks).map((w) => ({
+    id: w.id,
+    label: w.label || "",
+    url: w.url,
+    masked: maskWebhookUrl(w.url),
+    addedAt: w.addedAt || null,
+  }));
+}
+
 app.get("/admin/config", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const m = hub.monitor.status();
@@ -642,6 +741,7 @@ app.get("/admin/config", async (req, reply) => {
     keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
     presetCatalog: presetRaw,
     presetCatalogRows: presetRowsForResponse(presetRaw),
+    discordWebhooks: discordWebhooksPublic(),
     productCacheCount: Object.keys(productCache.entries || {}).length,
     ispProxies: runtime.ispProxies || "",
     dcProxies: runtime.dcProxies || "",
@@ -757,6 +857,9 @@ app.put("/admin/config", async (req, reply) => {
     if (body.notifyOos != null) {
       runtime.notifyOos = Boolean(body.notifyOos);
     }
+    if (body.discordWebhooks != null) {
+      runtime.discordWebhooks = normalizeDiscordWebhooks(body.discordWebhooks);
+    }
     const proxPatch = {};
     if (body.ispProxies != null) {
       runtime.ispProxies = String(body.ispProxies);
@@ -777,6 +880,7 @@ app.put("/admin/config", async (req, reply) => {
       presetCatalog: presetRaw,
       presetCatalogRows: presetRowsForResponse(presetRaw),
       presetEnrich,
+      discordWebhooks: discordWebhooksPublic(),
       productCacheCount: Object.keys(productCache.entries || {}).length,
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
@@ -789,6 +893,64 @@ app.put("/admin/config", async (req, reply) => {
   } catch (e) {
     return reply.code(400).send({ ok: false, error: e?.message || String(e) });
   }
+});
+
+/** Add a Discord webhook for restock / OOS fan-out (persisted on volume). */
+app.post("/admin/discord-webhooks", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const url = String(body.url || "").trim().replace(/\/+$/, "");
+  if (!isDiscordWebhookUrl(url)) {
+    return reply.code(400).send({
+      ok: false,
+      error: "Invalid Discord webhook URL (expect discord.com/api/webhooks/…)",
+    });
+  }
+  const label = String(body.label || "").trim().slice(0, 80);
+  const cur = normalizeDiscordWebhooks(runtime.discordWebhooks);
+  if (cur.some((w) => w.url.toLowerCase() === url.toLowerCase())) {
+    return {
+      ok: true,
+      already: true,
+      discordWebhooks: discordWebhooksPublic(),
+    };
+  }
+  if (cur.length >= 20) {
+    return reply.code(400).send({ ok: false, error: "Max 20 Discord webhooks" });
+  }
+  runtime.discordWebhooks = normalizeDiscordWebhooks([
+    ...cur,
+    { url, label, addedAt: new Date().toISOString() },
+  ]);
+  runtime = { ...runtime, ...saveRuntimeConfig(runtime, runtime._path) };
+  labLog("discord", "info", `webhook added · ${maskWebhookUrl(url)}${label ? ` · ${label}` : ""}`);
+  return { ok: true, discordWebhooks: discordWebhooksPublic() };
+});
+
+/** Remove Discord webhook by id or exact url. */
+app.delete("/admin/discord-webhooks", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const id = String(body.id || req.query?.id || "").trim();
+  const url = String(body.url || req.query?.url || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!id && !url) {
+    return reply.code(400).send({ ok: false, error: "id or url required" });
+  }
+  const cur = normalizeDiscordWebhooks(runtime.discordWebhooks);
+  const next = cur.filter((w) => {
+    if (id && w.id === id) return false;
+    if (url && w.url.toLowerCase() === url.toLowerCase()) return false;
+    return true;
+  });
+  if (next.length === cur.length) {
+    return reply.code(404).send({ ok: false, error: "webhook not found" });
+  }
+  runtime.discordWebhooks = next;
+  runtime = { ...runtime, ...saveRuntimeConfig(runtime, runtime._path) };
+  labLog("discord", "info", `webhook removed · ${id || maskWebhookUrl(url)}`);
+  return { ok: true, discordWebhooks: discordWebhooksPublic() };
 });
 
 app.post("/lab/poll", async (req, reply) => {
@@ -879,8 +1041,11 @@ app.delete("/logs", async (req, reply) => {
 /** Operator test: POST /test-discord?sku=…&kind=restock|oos */
 app.post("/test-discord", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
-  if (!discordHook()) {
-    return reply.code(400).send({ ok: false, error: "DISCORD_WEBHOOK_URL not configured" });
+  if (!discordHooks().length) {
+    return reply.code(400).send({
+      ok: false,
+      error: "No Discord webhooks — add one in Admin → Discord webhooks",
+    });
   }
   const q = req.query || {};
   const body = req.body && typeof req.body === "object" ? req.body : {};

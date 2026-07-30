@@ -35,6 +35,12 @@ function makeEngine(opts = {}) {
       ...(opts.settings || {}),
     }),
     getTasks: () => tasks,
+    getProfiles: () =>
+      opts.profiles || [
+        { id: "prof_1", name: "P1", profileGroup: "Main" },
+        { id: "prof_2", name: "P2", profileGroup: "Main" },
+        { id: "prof_3", name: "P3", profileGroup: "Other" },
+      ],
     idFn: (p) => `${p || "sa"}_${created.length + started.length + 1}`,
     upsertTask: (task) => {
       const row = { ...task, id: task.id || `task_${created.length + 1}`, enabled: true };
@@ -125,6 +131,44 @@ test("Product Monitor → filters → Create+Start → Completed", async () => {
   assert.equal(created[0].bandaiMode, "checkout");
   assert.deepEqual(started[0], [created[0].id]);
   assert.equal(actions[0].lastResult, OUTCOMES.COMPLETED);
+});
+
+test("create_tasks expands profile group × per profile", async () => {
+  const { engine, created, started } = makeEngine();
+  engine.upsert({
+    id: "sa_pg",
+    name: "Group expand",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [],
+    actions: [
+      {
+        type: "create_tasks",
+        config: {
+          usePreset: true,
+          profileGroup: "Main",
+          perProfile: 2,
+          labelTemplate: "{{title}}",
+          taskGroup: "Drop G",
+        },
+      },
+      { type: "start_tasks", config: { target: { scope: "created" } } },
+    ],
+  });
+  const hit = await engine.handleMonitorHit({
+    productId: "N1",
+    title: "Item",
+    reason: "restock",
+  });
+  assert.equal(hit[0].outcome, OUTCOMES.COMPLETED);
+  // Main has prof_1 + prof_2, × 2 each
+  assert.equal(created.length, 4);
+  assert.deepEqual(
+    created.map((t) => t.profileId).sort(),
+    ["prof_1", "prof_1", "prof_2", "prof_2"],
+  );
+  assert.equal(started[0].length, 4);
 });
 
 test("run interval debounce skips duplicate Completed spam", async () => {
@@ -297,6 +341,77 @@ test("update_tasks can slash bandaiMonitorDelayMs for pre-drop tighten", async (
   assert.deepEqual(patched[0].ids, ["t_delay"]);
   assert.equal(patched[0].patch.bandaiMonitorDelayMs, 0);
   assert.equal(tasks.find((t) => t.id === "t_delay").bandaiMonitorDelayMs, 0);
+});
+
+test("stop_after waits then stops task group", async () => {
+  const ctx = makeEngine({
+    tasks: [{ id: "t1", taskGroup: "Drop A", enabled: true, store: "bandai" }],
+  });
+  ctx.engine.upsert({
+    id: "sa_stop_after",
+    name: "Stop after",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [],
+    actions: [
+      {
+        type: "stop_after",
+        config: {
+          delayMs: 5,
+          target: { scope: "group", taskGroup: "Drop A" },
+        },
+      },
+    ],
+  });
+  const r = await ctx.engine.handleMonitorHit({
+    productId: "N1",
+    title: "Test",
+    reason: "restock",
+  });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(ctx.stopped, [["t1"]]);
+});
+
+test("delete_tasks removes targeted ids", async () => {
+  let tasks = [
+    { id: "t1", taskGroup: "G", enabled: true },
+    { id: "t2", taskGroup: "G", enabled: true },
+  ];
+  const deleted = [];
+  const { engine } = makeEngine({ tasks });
+  // Override delete via fresh engine with deleteTasks
+  let actions = [];
+  const eng = createSmartActionsEngine({
+    getActions: () => actions,
+    saveActions: (next) => {
+      actions = next;
+    },
+    getSettings: () => ({ quickTaskPreset: {} }),
+    getTasks: () => tasks,
+    idFn: (p) => `${p}_d`,
+    upsertTask: (t) => t,
+    startTasks: () => ({ ok: true }),
+    deleteTasks: (ids) => {
+      deleted.push([...ids]);
+      const set = new Set(ids);
+      tasks = tasks.filter((t) => !set.has(t.id));
+    },
+    emit: () => {},
+  });
+  eng.upsert({
+    id: "sa_del",
+    name: "Delete",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      { type: "delete_tasks", config: { target: { scope: "group", taskGroup: "G" } } },
+    ],
+  });
+  const r = await eng.handleMonitorHit({ productId: "N9", title: "X", reason: "restock" });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(deleted[0].sort(), ["t1", "t2"]);
 });
 
 test("tickSchedule honors HH:MM:SS second precision", async () => {

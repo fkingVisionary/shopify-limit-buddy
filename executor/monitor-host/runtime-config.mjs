@@ -1,14 +1,59 @@
 /**
- * Persistable monitor admin state (keywords, proxies, toggles).
+ * Persistable monitor admin state (keywords, proxies, toggles, Discord webhooks).
  * Survives process restart on /data; attach a Railway volume for redeploy survival.
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { persistenceMeta, resolveStateFile } from "./data-dir.mjs";
 
 function defaultStatePath() {
   if (process.env.MONITOR_STATE_PATH) return process.env.MONITOR_STATE_PATH;
   return resolveStateFile("vanta-monitor-state.json").path;
+}
+
+const DISCORD_WEBHOOK_RE =
+  /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\/\d+\/[\w-]+\/?$/i;
+
+export function isDiscordWebhookUrl(url) {
+  return DISCORD_WEBHOOK_RE.test(String(url || "").trim());
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {{ id: string, url: string, label: string, addedAt: string|null }[]}
+ */
+export function normalizeDiscordWebhooks(raw) {
+  const list = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(/\r?\n/).map((u) => ({ url: u }))
+      : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    const url = String(row?.url || row || "").trim().replace(/\/+$/, "");
+    if (!isDiscordWebhookUrl(url)) continue;
+    const key = url.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      id: String(row?.id || `wh_${crypto.createHash("sha1").update(key).digest("hex").slice(0, 10)}`),
+      url,
+      label: String(row?.label || "").trim().slice(0, 80),
+      addedAt: row?.addedAt || null,
+    });
+  }
+  return out.slice(0, 20);
+}
+
+/** Env bootstrap webhook (single) — used when disk list is empty / first boot. */
+export function envDiscordWebhookBootstrap() {
+  const url = String(process.env.DISCORD_WEBHOOK_URL || "").trim().replace(/\/+$/, "");
+  if (!isDiscordWebhookUrl(url)) return [];
+  return normalizeDiscordWebhooks([
+    { url, label: "env", addedAt: null, id: "wh_env" },
+  ]);
 }
 
 /**
@@ -19,6 +64,7 @@ function defaultStatePath() {
  *   dcProxies: string,
  *   intervalMs: number,
  *   notifyOos: boolean,
+ *   discordWebhooks: ReturnType<typeof normalizeDiscordWebhooks>,
  *   updatedAt: string|null,
  * }}
  */
@@ -34,6 +80,7 @@ export function defaultConfigFromEnv() {
     dcProxies: String(process.env.BANDAI_MONITOR_DC_PROXIES || ""),
     intervalMs: Number(process.env.BANDAI_MONITOR_INTERVAL_MS) || 5000,
     notifyOos: process.env.BANDAI_MONITOR_NOTIFY_OOS !== "0",
+    discordWebhooks: envDiscordWebhookBootstrap(),
     updatedAt: null,
   };
 }
@@ -57,6 +104,15 @@ export function loadRuntimeConfig(filePath = defaultStatePath()) {
       if (Object.prototype.hasOwnProperty.call(j, "dcProxies")) {
         merged.dcProxies = String(j.dcProxies || "");
       }
+      if (Object.prototype.hasOwnProperty.call(j, "discordWebhooks")) {
+        merged.discordWebhooks = normalizeDiscordWebhooks(j.discordWebhooks);
+      } else {
+        // Soft upgrade: keep env bootstrap until admin saves a webhook list.
+        merged.discordWebhooks = normalizeDiscordWebhooks([
+          ...envDiscordWebhookBootstrap(),
+          ...(Array.isArray(j.discordWebhooks) ? j.discordWebhooks : []),
+        ]);
+      }
     }
     return merged;
   } catch {
@@ -72,6 +128,7 @@ export function saveRuntimeConfig(cfg, filePath = defaultStatePath()) {
     dcProxies: String(cfg.dcProxies || ""),
     intervalMs: Number(cfg.intervalMs) || 5000,
     notifyOos: cfg.notifyOos !== false,
+    discordWebhooks: normalizeDiscordWebhooks(cfg.discordWebhooks),
     updatedAt: new Date().toISOString(),
   };
   const dir = path.dirname(filePath);

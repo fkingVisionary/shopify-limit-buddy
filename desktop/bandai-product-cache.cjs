@@ -63,6 +63,9 @@ function normalizeEntry(raw = {}) {
         ? [areaItemNo]
         : [],
     title: String(raw.title || "").trim().slice(0, 160),
+    imageUrl: String(raw.imageUrl || raw.image || raw.thumbnailUrl || "")
+      .trim()
+      .slice(0, 500),
     area,
     source: String(raw.source || "").slice(0, 40),
     updatedAt: Number(raw.updatedAt) || Date.now(),
@@ -81,7 +84,8 @@ function mergeEntries(cache, incoming) {
       prev &&
       prev.sku === n.sku &&
       prev.areaItemNo === n.areaItemNo &&
-      prev.title === n.title
+      prev.title === n.title &&
+      prev.imageUrl === n.imageUrl
     ) {
       continue;
     }
@@ -91,6 +95,7 @@ function mergeEntries(cache, incoming) {
           ...n,
           areaItemNo: n.areaItemNo || prev.areaItemNo || "",
           title: n.title || prev.title || "",
+          imageUrl: n.imageUrl || prev.imageUrl || "",
           updatedAt: Date.now(),
         }
       : n;

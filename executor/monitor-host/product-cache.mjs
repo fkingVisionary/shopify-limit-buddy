@@ -55,6 +55,9 @@ export function normalizeProductEntry(raw = {}, opts = {}) {
   if (!isBackendPid(areaItemNo)) areaItemNo = "";
 
   const title = String(raw.title || "").trim().slice(0, 160);
+  const imageUrl = String(raw.imageUrl || raw.image || raw.thumbnailUrl || "")
+    .trim()
+    .slice(0, 500);
   const key = sku
     ? productCacheKey(area, sku)
     : areaItemNo
@@ -68,6 +71,7 @@ export function normalizeProductEntry(raw = {}, opts = {}) {
     areaItemNo: areaItemNo || "",
     areaItemNos: areaItemNos.length ? areaItemNos : areaItemNo ? [areaItemNo] : [],
     title,
+    imageUrl,
     area,
     source: String(raw.source || opts.source || "unknown").slice(0, 40),
     updatedAt: Number(raw.updatedAt) || Date.now(),
@@ -106,6 +110,7 @@ export function saveProductCache(cache, filePath = defaultCachePath()) {
       areaItemNo: n.areaItemNo,
       areaItemNos: n.areaItemNos,
       title: n.title,
+      imageUrl: n.imageUrl || "",
       area: n.area,
       source: n.source,
       updatedAt: n.updatedAt,
@@ -153,6 +158,7 @@ export function upsertProductEntries(cache, incoming, opts = {}) {
         areaItemNos:
           n.areaItemNos?.length ? n.areaItemNos : prev.areaItemNos || [],
         title: n.title || prev.title || "",
+        imageUrl: n.imageUrl || prev.imageUrl || "",
         source: n.source || prev.source,
         updatedAt: Date.now(),
       };
@@ -160,6 +166,7 @@ export function upsertProductEntries(cache, incoming, opts = {}) {
         merged.sku === prev.sku &&
         merged.areaItemNo === prev.areaItemNo &&
         merged.title === prev.title &&
+        merged.imageUrl === prev.imageUrl &&
         merged.area === prev.area;
       if (same) {
         last = prev;
@@ -209,6 +216,7 @@ export function mergeRowsWithProductCache(rows, cache, area = "au") {
           : row.taskGroup || row.title || hit.title || row.sku,
       areaItemNo: hit.areaItemNo || row.areaItemNo || "",
       areaItemNos: hit.areaItemNos?.length ? hit.areaItemNos : row.areaItemNos || [],
+      imageUrl: row.imageUrl || hit.imageUrl || "",
       needsTitle: hit.title ? false : row.needsTitle,
       titleSource: hit.title && row.needsTitle ? "cache" : row.titleSource,
     };

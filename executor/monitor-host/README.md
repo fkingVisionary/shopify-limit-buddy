@@ -38,7 +38,7 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 |---|---|
 | `MONITOR_TOKEN` | Bearer for admin / bot / writes (not required for Desktop SSE) |
 | `MONITOR_FEED_PUBLIC` | `1` (default) = public SSE + catalog/cache reads; `0` = require Bearer |
-| `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
+| `DISCORD_WEBHOOK_URL` | Bootstrap restock / OOS webhook (admin can add more in `/admin`) |
 | `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap / env OSPs) |
 | `BANDAI_MONITOR_DC_PROXIES` | Monitor DC (optional bootstrap) |
 | `BANDAI_MONITOR_KEYWORDS` | Bootstrap keywords |
@@ -73,9 +73,11 @@ Hardcoded env OSPs (`BANDAI_MONITOR_ISP_PROXIES`) always come back on boot as th
 Default write path is **`/data`** (container layer → survives process restart). **`/tmp` is ephemeral**
 and will drop admin-added proxies after a restart — only env OSPs remain.
 
-For **redeploy-safe** saves: Railway → service → **Volumes** → mount at `/data`
-(or set `MONITOR_DATA_DIR` / `RAILWAY_VOLUME_MOUNT_PATH`). The admin Monitor tab shows a
-persistence warning when saves would not survive.
+For **redeploy-safe** saves: attach a Railway volume mounted at `/data`
+(or set `MONITOR_DATA_DIR` / `RAILWAY_VOLUME_MOUNT_PATH`). Production
+`j1ms-bandai-monitor` uses volume `j1ms-bandai-monitor-volume` at `/data`.
+Admin status reports `survivesRedeploy: true` when the volume is live; the
+Monitor tab warns when saves would not survive.
 
 Without `EXECUTOR_TOKEN`, Monitor + Discord labs still work; Bot launches show a setup warning.
 

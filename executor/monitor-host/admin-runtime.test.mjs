@@ -3,7 +3,12 @@ import assert from "node:assert/strict";
 import { createMonitorProxyPool } from "../monitor/monitor-proxy-pool.js";
 import { createBandaiStockMonitor } from "../monitor/bandai-stock-monitor.js";
 import { vantaOosDiscordBody, vantaRestockDiscordBody } from "./vanta-discord.mjs";
-import { saveRuntimeConfig, loadRuntimeConfig } from "./runtime-config.mjs";
+import {
+  saveRuntimeConfig,
+  loadRuntimeConfig,
+  normalizeDiscordWebhooks,
+  isDiscordWebhookUrl,
+} from "./runtime-config.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -93,6 +98,12 @@ test("runtime config round-trip", () => {
       dcProxies: "4.4.4.4:80:e:f",
       intervalMs: 4000,
       notifyOos: true,
+      discordWebhooks: [
+        {
+          url: "https://discord.com/api/webhooks/1234567890123456789/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN",
+          label: "ops",
+        },
+      ],
     },
     file,
   );
@@ -102,8 +113,23 @@ test("runtime config round-trip", () => {
   assert.equal(loaded.ispProxies, "1.1.1.1:80:u:p");
   assert.equal(loaded.dcProxies, "4.4.4.4:80:e:f");
   assert.equal(loaded.intervalMs, 4000);
+  assert.equal(loaded.discordWebhooks.length, 1);
+  assert.equal(loaded.discordWebhooks[0].label, "ops");
   assert.equal(loaded._fromDisk, true);
   fs.unlinkSync(file);
+});
+
+test("normalizeDiscordWebhooks validates and dedupes", () => {
+  assert.equal(isDiscordWebhookUrl("https://example.com/hook"), false);
+  const rows = normalizeDiscordWebhooks([
+    { url: "https://discord.com/api/webhooks/1/abc", label: "a" },
+    { url: "https://discord.com/api/webhooks/1/abc/", label: "dup" },
+    { url: "not-a-hook", label: "bad" },
+    { url: "https://discordapp.com/api/webhooks/2/xyz", label: "b" },
+  ]);
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].label, "a");
+  assert.equal(rows[1].label, "b");
 });
 
 test("disk proxy lists win over env bootstrap after save", () => {
@@ -221,6 +247,7 @@ test("shared product cache upsert + lookup", async () => {
     sku: "N2890904001",
     areaItemNo: "NAI0859145AU",
     title: "GUNDAM CARD GAME 1st Anniversary Set",
+    imageUrl: "https://p-bandai.com/files/seller-products/x/a.jpg",
     area: "au",
     source: "enrich",
   });
@@ -228,6 +255,7 @@ test("shared product cache upsert + lookup", async () => {
   assert.equal(up.changed, 1);
   const hit = lookupProduct(cache, { sku: "N2890904001", area: "au" });
   assert.equal(hit.areaItemNo, "NAI0859145AU");
+  assert.match(hit.imageUrl, /p-bandai\.com/);
   const rows = mergeRowsWithProductCache(
     [{ store: "bandai", sku: "N2890904001", title: "N2890904001", needsTitle: true }],
     cache,
@@ -235,4 +263,5 @@ test("shared product cache upsert + lookup", async () => {
   );
   assert.equal(rows[0].areaItemNo, "NAI0859145AU");
   assert.match(rows[0].title, /GUNDAM/i);
+  assert.match(rows[0].imageUrl, /p-bandai\.com/);
 });

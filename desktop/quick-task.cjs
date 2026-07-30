@@ -186,6 +186,12 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
 function contextFromMonitorHit(hit, opts = {}) {
   const area = String(opts.area || "au").toLowerCase();
   const productId = String(hit?.productId || "").trim();
+  const inStock =
+    hit?.inStock != null
+      ? Boolean(hit.inStock)
+      : hit?.meta?.inStock != null
+        ? Boolean(hit.meta.inStock)
+        : null;
   return {
     store: opts.store || "bandai",
     title: hit?.title || hit?.productName || hit?.meta?.title || productId,
@@ -194,6 +200,9 @@ function contextFromMonitorHit(hit, opts = {}) {
     url: productId ? `https://p-bandai.com/${area}/item/${productId}` : "",
     pdpUrl: productId ? `https://p-bandai.com/${area}/item/${productId}` : "",
     reason: hit?.reason || "restock",
+    price: hit?.price || hit?.meta?.price || null,
+    productType: hit?.productType || hit?.meta?.productType || null,
+    inStock,
     areaItemNo: hit?.areaItemNo || hit?.meta?.areaItemNo || null,
     hit: hit || null,
     source: "product_monitor",

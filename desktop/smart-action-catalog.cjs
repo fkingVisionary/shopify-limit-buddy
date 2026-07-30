@@ -20,6 +20,94 @@ function checkoutCreateConfig(labelTemplate) {
   };
 }
 
+function triggerWhenLabel(trigger) {
+  const t = String(trigger?.type || "");
+  if (t === "product_monitor") return "When the monitor feed restocks a matching SKU";
+  if (t === "quicktask") return "When Quick Task fires (Discord button or Feed)";
+  if (t === "schedule") {
+    const at = String(trigger?.at || "").trim() || "set time";
+    const tz = String(trigger?.tz || "Australia/Sydney").trim();
+    const repeat = String(trigger?.repeat || "daily");
+    return `On schedule · ${at} ${tz}${repeat === "once" ? " (once)" : " daily"}`;
+  }
+  return "When triggered";
+}
+
+function actionStepLabel(action) {
+  const type = String(action?.type || "");
+  const cfg = action?.config || {};
+  if (type === "create_tasks") {
+    if (String(cfg.bandaiMode || "") === "monitor") return "Create a watch (monitor) task";
+    if (cfg.placeOrder) return "Create checkout task (place order on)";
+    return "Create task from Quick Task preset";
+  }
+  if (type === "start_tasks") {
+    const scope = cfg.target?.scope || "created";
+    if (scope === "group") return "Start the task group";
+    if (scope === "all") return "Start all enabled tasks";
+    return "Start the tasks just created";
+  }
+  if (type === "stop_tasks") return "Stop matching tasks";
+  if (type === "delete_tasks") return "Delete matching tasks";
+  if (type === "stop_after") {
+    const sec =
+      (Number(cfg.delayHour) || 0) * 3600 +
+      (Number(cfg.delayMin) || 0) * 60 +
+      (Number(cfg.delaySec) || 0);
+    if (sec >= 3600) return `Stop group after ${Math.round(sec / 3600)}h`;
+    if (sec >= 60) return `Stop group after ${Math.round(sec / 60)} min`;
+    return `Stop group after ${sec}s`;
+  }
+  if (type === "wait") {
+    const sec = Math.max(0, Number(cfg.delaySec) || 0);
+    if (sec >= 60) return `Wait ${Math.round(sec / 60)} min`;
+    return `Wait ${sec}s`;
+  }
+  if (type === "notify_discord") return "Ping Discord";
+  if (type === "notify_toast") return "Desktop toast";
+  if (type === "create_task_group") return "Create / ensure task group";
+  if (type === "goto_task_group") return "Go to task group";
+  if (type === "start_harvester") return "Start Bandai harvest bank";
+  if (type === "stop_harvester") return "Stop harvest bank";
+  if (type === "update_tasks") {
+    if (cfg.bandaiMonitorDelayMs === 0 || cfg.bandaiMonitorDelayMs === "0") {
+      return "Set monitor start delay → 0 on the group";
+    }
+    if (cfg.product) return "Point the task group at this SKU";
+    return "Patch the task group";
+  }
+  return type.replace(/_/g, " ");
+}
+
+/**
+ * Human-readable “what this pack does” for UI (admin SKUs × this pack).
+ * @returns {{ when: string, steps: string[], does: string, explain: string, applies: string }}
+ */
+function describeTemplate(template) {
+  const t = template || {};
+  const when = triggerWhenLabel(t.trigger);
+  const steps = (Array.isArray(t.actions) ? t.actions : []).map(actionStepLabel).filter(Boolean);
+  const does =
+    String(t.does || "").trim() ||
+    String(t.blurb || "").trim() ||
+    (steps.length ? `${when} → ${steps.join(" → ")}` : when);
+  const explain =
+    String(t.explain || "").trim() ||
+    (steps.length ? `${when}. Then: ${steps.join(" → ")}.` : when);
+  const applies =
+    String(t.applies || "").trim() ||
+    "Opens in the builder — edit filters and actions, then Save";
+  return {
+    when,
+    steps,
+    does,
+    explain,
+    applies,
+    filterCount: Array.isArray(t.filters) ? t.filters.length : 0,
+    actionCount: Array.isArray(t.actions) ? t.actions.length : 0,
+  };
+}
+
 const DEFAULT_TEMPLATES = [
   {
     id: "monitor_atc", // stable id (was named ATC; now full checkout)
@@ -28,7 +116,11 @@ const DEFAULT_TEMPLATES = [
     category: "Bandai",
     glyph: "IC",
     accent: "silver",
-    blurb: "Restock ping → full checkout (place order)",
+    blurb: "Restock → checkout now",
+    does: "On restock for that SKU: create a live checkout task, start it immediately, then Discord.",
+    explain:
+      "Best default for drops. When Monitor sees this SKU back in stock, Vanta creates a checkout task from your Quick Task preset, starts it right away, and pings Discord. Keep the app open.",
+    applies: "One action per library SKU — fires whenever that SKU restocks",
     enabled: true,
     runOnce: false,
     runIntervalMs: 30000,
@@ -54,7 +146,11 @@ const DEFAULT_TEMPLATES = [
     category: "Bandai",
     glyph: "+30",
     accent: "steel",
-    blurb: "Wait 30m after ping for unpaid cart-expiry restocks",
+    blurb: "Restock → wait 30m → checkout",
+    does: "On restock: Discord “armed”, wait 30 min (cart-expiry window), then create + start checkout.",
+    explain:
+      "For Bandai unpaid cart holds. First restock ping arms the action and waits 30 minutes (typical cart-expiry window). Then it creates and starts checkout — catching the second wave when carts expire. App must stay open for the wait.",
+    applies: "Bandai SKUs only · one delayed checkout action per SKU",
     /** Only materialize for these stores (Bandai cart-hold expiry pattern). */
     stores: ["bandai"],
     enabled: true,
@@ -92,7 +188,11 @@ const DEFAULT_TEMPLATES = [
     category: "Monitor",
     glyph: "WT",
     accent: "graphite",
-    blurb: "Spawn a global watch task on restock",
+    blurb: "Restock → create a watch task",
+    does: "On restock: create a Bandai Monitor task for that SKU (does not checkout by itself).",
+    explain:
+      "Spawns a Monitor task aimed at this SKU when it restocks. Useful if you want a dedicated watch lane without auto-buying. Pair with Instant Checkout or start the task yourself later.",
+    applies: "One watch-task action per library SKU",
     enabled: true,
     runOnce: false,
     runIntervalMs: 60000,
@@ -124,7 +224,11 @@ const DEFAULT_TEMPLATES = [
     category: "Discord",
     glyph: "QT",
     accent: "silver",
-    blurb: "Discord / Feed Quick Task → full checkout",
+    blurb: "Manual Quick Task → checkout",
+    does: "When you hit Quick Task for that SKU: create checkout from your preset and start it.",
+    explain:
+      "Fires only when you press Quick Task (Monitor row or Discord). Creates and starts a checkout from your Quick Task preset for that SKU — good for manual confirmations without auto-arming restocks.",
+    applies: "One Quick Task handler per library SKU",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -146,7 +250,11 @@ const DEFAULT_TEMPLATES = [
     category: "Schedule",
     glyph: "DC",
     accent: "steel",
-    blurb: "Harvest → wait → start checkout group on schedule",
+    blurb: "Scheduled harvest → aim group → start",
+    does: "Daily at schedule: start harvest, wait 2 min, point the task group at this SKU, then start the group.",
+    explain:
+      "Drop prep on a clock. At the set time (default 06:55 Australia/Sydney): start the Bandai harvest bank, wait 2 minutes for sessions to warm, retarget this SKU’s task group at the product, then start that whole group. Edit the schedule/time before Save. App must be open at fire time. Pair with Delay Tighten if monitor tasks use a start delay.",
+    applies: "One scheduled drop chain per library SKU (uses that SKU’s task group)",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -182,7 +290,11 @@ const DEFAULT_TEMPLATES = [
     category: "Schedule",
     glyph: "DT",
     accent: "steel",
-    blurb: "At T−30s, slash monitor start delay on a task group for a tight fire",
+    blurb: "T−30s: zero monitor start delay",
+    does: "Daily at 12:59:30 AEST: set monitor start delay to 0 on this SKU’s task group (pre-drop tighten).",
+    explain:
+      "Pre-drop timing trick. Keep monitor tasks with a long start delay during the day (safer / less spam), then at T−30s (default 12:59:30 Australia/Sydney) this action sets that group’s monitor start delay to 0 so the next poll fires tight. Does not create or start tasks by itself — it only patches delay. Change the schedule to match your drop time. Bandai only · app must be open.",
+    applies: "Bandai SKUs only · one schedule action per SKU/group",
     enabled: true,
     runOnce: false,
     runIntervalMs: 0,
@@ -212,7 +324,11 @@ const DEFAULT_TEMPLATES = [
     category: "Notify",
     glyph: "RA",
     accent: "graphite",
-    blurb: "Discord ping only — no tasks created",
+    blurb: "Restock → Discord only",
+    does: "On restock for that SKU: Discord alert only — no tasks created or started.",
+    explain:
+      "Heads-up only. When this SKU restocks, send a Discord ping — no tasks created or started. Use when you want visibility without auto-checkout.",
+    applies: "One alert action per library SKU",
     enabled: true,
     runOnce: false,
     runIntervalMs: 15000,
@@ -271,6 +387,13 @@ function normalizeCatalogRow(raw = {}, idFn) {
   const id =
     raw.id ||
     (idFn ? idFn("cat") : `cat_${store}_${sku}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 80));
+  // Per-SKU packs (opt-in). Empty = no Smart Actions for this product.
+  const enabledTemplateIds = Array.isArray(raw.enabledTemplateIds)
+    ? [...new Set(raw.enabledTemplateIds.map(String).filter(Boolean))]
+    : [];
+  const imageUrl = String(raw.imageUrl || raw.image || raw.thumbnailUrl || "")
+    .trim()
+    .slice(0, 500);
   return {
     id,
     store,
@@ -280,9 +403,24 @@ function normalizeCatalogRow(raw = {}, idFn) {
     area: String(raw.area || "au").toLowerCase().slice(0, 2),
     areaItemNo: /^NAI|^AAI/i.test(areaItemNo) ? areaItemNo : "",
     areaItemNos,
+    imageUrl,
+    enabledTemplateIds,
     enabled: raw.enabled !== false,
     notes: String(raw.notes || "").slice(0, 200),
   };
+}
+
+/** Packs that should materialize for a single catalog row. */
+function packsForRow(row, templates, globalEnabledIds) {
+  const allIds = (templates || []).filter((t) => t.enabled !== false).map((t) => t.id);
+  if (Array.isArray(row?.enabledTemplateIds)) {
+    // Explicit per-SKU list (including empty = none).
+    return allIds.filter((id) => row.enabledTemplateIds.includes(id));
+  }
+  // Legacy: no per-SKU field → honor global pack allow-list.
+  if (globalEnabledIds == null) return allIds;
+  if (!globalEnabledIds.length) return [];
+  return allIds.filter((id) => globalEnabledIds.includes(id));
 }
 
 /**
@@ -415,28 +553,25 @@ function listTemplates(overrides = []) {
 }
 
 /**
- * Expand enabled templates × enabled rows into Smart Action drafts.
+ * Expand per-SKU packs (or legacy global packs) into Smart Action drafts.
  * @returns {{ drafts: object[], skipped: number, pairs: number }}
  */
 function expandCatalog(catalog, opts = {}) {
   const state = normalizeCatalogState(catalog);
   const templates = listTemplates(opts.templates);
-  const enabledIds = state.enabledTemplateIds;
-  const activeTemplates = templates.filter((t) => {
-    if (t.enabled === false) return false;
-    // null/undefined = all packs on; [] = all off; otherwise explicit allow-list
-    if (enabledIds == null) return true;
-    if (!enabledIds.length) return false;
-    return enabledIds.includes(t.id);
-  });
   const rows = state.rows.filter((r) => r.enabled !== false && r.sku);
   const drafts = [];
+  const packIdsUsed = new Set();
   for (const row of rows) {
-    for (const tmpl of activeTemplates) {
+    const packIds = packsForRow(row, templates, state.enabledTemplateIds);
+    for (const tmpl of templates) {
+      if (tmpl.enabled === false) continue;
+      if (!packIds.includes(tmpl.id)) continue;
       if (Array.isArray(tmpl.stores) && tmpl.stores.length) {
         const allowed = tmpl.stores.map((s) => String(s).toLowerCase());
         if (!allowed.includes(String(row.store || "").toLowerCase())) continue;
       }
+      packIdsUsed.add(tmpl.id);
       drafts.push(materializeAction(tmpl, row));
     }
   }
@@ -444,7 +579,7 @@ function expandCatalog(catalog, opts = {}) {
     drafts,
     skipped: 0,
     pairs: drafts.length,
-    templateCount: activeTemplates.length,
+    templateCount: packIdsUsed.size,
     rowCount: rows.length,
   };
 }
@@ -499,8 +634,17 @@ function removeCatalogActions(list, opts = {}) {
   return removed;
 }
 
+/** Featured quick-toggle packs shown on SKU cards (order = UI order). */
+const QUICK_PACK_IDS = [
+  "monitor_atc",
+  "monitor_checkout_delay_30m",
+  "monitor_alert",
+  "quicktask_atc",
+];
+
 module.exports = {
   DEFAULT_TEMPLATES,
+  QUICK_PACK_IDS,
   defaultCatalogState,
   normalizeCatalogState,
   normalizeCatalogRow,
@@ -509,8 +653,12 @@ module.exports = {
   catalogKey,
   materializeAction,
   listTemplates,
+  packsForRow,
   expandCatalog,
   applyCatalog,
   removeCatalogActions,
   applyPlaceholders,
+  describeTemplate,
+  triggerWhenLabel,
+  actionStepLabel,
 };

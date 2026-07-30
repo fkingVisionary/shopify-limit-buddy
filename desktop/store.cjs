@@ -62,7 +62,10 @@ const DEFAULT_SETTINGS = {
   successAlertEnabled: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
-  /** Always-on Bandai Railway global monitor (SSE) while engine is running. */
+  /**
+   * Consumer: follow Railway admin watchlist via public SSE while engine runs.
+   * No local Monitor→Global tasks required for feed.
+   */
   bandaiGlobalMonitorEnabled: true,
   bandaiGlobalMonitorUrl: "https://j1ms-bandai-monitor-production.up.railway.app",
   /** Optional operator override only — feed/catalog reads are public on Railway. */
@@ -128,6 +131,12 @@ function loadAll() {
   db.results = Array.isArray(db.results) ? db.results.slice(-200) : [];
   db.accounts = Array.isArray(db.accounts) ? db.accounts : [];
   db.smartActions = Array.isArray(db.smartActions) ? db.smartActions : [];
+  if (!db.smartActionCatalog || typeof db.smartActionCatalog !== "object") {
+    db.smartActionCatalog = { rows: [], enabledTemplateIds: null };
+  }
+  if (!db.taskGroupColors || typeof db.taskGroupColors !== "object") db.taskGroupColors = {};
+  if (!db.profileGroupColors || typeof db.profileGroupColors !== "object") db.profileGroupColors = {};
+  if (!db.accountGroupColors || typeof db.accountGroupColors !== "object") db.accountGroupColors = {};
   return { settings, db };
 }
 
@@ -143,7 +152,29 @@ function saveDb(db) {
     results: (db.results || []).slice(-200),
     accounts: (db.accounts || []).slice(0, 500),
     smartActions: Array.isArray(db.smartActions) ? db.smartActions.slice(0, 100) : [],
+    smartActionCatalog: db.smartActionCatalog || { rows: [], enabledTemplateIds: null },
+    taskGroupColors: db.taskGroupColors || {},
+    profileGroupColors: db.profileGroupColors || {},
+    accountGroupColors: db.accountGroupColors || {},
+    bandaiProductCache: db.bandaiProductCache || undefined,
   });
+}
+
+const MONITOR_FEED_MAX = 80;
+
+function loadMonitorFeed() {
+  const rows = readJson("monitor-feed.json", []);
+  return (Array.isArray(rows) ? rows : [])
+    .filter((h) => h && (h.productId || h.sku))
+    .slice(0, MONITOR_FEED_MAX);
+}
+
+function saveMonitorFeed(feed) {
+  const rows = (Array.isArray(feed) ? feed : [])
+    .filter((h) => h && (h.productId || h.sku))
+    .slice(0, MONITOR_FEED_MAX);
+  writeJson("monitor-feed.json", rows);
+  return rows;
 }
 
 module.exports = {
@@ -151,5 +182,8 @@ module.exports = {
   loadAll,
   saveSettings,
   saveDb,
+  loadMonitorFeed,
+  saveMonitorFeed,
+  MONITOR_FEED_MAX,
   DEFAULT_SETTINGS,
 };

@@ -7,6 +7,29 @@ import { createJar, makeDispatcher, request, UA, parseProxy } from "../monitor/h
 import { serializePresetCatalogRows } from "./preset-catalog.mjs";
 import { isBackendPid } from "./product-cache.mjs";
 
+function absolutizeBandaiUrl(fileUrl) {
+  const s = String(fileUrl || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s.slice(0, 500);
+  return `https://p-bandai.com/${s.replace(/^\//, "")}`.slice(0, 500);
+}
+
+/** First storefront image from PDP / search-card JSON. */
+export function pickBandaiImageUrl(json) {
+  if (!json || typeof json !== "object") return "";
+  const media = Array.isArray(json.mediaSection?.images)
+    ? json.mediaSection.images
+    : Array.isArray(json.productImages)
+      ? json.productImages
+      : [];
+  const fileUrl =
+    media.find((i) => i?.fileUrl)?.fileUrl ||
+    json.imageUrl ||
+    json.thumbnailUrl ||
+    "";
+  return absolutizeBandaiUrl(fileUrl);
+}
+
 /**
  * @param {object[]} rows
  * @param {{
@@ -62,13 +85,15 @@ export async function enrichPresetTitles(rows, opts = {}) {
       const area = String(row.area || areaDefault).toLowerCase().slice(0, 2);
       const needsTitle = Boolean(row.needsTitle) || !row.title || row.title === row.sku;
       const needsPid = !isBackendPid(row.areaItemNo);
-      if (!needsTitle && !needsPid) {
+      const needsImage = !String(row.imageUrl || "").trim();
+      if (!needsTitle && !needsPid && !needsImage) {
         skipped += 1;
         if (isBackendPid(row.areaItemNo)) {
           cacheEntries.push({
             sku: row.sku,
             areaItemNo: row.areaItemNo,
             title: row.title,
+            imageUrl: row.imageUrl || "",
             area,
             source: "preset",
           });
@@ -79,6 +104,7 @@ export async function enrichPresetTitles(rows, opts = {}) {
       let title = needsTitle ? "" : String(row.title || "");
       let areaItemNo = isBackendPid(row.areaItemNo) ? row.areaItemNo : "";
       let areaItemNos = Array.isArray(row.areaItemNos) ? row.areaItemNos.filter(isBackendPid) : [];
+      let imageUrl = String(row.imageUrl || "").trim();
 
       try {
         const cached =
@@ -90,12 +116,13 @@ export async function enrichPresetTitles(rows, opts = {}) {
           if (!areaItemNo && isBackendPid(cached.areaItemNo)) {
             areaItemNo = String(cached.areaItemNo).trim();
           }
+          if (!imageUrl && cached.imageUrl) imageUrl = String(cached.imageUrl).trim();
         }
       } catch {
         /* ignore */
       }
 
-      if ((needsTitle && !title) || (needsPid && !areaItemNo)) {
+      if ((needsTitle && !title) || (needsPid && !areaItemNo) || (needsImage && !imageUrl)) {
         try {
           const meta = await fetchMeta(row.sku, area, proxy);
           if (meta?.title && !title) title = String(meta.title).trim();
@@ -105,6 +132,7 @@ export async function enrichPresetTitles(rows, opts = {}) {
           if (Array.isArray(meta?.areaItemNos) && meta.areaItemNos.length) {
             areaItemNos = meta.areaItemNos.filter(isBackendPid);
           }
+          if (meta?.imageUrl && !imageUrl) imageUrl = String(meta.imageUrl).trim();
         } catch {
           /* ignore */
         }
@@ -123,6 +151,10 @@ export async function enrichPresetTitles(rows, opts = {}) {
         row.areaItemNos = areaItemNos.length ? areaItemNos : [areaItemNo];
         got = true;
       }
+      if (imageUrl) {
+        row.imageUrl = imageUrl.slice(0, 500);
+        got = true;
+      }
 
       if (got) {
         resolved += 1;
@@ -131,6 +163,7 @@ export async function enrichPresetTitles(rows, opts = {}) {
           areaItemNo: row.areaItemNo || "",
           areaItemNos: row.areaItemNos || [],
           title: row.title || "",
+          imageUrl: row.imageUrl || "",
           area,
           source: "enrich",
         });
@@ -244,6 +277,7 @@ export async function fetchBandaiProductMeta(productCode, opts = {}) {
     let title = "";
     let areaItemNo = "";
     let areaItemNos = [];
+    let imageUrl = "";
 
     if (!isBackendPid(code)) {
       try {
@@ -259,12 +293,15 @@ export async function fetchBandaiProductMeta(productCode, opts = {}) {
         );
         jar.ingest?.(prod.headers);
         const json = await prod.json().catch(() => null);
-        title = coerceBandaiTitle(json?.productName || json?.name);
+        title = coerceBandaiTitle(
+          json?.infoSection?.productName || json?.productName || json?.name,
+        );
         const pids = pickBackendPids(json, null);
         areaItemNo = pids.areaItemNo;
         areaItemNos = pids.areaItemNos;
-        if (title || areaItemNo) {
-          return { title, areaItemNo, areaItemNos };
+        imageUrl = pickBandaiImageUrl(json);
+        if (title || areaItemNo || imageUrl) {
+          return { title, areaItemNo, areaItemNos, imageUrl };
         }
       } catch {
         /* try search */
@@ -300,14 +337,23 @@ export async function fetchBandaiProductMeta(productCode, opts = {}) {
       const pids = pickBackendPids(null, p);
       areaItemNo = pids.areaItemNo;
       areaItemNos = pids.areaItemNos;
-      if (title || areaItemNo) return { title, areaItemNo, areaItemNos };
+      imageUrl = pickBandaiImageUrl(p);
+      if (title || areaItemNo || imageUrl) {
+        return { title, areaItemNo, areaItemNos, imageUrl };
+      }
     }
     if (Array.isArray(products) && products.length === 1) {
       const p = products[0];
       title = coerceBandaiTitle(p?.productName || p?.name || p?.title);
       const pids = pickBackendPids(null, p);
-      if (title || pids.areaItemNo) {
-        return { title, areaItemNo: pids.areaItemNo, areaItemNos: pids.areaItemNos };
+      imageUrl = pickBandaiImageUrl(p);
+      if (title || pids.areaItemNo || imageUrl) {
+        return {
+          title,
+          areaItemNo: pids.areaItemNo,
+          areaItemNos: pids.areaItemNos,
+          imageUrl,
+        };
       }
     }
     return null;

@@ -17,7 +17,7 @@ const OUTCOME = {
   confirmed: "Order confirmed",
   complete: "Complete",
   oos: "Out of stock",
-  akamai: "Failed on Akamai",
+  akamai: "Blocked by store protection",
   proxy: "Proxy error",
   declined: "Payment declined",
   held_pay_retry: "Cart held — retry pay",

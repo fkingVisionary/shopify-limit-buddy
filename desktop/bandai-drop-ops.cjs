@@ -258,7 +258,7 @@ function assessDropReady({
         ? `Harvest ${harvestReady}/${Number.isFinite(harvestDesired) ? harvestDesired : "–"}`
         : harvestReady >= lanes
           ? `Harvest ${harvestReady}/${lanes} ready`
-          : `Harvest ${harvestReady}/${lanes} — arm more F5 bridges`,
+          : `Harvest ${harvestReady}/${lanes} — start more warm sessions`,
   });
 
   // Accounts: each drop task should resolve to a login-ok vault row when possible.

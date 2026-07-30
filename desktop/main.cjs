@@ -59,13 +59,16 @@ const {
   planDropMode,
   formatLaneAfterAction,
 } = require("./bandai-drop-ops.cjs");
-const { createBandaiGlobalMonitorClient } = require("./bandai-global-monitor-client.cjs");
+const {
+  createBandaiGlobalMonitorClient,
+  formatMonitorFeedStatusLine,
+} = require("./bandai-global-monitor-client.cjs");
 const {
   createWatchdogCooldown,
   planWatchdogStarts,
 } = require("./desktop-watchdog.cjs");
 const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
-const { testProxyEntries } = require("./proxy-test.cjs");
+const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
 const {
   defaultCatalogState,
@@ -75,19 +78,47 @@ const {
   applyCatalog,
   removeCatalogActions,
   listTemplates,
+  describeTemplate,
+  QUICK_PACK_IDS,
 } = require("./smart-action-catalog.cjs");
 const productCacheLib = require("./bandai-product-cache.cjs");
+const { enrichRowsWithBandaiImages } = require("./bandai-product-image.cjs");
 
 function catalogTemplatePublic(t) {
+  const desc = describeTemplate(t);
   return {
     id: t.id,
     name: t.name,
     displayName: t.displayName || t.name,
     category: t.category || "Preset",
+    galleryCategory: galleryCategoryForTemplate(t),
     glyph: t.glyph || "SA",
     accent: t.accent || "silver",
     blurb: t.blurb || "",
+    does: desc.does,
+    explain: desc.explain,
+    when: desc.when,
+    steps: desc.steps,
+    applies: desc.applies,
+    filterCount: desc.filterCount,
+    actionCount: desc.actionCount,
+    trigger: t.trigger || { type: "product_monitor" },
+    filters: Array.isArray(t.filters) ? t.filters : [],
+    actions: Array.isArray(t.actions) ? t.actions : [],
+    enabled: t.enabled !== false,
+    runOnce: t.runOnce === true,
+    runIntervalMs: t.runIntervalMs ?? 30000,
+    notifications: t.notifications !== false,
   };
+}
+
+function galleryCategoryForTemplate(t) {
+  const c = String(t?.category || "").toLowerCase();
+  const trig = String(t?.trigger?.type || "").toLowerCase();
+  if (c === "schedule" || trig === "schedule") return "Schedule";
+  if (c === "discord" || trig === "quicktask") return "Quicktask";
+  if (c === "notify") return "Notify";
+  return "Product Monitor";
 }
 const {
   normalizeQuickTaskPreset,
@@ -121,6 +152,12 @@ if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "obje
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
 if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
   state.db.taskGroupColors = {};
+}
+if (!state.db.profileGroupColors || typeof state.db.profileGroupColors !== "object") {
+  state.db.profileGroupColors = {};
+}
+if (!state.db.accountGroupColors || typeof state.db.accountGroupColors !== "object") {
+  state.db.accountGroupColors = {};
 }
 
 /** @type {{ atMs: number, label: string, taskIds: string[], staggerGapMs: number, timer: NodeJS.Timeout|null, tickTimer: NodeJS.Timeout|null }|null} */
@@ -163,6 +200,7 @@ const smartActions = createSmartActionsEngine({
   },
   getSettings: () => state.settings,
   getTasks: () => state.db.tasks || [],
+  getProfiles: () => state.db.profiles || [],
   idFn: (prefix) => store.id(prefix || "sa"),
   upsertTask: (task) => upsertTaskRow(task),
   startTasks: (ids, opts) => enqueueTaskIds(ids, opts || {}),
@@ -222,6 +260,33 @@ const smartActions = createSmartActionsEngine({
       resolveDiscordWebhookUrl(state.settings, "success") ||
       "";
     return postDiscordWebhook(url, payload);
+  },
+  notifyToast: (payload = {}) => {
+    send({
+      type: "toast",
+      message: String(payload.message || "").slice(0, 240),
+      level: payload.level || "ok",
+      actionId: payload.actionId || null,
+    });
+  },
+  ensureTaskGroup: (opts = {}) => {
+    const group = String(opts.taskGroup || "").trim().slice(0, 80);
+    if (!group) return { ok: false, error: "task group required" };
+    if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
+      state.db.taskGroupColors = {};
+    }
+    const key = group;
+    const existed = Object.prototype.hasOwnProperty.call(state.db.taskGroupColors, key);
+    const color = String(opts.color || "").trim();
+    if (color) state.db.taskGroupColors[key] = color;
+    else if (!existed) state.db.taskGroupColors[key] = "";
+    persistDb();
+    return { ok: true, taskGroup: key, existed, created: !existed };
+  },
+  gotoTaskGroup: (opts = {}) => {
+    const group = String(opts.taskGroup || "").trim();
+    if (!group) return;
+    send({ type: "gotoTaskGroup", taskGroup: group });
   },
   emit: (evt) => send(evt),
 });
@@ -291,9 +356,17 @@ function handleDesktopWatchdog(hit) {
 const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
   getSettings: () => state.settings,
   getTasks: () => state.db.tasks,
+  initialFeed: store.loadMonitorFeed?.() || [],
   emitLog: (message) =>
     send({ type: "job", phase: "log", level: "info", message: String(message || "") }),
   onCheckoutTask: async (task) => enqueueGlobalMonitorCheckout(task),
+  onFeedChanged: (feed) => {
+    try {
+      store.saveMonitorFeed?.(feed);
+    } catch {
+      /* disk persist is best-effort */
+    }
+  },
   onFeedHit: (hit) => {
     send({ type: "monitorFeed", hit });
     // Smart Actions Product Monitor trigger (orchestration only).
@@ -312,6 +385,12 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
       });
     }
   },
+});
+bandaiGlobalMonitor.on("feedSync", (feed) => {
+  send({ type: "monitorFeed", feed: Array.isArray(feed) ? feed : [] });
+});
+bandaiGlobalMonitor.on("adminWatchlist", () => {
+  send({ type: "snapshot", data: snapshot() });
 });
 
 function harvestEntries() {
@@ -404,7 +483,7 @@ async function pullProductCacheFromMonitor() {
     String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
       .trim()
       .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
-  if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
+  if (!base) return { ok: false, error: "Monitor unavailable" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
   let res;
   try {
@@ -590,12 +669,23 @@ function upsertAccountRow(account, { storeId, profileId, source } = {}) {
     source: source || account.source || existing?.source || "generated",
     status,
     notes: account.notes != null ? account.notes : existing?.notes || null,
+    accountGroup: String(account.accountGroup || existing?.accountGroup || "")
+      .trim()
+      .slice(0, 80),
     lastUsedAt: existing?.lastUsedAt || account.lastUsedAt || null,
     lastLoginAt: account.lastLoginAt || existing?.lastLoginAt || null,
     loginProvenAt: account.loginProvenAt || existing?.loginProvenAt || null,
     createdAt: existing?.createdAt || account.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
+  if (row.accountGroup) {
+    if (!state.db.accountGroupColors || typeof state.db.accountGroupColors !== "object") {
+      state.db.accountGroupColors = {};
+    }
+    if (!Object.prototype.hasOwnProperty.call(state.db.accountGroupColors, row.accountGroup)) {
+      state.db.accountGroupColors[row.accountGroup] = "";
+    }
+  }
   if (existing) {
     state.db.accounts = state.db.accounts.map((a) => (a.id === existing.id ? row : a));
   } else {
@@ -728,6 +818,8 @@ function snapshot() {
     proxyGroups: state.db.proxyGroups,
     tasks: state.db.tasks,
     taskGroupColors: state.db.taskGroupColors || {},
+    profileGroupColors: state.db.profileGroupColors || {},
+    accountGroupColors: state.db.accountGroupColors || {},
     results: state.db.results.slice(-50),
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
@@ -735,11 +827,28 @@ function snapshot() {
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
-    bandaiGlobalMonitor: bandaiGlobalMonitor.snapshot(),
+    bandaiGlobalMonitor: (() => {
+      const mon = bandaiGlobalMonitor.snapshot();
+      return {
+        ...mon,
+        // Keep host out of the renderer snapshot (baked-in; not for members).
+        url: undefined,
+        statusLine: formatMonitorFeedStatusLine({
+          connected: mon.connected,
+          running: mon.running,
+          hits: mon.hits,
+          adminWatchCount: mon.adminWatchCount,
+          watchTasks: mon.watchTasks,
+          lastError: mon.lastError,
+          engineRunning: Boolean(sidecar.status()?.running),
+        }),
+      };
+    })(),
     smartActions: smartActions.snapshot(),
     smartActionCatalog: {
       ...normalizeCatalogState(state.db.smartActionCatalog),
       templates: listTemplates().map(catalogTemplatePublic),
+      quickPackIds: QUICK_PACK_IDS,
       source: state.db.smartActionCatalog?.source || "local",
       remoteUpdatedAt: state.db.smartActionCatalog?.remoteUpdatedAt || null,
       pulledAt: state.db.smartActionCatalog?.pulledAt || null,
@@ -752,12 +861,18 @@ function snapshot() {
 }
 
 function createWindow() {
+  const iconPath = path.join(__dirname, "renderer", "assets", "icon.png");
   win = new BrowserWindow({
-    width: 1100,
-    height: 780,
-    minWidth: 900,
-    minHeight: 640,
-    title: "J1m's Bot",
+    width: 1280,
+    height: 840,
+    minWidth: 1024,
+    minHeight: 700,
+    title: "Vanta",
+    backgroundColor: "#0a0a0b",
+    icon: require("fs").existsSync(iconPath) ? iconPath : undefined,
+    frame: false,
+    titleBarStyle: "hidden",
+    trafficLightPosition: { x: 16, y: 16 },
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -772,11 +887,27 @@ function createWindow() {
       /* ignore */
     }
   });
+  win.on("maximize", () => send({ type: "window", maximized: true }));
+  win.on("unmaximize", () => send({ type: "window", maximized: false }));
   win.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
   });
 }
+
+ipcMain.handle("desktop:window-minimize", () => {
+  win?.minimize();
+});
+ipcMain.handle("desktop:window-maximize", () => {
+  if (!win) return false;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+  return win.isMaximized();
+});
+ipcMain.handle("desktop:window-close", () => {
+  win?.close();
+});
+ipcMain.handle("desktop:window-is-maximized", () => Boolean(win?.isMaximized()));
 
 runner.setEmitter((evt) => send(evt));
 runner.setFinishedHandler((result) => {
@@ -1005,7 +1136,7 @@ async function bootEngine() {
     ...runnerHarvestHooks(),
   });
   wireProductCacheIntoRunner();
-  // Best-effort shared NAI pull so task starts skip public resolve.
+  // Inherit admin catalog + shared NAI cache (consumer zero-config).
   void pullProductCacheFromMonitor().then((r) => {
     if (r?.ok) {
       send({
@@ -1016,6 +1147,17 @@ async function bootEngine() {
       });
     }
   });
+  void pullPresetCatalogFromMonitor().then((r) => {
+    if (r?.ok) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "info",
+        message: `Action Store · ${r.count} SKU(s)`,
+      });
+      send({ type: "snapshot", data: snapshot() });
+    }
+  });
   runner.start();
   const mon = bandaiGlobalMonitor.start();
   if (mon.ok && !mon.skipped) {
@@ -1023,7 +1165,11 @@ async function bootEngine() {
       type: "job",
       phase: "log",
       level: "info",
-      message: `Bandai global monitor subscribe → ${mon.url || state.settings.bandaiGlobalMonitorUrl}`,
+      message: "Monitor connected",
+    });
+    // Refresh UI once admin watchlist lands from /health.
+    void bandaiGlobalMonitor.refreshAdminWatchlist?.().then(() => {
+      send({ type: "snapshot", data: snapshot() });
     });
     const watchJobs = (state.db.tasks || [])
       .filter(
@@ -1044,13 +1190,6 @@ async function bootEngine() {
         /* best-effort */
       }
     }
-  } else if (mon.skipped && mon.reason === "missing_url") {
-    send({
-      type: "job",
-      phase: "log",
-      level: "info",
-      message: "Bandai global monitor skipped — set URL in Settings",
-    });
   }
   send({ type: "snapshot", data: snapshot() });
   return {
@@ -1298,12 +1437,32 @@ ipcMain.handle("desktop:harvest-once", async (_e, opts = {}) => {
 // Profiles
 ipcMain.handle("desktop:upsert-profile", (_e, profile) => {
   const now = Date.now();
-  if (profile.id) {
-    const i = state.db.profiles.findIndex((p) => p.id === profile.id);
-    if (i >= 0) state.db.profiles[i] = { ...state.db.profiles[i], ...profile, updatedAt: now };
-    else state.db.profiles.push({ ...profile, createdAt: now, updatedAt: now });
+  const profileGroup = String(profile?.profileGroup || "").trim().slice(0, 80);
+  const accountGroup = String(profile?.accountGroup || "").trim().slice(0, 80);
+  const proxyGroupId = profile?.proxyGroupId ? String(profile.proxyGroupId) : null;
+  const next = { ...profile, profileGroup, accountGroup, proxyGroupId };
+  if (profileGroup) {
+    if (!state.db.profileGroupColors || typeof state.db.profileGroupColors !== "object") {
+      state.db.profileGroupColors = {};
+    }
+    if (!Object.prototype.hasOwnProperty.call(state.db.profileGroupColors, profileGroup)) {
+      state.db.profileGroupColors[profileGroup] = "";
+    }
+  }
+  if (accountGroup) {
+    if (!state.db.accountGroupColors || typeof state.db.accountGroupColors !== "object") {
+      state.db.accountGroupColors = {};
+    }
+    if (!Object.prototype.hasOwnProperty.call(state.db.accountGroupColors, accountGroup)) {
+      state.db.accountGroupColors[accountGroup] = "";
+    }
+  }
+  if (next.id) {
+    const i = state.db.profiles.findIndex((p) => p.id === next.id);
+    if (i >= 0) state.db.profiles[i] = { ...state.db.profiles[i], ...next, updatedAt: now };
+    else state.db.profiles.push({ ...next, createdAt: now, updatedAt: now });
   } else {
-    state.db.profiles.push({ ...profile, id: store.id("prof"), createdAt: now, updatedAt: now });
+    state.db.profiles.push({ ...next, id: store.id("prof"), createdAt: now, updatedAt: now });
   }
   persistDb();
   return snapshot();
@@ -1350,12 +1509,18 @@ ipcMain.handle("desktop:delete-proxy-group", (_e, groupId) => {
   return snapshot();
 });
 
+ipcMain.handle("desktop:proxy-test-presets", () => ({
+  ok: true,
+  presets: PROXY_TEST_PRESETS,
+}));
+
 ipcMain.handle("desktop:test-proxy-group", async (_e, groupId, opts = {}) => {
   const group = (state.db.proxyGroups || []).find((g) => g.id === groupId);
   if (!group) return { ok: false, error: "Proxy group not found" };
   const tested = await testProxyEntries(group.entries || [], {
     timeoutMs: opts.timeoutMs,
     concurrency: opts.concurrency,
+    targetUrl: opts.targetUrl,
   });
   let removed = 0;
   if (opts.removeDead === true && tested.results?.length) {
@@ -1877,17 +2042,17 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
   if (!url) {
     return { ok: false, error: `No webhook configured for ${kind}` };
   }
-  const colors = { success: 0x2ecc71, fail: 0xe74c3c, threeds: 0xf1c40f, monitor: 0x7c3aed };
+  const colors = { success: 0x8a9a8a, fail: 0xb07070, threeds: 0xc4b08a, monitor: 0x9098a8 };
   const payload = {
-    username: "J1m's Bot",
+    username: "Vanta",
     embeds: [
       {
         title: `Webhook test · ${kind}`,
         description: "Desktop Settings ping — routing works if you see this.",
-        color: colors[kind] || 0x3dd6c6,
+        color: colors[kind] || 0xc8c8cc,
         fields: [{ name: "Route", value: kind, inline: true }],
         timestamp: new Date().toISOString(),
-        footer: { text: "J1m's Bot · desktop" },
+        footer: { text: "Vanta · desktop" },
       },
     ],
   };
@@ -1919,7 +2084,7 @@ function enqueueGlobalMonitorCheckout(checkoutTask) {
       phase: "log",
       level: "err",
       taskId: task.id,
-      message: `Global monitor checkout blocked: ${resolved.error}`,
+      message: `Checkout blocked: ${resolved.error}`,
     });
     return { ok: false, error: resolved.error };
   }
@@ -1943,7 +2108,7 @@ function enqueueGlobalMonitorCheckout(checkoutTask) {
       phase: "log",
       level: "info",
       taskId: task.id,
-      message: `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"})`,
+      message: `Using warm harvest session (${harvestSession.proxyHost || "proxy"})`,
     });
   }
 
@@ -2337,6 +2502,11 @@ ipcMain.handle("desktop:monitor-feed", () => ({
 
 ipcMain.handle("desktop:monitor-feed-clear", () => {
   bandaiGlobalMonitor.clearFeed?.();
+  try {
+    store.saveMonitorFeed?.([]);
+  } catch {
+    /* ignore */
+  }
   send({ type: "monitorFeed", cleared: true, feed: [] });
   return { ok: true, feed: [], snapshot: snapshot() };
 });
@@ -2498,6 +2668,7 @@ ipcMain.handle("desktop:smart-action-catalog-get", () => ({
   ok: true,
   catalog: normalizeCatalogState(state.db.smartActionCatalog),
   templates: listTemplates().map(catalogTemplatePublic),
+  quickPackIds: QUICK_PACK_IDS,
 }));
 
 ipcMain.handle("desktop:smart-action-catalog-save", (_e, patch = {}) => {
@@ -2572,7 +2743,7 @@ async function pullPresetCatalogFromMonitor() {
     String(s.bandaiGlobalMonitorUrl || s.globalMonitorUrl || "")
       .trim()
       .replace(/\/+$/, "") || "https://j1ms-bandai-monitor-production.up.railway.app";
-  if (!base) return { ok: false, error: "Set Bandai global monitor URL in Settings" };
+  if (!base) return { ok: false, error: "Monitor unavailable" };
   const token = String(s.bandaiGlobalMonitorToken || "").trim();
   const url = `${base}/preset-catalog`;
   let res;
@@ -2594,25 +2765,48 @@ async function pullPresetCatalogFromMonitor() {
   // Also refresh shared NAI cache so members skip public resolve.
   const cachePull = await pullProductCacheFromMonitor().catch(() => ({ ok: false }));
   const cur = normalizeCatalogState(state.db.smartActionCatalog);
-  cur.rows = rows.map((r) => {
+  const prevByKey = new Map(
+    (cur.rows || []).map((r) => [`${r.store}::${r.sku}`.toLowerCase(), r]),
+  );
+  const draftRows = rows.map((r) => {
     const hit = lookupSharedProduct(r.sku, r.area || "au");
+    const prev = prevByKey.get(
+      `${String(r.store || "bandai").toLowerCase()}::${String(r.sku || "").toLowerCase()}`,
+    );
     return normalizeCatalogRow(
       {
         ...r,
         areaItemNo: r.areaItemNo || hit?.areaItemNo || "",
         title: r.title || hit?.title || r.sku,
-        id: r.id || store.id("cat"),
+        imageUrl:
+          r.imageUrl ||
+          r.image ||
+          hit?.imageUrl ||
+          prev?.imageUrl ||
+          "",
+        // Keep local per-SKU pack choices across Refresh
+        enabledTemplateIds: Array.isArray(r.enabledTemplateIds)
+          ? r.enabledTemplateIds
+          : prev?.enabledTemplateIds || [],
+        id: r.id || prev?.id || store.id("cat"),
       },
       (p) => store.id(p),
     );
   });
-  // Seed local cache from catalog rows that already carry NAI.
+  // Pull storefront images for Bandai SKUs that still lack one.
+  const imageEnrich = await enrichRowsWithBandaiImages(draftRows).catch(() => ({
+    rows: draftRows,
+    filled: 0,
+  }));
+  cur.rows = imageEnrich.rows || draftRows;
+  // Seed local cache from catalog rows that already carry NAI / image.
   for (const r of cur.rows) {
-    if (r.store === "bandai" && r.sku && productCacheLib.isBackendPid(r.areaItemNo)) {
+    if (r.store === "bandai" && r.sku) {
       rememberLocalProduct({
         sku: r.sku,
         areaItemNo: r.areaItemNo,
         title: r.title,
+        imageUrl: r.imageUrl,
         area: r.area || "au",
         source: "catalog",
       });
@@ -2626,80 +2820,41 @@ async function pullPresetCatalogFromMonitor() {
   return {
     ok: true,
     count: cur.rows.length,
+    imagesFilled: imageEnrich.filled || 0,
     updatedAt: cur.remoteUpdatedAt,
     rows: cur.rows,
     productCacheCount: cachePull.ok ? cachePull.count : Object.keys(ensureProductCache().entries || {}).length,
   };
 }
 
-ipcMain.handle("desktop:smart-action-catalog-pull", async () => {
-  const pulled = await pullPresetCatalogFromMonitor();
-  if (!pulled.ok) return { ...pulled, snapshot: snapshot() };
-  // Re-sync packs against the new library
+function syncCatalogActionsFromRows() {
   const catalog = normalizeCatalogState(state.db.smartActionCatalog);
-  const enabledSet = new Set(
-    Array.isArray(catalog.enabledTemplateIds) && catalog.enabledTemplateIds.length
-      ? catalog.enabledTemplateIds
-      : listTemplates()
-          .filter((t) => t.enabled !== false)
-          .map((t) => t.id),
-  );
-  if (catalog.rows.some((r) => r.enabled !== false && r.sku)) {
-    applyCatalog({
-      catalog: { ...catalog, enabledTemplateIds: [...enabledSet] },
-      upsert: (draft) => smartActions.upsert({ ...draft, enabled: true }),
-      list: () => smartActions.list(),
-      remove: (id) => smartActions.remove(id),
-      pruneMissing: false,
-    });
-  }
-  for (const sa of smartActions.list()) {
-    const tid = sa.catalogTemplateId;
-    if (!tid && !String(sa.id || "").startsWith("sa_cat_")) continue;
-    smartActions.setEnabled(sa.id, tid ? enabledSet.has(tid) : false);
-  }
-  return { ok: true, count: pulled.count, updatedAt: pulled.updatedAt, snapshot: snapshot() };
-});
-
-ipcMain.handle("desktop:smart-action-catalog-sync", (_e, opts = {}) => {
-  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
-  if (Array.isArray(opts.enabledTemplateIds)) {
-    catalog.enabledTemplateIds = opts.enabledTemplateIds.map(String);
-  } else if (opts.enabledTemplateIds === null) {
-    catalog.enabledTemplateIds = null;
-  }
   state.db.smartActionCatalog = catalog;
   persistDb();
 
-  const enabledSet = new Set(
-    Array.isArray(catalog.enabledTemplateIds) && catalog.enabledTemplateIds.length
-      ? catalog.enabledTemplateIds
-      : listTemplates()
-          .filter((t) => t.enabled !== false)
-          .map((t) => t.id),
-  );
-
-  let applied = { createdOrUpdated: 0, rowCount: 0, templateCount: 0 };
+  const keepIds = new Set();
+  let applied = { createdOrUpdated: 0, rowCount: 0, templateCount: 0, pairs: 0 };
   if ((catalog.rows || []).some((r) => r.enabled !== false && r.sku)) {
     applied = applyCatalog({
-      catalog: {
-        ...catalog,
-        // Only materialize currently-on packs
-        enabledTemplateIds: [...enabledSet],
+      catalog,
+      upsert: (draft) => {
+        const row = smartActions.upsert({ ...draft, enabled: true });
+        keepIds.add(row?.id || draft.id);
+        return row;
       },
-      upsert: (draft) => smartActions.upsert({ ...draft, enabled: true }),
       list: () => smartActions.list(),
       remove: (id) => smartActions.remove(id),
-      pruneMissing: false,
+      pruneMissing: true,
     });
+    for (const d of applied.actions || []) keepIds.add(d.id);
   }
 
+  // Disable (or prune) catalog actions that are no longer selected on any SKU.
   let enabled = 0;
   let disabled = 0;
   for (const sa of smartActions.list()) {
-    const tid = sa.catalogTemplateId;
-    if (!tid && !String(sa.id || "").startsWith("sa_cat_")) continue;
-    const on = tid ? enabledSet.has(tid) : false;
+    if (!sa?.catalogKey && !String(sa.id || "").startsWith("sa_cat_")) continue;
+    const on = keepIds.has(sa.id);
     smartActions.setEnabled(sa.id, on);
     if (on) enabled += 1;
     else disabled += 1;
@@ -2711,9 +2866,65 @@ ipcMain.handle("desktop:smart-action-catalog-sync", (_e, opts = {}) => {
     disabled,
     createdOrUpdated: applied.createdOrUpdated || 0,
     rowCount: applied.rowCount || catalog.rows.length,
-    templateCount: enabledSet.size,
+    templateCount: applied.templateCount || 0,
+    pairs: applied.pairs || 0,
     snapshot: snapshot(),
   };
+}
+
+ipcMain.handle("desktop:smart-action-catalog-pull", async () => {
+  const pulled = await pullPresetCatalogFromMonitor();
+  if (!pulled.ok) return { ...pulled, snapshot: snapshot() };
+  const synced = syncCatalogActionsFromRows();
+  return {
+    ok: true,
+    count: pulled.count,
+    updatedAt: pulled.updatedAt,
+    snapshot: synced.snapshot,
+  };
+});
+
+ipcMain.handle("desktop:smart-action-catalog-sync", (_e, opts = {}) => {
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  // Legacy global pack list (optional)
+  if (Array.isArray(opts.enabledTemplateIds)) {
+    catalog.enabledTemplateIds = opts.enabledTemplateIds.map(String);
+  } else if (opts.enabledTemplateIds === null) {
+    catalog.enabledTemplateIds = null;
+  }
+  // Per-SKU pack patch
+  if (opts.rowId != null && Array.isArray(opts.rowEnabledTemplateIds)) {
+    const id = String(opts.rowId);
+    catalog.rows = catalog.rows.map((r) =>
+      r.id === id
+        ? {
+            ...r,
+            enabledTemplateIds: opts.rowEnabledTemplateIds.map(String).filter(Boolean),
+          }
+        : r,
+    );
+  }
+  if (Array.isArray(opts.rows)) {
+    catalog.rows = opts.rows.map((r) => normalizeCatalogRow(r, (p) => store.id(p)));
+  }
+  state.db.smartActionCatalog = catalog;
+  persistDb();
+  return syncCatalogActionsFromRows();
+});
+
+ipcMain.handle("desktop:smart-action-catalog-set-row-packs", (_e, opts = {}) => {
+  const rowId = String(opts.rowId || "");
+  const packs = Array.isArray(opts.enabledTemplateIds)
+    ? opts.enabledTemplateIds.map(String).filter(Boolean)
+    : [];
+  if (!rowId) return { ok: false, error: "rowId required", snapshot: snapshot() };
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  const idx = catalog.rows.findIndex((r) => r.id === rowId);
+  if (idx < 0) return { ok: false, error: "SKU not found", snapshot: snapshot() };
+  catalog.rows[idx] = { ...catalog.rows[idx], enabledTemplateIds: packs };
+  state.db.smartActionCatalog = catalog;
+  persistDb();
+  return syncCatalogActionsFromRows();
 });
 
 ipcMain.handle("desktop:smart-action-catalog-remove-actions", (_e, opts = {}) => {
@@ -2944,6 +3155,24 @@ async function featureSmokeToday() {
         schedulePh: document.getElementById("saScheduleAt")?.getAttribute("placeholder") || "",
         scheduleLabel: document.querySelector("label[for=saScheduleAt], #saScheduleOpts label")?.textContent || "",
         delayHint: Array.from(document.querySelectorAll(".field-hint")).some(el => /pre-drop tighten|HH:MM:SS/i.test(el.textContent||"")),
+        titlebar: !!document.querySelector(".titlebar"),
+        homeTab: !!document.getElementById("tab-home"),
+        taskDialog: !!document.getElementById("taskDialog"),
+        toastHost: !!document.getElementById("toastHost"),
+        settingsNav: !!document.querySelector(".settings-nav"),
+        taskTable: !!document.getElementById("taskList") && document.getElementById("taskList").tagName === "TBODY",
+        brand: document.querySelector(".titlebar-brand")?.textContent || "",
+        homeStartBandai: !!document.getElementById("homeStartBandai"),
+        homeChecklist: !!document.getElementById("homeChecklist"),
+        homeStartCheckout: !!document.getElementById("homeStartCheckout"),
+        topnavSep: !!document.querySelector(".topnav-sep"),
+        saSkuGrid: !!document.querySelector("#saCatalogRows.sa-sku-grid"),
+        saSkuDialog: !!document.getElementById("saSkuDialog"),
+        saTemplateDialog: !!document.getElementById("saTemplateDialog"),
+        saBuilder: !!document.getElementById("saBuilder"),
+        saActionDialog: !!document.getElementById("saActionDialog"),
+        saFilterDialog: !!document.getElementById("saFilterDialog"),
+        saBuilderSave: !!document.getElementById("btnSaBuilderSave"),
       })`);
       pass(
         "ui_import_export_buttons",
@@ -2955,9 +3184,54 @@ async function featureSmokeToday() {
         /12:59:30/.test(dom.schedulePh) || /HH:MM:SS/i.test(dom.scheduleLabel) || dom.delayHint,
         JSON.stringify({ ph: dom.schedulePh, label: dom.scheduleLabel, hint: dom.delayHint }),
       );
+      pass(
+        "ui_vanta_shell",
+        dom.titlebar &&
+          dom.homeTab &&
+          dom.taskDialog &&
+          dom.toastHost &&
+          dom.settingsNav &&
+          dom.taskTable &&
+          /VANTA/i.test(dom.brand),
+        JSON.stringify(dom),
+      );
+      pass(
+        "ui_home_start_here",
+        dom.homeStartBandai && dom.homeChecklist && dom.homeStartCheckout && dom.topnavSep,
+        JSON.stringify({
+          homeStartBandai: dom.homeStartBandai,
+          homeChecklist: dom.homeChecklist,
+          homeStartCheckout: dom.homeStartCheckout,
+          topnavSep: dom.topnavSep,
+        }),
+      );
+      pass(
+        "ui_sa_sku_store",
+        dom.saSkuGrid && dom.saSkuDialog,
+        JSON.stringify({ saSkuGrid: dom.saSkuGrid, saSkuDialog: dom.saSkuDialog }),
+      );
+      pass(
+        "ui_sa_builder",
+        dom.saTemplateDialog &&
+          dom.saBuilder &&
+          dom.saActionDialog &&
+          dom.saFilterDialog &&
+          dom.saBuilderSave,
+        JSON.stringify({
+          saTemplateDialog: dom.saTemplateDialog,
+          saBuilder: dom.saBuilder,
+          saActionDialog: dom.saActionDialog,
+          saFilterDialog: dom.saFilterDialog,
+          saBuilderSave: dom.saBuilderSave,
+        }),
+      );
     } else {
       pass("ui_import_export_buttons", false, "no window");
       pass("ui_schedule_seconds", false, "no window");
+      pass("ui_vanta_shell", false, "no window");
+      pass("ui_home_start_here", false, "no window");
+      pass("ui_sa_sku_store", false, "no window");
+      pass("ui_sa_builder", false, "no window");
     }
 
     const failed = checks.filter((c) => !c.ok);

@@ -84,7 +84,11 @@ export function normalizeCatalogCard(p) {
   if (typeof pn === "string") title = pn;
   else if (pn && typeof pn === "object") title = pn.en || pn.fr || Object.values(pn)[0] || null;
 
-  const imgs = Array.isArray(p.productImages) ? p.productImages : [];
+  const imgs = Array.isArray(p.productImages)
+    ? p.productImages
+    : Array.isArray(p.mediaSection?.images)
+      ? p.mediaSection.images
+      : [];
   const fileUrl = imgs.find((i) => i?.fileUrl)?.fileUrl || p.imageUrl || p.thumbnailUrl || null;
   const imageUrl = fileUrl
     ? String(fileUrl).startsWith("http")

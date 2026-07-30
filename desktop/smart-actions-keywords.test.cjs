@@ -50,3 +50,21 @@ test("filters AND; empty list always runs", () => {
   assert.equal(matchFilter({ field: "reason", op: "equals", value: "restock" }, ctx), true);
   assert.equal(matchFilter({ field: "title", value: "" }, ctx), true);
 });
+
+test("filter ops: not_equals, equals_any, contains_any", () => {
+  const ctx = {
+    store: "bandai",
+    title: "GUNDAM CARD GAME",
+    sku: "N2890904001",
+    price: "AUD 179",
+    productType: "PreOrder",
+    inStock: true,
+  };
+  assert.equal(matchFilter({ field: "store", op: "not_equals", value: "kmart" }, ctx), true);
+  assert.equal(matchFilter({ field: "sku", op: "equals_any", value: "N1, N2890904001" }, ctx), true);
+  assert.equal(matchFilter({ field: "title", op: "contains_any", value: "one piece, gundam" }, ctx), true);
+  assert.equal(matchFilter({ field: "title", op: "contains_none", value: "pokemon" }, ctx), true);
+  assert.equal(matchFilter({ field: "price", op: "contains", value: "179" }, ctx), true);
+  assert.equal(matchFilter({ field: "productType", op: "equals", value: "PreOrder" }, ctx), true);
+  assert.equal(matchFilter({ field: "inStock", op: "equals", value: "true" }, ctx), true);
+});

@@ -235,6 +235,8 @@
       <div class="panel show" id="panel-monitor">
         <section>
           <h2>Monitor status</h2>
+          <p id="persistWarn" class="warn" style="display:none;margin:0 0 10px"></p>
+          <p class="hint" id="persistHint" style="margin:0 0 12px;color:var(--muted);font-size:0.8rem"></p>
           <div class="grid" id="stats"></div>
           <div class="row">
             <button id="btnMonStart" type="button">Start</button>
@@ -271,7 +273,9 @@
         </section>
         <section>
           <h2>Monitor proxies</h2>
-          <p id="persistWarn" class="warn" style="display:none;margin:0 0 10px"></p>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem">
+            ISP / DC lists save with keywords + Action Store SKUs onto the Railway volume (survives redeploy).
+          </p>
           <label for="isp">ISP lines</label>
           <textarea id="isp"></textarea>
           <label for="dc">DC lines (optional)</label>
@@ -283,7 +287,22 @@
             <input id="notifyOos" type="checkbox" />
           </div>
           <div class="row"><button id="btnSaveProx" type="button">Save proxies &amp; settings</button></div>
-          <p id="persistHint" class="hint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
+        </section>
+        <section>
+          <h2>Discord webhooks</h2>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Restock / OOS pings fan out to every URL here (and Desktop still uses SSE separately).
+            Saved on the Railway volume — survives redeploy. Max 20.
+          </p>
+          <ul class="hits" id="webhookList"></ul>
+          <label for="webhookUrl">Webhook URL</label>
+          <input id="webhookUrl" type="url" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+          <label for="webhookLabel">Label <span style="color:var(--muted)">(optional)</span></label>
+          <input id="webhookLabel" type="text" placeholder="e.g. ops-restock, public-feed" autocomplete="off" />
+          <div class="row">
+            <button id="btnWebhookAdd" type="button">Add webhook</button>
+          </div>
+          <p class="hint" id="webhookHint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
         </section>
         <section>
           <h2>Recent hits</h2>
@@ -332,7 +351,7 @@
             <input id="pf_cvv" type="password" placeholder="CVV" />
           </div>
           <div class="row"><button id="btnSaveVault" type="button">Save vault</button></div>
-          <p class="hint">Vault stays on Railway (volume or until redeploy). Card only needed for live place order.</p>
+          <p class="hint">Vault writes to the same Railway volume as monitor state (survives redeploy). Card only needed for live place order.</p>
         </section>
 
         <section>
@@ -507,11 +526,41 @@
         $("interval").value = cfg.intervalMs || 5000;
         $("notifyOos").checked = cfg.notifyOos !== false;
         applyPersistence(cfg.persistence);
+        renderWebhooks(cfg.discordWebhooks || []);
         const hits = st.recentHits || [];
         $("hits").innerHTML = hits.length
           ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>
               <div class="meta">${escapeHtml(h.productId||"")} · ${escapeHtml(h.reason||"")} · ${escapeHtml((h.at||"").replace("T"," ").slice(0,19))}</div></li>`).join("")
           : `<li><div class="meta">No monitor hits yet.</div></li>`;
+      }
+
+      function renderWebhooks(list) {
+        const el = $("webhookList");
+        const hint = $("webhookHint");
+        const rows = Array.isArray(list) ? list : [];
+        if (hint) {
+          hint.textContent = rows.length
+            ? `${rows.length} webhook(s) · restock/OOS post to all`
+            : "No webhooks yet — paste a Discord channel webhook URL and Add.";
+        }
+        if (!el) return;
+        if (!rows.length) {
+          el.innerHTML = `<li><div class="meta">No Discord webhooks configured.</div></li>`;
+          return;
+        }
+        el.innerHTML = rows
+          .map((w) => {
+            const label = w.label ? escapeHtml(w.label) + " · " : "";
+            const shown = escapeHtml(w.masked || w.url || "");
+            return `<li>
+              <strong>${label || "Webhook"}</strong>
+              <div class="meta" style="word-break:break-all">${shown}</div>
+              <div class="row" style="margin-top:6px">
+                <button type="button" class="secondary danger" data-wh-del="${escapeHtml(w.id)}">Remove</button>
+              </div>
+            </li>`;
+          })
+          .join("");
       }
 
       function applyPersistence(p) {
@@ -523,22 +572,24 @@
           return;
         }
         const path = p.statePath || p.dataDir || "";
+        const kept =
+          "keywords, Action Store SKUs, ISP/DC, Discord webhooks, product cache, bot vault";
         if (hint) {
           hint.textContent = p.survivesRedeploy
-            ? `Saved to volume · ${path}`
+            ? `Durable volume · ${kept} · ${path}`
             : p.survivesRestart
-              ? `Saved under ${path} (survives restart; attach Railway volume at /data for redeploys)`
+              ? `Local disk · ${kept} · ${path} (survives restart; attach Railway volume at /data for redeploys)`
               : `Ephemeral ${path} — env OSPs only after restart. Attach Railway volume at /data.`;
         }
         if (warn) {
           if (p.ephemeral) {
             warn.style.display = "block";
             warn.textContent =
-              "Proxy saves will not survive a restart (state is in /tmp). Env OSPs come back; admin ISP/DC lines do not. Attach a Railway volume mounted at /data.";
+              "Admin saves will not survive a restart (state is in /tmp). Env OSPs come back; ISP/DC, keywords, Action Store SKUs, and product cache do not. Attach a Railway volume mounted at /data.";
           } else if (!p.survivesRedeploy) {
             warn.style.display = "block";
             warn.textContent =
-              "Proxy saves survive process restart, but a Railway redeploy still wipes them unless you attach a volume at /data.";
+              "Admin saves survive process restart, but a Railway redeploy still wipes keywords, Action Store SKUs, ISP/DC, and product cache unless a volume is mounted at /data.";
           } else {
             warn.style.display = "none";
           }
@@ -771,6 +822,47 @@
           );
         } catch (e) { toast(e.message, "bad"); }
       };
+
+      if ($("btnWebhookAdd")) {
+        $("btnWebhookAdd").onclick = async () => {
+          const url = ($("webhookUrl")?.value || "").trim();
+          const label = ($("webhookLabel")?.value || "").trim();
+          if (!url) {
+            toast("Paste a Discord webhook URL", "bad");
+            return;
+          }
+          try {
+            const r = await api("/admin/discord-webhooks", {
+              method: "POST",
+              body: JSON.stringify({ url, label }),
+            });
+            renderWebhooks(r.discordWebhooks || []);
+            if ($("webhookUrl")) $("webhookUrl").value = "";
+            if ($("webhookLabel")) $("webhookLabel").value = "";
+            toast(r.already ? "Already in the list" : "Webhook added", "ok");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("webhookList")) {
+        $("webhookList").addEventListener("click", async (ev) => {
+          const btn = ev.target?.closest?.("[data-wh-del]");
+          if (!btn) return;
+          const id = btn.getAttribute("data-wh-del");
+          if (!id) return;
+          try {
+            const r = await api("/admin/discord-webhooks", {
+              method: "DELETE",
+              body: JSON.stringify({ id }),
+            });
+            renderWebhooks(r.discordWebhooks || []);
+            toast("Webhook removed", "ok");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        });
+      }
 
       $("btnSaveVault").onclick = async () => {
         try {

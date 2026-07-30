@@ -31,9 +31,13 @@ const ACTION_TYPES = Object.freeze({
   DELETE_TASKS: "delete_tasks",
   UPDATE_TASKS: "update_tasks",
   WAIT: "wait",
+  STOP_AFTER: "stop_after",
   NOTIFY_DISCORD: "notify_discord",
+  NOTIFY_TOAST: "notify_toast",
   START_HARVESTER: "start_harvester",
   STOP_HARVESTER: "stop_harvester",
+  CREATE_TASK_GROUP: "create_task_group",
+  GOTO_TASK_GROUP: "goto_task_group",
 });
 
 const TARGET_SCOPES = Object.freeze({
@@ -71,6 +75,43 @@ function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
   }
   if (type === ACTION_TYPES.WAIT) {
     return { type, config: { delaySec: 60 } };
+  }
+  if (type === ACTION_TYPES.STOP_AFTER) {
+    return {
+      type,
+      config: {
+        delaySec: 60,
+        delayMin: 0,
+        delayHour: 0,
+        target: { scope: TARGET_SCOPES.GROUP, taskGroup: "" },
+      },
+    };
+  }
+  if (type === ACTION_TYPES.NOTIFY_TOAST) {
+    return {
+      type,
+      config: {
+        message: "Smart Action: {{title}} ({{sku}})",
+        level: "ok",
+      },
+    };
+  }
+  if (type === ACTION_TYPES.CREATE_TASK_GROUP) {
+    return {
+      type,
+      config: {
+        taskGroup: "{{taskGroup}}",
+        color: "",
+      },
+    };
+  }
+  if (type === ACTION_TYPES.GOTO_TASK_GROUP) {
+    return {
+      type,
+      config: {
+        taskGroup: "{{taskGroup}}",
+      },
+    };
   }
   if (type === ACTION_TYPES.UPDATE_TASKS) {
     return {
@@ -251,10 +292,22 @@ function sleep(ms) {
  * @param {(opts?: object) => Promise<object>|object} [deps.startHarvester]
  * @param {() => object} [deps.stopHarvester]
  * @param {(payload: object) => Promise<object>} [deps.notifyDiscord]
+ * @param {(payload: object) => void} [deps.notifyToast]
+ * @param {(opts: { taskGroup: string, color?: string }) => object} [deps.ensureTaskGroup]
+ * @param {(opts: { taskGroup: string }) => void} [deps.gotoTaskGroup]
  * @param {(evt: object) => void} [deps.emit]
  * @param {() => string} [deps.idFn]
  */
 function createSmartActionsEngine(deps = {}) {
+  function resolveWaitMs(config = {}) {
+    const hasMs = config.delayMs != null && config.delayMs !== "";
+    if (hasMs) return Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(Number(config.delayMs) || 0)));
+    const sec = Number(config.delaySec) || 0;
+    const min = Number(config.delayMin) || 0;
+    const hour = Number(config.delayHour) || 0;
+    const ms = (hour * 3600 + min * 60 + sec) * 1000;
+    return Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(ms)));
+  }
   const running = new Set(); // sa ids currently executing
 
   function list() {
@@ -365,19 +418,120 @@ function createSmartActionsEngine(deps = {}) {
       const type = step.type;
       try {
         if (type === ACTION_TYPES.WAIT) {
-          // Prefer explicit delayMs (tests / advanced); else delaySec from UI.
-          const hasMs =
-            step.config?.delayMs != null && step.config.delayMs !== "";
-          const msRaw = hasMs
-            ? Number(step.config.delayMs) || 0
-            : (Number(step.config?.delaySec) || 0) * 1000;
-          const ms = Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(msRaw)));
+          const ms = resolveWaitMs(step.config || {});
           appendLog(sa, {
             step: `action:${i}:wait`,
             level: "info",
             message: `Waiting ${Math.round(ms / 1000)}s…`,
           });
           if (ms > 0) await sleep(ms);
+          continue;
+        }
+
+        if (type === ACTION_TYPES.STOP_AFTER) {
+          const ms = resolveWaitMs(step.config || {});
+          appendLog(sa, {
+            step: `action:${i}:stop_after`,
+            level: "info",
+            message: `Waiting ${Math.round(ms / 1000)}s before stop…`,
+          });
+          if (ms > 0) await sleep(ms);
+          const { ids, label, error } = resolveTargetIds(step.config || {}, runCtx);
+          if (error) {
+            appendLog(sa, { step: `action:${i}:stop_after`, level: "err", message: error });
+            return finish(sa, OUTCOMES.FAILED, error);
+          }
+          deps.stopTasks?.(ids);
+          appendLog(sa, {
+            step: `action:${i}:stop_after`,
+            level: "ok",
+            message: `Stopped ${ids.length} task(s) after wait · ${label}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.CREATE_TASK_GROUP) {
+          const group = applyTemplate(step.config?.taskGroup || "", runCtx).trim();
+          if (!group) {
+            appendLog(sa, {
+              step: `action:${i}:create_task_group`,
+              level: "err",
+              message: "Task group name required",
+            });
+            return finish(sa, OUTCOMES.FAILED, "Task group name required");
+          }
+          const res =
+            deps.ensureTaskGroup?.({
+              taskGroup: group,
+              color: String(step.config?.color || "").trim(),
+            }) || { ok: true, taskGroup: group, created: true };
+          if (res?.ok === false) {
+            appendLog(sa, {
+              step: `action:${i}:create_task_group`,
+              level: "err",
+              message: res.error || "create group failed",
+            });
+            return finish(sa, OUTCOMES.FAILED, res.error || "Create Task Group failed");
+          }
+          runCtx.taskGroup = group;
+          appendLog(sa, {
+            step: `action:${i}:create_task_group`,
+            level: "ok",
+            message: res?.existed ? `Task group ready: ${group}` : `Created task group: ${group}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.GOTO_TASK_GROUP) {
+          const group = applyTemplate(step.config?.taskGroup || "", runCtx).trim();
+          if (!group) {
+            appendLog(sa, {
+              step: `action:${i}:goto_task_group`,
+              level: "warn",
+              message: "No task group to navigate to",
+            });
+            continue;
+          }
+          deps.gotoTaskGroup?.({ taskGroup: group });
+          deps.emit?.({
+            type: "smartAction",
+            phase: "goto_task_group",
+            actionId: sa.id,
+            taskGroup: group,
+          });
+          appendLog(sa, {
+            step: `action:${i}:goto_task_group`,
+            level: "ok",
+            message: `Navigate to task group: ${group}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.NOTIFY_TOAST) {
+          if (sa.notifications === false) {
+            appendLog(sa, {
+              step: `action:${i}:notify_toast`,
+              level: "info",
+              message: "Skipped (notifications off)",
+            });
+            continue;
+          }
+          const tmpl = step.config?.message || `Smart Action ${sa.name}: {{title}} ({{sku}})`;
+          const message = applyTemplate(tmpl, runCtx);
+          const level = String(step.config?.level || "ok");
+          deps.notifyToast?.({ message, level, actionId: sa.id });
+          deps.emit?.({
+            type: "smartAction",
+            phase: "toast",
+            actionId: sa.id,
+            message,
+            level,
+          });
+          appendLog(sa, {
+            step: `action:${i}:notify_toast`,
+            level: "ok",
+            message: "Desktop toast sent",
+          });
           continue;
         }
 
@@ -633,10 +787,14 @@ function createSmartActionsEngine(deps = {}) {
     const settings = deps.getSettings?.() || {};
     const preset = normalizeQuickTaskPreset(settings.quickTaskPreset || {});
     const usePreset = config.usePreset !== false;
-    const count = Math.max(1, Math.min(20, Number(config.count) || 1));
+    const perProfile = Math.max(
+      1,
+      Math.min(20, Number(config.perProfile != null ? config.perProfile : config.count) || 1),
+    );
     const mode = String(config.bandaiMode || (usePreset ? preset.bandaiMode : "checkout"));
     const store = String(config.store || (usePreset ? preset.store : "bandai"));
     const taskGroup = String(config.taskGroup || "").trim().slice(0, 80);
+    const profileGroup = String(config.profileGroup || "").trim();
 
     let target;
     if (runCtx.hit) {
@@ -657,25 +815,60 @@ function createSmartActionsEngine(deps = {}) {
       { ...runCtx, title: runCtx.title || target.title || target.productId },
     );
 
-    const mergedPreset = {
-      ...preset,
-      store,
-      bandaiMode: mode,
-      bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
-      qty: config.qty != null ? Number(config.qty) : preset.qty,
-      quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
-      placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
-      profileId: config.profileId || (usePreset ? preset.profileId : null),
-      proxyGroupId: config.proxyGroupId || (usePreset ? preset.proxyGroupId : null),
-      accountAssign: config.accountAssign || preset.accountAssign,
-      accountId: config.accountId || preset.accountId,
-      startAfterCreate: false,
-    };
+    const baseProxy = config.proxyGroupId || (usePreset ? preset.proxyGroupId : null);
+    const profileSlots = [];
+    if (profileGroup) {
+      const key = profileGroup.toLowerCase();
+      const rows = (deps.getProfiles?.() || []).filter(
+        (p) => String(p.profileGroup || "").trim().toLowerCase() === key,
+      );
+      if (!rows.length) {
+        throw new Error(`Create Tasks: no profiles in group “${profileGroup}”`);
+      }
+      for (const p of rows) {
+        for (let n = 1; n <= perProfile; n++) {
+          profileSlots.push({
+            profileId: p.id,
+            proxyGroupId: baseProxy || p.proxyGroupId || null,
+            labelSuffix:
+              rows.length * perProfile > 1
+                ? ` · ${p.name || p.email || "profile"}${perProfile > 1 ? ` #${n}` : ""}`
+                : "",
+          });
+        }
+      }
+    } else {
+      const profileId = config.profileId || (usePreset ? preset.profileId : null);
+      for (let n = 0; n < perProfile; n++) {
+        profileSlots.push({
+          profileId,
+          proxyGroupId: baseProxy,
+          labelSuffix: perProfile > 1 ? ` #${n + 1}` : "",
+        });
+      }
+    }
+    if (profileSlots.length > 100) {
+      throw new Error(`Create Tasks: too many tasks (${profileSlots.length}) — max 100`);
+    }
 
     const ids = [];
-    for (let n = 0; n < count; n++) {
+    for (const slot of profileSlots) {
+      const mergedPreset = {
+        ...preset,
+        store,
+        bandaiMode: mode,
+        bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
+        qty: config.qty != null ? Number(config.qty) : preset.qty,
+        quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
+        placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
+        profileId: slot.profileId,
+        proxyGroupId: slot.proxyGroupId,
+        accountAssign: config.accountAssign || preset.accountAssign,
+        accountId: config.accountId || preset.accountId,
+        startAfterCreate: false,
+      };
       const built = buildQuickTaskDraft(mergedPreset, target, {
-        label: count > 1 ? `${label} #${n + 1}` : label,
+        label: `${label}${slot.labelSuffix}`.slice(0, 120),
       });
       if (!built.ok) throw new Error(built.error);
       if (taskGroup) built.task.taskGroup = taskGroup;
