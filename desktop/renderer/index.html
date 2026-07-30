@@ -180,6 +180,15 @@
               <label>Backend PID / areaItemNo <span class="optional">(NAI… — preferred on drops)</span></label>
               <input id="taskBandaiAreaItemNo" placeholder="NAI0859145AU" autocomplete="off" />
               <p class="field-hint">If set, ATC uses this id instead of the frontend <code>N…</code> from the PDP URL (extension tip under load).</p>
+              <label class="check"><input id="taskBandaiWatchdog" type="checkbox" checked /> Watchdog — auto-start on Railway restock match</label>
+              <p class="field-hint">
+                When the engine is subscribed to the Bandai global monitor, a matching in-stock hit starts this Autocheckout task
+                (matches PDP URL / product code, or Watch SKU / keywords if set). Cooldown ~60s per task+SKU. Toggle off for manual-only lanes.
+              </p>
+              <label>Watch SKU / product code <span class="optional">(optional — PDP URL also matches)</span></label>
+              <input id="taskBandaiCheckoutWatchSku" placeholder="N2903432003" autocomplete="off" />
+              <label>Watch keywords <span class="optional">(optional)</span></label>
+              <input id="taskBandaiCheckoutWatchKeywords" placeholder="ONE PIECE, GUNDAM" autocomplete="off" />
             </div>
             <div id="taskBandaiAccountPassWrap" hidden>
               <label>Account password <span class="optional">(optional — agen)</span></label>
@@ -808,6 +817,8 @@
         <input id="setBandaiGlobalMonUrl" placeholder="https://j1ms-bandai-monitor-production.up.railway.app" />
         <label>Monitor token (Bearer)</label>
         <input id="setBandaiGlobalMonToken" placeholder="MONITOR_TOKEN from Railway" autocomplete="off" />
+        <label class="check"><input id="setDesktopWatchdog" type="checkbox" checked /> Watchdog — auto-start Autocheckout tasks on restock match</label>
+        <p class="hint">Armed Bandai Autocheckout tasks (Watchdog on + PDP/SKU/keywords) start when the Railway feed reports in-stock. Separate from Monitor → Checkout on hit.</p>
         <h3 style="margin-top:1.25rem">Discord webhooks (routing)</h3>
         <p class="hint">
           Split channels so wins stay visible. Empty fields fall back to Success.
