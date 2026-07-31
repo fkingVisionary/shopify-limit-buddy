@@ -7,6 +7,7 @@ const {
   eventMatchesWatch,
 } = require("./bandai-global-monitor-client.cjs");
 const { taskForMonitorCheckout } = require("./bandai-monitor-checkout.cjs");
+const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 
 const BUSY_STATUSES = new Set(["queued", "running"]);
 
@@ -33,12 +34,14 @@ function listWatchdogCheckoutTasks(tasks = [], hit = {}, settings = {}) {
   if (!isWatchdogEnabled(settings)) return [];
   if (!hit?.productId) return [];
   if (hit.inStock === false) return [];
+  if (isMonitorSkuMuted(settings, hit.productId || hit.sku)) return [];
 
   return (Array.isArray(tasks) ? tasks : []).filter((t) => {
     if (!t || t.enabled === false) return false;
     if (String(t.store || "") !== "bandai") return false;
     const mode = String(t.bandaiMode || "checkout").toLowerCase();
-    if (mode !== "checkout") return false;
+    // Autocheckout + ATC-only lanes (drop path).
+    if (mode !== "checkout" && mode !== "atc") return false;
     if (!taskWatchdogArmed(t)) return false;
     if (BUSY_STATUSES.has(String(t.lastStatus || "").toLowerCase())) return false;
     const watch = parseWatch(t);
@@ -48,11 +51,18 @@ function listWatchdogCheckoutTasks(tasks = [], hit = {}, settings = {}) {
 }
 
 /**
- * Build a checkout job task from an Autocheckout row + monitor hit
+ * Build a job task from an Autocheckout / ATC row + monitor hit
  * (stamps PDP / NAI from the hit without mutating the DB row).
+ * Preserves ATC-only mode for the drop path.
  */
 function checkoutTaskFromWatchdogHit(task, hit) {
-  return taskForMonitorCheckout(task, hit, task?.bandaiArea || "au");
+  const out = taskForMonitorCheckout(task, hit, task?.bandaiArea || "au");
+  if (!out.ok) return out;
+  const mode = String(task.bandaiMode || "checkout").toLowerCase();
+  if (mode === "atc") {
+    return { ...out, task: { ...out.task, bandaiMode: "atc" } };
+  }
+  return out;
 }
 
 /**

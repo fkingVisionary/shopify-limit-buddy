@@ -881,7 +881,8 @@ function renderSaActionsEditor() {
             <div class="sa-field">
               <label>Mode</label>
               <select data-sa-ac="${i}" data-k="bandaiMode">
-                <option value="checkout" ${cfg.bandaiMode !== "monitor" ? "selected" : ""}>Autocheckout</option>
+                <option value="checkout" ${!cfg.bandaiMode || cfg.bandaiMode === "checkout" ? "selected" : ""}>Autocheckout</option>
+                <option value="atc" ${cfg.bandaiMode === "atc" ? "selected" : ""}>ATC only</option>
                 <option value="monitor" ${cfg.bandaiMode === "monitor" ? "selected" : ""}>Monitor</option>
               </select>
             </div>

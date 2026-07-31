@@ -89,6 +89,52 @@ test("client inject hit matches watch and enqueues checkout", async () => {
   assert.ok(feed[0].receivedAt);
 });
 
+test("admin-muted SKU skips feed + checkout handoff", async () => {
+  const enqueued = [];
+  const feedHits = [];
+  const muted = [];
+  const client = createBandaiGlobalMonitorClient({
+    getSettings: () => ({
+      bandaiGlobalMonitorEnabled: true,
+      bandaiGlobalMonitorUrl: "https://example.test",
+    }),
+    getTasks: () => [
+      {
+        id: "t1",
+        store: "bandai",
+        bandaiMode: "monitor",
+        bandaiMonitorMode: "global",
+        bandaiWatchSku: "N2890904001",
+        bandaiCheckoutOnHit: true,
+        placeOrder: true,
+        enabled: true,
+      },
+    ],
+    onCheckoutTask: async (task) => {
+      enqueued.push(task);
+    },
+    onFeedHit: (hit) => {
+      feedHits.push(hit);
+    },
+    emitLog: () => {},
+  });
+  client._setAdminWatchlistFromHealth({
+    mutedSkus: ["N2890904001"],
+  });
+  client.on("mutedHit", (h) => muted.push(h));
+  await client._injectHit({
+    productId: "N2890904001",
+    inStock: true,
+    reason: "restock",
+    title: "Gundam",
+  });
+  assert.equal(enqueued.length, 0);
+  assert.equal(feedHits.length, 0);
+  assert.equal(client.getFeed().length, 0);
+  assert.equal(muted.length, 1);
+  assert.deepEqual(client.getAdminMutedSkus(), ["N2890904001"]);
+});
+
 test("checkout result discord embed", () => {
   const { checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
   const ok = checkoutResultDiscordPayload(

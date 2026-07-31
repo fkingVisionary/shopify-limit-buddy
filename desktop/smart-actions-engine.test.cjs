@@ -17,6 +17,18 @@ function makeEngine(opts = {}) {
   const patched = [];
   const harvest = [];
   const discord = [];
+  const gotos = [];
+  const toasts = [];
+  const basePreset = {
+    store: "bandai",
+    bandaiMode: "checkout",
+    profileId: "prof_1",
+    proxyGroupId: "px_1",
+    qty: 1,
+    quantity: 1,
+    placeOrder: true,
+    startAfterCreate: true,
+  };
   const engine = createSmartActionsEngine({
     getActions: () => actions,
     saveActions: (next) => {
@@ -24,16 +36,12 @@ function makeEngine(opts = {}) {
     },
     getSettings: () => ({
       quickTaskPreset: {
-        store: "bandai",
-        bandaiMode: "checkout",
-        profileId: "prof_1",
-        proxyGroupId: "px_1",
-        qty: 1,
-        quantity: 1,
-        placeOrder: true,
-        startAfterCreate: true,
+        ...basePreset,
+        ...(opts.settings?.quickTaskPreset || {}),
       },
-      ...(opts.settings || {}),
+      ...Object.fromEntries(
+        Object.entries(opts.settings || {}).filter(([k]) => k !== "quickTaskPreset"),
+      ),
     }),
     getTasks: () => tasks,
     getProfiles: () =>
@@ -80,6 +88,13 @@ function makeEngine(opts = {}) {
       discord.push(payload);
       return { ok: true };
     },
+    ensureTaskGroup: ({ taskGroup }) => ({ ok: true, taskGroup, created: true }),
+    gotoTaskGroup: ({ taskGroup }) => {
+      gotos.push(taskGroup);
+    },
+    notifyToast: (payload) => {
+      toasts.push(payload);
+    },
     emit: () => {},
   });
   return {
@@ -97,6 +112,8 @@ function makeEngine(opts = {}) {
     patched,
     harvest,
     discord,
+    gotos,
+    toasts,
   };
 }
 
@@ -566,4 +583,91 @@ test("stagger_start_task_group forces group scope + stagger", async () => {
   assert.deepEqual(started[0].sort(), ["g1", "g2"]);
   assert.equal(startOpts[0].stagger, true);
   assert.equal(startOpts[0].staggerGapMs, 40);
+});
+
+test("create_tasks stamps taskGroup and toasts", async () => {
+  const { engine, created, tasks, gotos, toasts } = makeEngine();
+  engine.upsert({
+    id: "sa_vis",
+    name: "Vis",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [{ field: "sku", op: "equals", value: "N77" }],
+    actions: [
+      {
+        type: "create_tasks",
+        config: {
+          usePreset: true,
+          taskGroup: "Drop Vis",
+          labelTemplate: "{{title}}",
+          count: 1,
+        },
+      },
+    ],
+  });
+  const r = await engine.handleMonitorHit({
+    productId: "N77",
+    title: "Vis Title",
+    reason: "restock",
+  });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].taskGroup, "Drop Vis");
+  assert.equal(tasks[0].taskGroup, "Drop Vis");
+  assert.ok(gotos.includes("Drop Vis"));
+  assert.ok(toasts.some((t) => /Created 1/.test(String(t.message || ""))));
+});
+
+test("create_tasks fails without Quick Task profile", async () => {
+  const { engine, created } = makeEngine({
+    settings: { quickTaskPreset: { profileId: null, proxyGroupId: null } },
+  });
+  engine.upsert({
+    id: "sa_noprof",
+    name: "No profile",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [{ type: "create_tasks", config: { usePreset: true, count: 1 } }],
+  });
+  const r = await engine.handleMonitorHit({
+    productId: "N88",
+    title: "X",
+    reason: "restock",
+  });
+  assert.equal(r[0]?.outcome, OUTCOMES.FAILED);
+  assert.equal(created.length, 0);
+  const logs = engine.getLogs("sa_noprof");
+  assert.ok(logs.some((l) => /assign a Quick Task profile/i.test(l.message)));
+});
+
+test("disable mid-wait aborts before create_tasks", async () => {
+  const { engine, created } = makeEngine();
+  engine.upsert({
+    id: "sa_abort",
+    name: "Abort wait",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      { type: "wait", config: { delayMs: 600 } },
+      {
+        type: "create_tasks",
+        config: { usePreset: true, taskGroup: "G", labelTemplate: "{{title}}", count: 1 },
+      },
+    ],
+  });
+  const pending = engine.handleMonitorHit({
+    productId: "N66",
+    title: "Slow",
+    reason: "restock",
+  });
+  await new Promise((r) => setTimeout(r, 120));
+  engine.setEnabled("sa_abort", false);
+  const r = await pending;
+  assert.equal(r[0]?.outcome, OUTCOMES.FAILED);
+  assert.equal(created.length, 0);
+  const logs = engine.getLogs("sa_abort");
+  assert.ok(logs.some((l) => /cancel|Abort|disabled/i.test(l.message)));
 });

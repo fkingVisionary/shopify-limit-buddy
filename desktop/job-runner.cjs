@@ -352,7 +352,6 @@ function buildBandaiPayload({
   if (
     mode !== "account_gen" &&
     mode !== "monitor" &&
-    mode !== "chance" &&
     mode !== "login_check" &&
     input &&
     !/^https:\/\/(www\.)?p-bandai\.com\//i.test(input) &&
@@ -394,7 +393,7 @@ function buildBandaiPayload({
 
   let resolvedAccount = null;
   let accountAssignSource = null;
-  if (mode === "checkout" || mode === "chance" || mode === "login_check") {
+  if (mode === "checkout" || mode === "atc" || mode === "login_check") {
     if (task.account?.email && task.account?.password) {
       resolvedAccount = {
         email: task.account.email,
@@ -1414,13 +1413,13 @@ function pathToFileUrl(p) {
 }
 
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
-  // Bandai Autocheckout / chance: claim F5 at run-start (not enqueue) so bank TTL
+  // Bandai Autocheckout / ATC: claim F5 at run-start (not enqueue) so bank TTL
   // stays fresh through the queue — matches Monitor restock claim timing.
   if (
     job.task?.store === "bandai" &&
-    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
-    !job.task.harvestedBridgeId &&
-    typeof takeBandaiHarvestFn === "function"
+      ["checkout", "atc"].includes(String(job.task?.bandaiMode || "checkout")) &&
+      !job.task.harvestedBridgeId &&
+      typeof takeBandaiHarvestFn === "function"
   ) {
     const harvestSession = takeBandaiHarvestFn() || null;
     if (harvestSession?.id) {
@@ -1444,9 +1443,9 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
   // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
   if (
     job.task?.store === "bandai" &&
-    ["checkout", "chance"].includes(String(job.task?.bandaiMode || "checkout")) &&
-    !job.task.bandaiPayFromCart &&
-    !pickAreaItemNo({
+      ["checkout", "atc"].includes(String(job.task?.bandaiMode || "checkout")) &&
+      !job.task.bandaiPayFromCart &&
+      !pickAreaItemNo({
       bandaiAreaItemNo: job.task.bandaiAreaItemNo,
       bandaiBackendPid: job.task.bandaiBackendPid,
       areaItemNo: job.task.areaItemNo,

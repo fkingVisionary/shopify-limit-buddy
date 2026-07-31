@@ -21,10 +21,14 @@ const DEFAULT_PRESET = {
  */
 function normalizeQuickTaskPreset(raw = {}) {
   const store = String(raw.store || DEFAULT_PRESET.store).toLowerCase() || "bandai";
-  const bandaiMode = ["checkout", "monitor", "account_gen", "chance"].includes(
-    String(raw.bandaiMode || "").toLowerCase(),
+  const modeRaw = String(raw.bandaiMode || "").toLowerCase();
+  // Raffle / Chance applyDraw removed — map legacy tasks to checkout.
+  const bandaiMode = ["checkout", "atc", "monitor", "account_gen"].includes(
+    modeRaw === "chance" ? "checkout" : modeRaw,
   )
-    ? String(raw.bandaiMode).toLowerCase()
+    ? modeRaw === "chance"
+      ? "checkout"
+      : modeRaw
     : "checkout";
   return {
     store,

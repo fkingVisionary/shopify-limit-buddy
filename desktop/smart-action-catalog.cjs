@@ -132,6 +132,7 @@ const DEFAULT_TEMPLATES = [
     ],
     actions: [
       { type: "create_tasks", config: checkoutCreateConfig("{{title}}") },
+      { type: "goto_task_group", config: { taskGroup: "{{taskGroup}}" } },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
       {
         type: "notify_discord",
@@ -174,6 +175,7 @@ const DEFAULT_TEMPLATES = [
         type: "create_tasks",
         config: checkoutCreateConfig("{{title}} +30m"),
       },
+      { type: "goto_task_group", config: { taskGroup: "{{taskGroup}}" } },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
       {
         type: "notify_discord",

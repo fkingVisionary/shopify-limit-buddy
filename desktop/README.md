@@ -91,7 +91,7 @@ Shipped in the same Electron → local `executor/` sidecar path as Kmart.
 | Pay path **Fast** (default) | `bandaiCheckoutMode=fast` + riskHydrate + **page issuer** | Fresh Forter/iovation mint; issuer POST from same Playwright context (avoids RELOAD_ONLY) |
 | Pay path **Fast undici** (A/B) | `bandaiCheckoutMode=fast_undici` | Same mint, undici issuer after page-drop (lab compare) |
 | Pay path **Safe** | `bandaiCheckoutMode=safe` + `bandaiBrowserCheckout` | Same cart hold, Playwright GEM Pay on F5 bridge |
-| Account gen / monitor / chance | `bandaiMode=…` | See executor Bandai bible |
+| Account gen / monitor / ATC | `bandaiMode=…` | See executor Bandai bible |
 
 ATC is always HTTP+F5. Sticky AU ISP/resi proxy recommended. Place order needs a
 complete card on the profile. Score bank/Revolut + issuer JWT

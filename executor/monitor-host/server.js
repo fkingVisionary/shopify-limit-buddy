@@ -28,6 +28,7 @@ import {
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
+import { parseMutedSkus, mutedSkusText, isSkuMuted } from "./muted-skus.mjs";
 import { computeMonitorStale, shouldWatchdogRestart } from "./monitor-watchdog.mjs";
 import {
   parsePresetCatalogBulk,
@@ -143,8 +144,13 @@ function discordHook() {
   return hook;
 }
 
+function mutedSkuList() {
+  return parseMutedSkus(runtime.mutedSkus);
+}
+
 function pushHit(ev) {
   const meta = ev?.meta || {};
+  const muted = isSkuMuted(mutedSkuList(), ev?.productId || ev?.sku);
   const row = {
     at: new Date().toISOString(),
     productId: ev.productId,
@@ -155,9 +161,12 @@ function pushHit(ev) {
     price: ev.price || meta.price || null,
     areaItemNo: ev.areaItemNo || meta.areaItemNo || null,
     productType: meta.productType || ev.productType || null,
+    muted: muted || undefined,
   };
   recentHits.unshift(row);
   if (recentHits.length > MAX_HITS) recentHits.length = MAX_HITS;
+  // Global admin mute — keep in operator /hits buffer, do not fan out to Desktop SSE.
+  if (muted) return row;
   // Desktop checkout only cares about in-stock; still stream OOS for operators.
   const payload = `event: stock_changed\ndata: ${JSON.stringify(row)}\n\n`;
   for (const res of sseClients) {
@@ -297,7 +306,15 @@ hub.monitor.on("stock_changed", async (ev) => {
       "poll",
     );
   }
-  pushHit(ev);
+  const hitRow = pushHit(ev);
+  // Muted SKUs stay out of Discord + Desktop (spam restocks).
+  if (hitRow?.muted) {
+    labLog("monitor", "info", `Muted restock · ${ev.productId}`, {
+      productId: ev.productId,
+      reason: ev.reason,
+    });
+    return;
+  }
 
   const reason = String(ev?.reason || "");
   const isOos = ev?.inStock === false || reason === "went_oos";
@@ -594,6 +611,7 @@ app.get("/health", async (_req, reply) => {
     area: AREA,
     intervalMs: m.intervalMs ?? runtime.intervalMs,
     keywords: m.keywords || [],
+    mutedSkus: mutedSkuList(),
     monitor: m,
     healthy: stale.healthy,
     staleMs: stale.staleMs,
@@ -630,7 +648,9 @@ app.get("/status", async (req, reply) => {
 app.get("/hits", async (req, reply) => {
   if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const limit = Math.max(1, Math.min(MAX_HITS, Number(req.query?.limit) || 50));
-  return { ok: true, hits: recentHits.slice(0, limit) };
+  // Consumers never see admin-muted SKUs (still visible on /status for operators).
+  const hits = recentHits.filter((h) => !h?.muted).slice(0, limit);
+  return { ok: true, hits };
 });
 
 app.get("/admin/config", async (req, reply) => {
@@ -640,6 +660,7 @@ app.get("/admin/config", async (req, reply) => {
   return {
     ok: true,
     keywords: Array.isArray(m.keywords) ? m.keywords.join("\n") : String(runtime.keywords || ""),
+    mutedSkus: mutedSkusText(mutedSkuList()),
     presetCatalog: presetRaw,
     presetCatalogRows: presetRowsForResponse(presetRaw),
     productCacheCount: Object.keys(productCache.entries || {}).length,
@@ -719,6 +740,9 @@ app.put("/admin/config", async (req, reply) => {
       const list = hub.monitor.setKeywords(body.keywords);
       runtime.keywords = list.join("\n");
     }
+    if (body.mutedSkus != null) {
+      runtime.mutedSkus = mutedSkusText(parseMutedSkus(body.mutedSkus));
+    }
     let presetEnrich = null;
     if (body.presetCatalog != null) {
       const parsed = parsePresetCatalogBulk(body.presetCatalog, { defaultArea: AREA });
@@ -774,6 +798,7 @@ app.put("/admin/config", async (req, reply) => {
     return {
       ok: true,
       keywords: hub.monitor.status().keywords,
+      mutedSkus: mutedSkusText(mutedSkuList()),
       presetCatalog: presetRaw,
       presetCatalogRows: presetRowsForResponse(presetRaw),
       presetEnrich,

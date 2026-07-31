@@ -16,12 +16,14 @@ const LIVE = {
 const OUTCOME = {
   confirmed: "Order confirmed",
   complete: "Complete",
+  cart_held: "In cart",
   oos: "Out of stock",
   akamai: "Blocked by store protection",
   proxy: "Proxy error",
   declined: "Payment declined",
   held_pay_retry: "Cart held — retry pay",
   held_cart_gone: "Cart hold expired",
+  checkout_address: "Checkout needs address/name",
   error: "Something went wrong",
   stopped: "Stopped",
 };
@@ -110,6 +112,16 @@ function isHeldCartGone(res) {
   );
 }
 
+/** GE / Bandai shipping+billing blockers after ATC. */
+function isCheckoutAddressFail(res) {
+  if (!res || res.ok) return false;
+  if (String(res.failedStep || "") === "checkout_address") return true;
+  const text = stepText(res);
+  return /checkout_address|BillingMandatory|BillingFirstName|BillingLastName|hasAddress=false/i.test(
+    text,
+  );
+}
+
 /**
  * Map live /progress payload → short consumer line.
  */
@@ -143,6 +155,15 @@ function consumerOutcome(res) {
     if (res.orderNumber) {
       return { code: "confirmed", label: OUTCOME.confirmed, stockStatus: "ok" };
     }
+    // ATC-only / stop-at-cart: cart held for ~30 min pay window.
+    if (
+      res.atcOnly === true ||
+      (res.heldPayRetry === true &&
+        (res.heldCart?.cartSn || res.cartSn) &&
+        /^(cart|cart_hold)$/i.test(String(res.checkoutStage || "")))
+    ) {
+      return { code: "cart_held", label: OUTCOME.cart_held, stockStatus: "ok" };
+    }
     return { code: "complete", label: OUTCOME.complete, stockStatus: "ok" };
   }
   if (isProxyFail(res)) {
@@ -156,6 +177,14 @@ function consumerOutcome(res) {
   }
   if (isHeldCartGone(res)) {
     return { code: "held_cart_gone", label: OUTCOME.held_cart_gone, stockStatus: "unknown" };
+  }
+  // Address/name blockers before treating the fail as a generic held-cart pay retry.
+  if (isCheckoutAddressFail(res)) {
+    return {
+      code: "checkout_address",
+      label: OUTCOME.checkout_address,
+      stockStatus: "unknown",
+    };
   }
   // Prefer held-cart retry over plain declined when cart ids survived pay fail.
   if (isHeldPayRetry(res)) {
@@ -178,4 +207,5 @@ module.exports = {
   isPaymentDeclined,
   isHeldPayRetry,
   isHeldCartGone,
+  isCheckoutAddressFail,
 };

@@ -136,6 +136,10 @@ test("materialize replaces placeholders in filters + task group", () => {
   assert.match(draft.name, /Gundam/);
   assert.equal(draft.filters.find((f) => f.field === "sku").value, "N2890904001");
   assert.equal(draft.actions[0].config.taskGroup, "Drop Gundam");
+  assert.equal(
+    draft.actions.some((a) => a.type === "goto_task_group"),
+    true,
+  );
   assert.equal(draft.catalogTemplateId, "monitor_atc");
 });
 

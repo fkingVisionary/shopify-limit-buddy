@@ -398,9 +398,7 @@ function syncTaskFormForStore() {
           ? "Store (auto)"
           : mode === "monitor"
             ? "Keywords or product code"
-            : mode === "chance"
-              ? "Optional product URL"
-              : "Product URL / code";
+            : "Product URL / code";
     } else if (toy) {
       label.textContent =
         mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
@@ -426,9 +424,7 @@ function syncTaskFormForStore() {
           ? "Uses IMAP mailbox + profile address"
           : mode === "monitor"
             ? "one piece  OR  N2903432003"
-            : mode === "chance"
-              ? "optional"
-              : "https://p-bandai.com/au|us|nz|sg|hk|tw|fr/item/…";
+            : "https://p-bandai.com/au|us|nz|sg|hk|tw|fr/item/…";
     } else if (toy) {
       input.placeholder =
         mode === "account_gen"
@@ -456,14 +452,16 @@ function syncTaskFormForStore() {
   const bAssign = $("taskBandaiAssignWrap");
   if (bAssign) {
     const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
-    bAssign.hidden = !bandai || (mode !== "checkout" && mode !== "chance" && !monCheckout);
+    bAssign.hidden =
+      !bandai || (mode !== "checkout" && mode !== "atc" && !monCheckout);
   }
-  const bChance = $("taskBandaiChanceWrap");
-  if (bChance) bChance.hidden = !bandai || mode !== "chance";
+  const bAtcHint = $("taskBandaiAtcHint");
+  if (bAtcHint) bAtcHint.hidden = !bandai || mode !== "atc";
   const bPayPath = $("taskBandaiCheckoutModeWrap");
   if (bPayPath) {
     const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
-    bPayPath.hidden = !bandai || (mode !== "checkout" && !monCheckout);
+    // Checkout + ATC both need watchdog / watch SKU; monitor-on-hit too.
+    bPayPath.hidden = !bandai || (mode !== "checkout" && mode !== "atc" && !monCheckout);
   }
   const bMon = $("taskBandaiMonitorWrap");
   if (bMon) bMon.hidden = !bandai || mode !== "monitor";
@@ -482,7 +480,7 @@ function syncTaskFormForStore() {
       (pc && mode !== "checkout");
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
-  if (bandai && (mode === "checkout" || mode === "chance" || mode === "monitor"))
+  if (bandai && (mode === "checkout" || mode === "atc" || mode === "monitor"))
     syncBandaiAccountAssignUi();
 }
 
@@ -570,20 +568,66 @@ function refreshTaskGroupList() {
 function taskStoreLabel(t) {
   if (t.store === "toymate") return `Toymate · ${t.toymateMode || "checkout"}`;
   if (t.store === "bandai") {
-    return `Bandai · ${t.bandaiMode || "checkout"}${
-      String(t.bandaiMode || "checkout") === "checkout"
-        ? ` · ${t.bandaiCheckoutMode || "fast"}`
-        : ""
-    }`;
+    const mode = String(t.bandaiMode || "checkout");
+    const modeLabel = mode === "atc" ? "ATC only" : mode;
+    const speed =
+      mode === "checkout" || mode === "atc" ? ` · ${t.bandaiCheckoutMode || "fast"}` : "";
+    const wd =
+      (mode === "checkout" || mode === "atc") &&
+      t.bandaiWatchdog !== false &&
+      (t.bandaiWatchSku || t.pdpUrl || t.bandaiWatchKeywords)
+        ? " · watchdog"
+        : "";
+    return `Bandai · ${modeLabel}${speed}${wd}`;
   }
   if (t.store === "pokemoncentre") return `Pokémon Centre · ${t.pcMode || "monitor"}`;
   return t.store || "Store";
 }
 
+function formatCartHoldCountdown(ms) {
+  const s = Math.max(0, Math.floor(Number(ms) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
+function heldCartCountdownHtml(t) {
+  if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
+  const start = Number(t.heldCart.cartHoldAt) || 0;
+  const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
+  if (!start) {
+    return `<div class="task-sub cart-countdown">cart held — retry pay</div>`;
+  }
+  const left = Math.max(0, start + win - Date.now());
+  if (left <= 0) {
+    return `<div class="task-sub cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}">cart held? (window may be up)</div>`;
+  }
+  return `<div class="task-sub cart-countdown" data-hold-at="${start}" data-hold-win="${win}">cart held · ${formatCartHoldCountdown(left)}</div>`;
+}
+
+function tickHeldCartCountdowns() {
+  document.querySelectorAll(".cart-countdown[data-hold-at]").forEach((el) => {
+    const start = Number(el.dataset.holdAt) || 0;
+    const win = Number(el.dataset.holdWin) || 30 * 60_000;
+    if (!start) return;
+    const left = Math.max(0, start + win - Date.now());
+    if (left <= 0) {
+      el.textContent = "cart held? (window may be up)";
+      el.classList.add("expired");
+    } else {
+      el.textContent = `cart held · ${formatCartHoldCountdown(left)}`;
+      el.classList.remove("expired");
+    }
+  });
+}
+
 function taskStatusBadge(t) {
   const s = t.lastStatus;
   if (s === "confirmed" || s === "complete" || s === "ok" || s === "login_ok") return "ok";
-  if (s === "held_pay_retry" || s === "queued") return "run";
+  if (s === "held_pay_retry" || s === "cart_held" || s === "queued") return "run";
   if (
     s === "failed" ||
     s === "error" ||
@@ -660,6 +704,7 @@ function renderTasks() {
   ) {
     $("massTaskGroup").value = taskGroupFilter;
   }
+  syncTaskGroupOpsBar();
   const el = $("taskList");
   if (!el) return;
   const tasks = filteredTasks();
@@ -692,7 +737,7 @@ function renderTasks() {
         <td>${esc(prof?.name || prof?.email || "—")}</td>
         <td>${esc(px?.name || "Direct")}</td>
         <td>${esc(String(t.qty || 1))}×${esc(String(t.quantity || 1))}</td>
-        <td><span class="badge ${badge}">${esc(statusLabel)}</span>${t.lastOrderNumber ? `<div class="task-sub">${esc(t.lastOrderNumber)}</div>` : ""}</td>
+        <td><span class="badge ${badge}">${esc(statusLabel)}</span>${heldCartCountdownHtml(t)}${t.lastOrderNumber ? `<div class="task-sub">${esc(t.lastOrderNumber)}</div>` : ""}</td>
         <td class="col-actions"><div class="row-actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
           <button type="button" class="secondary" data-dup-task="${t.id}">Dup</button>
@@ -1406,11 +1451,12 @@ function renderProfiles() {
       const groupChip = groupName
         ? `<span class="group-chip" style="--g:${esc(colorForGroup(groupName, state?.profileGroupColors))}">${esc(groupName)}</span>`
         : "—";
+      const loc = [p.city, p.province, p.zip].filter(Boolean).join(" ") || "—";
       return `<tr>
-      <td class="task-name">${esc(p.name || "Profile")}</td>
+      <td><div class="task-name">${esc(p.name || "Profile")}</div></td>
       <td>${groupChip}</td>
-      <td>${esc(p.email || "—")}</td>
-      <td class="task-sub">${esc([p.city, p.province, p.zip].filter(Boolean).join(" "))}</td>
+      <td title="${esc(p.email || "")}">${esc(p.email || "—")}</td>
+      <td title="${esc(loc)}">${esc(loc)}</td>
       <td>•••• ${esc(String(p.card_number || "").slice(-4) || "????")}</td>
       <td class="col-actions"><div class="row-actions">
         <button type="button" class="secondary" data-edit-prof="${p.id}">Edit</button>
@@ -1428,6 +1474,39 @@ function pingChipClass(ms) {
   if (ms < 500) return "ok";
   if (ms < 1200) return "mid";
   return "slow";
+}
+
+/** Split a proxy line into host / port / user for the table. */
+function parseProxyParts(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return { host: "—", port: "—", user: "—" };
+  try {
+    if (s.includes("@")) {
+      const u = new URL(s.includes("://") ? s : `http://${s}`);
+      return {
+        host: u.hostname || "—",
+        port: u.port || "—",
+        user: u.username ? decodeURIComponent(u.username) : "—",
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  const parts = s.split(":");
+  if (parts.length >= 4) {
+    return { host: parts[0] || "—", port: parts[1] || "—", user: parts[2] || "—" };
+  }
+  if (parts.length >= 2) {
+    return { host: parts[0] || "—", port: parts[1] || "—", user: "—" };
+  }
+  return { host: s, port: "—", user: "—" };
+}
+
+function closePxMoreMenu() {
+  const menu = $("pxMoreMenu");
+  const btn = $("pxMoreBtn");
+  if (menu) menu.hidden = true;
+  if (btn) btn.setAttribute("aria-expanded", "false");
 }
 
 function renderProxyGroupRail() {
@@ -1453,18 +1532,19 @@ function renderProxyGroupRail() {
 }
 
 function fillProxyEditor(g) {
-  if (!$("proxyForm")) return;
+  if (!$("pxId")) return;
   if (!g) {
     $("pxId").value = "";
-    $("pxName").value = "";
-    $("pxEntries").value = "";
-    if ($("proxyEditorTitle")) $("proxyEditorTitle").textContent = "New proxy group";
+    if ($("pxName")) $("pxName").value = "";
+    if ($("pxEntries")) $("pxEntries").value = "";
+    if ($("proxyEditorTitle")) $("proxyEditorTitle").textContent = "Proxy group";
+    if ($("proxyGroupMeta")) $("proxyGroupMeta").textContent = "Select or create a group";
     renderProxyEntryList(null);
     return;
   }
   $("pxId").value = g.id;
-  $("pxName").value = g.name || "";
-  $("pxEntries").value = (g.entries || []).join("\n");
+  if ($("pxName")) $("pxName").value = g.name || "";
+  if ($("pxEntries")) $("pxEntries").value = (g.entries || []).join("\n");
   if ($("proxyEditorTitle")) $("proxyEditorTitle").textContent = g.name || "Proxy group";
   renderProxyEntryList(g);
 }
@@ -1473,7 +1553,8 @@ function renderProxyEntryList(g) {
   const el = $("proxyEntryList");
   if (!el) return;
   if (!g) {
-    el.innerHTML = `<div class="feed-empty">Select or create a proxy group.</div>`;
+    el.innerHTML = `<tr><td colspan="5" class="empty-cell">Select a group on the left, or New group.</td></tr>`;
+    if ($("proxyGroupMeta")) $("proxyGroupMeta").textContent = "Select or create a group";
     return;
   }
   const test = proxyTestResults[g.id];
@@ -1491,39 +1572,51 @@ function renderProxyEntryList(g) {
     entries.sort((a, b) => {
       const ra = byEntry.get(a);
       const rb = byEntry.get(b);
-      return Number(ra?.ok) - Number(rb?.ok);
+      return Number(!!ra?.ok) - Number(!!rb?.ok);
     });
   }
+  const n = entries.length;
+  if ($("proxyGroupMeta")) {
+    if (test?.alive != null) {
+      $("proxyGroupMeta").textContent = `${n} prox${n === 1 ? "y" : "ies"} · ${test.alive}/${test.total} alive`;
+    } else {
+      $("proxyGroupMeta").textContent = `${n} prox${n === 1 ? "y" : "ies"} loaded`;
+    }
+  }
   if ($("pxTestHint")) {
-    const targetBit = test?.target ? ` · ${test.target.replace(/^https?:\/\//, "").slice(0, 40)}` : "";
+    const targetBit = test?.target ? ` · ${test.target.replace(/^https?:\/\//, "").slice(0, 36)}` : "";
     if (test?.error && !test.results) $("pxTestHint").textContent = test.error;
     else if (test)
       $("pxTestHint").textContent = `${test.alive}/${test.total} alive · dead ${test.dead}${targetBit}`;
-    else $("pxTestHint").textContent = `${entries.length} entries · pick a target, then Test`;
+    else $("pxTestHint").textContent = n ? "Ready to test" : "Add proxies first";
   }
   el.innerHTML = entries.length
     ? entries
         .map((entry) => {
+          const parts = parseProxyParts(entry);
           const r = byEntry.get(entry);
-          let result = `<span class="proxy-result muted">—</span>`;
+          let status = `<span class="proxy-status-pill">None</span>`;
           if (r?.ok) {
-            const detail = r.ip
-              ? esc(r.ip)
-              : r.status != null
-                ? `HTTP ${esc(String(r.status))}`
-                : "ok";
-            result = `<span class="proxy-result ok"><span class="proxy-ip">${detail}</span><span class="ping-chip ${pingChipClass(r.ms)}">${r.ms}ms</span></span>`;
+            const detail = r.ip || (r.status != null ? `HTTP ${r.status}` : "ok");
+            status = `<span class="proxy-status-pill is-ok">${esc(String(detail))} · <span class="ping-chip ${pingChipClass(r.ms)}">${r.ms}ms</span></span>`;
           } else if (r) {
-            result = `<span class="proxy-result err">${esc(r.error || "dead")}</span>`;
+            status = `<span class="proxy-status-pill is-dead" title="${esc(r.error || "dead")}">${esc(
+              (r.error || "dead").slice(0, 28),
+            )}</span>`;
           }
-          return `<div class="proxy-entry" data-proxy-entry="${esc(entry)}">
-            <span class="proxy-line">${esc(entry)}</span>
-            ${result}
-            <button type="button" class="secondary" data-del-proxy-entry="${esc(entry)}">✕</button>
-          </div>`;
+          return `<tr data-proxy-entry="${esc(entry)}" title="${esc(entry)}">
+            <td class="proxy-host">${esc(parts.host)}</td>
+            <td class="proxy-port">${esc(parts.port)}</td>
+            <td class="proxy-user">${esc(parts.user)}</td>
+            <td>${status}</td>
+            <td class="col-actions"><div class="row-actions">
+              <button type="button" class="secondary" data-test-proxy-entry="${esc(entry)}" title="Test this proxy">Test</button>
+              <button type="button" class="danger" data-del-proxy-entry="${esc(entry)}" title="Remove">Del</button>
+            </div></td>
+          </tr>`;
         })
         .join("")
-    : `<div class="feed-empty">Paste entries and save.</div>`;
+    : `<tr><td colspan="5" class="empty-cell">No proxies yet — click <strong>Add proxies</strong>.</td></tr>`;
 }
 
 function renderProxies() {
@@ -2072,7 +2165,7 @@ function fillTaskForm(task) {
     $("taskBandaiAccountPassword").value = task.accountPassword || "";
   if ($("taskBandaiAccountAssign"))
     $("taskBandaiAccountAssign").value = task.accountAssign || "auto";
-  if ($("taskBandaiCampaignSn")) $("taskBandaiCampaignSn").value = task.campaignSn || "";
+  // Legacy chance/campaignSn ignored — raffle mode removed.
   $("taskPdp").value = task.pdpUrl || "";
   $("taskQty").value = task.qty || 1;
   $("taskQuantity").value = task.quantity || 1;
@@ -2183,13 +2276,45 @@ document.body.addEventListener("click", async (e) => {
     toast(on ? "Task enabled" : "Task disabled", "muted");
     return;
   }
-  if (t.dataset.delProxyEntry) {
-    const entry = t.dataset.delProxyEntry;
+  const delProxyBtn =
+    t.closest?.("[data-del-proxy-entry]") || (t.dataset.delProxyEntry ? t : null);
+  if (delProxyBtn) {
+    const entry = delProxyBtn.getAttribute("data-del-proxy-entry");
     const lines = String($("pxEntries")?.value || "")
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l && l !== entry);
-    $("pxEntries").value = lines.join("\n");
+    await rewriteProxyEntries(lines);
+    return;
+  }
+  const testProxyBtn =
+    t.closest?.("[data-test-proxy-entry]") || (t.dataset.testProxyEntry ? t : null);
+  if (testProxyBtn) {
+    const entry = testProxyBtn.getAttribute("data-test-proxy-entry");
+    const targetUrl = resolveProxyTestTargetUrl();
+    appendLog(`Testing 1 proxy…`, "muted");
+    const res = await window.desktop.testProxyEntries(entry, {
+      concurrency: 1,
+      targetUrl: targetUrl || undefined,
+    });
+    const id = $("pxId")?.value || selectedProxyGroupId;
+    if (id) {
+      const prev = proxyTestResults[id] || { results: [], alive: 0, dead: 0, total: 0 };
+      const by = new Map((prev.results || []).map((r) => [r.entry, r]));
+      for (const r of res.results || []) by.set(r.entry, r);
+      const results = [...by.values()];
+      proxyTestResults[id] = {
+        ...prev,
+        ok: true,
+        results,
+        alive: results.filter((r) => r.ok).length,
+        dead: results.filter((r) => !r.ok).length,
+        total: results.length,
+        target: res.target || prev.target,
+      };
+    }
+    toast(res.results?.[0]?.ok ? `Alive · ${res.results[0].ms}ms` : "Dead", res.results?.[0]?.ok ? "ok" : "err");
+    renderProxies();
     return;
   }
   if (t.dataset.settingsSave != null) {
@@ -2423,13 +2548,13 @@ function readTaskForm() {
         : undefined,
     bandaiWatchSku:
       store === "bandai"
-        ? ($("taskBandaiMode")?.value || "") === "checkout"
+        ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
           ? $("taskBandaiCheckoutWatchSku")?.value?.trim() || ""
           : $("taskBandaiWatchSku")?.value?.trim() || ""
         : undefined,
     bandaiWatchKeywords:
       store === "bandai"
-        ? ($("taskBandaiMode")?.value || "") === "checkout"
+        ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
           ? $("taskBandaiCheckoutWatchKeywords")?.value?.trim() || ""
           : $("taskBandaiWatchKeywords")?.value?.trim() || ""
         : undefined,
@@ -2444,7 +2569,8 @@ function readTaskForm() {
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
         : undefined,
     bandaiWatchdog:
-      store === "bandai" && ($("taskBandaiMode")?.value || "") === "checkout"
+      store === "bandai" &&
+      ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
         ? $("taskBandaiWatchdog")?.checked !== false
         : undefined,
     bandaiAreaItemNo:
@@ -2465,7 +2591,6 @@ function readTaskForm() {
         : store === "bandai" && accountAssign === "manual"
           ? $("taskBandaiAccountId")?.value || null
           : null,
-    campaignSn: store === "bandai" ? $("taskBandaiCampaignSn")?.value || "" : undefined,
   };
 }
 
@@ -2794,28 +2919,107 @@ $("profReset").onclick = () => {
   if ($("profileFormTitle")) $("profileFormTitle").textContent = "Profile";
 };
 
-$("proxyForm").onsubmit = async (e) => {
-  e.preventDefault();
-  const snap = await window.desktop.upsertProxyGroup({
-    id: $("pxId").value || undefined,
-    name: $("pxName").value,
-    entriesText: $("pxEntries").value,
+if ($("proxyForm")) {
+  $("proxyForm").onsubmit = async (e) => {
+    e.preventDefault();
+    const snap = await window.desktop.upsertProxyGroup({
+      id: $("pxId").value || undefined,
+      name: $("pxName").value,
+      entriesText: $("pxEntries").value,
+    });
+    const name = $("pxName").value;
+    applyState(snap);
+    const saved =
+      (state.proxyGroups || []).find((g) => g.name === name) || state.proxyGroups?.slice(-1)[0];
+    if (saved) selectedProxyGroupId = saved.id;
+    toast("Proxy group saved", "ok");
+    renderProxies();
+  };
+}
+if ($("pxReset")) {
+  $("pxReset").onclick = () => {
+    selectedProxyGroupId = null;
+    if ($("pxId")) $("pxId").value = "";
+    if ($("pxName")) $("pxName").value = "";
+    if ($("pxEntries")) $("pxEntries").value = "";
+    if ($("pxTestHint")) $("pxTestHint").textContent = "";
+    if ($("proxyEditorTitle")) $("proxyEditorTitle").textContent = "Proxy group";
+    if ($("proxyGroupMeta")) $("proxyGroupMeta").textContent = "Select or create a group";
+    renderProxyEntryList(null);
+  };
+}
+
+function openProxyAddDialog({ replace = false } = {}) {
+  const g = (state?.proxyGroups || []).find((x) => x.id === selectedProxyGroupId);
+  if ($("proxyAddTitle")) $("proxyAddTitle").textContent = replace ? "Replace proxies" : "Add proxies";
+  if ($("proxyAddName")) $("proxyAddName").value = g?.name || $("pxName")?.value || "";
+  if ($("proxyAddEntries")) $("proxyAddEntries").value = replace ? "" : "";
+  $("proxyAddDialog")?.showModal?.();
+}
+
+if ($("btnAddProxies")) {
+  $("btnAddProxies").onclick = () => openProxyAddDialog();
+}
+if ($("proxyAddDialogClose")) {
+  $("proxyAddDialogClose").onclick = () => $("proxyAddDialog")?.close?.();
+}
+if ($("proxyAddCancel")) {
+  $("proxyAddCancel").onclick = () => $("proxyAddDialog")?.close?.();
+}
+if ($("proxyAddSave")) {
+  $("proxyAddSave").onclick = async () => {
+    const name = String($("proxyAddName")?.value || "").trim() || "Proxy group";
+    const pasted = String($("proxyAddEntries")?.value || "")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!pasted.length) {
+      toast("Paste at least one proxy line", "err");
+      return;
+    }
+    const existingId = $("pxId")?.value || selectedProxyGroupId || undefined;
+    const existing = (state?.proxyGroups || []).find((g) => g.id === existingId);
+    const merged = existing
+      ? [...new Set([...(existing.entries || []), ...pasted])]
+      : pasted;
+    const snap = await window.desktop.upsertProxyGroup({
+      id: existingId,
+      name: existing?.name || name,
+      entriesText: merged.join("\n"),
+    });
+    applyState(snap);
+    const saved =
+      (state.proxyGroups || []).find((g) => g.id === existingId) ||
+      (state.proxyGroups || []).find((g) => g.name === (existing?.name || name)) ||
+      state.proxyGroups?.slice(-1)[0];
+    if (saved) selectedProxyGroupId = saved.id;
+    $("proxyAddDialog")?.close?.();
+    toast(`Added ${pasted.length} prox${pasted.length === 1 ? "y" : "ies"}`, "ok");
+    renderProxies();
+  };
+}
+
+if ($("pxMoreBtn") && $("pxMoreMenu")) {
+  $("pxMoreBtn").onclick = (e) => {
+    e.stopPropagation();
+    const open = $("pxMoreMenu").hidden;
+    $("pxMoreMenu").hidden = !open;
+    $("pxMoreBtn").setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  document.addEventListener("click", (e) => {
+    const wrap = e.target instanceof HTMLElement ? e.target.closest(".menu-wrap") : null;
+    if (!wrap || !wrap.contains($("pxMoreBtn"))) closePxMoreMenu();
   });
-  const name = $("pxName").value;
-  applyState(snap);
-  const saved = (state.proxyGroups || []).find((g) => g.name === name) || state.proxyGroups?.slice(-1)[0];
-  if (saved) selectedProxyGroupId = saved.id;
-  toast("Proxy group saved", "ok");
-  renderProxies();
-};
-$("pxReset").onclick = () => {
-  selectedProxyGroupId = null;
-  $("pxId").value = "";
-  $("proxyForm").reset();
-  if ($("pxTestHint")) $("pxTestHint").textContent = "";
-  if ($("proxyEditorTitle")) $("proxyEditorTitle").textContent = "New proxy group";
-  renderProxyEntryList(null);
-};
+}
+
+if ($("pxClearAll")) {
+  $("pxClearAll").onclick = async () => {
+    const id = $("pxId")?.value || selectedProxyGroupId;
+    if (!id) return toast("Pick a proxy group first", "err");
+    if (!confirm("Clear all proxies in this group?")) return;
+    await rewriteProxyEntries([]);
+  };
+}
 
 if ($("pxTestPreset")) {
   $("pxTestPreset").addEventListener("change", syncProxyTestTargetUi);
@@ -2826,8 +3030,7 @@ if ($("pxTestForm")) {
   $("pxTestForm").onclick = async () => {
     const text = $("pxEntries")?.value || "";
     if (!text.trim()) {
-      appendLog("Paste proxy lines first", "err");
-      toast("Paste proxy lines first", "err");
+      toast("Add proxies first", "err");
       return;
     }
     const targetUrl = resolveProxyTestTargetUrl();
@@ -2861,16 +3064,12 @@ if ($("pxTestForm")) {
       }
     }
     if (id) proxyTestResults[id] = res.ok || res.results ? res : { error: res.error };
-    if ($("pxTestHint")) {
-      $("pxTestHint").textContent = res.ok || res.results
-        ? `${res.alive}/${res.total} alive · dead ${res.dead}`
-        : res.error || "test failed";
-    }
     appendLog(
       `Proxy test · ${res.alive ?? 0}/${res.total ?? 0} alive`,
       res.dead ? "err" : "ok",
     );
     toast(`Proxy test · ${res.alive ?? 0}/${res.total ?? 0} alive`, res.dead ? "err" : "ok");
+    closePxMoreMenu();
     renderProxies();
   };
 }
@@ -2896,12 +3095,14 @@ async function rewriteProxyEntries(nextEntries) {
 if ($("pxSortSpeed")) {
   $("pxSortSpeed").onclick = () => {
     proxySortMode = "speed";
+    closePxMoreMenu();
     renderProxies();
   };
 }
 if ($("pxSortFailed")) {
   $("pxSortFailed").onclick = () => {
     proxySortMode = "failed";
+    closePxMoreMenu();
     renderProxies();
   };
 }
@@ -2911,7 +3112,7 @@ if ($("pxClearFailed")) {
     const test = id ? proxyTestResults[id] : null;
     const dead = new Set((test?.results || []).filter((r) => !r.ok).map((r) => r.entry));
     if (!dead.size) {
-      toast("No failed results to clear — run Test first", "muted");
+      toast("No failed results — run Test all first", "muted");
       return;
     }
     const next = String($("pxEntries").value || "")
@@ -2919,6 +3120,7 @@ if ($("pxClearFailed")) {
       .map((l) => l.trim())
       .filter((l) => l && !dead.has(l));
     await rewriteProxyEntries(next);
+    closePxMoreMenu();
   };
 }
 if ($("pxClearOver")) {
@@ -2942,22 +3144,39 @@ if ($("pxClearOver")) {
       .map((l) => l.trim())
       .filter((l) => l && !slow.has(l));
     await rewriteProxyEntries(next);
+    closePxMoreMenu();
   };
 }
 
+/** Group ops use the left rail selection (not a second dropdown). */
+function activeTaskGroupName() {
+  if (taskGroupFilter === "all" || taskGroupFilter === "ungrouped") return "";
+  return String(taskGroupFilter || "").trim();
+}
+
 async function massGroupOpts() {
+  const taskGroup = activeTaskGroupName() || $("massTaskGroup")?.value?.trim() || "";
+  if ($("massTaskGroup") && taskGroup) $("massTaskGroup").value = taskGroup;
   return {
-    taskGroup: $("massTaskGroup")?.value?.trim() || "",
+    taskGroup,
     qty: $("massQty")?.value,
     quantity: $("massQuantity")?.value,
     bandaiMonitorDelayMs: $("massDelay")?.value,
   };
 }
 
+function syncTaskGroupOpsBar() {
+  const ops = $("taskGroupOps");
+  if (!ops) return;
+  const group = activeTaskGroupName();
+  ops.hidden = !group;
+  if ($("massTaskGroup") && group) $("massTaskGroup").value = group;
+}
+
 if ($("btnGroupStart")) {
   $("btnGroupStart").onclick = async () => {
     const opts = await massGroupOpts();
-    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
     const res = await window.desktop.runTaskGroup(opts);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Started group “${esc(opts.taskGroup)}” · ${res.enqueued || 0} job(s)`, "ok");
@@ -2967,27 +3186,17 @@ if ($("btnGroupStart")) {
 if ($("btnGroupStop")) {
   $("btnGroupStop").onclick = async () => {
     const opts = await massGroupOpts();
-    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
     const res = await window.desktop.stopTaskGroup(opts);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Stopped group “${esc(opts.taskGroup)}” · ${res.stopped} task(s)`, "ok");
     if (res.snapshot) applyState(res.snapshot);
   };
 }
-if ($("btnGroupPatch")) {
-  $("btnGroupPatch").onclick = async () => {
-    const opts = await massGroupOpts();
-    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
-    const res = await window.desktop.patchTaskGroup(opts);
-    if (!res.ok) appendLog(esc(res.error), "err");
-    else appendLog(`Patched group “${esc(opts.taskGroup)}” · ${res.updated} task(s)`, "ok");
-    if (res.snapshot) applyState(res.snapshot);
-  };
-}
 if ($("btnGroupDup")) {
   $("btnGroupDup").onclick = async () => {
     const opts = await massGroupOpts();
-    if (!opts.taskGroup) return appendLog("Pick a task group", "err");
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
     const res = await window.desktop.duplicateTaskGroup({ taskGroup: opts.taskGroup });
     if (!res.ok) appendLog(esc(res.error || "dup group failed"), "err");
     else {
@@ -2995,35 +3204,11 @@ if ($("btnGroupDup")) {
         `Duplicated group “${esc(opts.taskGroup)}” → “${esc(res.destGroup)}” · ${res.duplicated} task(s)`,
         "ok",
       );
+      if (res.destGroup) taskGroupFilter = res.destGroup;
       if ($("massTaskGroup")) $("massTaskGroup").value = res.destGroup || opts.taskGroup;
       if (res.snapshot) applyState(res.snapshot);
     }
   };
-}
-if ($("btnGroupColor")) {
-  $("btnGroupColor").onclick = async () => {
-    const group = $("massTaskGroup")?.value?.trim() || "";
-    if (!group) return appendLog("Pick a task group", "err");
-    const color = $("massGroupColor")?.value || "#c8c8cc";
-    const res = await window.desktop.setTaskGroupColor({ taskGroup: group, color });
-    if (!res.ok) appendLog(esc(res.error || "color failed"), "err");
-    else {
-      appendLog(`Group “${esc(group)}” color ${esc(res.color)}`, "ok");
-      if (res.snapshot) applyState(res.snapshot);
-    }
-  };
-}
-
-// Sync color picker when group name changes
-if ($("massTaskGroup")) {
-  $("massTaskGroup").addEventListener("change", () => {
-    const g = $("massTaskGroup").value.trim();
-    if (g && $("massGroupColor")) $("massGroupColor").value = colorForGroup(g);
-  });
-  $("massTaskGroup").addEventListener("input", () => {
-    const g = $("massTaskGroup").value.trim();
-    if (g && $("massGroupColor")) $("massGroupColor").value = colorForGroup(g);
-  });
 }
 
 $("btnSaveSettings").onclick = async () => {
@@ -3926,7 +4111,9 @@ function renderSmartActions() {
       return `<div class="item sa-saved-item ${on ? "is-on" : "is-off"}">
         <div class="sa-saved-row">
           <label class="power-pill sa-power" data-state="${on ? "on" : "off"}" title="${
-            on ? "On — armed" : "Off"
+            on
+              ? "On — armed for new monitor hits"
+              : "Off — no new SA runs; in-flight waits cancelled. Watchdog is separate."
           }">
             <input type="checkbox" class="sa-power-input" data-sa-toggle="${esc(a.id)}" ${
               on ? "checked" : ""
@@ -4071,7 +4258,8 @@ function renderSaActionsEditor() {
           } /> Use Quick Task preset</label>
           <label>Mode</label>
           <select data-sa-ac="${i}" data-k="bandaiMode">
-            <option value="checkout" ${cfg.bandaiMode !== "monitor" ? "selected" : ""}>Autocheckout</option>
+            <option value="checkout" ${!cfg.bandaiMode || cfg.bandaiMode === "checkout" ? "selected" : ""}>Autocheckout</option>
+            <option value="atc" ${cfg.bandaiMode === "atc" ? "selected" : ""}>ATC only</option>
             <option value="monitor" ${cfg.bandaiMode === "monitor" ? "selected" : ""}>Monitor</option>
           </select>
           <label>Task group</label>
@@ -4445,19 +4633,39 @@ window.desktop.onEvent((evt) => {
   }
   if (
     (evt.type === "gotoTaskGroup" ||
-      (evt.type === "smartAction" && evt.phase === "goto_task_group")) &&
-    evt.taskGroup
+      (evt.type === "smartAction" &&
+        (evt.phase === "goto_task_group" || evt.phase === "tasks_created"))) &&
+    (evt.taskGroup || (evt.phase === "tasks_created" && evt.taskIds?.length))
   ) {
     const group = String(evt.taskGroup || "");
-    taskGroupFilter = group;
-    setTab("tasks");
-    try {
-      renderTaskGroupRail();
-      renderTasks();
-    } catch {
-      /* ignore */
+    if (group) {
+      taskGroupFilter = group;
+      setTab("tasks");
+      try {
+        renderTaskGroupRail();
+        renderTasks();
+      } catch {
+        /* ignore */
+      }
+      if (evt.phase === "tasks_created") {
+        toast(
+          `Created ${(evt.taskIds || []).length} task(s) in ${group}`,
+          "ok",
+        );
+      } else {
+        toast(`Task group · ${group}`, "muted");
+      }
+    } else if (evt.phase === "tasks_created" && evt.taskIds?.length) {
+      taskGroupFilter = "all";
+      setTab("tasks");
+      try {
+        renderTaskGroupRail();
+        renderTasks();
+      } catch {
+        /* ignore */
+      }
+      toast(`Created ${evt.taskIds.length} task(s)`, "ok");
     }
-    toast(`Task group · ${group}`, "muted");
   }
   if (evt.type === "navigate" && evt.tab) {
     setTab(evt.tab);
@@ -4564,6 +4772,7 @@ window.desktop.onEvent((evt) => {
 wireWindowControls();
 tickClock();
 setInterval(tickClock, 1000);
+setInterval(tickHeldCartCountdowns, 1000);
 
 $("homeOpenDropPrep")?.addEventListener("click", () => focusDropPrep());
 $("homeOpenHarvest")?.addEventListener("click", () => setTab("harvest"));
@@ -4614,10 +4823,21 @@ $("btnNewAccountGroup")?.addEventListener("click", () => {
   setTab("accounts");
   openDialog("accountDialog");
 });
-$("btnNewProxyGroup")?.addEventListener("click", () => {
-  selectedProxyGroupId = null;
-  $("pxReset")?.click();
+$("btnNewProxyGroup")?.addEventListener("click", async () => {
+  const name = window.prompt("New proxy group name");
+  if (!name?.trim()) return;
+  const snap = await window.desktop.upsertProxyGroup({
+    name: name.trim(),
+    entriesText: "",
+  });
+  applyState(snap);
+  const saved =
+    (state.proxyGroups || []).find((g) => g.name === name.trim()) ||
+    state.proxyGroups?.slice(-1)[0];
+  if (saved) selectedProxyGroupId = saved.id;
   setTab("proxies");
+  renderProxies();
+  openProxyAddDialog();
 });
 $("accStoreFilter")?.addEventListener("change", () => renderAccounts());
 

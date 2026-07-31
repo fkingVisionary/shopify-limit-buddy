@@ -14,6 +14,7 @@ function defaultStatePath() {
 /**
  * @returns {{
  *   keywords: string,
+ *   mutedSkus: string,
  *   presetCatalog: string,
  *   ispProxies: string,
  *   dcProxies: string,
@@ -28,6 +29,8 @@ export function defaultConfigFromEnv() {
       process.env.BANDAI_MONITOR_KEYWORDS ||
       process.env.MONITOR_KEYWORDS ||
       "GUNDAM,ONE PIECE,N2890904001",
+    /** Global mute — suppressed for all Desktop consumers (SSE + Discord). */
+    mutedSkus: String(process.env.BANDAI_MONITOR_MUTED_SKUS || ""),
     /** Action Store SKUs for Desktop (admin-curated). */
     presetCatalog: String(process.env.BANDAI_PRESET_CATALOG || ""),
     ispProxies: String(process.env.BANDAI_MONITOR_ISP_PROXIES || ""),
@@ -67,6 +70,7 @@ export function loadRuntimeConfig(filePath = defaultStatePath()) {
 export function saveRuntimeConfig(cfg, filePath = defaultStatePath()) {
   const out = {
     keywords: String(cfg.keywords || ""),
+    mutedSkus: String(cfg.mutedSkus || ""),
     presetCatalog: String(cfg.presetCatalog || ""),
     ispProxies: String(cfg.ispProxies || ""),
     dcProxies: String(cfg.dcProxies || ""),

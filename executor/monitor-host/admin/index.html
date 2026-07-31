@@ -256,6 +256,15 @@
           <div class="row"><button id="btnSaveKw" type="button">Save keywords</button></div>
         </section>
         <section>
+          <h2>Muted SKUs <span style="font-weight:400;color:var(--muted)">(global)</span></h2>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Spam / oversold product ids — one per line. Muted SKUs are <strong>not</strong> pushed to Desktop
+            SSE, Smart Actions, Watchdog, or Discord. Still logged here for operators.
+          </p>
+          <textarea id="mutedSkus" placeholder="N2847890001&#10;NAI0815453AU"></textarea>
+          <div class="row"><button id="btnSaveMuted" type="button">Save muted SKUs</button></div>
+        </section>
+        <section>
           <h2>Action Store presets</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
             SKU library for Desktop Smart Action packs. Paste a <strong>SKU</strong>,
@@ -495,6 +504,7 @@
           ? "Monitor is polling. Restart clears stuck proxies; Stop pauses searches."
           : "Monitor is stopped. Start resumes polling.";
         $("keywords").value = cfg.keywords || "";
+        if ($("mutedSkus")) $("mutedSkus").value = cfg.mutedSkus || "";
         if ($("presetCatalog")) $("presetCatalog").value = cfg.presetCatalog || "";
         if ($("presetCatalogHint")) {
           const n = Array.isArray(cfg.presetCatalogRows) ? cfg.presetCatalogRows.length : 0;
@@ -509,7 +519,7 @@
         applyPersistence(cfg.persistence);
         const hits = st.recentHits || [];
         $("hits").innerHTML = hits.length
-          ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>
+          ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>${h.muted ? ` <span class="meta">· muted</span>` : ""}
               <div class="meta">${escapeHtml(h.productId||"")} · ${escapeHtml(h.reason||"")} · ${escapeHtml((h.at||"").replace("T"," ").slice(0,19))}</div></li>`).join("")
           : `<li><div class="meta">No monitor hits yet.</div></li>`;
       }
@@ -716,6 +726,23 @@
           toast("Keywords live", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      if ($("btnSaveMuted")) {
+        $("btnSaveMuted").onclick = async () => {
+          try {
+            const r = await api("/admin/config", {
+              method: "PUT",
+              body: JSON.stringify({ mutedSkus: $("mutedSkus").value }),
+            });
+            if (r.mutedSkus != null) $("mutedSkus").value = r.mutedSkus;
+            const n = String(r.mutedSkus || "")
+              .split(/\r?\n/)
+              .filter((l) => l.trim()).length;
+            toast(n ? `Muted ${n} SKU(s) — Desktop will skip them` : "Mute list cleared", "ok");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
       if ($("btnSavePresets")) {
         $("btnSavePresets").onclick = async () => {
           try {

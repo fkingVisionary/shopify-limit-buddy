@@ -54,14 +54,15 @@ test("formatCountdown", () => {
   assert.equal(formatCountdown(65_000), "1m 05s");
 });
 
-test("countDropLanes sums Bandai checkout quantity", () => {
+test("countDropLanes sums Bandai checkout + ATC quantity", () => {
   const n = countDropLanes([
     { store: "bandai", bandaiMode: "checkout", enabled: true, quantity: 2 },
+    { store: "bandai", bandaiMode: "atc", enabled: true, quantity: 3 },
     { store: "bandai", bandaiMode: "monitor", enabled: true, quantity: 5 },
     { store: "kmart", enabled: true, quantity: 3 },
     { store: "bandai", bandaiMode: "checkout", enabled: false, quantity: 9 },
   ]);
-  assert.equal(n, 2);
+  assert.equal(n, 5);
 });
 
 test("assessDropReady blocks without engine / harvest", () => {

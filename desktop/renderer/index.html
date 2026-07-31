@@ -155,7 +155,7 @@
           <div class="panel-header tasks-toolbar-head">
             <div>
               <h2 id="tasksGroupTitle">Tasks</h2>
-              <p class="hint">Press <kbd>N</kbd> for a new task. Start / stop from the row or group bar.</p>
+              <p class="hint">Press <kbd>N</kbd> for a new task. Pick a group on the left, then Start / Stop group — or use each row.</p>
             </div>
             <div class="toolbar-actions">
               <button type="button" class="secondary" id="btnExportTasks">Export</button>
@@ -177,20 +177,16 @@
             <p id="dropScheduleLine" hidden></p>
           </div>
           <div class="task-group-ops" id="taskGroupOps">
-            <button type="button" id="btnGroupStart">Start group</button>
-            <button type="button" id="btnGroupStop" class="secondary">Stop group</button>
-            <button type="button" id="btnGroupDup" class="secondary">Duplicate</button>
-            <span class="task-ops-sep" aria-hidden="true"></span>
-            <select id="massTaskGroup" class="toolbar-select" aria-label="Task group">
-              <option value="">Select group…</option>
-            </select>
+            <button type="button" id="btnGroupStart" title="Start every enabled task in the group selected on the left">Start group</button>
+            <button type="button" id="btnGroupStop" class="secondary" title="Stop every task in the group selected on the left">Stop group</button>
+            <button type="button" id="btnGroupDup" class="secondary" title="Copy all tasks in this group into a new group">Duplicate group</button>
+            <!-- Hidden stubs — kept so older JS helpers don't throw -->
+            <select id="massTaskGroup" hidden aria-hidden="true"></select>
             <datalist id="taskGroupList" hidden></datalist>
-            <input id="massGroupColor" type="color" value="#c8c8cc" title="Group color" aria-label="Group color" />
-            <button type="button" id="btnGroupColor" class="secondary">Color</button>
-            <input id="massQty" type="number" min="1" max="20" placeholder="Qty" title="Qty per checkout" />
-            <input id="massQuantity" type="number" min="1" max="50" placeholder="×" title="Parallel jobs" />
-            <input id="massDelay" type="number" min="0" step="500" placeholder="Delay" title="Monitor start delay (ms)" />
-            <button type="button" id="btnGroupPatch" class="secondary">Apply</button>
+            <input id="massGroupColor" type="hidden" value="#c8c8cc" />
+            <input id="massQty" type="hidden" />
+            <input id="massQuantity" type="hidden" />
+            <input id="massDelay" type="hidden" />
           </div>
         </div>
         <div class="table-wrap">
@@ -271,10 +267,13 @@
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
               <option value="checkout">Bandai — Autocheckout</option>
+              <option value="atc">Bandai — ATC only (hold cart)</option>
               <option value="account_gen">Bandai — Account gen</option>
               <option value="monitor">Bandai — Monitor</option>
-              <option value="chance">Chance draw</option>
             </select>
+            <p id="taskBandaiAtcHint" class="field-hint" hidden>
+              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Retry pay</strong> to checkout later.
+            </p>
             <div id="taskBandaiMonitorWrap" hidden>
               <label>Monitor source</label>
               <select id="taskBandaiMonitorMode">
@@ -311,7 +310,7 @@
               <p class="field-hint">Leave blank unless you were given a specific product ID for the drop.</p>
               <label class="check"><input id="taskBandaiWatchdog" type="checkbox" checked /> Auto-start on monitor restock</label>
               <p class="field-hint">
-                Starts this Autocheckout task when the product monitor reports a matching restock.
+                Starts this Autocheckout / ATC task when the product monitor reports a matching restock.
                 Cooldown ~60s per task. Turn off for manual-only runs.
               </p>
               <label>Watch SKU / product code <span class="optional">(optional — PDP URL also matches)</span></label>
@@ -334,10 +333,6 @@
                 <label>Vault account</label>
                 <select id="taskBandaiAccountId"></select>
               </div>
-            </div>
-            <div id="taskBandaiChanceWrap" hidden>
-              <label>Campaign SN</label>
-              <input id="taskBandaiCampaignSn" placeholder="Campaign ID" />
             </div>
           </div>
           <div id="taskPcOpts" hidden>
@@ -968,9 +963,7 @@
     </dialog>
 
 
-    <!-- PROXIES -->
-    
-    <!-- PROXIES -->
+    <!-- PROXIES — Cybersole-style: groups rail + entry table; test tools in More menu -->
     <section id="tab-proxies" class="panel proxies-panel">
       <aside class="groups-rail">
         <div class="rail-head">Proxy groups</div>
@@ -980,63 +973,94 @@
         </div>
       </aside>
       <div class="proxies-main">
-        <div class="panel-header">
+        <div class="panel-header proxies-toolbar-head">
           <div>
             <h2 id="proxyEditorTitle">Proxy group</h2>
-            <p class="hint">One entry per line. Supports <code>host:port</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>. Prefer sticky AU residential / ISP for Bandai.</p>
+            <p class="hint" id="proxyGroupMeta">Select or create a group</p>
           </div>
           <div class="toolbar-actions">
             <button type="button" class="secondary" id="btnExportProxies">Export</button>
             <button type="button" class="secondary" id="btnImportProxies">Import</button>
             <input type="file" id="pxImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
-          </div>
-        </div>
-        <div class="proxies-grid">
-          <form id="proxyForm" class="form-card">
-            <input type="hidden" id="pxId" />
-          <label>Name</label>
-          <input id="pxName" placeholder="Local manager" />
-          <label>Entries</label>
-          <textarea id="pxEntries" rows="10" placeholder="127.0.0.1:60000&#10;user:pass@host:8000"></textarea>
-          <label class="check"><input id="pxRemoveDead" type="checkbox" /> Remove dead after test</label>
-          <label>Test against</label>
-          <div class="proxy-test-target-row">
-            <select id="pxTestPreset" aria-label="Proxy test target">
-              <option value="ip">Exit IP (any)</option>
-              <option value="bandai">Bandai AU</option>
-              <option value="toymate">Toymate AU</option>
-              <option value="pokemoncentre">Pokémon Center AU</option>
-              <option value="custom">Custom URL…</option>
-            </select>
-            <input id="pxTestCustomUrl" type="url" placeholder="https://…" hidden autocomplete="off" />
-          </div>
-          <div class="row">
-            <button type="submit">Save group</button>
-            <button type="button" class="secondary" id="pxTestForm">Test entries</button>
-            <button type="button" class="secondary" id="pxReset">Clear</button>
-          </div>
-          
-          </form>
-          <div class="form-card proxy-test-card">
-            <h3>Test results</h3>
-            <p id="pxTestHint" class="hint" style="margin-top:0"></p>
-            <div class="proxy-tools">
-              <div class="row" style="flex-wrap:wrap;gap:8px">
-                <button type="button" class="secondary" id="pxSortSpeed">Sort by speed</button>
-                <button type="button" class="secondary" id="pxSortFailed">Sort failed first</button>
-                <button type="button" class="secondary" id="pxClearFailed">Clear failed</button>
-              </div>
-              <div class="inline-fields" style="margin-top:10px">
-                <input id="pxClearOverMs" type="number" min="1" placeholder="Clear over ms" />
-                <button type="button" class="secondary" id="pxClearOver">Clear slow</button>
+            <button type="button" id="btnAddProxies">Add proxies</button>
+            <button type="button" class="secondary danger-soft" id="pxClearAll">Clear all</button>
+            <div class="menu-wrap">
+              <button type="button" class="secondary" id="pxMoreBtn" aria-haspopup="true" aria-expanded="false">More ▾</button>
+              <div id="pxMoreMenu" class="dropdown-panel" hidden role="menu">
+                <p class="dropdown-label">Test</p>
+                <label class="dropdown-field">Target
+                  <select id="pxTestPreset" aria-label="Proxy test target">
+                    <option value="ip">Exit IP (any)</option>
+                    <option value="bandai">Bandai AU</option>
+                    <option value="toymate">Toymate AU</option>
+                    <option value="pokemoncentre">Pokémon Center AU</option>
+                    <option value="custom">Custom URL…</option>
+                  </select>
+                </label>
+                <input id="pxTestCustomUrl" type="url" placeholder="https://…" hidden autocomplete="off" />
+                <label class="check dropdown-check"><input id="pxRemoveDead" type="checkbox" /> Remove dead after test</label>
+                <button type="button" id="pxTestForm" role="menuitem">Test all</button>
+                <hr class="dropdown-sep" />
+                <p class="dropdown-label">Clean up</p>
+                <button type="button" class="secondary" id="pxClearFailed" role="menuitem">Remove dead</button>
+                <div class="dropdown-inline">
+                  <input id="pxClearOverMs" type="number" min="1" placeholder="ms" aria-label="Clear slower than ms" />
+                  <button type="button" class="secondary" id="pxClearOver" role="menuitem">Remove slow</button>
+                </div>
+                <hr class="dropdown-sep" />
+                <p class="dropdown-label">Sort</p>
+                <button type="button" class="secondary" id="pxSortSpeed" role="menuitem">By speed</button>
+                <button type="button" class="secondary" id="pxSortFailed" role="menuitem">Failed first</button>
+                <p id="pxTestHint" class="dropdown-hint"></p>
               </div>
             </div>
-            <div id="proxyEntryList" class="proxy-entry-list"></div>
-            <div id="proxyList" hidden></div>
+          </div>
+        </div>
+        <div class="table-wrap proxies-table-wrap">
+          <table class="data-table proxy-data-table">
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Port</th>
+                <th>User</th>
+                <th>Status</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="proxyEntryList"></tbody>
+          </table>
+          <div id="proxyList" hidden></div>
+        </div>
+        <!-- Hidden fields kept for save/test helpers -->
+        <form id="proxyForm" hidden aria-hidden="true">
+          <input type="hidden" id="pxId" />
+          <input type="hidden" id="pxName" />
+          <textarea id="pxEntries" hidden></textarea>
+          <button type="submit" id="pxSaveHidden" hidden>Save</button>
+          <button type="button" id="pxReset" hidden>Clear</button>
+        </form>
+      </div>
+    </section>
+
+    <dialog id="proxyAddDialog" class="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="proxyAddTitle">Add proxies</h3>
+          <button type="button" class="icon-btn" id="proxyAddDialogClose" aria-label="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <label>Group name</label>
+          <input id="proxyAddName" placeholder="AU sticky" />
+          <label>Entries <span class="optional">one per line</span></label>
+          <textarea id="proxyAddEntries" rows="12" placeholder="host:port&#10;user:pass@host:port&#10;host:port:user:pass"></textarea>
+          <p class="field-hint">Paste appends to the current group (or creates one if empty).</p>
+          <div class="row">
+            <button type="button" id="proxyAddSave">Save</button>
+            <button type="button" class="secondary" id="proxyAddCancel">Cancel</button>
           </div>
         </div>
       </div>
-    </section>
+    </dialog>
 
 
     <!-- RESULTS -->
@@ -1078,6 +1102,7 @@
           <label>Bandai mode</label>
           <select id="qtPresetMode">
             <option value="checkout">Autocheckout</option>
+            <option value="atc">ATC only (hold cart)</option>
             <option value="monitor">Monitor (global + checkout on hit)</option>
           </select>
           <label>Profile</label>

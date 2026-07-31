@@ -10,6 +10,7 @@ const {
   shouldCheckoutOnMonitorHit,
   taskForMonitorCheckout,
 } = require("./bandai-monitor-checkout.cjs");
+const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 
 const DEFAULT_BANDAI_GLOBAL_MONITOR_URL =
   "https://j1ms-bandai-monitor-production.up.railway.app";
@@ -29,15 +30,19 @@ function resolveMonitorBase(settings = {}) {
   );
 }
 
-/** Parse Railway /health → admin watchlist fields for Desktop snapshot. */
+/** Parse Railway /health → admin watchlist + global muted SKUs for Desktop. */
 function parseAdminWatchlistFromHealth(body = {}) {
   const keywords = Array.isArray(body?.keywords)
     ? body.keywords.map((k) => String(k || "").trim()).filter(Boolean)
+    : [];
+  const mutedSkus = Array.isArray(body?.mutedSkus)
+    ? body.mutedSkus.map((k) => String(k || "").trim().toUpperCase()).filter(Boolean)
     : [];
   return {
     adminKeywords: keywords,
     adminWatchCount: keywords.length,
     adminArea: body?.area != null ? String(body.area) : null,
+    adminMutedSkus: mutedSkus,
   };
 }
 
@@ -156,6 +161,8 @@ function createBandaiGlobalMonitorClient({
   let adminWatchCount = null;
   /** @type {string|null} */
   let adminArea = null;
+  /** @type {string[]} admin-global muted SKUs from /health */
+  let adminMutedSkus = [];
   /** @type {object[]} newest-first ring buffer for Monitor Feed UI */
   let feed = (Array.isArray(initialFeed) ? initialFeed : [])
     .map(normalizeFeedRow)
@@ -165,6 +172,15 @@ function createBandaiGlobalMonitorClient({
 
   function settings() {
     return getSettings?.() || {};
+  }
+
+  function getAdminMutedSkus() {
+    return adminMutedSkus.slice();
+  }
+
+  function isHitMuted(hit) {
+    if (hit?.muted === true) return true;
+    return isMonitorSkuMuted({ monitorMutedSkus: adminMutedSkus }, hit?.productId || hit?.sku);
   }
 
   function clearReconnect() {
@@ -183,6 +199,7 @@ function createBandaiGlobalMonitorClient({
     adminWatchCount =
       parsed.adminWatchCount != null ? Number(parsed.adminWatchCount) : adminKeywords.length;
     adminArea = parsed.adminArea != null ? String(parsed.adminArea) : null;
+    adminMutedSkus = Array.isArray(parsed.adminMutedSkus) ? parsed.adminMutedSkus : [];
   }
 
   async function refreshAdminWatchlist(base) {
@@ -255,6 +272,7 @@ function createBandaiGlobalMonitorClient({
     let merged = 0;
     const incoming = [];
     for (const raw of list) {
+      if (isHitMuted(raw)) continue;
       const row = normalizeFeedRow(raw);
       if (!row) continue;
       const key = feedDedupeKey(row);
@@ -293,6 +311,18 @@ function createBandaiGlobalMonitorClient({
 
   async function handleHit(hit) {
     if (!hit?.productId) return;
+    // Admin mute (Railway) — belt-and-suspenders if a muted hit still arrives.
+    if (isHitMuted(hit)) {
+      emitLog?.(`Muted restock · ${hit.productId} (admin mute — skipped)`);
+      bus.emit("mutedHit", {
+        productId: hit.productId,
+        sku: hit.sku || hit.productId,
+        reason: hit.reason || "restock",
+        at: hit.at || new Date().toISOString(),
+        source: "admin",
+      });
+      return;
+    }
     hits += 1;
     const row = pushFeed(hit, { live: true });
     if (!row) return;
@@ -477,6 +507,7 @@ function createBandaiGlobalMonitorClient({
       adminKeywords: adminKeywords.slice(),
       adminWatchCount,
       adminArea,
+      adminMutedSkus: adminMutedSkus.slice(),
       /** Advanced local Monitor→Global count (not consumer readiness). */
       watchTasks: listGlobalWatchTasks(getTasks?.() || []).length,
       feed: feed.slice(0, 80),
@@ -518,6 +549,7 @@ function createBandaiGlobalMonitorClient({
     stop,
     snapshot,
     getFeed,
+    getAdminMutedSkus,
     clearFeed,
     hydrateFeed,
     mergeRemoteHits,

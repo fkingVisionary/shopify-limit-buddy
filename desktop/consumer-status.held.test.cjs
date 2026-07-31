@@ -45,3 +45,30 @@ test("decline without cart ids stays declined", () => {
   assert.equal(isHeldPayRetry(res), false);
   assert.equal(consumerOutcome(res).code, "declined");
 });
+
+test("ATC-only success maps to cart_held", () => {
+  const out = consumerOutcome({
+    ok: true,
+    atcOnly: true,
+    checkoutStage: "cart_hold",
+    heldPayRetry: true,
+    heldCart: { cartSn: 1, cartItemSn: 2 },
+  });
+  assert.equal(out.code, "cart_held");
+  assert.equal(out.label, OUTCOME.cart_held);
+});
+
+test("checkout_address preferred over held_pay_retry", () => {
+  const out = consumerOutcome({
+    ok: false,
+    failedStep: "checkout_address",
+    cartSn: 99,
+    cartItemSn: 12,
+    heldPayRetry: true,
+    heldCart: { cartSn: 99, cartItemSn: 12 },
+    error: 'BillingMandatory BillingFirstName',
+    checkoutStage: "tokenize",
+  });
+  assert.equal(out.code, "checkout_address");
+  assert.equal(out.label, OUTCOME.checkout_address);
+});

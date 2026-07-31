@@ -182,14 +182,14 @@ function staggerOffsets(laneCount, { maxSpreadMs = 150, gapMs = 50 } = {}) {
 }
 
 /**
- * Enabled Bandai Autocheckout / chance lanes (not monitor/agen).
+ * Enabled Bandai Autocheckout / ATC-only lanes (not monitor/agen).
  */
 function listBandaiDropTasks(tasks = []) {
   return (tasks || []).filter((t) => {
     if (!t || t.enabled === false) return false;
     if (String(t.store || "") !== "bandai") return false;
     const mode = String(t.bandaiMode || "checkout").toLowerCase();
-    return mode === "checkout" || mode === "chance";
+    return mode === "checkout" || mode === "atc";
   });
 }
 

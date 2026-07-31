@@ -31,6 +31,13 @@ test("listWatchdogCheckoutTasks matches idle Autocheckout by PDP SKU", () => {
       pdpUrl: "https://p-bandai.com/au/item/N2890904001",
     },
     {
+      id: "a1",
+      store: "bandai",
+      bandaiMode: "atc",
+      enabled: true,
+      pdpUrl: "https://p-bandai.com/au/item/N2890904001",
+    },
+    {
       id: "m1",
       store: "bandai",
       bandaiMode: "monitor",
@@ -64,7 +71,7 @@ test("listWatchdogCheckoutTasks matches idle Autocheckout by PDP SKU", () => {
   ];
   assert.deepEqual(
     listWatchdogCheckoutTasks(tasks, hit, {}).map((t) => t.id),
-    ["c1"],
+    ["c1", "a1"],
   );
 });
 
@@ -81,6 +88,24 @@ test("listWatchdogCheckoutTasks matches keywords", () => {
   assert.equal(listWatchdogCheckoutTasks(tasks, hit, {}).length, 1);
   assert.equal(
     listWatchdogCheckoutTasks(tasks, hit, { desktopWatchdogEnabled: false }).length,
+    0,
+  );
+});
+
+test("listWatchdogCheckoutTasks skips muted SKUs", () => {
+  const tasks = [
+    {
+      id: "c1",
+      store: "bandai",
+      bandaiMode: "checkout",
+      enabled: true,
+      pdpUrl: "https://p-bandai.com/au/item/N2890904001",
+    },
+  ];
+  assert.equal(
+    listWatchdogCheckoutTasks(tasks, hit, {
+      monitorMutedSkus: ["N2890904001"],
+    }).length,
     0,
   );
 });
@@ -121,4 +146,20 @@ test("oos hits never arm watchdog", () => {
     listWatchdogCheckoutTasks(tasks, { ...hit, inStock: false }, {}).length,
     0,
   );
+});
+
+test("planWatchdogStarts preserves ATC-only mode", () => {
+  const cooldown = createWatchdogCooldown({ cooldownMs: 60_000 });
+  const tasks = [
+    {
+      id: "a1",
+      store: "bandai",
+      bandaiMode: "atc",
+      enabled: true,
+      bandaiWatchSku: "N2890904001",
+    },
+  ];
+  const a = planWatchdogStarts({ tasks, hit, settings: {}, cooldown });
+  assert.equal(a.length, 1);
+  assert.equal(a[0].checkoutTask.bandaiMode, "atc");
 });

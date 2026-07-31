@@ -319,6 +319,19 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Chunked sleep so disable/abort can interrupt long waits (+30m packs). */
+async function interruptibleSleep(ms, isAborted, chunkMs = 200) {
+  let left = Math.max(0, Math.floor(Number(ms) || 0));
+  const chunk = Math.max(50, Math.floor(Number(chunkMs) || 200));
+  while (left > 0) {
+    if (typeof isAborted === "function" && isAborted()) return false;
+    const step = Math.min(chunk, left);
+    await sleep(step);
+    left -= step;
+  }
+  return !(typeof isAborted === "function" && isAborted());
+}
+
 /**
  * @param {object} deps
  * @param {() => object[]} deps.getActions
@@ -350,6 +363,20 @@ function createSmartActionsEngine(deps = {}) {
     return Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(ms)));
   }
   const running = new Set(); // sa ids currently executing
+  /** Bumped on disable/remove so in-flight waits/steps abort. */
+  const runGens = new Map();
+
+  function bumpRunGen(id) {
+    const key = String(id || "");
+    if (!key) return 0;
+    const n = (runGens.get(key) || 0) + 1;
+    runGens.set(key, n);
+    return n;
+  }
+
+  function currentRunGen(id) {
+    return runGens.get(String(id || "")) || 0;
+  }
 
   function list() {
     return (deps.getActions?.() || []).map((a) => ({ ...a }));
@@ -482,7 +509,7 @@ function createSmartActionsEngine(deps = {}) {
     return { ids, target, label };
   }
 
-  async function actionStartTasks(sa, step, runCtx, i, { stagger = false } = {}) {
+  async function actionStartTasks(sa, step, runCtx, i, { stagger = false, isAborted } = {}) {
     const type = step.type;
     let config = step.config || {};
     if (type === ACTION_TYPES.STAGGER_START_TASK_GROUP) {
@@ -496,6 +523,14 @@ function createSmartActionsEngine(deps = {}) {
     }
     const { ids, label, error } = resolveTargetIds(config, runCtx);
     const stepKey = `action:${i}:${type}`;
+    if (typeof isAborted === "function" && isAborted()) {
+      appendLog(sa, {
+        step: stepKey,
+        level: "warn",
+        message: "Aborted — Smart Action turned off before start",
+      });
+      return finish(sa, OUTCOMES.FAILED, "Aborted (disabled)");
+    }
     if (error) {
       appendLog(sa, { step: stepKey, level: "err", message: error });
       return finish(sa, OUTCOMES.FAILED, error);
@@ -528,7 +563,7 @@ function createSmartActionsEngine(deps = {}) {
     return null;
   }
 
-  async function runActions(sa, ctx) {
+  async function runActions(sa, ctx, isAborted = () => false) {
     const runCtx = {
       ...ctx,
       createdTaskIds: [],
@@ -539,6 +574,14 @@ function createSmartActionsEngine(deps = {}) {
       const step = steps[i];
       const type = step.type;
       try {
+        if (isAborted()) {
+          appendLog(sa, {
+            step: `action:${i}:aborted`,
+            level: "warn",
+            message: "Aborted — Smart Action turned off (in-flight wait/steps cancelled)",
+          });
+          return finish(sa, OUTCOMES.FAILED, "Aborted (disabled)");
+        }
         if (type === ACTION_TYPES.WAIT) {
           const ms = resolveWaitMs(step.config || {});
           appendLog(sa, {
@@ -546,7 +589,17 @@ function createSmartActionsEngine(deps = {}) {
             level: "info",
             message: `Waiting ${Math.round(ms / 1000)}s…`,
           });
-          if (ms > 0) await sleep(ms);
+          if (ms > 0) {
+            const ok = await interruptibleSleep(ms, isAborted);
+            if (!ok) {
+              appendLog(sa, {
+                step: `action:${i}:wait`,
+                level: "warn",
+                message: "Wait cancelled — Smart Action turned off",
+              });
+              return finish(sa, OUTCOMES.FAILED, "Aborted (disabled)");
+            }
+          }
           continue;
         }
 
@@ -557,7 +610,17 @@ function createSmartActionsEngine(deps = {}) {
             level: "info",
             message: `Waiting ${Math.round(ms / 1000)}s before stop…`,
           });
-          if (ms > 0) await sleep(ms);
+          if (ms > 0) {
+            const ok = await interruptibleSleep(ms, isAborted);
+            if (!ok) {
+              appendLog(sa, {
+                step: `action:${i}:stop_after`,
+                level: "warn",
+                message: "stop_after cancelled — Smart Action turned off",
+              });
+              return finish(sa, OUTCOMES.FAILED, "Aborted (disabled)");
+            }
+          }
           const { ids, label, error } = resolveTargetIds(step.config || {}, runCtx);
           if (error) {
             appendLog(sa, { step: `action:${i}:stop_after`, level: "err", message: error });
@@ -659,10 +722,44 @@ function createSmartActionsEngine(deps = {}) {
 
         if (type === ACTION_TYPES.CREATE_TASKS) {
           const created = await actionCreateTasks(sa, step.config || {}, runCtx);
+          const group = String(
+            runCtx.taskGroup ||
+              applyTemplate(step.config?.taskGroup || "", runCtx).trim() ||
+              "",
+          ).trim();
           appendLog(sa, {
             step: `action:${i}:create_tasks`,
             level: "ok",
-            message: `Created ${created.length} task(s): ${created.join(", ") || "—"}`,
+            message: `Created ${created.length} task(s): ${created.join(", ") || "—"}${
+              group ? ` · group ${group}` : ""
+            }`,
+          });
+          if (group) {
+            runCtx.taskGroup = group;
+            deps.ensureTaskGroup?.({ taskGroup: group });
+            // Auto-navigate so created rows are visible even if the pack omits goto.
+            const hasGoto = steps.some((s) => s?.type === ACTION_TYPES.GOTO_TASK_GROUP);
+            if (!hasGoto) {
+              deps.gotoTaskGroup?.({ taskGroup: group });
+              deps.emit?.({
+                type: "smartAction",
+                phase: "goto_task_group",
+                actionId: sa.id,
+                taskGroup: group,
+              });
+            }
+          }
+          deps.notifyToast?.({
+            message: `Created ${created.length} task(s)${group ? ` in ${group}` : ""}`,
+            level: "ok",
+            actionId: sa.id,
+          });
+          deps.emit?.({
+            type: "smartAction",
+            phase: "tasks_created",
+            actionId: sa.id,
+            taskIds: created,
+            taskGroup: group || "",
           });
           continue;
         }
@@ -708,7 +805,10 @@ function createSmartActionsEngine(deps = {}) {
         }
 
         if (type === ACTION_TYPES.START_TASKS) {
-          const fail = await actionStartTasks(sa, step, runCtx, i, { stagger: false });
+          const fail = await actionStartTasks(sa, step, runCtx, i, {
+            stagger: false,
+            isAborted,
+          });
           if (fail) return fail;
           continue;
         }
@@ -717,7 +817,10 @@ function createSmartActionsEngine(deps = {}) {
           type === ACTION_TYPES.STAGGER_START_TASKS ||
           type === ACTION_TYPES.STAGGER_START_TASK_GROUP
         ) {
-          const fail = await actionStartTasks(sa, step, runCtx, i, { stagger: true });
+          const fail = await actionStartTasks(sa, step, runCtx, i, {
+            stagger: true,
+            isAborted,
+          });
           if (fail) return fail;
           continue;
         }
@@ -945,6 +1048,11 @@ function createSmartActionsEngine(deps = {}) {
       }
     } else {
       const profileId = config.profileId || (usePreset ? preset.profileId : null);
+      if (!profileId) {
+        throw new Error(
+          "Create Tasks: assign a Quick Task profile in Settings (or set a profile group on the pack)",
+        );
+      }
       for (let n = 0; n < perProfile; n++) {
         profileSlots.push({
           profileId,
@@ -977,7 +1085,10 @@ function createSmartActionsEngine(deps = {}) {
         label: `${label}${slot.labelSuffix}`.slice(0, 120),
       });
       if (!built.ok) throw new Error(built.error);
-      if (taskGroup) built.task.taskGroup = taskGroup;
+      if (taskGroup) {
+        built.task.taskGroup = taskGroup;
+        runCtx.taskGroup = taskGroup;
+      }
       const saved = deps.upsertTask?.(built.task);
       const id = saved?.id || built.task.id;
       if (!id) throw new Error("upsertTask did not return id");
@@ -1023,9 +1134,16 @@ function createSmartActionsEngine(deps = {}) {
       message: `Triggered (${ctx.source || sa.trigger?.type}) ${ctx.sku || ctx.title || sa.name || ""}`.trim(),
     });
 
+    const genAtStart = currentRunGen(sa.id);
+    const isAborted = () => {
+      if (currentRunGen(sa.id) !== genAtStart) return true;
+      const fresh = (deps.getActions?.() || []).find((a) => a.id === sa.id);
+      return !fresh || fresh.enabled === false;
+    };
+
     running.add(sa.id);
     try {
-      return await runActions(sa, ctx);
+      return await runActions(sa, ctx, isAborted);
     } finally {
       running.delete(sa.id);
     }
@@ -1128,13 +1246,17 @@ function createSmartActionsEngine(deps = {}) {
   }
 
   function remove(id) {
+    bumpRunGen(id);
     const next = (deps.getActions?.() || []).filter((a) => a.id !== id);
     persist(next);
     return true;
   }
 
   function setEnabled(id, enabled) {
-    return patchAction(id, { enabled: enabled !== false });
+    const on = enabled !== false;
+    // Turning off bumps generation so in-flight wait/+30m pipelines abort.
+    if (!on) bumpRunGen(id);
+    return patchAction(id, { enabled: on });
   }
 
   function getLogs(id) {
@@ -1181,6 +1303,7 @@ module.exports = {
   normalizeTarget,
   clampStaggerGapMs,
   clockPartsInTz,
+  interruptibleSleep,
   OUTCOMES,
   TRIGGERS,
   ACTION_TYPES,

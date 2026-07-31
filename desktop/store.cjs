@@ -77,6 +77,11 @@ const DEFAULT_SETTINGS = {
   desktopWatchdogEnabled: true,
   desktopWatchdogCooldownMs: 60_000,
   /**
+   * Muted product ids / SKUs — suppress Monitor Feed rows, Smart Actions,
+   * Watchdog, and Monitor→checkout handoff for these restocks.
+   */
+  monitorMutedSkus: [],
+  /**
    * Per-user Discord webhook for checkout success (also fallback for other routes).
    * Prefer discordSuccessWebhook when set; discordCheckoutWebhook kept for compat.
    */
@@ -126,6 +131,9 @@ function loadAll() {
       ? settings.quickTaskPreset
       : {}),
   };
+  settings.monitorMutedSkus = Array.isArray(settings.monitorMutedSkus)
+    ? settings.monitorMutedSkus.map((s) => String(s || "").trim()).filter(Boolean)
+    : [];
   const db = { ...DEFAULT_DB, ...readJson("db.json", {}) };
   db.profiles = Array.isArray(db.profiles) ? db.profiles : [];
   db.proxyGroups = Array.isArray(db.proxyGroups) ? db.proxyGroups : [];

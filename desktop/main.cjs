@@ -67,6 +67,8 @@ const {
   createWatchdogCooldown,
   planWatchdogStarts,
 } = require("./desktop-watchdog.cjs");
+const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
+const { appendMonitorEvent, readMonitorEvents } = require("./monitor-event-log.cjs");
 const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
 const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
@@ -328,7 +330,11 @@ function handleDesktopWatchdog(hit) {
   const starts = planWatchdogStarts({
     tasks: state.db.tasks,
     hit,
-    settings: state.settings,
+    settings: {
+      ...state.settings,
+      // Admin mute list from Railway /health (not a per-user setting).
+      monitorMutedSkus: bandaiGlobalMonitor.getAdminMutedSkus?.() || [],
+    },
     cooldown: desktopWatchdogCooldown,
   });
   let started = 0;
@@ -374,14 +380,57 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
     }
   },
   onFeedHit: (hit) => {
+    if (
+      hit?.muted === true ||
+      isMonitorSkuMuted(
+        { monitorMutedSkus: bandaiGlobalMonitor.getAdminMutedSkus?.() || [] },
+        hit?.productId || hit?.sku,
+      )
+    ) {
+      appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+        kind: "muted",
+        productId: hit?.productId || hit?.sku || "",
+        reason: hit?.reason || "restock",
+        source: "admin",
+      });
+      return;
+    }
     send({ type: "monitorFeed", hit });
+    appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+      kind: "restock",
+      productId: hit?.productId || hit?.sku || "",
+      reason: hit?.reason || "restock",
+      title: hit?.title || hit?.productName || "",
+    });
     // Smart Actions Product Monitor trigger (orchestration only).
-    void smartActions.handleMonitorHit(hit).then(() => {
+    void smartActions.handleMonitorHit(hit).then((results) => {
+      const fired = (Array.isArray(results) ? results : []).filter(
+        (r) => r && !r.skipped && r.outcome,
+      );
+      if (fired.length) {
+        appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+          kind: "smart_action",
+          productId: hit?.productId || hit?.sku || "",
+          results: fired.map((r) => ({
+            actionId: r.actionId,
+            outcome: r.outcome,
+            ok: r.ok,
+          })),
+        });
+      }
       send({ type: "snapshot", data: snapshot() });
     });
     // Watchdog: idle Autocheckout tasks matching this SKU/keywords → start now.
     try {
-      handleDesktopWatchdog(hit);
+      const wd = handleDesktopWatchdog(hit);
+      if (wd?.started) {
+        appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+          kind: "watchdog",
+          productId: hit?.productId || hit?.sku || "",
+          started: wd.started,
+          matched: wd.matched,
+        });
+      }
     } catch (e) {
       send({
         type: "job",
@@ -394,6 +443,19 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
 });
 bandaiGlobalMonitor.on("feedSync", (feed) => {
   send({ type: "monitorFeed", feed: Array.isArray(feed) ? feed : [] });
+});
+bandaiGlobalMonitor.on("mutedHit", (hit) => {
+  appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+    kind: "muted",
+    productId: hit?.productId || hit?.sku || "",
+    reason: hit?.reason || "restock",
+  });
+  send({
+    type: "job",
+    phase: "log",
+    level: "muted",
+    message: `Muted restock · ${hit?.productId || hit?.sku || "?"} (skipped)`,
+  });
 });
 bandaiGlobalMonitor.on("adminWatchlist", () => {
   send({ type: "snapshot", data: snapshot() });
@@ -1075,6 +1137,10 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   if (patch && Object.prototype.hasOwnProperty.call(patch, "quickTaskPreset")) {
     next.quickTaskPreset = normalizeQuickTaskPreset(patch.quickTaskPreset || {});
   }
+  // Per-user monitorMutedSkus is retired — mute globally from the admin dashboard.
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "monitorMutedSkus")) {
+    delete next.monitorMutedSkus;
+  }
   state.settings = next;
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
@@ -1573,7 +1639,14 @@ function upsertTaskRow(task) {
     // Toymate-only fields (ignored by Kmart / Bandai payload builders).
     toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
     // Bandai-only fields (ignored by Kmart / Toymate payload builders).
-    bandaiMode: storeId === "bandai" ? String(task.bandaiMode || "checkout") : undefined,
+    bandaiMode: (() => {
+      if (storeId !== "bandai") return undefined;
+      const raw = String(task.bandaiMode || "checkout").toLowerCase();
+      // Raffle / Chance removed — coerce legacy rows to checkout.
+      if (raw === "chance") return "checkout";
+      if (["checkout", "atc", "monitor", "account_gen", "login_check"].includes(raw)) return raw;
+      return "checkout";
+    })(),
     bandaiCheckoutMode:
       storeId === "bandai"
         ? ["fast", "fast_undici", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
@@ -1605,7 +1678,8 @@ function upsertTaskRow(task) {
         ? task.bandaiCheckoutOnHit !== false
         : undefined,
     bandaiWatchdog:
-      storeId === "bandai" && String(task.bandaiMode || "checkout") === "checkout"
+      storeId === "bandai" &&
+      ["checkout", "atc"].includes(String(task.bandaiMode || "checkout").toLowerCase())
         ? task.bandaiWatchdog !== false
         : undefined,
     bandaiAreaItemNo: (() => {
@@ -2068,13 +2142,19 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
 });
 
 /**
- * Fire Autocheckout from a Railway global-monitor SSE hit (task already switched to checkout).
+ * Fire Autocheckout / ATC from a Railway global-monitor SSE hit
+ * (monitor → checkout handoff, or watchdog on an idle Autocheckout/ATC lane).
  */
 function enqueueGlobalMonitorCheckout(checkoutTask) {
   if (!sidecar.status().running) {
     return { ok: false, error: "engine not running" };
   }
-  const task = { ...checkoutTask, bandaiMode: "checkout" };
+  const mode = String(checkoutTask?.bandaiMode || "checkout").toLowerCase();
+  const task = {
+    ...checkoutTask,
+    // Preserve ATC-only drop lanes; everything else runs full checkout.
+    bandaiMode: mode === "atc" ? "atc" : "checkout",
+  };
   const profile = (state.db.profiles || []).find((p) => p.id === task.profileId) || null;
   const group = (state.db.proxyGroups || []).find((g) => g.id === task.proxyGroupId);
   const entries = group?.entries || [];
@@ -2199,7 +2279,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       const needsVault =
         (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
         (task.store === "bandai" &&
-          (["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")) ||
+          (["checkout", "atc", "login_check"].includes(String(task.bandaiMode || "checkout")) ||
             (String(task.bandaiMode || "") === "monitor" &&
               task.bandaiCheckoutOnHit !== false &&
               task.placeOrder !== false)));
@@ -2518,6 +2598,19 @@ ipcMain.handle("desktop:monitor-feed-clear", () => {
   return { ok: true, feed: [], snapshot: snapshot() };
 });
 
+ipcMain.handle("desktop:monitor-mute-sku", () => ({
+  ok: false,
+  error: "Mute SKUs from the admin dashboard (global), not per Desktop",
+  snapshot: snapshot(),
+}));
+
+ipcMain.handle("desktop:monitor-event-log", (_e, opts = {}) => ({
+  ok: true,
+  events: readMonitorEvents(path.join(app.getPath("userData"), "j1ms-desktop"), {
+    limit: Number(opts.limit) || 100,
+  }),
+}));
+
 /**
  * Quick Task from pasted SKU/URL, monitor feed hit, or Discord deep-link.
  * Creates a task from Settings → Quick Task preset, optionally starts it,
@@ -2709,7 +2802,16 @@ ipcMain.handle("desktop:smart-action-delete", (_e, actionId) => {
 });
 
 ipcMain.handle("desktop:smart-action-set-enabled", (_e, actionId, enabled) => {
-  const row = smartActions.setEnabled(String(actionId || ""), enabled !== false);
+  const on = enabled !== false;
+  const row = smartActions.setEnabled(String(actionId || ""), on);
+  if (row && !on) {
+    send({
+      type: "toast",
+      message:
+        "Smart Action off — in-flight waits cancelled. Watchdog / muted SKUs are separate.",
+      level: "muted",
+    });
+  }
   return { ok: Boolean(row), action: row, snapshot: snapshot() };
 });
 
@@ -3380,7 +3482,7 @@ async function e2eAutorun() {
     const needsVault =
       (task.store === "toymate" && String(task.toymateMode || "checkout") === "checkout") ||
       (task.store === "bandai" &&
-        ["checkout", "chance", "login_check"].includes(String(task.bandaiMode || "checkout")));
+        ["checkout", "atc", "login_check"].includes(String(task.bandaiMode || "checkout")));
     if (needsVault) {
       const resolved = resolveAccountForTask({
         task,

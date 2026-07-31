@@ -70,6 +70,7 @@ contextBridge.exposeInMainWorld("desktop", {
   // Monitor Feed / Quick Task / Smart Actions
   monitorFeed: () => ipcRenderer.invoke("desktop:monitor-feed"),
   monitorFeedClear: () => ipcRenderer.invoke("desktop:monitor-feed-clear"),
+  monitorEventLog: (opts) => ipcRenderer.invoke("desktop:monitor-event-log", opts || {}),
   quickTask: (payload) => ipcRenderer.invoke("desktop:quick-task", payload || {}),
   smartActionsList: () => ipcRenderer.invoke("desktop:smart-actions-list"),
   storeGroupsList: () => ipcRenderer.invoke("desktop:store-groups-list"),
