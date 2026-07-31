@@ -69,6 +69,7 @@ const {
 } = require("./desktop-watchdog.cjs");
 const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 const { appendMonitorEvent, readMonitorEvents } = require("./monitor-event-log.cjs");
+const { appendCheckoutRun, readCheckoutRuns } = require("./checkout-run-log.cjs");
 const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
 const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
@@ -294,9 +295,19 @@ const smartActions = createSmartActionsEngine({
   gotoTaskGroup: (opts = {}) => {
     const group = String(opts.taskGroup || "").trim();
     if (!group) return;
+    // Flush DB → UI before navigate so the new group isn't empty on first paint.
+    send({ type: "snapshot", data: snapshot() });
     send({ type: "gotoTaskGroup", taskGroup: group });
   },
-  emit: (evt) => send(evt),
+  emit: (evt) => {
+    if (
+      evt?.type === "smartAction" &&
+      (evt.phase === "tasks_created" || evt.phase === "goto_task_group")
+    ) {
+      send({ type: "snapshot", data: snapshot() });
+    }
+    send(evt);
+  },
 });
 
 /** Smart Action schedule trigger — fires at HH:MM or HH:MM:SS in trigger tz while app is open. */
@@ -997,6 +1008,16 @@ runner.setFinishedHandler((result) => {
     at: result.at || Date.now(),
   });
   state.db.results = state.db.results.slice(0, 200);
+
+  // Local troubleshooting log (redacted) — survives UI scroll / restart.
+  try {
+    const taskRow = result.taskId
+      ? state.db.tasks.find((x) => x.id === result.taskId) || null
+      : null;
+    appendCheckoutRun(path.join(app.getPath("userData"), "j1ms-desktop"), result, taskRow);
+  } catch {
+    /* best-effort */
+  }
 
   // Per-user Discord: checkout success/fail only (not global restocks).
   void notifyUserCheckoutDiscord(result);
@@ -2607,6 +2628,13 @@ ipcMain.handle("desktop:monitor-mute-sku", () => ({
 ipcMain.handle("desktop:monitor-event-log", (_e, opts = {}) => ({
   ok: true,
   events: readMonitorEvents(path.join(app.getPath("userData"), "j1ms-desktop"), {
+    limit: Number(opts.limit) || 100,
+  }),
+}));
+
+ipcMain.handle("desktop:checkout-run-log", (_e, opts = {}) => ({
+  ok: true,
+  runs: readCheckoutRuns(path.join(app.getPath("userData"), "j1ms-desktop"), {
     limit: Number(opts.limit) || 100,
   }),
 }));

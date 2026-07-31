@@ -919,7 +919,18 @@ function finishResult(job, res, summary) {
       : null;
   const failedStep =
     res?.failedStep ??
-    (Array.isArray(res?.steps) ? [...res.steps].reverse().find((s) => s && s.ok === false)?.step : null) ??
+    (Array.isArray(res?.steps)
+      ? [...res.steps]
+          .reverse()
+          .find(
+            (s) =>
+              s &&
+              s.ok === false &&
+              // Soft pre-ATC step — don't mask a later pay/checkout failure.
+              String(s.step || "") !== "shipping_ensure",
+          )?.step ||
+        [...res.steps].reverse().find((s) => s && s.ok === false)?.step
+      : null) ??
     null;
   console.log(
     "[desktop:run]",
@@ -953,6 +964,8 @@ function finishResult(job, res, summary) {
     stockStatus: outcome.stockStatus,
     proxyAttempts: Array.isArray(res?.proxyAttempts) ? res.proxyAttempts : null,
     proxyRotated: Boolean(res?.proxyRotated),
+    // Already masked by summarizePayload — safe for local troubleshooting log.
+    proxy: summary.proxy || null,
     debugError,
     checkoutStage: res?.checkoutStage ?? null,
     failedStep,

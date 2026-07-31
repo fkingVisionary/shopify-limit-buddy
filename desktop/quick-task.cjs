@@ -190,6 +190,10 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
 function contextFromMonitorHit(hit, opts = {}) {
   const area = String(opts.area || "au").toLowerCase();
   const productId = String(hit?.productId || "").trim();
+  const title = hit?.title || hit?.productName || hit?.meta?.title || productId;
+  const taskGroup = String(hit?.taskGroup || hit?.group || title || productId)
+    .trim()
+    .slice(0, 80);
   const inStock =
     hit?.inStock != null
       ? Boolean(hit.inStock)
@@ -198,9 +202,11 @@ function contextFromMonitorHit(hit, opts = {}) {
         : null;
   return {
     store: opts.store || "bandai",
-    title: hit?.title || hit?.productName || hit?.meta?.title || productId,
+    title,
     sku: productId,
     productId,
+    taskGroup,
+    group: taskGroup,
     url: productId ? `https://p-bandai.com/${area}/item/${productId}` : "",
     pdpUrl: productId ? `https://p-bandai.com/${area}/item/${productId}` : "",
     reason: hit?.reason || "restock",

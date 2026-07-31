@@ -111,6 +111,20 @@ function isAkamaiWwwBlocked(res) {
   );
 }
 
+/** Host:port only for console / logs — never user:pass. */
+function maskProxyForLog(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "(direct — this machine's egress)";
+  try {
+    const withScheme = /^[a-z]+:\/\//i.test(s) ? s : `http://${s}`;
+    const u = new URL(withScheme);
+    if (!u.hostname) return "(proxy)";
+    return u.port ? `${u.hostname}:${u.port}` : u.hostname;
+  } catch {
+    return s.replace(/^[a-z]+:\/\//i, "").replace(/^[^@]+@/, "").split("/")[0] || "(proxy)";
+  }
+}
+
 function summarizePayload(payload) {
   return {
     taskId: payload.taskId,
@@ -120,7 +134,7 @@ function summarizePayload(payload) {
     dryRun: payload.dryRun !== false,
     kmartMode: payload.kmartMode || "current",
     transport: payload.forceTls === true || payload.transport === "tls" ? "tls" : "undici",
-    proxy: payload.proxy || "(direct — this machine's egress)",
+    proxy: maskProxyForLog(payload.proxy),
     hasCard: Boolean(payload.card?.number),
     hasProfile: Boolean(payload.profile?.email || payload.profile?.first_name),
   };
@@ -141,5 +155,6 @@ module.exports = {
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
   summarizePayload,
+  maskProxyForLog,
   stageLogLine,
 };

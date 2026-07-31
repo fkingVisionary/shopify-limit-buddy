@@ -1000,10 +1000,16 @@ function createSmartActionsEngine(deps = {}) {
       1,
       Math.min(20, Number(config.perProfile != null ? config.perProfile : config.count) || 1),
     );
-    const mode = String(config.bandaiMode || (usePreset ? preset.bandaiMode : "checkout"));
-    const store = String(config.store || (usePreset ? preset.store : "bandai"));
-    const taskGroup = String(config.taskGroup || "").trim().slice(0, 80);
-    const profileGroup = String(config.profileGroup || "").trim();
+    const mode = String(
+      applyTemplate(config.bandaiMode || (usePreset ? preset.bandaiMode : "checkout"), runCtx) ||
+        "checkout",
+    );
+    const store = String(
+      applyTemplate(config.store || (usePreset ? preset.store : "bandai"), runCtx) || "bandai",
+    );
+    // Always expand {{taskGroup}} / {{title}} — raw placeholders hide tasks in a fake group.
+    const taskGroup = applyTemplate(config.taskGroup || "", runCtx).trim().slice(0, 80);
+    const profileGroup = applyTemplate(config.profileGroup || "", runCtx).trim();
 
     let target;
     if (runCtx.hit) {

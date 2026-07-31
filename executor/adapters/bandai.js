@@ -936,6 +936,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   }
 
   // Ensure a shipping address exists for GE (fresh agen often has none → checkout_address).
+  // Soft: continue even if this fails — GE can still fill from the desktop profile.
   const shipProfile = profileFromTask(task);
   await tStep("shipping_ensure", async () => {
     try {
@@ -948,28 +949,44 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       if (Array.isArray(rows) && rows.length > 0) {
         return { ok: true, status: list.status, note: `shipping already ${rows.length}` };
       }
+      const phoneDigits = String(shipProfile.phone || "")
+        .replace(/\D/g, "")
+        .replace(/^61/, "")
+        .replace(/^0/, "")
+        .slice(-9);
       const body = {
         countryCode: "AU",
-        zipCode: String(shipProfile.zip || "4160").slice(0, 4),
-        address1: shipProfile.address1 || "133 Allenby Road",
+        zipCode: String(shipProfile.zip || shipProfile.postcode || "4160")
+          .replace(/\D/g, "")
+          .slice(0, 4),
+        address1: String(shipProfile.address1 || "").trim() || "133 Allenby Road",
         address2: "",
-        address3: shipProfile.city || "Alexandra Hills",
+        address3: String(shipProfile.city || "").trim() || "Alexandra Hills",
         address4: "",
-        address5: shipProfile.province || "QLD",
+        address5: String(shipProfile.province || shipProfile.state || "QLD")
+          .trim()
+          .toUpperCase()
+          .slice(0, 3) || "QLD",
         name: {
-          name1: shipProfile.first_name || "Alex",
-          name2: shipProfile.last_name || "Buyer",
+          name1: String(shipProfile.first_name || shipProfile.firstName || "Alex").trim(),
+          name2: String(shipProfile.last_name || shipProfile.lastName || "Buyer").trim(),
         },
-        phone1: shipProfile.phone
-          ? { countryNo: "61", phoneNo: String(shipProfile.phone).replace(/\D/g, "").slice(-9) }
-          : undefined,
         defaultFlag: true,
       };
+      // Bandai rejects phone1 with wrong shape (HTTP 400 Invalid request content).
+      if (phoneDigits.length === 9) {
+        body.phone1 = { countryNo: "61", phoneNo: phoneDigits };
+      }
       const { status, json } = await session.apiJson("POST", "/api/my/shippingAddresses", {
         body,
         referer: `${session.base}/mypage`,
       });
-      const err = json?.detail || json?.error || json?.message || null;
+      const err =
+        json?.detail ||
+        json?.title ||
+        json?.error ||
+        json?.message ||
+        (typeof json === "string" ? json : null);
       return {
         ok: status >= 200 && status < 300,
         status,
@@ -979,7 +996,6 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       return { ok: false, status: null, note: e?.message || String(e) };
     }
   });
-  // Soft: continue even if shipping_ensure fails — lab accounts may already be fine.
 
   if (chanceOnly) {
     await closeBridge();

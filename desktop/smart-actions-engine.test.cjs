@@ -619,6 +619,39 @@ test("create_tasks stamps taskGroup and toasts", async () => {
   assert.ok(toasts.some((t) => /Created 1/.test(String(t.message || ""))));
 });
 
+test("create_tasks expands {{taskGroup}} from hit title", async () => {
+  const { engine, created, tasks, gotos } = makeEngine();
+  engine.upsert({
+    id: "sa_tmpl_group",
+    name: "Tmpl group",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [{ field: "sku", op: "equals", value: "N88" }],
+    actions: [
+      {
+        type: "create_tasks",
+        config: {
+          usePreset: true,
+          taskGroup: "{{taskGroup}}",
+          labelTemplate: "{{title}}",
+          count: 1,
+        },
+      },
+    ],
+  });
+  await engine.handleMonitorHit({
+    productId: "N88",
+    title: "Piece Title",
+    reason: "restock",
+  });
+  // Monitor ctx defaults taskGroup to title when pack still has {{taskGroup}}.
+  assert.equal(created[0].taskGroup, "Piece Title");
+  assert.equal(tasks[0].taskGroup, "Piece Title");
+  assert.ok(gotos.includes("Piece Title"));
+  assert.notEqual(created[0].taskGroup, "{{taskGroup}}");
+});
+
 test("create_tasks fails without Quick Task profile", async () => {
   const { engine, created } = makeEngine({
     settings: { quickTaskPreset: { profileId: null, proxyGroupId: null } },

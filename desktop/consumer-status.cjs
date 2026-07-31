@@ -193,6 +193,14 @@ function consumerOutcome(res) {
   if (isPaymentDeclined(res)) {
     return { code: "declined", label: OUTCOME.declined, stockStatus: "ok" };
   }
+  // Soft member-address POST failed and nothing later recovered — treat as address.
+  if (String(res.failedStep || "") === "shipping_ensure") {
+    return {
+      code: "checkout_address",
+      label: OUTCOME.checkout_address,
+      stockStatus: "unknown",
+    };
+  }
   return { code: "error", label: OUTCOME.error, stockStatus: "unknown" };
 }
 

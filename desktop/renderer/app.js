@@ -4638,34 +4638,52 @@ window.desktop.onEvent((evt) => {
     (evt.taskGroup || (evt.phase === "tasks_created" && evt.taskIds?.length))
   ) {
     const group = String(evt.taskGroup || "");
-    if (group) {
-      taskGroupFilter = group;
+    const taskIds = Array.isArray(evt.taskIds) ? evt.taskIds.map(String) : [];
+    void (async () => {
+      // Pull fresh snapshot — Watchdog can race ahead of SA create and leave UI stale.
+      try {
+        const snap = await window.desktop?.getState?.();
+        if (snap) applyState(snap);
+      } catch {
+        /* ignore */
+      }
+      if (group) {
+        taskGroupFilter = group;
+        const inGroup = (state?.tasks || []).filter(
+          (t) => groupKey(t.taskGroup) === groupKey(group),
+        );
+        // If create stamped a different group (or none), don't strand on an empty rail.
+        if (!inGroup.length && taskIds.length) {
+          const any = (state?.tasks || []).some((t) => taskIds.includes(String(t.id)));
+          taskGroupFilter = any ? "all" : group;
+        } else if (!inGroup.length && !taskIds.length) {
+          taskGroupFilter = "all";
+        }
+      } else if (taskIds.length) {
+        taskGroupFilter = "all";
+      }
       setTab("tasks");
       try {
         renderTaskGroupRail();
         renderTasks();
+        if (taskIds[0]) {
+          const row = document.querySelector(`[data-task-row="${CSS.escape(taskIds[0])}"]`);
+          row?.scrollIntoView?.({ behavior: "smooth", block: "nearest" });
+        }
       } catch {
         /* ignore */
       }
-      if (evt.phase === "tasks_created") {
+      if (evt.phase === "tasks_created" && taskIds.length) {
         toast(
-          `Created ${(evt.taskIds || []).length} task(s) in ${group}`,
+          group && taskGroupFilter === group
+            ? `Created ${taskIds.length} task(s) in ${group}`
+            : `Created ${taskIds.length} task(s)`,
           "ok",
         );
-      } else {
+      } else if (group && taskGroupFilter === group) {
         toast(`Task group · ${group}`, "muted");
       }
-    } else if (evt.phase === "tasks_created" && evt.taskIds?.length) {
-      taskGroupFilter = "all";
-      setTab("tasks");
-      try {
-        renderTaskGroupRail();
-        renderTasks();
-      } catch {
-        /* ignore */
-      }
-      toast(`Created ${evt.taskIds.length} task(s)`, "ok");
-    }
+    })();
   }
   if (evt.type === "navigate" && evt.tab) {
     setTab(evt.tab);
