@@ -1,0 +1,744 @@
+﻿{
+    "ok":  true,
+    "updatedAt":  "2026-07-30T04:11:47.836Z",
+    "count":  67,
+    "entries":  [
+                    {
+                        "sku":  "N2890904001",
+                        "areaItemNo":  "NAI0859145AU",
+                        "areaItemNos":  [
+                                            "NAI0859145AU"
+                                        ],
+                        "title":  "GUNDAM CARD GAME 1st Anniversary Set",
+                        "area":  "au",
+                        "source":  "enrich",
+                        "updatedAt":  1785384707835
+                    },
+                    {
+                        "sku":  "N2903432003",
+                        "areaItemNo":  "NAI0871504AU",
+                        "areaItemNos":  [
+                                            "NAI0871504AU"
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+                        "area":  "au",
+                        "source":  "enrich",
+                        "updatedAt":  1785384707835
+                    },
+                    {
+                        "sku":  "N2826596002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set Heroic Beginnings [ST01A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2826595002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set SEED Strike [ST04A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2826595003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set SEED Strike [ST04A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2837454001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam GQuuuuuuX HELLO, ARE YOU IN A HURRY T-shirt",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2870504001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME Official Playmat and Card Set -Mobile Suit Gundam 00-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2847983001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway MS Illustration Acrylic Standees (Big Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2847986001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway MS Illustration Acrylic Standees (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2826597002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set Wings of Advance [ST02A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2853371001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "[PC02A] GUNDAM CARD GAME Premium Card Collection GUNDAM ASSEMBLE Set -Mobile Suit Gundam GQuuuuuuX-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2853370001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "[PC01A] GUNDAM CARD GAME Premium Card Collection GUNDAM ASSEMBLE Set -Mobile Suit Gundam IRON-BLOODED ORPHANS-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2826594002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set Zeon\u0027s Rush [ST03A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2826594003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set Zeon\u0027s Rush [ST03A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2847999001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway Acrylic Standees (Big Size)– Fourth Collection",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2848000001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway Acrylic Standees (Standard Size)– Fourth Collection",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2803395004",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing 2nd Collection of Acrylic Standees",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2803395003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing 2nd Collection of Acrylic Standees",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2803395005",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing 2nd Collection of Acrylic Standees",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2803418004",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing 2nd Collection of Acrylic Standees (Big Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2803418003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing 2nd Collection of Acrylic Standees (Big Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2828968002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "[PB01] GUNDAM CARD GAME Premium Accessory Set -Mobile Suit Gundam Wing-[April 2026 Delivery]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2828968001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "[PB01] GUNDAM CARD GAME Premium Accessory Set -Mobile Suit Gundam Wing-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2814268001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing All-Over Print T-shirt",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2725520002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam SEED FREEDOM Full Panel T-shirt",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2764686004",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G JAPAN Gundam Series 45th Anniversary T-shirt ν GUNDAM \u0026 UNICORN GUNDAM",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2847989001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway SD Gundam Ξ GUNDAM Acrylic Charm",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2823068001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G Mobile Suit Gundam Face Pins Collection GUNDAM",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2814268002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing All-Over Print T-shirt",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2863455001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Live Action Edition vol.2 Straw Hat Crew-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2856354001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME English Version 3rd Anniversary Set",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2863371001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Best Selection Vol.6-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2863372001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Best Selection vol.7-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2883032001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Live Action Edition vol.2 Baroque Works-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2883032002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Live Action Edition vol.2 Baroque Works-[November 2026 Delivery]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2863455002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Live Action Edition vol.2 Straw Hat Crew- [November 2026 Delivery]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2835216001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME ONE PIECE Heroines Special Set",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2835217001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Japanese 3rd ANNIVERSARY SET",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2860266001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Official Playmat Limited Edition Vol.5",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2863373001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Official Playmat Limited Edition vol.6",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2903432001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2829153001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Official Playmat Limited Edition Vol.4",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2903432004",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2829516001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Best Selection Vol.5-",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2829516005",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "ONE PIECE CARD GAME Premium Card Collection -Best Selection Vol.5-[February 2026 Delivery]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2831464002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Aurora Acrylic Standees (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2831464003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Aurora Acrylic Standees (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2831463001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Aurora Acrylic Standees (Big Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2831464001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Aurora Acrylic Standees (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2831464004",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Aurora Acrylic Standees (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2825734001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x NEW ERA(R) Mobile Suit Gundam ONE YEAR 9FIFTY(TM)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2825734003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x NEW ERA(R) Mobile Suit Gundam ONE YEAR 9FIFTY(TM)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2825734002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x NEW ERA(R) Mobile Suit Gundam ONE YEAR 9FIFTY(TM)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2789066005",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x ALPHA Mobile Suit Gundam: The One Year War ZEON FORCES MODEL LIGHT MA-1",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2789065005",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x ALPHA Mobile Suit Gundam: The One Year War EARTH FEDERATION FORCES MODEL LIGHT MA-1",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886368
+                    },
+                    {
+                        "sku":  "N2865037001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway Boxer Briefs",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2846537001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Opening Scene T-Shirt",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2846528001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Wing Costume Charm Set A",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2846557001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam GQuuuuuuX Costume Charm Set",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2846514001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Iron-Blooded Orphans Costume Charm Set A",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2839157001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G Mobile Suit Gundam Iron-Blooded Orphans TEKKADAN Pin (with a case)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2841782001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x NEW ERA(R) Mobile Suit Gundam Title Logo 9FORTY(TM) A-Frame Trucker",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2841782002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "STRICT-G x NEW ERA(R) Mobile Suit Gundam Title Logo 9FORTY(TM) A-Frame Trucker",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2831397002",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway FORTUNE Acrylic Standee (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2831396001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway FORTUNE Acrylic Standee (Big Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2831397001",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "Mobile Suit Gundam Hathaway FORTUNE Acrylic Standee (Standard Size)",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    },
+                    {
+                        "sku":  "N2826596003",
+                        "areaItemNo":  "",
+                        "areaItemNos":  [
+
+                                        ],
+                        "title":  "GUNDAM CARD GAME ASSEMBLE Starter Set Heroic Beginnings [ST01A]",
+                        "area":  "au",
+                        "source":  "poll",
+                        "updatedAt":  1785377886367
+                    }
+                ]
+}

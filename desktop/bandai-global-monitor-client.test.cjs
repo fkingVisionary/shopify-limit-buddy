@@ -6,6 +6,8 @@ const {
   listGlobalWatchTasks,
   parseWatch,
   eventMatchesWatch,
+  parseAdminWatchlistFromHealth,
+  formatMonitorFeedStatusLine,
 } = require("./bandai-global-monitor-client.cjs");
 
 test("parseWatch extracts SKU from PDP URL", () => {
@@ -99,4 +101,139 @@ test("checkout result discord embed", () => {
     { store: "bandai" },
   );
   assert.match(fail.embeds[0].title, /failed/);
+});
+
+test("parseAdminWatchlistFromHealth counts keywords", () => {
+  const w = parseAdminWatchlistFromHealth({
+    area: "au",
+    keywords: ["GUNDAM", "ONE PIECE", "N2890904001", ""],
+  });
+  assert.equal(w.adminArea, "au");
+  assert.equal(w.adminWatchCount, 3);
+  assert.deepEqual(w.adminKeywords, ["GUNDAM", "ONE PIECE", "N2890904001"]);
+});
+
+test("client snapshot includes admin watchlist from /health", async () => {
+  const calls = [];
+  const client = createBandaiGlobalMonitorClient({
+    getSettings: () => ({
+      bandaiGlobalMonitorEnabled: true,
+      bandaiGlobalMonitorUrl: "https://example.test",
+    }),
+    getTasks: () => [],
+    emitLog: () => {},
+    fetchImpl: async (url) => {
+      calls.push(String(url));
+      assert.match(String(url), /\/health$/);
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          area: "au",
+          keywords: ["GUNDAM", "N2890904001", "ONE PIECE"],
+        }),
+      };
+    },
+  });
+  const ok = await client.refreshAdminWatchlist();
+  assert.equal(ok, true);
+  const snap = client.snapshot();
+  assert.equal(snap.adminWatchCount, 3);
+  assert.equal(snap.adminArea, "au");
+  assert.deepEqual(snap.adminKeywords, ["GUNDAM", "N2890904001", "ONE PIECE"]);
+  assert.equal(snap.watchTasks, 0);
+  assert.equal(calls.length, 1);
+
+  client._setAdminWatchlistFromHealth({ area: "nz", keywords: ["A"] });
+  assert.equal(client.snapshot().adminWatchCount, 1);
+  assert.equal(client.snapshot().adminArea, "nz");
+});
+
+test("mergeRemoteHits fills feed without firing onFeedHit", async () => {
+  let liveHits = 0;
+  const client = createBandaiGlobalMonitorClient({
+    getSettings: () => ({
+      bandaiGlobalMonitorEnabled: true,
+      bandaiGlobalMonitorUrl: "https://example.test",
+    }),
+    getTasks: () => [],
+    onFeedHit: () => {
+      liveHits += 1;
+    },
+    emitLog: () => {},
+  });
+  const { merged } = client.mergeRemoteHits([
+    {
+      productId: "N2890904001",
+      reason: "restock",
+      title: "Gundam",
+      at: "2026-07-30T02:33:00.000Z",
+      inStock: true,
+    },
+    {
+      productId: "N2890904001",
+      reason: "restock",
+      title: "Gundam",
+      at: "2026-07-30T02:33:00.000Z",
+      inStock: true,
+    },
+  ]);
+  assert.equal(merged, 1);
+  assert.equal(liveHits, 0);
+  assert.equal(client.getFeed().length, 1);
+  assert.equal(client.getFeed()[0].productId, "N2890904001");
+});
+
+test("initialFeed hydrates persisted rows", () => {
+  const client = createBandaiGlobalMonitorClient({
+    getSettings: () => ({ bandaiGlobalMonitorEnabled: true }),
+    getTasks: () => [],
+    initialFeed: [
+      {
+        productId: "N2903432003",
+        title: "ONE PIECE",
+        reason: "restock",
+        at: "2026-07-30T01:00:00.000Z",
+        receivedAt: Date.parse("2026-07-30T01:00:00.000Z"),
+      },
+    ],
+    emitLog: () => {},
+  });
+  assert.equal(client.getFeed().length, 1);
+  assert.equal(client.snapshot().feed[0].productId, "N2903432003");
+});
+
+test("formatMonitorFeedStatusLine hides host and admin wording", () => {
+  const line = formatMonitorFeedStatusLine({
+    connected: true,
+    running: true,
+    url: "https://j1ms-bandai-monitor-production.up.railway.app",
+    hits: 2,
+    adminWatchCount: 3,
+    watchTasks: 0,
+    engineRunning: true,
+  });
+  assert.match(line, /connected/);
+  assert.match(line, /3 watched/);
+  assert.equal(line.includes("railway"), false);
+  assert.equal(line.includes("admin"), false);
+  assert.equal(line.includes("0 watch task"), false);
+  assert.equal(line.includes("watch task"), false);
+
+  const noAdmin = formatMonitorFeedStatusLine({
+    connected: true,
+    hits: 0,
+    adminWatchCount: null,
+    watchTasks: 0,
+  });
+  assert.equal(noAdmin.includes("watch task"), false);
+  assert.equal(noAdmin.includes("admin"), false);
+
+  const advanced = formatMonitorFeedStatusLine({
+    connected: true,
+    adminWatchCount: 5,
+    watchTasks: 2,
+  });
+  assert.match(advanced, /5 watched/);
+  assert.match(advanced, /2 local monitor/);
 });

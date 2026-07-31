@@ -1,0 +1,34 @@
+﻿{
+    "ok":  true,
+    "vault":  {
+                  "accounts":  [
+
+                               ],
+                  "profile":  {
+                                  "label":  "default",
+                                  "email":  "",
+                                  "first_name":  "",
+                                  "last_name":  "",
+                                  "address1":  "",
+                                  "city":  "",
+                                  "province":  "",
+                                  "zip":  "",
+                                  "phone":  "",
+                                  "card_number":  "",
+                                  "card_cvv":  "",
+                                  "card_exp_month":  "",
+                                  "card_exp_year":  "",
+                                  "card_name":  "",
+                                  "_hasCard":  false
+                              },
+                  "checkoutProxies":  "",
+                  "proxyCount":  0,
+                  "defaults":  {
+                                   "bandaiArea":  "au",
+                                   "bandaiSku":  "N2890904001",
+                                   "kmartUrl":  "",
+                                   "kmartVariantId":  ""
+                               },
+                  "updatedAt":  null
+              }
+}

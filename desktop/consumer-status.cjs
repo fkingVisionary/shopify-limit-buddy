@@ -16,9 +16,8 @@ const LIVE = {
 const OUTCOME = {
   confirmed: "Order confirmed",
   complete: "Complete",
-  cart_held: "In cart",
   oos: "Out of stock",
-  akamai: "Failed on Akamai",
+  akamai: "Blocked by store protection",
   proxy: "Proxy error",
   declined: "Payment declined",
   held_pay_retry: "Cart held — retry pay",
@@ -143,15 +142,6 @@ function consumerOutcome(res) {
     }
     if (res.orderNumber) {
       return { code: "confirmed", label: OUTCOME.confirmed, stockStatus: "ok" };
-    }
-    // ATC-only / stop-at-cart: cart held for ~30 min pay window.
-    if (
-      res.atcOnly === true ||
-      (res.heldPayRetry === true &&
-        (res.heldCart?.cartSn || res.cartSn) &&
-        /^(cart|cart_hold)$/i.test(String(res.checkoutStage || "")))
-    ) {
-      return { code: "cart_held", label: OUTCOME.cart_held, stockStatus: "ok" };
     }
     return { code: "complete", label: OUTCOME.complete, stockStatus: "ok" };
   }

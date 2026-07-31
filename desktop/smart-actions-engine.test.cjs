@@ -12,6 +12,7 @@ function makeEngine(opts = {}) {
   let tasks = opts.tasks || [];
   const created = [];
   const started = [];
+  const startOpts = [];
   const stopped = [];
   const patched = [];
   const harvest = [];
@@ -35,6 +36,13 @@ function makeEngine(opts = {}) {
       ...(opts.settings || {}),
     }),
     getTasks: () => tasks,
+    getProfiles: () =>
+      opts.profiles || [
+        { id: "prof_1", name: "P1", profileGroup: "Main" },
+        { id: "prof_2", name: "P2", profileGroup: "Main" },
+        { id: "prof_3", name: "P3", profileGroup: "Other" },
+      ],
+    getStoreGroups: () => opts.storeGroups || [],
     idFn: (p) => `${p || "sa"}_${created.length + started.length + 1}`,
     upsertTask: (task) => {
       const row = { ...task, id: task.id || `task_${created.length + 1}`, enabled: true };
@@ -44,8 +52,9 @@ function makeEngine(opts = {}) {
       else tasks.push(row);
       return row;
     },
-    startTasks: (ids) => {
+    startTasks: (ids, optsIn = {}) => {
       started.push([...ids]);
+      startOpts.push({ ...optsIn });
       return { ok: true, enqueued: ids.length };
     },
     stopTasks: (ids) => {
@@ -83,6 +92,7 @@ function makeEngine(opts = {}) {
     },
     created,
     started,
+    startOpts,
     stopped,
     patched,
     harvest,
@@ -125,6 +135,44 @@ test("Product Monitor → filters → Create+Start → Completed", async () => {
   assert.equal(created[0].bandaiMode, "checkout");
   assert.deepEqual(started[0], [created[0].id]);
   assert.equal(actions[0].lastResult, OUTCOMES.COMPLETED);
+});
+
+test("create_tasks expands profile group × per profile", async () => {
+  const { engine, created, started } = makeEngine();
+  engine.upsert({
+    id: "sa_pg",
+    name: "Group expand",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [],
+    actions: [
+      {
+        type: "create_tasks",
+        config: {
+          usePreset: true,
+          profileGroup: "Main",
+          perProfile: 2,
+          labelTemplate: "{{title}}",
+          taskGroup: "Drop G",
+        },
+      },
+      { type: "start_tasks", config: { target: { scope: "created" } } },
+    ],
+  });
+  const hit = await engine.handleMonitorHit({
+    productId: "N1",
+    title: "Item",
+    reason: "restock",
+  });
+  assert.equal(hit[0].outcome, OUTCOMES.COMPLETED);
+  // Main has prof_1 + prof_2, × 2 each
+  assert.equal(created.length, 4);
+  assert.deepEqual(
+    created.map((t) => t.profileId).sort(),
+    ["prof_1", "prof_1", "prof_2", "prof_2"],
+  );
+  assert.equal(started[0].length, 4);
 });
 
 test("run interval debounce skips duplicate Completed spam", async () => {
@@ -299,6 +347,77 @@ test("update_tasks can slash bandaiMonitorDelayMs for pre-drop tighten", async (
   assert.equal(tasks.find((t) => t.id === "t_delay").bandaiMonitorDelayMs, 0);
 });
 
+test("stop_after waits then stops task group", async () => {
+  const ctx = makeEngine({
+    tasks: [{ id: "t1", taskGroup: "Drop A", enabled: true, store: "bandai" }],
+  });
+  ctx.engine.upsert({
+    id: "sa_stop_after",
+    name: "Stop after",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [],
+    actions: [
+      {
+        type: "stop_after",
+        config: {
+          delayMs: 5,
+          target: { scope: "group", taskGroup: "Drop A" },
+        },
+      },
+    ],
+  });
+  const r = await ctx.engine.handleMonitorHit({
+    productId: "N1",
+    title: "Test",
+    reason: "restock",
+  });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(ctx.stopped, [["t1"]]);
+});
+
+test("delete_tasks removes targeted ids", async () => {
+  let tasks = [
+    { id: "t1", taskGroup: "G", enabled: true },
+    { id: "t2", taskGroup: "G", enabled: true },
+  ];
+  const deleted = [];
+  const { engine } = makeEngine({ tasks });
+  // Override delete via fresh engine with deleteTasks
+  let actions = [];
+  const eng = createSmartActionsEngine({
+    getActions: () => actions,
+    saveActions: (next) => {
+      actions = next;
+    },
+    getSettings: () => ({ quickTaskPreset: {} }),
+    getTasks: () => tasks,
+    idFn: (p) => `${p}_d`,
+    upsertTask: (t) => t,
+    startTasks: () => ({ ok: true }),
+    deleteTasks: (ids) => {
+      deleted.push([...ids]);
+      const set = new Set(ids);
+      tasks = tasks.filter((t) => !set.has(t.id));
+    },
+    emit: () => {},
+  });
+  eng.upsert({
+    id: "sa_del",
+    name: "Delete",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      { type: "delete_tasks", config: { target: { scope: "group", taskGroup: "G" } } },
+    ],
+  });
+  const r = await eng.handleMonitorHit({ productId: "N9", title: "X", reason: "restock" });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(deleted[0].sort(), ["t1", "t2"]);
+});
+
 test("tickSchedule honors HH:MM:SS second precision", async () => {
   const { engine, harvest } = makeEngine();
   const now = Date.UTC(2026, 6, 29, 12, 59, 30);
@@ -320,4 +439,131 @@ test("tickSchedule honors HH:MM:SS second precision", async () => {
   assert.deepEqual(harvest, ["start"]);
   const again = await engine.tickSchedule(now + 500);
   assert.equal(again.length, 0);
+});
+
+test("store_group target resolves tasks by store membership", async () => {
+  const tasks = [
+    { id: "t_b", store: "bandai", enabled: true, taskGroup: "G" },
+    { id: "t_k", store: "kmart", enabled: true, taskGroup: "G" },
+    { id: "t_t", store: "toymate", enabled: true, taskGroup: "G" },
+  ];
+  const { engine, started } = makeEngine({
+    tasks,
+    storeGroups: [{ id: "sg_tcg", name: "TCG", stores: ["bandai", "toymate"] }],
+  });
+  engine.upsert({
+    id: "sa_sg",
+    name: "Store group start",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      {
+        type: "start_tasks",
+        config: { target: { scope: "store_group", storeGroup: "sg_tcg" } },
+      },
+    ],
+  });
+  const r = await engine.handleMonitorHit({
+    productId: "N1",
+    title: "X",
+    reason: "restock",
+    store: "bandai",
+  });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(started[0].sort(), ["t_b", "t_t"]);
+});
+
+test("storeGroup filter gates monitor hits", async () => {
+  const { engine, started } = makeEngine({
+    storeGroups: [{ id: "sg_b", name: "Bandai only", stores: ["bandai"] }],
+  });
+  engine.upsert({
+    id: "sa_fg",
+    name: "Filter store group",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [{ field: "storeGroup", op: "is", value: "sg_b" }],
+    actions: [
+      { type: "create_tasks", config: { usePreset: true, count: 1, labelTemplate: "{{sku}}" } },
+      { type: "start_tasks", config: { target: { scope: "created" } } },
+    ],
+  });
+  const miss = await engine.handleMonitorHit({
+    productId: "N2",
+    title: "Kmart item",
+    reason: "restock",
+    store: "kmart",
+  });
+  assert.equal(miss[0]?.outcome, OUTCOMES.FILTERED);
+  assert.equal(started.length, 0);
+
+  const hit = await engine.handleMonitorHit({
+    productId: "N3",
+    title: "Bandai item",
+    reason: "restock",
+    store: "bandai",
+  });
+  assert.equal(hit[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.equal(started.length, 1);
+});
+
+test("stagger_start_tasks passes stagger opts to startTasks", async () => {
+  const tasks = [
+    { id: "a", store: "bandai", enabled: true, taskGroup: "Drop" },
+    { id: "b", store: "bandai", enabled: true, taskGroup: "Drop" },
+  ];
+  const { engine, started, startOpts } = makeEngine({ tasks });
+  engine.upsert({
+    id: "sa_stagger",
+    name: "Stagger",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      {
+        type: "stagger_start_tasks",
+        config: {
+          target: { scope: "group", taskGroup: "Drop" },
+          staggerGapMs: 75,
+        },
+      },
+    ],
+  });
+  const r = await engine.handleMonitorHit({ productId: "N4", title: "X", reason: "restock" });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(started[0].sort(), ["a", "b"]);
+  assert.equal(startOpts[0].stagger, true);
+  assert.equal(startOpts[0].staggerGapMs, 75);
+});
+
+test("stagger_start_task_group forces group scope + stagger", async () => {
+  const tasks = [
+    { id: "g1", store: "bandai", enabled: true, taskGroup: "Wave" },
+    { id: "g2", store: "bandai", enabled: true, taskGroup: "Wave" },
+    { id: "other", store: "bandai", enabled: true, taskGroup: "Other" },
+  ];
+  const { engine, started, startOpts } = makeEngine({ tasks });
+  engine.upsert({
+    id: "sa_stg",
+    name: "Stagger group",
+    enabled: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    actions: [
+      {
+        type: "stagger_start_task_group",
+        config: {
+          target: { scope: "all", taskGroup: "Wave" },
+          staggerGapMs: 40,
+        },
+      },
+    ],
+  });
+  const r = await engine.handleMonitorHit({ productId: "N5", title: "X", reason: "restock" });
+  assert.equal(r[0]?.outcome, OUTCOMES.COMPLETED);
+  assert.deepEqual(started[0].sort(), ["g1", "g2"]);
+  assert.equal(startOpts[0].stagger, true);
+  assert.equal(startOpts[0].staggerGapMs, 40);
 });

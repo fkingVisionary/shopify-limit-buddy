@@ -45,30 +45,3 @@ test("decline without cart ids stays declined", () => {
   assert.equal(isHeldPayRetry(res), false);
   assert.equal(consumerOutcome(res).code, "declined");
 });
-
-test("ATC-only success maps to cart_held with In cart label", () => {
-  const res = {
-    ok: true,
-    atcOnly: true,
-    checkoutStage: "cart_hold",
-    heldPayRetry: true,
-    cartSn: 55,
-    cartItemSn: 3,
-    heldCart: { cartSn: 55, cartItemSn: 3, cartHoldAt: Date.now(), payWindowMs: 30 * 60_000 },
-  };
-  const out = consumerOutcome(res);
-  assert.equal(out.code, "cart_held");
-  assert.equal(out.label, OUTCOME.cart_held);
-});
-
-test("stop-at-cart ok + heldPayRetry maps to cart_held", () => {
-  const res = {
-    ok: true,
-    checkoutStage: "cart",
-    heldPayRetry: true,
-    cartSn: 1,
-    cartItemSn: 2,
-    heldCart: { cartSn: 1, cartItemSn: 2 },
-  };
-  assert.equal(consumerOutcome(res).code, "cart_held");
-});

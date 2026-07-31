@@ -11,6 +11,7 @@ const {
   parseBandaiProductInput,
   contextFromMonitorHit,
 } = require("./quick-task.cjs");
+const { findStoreGroup, storeIdsForGroup } = require("./store-groups.cjs");
 
 const OUTCOMES = Object.freeze({
   FILTERED: "Filtered",
@@ -27,22 +28,35 @@ const TRIGGERS = Object.freeze({
 const ACTION_TYPES = Object.freeze({
   CREATE_TASKS: "create_tasks",
   START_TASKS: "start_tasks",
+  STAGGER_START_TASKS: "stagger_start_tasks",
+  STAGGER_START_TASK_GROUP: "stagger_start_task_group",
   STOP_TASKS: "stop_tasks",
   DELETE_TASKS: "delete_tasks",
   UPDATE_TASKS: "update_tasks",
   WAIT: "wait",
+  STOP_AFTER: "stop_after",
   NOTIFY_DISCORD: "notify_discord",
+  NOTIFY_TOAST: "notify_toast",
   START_HARVESTER: "start_harvester",
   STOP_HARVESTER: "stop_harvester",
+  CREATE_TASK_GROUP: "create_task_group",
+  GOTO_TASK_GROUP: "goto_task_group",
 });
 
 const TARGET_SCOPES = Object.freeze({
   CREATED: "created",
   GROUP: "group",
+  STORE_GROUP: "store_group",
   ALL: "all",
 });
 
 const MAX_WAIT_MS = 30 * 60 * 1000;
+
+function clampStaggerGapMs(raw) {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 50;
+  return Math.max(0, Math.min(500, Math.round(n)));
+}
 
 function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
   if (type === ACTION_TYPES.CREATE_TASKS) {
@@ -72,6 +86,43 @@ function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
   if (type === ACTION_TYPES.WAIT) {
     return { type, config: { delaySec: 60 } };
   }
+  if (type === ACTION_TYPES.STOP_AFTER) {
+    return {
+      type,
+      config: {
+        delaySec: 60,
+        delayMin: 0,
+        delayHour: 0,
+        target: { scope: TARGET_SCOPES.GROUP, taskGroup: "" },
+      },
+    };
+  }
+  if (type === ACTION_TYPES.NOTIFY_TOAST) {
+    return {
+      type,
+      config: {
+        message: "Smart Action: {{title}} ({{sku}})",
+        level: "ok",
+      },
+    };
+  }
+  if (type === ACTION_TYPES.CREATE_TASK_GROUP) {
+    return {
+      type,
+      config: {
+        taskGroup: "{{taskGroup}}",
+        color: "",
+      },
+    };
+  }
+  if (type === ACTION_TYPES.GOTO_TASK_GROUP) {
+    return {
+      type,
+      config: {
+        taskGroup: "{{taskGroup}}",
+      },
+    };
+  }
   if (type === ACTION_TYPES.UPDATE_TASKS) {
     return {
       type,
@@ -99,6 +150,24 @@ function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
       },
     };
   }
+  if (type === ACTION_TYPES.STAGGER_START_TASKS) {
+    return {
+      type,
+      config: {
+        target: { scope: TARGET_SCOPES.CREATED, taskGroup: "", storeGroup: "" },
+        staggerGapMs: 50,
+      },
+    };
+  }
+  if (type === ACTION_TYPES.STAGGER_START_TASK_GROUP) {
+    return {
+      type,
+      config: {
+        target: { scope: TARGET_SCOPES.GROUP, taskGroup: "" },
+        staggerGapMs: 50,
+      },
+    };
+  }
   if (type === ACTION_TYPES.START_HARVESTER) {
     return { type, config: {} };
   }
@@ -117,6 +186,7 @@ function normalizeTarget(raw = {}, fallbackScope = TARGET_SCOPES.CREATED) {
     scope,
     taskGroup: String(raw.taskGroup || raw.group || "").trim(),
     store: String(raw.store || "").trim().toLowerCase(),
+    storeGroup: String(raw.storeGroup || raw.storeGroupId || "").trim(),
   };
 }
 
@@ -161,6 +231,18 @@ function normalizeAction(raw = {}) {
   const base = blankAction(t);
   const cfg = raw.config && typeof raw.config === "object" ? { ...base.config, ...raw.config } : { ...base.config };
   if (cfg.target) cfg.target = normalizeTarget(cfg.target, base.config?.target?.scope || TARGET_SCOPES.CREATED);
+  if (
+    t === ACTION_TYPES.STAGGER_START_TASKS ||
+    t === ACTION_TYPES.STAGGER_START_TASK_GROUP
+  ) {
+    cfg.staggerGapMs = clampStaggerGapMs(cfg.staggerGapMs);
+  }
+  if (t === ACTION_TYPES.STAGGER_START_TASK_GROUP) {
+    cfg.target = normalizeTarget(
+      { ...(cfg.target || {}), scope: TARGET_SCOPES.GROUP },
+      TARGET_SCOPES.GROUP,
+    );
+  }
   return { type: t, config: cfg };
 }
 
@@ -251,10 +333,22 @@ function sleep(ms) {
  * @param {(opts?: object) => Promise<object>|object} [deps.startHarvester]
  * @param {() => object} [deps.stopHarvester]
  * @param {(payload: object) => Promise<object>} [deps.notifyDiscord]
+ * @param {(payload: object) => void} [deps.notifyToast]
+ * @param {(opts: { taskGroup: string, color?: string }) => object} [deps.ensureTaskGroup]
+ * @param {(opts: { taskGroup: string }) => void} [deps.gotoTaskGroup]
  * @param {(evt: object) => void} [deps.emit]
  * @param {() => string} [deps.idFn]
  */
 function createSmartActionsEngine(deps = {}) {
+  function resolveWaitMs(config = {}) {
+    const hasMs = config.delayMs != null && config.delayMs !== "";
+    if (hasMs) return Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(Number(config.delayMs) || 0)));
+    const sec = Number(config.delaySec) || 0;
+    const min = Number(config.delayMin) || 0;
+    const hour = Number(config.delayHour) || 0;
+    const ms = (hour * 3600 + min * 60 + sec) * 1000;
+    return Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(ms)));
+  }
   const running = new Set(); // sa ids currently executing
 
   function list() {
@@ -339,6 +433,41 @@ function createSmartActionsEngine(deps = {}) {
       if (!g) return { ids: [], target, label: "group (empty name)", error: "Task group name required" };
       filtered = filtered.filter((t) => String(t.taskGroup || "").trim().toLowerCase() === g);
     }
+    if (target.scope === TARGET_SCOPES.STORE_GROUP) {
+      const key = target.storeGroup || target.taskGroup;
+      if (!key) {
+        return {
+          ids: [],
+          target,
+          label: "store group (empty)",
+          error: "Store group required",
+        };
+      }
+      const groups = deps.getStoreGroups?.() || [];
+      const group = findStoreGroup(groups, key);
+      if (!group) {
+        return {
+          ids: [],
+          target,
+          label: `store group "${key}"`,
+          error: `Store group not found: ${key}`,
+        };
+      }
+      const storeSet = storeIdsForGroup(groups, key);
+      filtered = filtered.filter((t) => storeSet.has(String(t.store || "").toLowerCase()));
+      if (target.store) {
+        filtered = filtered.filter((t) => String(t.store || "").toLowerCase() === target.store);
+      }
+      const ids = filtered.map((t) => t.id).filter(Boolean);
+      for (const id of ids) {
+        if (!runCtx.touchedTaskIds.includes(id)) runCtx.touchedTaskIds.push(id);
+      }
+      return {
+        ids,
+        target,
+        label: `store group "${group.name}" (${ids.length})`,
+      };
+    }
     if (target.store) {
       filtered = filtered.filter((t) => String(t.store || "").toLowerCase() === target.store);
     }
@@ -353,6 +482,52 @@ function createSmartActionsEngine(deps = {}) {
     return { ids, target, label };
   }
 
+  async function actionStartTasks(sa, step, runCtx, i, { stagger = false } = {}) {
+    const type = step.type;
+    let config = step.config || {};
+    if (type === ACTION_TYPES.STAGGER_START_TASK_GROUP) {
+      config = {
+        ...config,
+        target: normalizeTarget(
+          { ...(config.target || {}), scope: TARGET_SCOPES.GROUP },
+          TARGET_SCOPES.GROUP,
+        ),
+      };
+    }
+    const { ids, label, error } = resolveTargetIds(config, runCtx);
+    const stepKey = `action:${i}:${type}`;
+    if (error) {
+      appendLog(sa, { step: stepKey, level: "err", message: error });
+      return finish(sa, OUTCOMES.FAILED, error);
+    }
+    if (!ids.length) {
+      appendLog(sa, {
+        step: stepKey,
+        level: "warn",
+        message: `No tasks to start (${label})`,
+      });
+      return null;
+    }
+    const gapMs = stagger ? clampStaggerGapMs(config.staggerGapMs) : undefined;
+    const startOpts = stagger ? { stagger: true, staggerGapMs: gapMs } : {};
+    const res = deps.startTasks?.(ids, startOpts) || { ok: false, error: "startTasks unavailable" };
+    if (!res.ok) {
+      appendLog(sa, {
+        step: stepKey,
+        level: "err",
+        message: res.error || "start failed",
+      });
+      return finish(sa, OUTCOMES.FAILED, res.error || "Start Tasks failed");
+    }
+    const staggerNote = stagger ? ` · stagger ${gapMs}ms` : "";
+    appendLog(sa, {
+      step: stepKey,
+      level: "ok",
+      message: `Started ${res.enqueued ?? ids.length} job(s) · ${label}${staggerNote}`,
+    });
+    return null;
+  }
+
   async function runActions(sa, ctx) {
     const runCtx = {
       ...ctx,
@@ -365,19 +540,120 @@ function createSmartActionsEngine(deps = {}) {
       const type = step.type;
       try {
         if (type === ACTION_TYPES.WAIT) {
-          // Prefer explicit delayMs (tests / advanced); else delaySec from UI.
-          const hasMs =
-            step.config?.delayMs != null && step.config.delayMs !== "";
-          const msRaw = hasMs
-            ? Number(step.config.delayMs) || 0
-            : (Number(step.config?.delaySec) || 0) * 1000;
-          const ms = Math.max(0, Math.min(MAX_WAIT_MS, Math.floor(msRaw)));
+          const ms = resolveWaitMs(step.config || {});
           appendLog(sa, {
             step: `action:${i}:wait`,
             level: "info",
             message: `Waiting ${Math.round(ms / 1000)}s…`,
           });
           if (ms > 0) await sleep(ms);
+          continue;
+        }
+
+        if (type === ACTION_TYPES.STOP_AFTER) {
+          const ms = resolveWaitMs(step.config || {});
+          appendLog(sa, {
+            step: `action:${i}:stop_after`,
+            level: "info",
+            message: `Waiting ${Math.round(ms / 1000)}s before stop…`,
+          });
+          if (ms > 0) await sleep(ms);
+          const { ids, label, error } = resolveTargetIds(step.config || {}, runCtx);
+          if (error) {
+            appendLog(sa, { step: `action:${i}:stop_after`, level: "err", message: error });
+            return finish(sa, OUTCOMES.FAILED, error);
+          }
+          deps.stopTasks?.(ids);
+          appendLog(sa, {
+            step: `action:${i}:stop_after`,
+            level: "ok",
+            message: `Stopped ${ids.length} task(s) after wait · ${label}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.CREATE_TASK_GROUP) {
+          const group = applyTemplate(step.config?.taskGroup || "", runCtx).trim();
+          if (!group) {
+            appendLog(sa, {
+              step: `action:${i}:create_task_group`,
+              level: "err",
+              message: "Task group name required",
+            });
+            return finish(sa, OUTCOMES.FAILED, "Task group name required");
+          }
+          const res =
+            deps.ensureTaskGroup?.({
+              taskGroup: group,
+              color: String(step.config?.color || "").trim(),
+            }) || { ok: true, taskGroup: group, created: true };
+          if (res?.ok === false) {
+            appendLog(sa, {
+              step: `action:${i}:create_task_group`,
+              level: "err",
+              message: res.error || "create group failed",
+            });
+            return finish(sa, OUTCOMES.FAILED, res.error || "Create Task Group failed");
+          }
+          runCtx.taskGroup = group;
+          appendLog(sa, {
+            step: `action:${i}:create_task_group`,
+            level: "ok",
+            message: res?.existed ? `Task group ready: ${group}` : `Created task group: ${group}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.GOTO_TASK_GROUP) {
+          const group = applyTemplate(step.config?.taskGroup || "", runCtx).trim();
+          if (!group) {
+            appendLog(sa, {
+              step: `action:${i}:goto_task_group`,
+              level: "warn",
+              message: "No task group to navigate to",
+            });
+            continue;
+          }
+          deps.gotoTaskGroup?.({ taskGroup: group });
+          deps.emit?.({
+            type: "smartAction",
+            phase: "goto_task_group",
+            actionId: sa.id,
+            taskGroup: group,
+          });
+          appendLog(sa, {
+            step: `action:${i}:goto_task_group`,
+            level: "ok",
+            message: `Navigate to task group: ${group}`,
+          });
+          continue;
+        }
+
+        if (type === ACTION_TYPES.NOTIFY_TOAST) {
+          if (sa.notifications === false) {
+            appendLog(sa, {
+              step: `action:${i}:notify_toast`,
+              level: "info",
+              message: "Skipped (notifications off)",
+            });
+            continue;
+          }
+          const tmpl = step.config?.message || `Smart Action ${sa.name}: {{title}} ({{sku}})`;
+          const message = applyTemplate(tmpl, runCtx);
+          const level = String(step.config?.level || "ok");
+          deps.notifyToast?.({ message, level, actionId: sa.id });
+          deps.emit?.({
+            type: "smartAction",
+            phase: "toast",
+            actionId: sa.id,
+            message,
+            level,
+          });
+          appendLog(sa, {
+            step: `action:${i}:notify_toast`,
+            level: "ok",
+            message: "Desktop toast sent",
+          });
           continue;
         }
 
@@ -432,33 +708,17 @@ function createSmartActionsEngine(deps = {}) {
         }
 
         if (type === ACTION_TYPES.START_TASKS) {
-          const { ids, label, error } = resolveTargetIds(step.config || {}, runCtx);
-          if (error) {
-            appendLog(sa, { step: `action:${i}:start_tasks`, level: "err", message: error });
-            return finish(sa, OUTCOMES.FAILED, error);
-          }
-          if (!ids.length) {
-            appendLog(sa, {
-              step: `action:${i}:start_tasks`,
-              level: "warn",
-              message: `No tasks to start (${label})`,
-            });
-            continue;
-          }
-          const res = deps.startTasks?.(ids, {}) || { ok: false, error: "startTasks unavailable" };
-          if (!res.ok) {
-            appendLog(sa, {
-              step: `action:${i}:start_tasks`,
-              level: "err",
-              message: res.error || "start failed",
-            });
-            return finish(sa, OUTCOMES.FAILED, res.error || "Start Tasks failed");
-          }
-          appendLog(sa, {
-            step: `action:${i}:start_tasks`,
-            level: "ok",
-            message: `Started ${res.enqueued ?? ids.length} job(s) · ${label}`,
-          });
+          const fail = await actionStartTasks(sa, step, runCtx, i, { stagger: false });
+          if (fail) return fail;
+          continue;
+        }
+
+        if (
+          type === ACTION_TYPES.STAGGER_START_TASKS ||
+          type === ACTION_TYPES.STAGGER_START_TASK_GROUP
+        ) {
+          const fail = await actionStartTasks(sa, step, runCtx, i, { stagger: true });
+          if (fail) return fail;
           continue;
         }
 
@@ -633,10 +893,14 @@ function createSmartActionsEngine(deps = {}) {
     const settings = deps.getSettings?.() || {};
     const preset = normalizeQuickTaskPreset(settings.quickTaskPreset || {});
     const usePreset = config.usePreset !== false;
-    const count = Math.max(1, Math.min(20, Number(config.count) || 1));
+    const perProfile = Math.max(
+      1,
+      Math.min(20, Number(config.perProfile != null ? config.perProfile : config.count) || 1),
+    );
     const mode = String(config.bandaiMode || (usePreset ? preset.bandaiMode : "checkout"));
     const store = String(config.store || (usePreset ? preset.store : "bandai"));
     const taskGroup = String(config.taskGroup || "").trim().slice(0, 80);
+    const profileGroup = String(config.profileGroup || "").trim();
 
     let target;
     if (runCtx.hit) {
@@ -657,25 +921,60 @@ function createSmartActionsEngine(deps = {}) {
       { ...runCtx, title: runCtx.title || target.title || target.productId },
     );
 
-    const mergedPreset = {
-      ...preset,
-      store,
-      bandaiMode: mode,
-      bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
-      qty: config.qty != null ? Number(config.qty) : preset.qty,
-      quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
-      placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
-      profileId: config.profileId || (usePreset ? preset.profileId : null),
-      proxyGroupId: config.proxyGroupId || (usePreset ? preset.proxyGroupId : null),
-      accountAssign: config.accountAssign || preset.accountAssign,
-      accountId: config.accountId || preset.accountId,
-      startAfterCreate: false,
-    };
+    const baseProxy = config.proxyGroupId || (usePreset ? preset.proxyGroupId : null);
+    const profileSlots = [];
+    if (profileGroup) {
+      const key = profileGroup.toLowerCase();
+      const rows = (deps.getProfiles?.() || []).filter(
+        (p) => String(p.profileGroup || "").trim().toLowerCase() === key,
+      );
+      if (!rows.length) {
+        throw new Error(`Create Tasks: no profiles in group “${profileGroup}”`);
+      }
+      for (const p of rows) {
+        for (let n = 1; n <= perProfile; n++) {
+          profileSlots.push({
+            profileId: p.id,
+            proxyGroupId: baseProxy || p.proxyGroupId || null,
+            labelSuffix:
+              rows.length * perProfile > 1
+                ? ` · ${p.name || p.email || "profile"}${perProfile > 1 ? ` #${n}` : ""}`
+                : "",
+          });
+        }
+      }
+    } else {
+      const profileId = config.profileId || (usePreset ? preset.profileId : null);
+      for (let n = 0; n < perProfile; n++) {
+        profileSlots.push({
+          profileId,
+          proxyGroupId: baseProxy,
+          labelSuffix: perProfile > 1 ? ` #${n + 1}` : "",
+        });
+      }
+    }
+    if (profileSlots.length > 100) {
+      throw new Error(`Create Tasks: too many tasks (${profileSlots.length}) — max 100`);
+    }
 
     const ids = [];
-    for (let n = 0; n < count; n++) {
+    for (const slot of profileSlots) {
+      const mergedPreset = {
+        ...preset,
+        store,
+        bandaiMode: mode,
+        bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
+        qty: config.qty != null ? Number(config.qty) : preset.qty,
+        quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
+        placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
+        profileId: slot.profileId,
+        proxyGroupId: slot.proxyGroupId,
+        accountAssign: config.accountAssign || preset.accountAssign,
+        accountId: config.accountId || preset.accountId,
+        startAfterCreate: false,
+      };
       const built = buildQuickTaskDraft(mergedPreset, target, {
-        label: count > 1 ? `${label} #${n + 1}` : label,
+        label: `${label}${slot.labelSuffix}`.slice(0, 120),
       });
       if (!built.ok) throw new Error(built.error);
       if (taskGroup) built.task.taskGroup = taskGroup;
@@ -704,7 +1003,11 @@ function createSmartActionsEngine(deps = {}) {
       return { ok: false, skipped: true, reason: debounce.reason, remainingMs: debounce.remainingMs };
     }
 
-    const filterResult = matchAllFilters(sa.filters, ctx);
+    const filterCtx = {
+      ...ctx,
+      storeGroups: typeof deps.getStoreGroups === "function" ? deps.getStoreGroups() : [],
+    };
+    const filterResult = matchAllFilters(sa.filters, filterCtx);
     if (!filterResult.ok) {
       appendLog(sa, {
         step: "filters",
@@ -745,7 +1048,12 @@ function createSmartActionsEngine(deps = {}) {
   }
 
   async function handleMonitorHit(hit) {
-    const ctx = contextFromMonitorHit(hit, { store: "bandai", area: "au" });
+    const store =
+      String(hit?.store || hit?.meta?.store || "bandai")
+        .trim()
+        .toLowerCase() || "bandai";
+    const area = String(hit?.area || hit?.meta?.area || "au").trim().toLowerCase() || "au";
+    const ctx = contextFromMonitorHit(hit, { store, area });
     return handleEvent(TRIGGERS.PRODUCT_MONITOR, ctx);
   }
 
@@ -871,6 +1179,7 @@ module.exports = {
   blankAction,
   normalizeTrigger,
   normalizeTarget,
+  clampStaggerGapMs,
   clockPartsInTz,
   OUTCOMES,
   TRIGGERS,

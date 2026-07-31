@@ -186,6 +186,7 @@ function normalizeManualAccount(input = {}) {
       lastUsedAt: input.lastUsedAt || null,
       createdAt: input.createdAt || null,
       notes: input.notes != null ? String(input.notes).slice(0, 240) : null,
+      accountGroup: String(input.accountGroup || input.group || "").trim().slice(0, 80),
     },
   };
 }

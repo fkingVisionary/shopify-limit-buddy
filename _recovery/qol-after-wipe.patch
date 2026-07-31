@@ -1,0 +1,979 @@
+﻿diff --git a/desktop/bandai-drop-ops.cjs b/desktop/bandai-drop-ops.cjs
+index 9ab4523..3ca2755 100644
+--- a/desktop/bandai-drop-ops.cjs
++++ b/desktop/bandai-drop-ops.cjs
+@@ -226,6 +226,8 @@ function assessDropReady({
+   tasks = [],
+   accounts = [],
+   proxyGroups = [],
++  profiles = [],
++  smartActions = [],
+   nowMs = Date.now(),
+ } = {}) {
+   const dropTasks = listBandaiDropTasks(tasks);
+@@ -241,15 +243,16 @@ function assessDropReady({
+     id: "engine",
+     ok: Boolean(engineRunning),
+     label: engineRunning ? "Engine on" : "Engine offline",
++    go: "engine",
+   });
+ 
+   checks.push({
+     id: "lanes",
+     ok: lanes > 0,
+     label: lanes > 0 ? `${lanes} Bandai lane(s)` : "No enabled Bandai Autocheckout tasks",
++    go: "tasks",
+   });
+ 
+-  const harvestOk = harvestReady >= Math.max(1, lanes) || (lanes === 0 && harvestReady >= 0);
+   checks.push({
+     id: "harvest",
+     ok: lanes === 0 ? true : harvestReady >= lanes,
+@@ -259,6 +262,7 @@ function assessDropReady({
+         : harvestReady >= lanes
+           ? `Harvest ${harvestReady}/${lanes} ready`
+           : `Harvest ${harvestReady}/${lanes} ΓÇö arm more F5 bridges`,
++    go: "harvest",
+   });
+ 
+   // Accounts: each drop task should resolve to a login-ok vault row when possible.
+@@ -304,6 +308,7 @@ function assessDropReady({
+               accountIssues.some((x) => /not login-proven/.test(x)) ? " (prove today)" : " ok"
+             }`
+           : `Accounts ${accountOk}/${accountNeed} ΓÇö fix vault`,
++    go: "accounts",
+   });
+ 
+   // Sticky checkout proxy group on harvest or tasks
+@@ -322,9 +327,33 @@ function assessDropReady({
+     id: "proxies",
+     ok: lanes === 0 ? true : proxyOk,
+     label: proxyOk ? "Proxies set" : "Set sticky checkout proxy group",
++    go: "proxies",
+   });
+ 
+-  const blocking = checks.filter((c) => !c.ok);
++  const profileCount = (profiles || []).length;
++  checks.push({
++    id: "profiles",
++    ok: profileCount > 0,
++    label: profileCount > 0 ? `${profileCount} profile(s)` : "Add a checkout profile",
++    go: "profiles",
++  });
++
++  const saOn = (smartActions || []).filter((a) => a && a.enabled !== false).length;
++  checks.push({
++    id: "smart",
++    ok: true,
++    warn: saOn === 0 && lanes > 0,
++    label:
++      saOn > 0
++        ? `${saOn} Smart Action(s) on`
++        : lanes > 0
++          ? "No Smart Actions armed (optional)"
++          : "Smart Actions ΓÇö",
++    go: "smart",
++  });
++
++  const hardIds = new Set(["engine", "lanes", "harvest", "accounts", "proxies", "profiles"]);
++  const blocking = checks.filter((c) => !c.ok && hardIds.has(c.id));
+   const ready = blocking.length === 0 && lanes > 0;
+   return {
+     ready,
+@@ -334,7 +363,7 @@ function assessDropReady({
+     harvestDesired: Number.isFinite(harvestDesired) ? harvestDesired : null,
+     checks,
+     accountIssues,
+-    text: checks.map((c) => `${c.ok ? "Γ£ô" : "Γ£ù"} ${c.label}`).join(" ┬╖ "),
++    text: checks.map((c) => `${c.ok ? "Γ£ô" : c.warn ? "!" : "Γ£ù"} ${c.label}`).join(" ┬╖ "),
+     at: nowMs,
+   };
+ }
+diff --git a/desktop/bandai-drop-ops.test.cjs b/desktop/bandai-drop-ops.test.cjs
+index 24def30..c750a64 100644
+--- a/desktop/bandai-drop-ops.test.cjs
++++ b/desktop/bandai-drop-ops.test.cjs
+@@ -97,9 +97,13 @@ test("assessDropReady blocks without engine / harvest", () => {
+     tasks,
+     accounts,
+     proxyGroups,
++    profiles: [{ id: "p1", name: "Main" }],
++    smartActions: [{ id: "sa1", enabled: true }],
+   });
+   assert.equal(good.ready, true);
+   assert.equal(good.lanes, 2);
++  assert.ok(good.checks.some((c) => c.id === "profiles" && c.ok));
++  assert.ok(good.checks.some((c) => c.id === "smart" && c.ok));
+ });
+ 
+ test("planDropMode sets desired = lanes", () => {
+diff --git a/desktop/main.cjs b/desktop/main.cjs
+index 144a999..2f8fbdb 100644
+--- a/desktop/main.cjs
++++ b/desktop/main.cjs
+@@ -163,6 +163,7 @@ const smartActions = createSmartActionsEngine({
+   },
+   getSettings: () => state.settings,
+   getTasks: () => state.db.tasks || [],
++  getProfiles: () => state.db.profiles || [],
+   idFn: (prefix) => store.id(prefix || "sa"),
+   upsertTask: (task) => upsertTaskRow(task),
+   startTasks: (ids, opts) => enqueueTaskIds(ids, opts || {}),
+@@ -699,6 +700,8 @@ function dropReadySnapshot() {
+     tasks: state.db.tasks,
+     accounts: state.db.accounts || [],
+     proxyGroups: state.db.proxyGroups || [],
++    profiles: state.db.profiles || [],
++    smartActions: state.db.smartActions || [],
+   });
+ }
+ 
+diff --git a/desktop/renderer/app.js b/desktop/renderer/app.js
+index ef6aeea..ef88aa2 100644
+--- a/desktop/renderer/app.js
++++ b/desktop/renderer/app.js
+@@ -4,6 +4,85 @@ const $ = (id) => document.getElementById(id);
+ let state = null;
+ /** @type {Record<string, object>} last proxy test results by group id */
+ const proxyTestResults = {};
++/** After-run batch summary for Results tab */
++const runSummary = {
++  active: false,
++  started: 0,
++  ok: 0,
++  charged: 0,
++  cart: 0,
++  proxyFail: 0,
++  otherFail: 0,
++  timer: null,
++};
++
++function bumpRunSummaryStart(n = 1) {
++  runSummary.active = true;
++  runSummary.started += Math.max(1, Number(n) || 1);
++  scheduleRunSummaryRender();
++}
++
++function bumpRunSummaryDone(evt) {
++  if (!runSummary.active && !runSummary.started) {
++    runSummary.active = true;
++    runSummary.started = 1;
++  }
++  const code = String(evt?.consumerCode || evt?.lastStatus || "").toLowerCase();
++  const label = String(evt?.consumerLabel || evt?.error || "").toLowerCase();
++  if (evt?.ok) {
++    runSummary.ok += 1;
++    if (evt.orderNumber || code === "confirmed") runSummary.charged += 1;
++    else if (code === "cart_held" || /cart|atc|held/.test(label)) runSummary.cart += 1;
++  } else {
++    if (/proxy|soft.?block|tunnel|econn|timeout|403/.test(`${code} ${label}`)) {
++      runSummary.proxyFail += 1;
++    } else {
++      runSummary.otherFail += 1;
++    }
++  }
++  scheduleRunSummaryRender();
++}
++
++function scheduleRunSummaryRender() {
++  if (runSummary.timer) clearTimeout(runSummary.timer);
++  runSummary.timer = setTimeout(() => renderRunSummary(), 200);
++}
++
++function renderRunSummary() {
++  const card = $("runSummaryCard");
++  const line = $("runSummaryLine");
++  if (!card || !line) return;
++  if (!runSummary.active && !runSummary.started) {
++    card.hidden = true;
++    return;
++  }
++  card.hidden = false;
++  const fail = runSummary.proxyFail + runSummary.otherFail;
++  const bits = [
++    `${runSummary.started} started`,
++    `${runSummary.ok} ok`,
++    `${runSummary.cart} cart`,
++    `${runSummary.charged} charged`,
++    `${runSummary.proxyFail} proxy fail`,
++  ];
++  if (runSummary.otherFail) bits.push(`${runSummary.otherFail} other fail`);
++  line.textContent = bits.join(" ┬╖ ");
++  line.classList.toggle("ok", runSummary.ok > 0 && fail === 0);
++  line.classList.toggle("bad", fail > 0 && runSummary.ok === 0);
++}
++
++function clearRunSummary() {
++  runSummary.active = false;
++  runSummary.started = 0;
++  runSummary.ok = 0;
++  runSummary.charged = 0;
++  runSummary.cart = 0;
++  runSummary.proxyFail = 0;
++  runSummary.otherFail = 0;
++  if (runSummary.timer) clearTimeout(runSummary.timer);
++  runSummary.timer = null;
++  renderRunSummary();
++}
+ 
+ const GROUP_PALETTE = [
+   "#3dd6c6",
+@@ -462,6 +541,7 @@ function renderDropPrep() {
+   const strip = $("dropReadyStrip");
+   const badge = $("dropReadyBadge");
+   const sched = $("dropScheduleLine");
++  const checksEl = $("dropReadyChecks");
+   if (!strip) return;
+   const ready = state.dropReady;
+   if (ready?.text) {
+@@ -476,6 +556,22 @@ function renderDropPrep() {
+     badge.textContent = ready?.ready ? "READY" : ready?.lanes ? "NOT READY" : "ΓÇö";
+     badge.className = `badge ${ready?.ready ? "ok" : ready?.lanes ? "err" : ""}`;
+   }
++  if (checksEl) {
++    const checks = Array.isArray(ready?.checks) ? ready.checks : [];
++    checksEl.innerHTML = checks.length
++      ? checks
++          .map((c) => {
++            const cls = c.ok ? "ok" : c.warn ? "warn" : "bad";
++            const mark = c.ok ? "Γ£ô" : c.warn ? "!" : "Γ£ù";
++            return `<button type="button" class="drop-check-chip ${cls}" data-drop-go="${esc(
++              c.go || c.id || "",
++            )}" title="Open ${esc(c.go || c.id || "")}">
++              <span>${mark}</span> ${esc(c.label || c.id)}
++            </button>`;
++          })
++          .join("")
++      : "";
++  }
+   const ds = state.dropSchedule;
+   if (sched) {
+     if (ds?.armed) {
+@@ -486,6 +582,36 @@ function renderDropPrep() {
+   }
+ }
+ 
++function runDropReadyGo(go) {
++  const key = String(go || "");
++  if (key === "engine") {
++    setTab("settings");
++    $("btnRetryEngine")?.click?.();
++    return;
++  }
++  if (key === "harvest") {
++    setTab("harvest");
++    return;
++  }
++  if (key === "proxies") {
++    setTab("proxies");
++    return;
++  }
++  if (key === "profiles") {
++    setTab("profiles");
++    return;
++  }
++  if (key === "accounts") {
++    setTab("accounts");
++    return;
++  }
++  if (key === "smart") {
++    setTab("smart");
++    return;
++  }
++  setTab("tasks");
++}
++
+ function accountStatusBadge(status) {
+   const s = String(status || "unknown").toLowerCase();
+   if (s === "ready" || s === "active") return "ok";
+@@ -1015,12 +1141,40 @@ function applyState(next) {
+   engineUi();
+ }
+ 
++function suggestBandaiHarvestFromTasks() {
++  const bandai = (state?.tasks || []).filter(
++    (t) => t.store === "bandai" && t.enabled !== false && (t.bandaiMode || "checkout") === "checkout",
++  );
++  if (!bandai.length) return null;
++  const counts = new Map();
++  const profileIds = new Set();
++  for (const t of bandai) {
++    if (t.proxyGroupId) counts.set(t.proxyGroupId, (counts.get(t.proxyGroupId) || 0) + 1);
++    if (t.profileId) profileIds.add(t.profileId);
++  }
++  let bestId = null;
++  let bestN = 0;
++  for (const [id, n] of counts) {
++    if (n > bestN) {
++      bestId = id;
++      bestN = n;
++    }
++  }
++  const desired = Math.max(1, Math.min(6, profileIds.size || bandai.length || 1));
++  return { proxyGroupId: bestId, desired, taskCount: bandai.length, profileCount: profileIds.size };
++}
++
+ function renderBandaiHarvest() {
+   const hv = state?.bandaiHarvest || {};
+   const cfg = hv.config || {};
++  const suggest = suggestBandaiHarvestFromTasks();
+   const sel = $("bhProxyGroup");
+   if (sel) {
+-    const cur = sel.value || cfg.proxyGroupId || "";
++    let cur = sel.value || cfg.proxyGroupId || "";
++    // Autosuggest when harvest has no proxy yet
++    if (!cur && !cfg.proxyGroupId && suggest?.proxyGroupId) {
++      cur = suggest.proxyGroupId;
++    }
+     sel.innerHTML =
+       `<option value="">Select proxy groupΓÇª</option>` +
+       (state.proxyGroups || [])
+@@ -1030,7 +1184,26 @@ function renderBandaiHarvest() {
+     else if (cfg.proxyGroupId) sel.value = cfg.proxyGroupId;
+   }
+   if ($("bhDesired") && document.activeElement !== $("bhDesired")) {
+-    $("bhDesired").value = cfg.desired != null ? cfg.desired : 2;
++    if (cfg.desired != null) $("bhDesired").value = cfg.desired;
++    else if (suggest?.desired) $("bhDesired").value = suggest.desired;
++    else $("bhDesired").value = 2;
++  }
++  const hint = $("bhSuggestHint");
++  const applyBtn = $("bhApplySuggest");
++  if (hint && applyBtn) {
++    if (suggest?.proxyGroupId || suggest?.desired) {
++      const g = (state.proxyGroups || []).find((x) => x.id === suggest.proxyGroupId);
++      const bits = [];
++      if (g) bits.push(`proxy ΓÇ£${g.name}ΓÇ¥`);
++      bits.push(`desired ${suggest.desired} (from ${suggest.profileCount || suggest.taskCount} Bandai profile/task)`);
++      hint.hidden = false;
++      hint.textContent = `Suggested from your Bandai tasks: ${bits.join(" ┬╖ ")}`;
++      applyBtn.hidden = false;
++    } else {
++      hint.hidden = true;
++      hint.textContent = "";
++      applyBtn.hidden = true;
++    }
+   }
+   if ($("bhArea") && document.activeElement !== $("bhArea") && cfg.area) {
+     $("bhArea").value = cfg.area;
+@@ -1038,7 +1211,9 @@ function renderBandaiHarvest() {
+   if ($("bhReady")) $("bhReady").textContent = String(hv.ready ?? 0);
+   if ($("bhSolved")) $("bhSolved").textContent = String(hv.solvedCount ?? 0);
+   if ($("bhFailed")) $("bhFailed").textContent = String(hv.failedCount ?? 0);
+-  if ($("bhDesiredLabel")) $("bhDesiredLabel").textContent = String(cfg.desired ?? 2);
++  if ($("bhDesiredLabel")) $("bhDesiredLabel").textContent = String(
++    $("bhDesired")?.value || cfg.desired ?? 2,
++  );
+ 
+   const line = $("bandaiHarvestStatusLine");
+   if (line) {
+@@ -1196,7 +1371,10 @@ document.body.addEventListener("click", async (e) => {
+   if (t.dataset.runTask) {
+     const res = await window.desktop.runTasks([t.dataset.runTask]);
+     if (!res.ok) appendLog(esc(res.error), "err");
+-    else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++    else {
++      bumpRunSummaryStart(res.enqueued || 1);
++      appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++    }
+     if (res.snapshot) applyState(res.snapshot);
+   }
+   if (t.dataset.retryPay) {
+@@ -1387,7 +1565,10 @@ $("taskRunOne").onclick = async () => {
+   if (!match) return;
+   const res = await window.desktop.runTasks([match.id]);
+   if (!res.ok) appendLog(esc(res.error), "err");
+-  else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++  else {
++    bumpRunSummaryStart(res.enqueued || 1);
++    appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++  }
+   if (res.snapshot) applyState(res.snapshot);
+ };
+ 
+@@ -1775,7 +1956,10 @@ if ($("btnRetryEngine")) {
+ $("btnRunAll").onclick = async () => {
+   const res = await window.desktop.runTasks([]);
+   if (!res.ok) appendLog(esc(res.error), "err");
+-  else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++  else {
++    bumpRunSummaryStart(res.enqueued || 1);
++    appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
++  }
+   if (res.snapshot) applyState(res.snapshot);
+ };
+ 
+@@ -1846,6 +2030,26 @@ $("bhStart").onclick = async () => {
+   appendLog(res.ok ? "Bandai harvest armed" : esc(res.error || "Harvest start failed"), res.ok ? "ok" : "err");
+ };
+ 
++$("bhApplySuggest")?.addEventListener("click", async () => {
++  const suggest = suggestBandaiHarvestFromTasks();
++  if (!suggest) return;
++  if (suggest.proxyGroupId && $("bhProxyGroup")) $("bhProxyGroup").value = suggest.proxyGroupId;
++  if ($("bhDesired")) $("bhDesired").value = String(suggest.desired);
++  if ($("bhDesiredLabel")) $("bhDesiredLabel").textContent = String(suggest.desired);
++  const res = await window.desktop.bandaiHarvestConfigure(bandaiHarvestOptsFromForm());
++  if (res.snapshot) applyState(res.snapshot);
++  else if (res.harvest && state) {
++    state.bandaiHarvest = res.harvest;
++    renderBandaiHarvest();
++  }
++  appendLog(
++    `Harvest suggested ┬╖ desired ${suggest.desired}${
++      suggest.proxyGroupId ? " ┬╖ proxy from Bandai tasks" : ""
++    }`,
++    "ok",
++  );
++});
++
+ $("bhStop").onclick = async () => {
+   const res = await window.desktop.bandaiHarvestStop();
+   if (res.snapshot) applyState(res.snapshot);
+@@ -2263,6 +2467,9 @@ function renderSaCatalog() {
+               <strong>${esc(r.title || r.sku)}</strong>
+               <div class="meta">${esc(r.store)} ┬╖ ${esc(r.sku)}</div>
+             </div>
++            <button type="button" class="sa-store-btn sa-store-btn-primary" data-sa-arm="${esc(
++              r.id,
++            )}">Arm</button>
+           </div>`,
+         )
+         .join("");
+@@ -2271,6 +2478,164 @@ function renderSaCatalog() {
+   refreshSaCatalogMeta();
+ }
+ 
++function profileGroupNamesForArm() {
++  return [
++    ...new Set(
++      (state?.profiles || [])
++        .map((p) => String(p.profileGroup || "").trim())
++        .filter(Boolean),
++    ),
++  ].sort((a, b) => a.localeCompare(b));
++}
++
++function profilesInNamedGroup(name) {
++  const key = String(name || "")
++    .trim()
++    .toLowerCase();
++  if (!key) return [];
++  return (state?.profiles || []).filter(
++    (p) => String(p.profileGroup || "").trim().toLowerCase() === key,
++  );
++}
++
++function refreshSaArmCountHint() {
++  const hint = $("saArmCountHint");
++  if (!hint) return;
++  const group = $("saArmProfileGroup")?.value || "";
++  const per = Math.max(1, Math.min(20, Number($("saArmPerProfile")?.value) || 1));
++  if (group) {
++    const n = profilesInNamedGroup(group).length;
++    hint.textContent = n
++      ? `${n} profile(s) ├ù ${per} = ${n * per} task(s) on restock`
++      : `No profiles in ΓÇ£${group}ΓÇ¥ yet`;
++    return;
++  }
++  hint.textContent = `${per} task(s) using the selected / preset profile`;
++}
++
++function openSaArmDialog(rowId) {
++  const row = (saCatalogState().rows || []).find((r) => String(r.id) === String(rowId));
++  if (!row) {
++    appendLog("SKU not found in library", "err");
++    return;
++  }
++  const dlg = $("saArmDialog");
++  if (!dlg) return;
++  $("saArmRowId").value = row.id;
++  if ($("saArmTitle")) $("saArmTitle").textContent = `Arm ┬╖ ${row.title || row.sku}`;
++  if ($("saArmSkuHint")) {
++    $("saArmSkuHint").textContent = `${row.store || "bandai"} ┬╖ ${row.sku} ΓÇö restock ΓåÆ create + start checkout`;
++  }
++  const pg = $("saArmProfileGroup");
++  if (pg) {
++    const names = profileGroupNamesForArm();
++    pg.innerHTML =
++      `<option value="">Use Quick Task / single profile</option>` +
++      names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
++  }
++  const prof = $("saArmProfile");
++  if (prof) {
++    const presetId = state?.settings?.quickTaskPreset?.profileId || "";
++    prof.innerHTML =
++      `<option value="">Quick Task preset default</option>` +
++      (state?.profiles || [])
++        .map(
++          (p) =>
++            `<option value="${esc(p.id)}" ${p.id === presetId ? "selected" : ""}>${esc(
++              p.name || p.email || p.id,
++            )}</option>`,
++        )
++        .join("");
++  }
++  const px = $("saArmProxy");
++  if (px) {
++    const presetPx = state?.settings?.quickTaskPreset?.proxyGroupId || "";
++    px.innerHTML =
++      `<option value="">Quick Task preset / profile default</option>` +
++      (state?.proxyGroups || [])
++        .map(
++          (g) =>
++            `<option value="${esc(g.id)}" ${g.id === presetPx ? "selected" : ""}>${esc(g.name)} (${
++              g.entries?.length || 0
++            })</option>`,
++        )
++        .join("");
++  }
++  if ($("saArmPerProfile")) $("saArmPerProfile").value = "1";
++  refreshSaArmCountHint();
++  if (typeof dlg.showModal === "function") dlg.showModal();
++  else dlg.setAttribute("open", "open");
++}
++
++async function confirmSaArm() {
++  const rowId = $("saArmRowId")?.value;
++  const row = (saCatalogState().rows || []).find((r) => String(r.id) === String(rowId));
++  if (!row) {
++    appendLog("SKU missing", "err");
++    return;
++  }
++  const profileGroup = $("saArmProfileGroup")?.value?.trim() || "";
++  const perProfile = Math.max(1, Math.min(20, Number($("saArmPerProfile")?.value) || 1));
++  const profileId = $("saArmProfile")?.value || null;
++  const proxyGroupId = $("saArmProxy")?.value || null;
++  if (profileGroup && !profilesInNamedGroup(profileGroup).length) {
++    appendLog(`No profiles in group ΓÇ£${profileGroup}ΓÇ¥`, "err");
++    return;
++  }
++  const store = row.store || "bandai";
++  const sku = row.sku;
++  const title = row.title || sku;
++  const payload = {
++    name: `${title} ┬╖ Instant Checkout`.slice(0, 120),
++    enabled: true,
++    runOnce: false,
++    runIntervalMs: 30000,
++    notifications: true,
++    catalogTemplateId: "monitor_atc",
++    catalogRowId: row.id,
++    catalogKey: `monitor_atc::${store}::${sku}`,
++    trigger: { type: "product_monitor" },
++    filters: [
++      { field: "store", op: "equals", value: store },
++      { field: "sku", op: "equals", value: sku },
++    ],
++    actions: [
++      {
++        type: "create_tasks",
++        config: {
++          usePreset: true,
++          store,
++          bandaiMode: "checkout",
++          bandaiCheckoutMode: "fast",
++          placeOrder: true,
++          labelTemplate: "{{title}}",
++          taskGroup: title.slice(0, 80),
++          profileGroup: profileGroup || undefined,
++          perProfile,
++          profileId: profileGroup ? undefined : profileId,
++          proxyGroupId: proxyGroupId || undefined,
++          qty: 1,
++        },
++      },
++      { type: "start_tasks", config: { target: { scope: "created" } } },
++      {
++        type: "notify_discord",
++        config: { message: `SA Instant Checkout: {{title}} (\`{{sku}}\`)` },
++      },
++    ],
++  };
++  const res = await window.desktop.smartActionUpsert(payload);
++  if (!res?.ok) {
++    appendLog(esc(res?.error || "Arm failed"), "err");
++    return;
++  }
++  if (res.snapshot) applyState(res.snapshot);
++  const dlg = $("saArmDialog");
++  if (dlg?.close) dlg.close();
++  else dlg?.removeAttribute("open");
++  appendLog(`Armed Instant Checkout ΓÇö ${esc(title)}`, "ok");
++}
++
+ function refreshSaCatalogMeta() {
+   const cat = saCatalogState();
+   const templates = cat.templates || [];
+@@ -2648,6 +3013,21 @@ function closeSaEditor() {
+ if ($("btnSaNew")) {
+   $("btnSaNew").onclick = () => openSaEditor(null);
+ }
++if ($("saArmForm")) {
++  $("saArmForm").addEventListener("submit", async (e) => {
++    e.preventDefault();
++    await confirmSaArm();
++  });
++}
++if ($("btnSaArmCancel")) {
++  $("btnSaArmCancel").onclick = () => {
++    const dlg = $("saArmDialog");
++    if (dlg?.close) dlg.close();
++    else dlg?.removeAttribute("open");
++  };
++}
++$("saArmProfileGroup")?.addEventListener("change", () => refreshSaArmCountHint());
++$("saArmPerProfile")?.addEventListener("input", () => refreshSaArmCountHint());
+ if ($("btnSaCatalogPull")) {
+   $("btnSaCatalogPull").onclick = async () => {
+     if (!window.desktop?.smartActionCatalogPull) {
+@@ -2812,6 +3192,16 @@ document.body.addEventListener("click", async (e) => {
+     await runQuickTask({ hit });
+     return;
+   }
++  if (t.dataset.dropGo != null || t.closest?.("[data-drop-go]")) {
++    const btn = t.closest("[data-drop-go]") || t;
++    runDropReadyGo(btn.getAttribute("data-drop-go"));
++    return;
++  }
++  if (t.dataset.saArm != null || t.closest?.("[data-sa-arm]")) {
++    const btn = t.closest("[data-sa-arm]") || t;
++    openSaArmDialog(btn.getAttribute("data-sa-arm"));
++    return;
++  }
+   if (t.dataset.feedSa != null) {
+     const idx = Number(t.dataset.feedSa);
+     const hit = (state?.monitorFeed || [])[idx];
+@@ -2964,6 +3354,7 @@ window.desktop.onEvent((evt) => {
+   }
+   if (evt.type === "job") {
+     if (evt.phase === "start") {
++      bumpRunSummaryStart(1);
+       appendLog(`${esc(evt.label || evt.runId)} ΓÇö Starting`, "muted");
+     } else if (evt.phase === "log") {
+       const cls = evt.level === "err" ? "err" : evt.level === "ok" ? "ok" : "muted";
+@@ -2972,6 +3363,7 @@ window.desktop.onEvent((evt) => {
+       const line = evt.consumerLabel || evt.message || evt.progress?.label || "Starting";
+       appendLog(esc(line), "muted");
+     } else if (evt.phase === "done") {
++      bumpRunSummaryDone(evt);
+       const label =
+         evt.consumerLabel ||
+         (evt.ok ? (evt.orderNumber ? "Order confirmed" : "Complete") : evt.error || "Something went wrong");
+@@ -2981,6 +3373,8 @@ window.desktop.onEvent((evt) => {
+   }
+ });
+ 
++$("btnRunSummaryClear")?.addEventListener("click", () => clearRunSummary());
++
+ refresh();
+ setInterval(tickHeldCartCountdowns, 1000);
+ }
+diff --git a/desktop/renderer/index.html b/desktop/renderer/index.html
+index 20904a5..88c256f 100644
+--- a/desktop/renderer/index.html
++++ b/desktop/renderer/index.html
+@@ -50,6 +50,7 @@
+               <span id="dropReadyBadge" class="badge">ΓÇö</span>
+             </div>
+             <p id="dropReadyStrip" class="drop-ready-strip" aria-live="polite">Ready ΓÇö</p>
++            <div id="dropReadyChecks" class="drop-ready-checks" aria-label="Drop readiness checklist"></div>
+             <div class="drop-prep-row">
+               <label class="drop-fire-label">Fire at (AEST)</label>
+               <input id="dropFireAt" placeholder="13:00 or 2026-07-27T13:00" autocomplete="off" />
+@@ -559,8 +560,10 @@
+ 
+           <label>Proxy group</label>
+           <select id="bhProxyGroup"></select>
++          <p class="field-hint" id="bhSuggestHint" hidden></p>
+           <label>Desired warm bridges</label>
+           <input id="bhDesired" type="number" min="0" max="6" value="2" />
++          <button type="button" class="secondary" id="bhApplySuggest" hidden style="margin-bottom:8px">Apply suggested</button>
+           <label>Region</label>
+           <select id="bhArea">
+             <option value="au" selected>AU</option>
+@@ -738,6 +741,13 @@
+     <!-- RESULTS -->
+     <section id="tab-results" class="panel">
+       <h2>Results</h2>
++      <div id="runSummaryCard" class="run-summary-card" hidden>
++        <div class="run-summary-head">
++          <strong>Run summary</strong>
++          <button type="button" class="secondary" id="btnRunSummaryClear">Clear</button>
++        </div>
++        <p id="runSummaryLine" class="run-summary-line" aria-live="polite"></p>
++      </div>
+       <div id="liveLog" class="log"></div>
+       <div id="resultList" class="list"></div>
+     </section>
+@@ -892,6 +902,33 @@
+     </section>
+   </main>
+ 
++  <dialog id="saArmDialog" class="modal">
++    <form method="dialog" id="saArmForm" class="form-card" style="margin:0;min-width:min(420px,92vw)">
++      <h3 id="saArmTitle">Arm Instant Checkout</h3>
++      <p class="hint" id="saArmSkuHint">Restock ΓåÆ create + start checkout tasks.</p>
++      <input type="hidden" id="saArmRowId" />
++      <label>Profile group <span class="optional">(recommended)</span></label>
++      <select id="saArmProfileGroup">
++        <option value="">Use Quick Task / single profile</option>
++      </select>
++      <label>Or single profile</label>
++      <select id="saArmProfile">
++        <option value="">Quick Task preset default</option>
++      </select>
++      <label>Proxy group</label>
++      <select id="saArmProxy">
++        <option value="">Quick Task preset / profile default</option>
++      </select>
++      <label>Tasks per profile</label>
++      <input id="saArmPerProfile" type="number" min="1" max="20" value="1" />
++      <p class="field-hint" id="saArmCountHint"></p>
++      <div class="row">
++        <button type="submit" id="btnSaArmConfirm">Arm &amp; enable</button>
++        <button type="button" class="secondary" id="btnSaArmCancel">Cancel</button>
++      </div>
++    </form>
++  </dialog>
++
+   <script src="app.js"></script>
+ </body>
+ </html>
+diff --git a/desktop/renderer/styles.css b/desktop/renderer/styles.css
+index ed9f808..63a1757 100644
+--- a/desktop/renderer/styles.css
++++ b/desktop/renderer/styles.css
+@@ -298,12 +298,65 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
+ }
+ .drop-ready-strip.ok { color: var(--ok); }
+ .drop-ready-strip.bad { color: var(--warn); }
++.drop-ready-checks {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 6px;
++  margin: 0 0 12px;
++}
++.drop-check-chip {
++  appearance: none;
++  border: 1px solid var(--border);
++  background: var(--panel);
++  color: var(--fg);
++  font-size: 11px;
++  padding: 5px 8px;
++  border-radius: 999px;
++  cursor: pointer;
++  line-height: 1.2;
++}
++.drop-check-chip:hover { border-color: #3a3a40; background: var(--panel-hover); }
++.drop-check-chip.ok { color: var(--ok); border-color: #2a4034; }
++.drop-check-chip.warn { color: var(--warn); border-color: #4a3c20; }
++.drop-check-chip.bad { color: var(--err); border-color: #3d2828; }
+ .drop-prep-row {
+   display: flex;
+   flex-wrap: wrap;
+   gap: 8px;
+   align-items: center;
+ }
++.run-summary-card {
++  margin: 0 0 12px;
++  padding: 12px 14px;
++  border: 1px solid var(--border);
++  border-radius: 8px;
++  background: var(--panel-2);
++}
++.run-summary-head {
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 10px;
++  margin-bottom: 6px;
++}
++.run-summary-line {
++  margin: 0;
++  font-family: var(--mono);
++  font-size: 12.5px;
++  color: var(--fg);
++  line-height: 1.45;
++}
++.run-summary-line.ok { color: var(--ok); }
++.run-summary-line.bad { color: var(--err); }
++#saArmDialog {
++  border: 1px solid var(--border);
++  border-radius: 10px;
++  padding: 0;
++  background: var(--panel);
++  color: var(--fg);
++}
++#saArmDialog::backdrop { background: rgba(0, 0, 0, 0.55); }
++#saArmDialog .form-card { box-shadow: none; }
+ .task-group-ops {
+   display: flex;
+   flex-wrap: wrap;
+@@ -360,7 +413,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
+   font-size: 12px;
+   padding: 6px 10px;
+ }
+-/* ΓöÇΓöÇ Smart Action Store (silver / black App Store surface) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
++/* ?? Smart Action Store (silver / black App Store surface) ????????? */
+ .sa-store {
+   --sa-black: #070809;
+   --sa-panel: #101214;
+diff --git a/desktop/smart-actions-engine.cjs b/desktop/smart-actions-engine.cjs
+index 1165bdb..545d24d 100644
+--- a/desktop/smart-actions-engine.cjs
++++ b/desktop/smart-actions-engine.cjs
+@@ -633,10 +633,14 @@ function createSmartActionsEngine(deps = {}) {
+     const settings = deps.getSettings?.() || {};
+     const preset = normalizeQuickTaskPreset(settings.quickTaskPreset || {});
+     const usePreset = config.usePreset !== false;
+-    const count = Math.max(1, Math.min(20, Number(config.count) || 1));
++    const perProfile = Math.max(
++      1,
++      Math.min(20, Number(config.perProfile != null ? config.perProfile : config.count) || 1),
++    );
+     const mode = String(config.bandaiMode || (usePreset ? preset.bandaiMode : "checkout"));
+     const store = String(config.store || (usePreset ? preset.store : "bandai"));
+     const taskGroup = String(config.taskGroup || "").trim().slice(0, 80);
++    const profileGroup = String(config.profileGroup || "").trim();
+ 
+     let target;
+     if (runCtx.hit) {
+@@ -657,25 +661,60 @@ function createSmartActionsEngine(deps = {}) {
+       { ...runCtx, title: runCtx.title || target.title || target.productId },
+     );
+ 
+-    const mergedPreset = {
+-      ...preset,
+-      store,
+-      bandaiMode: mode,
+-      bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
+-      qty: config.qty != null ? Number(config.qty) : preset.qty,
+-      quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
+-      placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
+-      profileId: config.profileId || (usePreset ? preset.profileId : null),
+-      proxyGroupId: config.proxyGroupId || (usePreset ? preset.proxyGroupId : null),
+-      accountAssign: config.accountAssign || preset.accountAssign,
+-      accountId: config.accountId || preset.accountId,
+-      startAfterCreate: false,
+-    };
++    const baseProxy = config.proxyGroupId || (usePreset ? preset.proxyGroupId : null);
++    const profileSlots = [];
++    if (profileGroup) {
++      const key = profileGroup.toLowerCase();
++      const rows = (deps.getProfiles?.() || []).filter(
++        (p) => String(p.profileGroup || "").trim().toLowerCase() === key,
++      );
++      if (!rows.length) {
++        throw new Error(`Create Tasks: no profiles in group ΓÇ£${profileGroup}ΓÇ¥`);
++      }
++      for (const p of rows) {
++        for (let n = 1; n <= perProfile; n++) {
++          profileSlots.push({
++            profileId: p.id,
++            proxyGroupId: baseProxy || p.proxyGroupId || null,
++            labelSuffix:
++              rows.length * perProfile > 1
++                ? ` ┬╖ ${p.name || p.email || "profile"}${perProfile > 1 ? ` #${n}` : ""}`
++                : "",
++          });
++        }
++      }
++    } else {
++      const profileId = config.profileId || (usePreset ? preset.profileId : null);
++      for (let n = 0; n < perProfile; n++) {
++        profileSlots.push({
++          profileId,
++          proxyGroupId: baseProxy,
++          labelSuffix: perProfile > 1 ? ` #${n + 1}` : "",
++        });
++      }
++    }
++    if (profileSlots.length > 100) {
++      throw new Error(`Create Tasks: too many tasks (${profileSlots.length}) ΓÇö max 100`);
++    }
+ 
+     const ids = [];
+-    for (let n = 0; n < count; n++) {
++    for (const slot of profileSlots) {
++      const mergedPreset = {
++        ...preset,
++        store,
++        bandaiMode: mode,
++        bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
++        qty: config.qty != null ? Number(config.qty) : preset.qty,
++        quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
++        placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
++        profileId: slot.profileId,
++        proxyGroupId: slot.proxyGroupId,
++        accountAssign: config.accountAssign || preset.accountAssign,
++        accountId: config.accountId || preset.accountId,
++        startAfterCreate: false,
++      };
+       const built = buildQuickTaskDraft(mergedPreset, target, {
+-        label: count > 1 ? `${label} #${n + 1}` : label,
++        label: `${label}${slot.labelSuffix}`.slice(0, 120),
+       });
+       if (!built.ok) throw new Error(built.error);
+       if (taskGroup) built.task.taskGroup = taskGroup;
+diff --git a/desktop/smart-actions-engine.test.cjs b/desktop/smart-actions-engine.test.cjs
+index 96057b9..16eb69b 100644
+--- a/desktop/smart-actions-engine.test.cjs
++++ b/desktop/smart-actions-engine.test.cjs
+@@ -35,6 +35,12 @@ function makeEngine(opts = {}) {
+       ...(opts.settings || {}),
+     }),
+     getTasks: () => tasks,
++    getProfiles: () =>
++      opts.profiles || [
++        { id: "prof_1", name: "P1", profileGroup: "Main" },
++        { id: "prof_2", name: "P2", profileGroup: "Main" },
++        { id: "prof_3", name: "P3", profileGroup: "Other" },
++      ],
+     idFn: (p) => `${p || "sa"}_${created.length + started.length + 1}`,
+     upsertTask: (task) => {
+       const row = { ...task, id: task.id || `task_${created.length + 1}`, enabled: true };
+@@ -127,6 +133,43 @@ test("Product Monitor ΓåÆ filters ΓåÆ Create+Start ΓåÆ Completed", async () => {
+   assert.equal(actions[0].lastResult, OUTCOMES.COMPLETED);
+ });
+ 
++test("create_tasks expands profile group ├ù per profile", async () => {
++  const { engine, created, started } = makeEngine();
++  engine.upsert({
++    id: "sa_pg",
++    name: "Group expand",
++    enabled: true,
++    runIntervalMs: 0,
++    trigger: { type: "product_monitor" },
++    filters: [],
++    actions: [
++      {
++        type: "create_tasks",
++        config: {
++          usePreset: true,
++          profileGroup: "Main",
++          perProfile: 2,
++          labelTemplate: "{{title}}",
++          taskGroup: "Drop G",
++        },
++      },
++      { type: "start_tasks", config: { target: { scope: "created" } } },
++    ],
++  });
++  const hit = await engine.handleMonitorHit({
++    productId: "N1",
++    title: "Item",
++    reason: "restock",
++  });
++  assert.equal(hit[0].outcome, OUTCOMES.COMPLETED);
++  assert.equal(created.length, 4);
++  assert.deepEqual(
++    created.map((t) => t.profileId).sort(),
++    ["prof_1", "prof_1", "prof_2", "prof_2"],
++  );
++  assert.equal(started[0].length, 4);
++});
++
+ test("run interval debounce skips duplicate Completed spam", async () => {
+   const { engine, created } = makeEngine();
+   engine.upsert({

@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld("desktop", {
   testProxyGroup: (id, opts) => ipcRenderer.invoke("desktop:test-proxy-group", id, opts || {}),
   testProxyEntries: (text, opts) =>
     ipcRenderer.invoke("desktop:test-proxy-entries", text, opts || {}),
+  proxyTestPresets: () => ipcRenderer.invoke("desktop:proxy-test-presets"),
   upsertTask: (t) => ipcRenderer.invoke("desktop:upsert-task", t),
   deleteTask: (id) => ipcRenderer.invoke("desktop:delete-task", id),
   duplicateTask: (id) => ipcRenderer.invoke("desktop:duplicate-task", id),
@@ -71,6 +72,10 @@ contextBridge.exposeInMainWorld("desktop", {
   monitorFeedClear: () => ipcRenderer.invoke("desktop:monitor-feed-clear"),
   quickTask: (payload) => ipcRenderer.invoke("desktop:quick-task", payload || {}),
   smartActionsList: () => ipcRenderer.invoke("desktop:smart-actions-list"),
+  storeGroupsList: () => ipcRenderer.invoke("desktop:store-groups-list"),
+  storeGroupUpsert: (g) => ipcRenderer.invoke("desktop:store-group-upsert", g || {}),
+  storeGroupDelete: (id) => ipcRenderer.invoke("desktop:store-group-delete", id),
+  storeGroupClone: (id) => ipcRenderer.invoke("desktop:store-group-clone", id),
   smartActionUpsert: (a) => ipcRenderer.invoke("desktop:smart-action-upsert", a || {}),
   smartActionDelete: (id) => ipcRenderer.invoke("desktop:smart-action-delete", id),
   smartActionSetEnabled: (id, enabled) =>
@@ -86,11 +91,20 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.invoke("desktop:smart-action-catalog-apply", opts || {}),
   smartActionCatalogSync: (opts) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-sync", opts || {}),
+  smartActionCatalogSetRowPacks: (rowId, enabledTemplateIds) =>
+    ipcRenderer.invoke("desktop:smart-action-catalog-set-row-packs", {
+      rowId,
+      enabledTemplateIds,
+    }),
   smartActionCatalogPull: () => ipcRenderer.invoke("desktop:smart-action-catalog-pull"),
   smartActionCatalogRemoveActions: (opts) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-remove-actions", opts || {}),
   smartActionCatalogDeleteRow: (rowId) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-delete-row", rowId),
+  windowMinimize: () => ipcRenderer.invoke("desktop:window-minimize"),
+  windowMaximize: () => ipcRenderer.invoke("desktop:window-maximize"),
+  windowClose: () => ipcRenderer.invoke("desktop:window-close"),
+  windowIsMaximized: () => ipcRenderer.invoke("desktop:window-is-maximized"),
   onEvent: (handler) => {
     const listener = (_e, payload) => handler(payload);
     ipcRenderer.on("desktop:event", listener);

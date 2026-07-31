@@ -25,6 +25,22 @@ test("default templates include full checkout + Bandai +30m", () => {
   assert.deepEqual(delay.stores, ["bandai"]);
 });
 
+test("complex templates ship user-facing explainers", () => {
+  const { describeTemplate } = require("./smart-action-catalog.cjs");
+  for (const id of ["drop_harvest_chain", "drop_delay_tighten", "monitor_checkout_delay_30m"]) {
+    const t = DEFAULT_TEMPLATES.find((x) => x.id === id);
+    assert.ok(t, id);
+    assert.ok(String(t.explain || "").length > 40, `${id} explain`);
+    const d = describeTemplate(t);
+    assert.match(d.explain, /app must be open|App must/i);
+  }
+  const tighten = describeTemplate(DEFAULT_TEMPLATES.find((t) => t.id === "drop_delay_tighten"));
+  assert.match(tighten.explain, /delay/i);
+  assert.match(tighten.explain, /12:59:30|T−30|T-30/i);
+  const chain = describeTemplate(DEFAULT_TEMPLATES.find((t) => t.id === "drop_harvest_chain"));
+  assert.match(chain.explain, /harvest/i);
+});
+
 test("parse bulk SKU lines", () => {
   const rows = parseCatalogBulk(`
 # comment
@@ -41,18 +57,40 @@ kmart,SKU123,Kmart Drop
 });
 
 test("templates × SKUs expands; Bandai +30m only for bandai rows", () => {
+  const allPacks = DEFAULT_TEMPLATES.map((t) => t.id);
   const catalog = {
     rows: [
-      { id: "r1", store: "bandai", sku: "N1", title: "Alpha", taskGroup: "Alpha" },
-      { id: "r2", store: "bandai", sku: "N2", title: "Beta", taskGroup: "Beta" },
-      { id: "r3", store: "kmart", sku: "K1", title: "Kmart", taskGroup: "Kmart" },
+      {
+        id: "r1",
+        store: "bandai",
+        sku: "N1",
+        title: "Alpha",
+        taskGroup: "Alpha",
+        enabledTemplateIds: allPacks,
+      },
+      {
+        id: "r2",
+        store: "bandai",
+        sku: "N2",
+        title: "Beta",
+        taskGroup: "Beta",
+        enabledTemplateIds: allPacks,
+      },
+      {
+        id: "r3",
+        store: "kmart",
+        sku: "K1",
+        title: "Kmart",
+        taskGroup: "Kmart",
+        enabledTemplateIds: allPacks,
+      },
     ],
   };
   const a = expandCatalog(catalog);
-  // 6 templates × 2 bandai + 5 templates × 1 kmart (+30m skipped) = 12 + 5 = 17
-  assert.equal(a.templateCount, 6);
+  // 7 packs × 2 bandai; kmart skips Bandai-only (+30m, delay tighten) → 5 × 1 = 19
+  assert.equal(a.templateCount, 7);
   assert.equal(a.rowCount, 3);
-  assert.equal(a.pairs, 17);
+  assert.equal(a.pairs, 19);
   assert.ok(a.drafts.every((d) => d.id));
   assert.equal(
     a.drafts.filter((d) => d.catalogTemplateId === "monitor_checkout_delay_30m").length,
@@ -65,6 +103,25 @@ test("templates × SKUs expands; Bandai +30m only for bandai rows", () => {
     again.drafts.map((d) => d.id).sort(),
     a.drafts.map((d) => d.id).sort(),
   );
+});
+
+test("per-SKU packs are opt-in (empty = no actions)", () => {
+  const catalog = {
+    rows: [
+      {
+        id: "r1",
+        store: "bandai",
+        sku: "N1",
+        title: "Alpha",
+        enabledTemplateIds: ["monitor_atc"],
+      },
+      { id: "r2", store: "bandai", sku: "N2", title: "Beta", enabledTemplateIds: [] },
+    ],
+  };
+  const a = expandCatalog(catalog);
+  assert.equal(a.pairs, 1);
+  assert.equal(a.drafts[0].catalogTemplateId, "monitor_atc");
+  assert.match(a.drafts[0].catalogKey, /N1/);
 });
 
 test("materialize replaces placeholders in filters + task group", () => {
@@ -98,8 +155,16 @@ test("applyCatalog upserts into engine without duplicates", () => {
   });
 
   const catalog = {
-    rows: [{ id: "r1", store: "bandai", sku: "N9", title: "Nine", taskGroup: "Nine" }],
-    enabledTemplateIds: ["monitor_atc", "monitor_alert"],
+    rows: [
+      {
+        id: "r1",
+        store: "bandai",
+        sku: "N9",
+        title: "Nine",
+        taskGroup: "Nine",
+        enabledTemplateIds: ["monitor_atc", "monitor_alert"],
+      },
+    ],
   };
 
   const first = applyCatalog({

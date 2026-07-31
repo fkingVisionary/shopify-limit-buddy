@@ -1,8 +1,8 @@
 {
-  "name": "j1ms-bot-desktop",
+  "name": "vanta-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "J1m's Bot desktop app — local Kmart checkout (localhost proxies, API-key license, store adapters).",
+  "description": "Vanta desktop — local checkout ops (proxies, API-key license, store adapters).",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",

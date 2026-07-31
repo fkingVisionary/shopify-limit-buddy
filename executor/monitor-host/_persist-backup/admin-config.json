@@ -1,0 +1,62 @@
+﻿{
+    "ok":  true,
+    "keywords":  "GUNDAM\nONE PIECE\nN2890904001",
+    "presetCatalog":  "bandai N2890904001 GUNDAM CARD GAME 1st Anniversary Set\nbandai N2903432003 ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+    "presetCatalogRows":  [
+                              {
+                                  "id":  "cat_bandai_N2890904001",
+                                  "store":  "bandai",
+                                  "sku":  "N2890904001",
+                                  "title":  "GUNDAM CARD GAME 1st Anniversary Set",
+                                  "taskGroup":  "GUNDAM CARD GAME 1st Anniversary Set",
+                                  "area":  "au",
+                                  "enabled":  true,
+                                  "needsTitle":  false,
+                                  "titleSource":  "manual",
+                                  "areaItemNo":  "NAI0859145AU",
+                                  "areaItemNos":  [
+                                                      "NAI0859145AU"
+                                                  ]
+                              },
+                              {
+                                  "id":  "cat_bandai_N2903432003",
+                                  "store":  "bandai",
+                                  "sku":  "N2903432003",
+                                  "title":  "ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+                                  "taskGroup":  "ONE PIECE CARD GAME Premium Card Collection -29th Anniversary Edition-",
+                                  "area":  "au",
+                                  "enabled":  true,
+                                  "needsTitle":  false,
+                                  "titleSource":  "manual",
+                                  "areaItemNo":  "NAI0871504AU",
+                                  "areaItemNos":  [
+                                                      "NAI0871504AU"
+                                                  ]
+                              }
+                          ],
+    "productCacheCount":  67,
+    "ispProxies":  "45.42.47.235:12323:14a10729f185b:e0df8e84af\n45.42.47.161:12323:14a10729f185b:e0df8e84af\n45.42.47.34:12323:14a10729f185b:e0df8e84af\n216.185.44.255:12323:14a10729f185b:e0df8e84af\n216.185.44.50:12323:14a10729f185b:e0df8e84af\n178.210.242.133:12323:14a10729f185b:e0df8e84af\n178.210.242.210:12323:14a10729f185b:e0df8e84af\n178.210.241.115:12323:14a10729f185b:e0df8e84af\n178.210.241.156:12323:14a10729f185b:e0df8e84af\n175.29.0.42:12323:14a10729f185b:e0df8e84af\n175.29.2.96:12323:14a10729f185b:e0df8e84af\n175.29.3.99:12323:14a10729f185b:e0df8e84af\n175.29.1.78:12323:14a10729f185b:e0df8e84af\n175.29.3.190:12323:14a10729f185b:e0df8e84af\n175.29.2.8:12323:14a10729f185b:e0df8e84af\n175.29.2.151:12323:14a10729f185b:e0df8e84af\n175.29.3.169:12323:14a10729f185b:e0df8e84af\n193.30.101.82:12323:14a10729f185b:e0df8e84af\n193.30.101.165:12323:14a10729f185b:e0df8e84af\n155.103.171.158:12323:14a3ace52eed1:470f7d0de1\n155.103.170.165:12323:14a3ace52eed1:470f7d0de1\n155.103.168.50:12323:14a3ace52eed1:470f7d0de1\n155.103.169.53:12323:14a3ace52eed1:470f7d0de1\n155.103.170.180:12323:14a3ace52eed1:470f7d0de1\n155.103.170.71:12323:14a3ace52eed1:470f7d0de1\n155.103.171.184:12323:14a3ace52eed1:470f7d0de1\n155.103.170.158:12323:14a3ace52eed1:470f7d0de1\n155.103.169.235:12323:14a3ace52eed1:470f7d0de1\n155.103.170.55:12323:14a3ace52eed1:470f7d0de1\n155.103.171.139:12323:14a3ace52eed1:470f7d0de1\n155.103.170.142:12323:14a3ace52eed1:470f7d0de1\n155.103.169.221:12323:14a3ace52eed1:470f7d0de1\n155.103.171.246:12323:14a3ace52eed1:470f7d0de1\n155.103.169.30:12323:14a3ace52eed1:470f7d0de1\n155.103.168.63:12323:14a3ace52eed1:470f7d0de1\n155.103.171.16:12323:14a3ace52eed1:470f7d0de1\n155.103.171.182:12323:14a3ace52eed1:470f7d0de1\n155.103.170.161:12323:14a3ace52eed1:470f7d0de1",
+    "dcProxies":  "",
+    "intervalMs":  5000,
+    "notifyOos":  true,
+    "updatedAt":  "2026-07-30T04:11:47.836Z",
+    "pool":  {
+                 "isp":  38,
+                 "dc":  0,
+                 "ispRatio":  1,
+                 "rotateMode":  "roundrobin",
+                 "cooldownMs":  300000,
+                 "cooling":  0,
+                 "picks":  420,
+                 "exhaustedRecoveries":  0
+             },
+    "persistence":  {
+                        "statePath":  "/data/vanta-monitor-state.json",
+                        "dataDir":  "/data",
+                        "source":  "container",
+                        "durable":  "container",
+                        "ephemeral":  false,
+                        "survivesRestart":  true,
+                        "survivesRedeploy":  false
+                    }
+}

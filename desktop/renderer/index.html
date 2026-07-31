@@ -2,109 +2,239 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>J1m's Bot</title>
+  <title>Vanta</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header class="top">
-    <div class="brand">
-      <span id="engineDot" class="dot"></span>
-      <div>
-        <div class="brand-name">J1m's Bot</div>
-        <div class="brand-sub" id="engineLabel">Engine offline — app must stay open to run</div>
-      </div>
+  <div class="titlebar">
+    <div class="titlebar-drag">
+      <img class="titlebar-logo" src="assets/icon.png" alt="" width="18" height="18" />
+      <span class="titlebar-brand">VANTA</span>
     </div>
-    <div class="top-actions">
-      <button id="btnRetryEngine" class="secondary" type="button" hidden>Retry engine</button>
-      <button id="btnRunAll" type="button">Run enabled tasks</button>
+    <div class="titlebar-controls">
+      <button type="button" class="win-btn" id="btnWinMin" aria-label="Minimize">─</button>
+      <button type="button" class="win-btn" id="btnWinMax" aria-label="Maximize">□</button>
+      <button type="button" class="win-btn win-close" id="btnWinClose" aria-label="Close">✕</button>
+    </div>
+  </div>
+
+  <header class="topnav">
+    <div class="topnav-left">
+      <nav class="topnav-tabs tabs" aria-label="Main">
+        <button type="button" data-tab="home" class="active">Home</button>
+        <button type="button" data-tab="tasks">Tasks</button>
+        <button type="button" data-tab="profiles">Profiles</button>
+        <button type="button" data-tab="accounts">Accounts</button>
+        <button type="button" data-tab="proxies">Proxies</button>
+        <button type="button" data-tab="settings">Settings</button>
+        <span class="topnav-sep" aria-hidden="true"></span>
+        <button type="button" class="tab-adv" data-tab="feed">Feed</button>
+        <button type="button" class="tab-adv" data-tab="smart">Smart</button>
+        <button type="button" class="tab-adv" data-tab="harvest">Harvest</button>
+        <button type="button" class="tab-adv" data-tab="results">Results</button>
+      </nav>
+    </div>
+    <div class="topnav-right">
+      <div class="engine-pill">
+        <span id="engineDot" class="dot"></span>
+        <span class="engine-label" id="engineLabel">Starting…</span>
+      </div>
+      <button id="btnRetryEngine" class="secondary" type="button" hidden>Retry</button>
+      <button id="btnRunAll" type="button">Run enabled</button>
+      <span id="clock" class="clock"></span>
     </div>
   </header>
 
-  <nav class="tabs">
-    <button type="button" data-tab="tasks" class="active">Tasks</button>
-    <button type="button" data-tab="feed">Monitor Feed</button>
-    <button type="button" data-tab="smart">Smart Actions</button>
-    <button type="button" data-tab="harvest">Harvest</button>
-    <button type="button" data-tab="profiles">Profiles</button>
-    <button type="button" data-tab="accounts">Accounts</button>
-    <button type="button" data-tab="proxies">Proxies</button>
-    <button type="button" data-tab="results">Results</button>
-    <button type="button" data-tab="settings">Settings</button>
-  </nav>
-
   <main>
+
+    <!-- HOME -->
+    <section id="tab-home" class="panel active home-panel">
+      <div class="home-main home-main-full">
+        <div class="home-toolbar">
+          <div>
+            <h2 id="homeTitle">Home</h2>
+            <p class="hint" id="homeEngineLine">Checking engine…</p>
+          </div>
+        </div>
+
+        <div id="homeSuggested" class="home-dismissible">
+          <button type="button" class="home-dismiss-btn" data-home-dismiss="suggested" aria-label="Dismiss suggested actions">✕</button>
+          <div class="home-dismissible-head">
+            <h3>Suggested actions</h3>
+            <p class="hint">Quick paths to get a drop or checkout running.</p>
+          </div>
+          <div class="start-cards">
+            <article class="start-card" id="homeStartBandai">
+              <h3>Bandai drop</h3>
+              <ol class="start-steps">
+                <li>Profile + sticky AU proxy group</li>
+                <li>Harvest → Bandai → Start harvest</li>
+                <li>Smart Actions or Tasks for the SKU</li>
+                <li>Keep the app open through the drop</li>
+              </ol>
+              <div class="start-card-actions">
+                <button type="button" id="homeOpenDropPrep">Open Smart Actions</button>
+                <button type="button" class="secondary" id="homeOpenHarvest">Open Harvest</button>
+              </div>
+            </article>
+            <article class="start-card" id="homeStartCheckout">
+              <h3>Quick checkout</h3>
+              <ol class="start-steps">
+                <li>Profile (shipping + card)</li>
+                <li>Proxy group (or direct)</li>
+                <li>Create a task → Run</li>
+              </ol>
+              <div class="start-card-actions">
+                <button type="button" id="homeNewTask">New task</button>
+                <button type="button" class="secondary" id="homeOpenTasks">Open Tasks</button>
+              </div>
+            </article>
+          </div>
+        </div>
+
+        <div id="homeSetupCard" class="home-card home-checklist-card home-dismissible">
+          <button type="button" class="home-dismiss-btn" data-home-dismiss="setup" aria-label="Dismiss setup checklist">✕</button>
+          <div class="home-card-head"><h3>Setup checklist</h3></div>
+          <div id="homeChecklist" class="home-checklist"></div>
+          <p id="homeReadyStrip" class="home-ready-strip" hidden></p>
+        </div>
+
+        <div id="homeAnalytics" class="home-analytics" hidden>
+          <div class="home-analytics-main">
+            <div class="home-analytics-toolbar">
+              <div class="seg-row">
+                <button type="button" class="seg active" data-home-metric="checkouts">Checkouts</button>
+                <button type="button" class="seg" data-home-metric="spend">Spend</button>
+              </div>
+              <div class="seg-row">
+                <button type="button" class="seg active" data-home-period="today">Today</button>
+                <button type="button" class="seg" data-home-period="week">Week</button>
+                <button type="button" class="seg" data-home-period="month">Month</button>
+                <button type="button" class="seg" data-home-period="year">Year</button>
+              </div>
+            </div>
+            <div class="home-metric-hero">
+              <div class="home-metric-value" id="homeMetricValue">0</div>
+              <div class="home-metric-label" id="homeMetricLabel">Checkouts</div>
+            </div>
+            <div id="homeChart" class="home-chart" aria-hidden="false"></div>
+            <div id="homeChartEmpty" class="home-chart-empty" hidden>
+              <div class="home-chart-empty-icon" aria-hidden="true"></div>
+              <strong>Nothing to see here</strong>
+              <p>You haven’t made any checkouts for this period.</p>
+            </div>
+          </div>
+          <aside class="home-checkout-feed">
+            <h3>Checkout Feed</h3>
+            <div id="checkoutFeed" class="feed-list"></div>
+          </aside>
+        </div>
+
+        <div class="home-grid home-grid-secondary" id="homeActivityWrap">
+          <div class="home-card home-card-short">
+            <div class="home-card-head"><h3>Activity</h3></div>
+            <div id="homeActivity" class="log home-log"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+<!-- TASKS -->
+    
     <!-- TASKS -->
-    <section id="tab-tasks" class="panel active">
-      <div class="split">
-        <div>
-          <h2>Tasks</h2>
-          <div class="row" style="margin-bottom:8px">
-            <button type="button" class="secondary" id="btnExportTasks">Export</button>
-            <button type="button" class="secondary" id="btnImportTasks">Import</button>
-            <input type="file" id="taskImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
-          </div>
-          <p id="harvestBankStrip" class="harvest-bank-strip" aria-live="polite">Harvest banks —</p>
-          <div id="dropPrepCard" class="drop-prep-card">
-            <div class="drop-prep-head">
-              <strong>Bandai drop prep</strong>
-              <span id="dropReadyBadge" class="badge">—</span>
+    <section id="tab-tasks" class="panel tasks-panel">
+      <aside class="groups-rail">
+        <div class="rail-head">Groups</div>
+        <div id="taskGroupRail" class="group-list"></div>
+        <div class="rail-foot">
+          <button type="button" class="secondary" id="btnNewTaskGroup">New group</button>
+        </div>
+      </aside>
+      <div class="tasks-main">
+        <div class="tasks-toolbar">
+          <div class="panel-header tasks-toolbar-head">
+            <div>
+              <h2 id="tasksGroupTitle">Tasks</h2>
+              <p class="hint">Press <kbd>N</kbd> for a new task. Start / stop from the row or group bar.</p>
             </div>
-            <p id="dropReadyStrip" class="drop-ready-strip" aria-live="polite">Ready —</p>
-            <div class="drop-prep-row">
-              <label class="drop-fire-label">Fire at (AEST)</label>
-              <input id="dropFireAt" placeholder="13:00 or 2026-07-27T13:00" autocomplete="off" />
-              <button type="button" id="btnDropModeArm">Arm Drop Mode</button>
-              <button type="button" id="btnDropScheduleArm" class="secondary">Arm schedule</button>
-              <button type="button" id="btnDropScheduleCancel" class="secondary">Cancel</button>
-              <button type="button" id="btnVaultLoginCheck" class="secondary">Check vault logins</button>
+            <div class="toolbar-actions">
+              <button type="button" class="secondary" id="btnExportTasks">Export</button>
+              <button type="button" class="secondary" id="btnImportTasks">Import</button>
+              <input type="file" id="taskImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+              <button type="button" id="btnNewTask">New task</button>
             </div>
-            <p id="dropScheduleLine" class="field-hint">No schedule armed</p>
           </div>
-          <p class="hint">Kmart + Toymate run on this machine. Bandai: Arm Drop Mode → harvest fills → Arm schedule (AEST T0) fires all Autocheckout lanes together. Monitor + Checkout on restock also auto-arms F5 when Harvest → Bandai has a sticky proxy group.</p>
+          <p id="harvestBankStrip" class="harvest-bank-strip" hidden aria-live="polite"></p>
+          <!-- Go-live schedule/time removed — use Smart Actions or task creator. Hidden stubs keep IPC handlers safe. -->
+          <div id="dropPrepCard" hidden>
+            <span id="dropReadyBadge" class="badge">—</span>
+            <p id="dropReadyStrip"></p>
+            <input id="dropFireAt" type="hidden" />
+            <button type="button" id="btnDropModeArm" hidden></button>
+            <button type="button" id="btnDropScheduleArm" hidden></button>
+            <button type="button" id="btnDropScheduleCancel" hidden></button>
+            <button type="button" id="btnVaultLoginCheck" hidden></button>
+            <p id="dropScheduleLine" hidden></p>
+          </div>
           <div class="task-group-ops" id="taskGroupOps">
-            <label class="drop-fire-label">Group ops</label>
-            <input id="massTaskGroup" list="taskGroupList" placeholder="Task group" autocomplete="off" />
-            <input id="massGroupColor" type="color" value="#3dd6c6" title="Group color tag" aria-label="Group color" />
-            <button type="button" id="btnGroupColor" class="secondary">Set color</button>
             <button type="button" id="btnGroupStart">Start group</button>
             <button type="button" id="btnGroupStop" class="secondary">Stop group</button>
-            <button type="button" id="btnGroupDup" class="secondary">Duplicate group</button>
-            <input id="massQty" type="number" min="1" max="20" placeholder="Qty" title="Qty per checkout" style="width:4.5rem" />
-            <input id="massQuantity" type="number" min="1" max="50" placeholder="Parallel" title="Parallel jobs" style="width:5rem" />
-            <input id="massDelay" type="number" min="0" step="500" placeholder="Delay ms" title="Monitor start delay (ms)" style="width:6rem" />
-            <button type="button" id="btnGroupPatch" class="secondary">Apply to group</button>
+            <button type="button" id="btnGroupDup" class="secondary">Duplicate</button>
+            <span class="task-ops-sep" aria-hidden="true"></span>
+            <select id="massTaskGroup" class="toolbar-select" aria-label="Task group">
+              <option value="">Select group…</option>
+            </select>
+            <datalist id="taskGroupList" hidden></datalist>
+            <input id="massGroupColor" type="color" value="#c8c8cc" title="Group color" aria-label="Group color" />
+            <button type="button" id="btnGroupColor" class="secondary">Color</button>
+            <input id="massQty" type="number" min="1" max="20" placeholder="Qty" title="Qty per checkout" />
+            <input id="massQuantity" type="number" min="1" max="50" placeholder="×" title="Parallel jobs" />
+            <input id="massDelay" type="number" min="0" step="500" placeholder="Delay" title="Monitor start delay (ms)" />
+            <button type="button" id="btnGroupPatch" class="secondary">Apply</button>
           </div>
-          <div id="taskList" class="list"></div>
         </div>
-        <form id="taskForm" class="form-card">
+        <div class="table-wrap">
+          <table class="data-table" id="taskTable">
+            <thead>
+              <tr>
+                <th class="col-check">On</th>
+                <th>Task</th>
+                <th>Store</th>
+                <th>Profile</th>
+                <th>Proxy</th>
+                <th>Qty</th>
+                <th>Status</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="taskList"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="taskDialog" class="modal">
+      <div class="modal-card" style="width:min(560px,94vw)">
+        <div class="modal-head">
           <h3 id="taskFormTitle">New task</h3>
+          <button type="button" class="icon-btn" id="taskDialogClose" aria-label="Close">✕</button>
+        </div>
+        <form id="taskForm" class="modal-body">
           <input type="hidden" id="taskId" />
           <label>Label</label>
           <input id="taskLabel" placeholder="Drop SKU name" />
-          <label>Task group <span class="optional">Smart Actions target</span></label>
-          <input id="taskGroup" placeholder="e.g. Drop A / Harvest" list="taskGroupList" autocomplete="off" />
-          <datalist id="taskGroupList"></datalist>
+          <label>Task group</label>
+          <select id="taskGroup">
+            <option value="">No group</option>
+          </select>
+
           <label>Store</label>
           <select id="taskStore">
-            <option value="kmart">Kmart AU</option>
+            <option value="bandai" selected>Premium Bandai AU</option>
             <option value="toymate">Toymate AU</option>
-            <option value="bandai">Premium Bandai AU</option>
-            <option value="disney">Disney Store AU</option>
             <option value="pokemoncentre">Pokémon Centre AU</option>
           </select>
-          <div id="taskDisneyOpts" hidden>
-            <label>Disney mode</label>
-            <select id="taskDisneyMode">
-              <option value="pay" selected>Autocheckout (ATC → GE pay)</option>
-              <option value="atc">ATC only</option>
-              <option value="warm">Akamai warm only</option>
-              <option value="monitor">PDP monitor</option>
-            </select>
-            <p class="field-hint">
-              Autocheckout uses a harvested Akamai+CapSolver session when the Harvest tab bank has one;
-              empty bank = cold path (still works, slower). Same sticky proxy group as harvest recommended.
-            </p>
-          </div>
+          <div id="taskDisneyOpts" hidden></div>
           <div id="taskToymateOpts" hidden>
             <label>Toymate mode</label>
             <select id="taskToymateMode">
@@ -141,23 +271,19 @@
             <label>Bandai mode</label>
             <select id="taskBandaiMode">
               <option value="checkout">Bandai — Autocheckout</option>
-              <option value="atc">Bandai — ATC only (hold cart)</option>
               <option value="account_gen">Bandai — Account gen</option>
               <option value="monitor">Bandai — Monitor</option>
-              <option value="chance">Chance applyDraw</option>
+              <option value="chance">Chance draw</option>
             </select>
-            <p id="taskBandaiAtcHint" class="field-hint" hidden>
-              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Retry pay</strong> to checkout later.
-            </p>
             <div id="taskBandaiMonitorWrap" hidden>
               <label>Monitor source</label>
               <select id="taskBandaiMonitorMode">
                 <option value="local">Task-local — my proxies + interval</option>
                 <option value="global">Global — filter shared monitor events</option>
               </select>
-              <p class="field-hint">Global filters the always-on Railway poller (Settings → Bandai global monitor). Local uses this task’s proxy group and interval.</p>
+              <p class="field-hint">Global uses the shared product monitor. Local polls with this task’s proxy group and interval.</p>
               <label>Watch SKU / product code <span class="optional">(optional)</span></label>
-              <input id="taskBandaiWatchSku" placeholder="N2903432003 or NAI…" autocomplete="off" />
+              <input id="taskBandaiWatchSku" placeholder="N2903432003" autocomplete="off" />
               <label>Watch keywords <span class="optional">(optional if SKU set)</span></label>
               <input id="taskBandaiWatchKeywords" placeholder="ONE PIECE, GUNDAM" autocomplete="off" />
               <div id="taskBandaiMonitorLocalOpts">
@@ -166,28 +292,27 @@
                 <label>Start delay (ms)</label>
                 <input id="taskBandaiMonitorDelayMs" type="number" min="0" step="500" value="0" />
               </div>
-              <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout on restock / new in-stock match</label>
+              <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout when stock matches</label>
               <p class="field-hint">
-                When on, the first matching <code>stock_changed</code> switches to Autocheckout (claims a Bandai F5 harvest bridge if ready).
-                Running the task <strong>auto-arms</strong> Harvest → Bandai when a sticky checkout proxy group is set on the Harvest tab (monitor proxies are not used for F5).
-                Leave Place order off for a dry cart-only prove.
+                When on, a matching restock starts checkout. Warm sessions from Harvest are used when ready.
+                Leave Place order off for a cart-only dry run.
               </p>
             </div>
             <div id="taskBandaiCheckoutModeWrap" hidden>
-              <label>Checkout pay path</label>
+              <label>Checkout speed</label>
               <select id="taskBandaiCheckoutMode">
-                <option value="fast">Fast — risk-hydrate + page issuer (default)</option>
-                <option value="fast_undici">Fast — undici issuer (A/B / lab)</option>
-                <option value="safe">Safe — Playwright GE after cart hold</option>
+                <option value="fast">Fast (default)</option>
+                <option value="fast_undici">Fast+</option>
+                <option value="safe">Safe (slower)</option>
               </select>
-              <p class="field-hint">ATC is always HTTP+F5 (~15–25s cart hold). Fast mints Forter/iovation then pays from the same Playwright context (avoids RELOAD_ONLY after page-drop). Use undici issuer only for A/B. Safe keeps the ~30 min window and pays via browser GEM.</p>
-              <label>Backend PID / areaItemNo <span class="optional">(NAI… — preferred on drops)</span></label>
-              <input id="taskBandaiAreaItemNo" placeholder="NAI0859145AU" autocomplete="off" />
-              <p class="field-hint">If set, ATC uses this id instead of the frontend <code>N…</code> from the PDP URL (extension tip under load).</p>
-              <label class="check"><input id="taskBandaiWatchdog" type="checkbox" checked /> Watchdog — auto-start on Railway restock match</label>
+              <p class="field-hint">Fast is recommended for drops. Safe is slower and more conservative.</p>
+              <label>Product ID <span class="optional">(optional — advanced)</span></label>
+              <input id="taskBandaiAreaItemNo" placeholder="Optional override" autocomplete="off" />
+              <p class="field-hint">Leave blank unless you were given a specific product ID for the drop.</p>
+              <label class="check"><input id="taskBandaiWatchdog" type="checkbox" checked /> Auto-start on monitor restock</label>
               <p class="field-hint">
-                When the engine is subscribed to the Bandai global monitor, a matching in-stock hit starts this Autocheckout task
-                (matches PDP URL / product code, or Watch SKU / keywords if set). Cooldown ~60s per task+SKU. Toggle off for manual-only lanes.
+                Starts this Autocheckout task when the product monitor reports a matching restock.
+                Cooldown ~60s per task. Turn off for manual-only runs.
               </p>
               <label>Watch SKU / product code <span class="optional">(optional — PDP URL also matches)</span></label>
               <input id="taskBandaiCheckoutWatchSku" placeholder="N2903432003" autocomplete="off" />
@@ -204,7 +329,7 @@
                 <option value="auto">Auto — match profile email</option>
                 <option value="manual">Manual — pick from vault</option>
               </select>
-              <p class="field-hint">Bandai ATC requires login. Guest ATC returns 501.</p>
+              <p class="field-hint">Bandai checkout needs a logged-in account.</p>
               <div id="taskBandaiAccountManualWrap" hidden>
                 <label>Vault account</label>
                 <select id="taskBandaiAccountId"></select>
@@ -212,21 +337,21 @@
             </div>
             <div id="taskBandaiChanceWrap" hidden>
               <label>Campaign SN</label>
-              <input id="taskBandaiCampaignSn" placeholder="campaignSn for applyDraw" />
+              <input id="taskBandaiCampaignSn" placeholder="Campaign ID" />
             </div>
           </div>
           <div id="taskPcOpts" hidden>
             <label>Pokémon Centre mode</label>
             <select id="taskPcMode">
-              <option value="monitor">Monitor (edge + PDP stock)</option>
-              <option value="checkout">Checkout (Cortex ATC → Global-e)</option>
-              <option value="edge">Edge warm only (Incapsula + DD)</option>
-              <option value="har_probe">HAR probe (Cortex paths)</option>
+              <option value="monitor">Monitor</option>
+              <option value="checkout">Checkout</option>
+              <option value="edge">Warm only</option>
+              <option value="har_probe">Probe</option>
             </select>
-            <p class="field-hint">Needs sticky AU ISP/residential + Hyper (Incapsula/DD). CapSolver for hCaptcha drops. Cortex ATC bodies harden after HAR.</p>
+            <p class="field-hint">Use a sticky AU proxy group. Add Hyper and a captcha key in Settings when needed.</p>
           </div>
           <label id="taskPdpLabel">Product URL (PDP)</label>
-          <input id="taskPdp" placeholder="https://www.kmart.com.au/..." />
+          <input id="taskPdp" placeholder="https://…" />
           <div class="grid2">
             <div>
               <label>Qty per checkout</label>
@@ -237,8 +362,24 @@
               <input id="taskQuantity" type="number" min="1" max="50" value="1" />
             </div>
           </div>
-          <label>Profile</label>
-          <select id="taskProfile"></select>
+          <label>Profile source</label>
+          <select id="taskProfileSource">
+            <option value="single" selected>Single profile</option>
+            <option value="group">Profile group</option>
+          </select>
+          <div id="taskProfileSingleWrap">
+            <label>Profile</label>
+            <select id="taskProfile"></select>
+          </div>
+          <div id="taskProfileGroupWrap" hidden>
+            <label>Profile group</label>
+            <select id="taskProfileGroup">
+              <option value="">Select group…</option>
+            </select>
+            <label>Tasks per profile</label>
+            <input id="taskPerProfile" type="number" min="1" max="20" value="1" />
+            <p class="field-hint" id="taskProfileGroupHint">Creates that many tasks for every profile in the group.</p>
+          </div>
           <label>Proxy group</label>
           <select id="taskProxy">
             <option value="">Direct (no proxy)</option>
@@ -251,356 +392,439 @@
           </div>
         </form>
       </div>
-    </section>
+    </dialog>
+
 
     <!-- MONITOR FEED -->
-    <section id="tab-feed" class="panel">
-      <div class="split">
+    <section id="tab-feed" class="panel feed-panel">
+      <div class="feed-head">
         <div>
-          <h2>Monitor Feed</h2>
-          <p class="hint">Live Bandai global SSE hits while the engine is subscribed. Quick Task uses Settings → Quick Task preset. Discord restock pings also have a <strong>Quick Task</strong> button → localhost bridge (desktop must be open on this PC). Restock Discord stays on Railway (operator) — not your checkout webhook.</p>
-          <p id="feedStatusLine" class="harvest-bank-strip" aria-live="polite">Global monitor —</p>
-          <div class="feed-qt-row">
-            <input id="qtInput" placeholder="Paste Bandai SKU or PDP URL…" autocomplete="off" />
-            <button type="button" id="btnQuickTask">Quick Task</button>
-            <button type="button" class="secondary" id="btnFeedClear">Clear feed</button>
-          </div>
-          <div id="feedList" class="list"></div>
+          <h2>Monitor</h2>
+          <p class="hint">Recent stock updates</p>
         </div>
-        <div class="form-card">
-          <h3>Feed tips</h3>
-          <ol class="hint" style="padding-left:18px;line-height:1.6">
-            <li>Keep the app open (engine starts automatically) with Bandai global monitor enabled (Settings).</li>
-            <li>Set Quick Task preset (profile + proxy) before using row actions.</li>
-            <li><strong>Quick Task</strong> on a feed row (or Discord ping) creates/starts from the preset.</li>
-            <li>Discord button opens <code>http://127.0.0.1:17865/quicktask</code> — only works with this app open.</li>
-            <li><strong>Use in Smart Action</strong> opens the creator with SKU/title filters prefilled.</li>
-          </ol>
-          <p class="field-hint">Existing Bandai → Monitor → Global watch tasks still checkout on match. Smart Actions only orchestrate Create/Start tasks.</p>
+        <div class="feed-head-actions">
+          <span id="feedPower" class="power-pill" data-state="off" aria-live="polite">
+            <span class="power-pill-knob"></span>
+            <span class="power-pill-label">Off</span>
+          </span>
+          <button type="button" class="secondary" id="btnFeedClear">Clear</button>
         </div>
       </div>
+      <div id="feedList" class="list feed-list"></div>
     </section>
 
     <!-- SMART ACTIONS -->
-    <section id="tab-smart" class="panel">
-      <div class="split">
-        <div>
-          <div class="sa-head">
-            <div>
-              <h2>Smart Actions</h2>
-              <p class="hint">Cybersole-style builder: Schedule / Monitor / Quicktask → filters → Wait, Harvester, Create/Update/Start/Stop by task group. Runs in the main process while the app stays open.</p>
-            </div>
-            <button type="button" id="btnSaNew">New Action</button>
+    <section id="tab-smart" class="panel smart-panel">
+      <div class="sa-page">
+        <div class="sa-head">
+          <div>
+            <h2>Smart Actions</h2>
+            <p class="hint">Build automations from product presets or scratch. Runs while the app stays open.</p>
           </div>
+          <button type="button" id="btnSaNew">New Action</button>
+        </div>
 
+        <div class="sa-workspace">
           <div class="sa-store" id="saCatalogCard">
             <header class="sa-store-hero">
               <div>
-                <p class="sa-store-kicker">J1m Presets</p>
-                <h3 class="sa-store-title">Action Store</h3>
-                <p class="sa-store-sub">Curated packs × your SKUs. Tap a tile to turn it on or off.</p>
+                <p class="sa-store-kicker">Action Store</p>
+                <h3 class="sa-store-title">Products</h3>
+                <p class="sa-store-sub">One card per product. Click Checkout / Alert / etc. to open the builder pre-filled — pick profile &amp; proxy, name the tasks, then Save.</p>
               </div>
-              <div class="sa-store-meta" id="saCatalogMeta"></div>
+              <div class="sa-store-hero-actions">
+                <div class="sa-store-meta" id="saCatalogMeta"></div>
+                <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaCatalogPull">Refresh library</button>
+              </div>
             </header>
-
             <section class="sa-store-section">
               <div class="sa-store-section-head">
-                <h4>Featured actions</h4>
+                <h4>Library</h4>
+                <span class="optional" id="saCatalogSourceHint">from product library</span>
                 <span class="sa-store-count" id="saCatalogTmplCount"></span>
               </div>
-              <div id="saCatalogTemplates" class="sa-store-grid" role="list"></div>
-            </section>
-
-            <section class="sa-store-section sa-store-library">
-              <div class="sa-store-section-head">
-                <h4>Library</h4>
-                <span class="optional" id="saCatalogSourceHint">from monitor admin</span>
+              <div class="sa-catalog-filters" id="saCatalogFilters">
+                <input type="search" id="saCatalogSearch" placeholder="Search title or SKU…" autocomplete="off" />
+                <select id="saCatalogStore" aria-label="Store">
+                  <option value="">All stores</option>
+                </select>
+                <select id="saCatalogSet" aria-label="Set">
+                  <option value="">All sets</option>
+                </select>
+                <label class="sa-filter-check" title="Hide apparel, acrylics, and other non-card products">
+                  <input type="checkbox" id="saCatalogTcgOnly" checked />
+                  TCG only
+                </label>
+                <details class="sa-filter-keywords">
+                  <summary>Keywords</summary>
+                  <label>
+                    Require
+                    <input type="text" id="saCatalogRequireKw" placeholder="e.g. playmat, anniversary" />
+                  </label>
+                  <label>
+                    Block
+                    <input type="text" id="saCatalogBlockKw" placeholder="e.g. t-shirt, acrylic, charm" />
+                  </label>
+                </details>
               </div>
-              <p class="sa-store-sub" style="margin:0 0 10px">
-                SKUs are curated in the Bandai monitor admin → <strong>Action Store presets</strong>. Refresh to pull.
-              </p>
-              <div class="sa-store-actions">
-                <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaCatalogPull">Refresh from monitor</button>
-              </div>
-              <div id="saCatalogRows" class="sa-store-chips"></div>
+              <div id="saCatalogRows" class="sa-sku-grid" role="list"></div>
+              <div id="saCatalogTemplates" hidden></div>
             </section>
           </div>
 
-          <div id="saList" class="list"></div>
-          <div id="saLogPanel" class="form-card" hidden>
-            <h3 id="saLogTitle">Logs</h3>
-            <div id="saLogList" class="log sa-log"></div>
-            <button type="button" class="secondary" id="btnSaLogClose">Close logs</button>
+          <aside class="sa-saved-block" id="saSavedBlock">
+            <div class="sa-store-groups-block" id="saStoreGroupsBlock">
+              <div class="sa-saved-head">
+                <div>
+                  <h3>Store Groups</h3>
+                  <p class="hint">Bundle stores for SA filters and targets. Right-click to clone / edit / delete.</p>
+                </div>
+                <button type="button" class="sa-store-btn" id="btnStoreGroupNew">New group</button>
+              </div>
+              <div id="saStoreGroupList" class="list sa-store-group-list"></div>
+            </div>
+            <div class="sa-saved-head">
+              <div>
+                <h3>Your Smart Actions</h3>
+                <p class="hint">Toggle On to arm. Edit anytime.</p>
+              </div>
+              <span class="sa-saved-count" id="saSavedCount"></span>
+            </div>
+            <div id="saList" class="list sa-saved-list"></div>
+            <div id="saLogPanel" class="form-card" hidden>
+              <h3 id="saLogTitle">Logs</h3>
+              <div id="saLogList" class="log sa-log"></div>
+              <button type="button" class="secondary" id="btnSaLogClose">Close logs</button>
+            </div>
+          </aside>
+        </div>
+      </div>
+
+      <dialog id="storeGroupDialog" class="modal">
+        <div class="modal-card">
+          <div class="modal-head">
+            <h3 id="storeGroupDialogTitle">Store Group</h3>
+            <button type="button" class="icon-btn" id="storeGroupDialogClose" aria-label="Close">✕</button>
+          </div>
+          <input type="hidden" id="storeGroupId" />
+          <label>Name</label>
+          <input id="storeGroupName" placeholder="e.g. TCG AU" maxlength="80" />
+          <label>Stores</label>
+          <div class="store-group-checks" id="storeGroupStores">
+            <label class="check"><input type="checkbox" value="bandai" /> Bandai</label>
+            <label class="check"><input type="checkbox" value="kmart" /> Kmart</label>
+            <label class="check"><input type="checkbox" value="toymate" /> Toymate</label>
+            <label class="check"><input type="checkbox" value="disney" /> Disney</label>
+            <label class="check"><input type="checkbox" value="pokemoncentre" /> Pokémon Centre</label>
+          </div>
+          <div class="row modal-actions">
+            <button type="button" class="secondary" id="btnStoreGroupCancel">Cancel</button>
+            <button type="button" id="btnStoreGroupSave">Save</button>
           </div>
         </div>
-        <form id="saForm" class="form-card" hidden>
-          <h3 id="saFormTitle">New Smart Action</h3>
-          <input type="hidden" id="saId" />
-          <label>Name</label>
-          <input id="saName" placeholder="Bandai restock → ATC" />
-          <div class="grid2">
+      </dialog>
+
+      <!-- Blank / template gallery -->
+      <dialog id="saTemplateDialog" class="modal sa-gallery-modal">
+        <div class="modal-card sa-gallery-card">
+          <div class="modal-head">
+            <h3>New Action</h3>
+            <button type="button" class="icon-btn" id="saTemplateDialogClose" aria-label="Close">✕</button>
+          </div>
+          <div class="modal-body sa-gallery-body" id="saTemplateDialogBody"></div>
+        </div>
+      </dialog>
+
+      <!-- Full-screen builder -->
+      <div id="saBuilder" class="sa-builder" hidden>
+        <header class="sa-builder-top">
+          <div class="sa-builder-title-row">
+            <button type="button" class="icon-btn" id="btnSaBuilderClose" aria-label="Close">✕</button>
+            <div>
+              <input id="saName" class="sa-builder-name" placeholder="Untitled action" />
+              <p class="sa-builder-status" id="saBuilderStatus">Choose a trigger</p>
+            </div>
+          </div>
+          <div class="sa-builder-top-actions">
             <label class="check"><input id="saEnabled" type="checkbox" checked /> Enabled</label>
             <label class="check"><input id="saRunOnce" type="checkbox" /> Run once</label>
+            <label class="check"><input id="saNotifications" type="checkbox" checked /> Notifications</label>
+            <input id="saRunInterval" type="number" min="0" step="1000" value="30000" title="Debounce ms" class="sa-builder-interval" />
+            <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaBuilderSave">Save Smart Action</button>
           </div>
-          <label class="check"><input id="saNotifications" type="checkbox" checked /> Notifications</label>
-          <label>Run interval (ms) <span class="optional">debounce — 0 = every hit</span></label>
-          <input id="saRunInterval" type="number" min="0" step="1000" value="30000" />
+        </header>
+        <p class="sa-builder-explain" id="saBuilderExplain" hidden></p>
+        <div class="sa-builder-steps" id="saBuilderSteps">
+          <div class="sa-step" data-step="trigger"><span class="sa-step-num">1</span><div><strong>Trigger</strong><small id="saStepTriggerHint">Required</small></div></div>
+          <div class="sa-step-arrow" aria-hidden="true">→</div>
+          <div class="sa-step" data-step="filters"><span class="sa-step-num">2</span><div><strong>Filters</strong><small id="saStepFilterHint">Optional</small></div></div>
+          <div class="sa-step-arrow" aria-hidden="true">→</div>
+          <div class="sa-step" data-step="actions"><span class="sa-step-num">3</span><div><strong>Actions</strong><small id="saStepActionHint">Required</small></div></div>
+        </div>
+        <div class="sa-builder-cols">
+          <section class="sa-col sa-col-trigger">
+            <h4>Trigger</h4>
+            <div id="saTriggerList" class="sa-trigger-list"></div>
+            <div id="saScheduleOpts" class="sa-schedule-opts" hidden>
+              <label>Time (HH:MM or HH:MM:SS)</label>
+              <input id="saScheduleAt" placeholder="12:59:30" />
+              <label>Repeat</label>
+              <select id="saScheduleRepeat">
+                <option value="daily">Daily</option>
+                <option value="once">Once</option>
+              </select>
+              <label>Timezone</label>
+              <input id="saScheduleTz" value="Australia/Sydney" />
+              <p class="field-hint">Runs while the app is open. Use seconds for precise timing (e.g. 12:59:30).</p>
+            </div>
+            <select id="saTrigger" hidden>
+              <option value="product_monitor">Product Monitor</option>
+              <option value="quicktask">Quicktask</option>
+              <option value="schedule">Schedule</option>
+            </select>
+          </section>
+          <section class="sa-col sa-col-filters">
+            <div class="sa-col-head">
+              <h4>Filters</h4>
+              <button type="button" class="sa-col-add" id="btnSaAddFilter">+ Filter</button>
+            </div>
+            <div id="saFilters" class="sa-filter-stack"></div>
+            <p class="sa-empty-hint" id="saFiltersEmpty">No filters — runs on every trigger match.</p>
+          </section>
+          <section class="sa-col sa-col-actions">
+            <div class="sa-col-head">
+              <h4>Actions</h4>
+              <button type="button" class="sa-col-add" id="btnSaAddAction">+ Action</button>
+            </div>
+            <div id="saActions" class="sa-action-stack"></div>
+            <p class="sa-empty-hint" id="saActionsEmpty">Add at least one action to continue.</p>
+          </section>
+        </div>
+        <input type="hidden" id="saId" />
+        <form id="saForm" hidden></form>
+      </div>
 
-          <h3 class="sa-section">Trigger</h3>
-          <label>When</label>
-          <select id="saTrigger">
-            <option value="product_monitor">Product Monitor (Bandai SSE)</option>
-            <option value="quicktask">Quicktask</option>
-            <option value="schedule">Schedule (timer)</option>
-          </select>
-          <div id="saScheduleOpts" hidden>
+      <!-- Continue If filter dialog -->
+      <dialog id="saFilterDialog" class="modal">
+        <div class="modal-card" style="width:min(420px,94vw)">
+          <div class="modal-head">
+            <h3>Continue If</h3>
+            <button type="button" class="icon-btn" id="saFilterDialogClose" aria-label="Close">✕</button>
+          </div>
+          <div class="modal-body">
             <div class="grid2">
               <div>
-                <label>Time (HH:MM or HH:MM:SS)</label>
-                <input id="saScheduleAt" placeholder="12:59:30" />
+                <label>Variable</label>
+                <select id="saFilterField"></select>
               </div>
               <div>
-                <label>Repeat</label>
-                <select id="saScheduleRepeat">
-                  <option value="daily">Daily</option>
-                  <option value="once">Once</option>
-                </select>
+                <label>Operator</label>
+                <select id="saFilterOp"></select>
               </div>
             </div>
-            <label>Timezone</label>
-            <input id="saScheduleTz" value="Australia/Sydney" />
-            <p class="field-hint">Fires while Desktop is open (1s tick). Use <code>HH:MM:SS</code> for pre-drop delay tighten (e.g. 12:59:30 → delay 0).</p>
+            <label>Input</label>
+            <input id="saFilterValue" placeholder="Value" />
+            <div class="row" style="margin-top:14px">
+              <button type="button" class="sa-store-btn sa-store-btn-primary" id="btnSaFilterSave">Add Filter</button>
+              <button type="button" class="secondary" id="btnSaFilterCancel">Cancel</button>
+            </div>
           </div>
+        </div>
+      </dialog>
 
-          <h3 class="sa-section">Filters <span class="optional">AND · empty = always</span></h3>
-          <p class="field-hint">Keyword syntax: comma AND, <code>a/b</code> OR, <code>-neg</code> negative.</p>
-          <div id="saFilters"></div>
-          <button type="button" class="secondary" id="btnSaAddFilter">Add filter</button>
-
-          <h3 class="sa-section">Actions <span class="optional">top → bottom</span></h3>
-          <div id="saActions"></div>
-          <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:6px">
-            <button type="button" class="secondary" id="btnSaAddCreate">+ Create Tasks</button>
-            <button type="button" class="secondary" id="btnSaAddUpdate">+ Update Tasks</button>
-            <button type="button" class="secondary" id="btnSaAddStart">+ Start Tasks</button>
-            <button type="button" class="secondary" id="btnSaAddStop">+ Stop Tasks</button>
-            <button type="button" class="secondary" id="btnSaAddWait">+ Wait</button>
-            <button type="button" class="secondary" id="btnSaAddHarvestStart">+ Start Harvester</button>
-            <button type="button" class="secondary" id="btnSaAddHarvestStop">+ Stop Harvester</button>
-            <button type="button" class="secondary" id="btnSaAddNotify">+ Notify Discord</button>
+      <!-- Select Action dialog -->
+      <dialog id="saActionDialog" class="modal sa-action-pick-modal">
+        <div class="modal-card sa-action-pick-card">
+          <div class="modal-head">
+            <h3>Select Action</h3>
+            <button type="button" class="icon-btn" id="saActionDialogClose" aria-label="Close">✕</button>
           </div>
-
-          <div class="row" style="margin-top:14px">
-            <button type="submit">Save action</button>
-            <button type="button" class="secondary" id="btnSaCancel">Cancel</button>
+          <div class="modal-body">
+            <input id="saActionSearch" class="sa-action-search" placeholder="Search actions" />
+            <div id="saActionPickList" class="sa-action-pick-list"></div>
           </div>
-        </form>
-      </div>
+        </div>
+      </dialog>
+
+      <dialog id="saSkuDialog" class="modal">
+        <div class="modal-card" style="width:min(520px,94vw)">
+          <div class="modal-head">
+            <h3 id="saSkuDialogTitle">Presets</h3>
+            <button type="button" class="icon-btn" id="saSkuDialogClose" aria-label="Close">✕</button>
+          </div>
+          <div class="modal-body" id="saSkuDialogBody"></div>
+        </div>
+      </dialog>
     </section>
 
     <!-- HARVEST -->
-    <section id="tab-harvest" class="panel">
-      <div class="split">
-        <div>
-          <h2>Toymate Harvest</h2>
-          <p class="hint">
-            Pre-warm <strong>Cloudflare clearance</strong> and checkout <strong>reCAPTCHA</strong> on sticky proxies
-            so Autocheckout skips ~75s of CapSolver on the critical path. Sessions are single-use and IP-bound —
-            the same proxy that harvested must run the checkout.
-          </p>
-
-          <div class="howto form-card">
-            <h3>How to use</h3>
-            <ol class="howto-list">
-              <li><strong>Settings</strong> → paste your CapSolver API key → save.</li>
-              <li><strong>Proxies</strong> → create a group of sticky AU ISP/residential lines (session- style).</li>
-              <li>Pick that group below, set how many CF sessions to keep ready (2–4 is a good start).</li>
-              <li>Leave <em>Solve spam reCAPTCHA</em> on so each session also banks a checkout spam token (~2 min TTL).</li>
-              <li>Click <strong>Start harvest</strong> before a drop (engine starts with CapSolver if needed).</li>
-              <li>When the bank shows ready sessions, run <strong>Toymate → Autocheckout</strong> tasks — each run auto-claims one session and stays on that sticky proxy.</li>
-              <li>Point the task at the <em>same</em> proxy group you harvested with (or leave it; claim overrides to the harvested exit).</li>
-            </ol>
-            <p class="field-hint">
-              CF clearance lasts ~25 min · spam tokens ~100s. Empty bank = checkout falls back to on-demand CapSolver (slower, still works).
-              CapSolver spend scales with desired count × refill — start small. Stop harvest when you are done so CapSolver does not keep spending.
-            </p>
-          </div>
-
-          <div id="harvestSessionList" class="list"></div>
-        </div>
-
-        <div class="form-card">
-          <h3>Toymate bank</h3>
-          <div class="harvest-stats" id="harvestStats">
-            <div><span class="muted">Ready</span><strong id="hvReady">0</strong></div>
-            <div><span class="muted">With spam</span><strong id="hvSpam">0</strong></div>
-            <div><span class="muted">Solved</span><strong id="hvSolved">0</strong></div>
-            <div><span class="muted">Failed</span><strong id="hvFailed">0</strong></div>
-          </div>
-          <p id="harvestStatusLine" class="field-hint">Harvest stopped</p>
-          <p id="harvestError" class="err-line" hidden></p>
-
-          <label>Proxy group</label>
-          <select id="hvProxyGroup"></select>
-          <label>Desired CF sessions</label>
-          <input id="hvDesired" type="number" min="0" max="12" value="2" />
-          <label class="check"><input id="hvSolveSpam" type="checkbox" checked /> Solve spam reCAPTCHA with each CF session</label>
-
-          <div class="row-actions">
-            <button type="button" id="hvStart">Start harvest</button>
-            <button type="button" class="secondary" id="hvStop">Stop</button>
-          </div>
-          <div class="row-actions">
-            <button type="button" class="secondary" id="hvOnce">Harvest one now</button>
-            <button type="button" class="secondary" id="hvClear">Clear bank</button>
-          </div>
-        </div>
+    <section id="tab-harvest" class="panel harvest-panel">
+      <div class="panel-pad harvest-hero">
+        <h2>Harvest</h2>
+        <p class="hint">Warm Bandai logins before a drop — same sticky proxy group as your tasks. Start → wait for Ready → run Autocheckout.</p>
       </div>
 
-      <hr style="border:0;border-top:1px solid var(--border);margin:28px 0" />
-
-      <div class="split">
-        <div>
-          <h2>Disney Store Harvest</h2>
-          <p class="hint">
-            Pre-warm <strong>Akamai <code>_abck</code></strong> and <strong>reCAPTCHA Enterprise</strong> (AddToCart)
-            on sticky AU ISP/resi so Disney Autocheckout skips Hyper warm + CapSolver on the drop path
-            (~15s → ATC becomes ~3s when claimed).
-          </p>
-
-          <div class="howto form-card">
-            <h3>How to use</h3>
-            <ol class="howto-list">
-              <li><strong>Settings</strong> → Hyper API key + CapSolver key → save → start engine.</li>
-              <li><strong>Proxies</strong> → sticky AU ISP/residential group (same exits you will checkout on).</li>
-              <li>Pick that group below, desired 1–3 sessions, leave captcha solve on.</li>
-              <li>Click <strong>Start harvest</strong> a few minutes before the drop.</li>
-              <li>Run <strong>Disney Store AU → Autocheckout</strong> — each run auto-claims one session when ready.</li>
-              <li><strong>Stop</strong> after the drop so CapSolver/Hyper stop spending.</li>
-            </ol>
-            <p class="field-hint">
-              <code>_abck</code> TTL ~3 min · captcha ~100s. Empty bank = cold checkout (warm + CapSolver on path — still works).
-              Sessions are single-use and IP-bound.
-            </p>
+      <div class="harvest-primary">
+        <div class="harvest-primary-head">
+          <div>
+            <h3>Bandai</h3>
+            <p id="bandaiHarvestStatusLine" class="field-hint">Stopped</p>
           </div>
-
-          <div id="disneyHarvestSessionList" class="list"></div>
-        </div>
-
-        <div class="form-card">
-          <h3>Disney bank</h3>
-          <div class="harvest-stats" id="disneyHarvestStats">
-            <div><span class="muted">Ready</span><strong id="dhReady">0</strong></div>
-            <div><span class="muted">With captcha</span><strong id="dhCaptcha">0</strong></div>
-            <div><span class="muted">Solved</span><strong id="dhSolved">0</strong></div>
-            <div><span class="muted">Failed</span><strong id="dhFailed">0</strong></div>
-          </div>
-          <p id="disneyHarvestStatusLine" class="field-hint">Harvest stopped</p>
-          <p id="disneyHarvestError" class="err-line" hidden></p>
-
-          <label>Proxy group</label>
-          <select id="dhProxyGroup"></select>
-          <label>Desired warm sessions</label>
-          <input id="dhDesired" type="number" min="0" max="12" value="2" />
-          <label class="check"><input id="dhSolveCaptcha" type="checkbox" checked /> Solve AddToCart reCAPTCHA with each warm</label>
-
-          <div class="row-actions">
-            <button type="button" id="dhStart">Start harvest</button>
-            <button type="button" class="secondary" id="dhStop">Stop</button>
-          </div>
-          <div class="row-actions">
-            <button type="button" class="secondary" id="dhOnce">Harvest one now</button>
-            <button type="button" class="secondary" id="dhClear">Clear bank</button>
-          </div>
-        </div>
-      </div>
-
-      <hr style="border:0;border-top:1px solid var(--border);margin:28px 0" />
-
-      <div class="split">
-        <div>
-          <h2>Bandai F5 Harvest</h2>
-          <p class="hint">
-            Pre-warm Playwright <strong>F5 login bridges</strong> on sticky AU ISP/resi proxies so
-            Bandai Autocheckout skips Chromium launch on the drop path (~7–15s). Bridges are
-            single-use and IP-bound — the same exit that harvested must run checkout.
-          </p>
-
-          <div class="howto form-card">
-            <h3>How to use</h3>
-            <ol class="howto-list">
-              <li>Start the engine.</li>
-              <li>Pick the same sticky proxy group your Bandai tasks will use.</li>
-              <li>Set desired slots (start with 1–2 — each holds a Chromium).</li>
-              <li>Click <strong>Start harvest</strong> a few minutes before the drop.</li>
-              <li>Run <strong>Bandai → Autocheckout</strong> — each run auto-claims one bridge when ready.</li>
-              <li><strong>Stop</strong> harvest after the drop so Chromium stops burning CPU.</li>
-            </ol>
-            <p class="field-hint">
-              Idle TTL ~6 min (executor refreshes while armed). Empty bank = normal cold checkout
-              (unchanged). Sensors and GE risk tokens are never banked — only the warm login page.
-              Uses local CPU only (no CapSolver bill).
-            </p>
-          </div>
-
-          <div id="bandaiHarvestSessionList" class="list"></div>
-        </div>
-
-        <div class="form-card">
-          <h3>Bandai bank</h3>
-          <div class="harvest-stats" id="bandaiHarvestStats">
+          <div class="harvest-stats harvest-stats-compact" id="bandaiHarvestStats">
             <div><span class="muted">Ready</span><strong id="bhReady">0</strong></div>
-            <div><span class="muted">Minted</span><strong id="bhSolved">0</strong></div>
-            <div><span class="muted">Failed</span><strong id="bhFailed">0</strong></div>
-            <div><span class="muted">Desired</span><strong id="bhDesiredLabel">2</strong></div>
+            <div><span class="muted">Done</span><strong id="bhSolved">0</strong></div>
+            <div><span class="muted">Fail</span><strong id="bhFailed">0</strong></div>
+            <div hidden><strong id="bhDesiredLabel">2</strong></div>
           </div>
-          <p id="bandaiHarvestStatusLine" class="field-hint">Harvest stopped</p>
-          <p id="bandaiHarvestError" class="err-line" hidden></p>
-
-          <label>Proxy group</label>
-          <select id="bhProxyGroup"></select>
-          <label>Desired warm bridges</label>
-          <input id="bhDesired" type="number" min="0" max="6" value="2" />
-          <label>Region</label>
-          <select id="bhArea">
-            <option value="au" selected>AU</option>
-            <option value="nz">NZ</option>
-            <option value="us">US</option>
-            <option value="sg">SG</option>
-            <option value="hk">HK</option>
-            <option value="tw">TW</option>
-            <option value="fr">FR</option>
-          </select>
-          <div class="row-actions">
-            <button type="button" id="bhStart">Start harvest</button>
+        </div>
+        <p id="bandaiHarvestError" class="err-line" hidden></p>
+        <div class="harvest-controls">
+          <div class="harvest-fields">
+            <label>Proxy group
+              <select id="bhProxyGroup"></select>
+            </label>
+            <label>Sessions
+              <input id="bhDesired" type="number" min="0" max="6" value="2" />
+            </label>
+            <label>Region
+              <select id="bhArea">
+                <option value="au" selected>AU</option>
+                <option value="nz">NZ</option>
+                <option value="us">US</option>
+                <option value="sg">SG</option>
+                <option value="hk">HK</option>
+                <option value="tw">TW</option>
+                <option value="fr">FR</option>
+              </select>
+            </label>
+          </div>
+          <div class="row-actions harvest-main-actions">
+            <button type="button" id="bhStart">Start</button>
             <button type="button" class="secondary" id="bhStop">Stop</button>
           </div>
-          <div class="row-actions">
-            <button type="button" class="secondary" id="bhOnce">Harvest one now</button>
-            <button type="button" class="secondary" id="bhClear">Clear bank</button>
+          <div class="row-actions harvest-more-actions">
+            <button type="button" class="secondary" id="bhOnce">One now</button>
+            <button type="button" class="secondary" id="bhClear">Clear</button>
           </div>
         </div>
+        <div id="bandaiHarvestSessionList" class="list harvest-session-list"></div>
+      </div>
+
+      <details class="harvest-other">
+        <summary>Toymate <span class="muted">optional</span></summary>
+        <p class="hint">Needs a captcha key in Settings. Same idea — warm sessions on a sticky proxy group.</p>
+        <div class="harvest-other-body">
+          <div class="harvest-stats harvest-stats-compact" id="harvestStats">
+            <div><span class="muted">Ready</span><strong id="hvReady">0</strong></div>
+            <div><span class="muted">Token</span><strong id="hvSpam">0</strong></div>
+            <div><span class="muted">Done</span><strong id="hvSolved">0</strong></div>
+            <div><span class="muted">Fail</span><strong id="hvFailed">0</strong></div>
+          </div>
+          <p id="harvestStatusLine" class="field-hint">Stopped</p>
+          <p id="harvestError" class="err-line" hidden></p>
+          <div class="harvest-fields">
+            <label>Proxy group
+              <select id="hvProxyGroup"></select>
+            </label>
+            <label>Sessions
+              <input id="hvDesired" type="number" min="0" max="12" value="2" />
+            </label>
+          </div>
+          <label class="check"><input id="hvSolveSpam" type="checkbox" checked /> Prepare checkout tokens</label>
+          <div class="row-actions harvest-main-actions">
+            <button type="button" id="hvStart">Start</button>
+            <button type="button" class="secondary" id="hvStop">Stop</button>
+          </div>
+          <div class="row-actions harvest-more-actions">
+            <button type="button" class="secondary" id="hvOnce">One now</button>
+            <button type="button" class="secondary" id="hvClear">Clear</button>
+          </div>
+          <div id="harvestSessionList" class="list harvest-session-list"></div>
+        </div>
+      </details>
+
+      <!-- Disney harvest benched — keep DOM ids for engine wiring, hide from UI -->
+      <div hidden aria-hidden="true">
+        <div id="disneyHarvestSessionList" class="list"></div>
+        <div id="disneyHarvestStats">
+          <strong id="dhReady">0</strong><strong id="dhCaptcha">0</strong><strong id="dhSolved">0</strong><strong id="dhFailed">0</strong>
+        </div>
+        <p id="disneyHarvestStatusLine"></p>
+        <p id="disneyHarvestError"></p>
+        <select id="dhProxyGroup"></select>
+        <input id="dhDesired" type="number" value="0" />
+        <input id="dhSolveCaptcha" type="checkbox" />
+        <button type="button" id="dhStart"></button>
+        <button type="button" id="dhStop"></button>
+        <button type="button" id="dhOnce"></button>
+        <button type="button" id="dhClear"></button>
       </div>
     </section>
 
     <!-- PROFILES -->
-    <section id="tab-profiles" class="panel">
-      <div class="split">
-        <div>
-          <h2>Profiles</h2>
-          <div class="row" style="margin-bottom:12px">
+    <section id="tab-profiles" class="panel table-panel">
+      <aside class="groups-rail">
+        <div class="rail-head">Profile groups</div>
+        <div id="profileGroupRail" class="group-list"></div>
+        <div class="rail-foot">
+          <button type="button" id="btnNewProfileGroup">New group</button>
+        </div>
+      </aside>
+      <div class="panel-pad" style="flex:1;min-width:0">
+        <div class="panel-header">
+          <div>
+            <h2>Profiles</h2>
+            <p class="hint">Shipping + card details. Stored only on this computer.</p>
+          </div>
+          <div class="toolbar-actions">
             <button type="button" class="secondary" id="btnExportProfiles">Export</button>
             <button type="button" class="secondary" id="btnImportProfiles">Import</button>
             <input type="file" id="profImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+            <button type="button" id="btnNewProfile">New profile</button>
           </div>
-          <p class="hint">Stored only on this computer. Used for address + card on checkout.</p>
-          <div id="profileList" class="list"></div>
         </div>
-        <form id="profileForm" class="form-card">
-          <h3>Profile</h3>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Group</th>
+                <th>Email</th>
+                <th>Location</th>
+                <th>Card</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="profileList"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <dialog id="profileDialog" class="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="profileFormTitle">Profile</h3>
+          <button type="button" class="icon-btn" id="profileDialogClose" aria-label="Close">✕</button>
+        </div>
+        <form id="profileForm" class="modal-body">
           <input type="hidden" id="profId" />
           <label>Name</label>
           <input id="profName" placeholder="Main" />
+          <label>Profile group</label>
+          <select id="profGroup">
+            <option value="">No group</option>
+          </select>
+          <datalist id="profileGroupList" hidden></datalist>
+          <label>Proxy group</label>
+          <select id="profProxyGroup">
+            <option value="">None</option>
+          </select>
+          <label>Account group</label>
+          <select id="profAccountGroup">
+            <option value="">None</option>
+          </select>
+          <p class="field-hint">Groups organize this profile. Proxy / account defaults prefill new tasks that use it.</p>
           <div class="grid2">
             <div><label>First</label><input id="profFirst" /></div>
             <div><label>Last</label><input id="profLast" /></div>
@@ -633,265 +857,377 @@
           </div>
         </form>
       </div>
-    </section>
+    </dialog>
+
 
     <!-- ACCOUNTS -->
-    <section id="tab-accounts" class="panel">
-      <div class="split">
-        <div>
-          <h2>Accounts</h2>
-          <p class="hint">Retailer logins (manual, import, or Account gen). Checkout auto-assigns by profile email base (<code>+tag</code> OK). Save the <strong>exact</strong> Bandai member email + password — a typo (e.g. <code>spotongg</code> vs <code>spotondotgg</code>) returns login 401.</p>
-          <div class="row" style="margin-bottom:12px">
+    <section id="tab-accounts" class="panel table-panel">
+      <aside class="groups-rail">
+        <div class="rail-head">Account groups</div>
+        <div id="accountGroupRail" class="group-list"></div>
+        <div class="rail-foot">
+          <button type="button" id="btnNewAccountGroup">New group</button>
+        </div>
+      </aside>
+      <div class="panel-pad" style="flex:1;min-width:0">
+        <div class="panel-header">
+          <div>
+            <h2>Accounts</h2>
+            <p class="hint">Store logins for checkout. Keep email + password exact.</p>
+          </div>
+          <div class="toolbar-actions">
+            <select id="accStoreFilter" class="toolbar-select">
+              <option value="">All stores</option>
+              <option value="bandai">Bandai</option>
+              <option value="toymate">Toymate</option>
+            </select>
             <button type="button" class="secondary" id="btnExportAccounts">Export</button>
             <button type="button" class="secondary" id="btnImportAccounts">Import</button>
             <button type="button" class="secondary" id="btnClearAccounts">Clear all</button>
             <input type="file" id="accImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
+            <button type="button" id="btnNewAccount">Add account</button>
           </div>
-          <div id="accountList" class="list"></div>
         </div>
-        <div>
-          <form id="accountForm" class="form-card">
-            <h3 id="accountFormTitle">Add account</h3>
-            <input type="hidden" id="accId" />
-            <label>Store</label>
-            <select id="accStore">
-              <option value="bandai">Premium Bandai AU</option>
-              <option value="toymate">Toymate AU</option>
-              <option value="disney">Disney Store AU</option>
-              <option value="kmart">Kmart AU</option>
-            </select>
-            <label>Email (exact login)</label>
-            <input id="accEmail" type="email" autocomplete="off" placeholder="you@domain.com" required />
-            <label>Password</label>
-            <input id="accPassword" type="text" autocomplete="off" placeholder="account password" required />
-            <div class="grid2">
-              <div>
-                <label>Status</label>
-                <select id="accStatus">
-                  <option value="ready">ready (checkout OK)</option>
-                  <option value="active">active</option>
-                  <option value="created">created (SoftBlock / unproven)</option>
-                  <option value="needs_sms">needs_sms</option>
-                  <option value="needs_terms">needs_terms</option>
-                  <option value="disabled">disabled</option>
-                  <option value="burned">burned</option>
-                </select>
-              </div>
-              <div>
-                <label>Phone (optional)</label>
-                <input id="accPhone" placeholder="for agen rows" />
-              </div>
-            </div>
-            <label>Notes (optional)</label>
-            <input id="accNotes" maxlength="240" placeholder="lab gmail, drop lane 1…" />
-            <div class="row">
-              <button type="submit">Save account</button>
-              <button type="button" class="secondary" id="accReset">Clear</button>
-            </div>
-            <p class="hint" style="margin-top:10px">Import accepts JSON (<code>{"accounts":[…]}</code>), CSV (<code>storeId,email,password,status</code>), or lines (<code>email:password</code> / <code>store:email:password</code>).</p>
-          </form>
-          <div class="form-card" style="margin-top:12px">
-            <h3>How to generate</h3>
-            <ol class="hint" style="padding-left:18px;line-height:1.6">
-              <li>Profiles → shipping + email base (billing profile)</li>
-              <li>Proxies → sticky AU ISP/resi</li>
-              <li><strong>Bandai:</strong> Settings → SMSPool + IMAP → Tasks → Bandai → Account gen → Run</li>
-              <li><strong>Toymate:</strong> Settings → CapSolver → Tasks → Toymate → Account gen → Run</li>
-              <li>Or paste a known login above / Import a JSON dump</li>
-            </ol>
-          </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Store</th>
+                <th>Group</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Notes</th>
+                <th class="col-actions">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="accountList"></tbody>
+          </table>
         </div>
       </div>
     </section>
 
+    <dialog id="accountDialog" class="modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h3 id="accountFormTitle">Add account</h3>
+          <button type="button" class="icon-btn" id="accountDialogClose" aria-label="Close">✕</button>
+        </div>
+        <form id="accountForm" class="modal-body">
+          <input type="hidden" id="accId" />
+            <label>Store</label>
+            <select id="accStore">
+              <option value="bandai">Premium Bandai AU</option>
+              <option value="toymate">Toymate AU</option>
+            </select>
+            <label>Account group</label>
+            <select id="accGroup">
+              <option value="">No group</option>
+            </select>
+            <datalist id="accountGroupList" hidden></datalist>
+            <label>Email</label>
+            <input id="accEmail" type="email" autocomplete="off" placeholder="you@domain.com" required />
+            <label>Password</label>
+            <input id="accPassword" type="password" autocomplete="off" placeholder="Account password" required />
+            <div class="grid2">
+              <div>
+                <label>Status</label>
+                <select id="accStatus">
+                  <option value="ready">Ready</option>
+                  <option value="active">Active</option>
+                  <option value="created">Created</option>
+                  <option value="needs_sms">Needs SMS</option>
+                  <option value="needs_terms">Needs terms</option>
+                  <option value="disabled">Disabled</option>
+                  <option value="burned">Burned</option>
+                </select>
+              </div>
+              <div>
+                <label>Phone <span class="optional">(optional)</span></label>
+                <input id="accPhone" placeholder="Optional" />
+              </div>
+            </div>
+            <label>Notes <span class="optional">(optional)</span></label>
+            <input id="accNotes" maxlength="240" placeholder="Optional note" />
+            <div class="row">
+              <button type="submit">Save account</button>
+              <button type="button" class="secondary" id="accReset">Clear</button>
+            </div>
+            <p class="hint" style="margin-top:10px">Import accepts JSON, CSV, or <code>email:password</code> lines.</p>
+          <div class="howto" style="margin-top:14px">
+            <h3>How to generate</h3>
+            <ol class="hint" style="padding-left:18px;line-height:1.6">
+              <li>Profiles → shipping + email</li>
+              <li>Proxies → sticky AU group</li>
+              <li>Settings → SMS + email inbox for Bandai account gen</li>
+              <li>Tasks → Bandai / Toymate → Account gen → Run</li>
+              <li>Or paste a known login above</li>
+            </ol>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
+
     <!-- PROXIES -->
-    <section id="tab-proxies" class="panel">
-      <div class="split">
-        <div>
-          <h2>Proxy groups</h2>
-          <p class="hint">One entry per line. Supports <code>127.0.0.1:PORT</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>. Use <strong>Test</strong> to check latency + exit IP before a drop.</p>
-          <div class="row" style="margin-bottom:12px">
+    
+    <!-- PROXIES -->
+    <section id="tab-proxies" class="panel proxies-panel">
+      <aside class="groups-rail">
+        <div class="rail-head">Proxy groups</div>
+        <div id="proxyGroupRail" class="group-list"></div>
+        <div class="rail-foot">
+          <button type="button" id="btnNewProxyGroup">New group</button>
+        </div>
+      </aside>
+      <div class="proxies-main">
+        <div class="panel-header">
+          <div>
+            <h2 id="proxyEditorTitle">Proxy group</h2>
+            <p class="hint">One entry per line. Supports <code>host:port</code>, <code>user:pass@host:port</code>, <code>host:port:user:pass</code>. Prefer sticky AU residential / ISP for Bandai.</p>
+          </div>
+          <div class="toolbar-actions">
             <button type="button" class="secondary" id="btnExportProxies">Export</button>
             <button type="button" class="secondary" id="btnImportProxies">Import</button>
             <input type="file" id="pxImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
           </div>
-          <div id="proxyList" class="list"></div>
         </div>
-        <form id="proxyForm" class="form-card">
-          <h3>Proxy group</h3>
-          <input type="hidden" id="pxId" />
+        <div class="proxies-grid">
+          <form id="proxyForm" class="form-card">
+            <input type="hidden" id="pxId" />
           <label>Name</label>
           <input id="pxName" placeholder="Local manager" />
           <label>Entries</label>
           <textarea id="pxEntries" rows="10" placeholder="127.0.0.1:60000&#10;user:pass@host:8000"></textarea>
           <label class="check"><input id="pxRemoveDead" type="checkbox" /> Remove dead after test</label>
+          <label>Test against</label>
+          <div class="proxy-test-target-row">
+            <select id="pxTestPreset" aria-label="Proxy test target">
+              <option value="ip">Exit IP (any)</option>
+              <option value="bandai">Bandai AU</option>
+              <option value="toymate">Toymate AU</option>
+              <option value="pokemoncentre">Pokémon Center AU</option>
+              <option value="custom">Custom URL…</option>
+            </select>
+            <input id="pxTestCustomUrl" type="url" placeholder="https://…" hidden autocomplete="off" />
+          </div>
           <div class="row">
             <button type="submit">Save group</button>
             <button type="button" class="secondary" id="pxTestForm">Test entries</button>
             <button type="button" class="secondary" id="pxReset">Clear</button>
           </div>
-          <p id="pxTestHint" class="hint" style="margin-top:8px"></p>
-        </form>
+          
+          </form>
+          <div class="form-card proxy-test-card">
+            <h3>Test results</h3>
+            <p id="pxTestHint" class="hint" style="margin-top:0"></p>
+            <div class="proxy-tools">
+              <div class="row" style="flex-wrap:wrap;gap:8px">
+                <button type="button" class="secondary" id="pxSortSpeed">Sort by speed</button>
+                <button type="button" class="secondary" id="pxSortFailed">Sort failed first</button>
+                <button type="button" class="secondary" id="pxClearFailed">Clear failed</button>
+              </div>
+              <div class="inline-fields" style="margin-top:10px">
+                <input id="pxClearOverMs" type="number" min="1" placeholder="Clear over ms" />
+                <button type="button" class="secondary" id="pxClearOver">Clear slow</button>
+              </div>
+            </div>
+            <div id="proxyEntryList" class="proxy-entry-list"></div>
+            <div id="proxyList" hidden></div>
+          </div>
+        </div>
       </div>
     </section>
 
+
     <!-- RESULTS -->
-    <section id="tab-results" class="panel">
+    <section id="tab-results" class="panel results-panel">
       <h2>Results</h2>
       <div id="liveLog" class="log"></div>
       <div id="resultList" class="list"></div>
     </section>
 
     <!-- SETTINGS -->
-    <section id="tab-settings" class="panel">
-      <div class="form-card wide">
-        <h2>Settings</h2>
-        <p class="hint">API key is Whop-ready: validation hits the control plane when a URL is set. Leave URL empty for local/dev mode. Pairing codes are not used.</p>
-        <label>API key</label>
-        <input id="setApiKey" placeholder="Your license API key" autocomplete="off" />
-        <label>Control plane URL (optional for now)</label>
-        <input id="setControlPlane" placeholder="https://your-dashboard.example.com" />
-        <label>Hyper API key (BYO — required for Kmart)</label>
-        <input id="setHyper" placeholder="Hyper Solutions key" autocomplete="off" />
-        <label>Paydock public key (Kmart widget — static)</label>
-        <input id="setPaydockPk" placeholder="Paste once; used for card tokenize" autocomplete="off" />
-        <p class="hint">This is Kmart’s client-side Paydock public key (same value the browser widget uses). It does not rotate. Leave blank to use PAYDOCK_PUBLIC_KEY from the environment / baked-in default.</p>
-        <label>CapSolver API key (Toymate Cloudflare + captcha)</label>
-        <input id="setCapsolver" placeholder="CapSolver key" autocomplete="off" />
-        <p class="hint">Used only by Toymate. Kmart ignores this key.</p>
-        <h3 style="margin-top:1.25rem">Account gen OTP (Bandai + future agen)</h3>
-        <p class="hint">Secrets stay on this computer. Bandai: email via IMAP + SMS via SMSPool (US/UK numbers). OnlineSim is optional fallback. Never logged in full.</p>
-        <label>SMSPool API key <span class="optional">(preferred)</span></label>
-        <input id="setSmspool" placeholder="SMSPool key (BYO)" autocomplete="off" />
-        <div class="grid2">
-          <div>
-            <label>SMS provider</label>
-            <select id="setSmsProvider">
-              <option value="auto">Auto (SMSPool → OnlineSim)</option>
-              <option value="smspool">SMSPool only</option>
-              <option value="onlinesim">OnlineSim only</option>
-            </select>
+    
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="panel settings-panel">
+      <aside class="settings-nav">
+        <div class="rail-head">Settings</div>
+        <button type="button" class="settings-nav-item active" data-settings-pane="general">General</button>
+        <button type="button" class="settings-nav-item" data-settings-pane="checkout">Checkout keys</button>
+        <button type="button" class="settings-nav-item" data-settings-pane="agen">Account gen</button>
+        <button type="button" class="settings-nav-item" data-settings-pane="alerts">Alerts</button>
+        <button type="button" class="settings-nav-item" data-settings-pane="data">Data</button>
+      </aside>
+      <div class="settings-main">
+        <div class="settings-pane active" data-pane="general">
+          <h2>General</h2>
+          <p class="hint">Your license unlocks the app. Everything below stays on this computer.</p>
+          <label>License key</label>
+          <input id="setApiKey" placeholder="Your license key" autocomplete="off" />
+          <input id="setControlPlane" type="hidden" />
+          <label>Max concurrent checkouts</label>
+          <input id="setMax" type="number" min="1" max="50" value="5" />
+          <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
+          <label class="check"><input id="setSuccessAlert" type="checkbox" checked /> Sound + taskbar flash + toast on checkout win</label>
+          <h3 style="margin-top:1.25rem">Quick Task preset</h3>
+          <p class="hint">Defaults for Quick Task and Smart Actions Create Tasks.</p>
+          <label>Store</label>
+          <select id="qtPresetStore">
+            <option value="bandai">Premium Bandai AU</option>
+          </select>
+          <label>Bandai mode</label>
+          <select id="qtPresetMode">
+            <option value="checkout">Autocheckout</option>
+            <option value="monitor">Monitor (global + checkout on hit)</option>
+          </select>
+          <label>Profile</label>
+          <select id="qtPresetProfile"></select>
+          <label>Proxy group</label>
+          <select id="qtPresetProxy"></select>
+          <div class="grid2">
+            <div>
+              <label>Qty per checkout</label>
+              <input id="qtPresetQty" type="number" min="1" max="20" value="1" />
+            </div>
+            <div>
+              <label>Parallel tasks</label>
+              <input id="qtPresetQuantity" type="number" min="1" max="50" value="1" />
+            </div>
           </div>
-          <div>
-            <label>SMSPool country</label>
-            <select id="setSmspoolCountry">
-              <option value="GB">UK (+44) — cheaper</option>
-              <option value="US">US (+1)</option>
-            </select>
+          <label class="check"><input id="qtPresetPlaceOrder" type="checkbox" checked /> Place order</label>
+          <label class="check"><input id="qtPresetStart" type="checkbox" checked /> Start after create</label>
+          <div class="row" style="margin-top:16px">
+            <button type="button" id="btnSaveSettings">Save settings</button>
+            <button type="button" class="secondary" id="btnValidate">Validate API key</button>
           </div>
+          <p id="licenseMsg" class="hint"></p>
         </div>
-        <label>OnlineSim API key <span class="optional">(fallback)</span></label>
-        <input id="setOnlinesim" placeholder="OnlineSim apikey" autocomplete="off" />
-        <div class="grid2">
-          <div>
-            <label>OnlineSim mode</label>
-            <select id="setOnlinesimMode">
-              <option value="rent">Rent (AU)</option>
-              <option value="activation">Activation (service slug)</option>
-            </select>
-          </div>
-          <div>
-            <label>Service slug <span class="optional">(activation)</span></label>
-            <input id="setOnlinesimSlug" placeholder="other" />
-          </div>
-        </div>
-        <label>IMAP host</label>
-        <input id="setImapHost" placeholder="imap.gmail.com" />
-        <div class="grid2">
-          <div>
-            <label>IMAP port</label>
-            <input id="setImapPort" type="number" value="993" />
-          </div>
-          <div>
-            <label>Mailbox</label>
-            <input id="setImapMailbox" placeholder="INBOX" />
-          </div>
-        </div>
-        <label>IMAP user (email = Bandai memberId)</label>
-        <input id="setImapUser" type="email" placeholder="you@gmail.com" autocomplete="off" />
-        <label>IMAP app password</label>
-        <input id="setImapAppPassword" type="password" placeholder="App password (not Bandai password)" autocomplete="off" />
-        <label>Max concurrent checkouts</label>
-        <input id="setMax" type="number" min="1" max="50" value="5" />
-        <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
-        <h3 style="margin-top:1.25rem">Bandai global monitor (Railway)</h3>
-        <p class="hint">While the engine is on, Desktop stays subscribed to the always-on Railway poller (no token needed). Create Bandai → Monitor → <strong>Global</strong> tasks with watch SKU; Checkout on restock fires ATC without running a local poll loop.</p>
-        <label class="check"><input id="setBandaiGlobalMon" type="checkbox" checked /> Subscribe when engine starts</label>
-        <label>Monitor URL</label>
-        <input id="setBandaiGlobalMonUrl" placeholder="https://j1ms-bandai-monitor-production.up.railway.app" />
-        <label>Operator token (optional)</label>
-        <input id="setBandaiGlobalMonToken" placeholder="Only for cache push / admin overrides — leave blank" autocomplete="off" />
-        <label class="check"><input id="setDesktopWatchdog" type="checkbox" checked /> Watchdog — auto-start Autocheckout tasks on restock match</label>
-        <p class="hint">Armed Bandai Autocheckout tasks (Watchdog on + PDP/SKU/keywords) start when the Railway feed reports in-stock. Separate from Monitor → Checkout on hit.</p>
-        <h3 style="margin-top:1.25rem">Discord webhooks (routing)</h3>
-        <p class="hint">
-          Split channels so wins stay visible. Empty fields fall back to Success.
-          Global Bandai restock alerts stay on the operator Railway channel — not these URLs.
-        </p>
-        <label>Success (checkouts OK)</label>
-        <div class="row webhook-row">
-          <input id="setDiscordSuccess" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-          <button type="button" class="secondary" id="btnDiscordTestSuccess" data-discord-test="success">Test</button>
-        </div>
-        <label>Fail (checkout errors)</label>
-        <div class="row webhook-row">
-          <input id="setDiscordFail" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-          <button type="button" class="secondary" id="btnDiscordTestFail" data-discord-test="fail">Test</button>
-        </div>
-        <label>3DS / bank approval</label>
-        <div class="row webhook-row">
-          <input id="setDiscord3ds" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-          <button type="button" class="secondary" id="btnDiscordTest3ds" data-discord-test="threeds">Test</button>
-        </div>
-        <label>Monitor / Smart Action notify</label>
-        <div class="row webhook-row">
-          <input id="setDiscordMonitor" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
-          <button type="button" class="secondary" id="btnDiscordTestMonitor" data-discord-test="monitor">Test</button>
-        </div>
-        <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty. Test sends a small embed to that route.</p>
 
-        <h3 style="margin-top:1.25rem">Win alerts</h3>
-        <label class="check"><input id="setSuccessAlert" type="checkbox" checked /> Sound + taskbar flash + toast on checkout win</label>
-
-        <h3 style="margin-top:1.25rem">Quick Task preset</h3>
-        <p class="hint">Defaults for Monitor Feed → Quick Task and Smart Actions Create Tasks (when “Use Quick Task preset” is on).</p>
-        <label>Store</label>
-        <select id="qtPresetStore">
-          <option value="bandai">Premium Bandai AU</option>
-        </select>
-        <label>Bandai mode</label>
-        <select id="qtPresetMode">
-          <option value="checkout">Autocheckout</option>
-          <option value="atc">ATC only (hold cart)</option>
-          <option value="monitor">Monitor (global + checkout on hit)</option>
-        </select>
-        <label>Profile</label>
-        <select id="qtPresetProfile"></select>
-        <label>Proxy group</label>
-        <select id="qtPresetProxy"></select>
-        <div class="grid2">
-          <div>
-            <label>Qty per checkout</label>
-            <input id="qtPresetQty" type="number" min="1" max="20" value="1" />
-          </div>
-          <div>
-            <label>Parallel tasks</label>
-            <input id="qtPresetQuantity" type="number" min="1" max="50" value="1" />
+        <div class="settings-pane" data-pane="checkout">
+          <h2>Checkout keys</h2>
+          <p class="hint">Keys stay on this computer. Only add what your stores need.</p>
+          <label>Hyper API key <span class="optional">(optional)</span></label>
+          <input id="setHyper" placeholder="Hyper key" autocomplete="off" />
+          <input id="setPaydockPk" type="hidden" value="" />
+          <label>Captcha solver API key <span class="optional">(Toymate)</span></label>
+          <input id="setCapsolver" placeholder="Captcha solver key" autocomplete="off" />
+          <div class="row" style="margin-top:16px">
+            <button type="button" class="secondary" data-settings-save>Save settings</button>
           </div>
         </div>
-        <label class="check"><input id="qtPresetPlaceOrder" type="checkbox" checked /> Place order</label>
-        <label class="check"><input id="qtPresetStart" type="checkbox" checked /> Start after create</label>
 
-        <p class="hint">Runs the same undici executor path as the dashboard → Fly. Use an AU residential proxy so exit IP differs from home.</p>
-        <div class="row">
-          <button type="button" id="btnSaveSettings">Save settings</button>
-          <button type="button" class="secondary" id="btnValidate">Validate API key</button>
+        <div class="settings-pane" data-pane="agen">
+          <h2>Account gen</h2>
+            <p class="hint">Secrets stay on this computer. Used for Bandai account generation.</p>
+          <label>SMSPool API key <span class="optional">(preferred)</span></label>
+          <input id="setSmspool" placeholder="SMSPool key (BYO)" autocomplete="off" />
+          <div class="grid2">
+            <div>
+              <label>SMS provider</label>
+              <select id="setSmsProvider">
+                <option value="auto">Auto (SMSPool → OnlineSim)</option>
+                <option value="smspool">SMSPool only</option>
+                <option value="onlinesim">OnlineSim only</option>
+              </select>
+            </div>
+            <div>
+              <label>SMSPool country</label>
+              <select id="setSmspoolCountry">
+                <option value="GB">UK (+44) — cheaper</option>
+                <option value="US">US (+1)</option>
+              </select>
+            </div>
+          </div>
+          <label>OnlineSim API key <span class="optional">(fallback)</span></label>
+          <input id="setOnlinesim" placeholder="OnlineSim apikey" autocomplete="off" />
+          <div class="grid2">
+            <div>
+              <label>OnlineSim mode</label>
+              <select id="setOnlinesimMode">
+                <option value="rent">Rent (AU)</option>
+                <option value="activation">Activation (service slug)</option>
+              </select>
+            </div>
+            <div>
+              <label>Service slug <span class="optional">(activation)</span></label>
+              <input id="setOnlinesimSlug" placeholder="other" />
+            </div>
+          </div>
+          <label>IMAP host</label>
+          <input id="setImapHost" placeholder="imap.gmail.com" />
+          <div class="grid2">
+            <div>
+              <label>IMAP port</label>
+              <input id="setImapPort" type="number" value="993" />
+            </div>
+            <div>
+              <label>Mailbox</label>
+              <input id="setImapMailbox" placeholder="INBOX" />
+            </div>
+          </div>
+          <label>IMAP user (email = Bandai memberId)</label>
+          <input id="setImapUser" type="email" placeholder="you@gmail.com" autocomplete="off" />
+          <label>IMAP app password</label>
+          <input id="setImapAppPassword" type="password" placeholder="App password (not Bandai password)" autocomplete="off" />
+          <div class="row" style="margin-top:16px">
+            <button type="button" class="secondary" data-settings-save>Save settings</button>
+          </div>
         </div>
-        <p id="licenseMsg" class="hint"></p>
+
+        <div class="settings-pane" data-pane="alerts">
+          <h2>Alerts</h2>
+          <p class="hint">Split Discord channels so wins stay visible. Empty fields fall back to Success.</p>
+          <label>Success (checkouts OK)</label>
+          <div class="row webhook-row">
+            <input id="setDiscordSuccess" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+            <button type="button" class="secondary" id="btnDiscordTestSuccess" data-discord-test="success">Test</button>
+          </div>
+          <label>Fail (checkout errors)</label>
+          <div class="row webhook-row">
+            <input id="setDiscordFail" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+            <button type="button" class="secondary" id="btnDiscordTestFail" data-discord-test="fail">Test</button>
+          </div>
+          <label>3DS / bank approval</label>
+          <div class="row webhook-row">
+            <input id="setDiscord3ds" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+            <button type="button" class="secondary" id="btnDiscordTest3ds" data-discord-test="threeds">Test</button>
+          </div>
+          <label>Monitor / Smart Action notify</label>
+          <div class="row webhook-row">
+            <input id="setDiscordMonitor" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
+            <button type="button" class="secondary" id="btnDiscordTestMonitor" data-discord-test="monitor">Test</button>
+          </div>
+          <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty.</p>
+          <div class="row" style="margin-top:16px">
+            <button type="button" class="secondary" data-settings-save>Save settings</button>
+          </div>
+        </div>
+
+        <div class="settings-pane" data-pane="data">
+          <h2>Data</h2>
+          <p class="hint">Import / export local vault data. Files stay on this machine.</p>
+          <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">
+            <button type="button" class="secondary" id="btnExportTasksData" data-export-mirror="btnExportTasks">Export tasks</button>
+            <button type="button" class="secondary" id="btnImportTasksData" data-import-mirror="btnImportTasks">Import tasks</button>
+            <button type="button" class="secondary" id="btnExportProfilesData" data-export-mirror="btnExportProfiles">Export profiles</button>
+            <button type="button" class="secondary" id="btnImportProfilesData" data-import-mirror="btnImportProfiles">Import profiles</button>
+            <button type="button" class="secondary" id="btnExportAccountsData" data-export-mirror="btnExportAccounts">Export accounts</button>
+            <button type="button" class="secondary" id="btnImportAccountsData" data-import-mirror="btnImportAccounts">Import accounts</button>
+            <button type="button" class="secondary" id="btnExportProxiesData" data-export-mirror="btnExportProxies">Export proxies</button>
+            <button type="button" class="secondary" id="btnImportProxiesData" data-import-mirror="btnImportProxies">Import proxies</button>
+          </div>
+          <p class="hint">Mirrors the Export/Import buttons on each tab.</p>
+        </div>
       </div>
     </section>
+
   </main>
 
+  <div id="taskContextMenu" class="ctx-menu" hidden></div>
+  <div id="storeGroupContextMenu" class="ctx-menu" hidden></div>
+  <div id="toastHost" class="toast-host" aria-live="polite"></div>
+  <script src="catalog-filters.js"></script>
   <script src="app.js"></script>
+  <script src="sa-builder.js"></script>
 </body>
 </html>
