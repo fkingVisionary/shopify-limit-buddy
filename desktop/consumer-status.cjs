@@ -3,14 +3,19 @@
 
 const LIVE = {
   warm: "Starting",
+  login: "Logging in",
   product: "Loading product",
   cart: "Adding to cart",
-  details: "Proceeding to checkout",
+  details: "Checking out",
   tokenize: "Processing payment",
   threeds: "Waiting for bank approval",
   order: "Placing order",
   done: "Done",
-  switching: "Switching proxy",
+  switching: "Rotating proxy",
+  retry_atc: "Retrying ATC",
+  retry_pay: "Retrying pay",
+  monitor: "Waiting for restock",
+  oos_wait: "Out of stock — waiting",
 };
 
 const OUTCOME = {
@@ -42,9 +47,13 @@ function stepText(res) {
 
 function isOutOfStock(res) {
   if (!res || res.ok) return false;
-  const text = stepText(res);
+  const text = [stepText(res), res?.debugError, res?.note].filter(Boolean).join("\n");
   if (/Access Denied|AkamaiGHost|akamai_unsolved/i.test(text)) return false;
-  if (/out\s*of\s*stock|sold\s*out|not\s+available|unavailable|INSUFFICIENT|no\s+stock|OOS\b/i.test(text)) {
+  if (
+    /out\s*of\s*stock|sold\s*out|SoldOut|CouldNotAddToCartBy(SoldOut|OutOfStock)|not\s+available|unavailable|INSUFFICIENT|no\s+stock|OOS\b/i.test(
+      text,
+    )
+  ) {
     return true;
   }
   // ATC/verify completed HTTP-ok-ish but SKU never landed and not Akamai-denied.
@@ -75,7 +84,14 @@ function isProxyFail(res) {
 
 function isPaymentDeclined(res) {
   if (!res || res.ok) return false;
-  const text = stepText(res);
+  const text = [
+    stepText(res),
+    res?.debugError,
+    res?.paymentStatus,
+    res?.note,
+  ]
+    .filter(Boolean)
+    .join("\n");
   const ps = res?.paymentSummary || {};
   if (/declin|chargeAuthReject|payment.*fail|card.*fail|do.?not.?honor/i.test(text)) return true;
   if (ps.processStatus === "error" || ps.acsOk === false) {
@@ -129,16 +145,24 @@ function consumerProgressMessage(progress) {
   if (!progress) return LIVE.warm;
   const label = String(progress.label || "");
   const detail = String(progress.detail || "");
-  if (/switching proxy/i.test(label) || /switching proxy/i.test(detail)) {
+  if (/rotating proxy|switching proxy/i.test(label) || /rotating proxy|switching proxy/i.test(detail)) {
     return LIVE.switching;
   }
+  if (/retrying pay/i.test(label) || /retrying pay/i.test(detail)) return LIVE.retry_pay;
+  if (/retrying atc/i.test(label) || /retrying atc/i.test(detail)) return LIVE.retry_atc;
+  if (/waiting for restock/i.test(label) || /waiting for restock/i.test(detail)) {
+    return LIVE.monitor;
+  }
+  if (/out of stock/i.test(label)) return LIVE.oos_wait;
   const stage = progress.stage || "warm";
   if (progress.done) {
     if (progress.ok && progress.orderNumber) return OUTCOME.confirmed;
     if (progress.ok) return OUTCOME.complete;
     return OUTCOME.error;
   }
-  return LIVE[stage] || LIVE.warm;
+  // Prefer explicit consumer labels from Bandai-aware stages.
+  if (label && Object.values(LIVE).includes(label)) return label;
+  return LIVE[stage] || label || LIVE.warm;
 }
 
 /**

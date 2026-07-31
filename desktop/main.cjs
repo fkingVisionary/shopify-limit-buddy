@@ -7,14 +7,27 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 
-// Isolated profile for DESKTOP_FEATURE_SMOKE (must run before store.loadAll).
-if (process.env.DESKTOP_FEATURE_SMOKE === "1") {
+// Isolated profile for smoke / live-status demo (must run before store.loadAll).
+if (
+  process.env.DESKTOP_FEATURE_SMOKE === "1" ||
+  process.env.DESKTOP_LIVE_STATUS_DEMO === "1"
+) {
   const smokeDir =
     process.env.DESKTOP_SMOKE_DIR ||
-    path.join(os.tmpdir(), `j1ms-feature-smoke-${Date.now()}`);
+    process.env.DESKTOP_DEMO_DIR ||
+    path.join(
+      os.tmpdir(),
+      process.env.DESKTOP_LIVE_STATUS_DEMO === "1"
+        ? `j1ms-live-status-${Date.now()}`
+        : `j1ms-feature-smoke-${Date.now()}`,
+    );
   fs.mkdirSync(smokeDir, { recursive: true });
   app.setPath("userData", smokeDir);
-  console.log("[feature-smoke] userData →", smokeDir);
+  console.log(
+    process.env.DESKTOP_LIVE_STATUS_DEMO === "1" ? "[live-status-demo]" : "[feature-smoke]",
+    "userData →",
+    smokeDir,
+  );
 }
 
 const store = require("./store.cjs");
@@ -992,7 +1005,34 @@ ipcMain.handle("desktop:window-close", () => {
 });
 ipcMain.handle("desktop:window-is-maximized", () => Boolean(win?.isMaximized()));
 
-runner.setEmitter((evt) => send(evt));
+runner.setEmitter((evt) => {
+  // Live status → task row badge (Logging in / Rotating proxy / …).
+  if (
+    evt?.type === "job" &&
+    evt.taskId &&
+    (evt.phase === "start" || evt.phase === "status" || evt.phase === "progress")
+  ) {
+    const t = state.db.tasks.find((x) => x.id === evt.taskId);
+    if (t) {
+      const label =
+        evt.consumerLabel ||
+        evt.lastLabel ||
+        (evt.phase === "start" ? "Starting" : null);
+      if (label) {
+        t.lastStatus = evt.lastStatus || "running";
+        t.lastLabel = String(label);
+        t.updatedAt = Date.now();
+        send({
+          type: "taskStatus",
+          taskId: t.id,
+          lastStatus: t.lastStatus,
+          lastLabel: t.lastLabel,
+        });
+      }
+    }
+  }
+  send(evt);
+});
 runner.setFinishedHandler((result) => {
   // Keep step tail for Results UI (same info the web dashboard surfaces).
   state.db.results.unshift({
@@ -2416,6 +2456,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       continue;
     }
     task.lastStatus = "queued";
+    task.lastLabel = "Queued";
     task.updatedAt = Date.now();
   }
   // Monitor → checkout: arm Bandai F5 harvest at enqueue (claim still at restock).
@@ -3747,6 +3788,13 @@ app.whenReady().then(async () => {
     setTimeout(() => {
       void featureSmokeToday();
     }, 2500);
+  } else if (process.env.DESKTOP_LIVE_STATUS_DEMO === "1") {
+    setTimeout(() => {
+      void liveStatusDemo().catch((e) => {
+        console.error("[live-status-demo] fatal", e);
+        app.quit();
+      });
+    }, 2000);
   } else if (process.env.DESKTOP_E2E_AUTORUN === "1") {
     try {
       await e2eAutorun();
@@ -3756,6 +3804,148 @@ app.whenReady().then(async () => {
     }
   }
 });
+
+/**
+ * DESKTOP_LIVE_STATUS_DEMO=1 — drive live task-row statuses + PNG screenshots, then quit.
+ * Does not place orders; exercises UI + emitter path only.
+ */
+async function liveStatusDemo() {
+  const outDir =
+    process.env.DESKTOP_DEMO_OUT ||
+    (fs.existsSync("/opt/cursor/artifacts")
+      ? "/opt/cursor/artifacts/bandai-live-status"
+      : path.join(app.getPath("userData"), "live-status-demo"));
+  fs.mkdirSync(outDir, { recursive: true });
+  console.log("[live-status-demo] out →", outDir);
+
+  // Seed a Bandai Autocheckout task for the Tasks table.
+  const demoTask = upsertTaskRow({
+    store: "bandai",
+    label: "N2847890001 · Demo Gundam",
+    bandaiWatchSku: "N2847890001",
+    bandaiMode: "checkout",
+    bandaiCheckoutMode: "fast",
+    pdpUrl: "https://p-bandai.com/au/item/N2847890001",
+    qty: 1,
+    quantity: 1,
+    placeOrder: false,
+    enabled: true,
+  });
+  send({ type: "snapshot", data: snapshot() });
+
+  // Open Tasks tab.
+  for (let i = 0; i < 20 && !win; i++) await new Promise((r) => setTimeout(r, 200));
+  if (!win) throw new Error("no window");
+  await win.webContents.executeJavaScript(
+    `document.querySelector('[data-tab="tasks"]')?.click(); true`,
+  );
+  await new Promise((r) => setTimeout(r, 400));
+
+  const frames = [
+    { status: "queued", label: "Queued" },
+    { status: "running", label: "Starting" },
+    { status: "running", label: "Logging in" },
+    { status: "running", label: "Loading product" },
+    { status: "running", label: "Adding to cart" },
+    { status: "running", label: "Checking out" },
+    { status: "rotating", label: "Rotating proxy" },
+    { status: "retry_atc", label: "Retrying ATC" },
+    { status: "retry_pay", label: "Retrying pay" },
+    { status: "waiting_restock", label: "Waiting for restock" },
+    { status: "waiting_restock", label: "Out of stock — waiting" },
+    { status: "declined", label: "Payment declined" },
+  ];
+
+  const saved = [];
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    // Same path as real job-runner live status.
+    send({
+      type: "job",
+      phase: "status",
+      taskId: demoTask.id,
+      consumerLabel: f.label,
+      lastLabel: f.label,
+      lastStatus: f.status,
+    });
+    send({
+      type: "taskStatus",
+      taskId: demoTask.id,
+      lastStatus: f.status,
+      lastLabel: f.label,
+    });
+    const t = state.db.tasks.find((x) => x.id === demoTask.id);
+    if (t) {
+      t.lastStatus = f.status;
+      t.lastLabel = f.label;
+    }
+    await new Promise((r) => setTimeout(r, 350));
+    const png = await win.capturePage();
+    const name = `${String(i + 1).padStart(2, "0")}-${f.label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")}.png`;
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, png.toPNG());
+    saved.push(file);
+    console.log("[live-status-demo] shot", name);
+  }
+
+  // Policy sanity board (text artifact).
+  const {
+    classifyBandaiRunResult,
+  } = require("./bandai-retry-policy.cjs");
+  const policyBoard = [
+    {
+      name: "403 SoftBlock",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "login",
+        debugError: "SoftBlock 403",
+      }),
+    },
+    {
+      name: "soft pay process",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "ge_payment",
+        debugError: "failed to process payment — try again",
+        cartSn: 1,
+        cartItemSn: 2,
+        heldPayRetry: true,
+        heldCart: { cartSn: 1, cartItemSn: 2 },
+      }),
+    },
+    {
+      name: "hard decline",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "ge_payment",
+        debugError: "do not honor",
+        paymentStatus: "declined",
+      }),
+    },
+    {
+      name: "OOS",
+      d: classifyBandaiRunResult(
+        { ok: false, failedStep: "addToCart", debugError: "SoldOut" },
+        { mode: "checkout" },
+      ),
+    },
+  ].map((r) => ({
+    case: r.name,
+    action: r.d.action,
+    liveLabel: r.d.liveLabel,
+    reason: r.d.reason,
+  }));
+  fs.writeFileSync(
+    path.join(outDir, "policy-board.json"),
+    JSON.stringify({ ok: true, taskId: demoTask.id, frames: saved, policyBoard }, null, 2),
+  );
+
+  console.log("[live-status-demo] done", saved.length, "shots");
+  app.quit();
+}
 
 if (gotLock) {
   app.on("second-instance", (_event, argv) => {

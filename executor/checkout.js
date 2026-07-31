@@ -72,6 +72,7 @@ function wireProgress(ctx, taskId, meta = {}) {
 
 const WORKFLOW_STAGE_IDS = new Set([
   "warm",
+  "login",
   "product",
   "cart",
   "details",

@@ -41,3 +41,5 @@ yarn-error.log*
 *.har
 **/*.har
 executor/monitor-host/node_modules/
+
+artifacts/
