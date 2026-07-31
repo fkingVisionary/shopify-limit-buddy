@@ -217,8 +217,8 @@
         </div>
         <form id="taskForm" class="modal-body">
           <input type="hidden" id="taskId" />
-          <label>Label</label>
-          <input id="taskLabel" placeholder="Drop SKU name" />
+          <label>Label <span class="optional">(blank = SKU · title)</span></label>
+          <input id="taskLabel" placeholder="e.g. N2847890001 · RG Gundam" />
           <label>Task group</label>
           <select id="taskGroup">
             <option value="">No group</option>
@@ -1093,6 +1093,8 @@
           <input id="setMax" type="number" min="1" max="50" value="5" />
           <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
           <label class="check"><input id="setSuccessAlert" type="checkbox" checked /> Sound + taskbar flash + toast on checkout win</label>
+          <label class="check"><input id="setDetailedLogs" type="checkbox" checked /> Detailed diagnostics in live log</label>
+          <p class="hint">On = failedStep / detail / poll lines (solo testing). Off = consumer labels only for beta. Console + disk logs always keep detail.</p>
           <h3 style="margin-top:1.25rem">Quick Task preset</h3>
           <p class="hint">Defaults for Quick Task and Smart Actions Create Tasks.</p>
           <label>Store</label>

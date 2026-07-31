@@ -34,6 +34,8 @@ let queue = [];
 let inflight = 0;
 let running = false;
 let maxConcurrent = 5;
+/** When false, UI only gets consumer labels (failedStep/detail/polls stay on console). */
+let detailedLogs = true;
 let emit = () => {};
 let onFinished = null;
 /** @type {null | (() => object|null)} */
@@ -58,6 +60,9 @@ function setFinishedHandler(fn) {
 function configure(opts = {}) {
   const n = opts.maxConcurrent;
   if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
+  if (Object.prototype.hasOwnProperty.call(opts, "detailedLogs")) {
+    detailedLogs = opts.detailedLogs !== false;
+  }
   if (Object.prototype.hasOwnProperty.call(opts, "takeBandaiHarvest")) {
     takeBandaiHarvestFn = typeof opts.takeBandaiHarvest === "function" ? opts.takeBandaiHarvest : null;
   }
@@ -898,6 +903,15 @@ function pump() {
 }
 
 function emitLog(runId, taskId, level, message, extra) {
+  const opts = extra || {};
+  // Operator-only diagnostics — skip UI when detailedLogs is off.
+  if (opts.detailed && !detailedLogs) {
+    if (level === "err") {
+      console.log(`[desktop:run:debug] ${runId} ${message}`);
+    }
+    return;
+  }
+  const { detailed: _detailed, ...rest } = opts;
   emit({
     type: "job",
     phase: "log",
@@ -905,8 +919,13 @@ function emitLog(runId, taskId, level, message, extra) {
     taskId,
     level: level || "info",
     message: String(message || ""),
-    ...(extra || {}),
+    ...rest,
   });
+}
+
+/** Same as emitLog but only shown when Settings → Detailed diagnostics is on. */
+function emitDetailedLog(runId, taskId, level, message, extra) {
+  emitLog(runId, taskId, level, message, { ...(extra || {}), detailed: true });
 }
 
 function finishResult(job, res, summary) {
@@ -1022,16 +1041,21 @@ function logResultTail(job, result) {
   }
   emitLog(job.runId, job.task?.id, "err", result.consumerLabel || result.error || "Something went wrong");
   if (result.failedStep) {
-    emitLog(job.runId, job.task?.id, "err", `failedStep=${result.failedStep}`);
+    emitDetailedLog(job.runId, job.task?.id, "err", `failedStep=${result.failedStep}`);
   }
-  // Surface one line of analytical detail in the UI for drop diagnosis (still capped).
+  // Analytical detail for solo testing / support — gated by detailedLogs.
   if (result.debugError) {
     const cap = /RELOAD_ONLY|RedirectErrorType|IsTheSameCartToken|ge_risk_hydrate/i.test(
       String(result.debugError),
     )
       ? 480
       : 220;
-    emitLog(job.runId, job.task?.id, "err", `detail: ${String(result.debugError).slice(0, cap)}`);
+    emitDetailedLog(
+      job.runId,
+      job.task?.id,
+      "err",
+      `detail: ${String(result.debugError).slice(0, cap)}`,
+    );
     console.log(`[desktop:run:debug] ${job.runId} ${result.debugError}`);
   }
   for (const s of (result.lastSteps || []).slice(-8)) {
@@ -1206,7 +1230,8 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
     bandaiWatchKeywords: payload.bandaiWatchKeywords,
   });
 
-  emitLog(
+  emitLog(job.runId, job.task?.id, "info", "Watching for restock");
+  emitDetailedLog(
     job.runId,
     job.task?.id,
     "info",
@@ -1234,7 +1259,7 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
       monitorOpts: {
         intervalMs: Number(payload.bandaiMonitorIntervalMs) || 10000,
       },
-      log: (line) => emitLog(job.runId, job.task?.id, "info", line),
+      log: (line) => emitDetailedLog(job.runId, job.task?.id, "info", line),
     });
     const sub = hub.subscribeTask(
       {
@@ -1252,6 +1277,12 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
             job.runId,
             job.task?.id,
             "ok",
+            `In stock — ${ev.productId || ev.title || "product"}`,
+          );
+          emitDetailedLog(
+            job.runId,
+            job.task?.id,
+            "ok",
             `MATCH ${ev.productId} ${ev.title || ev.reason || ""}`,
           );
         },
@@ -1265,7 +1296,7 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
         bandaiMonitorMode: "global",
       };
     }
-    emitLog(
+    emitDetailedLog(
       job.runId,
       job.task?.id,
       "info",
@@ -1281,7 +1312,7 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
       };
       const onPoll = (s) => {
         polls += 1;
-        emitLog(
+        emitDetailedLog(
           job.runId,
           job.task?.id,
           "info",
@@ -1363,7 +1394,7 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
     const done = () => resolve();
     local.on("poll", (s) => {
       polls += 1;
-      emitLog(
+      emitDetailedLog(
         job.runId,
         job.task?.id,
         "info",
@@ -1386,7 +1417,18 @@ async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false }
     local.on("stock_changed", (ev) => {
       if (!eventMatchesWatch(ev, local.watch || watch)) return;
       hits.push(ev);
-      emitLog(job.runId, job.task?.id, "ok", `LOCAL ${ev.productId} ${ev.reason}`);
+      emitLog(
+        job.runId,
+        job.task?.id,
+        "ok",
+        `In stock — ${ev.productId || "product"}`,
+      );
+      emitDetailedLog(
+        job.runId,
+        job.task?.id,
+        "ok",
+        `LOCAL ${ev.productId} ${ev.reason}`,
+      );
       if (checkoutOnHit) done();
     });
     local.on("error", (e) =>
@@ -1444,7 +1486,8 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
         job.proxyEntries = [harvestSession.proxy];
         job.proxyIndex = 0;
       }
-      emitLog(
+      emitLog(job.runId, job.task?.id, "info", "Using warm harvest session");
+      emitDetailedLog(
         job.runId,
         job.task?.id,
         "info",
@@ -1468,7 +1511,7 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       await ensureBandaiNaiForTask(job.task, {
         proxy: job.task.harvestedProxy || job.proxyRaw || job.proxyEntries?.[0] || null,
         area: job.task.bandaiArea || "au",
-        log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+        log: (msg) => emitDetailedLog(job.runId, job.task?.id, "info", msg),
       });
     } catch {
       /* best-effort — adapter still has product_get */
@@ -1514,10 +1557,10 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
         await ensureBandaiNaiForTask(job.task, {
           proxy: job.proxyRaw || job.proxyEntries?.[0] || null,
           area: payload.bandaiArea || job.task.bandaiArea || "au",
-          log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+          log: (msg) => emitDetailedLog(job.runId, job.task?.id, "info", msg),
         });
       } catch (e) {
-        emitLog(
+        emitDetailedLog(
           job.runId,
           job.task?.id,
           "info",
@@ -1547,14 +1590,15 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
         switched.task.harvestedBridgeId = harvestSession.id;
         switched.task.harvestedProxy = harvestSession.proxy;
         switched.task.proxyOverride = harvestSession.proxy;
-        emitLog(
+        emitLog(job.runId, job.task?.id, "info", "Using warm harvest session");
+        emitDetailedLog(
           job.runId,
           job.task?.id,
           "info",
           `Using harvested F5 bridge (${harvestSession.proxyHost || "proxy"} age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
         );
       } else {
-        emitLog(job.runId, job.task?.id, "info", "No harvested F5 bridge — cold checkout");
+        emitLog(job.runId, job.task?.id, "info", "Cold checkout (no harvest session)");
       }
 
       // Last chance: resolve NAI from hit / warm GET before sidecar ATC.
@@ -1563,7 +1607,7 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
           await ensureBandaiNaiForTask(switched.task, {
             proxy: harvestSession?.proxy || job.proxyRaw || job.proxyEntries?.[0] || null,
             area: payload.bandaiArea || switched.task.bandaiArea || "au",
-            log: (msg) => emitLog(job.runId, job.task?.id, "info", msg),
+            log: (msg) => emitDetailedLog(job.runId, job.task?.id, "info", msg),
           });
         } catch {
           /* best-effort */
@@ -1571,6 +1615,12 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
       }
 
       emitLog(
+        job.runId,
+        job.task?.id,
+        "ok",
+        `Restock ${switched.target.productId} — starting checkout`,
+      );
+      emitDetailedLog(
         job.runId,
         job.task?.id,
         "ok",
