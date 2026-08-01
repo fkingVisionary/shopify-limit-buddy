@@ -136,17 +136,21 @@ test("admin-muted SKU skips feed + checkout handoff", async () => {
 });
 
 test("checkout result discord embed", () => {
-  const { checkoutResultDiscordPayload } = require("./discord-webhook.cjs");
+  const { checkoutResultDiscordPayload, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
   const ok = checkoutResultDiscordPayload(
     { ok: true, orderNumber: "ABC", checkoutStage: "complete", account: { email: "a@b.com" } },
-    { store: "bandai", label: "lane1" },
+    { store: "bandai", label: "lane1", kind: "success", profileName: "P1" },
   );
-  assert.match(ok.embeds[0].title, /OK/);
-  const fail = checkoutResultDiscordPayload(
-    { ok: false, failedStep: "login", error: "login 401" },
-    { store: "bandai" },
+  assert.match(ok.embeds[0].title, /Successfully checked out/i);
+  assert.equal(classifyCheckoutDiscordKind({ ok: true, orderNumber: "ABC" }), "success");
+  assert.equal(classifyCheckoutDiscordKind({ ok: true }), "skip");
+  const decline = checkoutResultDiscordPayload(
+    { ok: false, paymentStatus: "declined", consumerLabel: "Payment declined" },
+    { store: "bandai", kind: "fail" },
   );
-  assert.match(fail.embeds[0].title, /failed/);
+  assert.match(decline.embeds[0].title, /declined/i);
+  const blob = JSON.stringify(decline);
+  assert.equal(/failedStep|debugError/i.test(blob), false);
 });
 
 test("parseAdminWatchlistFromHealth counts keywords", () => {

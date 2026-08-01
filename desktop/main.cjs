@@ -70,7 +70,14 @@ const {
 const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 const { appendMonitorEvent, readMonitorEvents } = require("./monitor-event-log.cjs");
 const { appendCheckoutRun, readCheckoutRuns } = require("./checkout-run-log.cjs");
-const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
+const {
+  postDiscordWebhook,
+  checkoutResultDiscordPayload,
+  publicCheckoutWinReport,
+  resolveDiscordWebhookUrl,
+  classifyCheckoutDiscordKind,
+  normalizeEmbedFields,
+} = require("./discord-webhook.cjs");
 const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
 const {
@@ -627,25 +634,71 @@ function persistSettings() {
 }
 
 /**
- * User Discord webhooks — route success / fail / 3DS.
- * Global restock pings stay on the operator Railway webhook.
+ * User Discord webhooks — route success / fail(decline) / 3DS.
+ * Public checkout feed is reported separately to Railway (no PII).
  */
 async function notifyUserCheckoutDiscord(result) {
   const kind = classifyCheckoutDiscordKind(result);
   if (kind === "skip") return;
   const url = resolveDiscordWebhookUrl(state.settings, kind);
-  if (!url) return;
   const task = (state.db.tasks || []).find((t) => t.id === result.taskId);
   const storeId = task?.store || result.store || "checkout";
+  const profile = (state.db.profiles || []).find((p) => p.id === task?.profileId);
+  if (url) {
+    try {
+      const payload = checkoutResultDiscordPayload(result, {
+        store: storeId,
+        label: task?.label || result.taskId,
+        kind,
+        profileName: profile?.name || profile?.label || null,
+        mode: task?.bandaiCheckoutMode || task?.bandaiMode || task?.toymateMode,
+        qty: task?.qty,
+        pdpUrl: task?.pdpUrl,
+        sku: task?.bandaiWatchSku,
+        proxy: result.proxyHost || null,
+        embedFields: normalizeEmbedFields(state.settings.discordEmbedFields),
+        source: result.source || "Desktop",
+      });
+      await postDiscordWebhook(url, payload);
+    } catch {
+      /* ignore webhook errors */
+    }
+  }
+  // Public feed — only confirmed orders; webhook URL never leaves the monitor host.
+  if (kind === "success" && result.orderNumber) {
+    void reportPublicCheckoutWin(result, task);
+  }
+}
+
+async function reportPublicCheckoutWin(result, task) {
   try {
-    const payload = checkoutResultDiscordPayload(result, {
-      store: storeId,
-      label: task?.label || result.taskId,
-      kind,
+    const base = String(
+      state.settings.bandaiGlobalMonitorUrl ||
+        "https://j1ms-bandai-monitor-production.up.railway.app",
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    if (!base) return;
+    const body = publicCheckoutWinReport(result, {
+      store: task?.store || result.store,
+      label: task?.label || result.taskLabel,
+      sku: task?.bandaiWatchSku || result.productCode,
+      pdpUrl: task?.pdpUrl || result.pdpUrl,
+      mode: task?.bandaiCheckoutMode || task?.bandaiMode || "Checkout",
+      areaItemNo: result.areaItemNo || task?.bandaiAreaItemNo,
     });
-    await postDiscordWebhook(url, payload);
+    const token = String(state.settings.bandaiGlobalMonitorToken || "").trim();
+    await fetch(`${base}/checkout-win`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(12_000),
+    });
   } catch {
-    /* ignore webhook errors */
+    /* ignore — public feed is best-effort */
   }
 }
 
@@ -2144,20 +2197,54 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
   if (!url) {
     return { ok: false, error: `No webhook configured for ${kind}` };
   }
-  const colors = { success: 0x8a9a8a, fail: 0xb07070, threeds: 0xc4b08a, monitor: 0x9098a8 };
-  const payload = {
-    username: "Vanta",
-    embeds: [
-      {
-        title: `Webhook test · ${kind}`,
-        description: "Desktop Settings ping — routing works if you see this.",
-        color: colors[kind] || 0xc8c8cc,
-        fields: [{ name: "Route", value: kind, inline: true }],
-        timestamp: new Date().toISOString(),
-        footer: { text: "Vanta · desktop" },
-      },
-    ],
-  };
+  const fields = normalizeEmbedFields(state.settings.discordEmbedFields);
+  let payload;
+  if (kind === "monitor") {
+    payload = {
+      username: "Vanta",
+      embeds: [
+        {
+          title: "Smart Action completed!",
+          description: "Your Smart Action was triggered and ran successfully",
+          color: 0x3b82f6,
+          fields: [
+            { name: "Trigger", value: "Webhook test", inline: false },
+            { name: "Actions", value: "Notify Discord", inline: false },
+          ],
+          footer: { text: "Vanta" },
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+  } else {
+    const sample =
+      kind === "success"
+        ? {
+            ok: true,
+            orderNumber: "TEST-ORDER",
+            account: { email: "test@example.com" },
+            profileName: "Test Profile",
+            price: "99.00",
+          }
+        : kind === "threeds"
+          ? { ok: false, checkoutStage: "threeds", consumerLabel: "Waiting for bank approval" }
+          : {
+              ok: false,
+              paymentStatus: "declined",
+              consumerLabel: "Payment declined",
+              consumerCode: "declined",
+            };
+    payload = checkoutResultDiscordPayload(sample, {
+      store: "bandai",
+      label: "Webhook test product",
+      kind,
+      profileName: "Test Profile",
+      mode: "Checkout",
+      embedFields: fields,
+      source: "Settings test",
+      proxy: "1.2.3.4:12323",
+    });
+  }
   const res = await postDiscordWebhook(url, payload);
   return { ...res, kind, urlHost: (() => { try { return new URL(url).host; } catch { return ""; } })() };
 });

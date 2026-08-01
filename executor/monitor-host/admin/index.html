@@ -291,6 +291,16 @@
             <span>Discord OOS pings</span>
             <input id="notifyOos" type="checkbox" />
           </div>
+          <h3 style="margin:18px 0 8px;font-size:0.95rem">Discord webhooks</h3>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.8rem;line-height:1.4">
+            Editable here without redeploy (saved on the Railway volume). Empty falls back to env
+            (<code>DISCORD_WEBHOOK_URL</code> / <code>DISCORD_CHECKOUT_FEED_WEBHOOK</code>).
+            Checkout feed is public wins only — no profile / email / order / proxy.
+          </p>
+          <label for="restockWebhook">Restock / OOS webhook</label>
+          <input id="restockWebhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" />
+          <label for="checkoutFeedWebhook">Public checkout feed webhook</label>
+          <input id="checkoutFeedWebhook" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…" />
           <div class="row"><button id="btnSaveProx" type="button">Save proxies &amp; settings</button></div>
           <p id="persistHint" class="hint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
         </section>
@@ -419,6 +429,7 @@
           <div class="row">
             <button id="btnTestRestock" type="button">Test restock</button>
             <button class="secondary danger" id="btnTestOos" type="button">Test OOS</button>
+            <button class="secondary" id="btnTestCheckoutFeed" type="button">Test checkout feed</button>
           </div>
           <div class="row">
             <button class="secondary" id="btnPoll" type="button">Force monitor poll</button>
@@ -516,6 +527,18 @@
         $("dc").value = cfg.dcProxies || "";
         $("interval").value = cfg.intervalMs || 5000;
         $("notifyOos").checked = cfg.notifyOos !== false;
+        if ($("restockWebhook")) {
+          $("restockWebhook").value = cfg.restockWebhook || "";
+          $("restockWebhook").placeholder = cfg.restockWebhookSet
+            ? cfg.restockWebhookMasked || "configured"
+            : "https://discord.com/api/webhooks/…";
+        }
+        if ($("checkoutFeedWebhook")) {
+          $("checkoutFeedWebhook").value = cfg.checkoutFeedWebhook || "";
+          $("checkoutFeedWebhook").placeholder = cfg.checkoutFeedWebhookSet
+            ? cfg.checkoutFeedWebhookMasked || "configured"
+            : "https://discord.com/api/webhooks/…";
+        }
         applyPersistence(cfg.persistence);
         const hits = st.recentHits || [];
         $("hits").innerHTML = hits.length
@@ -787,6 +810,8 @@
               dcProxies: $("dc").value,
               intervalMs: Number($("interval").value) || 5000,
               notifyOos: $("notifyOos").checked,
+              restockWebhook: $("restockWebhook")?.value ?? "",
+              checkoutFeedWebhook: $("checkoutFeedWebhook")?.value ?? "",
             }),
           });
           applyPersistence(r.persistence);
@@ -909,6 +934,21 @@
           toast("OOS ping sent", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      if ($("btnTestCheckoutFeed")) {
+        $("btnTestCheckoutFeed").onclick = async () => {
+          try {
+            const sku = $("testSku").value.trim() || "N2890904001";
+            await api("/test-discord?sku=" + encodeURIComponent(sku) + "&kind=checkout", {
+              method: "POST",
+            });
+            const note = $("discordLabNote");
+            if (note) note.textContent = "Public checkout feed ping (no PII)";
+            toast("Checkout feed ping sent", "ok");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
       $("btnPoll").onclick = async () => {
         try {
           const r = await api("/lab/poll", { method: "POST" });

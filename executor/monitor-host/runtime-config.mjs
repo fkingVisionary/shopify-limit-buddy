@@ -20,6 +20,8 @@ function defaultStatePath() {
  *   dcProxies: string,
  *   intervalMs: number,
  *   notifyOos: boolean,
+ *   restockWebhook: string,
+ *   checkoutFeedWebhook: string,
  *   updatedAt: string|null,
  * }}
  */
@@ -37,6 +39,10 @@ export function defaultConfigFromEnv() {
     dcProxies: String(process.env.BANDAI_MONITOR_DC_PROXIES || ""),
     intervalMs: Number(process.env.BANDAI_MONITOR_INTERVAL_MS) || 5000,
     notifyOos: process.env.BANDAI_MONITOR_NOTIFY_OOS !== "0",
+    /** Operator restock Discord — admin-editable; env DISCORD_WEBHOOK_URL is fallback. */
+    restockWebhook: String(process.env.DISCORD_WEBHOOK_URL || ""),
+    /** Public checkouts feed (no PII) — admin-editable; env DISCORD_CHECKOUT_FEED_WEBHOOK fallback. */
+    checkoutFeedWebhook: String(process.env.DISCORD_CHECKOUT_FEED_WEBHOOK || ""),
     updatedAt: null,
   };
 }
@@ -76,6 +82,8 @@ export function saveRuntimeConfig(cfg, filePath = defaultStatePath()) {
     dcProxies: String(cfg.dcProxies || ""),
     intervalMs: Number(cfg.intervalMs) || 5000,
     notifyOos: cfg.notifyOos !== false,
+    restockWebhook: String(cfg.restockWebhook || ""),
+    checkoutFeedWebhook: String(cfg.checkoutFeedWebhook || ""),
     updatedAt: new Date().toISOString(),
   };
   const dir = path.dirname(filePath);

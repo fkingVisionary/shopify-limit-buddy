@@ -92,6 +92,22 @@ const DEFAULT_SETTINGS = {
   /** Smart Actions Notify Discord + optional monitor-task pings (not Railway restock). */
   discordMonitorWebhook: "",
   /**
+   * Which fields appear on personal Success / Decline Discord embeds.
+   * Public checkout feed never includes these (server-side sanitize).
+   */
+  discordEmbedFields: {
+    product: true,
+    store: true,
+    price: true,
+    profile: true,
+    order: true,
+    mode: true,
+    payment: true,
+    source: true,
+    email: true,
+    proxy: true,
+  },
+  /**
    * Quick Task defaults (Monitor Feed row / paste SKU → create+start).
    * Used by Smart Actions Create Tasks when usePreset is on.
    */
@@ -134,6 +150,12 @@ function loadAll() {
   settings.monitorMutedSkus = Array.isArray(settings.monitorMutedSkus)
     ? settings.monitorMutedSkus.map((s) => String(s || "").trim()).filter(Boolean)
     : [];
+  settings.discordEmbedFields = {
+    ...DEFAULT_SETTINGS.discordEmbedFields,
+    ...(settings.discordEmbedFields && typeof settings.discordEmbedFields === "object"
+      ? settings.discordEmbedFields
+      : {}),
+  };
   const db = { ...DEFAULT_DB, ...readJson("db.json", {}) };
   db.profiles = Array.isArray(db.profiles) ? db.profiles : [];
   db.proxyGroups = Array.isArray(db.proxyGroups) ? db.proxyGroups : [];

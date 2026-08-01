@@ -1664,6 +1664,27 @@ function renderResults() {
     .join("");
 }
 
+function syncDiscordEmbedFieldToggles(fields) {
+  const root = $("discordFieldToggles");
+  if (!root) return;
+  const f = fields && typeof fields === "object" ? fields : {};
+  for (const input of root.querySelectorAll("input[data-embed-field]")) {
+    const key = input.getAttribute("data-embed-field");
+    input.checked = f[key] !== false;
+  }
+}
+
+function readDiscordEmbedFieldsFromForm() {
+  const root = $("discordFieldToggles");
+  const out = {};
+  if (!root) return out;
+  for (const input of root.querySelectorAll("input[data-embed-field]")) {
+    const key = input.getAttribute("data-embed-field");
+    if (key) out[key] = Boolean(input.checked);
+  }
+  return out;
+}
+
 function renderSettings() {
   const s = state.settings || {};
   $("setApiKey").value = s.apiKey || "";
@@ -1689,6 +1710,7 @@ function renderSettings() {
   if ($("setDiscordFail")) $("setDiscordFail").value = s.discordFailWebhook || "";
   if ($("setDiscord3ds")) $("setDiscord3ds").value = s.discord3dsWebhook || "";
   if ($("setDiscordMonitor")) $("setDiscordMonitor").value = s.discordMonitorWebhook || "";
+  syncDiscordEmbedFieldToggles(s.discordEmbedFields);
   if ($("setSuccessAlert")) $("setSuccessAlert").checked = s.successAlertEnabled !== false;
   // Legacy single field if still present in DOM
   if ($("setDiscordWebhook")) $("setDiscordWebhook").value = successHook;
@@ -3234,6 +3256,7 @@ $("btnSaveSettings").onclick = async () => {
     discordFailWebhook: $("setDiscordFail")?.value?.trim() || "",
     discord3dsWebhook: $("setDiscord3ds")?.value?.trim() || "",
     discordMonitorWebhook: $("setDiscordMonitor")?.value?.trim() || "",
+    discordEmbedFields: readDiscordEmbedFieldsFromForm(),
     successAlertEnabled: $("setSuccessAlert")?.checked !== false,
     quickTaskPreset: readQuickTaskPresetFromForm(),
   };
