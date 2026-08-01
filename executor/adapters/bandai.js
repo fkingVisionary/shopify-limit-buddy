@@ -1976,6 +1976,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       machineId: geNoPage ? geMachineId : riskHydrate ? null : geMachineId,
       riskHydrate,
       forceFreshMint: riskHydrate,
+      // Forensics correlation only (desktop → /run → issuer POST).
+      desktopTaskId: task.desktopTaskId || null,
+      desktopRunId: task.desktopRunId || null,
+      desktopAttempt: task.desktopAttempt || null,
+      executorTaskId: task.taskId || null,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
       card: opts.card,

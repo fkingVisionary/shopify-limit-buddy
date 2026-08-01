@@ -34,6 +34,7 @@ import {
   disneyHarvestSnapshot,
 } from "./adapters/disney-harvest-pool.js";
 import { harvestDisneySession } from "./adapters/disney-harvest-session.js";
+import { payForensics, payForensicsPath } from "./pay-forensics.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -51,7 +52,7 @@ let inflight = 0;
  * Copy adapter passthrough keys; never override core fields (proxy/card/…).
  */
 const ADAPTER_PASSTHROUGH_KEY =
-  /^(bandai|disney|toymate|pcMode|pcLocale|harvestedBridgeId|harvestedSession|harvestedProxy|_harvestedBridge|heldCart|areaItemNo|shippingAreaCode|proxyPool|otp|vaultEmails|uniquifyEmail|campaignSn|productId|input|keywords|signupEmail)$/i;
+  /^(bandai|disney|toymate|pcMode|pcLocale|harvestedBridgeId|harvestedSession|harvestedProxy|_harvestedBridge|heldCart|areaItemNo|shippingAreaCode|proxyPool|otp|vaultEmails|uniquifyEmail|campaignSn|productId|input|keywords|signupEmail|desktopTaskId|desktopRunId|desktopAttempt)$/i;
 
 function pickAdapterPassthrough(task) {
   const out = {};
@@ -452,6 +453,19 @@ app.post("/run", async (req, reply) => {
       req.log.warn("card field present but invalid shape — ignoring");
     }
   }
+  // Behavior-neutral double-charge forensics (correlates desktop ↔ issuer POSTs).
+  payForensics("run_start", {
+    executorTaskId: task.taskId,
+    desktopTaskId: task.desktopTaskId || null,
+    desktopRunId: task.desktopRunId || null,
+    desktopAttempt: task.desktopAttempt || null,
+    storeUrl: String(task.storeUrl || "").slice(0, 160),
+    placeOrder: task.placeOrder === true,
+    dryRun: task.dryRun === true,
+    cardLast4: card ? card.number.slice(-4) : null,
+    inflight: inflight + 1,
+    forensicsPath: payForensicsPath(),
+  });
   // Validate optional placeOrderMutation shape.
   let placeOrderMutation = null;
   if (task.placeOrderMutation && typeof task.placeOrderMutation === "object") {
@@ -603,10 +617,34 @@ app.post("/run", async (req, reply) => {
       result.proxyRotated = proxyAttempts.length > 1;
       result.gitSha = GIT_SHA;
     }
+    payForensics("run_end", {
+      executorTaskId: task.taskId,
+      desktopTaskId: task.desktopTaskId || null,
+      desktopRunId: task.desktopRunId || null,
+      desktopAttempt: task.desktopAttempt || null,
+      ok: Boolean(result?.ok),
+      placeOrder: task.placeOrder === true,
+      paymentStatus: result?.paymentStatus ?? null,
+      chargeReqCount: result?.chargeReqCount ?? null,
+      undiciAttempts: result?.undiciAttempts ?? null,
+      responseLost: Boolean(result?.responseLost),
+      paymentAttempted: Boolean(result?.paymentAttempted),
+      transactionId: result?.transactionId ?? null,
+      failedStep: result?.failedStep ?? null,
+      cardLast4: card ? card.number.slice(-4) : null,
+    });
     return result;
   } catch (e) {
     reply.code(500);
     req.log.error({ err: e }, "run failed");
+    payForensics("run_end", {
+      executorTaskId: task?.taskId,
+      desktopTaskId: task?.desktopTaskId || null,
+      desktopRunId: task?.desktopRunId || null,
+      ok: false,
+      error: e?.message ?? String(e),
+      cardLast4: card ? card.number.slice(-4) : null,
+    });
     return { ok: false, error: e?.message ?? String(e), failedStep: "run_error" };
   } finally {
     inflight--;

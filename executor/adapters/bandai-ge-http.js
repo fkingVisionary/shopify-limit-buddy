@@ -16,6 +16,17 @@
 import { request } from "../http.js";
 import fs from "node:fs";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
+import { payForensics } from "../pay-forensics.js";
+
+function issuerBodyFlags(body) {
+  const s = String(body || "");
+  const createTxn = (s.match(/PaymentData\.createTransaction=([^&]*)/i) || [])[1];
+  const guid = (s.match(/PaymentData\.cartToken=([^&]*)/i) || [])[1];
+  return {
+    createTransaction: createTxn != null ? decodeURIComponent(createTxn) : null,
+    cartToken: guid != null ? decodeURIComponent(guid).slice(0, 64) : null,
+  };
+}
 
 const CAPTURE_DEFAULT = "/tmp/bandai-ge-issuer-capture.json";
 const BOOT_CAPTURE = "/tmp/bandai-ge-boot-capture.json";
@@ -1043,6 +1054,23 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
   }
   if (!body) return { ok: false, error: "body_required", via: "page-ge-issuer" };
   const t0 = Date.now();
+  const flags = issuerBodyFlags(body);
+  payForensics("psp_post_start", {
+    via: "page-ge-issuer",
+    store: "bandai",
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+    issuerHost: (() => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return null;
+      }
+    })(),
+    ...flags,
+  });
   try {
     // MUST use APIRequestContext — it bypasses page routes so we can keep the
     // browser HandleCreditCard block active (GEM iframe dual-rail fix).
@@ -1207,6 +1235,25 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     undiciAttempts: 0,
   });
 
+  const flags = issuerBodyFlags(body);
+  payForensics("psp_post_start", {
+    via: "http-ge-issuer",
+    store: "bandai",
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+    issuerHost: (() => {
+      try {
+        return new URL(url).host;
+      } catch {
+        return null;
+      }
+    })(),
+    bodyBytes: body.length,
+    ...flags,
+  });
+
   try {
     // CRITICAL: retry:false — undici used to retry POST on proxy RST after GE
     // already authorized → paired Revolut lines with app-level posts=1.
@@ -1343,6 +1390,21 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       error: out.error,
       via: out.via,
     });
+    payForensics("psp_post_end", {
+      via: "http-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      status: out.status,
+      ok: out.ok,
+      ms: out.ms,
+      undiciAttempts: out.undiciAttempts,
+      bankSignal: out.bankSignal,
+      responseLost: false,
+      ...flags,
+    });
     return out;
   } catch (e) {
     const ms = Date.now() - t0;
@@ -1351,6 +1413,20 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     // POST almost certainly left the client (GE/bank may still settle).
     // Do not score this as a clean miss — capture cause and check Revolut.
     const responseLost = undiciAttempts >= 1;
+    payForensics("psp_post_end", {
+      via: "http-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      ok: false,
+      ms,
+      undiciAttempts,
+      responseLost,
+      error: responseLost ? "issuer_response_lost" : net.message || "issuer_http_failed",
+      ...flags,
+    });
     const out = {
       ok: false,
       error: responseLost ? "issuer_response_lost" : net.message || "issuer_http_failed",
@@ -1646,6 +1722,16 @@ export async function runBandaiGeHttpPay(opts = {}) {
           url: url.slice(0, 320),
           issuer: true,
           phase: "riskHydrate-muted",
+          suppressed: true,
+        });
+        payForensics("psp_post_suppressed", {
+          via: "browser-ge-mute",
+          store: "bandai",
+          desktopTaskId: opts.desktopTaskId || null,
+          desktopRunId: opts.desktopRunId || null,
+          desktopAttempt: opts.desktopAttempt || null,
+          executorTaskId: opts.executorTaskId || null,
+          method,
           suppressed: true,
         });
       }
@@ -2249,6 +2335,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
         url: issuerUrl,
         body,
         referer: ccUrl,
+        desktopTaskId: opts.desktopTaskId,
+        desktopRunId: opts.desktopRunId,
+        desktopAttempt: opts.desktopAttempt,
+        executorTaskId: opts.executorTaskId,
       });
     } else {
       issuer = await postBandaiGeIssuerHttp({
@@ -2261,6 +2351,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
         // Hold for GE/bank settle — short waits were scoring "fetch failed"
         // after Revolut already moved (2026-07-23 ~12:45 AEST).
         timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
+        desktopTaskId: opts.desktopTaskId,
+        desktopRunId: opts.desktopRunId,
+        desktopAttempt: opts.desktopAttempt,
+        executorTaskId: opts.executorTaskId,
       });
     }
   } finally {

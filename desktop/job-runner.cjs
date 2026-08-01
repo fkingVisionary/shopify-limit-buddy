@@ -1671,6 +1671,10 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
   const payload = built.data;
   payload.taskId = `${job.runId}-${attemptLabel}`;
+  // Correlate desktop UI task ↔ executor /run ↔ issuer POSTs (forensics only).
+  payload.desktopTaskId = job.task?.id || null;
+  payload.desktopRunId = job.runId || null;
+  payload.desktopAttempt = attemptLabel;
   const summary = summarizePayload(payload);
 
   // Bandai monitor (global filter / task-local). Optionally hand off to checkout
@@ -1829,12 +1833,35 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
       /* ignore */
     }
   }
+  const cardLast4 = String(payload.card?.number || "")
+    .replace(/\s+/g, "")
+    .slice(-4) || null;
+  console.log(
+    "[pay-forensics]",
+    JSON.stringify({
+      t: new Date().toISOString(),
+      ts: Date.now(),
+      event: "desktop_run_start",
+      desktopTaskId: job.task?.id || null,
+      desktopRunId: job.runId,
+      desktopAttempt: attemptLabel,
+      executorTaskId: payload.taskId,
+      store: job.task?.store || null,
+      placeOrder: Boolean(payload.placeOrder),
+      cardLast4,
+      proxy: summary.proxy,
+      pdp: summary.storeUrl,
+      monitorHit: extra.monitorHit?.productId || null,
+    }),
+  );
   console.log(
     "[desktop:run]",
     JSON.stringify({
       runId: job.runId,
+      taskId: job.task?.id || null,
       phase: "start-executor",
       attempt: attemptLabel,
+      cardLast4,
       proxy: summary.proxy,
       transport: summary.transport,
       kmartMode: summary.kmartMode,
