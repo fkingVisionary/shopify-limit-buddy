@@ -1525,6 +1525,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const skipHydrateMutations =
     opts.skipHydrateMutations === true ||
     process.env.BANDAI_GE_TEST_SKIP_HYDRATE_MUTATIONS === "1";
+  const skipHandleActions =
+    skipHydrateMutations ||
+    opts.skipHandleActions === true ||
+    process.env.BANDAI_GE_TEST_SKIP_HANDLEACTION === "1";
+  const skipCheckoutSave =
+    skipHydrateMutations ||
+    opts.skipCheckoutSave === true ||
+    process.env.BANDAI_GE_TEST_SKIP_SAVE === "1";
   if (stopBeforeIssuer) {
     try {
       console.log("[bandai-ge-http-TEST] STOP_BEFORE_ISSUER — hydrate only, no HandleCreditCard");
@@ -1532,10 +1540,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
       /* ignore */
     }
   }
-  if (skipHydrateMutations) {
+  if (skipHydrateMutations || skipHandleActions || skipCheckoutSave) {
     try {
       console.log(
-        "[bandai-ge-http-TEST] SKIP_HYDRATE_MUTATIONS — no handleaction/save; CC form+issuer only",
+        `[bandai-ge-http-TEST] hydrate skips handleaction=${skipHandleActions} save=${skipCheckoutSave}`,
       );
     } catch {
       /* ignore */
@@ -1882,8 +1890,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
   // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
-  // TEST: skipHydrateMutations omits these POSTs (dual-auth arming suspect).
-  if (!skipHydrateMutations) {
+  // TEST: skip handleaction POSTs (dual-auth arming binary search).
+  if (!skipHandleActions) {
   for (const actionId of [1, 2, 3]) {
     const bodies = buildHandleActionBodies(form, {
       cartToken: guid,
@@ -1938,7 +1946,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     hydrateShippingOk = true;
     push("ge_handleaction_skipped", {
       ok: true,
-      note: "TEST skipHydrateMutations — no handleaction 1..3",
+      note: "TEST — no handleaction 1..3",
     });
   }
 
@@ -1961,10 +1969,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
   let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
 
   // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
-  let saveOk = skipHydrateMutations;
+  let saveOk = skipCheckoutSave;
   let saveJson = null;
   let saveRes = null;
-  if (!skipHydrateMutations) {
+  if (!skipCheckoutSave) {
   const saveBody = buildCheckoutSaveBody(form, {
     cartToken: guid,
     shippingMethodId,
@@ -2039,7 +2047,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
   } else {
     push("ge_checkout_save", {
       ok: true,
-      note: "TEST skipHydrateMutations — save skipped",
+      note: "TEST — save skipped",
     });
   }
 
