@@ -1,9 +1,9 @@
 /**
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
- * Keep this file a near-copy of production Fast; one lab delta at a time.
+ * Keep near-identical to production Fast; one lab delta at a time.
  *
- * Current delta (2026-08-02): after riskHydrate mint+blank on guid A, re-GetCartToken
- * and pay on guid B. Prod Fast mints on the live pay guid (bible header says not to).
+ * Diagnostic delta: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 stops after hydrate/save/CC
+ * form (no HandleCreditCard). Used to see if Revolut moves before issuer.
  *
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
@@ -1484,13 +1484,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const steps = [];
   const timeline = [];
   const t0 = Date.now();
-  try {
-    console.log(
-      "[bandai-ge-http-TEST] experimental Autocheckout test fork — production bandai-ge-http.js untouched",
-    );
-  } catch {
-    /* ignore */
-  }
   const mark = (event, extra = {}) => {
     const row = { t: new Date().toISOString(), elapsedMs: Date.now() - t0, event, ...extra };
     timeline.push(row);
@@ -1611,7 +1604,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   let guid = tokenOut.cartToken;
 
-  let v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
+  const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
     ctx,
     userAgent: opts.userAgent,
@@ -1633,7 +1626,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${opts.machineId ? "opts" : htmlMachineId ? "html" : "none"} bytes=${(v2.text || "").length}`,
   });
 
-  let form = applyProfileToGeForm(
+  const form = applyProfileToGeForm(
     parseCheckoutV2Form(v2.text),
     opts.profile || {},
     v2.text,
@@ -1852,72 +1845,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
         issuerPostsDuringMint,
         mutedIssuerPosts,
       });
-    }
-
-    // TEST-ONLY: guid just opened in Playwright is throwaway. Re-GetCartToken so
-    // undici hydrate/issuer runs on a pay guid the browser never loaded.
-    // (Prod Fast header documents this; prod body still mints on the live guid.)
-    if (!issuerPage && mint?.ok !== false) {
-      const mintGuid = guid;
-      const payToken = await getBandaiGeCartToken({
-        ctx,
-        merchantCartToken,
-        merchantId: mid,
-        area,
-        webStoreInstanceCode: area,
-        customerEmail: opts.customerEmail,
-        cultureCode: opts.cultureCode || "en-GB",
-        preferedCultureCode: opts.preferedCultureCode || "en-GB",
-        cookieConsent: opts.cookieConsent,
-        captchaResponseToken: opts.captchaResponseToken,
-        checkoutParams: opts.checkoutParams,
-        userAgent: opts.userAgent,
-        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-      });
-      const payGuid = payToken?.cartToken || null;
-      if (payToken?.ok && payGuid && payGuid !== mintGuid) {
-        guid = payGuid;
-        v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
-        const v2pay = await httpText(v2Url, {
-          ctx,
-          userAgent: opts.userAgent,
-          accept: "text/html,application/xhtml+xml,*/*",
-          headers: {
-            referer: `${BANDAI_GE_WEBSERVICES}/`,
-            "upgrade-insecure-requests": "1",
-          },
-        });
-        form = applyProfileToGeForm(
-          parseCheckoutV2Form(v2pay.text),
-          opts.profile || {},
-          v2pay.text,
-        );
-        shippingMethodId = form.selectedShippingOptionId || shippingMethodId || "";
-        urlStructureToken =
-          extractUrlStructureToken(v2pay.text) || urlStructureToken;
-        const htmlMid2 = extractMachineId(v2pay.text);
-        if (htmlMid2 && !machineId) machineId = htmlMid2;
-        push("ge_pay_guid_rebind", {
-          ok: true,
-          status: v2pay.status,
-          ms: v2pay.ms,
-          note: `mintGuid=${mintGuid} → payGuid=${payGuid} (browser never opened pay guid)`,
-        });
-        mark("ge_guid", { guid, mintGuid, rebound: true });
-        try {
-          console.log(
-            `[bandai-ge-http-TEST] pay guid rebind mint=${mintGuid} pay=${payGuid}`,
-          );
-        } catch {
-          /* ignore */
-        }
-      } else {
-        push("ge_pay_guid_rebind", {
-          ok: false,
-          status: payToken?.status || 0,
-          note: `rebind skipped — payGuid=${payGuid || "none"} mintGuid=${mintGuid} (same or missing)`,
-        });
-      }
     }
   }
 
@@ -2664,11 +2591,7 @@ export default {
   postBandaiGeIssuerViaPage,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
-  runBandaiGeHttpPayTest: runBandaiGeHttpPay,
   buildBandaiGeTiming,
   BANDAI_GE_MID,
   BANDAI_GE_ENCODED_MERCHANT,
 };
-
-/** Alias so bandai.js can import the fork without colliding with prod. */
-export { runBandaiGeHttpPay as runBandaiGeHttpPayTest };
