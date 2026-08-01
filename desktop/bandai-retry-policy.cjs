@@ -146,6 +146,21 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
+  // Intentional hydrate-only lab stop — never retry/rotate into issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return {
+      action: "stop",
+      liveLabel: "Hydrated — stopped before pay",
+      reason: "stop_before_issuer",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
+    };
+  }
+
   if (isBadCredentials(res)) {
     return {
       action: "stop",
