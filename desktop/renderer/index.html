@@ -179,6 +179,7 @@
           <div class="task-group-ops" id="taskGroupOps">
             <button type="button" id="btnGroupStart" title="Start every enabled task in the group selected on the left">Start group</button>
             <button type="button" id="btnGroupStop" class="secondary" title="Stop every task in the group selected on the left">Stop group</button>
+            <button type="button" id="btnGroupCheckoutHeld" class="secondary" hidden title="Checkout every task in this group that still has a held cart">Checkout held</button>
             <button type="button" id="btnGroupDup" class="secondary" title="Copy all tasks in this group into a new group">Duplicate group</button>
             <label class="checkout-limit-field" title="Max confirmed orders (order number) for this whole group. Blank = unlimited.">
               <span>Group max</span>
@@ -283,7 +284,7 @@
               <option value="monitor">Bandai — Monitor</option>
             </select>
             <p id="taskBandaiAtcHint" class="field-hint" hidden>
-              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Retry pay</strong> to checkout later.
+              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Checkout now</strong> on the task (or <strong>Checkout held</strong> in the group bar) while the hold is valid.
             </p>
             <div id="taskBandaiMonitorWrap" hidden>
               <label>Monitor source</label>
