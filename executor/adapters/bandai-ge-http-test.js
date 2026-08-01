@@ -2,8 +2,10 @@
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
  * Near-copy of production Fast; one lab delta at a time.
  *
- * Current delta: BANDAI_GE_TEST_PAYMENT_METHOD_ID (browser HAR posts pm=2; prod defaults 1).
- * Optional diagnostic: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 (no HandleCreditCard).
+ * Lab deltas (env, Autocheckout test only):
+ *   BANDAI_GE_TEST_PAYMENT_METHOD_ID — browser HAR posts pm=2 (prod default 1); alone still dual
+ *   BANDAI_GE_TEST_EMPTY_MACHINE_ID=1 — issuer body machineId="" (browser force-submit was len 0)
+ *   BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 — hydrate only, no HandleCreditCard
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
@@ -1528,6 +1530,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
       /* ignore */
     }
   }
+  // Browser force-submit HAR had PaymentData.machineId len=0 (body ~1064).
+  // Keep risk hydrate / forter; blank only the issuer form field.
+  const emptyIssuerMachineId =
+    opts.emptyMachineId === true || process.env.BANDAI_GE_TEST_EMPTY_MACHINE_ID === "1";
+  if (emptyIssuerMachineId) {
+    try {
+      console.log("[bandai-ge-http-TEST] EMPTY_MACHINE_ID — issuer machineId blanked");
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!merchantCartToken) {
     return {
@@ -2235,7 +2248,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   const blockers = [];
   if (!urlStructureToken) blockers.push("urlStructureToken");
-  if (!machineId) blockers.push("machineId");
+  if (!machineId && !emptyIssuerMachineId) blockers.push("machineId");
   // Fail closed when riskHydrate ran but Forter never landed (thin mint → RELOAD_ONLY).
   const allowThinRisk =
     opts.allowThinRisk === true ||
@@ -2301,10 +2314,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const issuerUrl =
     opts.issuerUrl ||
     `${BANDAI_GE_SECURE}/1/Payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${opts.issuerMode || "13534"}`;
+  const issuerMachineId = emptyIssuerMachineId ? "" : machineId;
+  if (emptyIssuerMachineId) {
+    push("ge_issuer_machineId_blanked", {
+      ok: true,
+      note: `TEST — issuer machineId cleared (had ${machineId ? String(machineId).length : 0} bytes)`,
+    });
+  }
   const body = buildIssuerFormBody({
     card,
     cartToken: guid,
-    machineId,
+    machineId: issuerMachineId,
     urlStructureToken,
     gatewayId,
     paymentMethodId,
