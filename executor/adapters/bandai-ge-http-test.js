@@ -2,14 +2,11 @@
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
  * Near-copy of production Fast; one lab delta at a time.
  *
- * Proven: stop-before-issuer → no Revolut. Dual is armed by undici hydrate then
- * fired by one HandleCreditCard.
+ * Hydrate skip experiments abandoned: dual Revolut persists across modules, so
+ * Bandai-only handleaction/save is not the shared root cause. Keep this file
+ * aligned with prod unless a new shared-path lever is under test.
  *
- * Current delta: BANDAI_GE_TEST_SKIP_HYDRATE_MUTATIONS=1 skips handleaction 1..3
- * + checkoutv2/save, then still does CreditCardForm + issuer — tests whether
- * those mutating hydrate steps are what arms the double auth.
- *
- * Also: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 (hydrate only, no issuer).
+ * Optional diagnostic: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 (no HandleCreditCard).
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
@@ -1486,9 +1483,6 @@ export async function replayCapturedIssuerHttp(opts = {}) {
  * unless opts.forceIssuer=true.
  */
 export async function runBandaiGeHttpPay(opts = {}) {
-  const steps = [];
-  const timeline = [];
-  const t0 = Date.now();
   try {
     console.log(
       "[bandai-ge-http-TEST] experimental Autocheckout test fork — production bandai-ge-http.js untouched",
@@ -1496,6 +1490,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
   } catch {
     /* ignore */
   }
+  const steps = [];
+  const timeline = [];
+  const t0 = Date.now();
   const mark = (event, extra = {}) => {
     const row = { t: new Date().toISOString(), elapsedMs: Date.now() - t0, event, ...extra };
     timeline.push(row);
@@ -1522,43 +1519,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const stopBeforeIssuer =
     opts.stopBeforeIssuer === true || process.env.BANDAI_GE_TEST_STOP_BEFORE_ISSUER === "1";
   const forceIssuer = opts.forceIssuer === true;
-  const skipHydrateMutations =
-    opts.skipHydrateMutations === true ||
-    process.env.BANDAI_GE_TEST_SKIP_HYDRATE_MUTATIONS === "1";
-  const skipHandleActions =
-    skipHydrateMutations ||
-    opts.skipHandleActions === true ||
-    process.env.BANDAI_GE_TEST_SKIP_HANDLEACTION === "1";
-  // Keep handleaction 1 (shipping pick) but skip 2/3 (tax/totals) — dual-arm binary search.
-  const skipHandleActionsAfter1 =
-    !skipHandleActions &&
-    (opts.skipHandleActionsAfter1 === true ||
-      process.env.BANDAI_GE_TEST_SKIP_HANDLEACTION_2_3 === "1");
-  const skipCheckoutSave =
-    skipHydrateMutations ||
-    opts.skipCheckoutSave === true ||
-    process.env.BANDAI_GE_TEST_SKIP_SAVE === "1";
-  if (stopBeforeIssuer) {
-    try {
-      console.log("[bandai-ge-http-TEST] STOP_BEFORE_ISSUER — hydrate only, no HandleCreditCard");
-    } catch {
-      /* ignore */
-    }
-  }
-  if (
-    skipHydrateMutations ||
-    skipHandleActions ||
-    skipHandleActionsAfter1 ||
-    skipCheckoutSave
-  ) {
-    try {
-      console.log(
-        `[bandai-ge-http-TEST] hydrate skips handleaction=${skipHandleActions} ha2_3=${skipHandleActionsAfter1} save=${skipCheckoutSave}`,
-      );
-    } catch {
-      /* ignore */
-    }
-  }
 
   if (!merchantCartToken) {
     return {
@@ -1900,71 +1860,54 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
   // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
-  // TEST: skip handleaction POSTs (dual-auth arming binary search).
-  // SKIP_HANDLEACTION_2_3 keeps only action 1 (shipping) so save can succeed.
-  if (!skipHandleActions) {
-    const handleActionIds = skipHandleActionsAfter1 ? [1] : [1, 2, 3];
-    for (const actionId of handleActionIds) {
-      const bodies = buildHandleActionBodies(form, {
-        cartToken: guid,
-        shippingMethodId,
-        paymentMethodId: form.selectedPaymentMethodId || "1",
-      });
-      const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
-      const ha = await httpText(haUrl, {
-        ctx,
-        method: "POST",
-        userAgent: opts.userAgent,
-        accept: "application/json, text/plain, */*",
-        headers: {
-          origin: BANDAI_GE_WEBSERVICES,
-          referer: v2Url,
-          "content-type": "application/json",
-          "x-requested-with": "XMLHttpRequest",
-          "X-merchantId": String(mid),
-        },
-        body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
-      });
-      let haJson = null;
-      try {
-        haJson = JSON.parse(String(ha.text || ""));
-      } catch {
-        haJson = null;
-      }
-      if (actionId === 1) {
-        const picked = pickShippingMethodId(haJson);
-        if (picked) shippingMethodId = picked;
-        hydrateShippingOk = Boolean(
-          ha.ok &&
-            (haJson?.success === true ||
-              haJson?.Success === true ||
-              haJson?.exists === true ||
-              (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
-        );
-      }
-      if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
-      push(`ge_handleaction_${actionId}`, {
-        ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
-        status: ha.status,
-        ms: ha.ms,
-        note: (
-          actionId === 1
-            ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} addr=${form.hasAddress} state=${form.shipping?.StateId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
-            : String(ha.text || "").replace(/\s+/g, " ")
-        ).slice(0, 200),
-      });
+  for (const actionId of [1, 2, 3]) {
+    const bodies = buildHandleActionBodies(form, {
+      cartToken: guid,
+      shippingMethodId,
+      paymentMethodId: form.selectedPaymentMethodId || "1",
+    });
+    const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
+    const ha = await httpText(haUrl, {
+      ctx,
+      method: "POST",
+      userAgent: opts.userAgent,
+      accept: "application/json, text/plain, */*",
+      headers: {
+        origin: BANDAI_GE_WEBSERVICES,
+        referer: v2Url,
+        "content-type": "application/json",
+        "x-requested-with": "XMLHttpRequest",
+        "X-merchantId": String(mid),
+      },
+      body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
+    });
+    let haJson = null;
+    try {
+      haJson = JSON.parse(String(ha.text || ""));
+    } catch {
+      haJson = null;
     }
-    if (skipHandleActionsAfter1) {
-      push("ge_handleaction_2_3_skipped", {
-        ok: true,
-        note: "TEST — handleaction 2/3 skipped (kept 1 for shipping)",
-      });
+    if (actionId === 1) {
+      const picked = pickShippingMethodId(haJson);
+      if (picked) shippingMethodId = picked;
+      hydrateShippingOk = Boolean(
+        ha.ok &&
+          (haJson?.success === true ||
+            haJson?.Success === true ||
+            haJson?.exists === true ||
+            (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
+      );
     }
-  } else {
-    hydrateShippingOk = true;
-    push("ge_handleaction_skipped", {
-      ok: true,
-      note: "TEST — no handleaction 1..3",
+    if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
+    push(`ge_handleaction_${actionId}`, {
+      ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
+      status: ha.status,
+      ms: ha.ms,
+      note: (
+        actionId === 1
+          ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} addr=${form.hasAddress} state=${form.shipping?.StateId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
+          : String(ha.text || "").replace(/\s+/g, " ")
+      ).slice(0, 200),
     });
   }
 
@@ -1987,10 +1930,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
 
   // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
-  let saveOk = skipCheckoutSave;
-  let saveJson = null;
-  let saveRes = null;
-  if (!skipCheckoutSave) {
   const saveBody = buildCheckoutSaveBody(form, {
     cartToken: guid,
     shippingMethodId,
@@ -2003,7 +1942,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ? form.selectedTaxOption
       : "",
   });
-  saveRes = await httpText(
+  const saveRes = await httpText(
     `${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`,
     {
       ctx,
@@ -2020,6 +1959,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
       body: saveBody,
     },
   ).catch((e) => ({ ok: false, status: 0, ms: 0, text: "", error: e?.message }));
+  let saveOk = false;
+  let saveJson = null;
   try {
     saveJson = JSON.parse(String(saveRes?.text || ""));
     saveOk = Boolean(saveRes?.ok && (saveJson?.Success === true || saveJson?.success === true));
@@ -2061,12 +2002,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
       elapsedMs,
       note: `GE SaveForm failed — refuse issuer (avoids DataCorruption). state=${form.shipping?.StateId || form.billing?.StateId || "none"} ${errBlob.replace(/\s+/g, " ").slice(0, 220)}`,
     };
-  }
-  } else {
-    push("ge_checkout_save", {
-      ok: true,
-      note: "TEST — save skipped",
-    });
   }
 
   // Path segment = gatewayId (GEM ShowCCForm / secureFrameURL+"/"+currentGatewayID).
@@ -2666,7 +2601,6 @@ export default {
   postBandaiGeIssuerViaPage,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
-  runBandaiGeHttpPayTest: runBandaiGeHttpPay,
   buildBandaiGeTiming,
   BANDAI_GE_MID,
   BANDAI_GE_ENCODED_MERCHANT,
