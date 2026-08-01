@@ -1,10 +1,15 @@
 /**
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
- * Keep near-identical to production Fast; one lab delta at a time.
+ * Near-copy of production Fast; one lab delta at a time.
  *
- * Diagnostic delta: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 stops after hydrate/save/CC
- * form (no HandleCreditCard). Used to see if Revolut moves before issuer.
+ * Proven: stop-before-issuer → no Revolut. Dual is armed by undici hydrate then
+ * fired by one HandleCreditCard.
  *
+ * Current delta: BANDAI_GE_TEST_SKIP_HYDRATE_MUTATIONS=1 skips handleaction 1..3
+ * + checkoutv2/save, then still does CreditCardForm + issuer — tests whether
+ * those mutating hydrate steps are what arms the double auth.
+ *
+ * Also: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 (hydrate only, no issuer).
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
@@ -1484,6 +1489,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const steps = [];
   const timeline = [];
   const t0 = Date.now();
+  try {
+    console.log(
+      "[bandai-ge-http-TEST] experimental Autocheckout test fork — production bandai-ge-http.js untouched",
+    );
+  } catch {
+    /* ignore */
+  }
   const mark = (event, extra = {}) => {
     const row = { t: new Date().toISOString(), elapsedMs: Date.now() - t0, event, ...extra };
     timeline.push(row);
@@ -1507,8 +1519,28 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const area = opts.area || "au";
   const encodedMerchant = opts.encodedMerchantId || BANDAI_GE_ENCODED_MERCHANT;
   const mid = opts.merchantId || BANDAI_GE_MID;
-  const stopBeforeIssuer = opts.stopBeforeIssuer === true;
+  const stopBeforeIssuer =
+    opts.stopBeforeIssuer === true || process.env.BANDAI_GE_TEST_STOP_BEFORE_ISSUER === "1";
   const forceIssuer = opts.forceIssuer === true;
+  const skipHydrateMutations =
+    opts.skipHydrateMutations === true ||
+    process.env.BANDAI_GE_TEST_SKIP_HYDRATE_MUTATIONS === "1";
+  if (stopBeforeIssuer) {
+    try {
+      console.log("[bandai-ge-http-TEST] STOP_BEFORE_ISSUER — hydrate only, no HandleCreditCard");
+    } catch {
+      /* ignore */
+    }
+  }
+  if (skipHydrateMutations) {
+    try {
+      console.log(
+        "[bandai-ge-http-TEST] SKIP_HYDRATE_MUTATIONS — no handleaction/save; CC form+issuer only",
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!merchantCartToken) {
     return {
@@ -1850,6 +1882,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
   // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
+  // TEST: skipHydrateMutations omits these POSTs (dual-auth arming suspect).
+  if (!skipHydrateMutations) {
   for (const actionId of [1, 2, 3]) {
     const bodies = buildHandleActionBodies(form, {
       cartToken: guid,
@@ -1900,6 +1934,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ).slice(0, 200),
     });
   }
+  } else {
+    hydrateShippingOk = true;
+    push("ge_handleaction_skipped", {
+      ok: true,
+      note: "TEST skipHydrateMutations — no handleaction 1..3",
+    });
+  }
 
   // Block browser/iframe issuer if page was explicitly kept (labs only).
   let browserIssuerBlock = { blocked: 0, unroute: async () => {} };
@@ -1920,6 +1961,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
   let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
 
   // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
+  let saveOk = skipHydrateMutations;
+  let saveJson = null;
+  let saveRes = null;
+  if (!skipHydrateMutations) {
   const saveBody = buildCheckoutSaveBody(form, {
     cartToken: guid,
     shippingMethodId,
@@ -1932,7 +1977,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ? form.selectedTaxOption
       : "",
   });
-  const saveRes = await httpText(
+  saveRes = await httpText(
     `${BANDAI_GE_WEBSERVICES}/checkoutv2/save/${encodedMerchant}/${guid}`,
     {
       ctx,
@@ -1949,8 +1994,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
       body: saveBody,
     },
   ).catch((e) => ({ ok: false, status: 0, ms: 0, text: "", error: e?.message }));
-  let saveOk = false;
-  let saveJson = null;
   try {
     saveJson = JSON.parse(String(saveRes?.text || ""));
     saveOk = Boolean(saveRes?.ok && (saveJson?.Success === true || saveJson?.success === true));
@@ -1992,6 +2035,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
       elapsedMs,
       note: `GE SaveForm failed — refuse issuer (avoids DataCorruption). state=${form.shipping?.StateId || form.billing?.StateId || "none"} ${errBlob.replace(/\s+/g, " ").slice(0, 220)}`,
     };
+  }
+  } else {
+    push("ge_checkout_save", {
+      ok: true,
+      note: "TEST skipHydrateMutations — save skipped",
+    });
   }
 
   // Path segment = gatewayId (GEM ShowCCForm / secureFrameURL+"/"+currentGatewayID).
@@ -2591,7 +2640,10 @@ export default {
   postBandaiGeIssuerViaPage,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
+  runBandaiGeHttpPayTest: runBandaiGeHttpPay,
   buildBandaiGeTiming,
   BANDAI_GE_MID,
   BANDAI_GE_ENCODED_MERCHANT,
 };
+
+export { runBandaiGeHttpPay as runBandaiGeHttpPayTest };
