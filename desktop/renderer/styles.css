@@ -483,6 +483,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .webhook-row { align-items: center; }
 .webhook-row input { flex: 1; min-width: 0; }
+.discord-field-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 8px 0 4px;
+}
+.discord-field-toggles label.check {
+  font-size: 0.8rem;
+  color: var(--muted, #9a9aa0);
+}
 
 .log {
   font-family: var(--mono);

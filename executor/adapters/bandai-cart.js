@@ -3,6 +3,8 @@
 /** Walk Bandai cart.detail — lines live under subCarts[].combinedShippings[].lineItems[]. */
 export function findCartLine(cartJson, areaItemNo) {
   const want = areaItemNo != null && String(areaItemNo).trim() ? String(areaItemNo).trim() : null;
+  // Never treat "no id" as match-first-line — that hijacks stale carts for other SKUs.
+  if (!want) return null;
   const subs = Array.isArray(cartJson?.subCarts) ? cartJson.subCarts : [];
   for (const sc of subs) {
     const nested = [];
@@ -26,8 +28,7 @@ export function findCartLine(cartJson, areaItemNo) {
       ]
         .filter(Boolean)
         .map(String);
-      if (want && !ids.some((id) => id === want)) continue;
-      if (!want && !ids.length) continue;
+      if (!ids.some((id) => id === want)) continue;
       return {
         cartSn: sc.cartSn,
         cartId: sc.cartId,

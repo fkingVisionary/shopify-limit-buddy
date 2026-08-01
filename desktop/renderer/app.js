@@ -566,10 +566,24 @@ function refreshTaskGroupList() {
 }
 
 function taskStoreLabel(t) {
-  if (t.store === "toymate") return `Toymate · ${t.toymateMode || "checkout"}`;
+  if (t.store === "toymate") {
+    const mode = String(t.toymateMode || "checkout");
+    const modeLabel =
+      mode === "account_gen" ? "Account gen" : mode === "monitor" ? "Monitor" : "Autocheckout";
+    return `Toymate · ${modeLabel}`;
+  }
   if (t.store === "bandai") {
     const mode = String(t.bandaiMode || "checkout");
-    const modeLabel = mode === "atc" ? "ATC only" : mode;
+    const modeLabel =
+      mode === "atc"
+        ? "ATC only"
+        : mode === "monitor"
+          ? "Monitor"
+          : mode === "account_gen"
+            ? "Account gen"
+            : mode === "login_check"
+              ? "Login check"
+              : "Autocheckout";
     const speed =
       mode === "checkout" || mode === "atc" ? ` · ${t.bandaiCheckoutMode || "fast"}` : "";
     const wd =
@@ -580,8 +594,22 @@ function taskStoreLabel(t) {
         : "";
     return `Bandai · ${modeLabel}${speed}${wd}`;
   }
-  if (t.store === "pokemoncentre") return `Pokémon Centre · ${t.pcMode || "monitor"}`;
+  if (t.store === "pokemoncentre") {
+    const mode = String(t.pcMode || "monitor");
+    const modeLabel = mode === "checkout" ? "Autocheckout" : mode.charAt(0).toUpperCase() + mode.slice(1);
+    return `Pokémon Centre · ${modeLabel}`;
+  }
   return t.store || "Store";
+}
+
+function taskProductSubline(t) {
+  const sku = String(t.bandaiWatchSku || t.productId || t.sku || "").trim();
+  if (sku && !/^https?:\/\//i.test(sku)) return sku;
+  const url = String(t.pdpUrl || "").trim();
+  if (!url) return t.lastDropSummary || "";
+  const m = url.match(/\/item\/([A-Za-z0-9_-]+)/i);
+  if (m?.[1]) return m[1];
+  return url.length > 64 ? `${url.slice(0, 64)}…` : url;
 }
 
 function formatCartHoldCountdown(ms) {
@@ -627,7 +655,19 @@ function tickHeldCartCountdowns() {
 function taskStatusBadge(t) {
   const s = t.lastStatus;
   if (s === "confirmed" || s === "complete" || s === "ok" || s === "login_ok") return "ok";
-  if (s === "held_pay_retry" || s === "cart_held" || s === "queued") return "run";
+  if (
+    s === "held_pay_retry" ||
+    s === "cart_held" ||
+    s === "queued" ||
+    s === "running" ||
+    s === "rotating" ||
+    s === "retry_pay" ||
+    s === "retry_atc" ||
+    s === "retry" ||
+    s === "waiting_restock"
+  ) {
+    return "run";
+  }
   if (s === "limit_reached") return "warn";
   if (
     s === "failed" ||
@@ -732,7 +772,7 @@ function renderTasks() {
         <td class="col-check"><input type="checkbox" class="toggle" data-toggle-task="${t.id}" ${t.enabled !== false ? "checked" : ""} title="Enabled" /></td>
         <td>
           <div class="task-name">${esc(t.label || "Task")} ${groupChip}</div>
-          <div class="task-sub">${esc((t.pdpUrl || "").slice(0, 64))}${t.lastDropSummary ? ` · ${esc(t.lastDropSummary)}` : ""}</div>
+          <div class="task-sub">${esc(taskProductSubline(t))}${t.lastDropSummary && !String(taskProductSubline(t)).includes(String(t.lastDropSummary)) ? ` · ${esc(t.lastDropSummary)}` : ""}</div>
         </td>
         <td>${esc(taskStoreLabel(t))}</td>
         <td>${esc(prof?.name || prof?.email || "—")}</td>
@@ -1665,6 +1705,27 @@ function renderResults() {
     .join("");
 }
 
+function syncDiscordEmbedFieldToggles(fields) {
+  const root = $("discordFieldToggles");
+  if (!root) return;
+  const f = fields && typeof fields === "object" ? fields : {};
+  for (const input of root.querySelectorAll("input[data-embed-field]")) {
+    const key = input.getAttribute("data-embed-field");
+    input.checked = f[key] !== false;
+  }
+}
+
+function readDiscordEmbedFieldsFromForm() {
+  const root = $("discordFieldToggles");
+  const out = {};
+  if (!root) return out;
+  for (const input of root.querySelectorAll("input[data-embed-field]")) {
+    const key = input.getAttribute("data-embed-field");
+    if (key) out[key] = Boolean(input.checked);
+  }
+  return out;
+}
+
 function renderSettings() {
   const s = state.settings || {};
   $("setApiKey").value = s.apiKey || "";
@@ -1690,7 +1751,9 @@ function renderSettings() {
   if ($("setDiscordFail")) $("setDiscordFail").value = s.discordFailWebhook || "";
   if ($("setDiscord3ds")) $("setDiscord3ds").value = s.discord3dsWebhook || "";
   if ($("setDiscordMonitor")) $("setDiscordMonitor").value = s.discordMonitorWebhook || "";
+  syncDiscordEmbedFieldToggles(s.discordEmbedFields);
   if ($("setSuccessAlert")) $("setSuccessAlert").checked = s.successAlertEnabled !== false;
+  if ($("setDetailedLogs")) $("setDetailedLogs").checked = s.detailedLogs !== false;
   // Legacy single field if still present in DOM
   if ($("setDiscordWebhook")) $("setDiscordWebhook").value = successHook;
   fillQuickTaskPresetSelects();
@@ -3303,7 +3366,9 @@ $("btnSaveSettings").onclick = async () => {
     discordFailWebhook: $("setDiscordFail")?.value?.trim() || "",
     discord3dsWebhook: $("setDiscord3ds")?.value?.trim() || "",
     discordMonitorWebhook: $("setDiscordMonitor")?.value?.trim() || "",
+    discordEmbedFields: readDiscordEmbedFieldsFromForm(),
     successAlertEnabled: $("setSuccessAlert")?.checked !== false,
+    detailedLogs: $("setDetailedLogs")?.checked !== false,
     quickTaskPreset: readQuickTaskPresetFromForm(),
   };
   // Never wipe baked-in secrets from empty hidden fields.
@@ -4337,8 +4402,8 @@ function renderSaActionsEditor() {
           )}" placeholder="optional — tag created tasks" />
           <label>Task name</label>
           <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(
-            cfg.labelTemplate || "{{title}}",
-          )}" placeholder="e.g. {{title}} or Drop A — Gundam" />
+            cfg.labelTemplate || "{{sku}} · {{title}}",
+          )}" placeholder="e.g. {{sku}} · {{title}}" />
           <div class="grid2">
             <div>
               <label>Count</label>
@@ -4538,7 +4603,7 @@ function openSaEditor(action) {
           config: {
             usePreset: true,
             bandaiMode: "checkout",
-            labelTemplate: "{{title}}",
+            labelTemplate: "{{sku}} · {{title}}",
             count: 1,
             qty: 1,
             taskGroup: "",
@@ -4837,14 +4902,43 @@ window.desktop.onEvent((evt) => {
       engineUi();
     }
   }
+  if (evt.type === "taskStatus" && evt.taskId && state?.tasks) {
+    const t = state.tasks.find((x) => x.id === evt.taskId);
+    if (t) {
+      t.lastStatus = evt.lastStatus || t.lastStatus;
+      t.lastLabel = evt.lastLabel || t.lastLabel;
+      if (document.querySelector("#tab-tasks.panel.active, #tab-tasks:not([hidden])") || true) {
+        renderTasks();
+      }
+    }
+  }
   if (evt.type === "job") {
     if (evt.phase === "start") {
       appendLog(`${esc(evt.label || evt.runId)} — Starting`, "muted");
+      patchTaskLiveStatus(evt.taskId, "running", evt.consumerLabel || "Starting");
+    } else if (evt.phase === "status") {
+      patchTaskLiveStatus(
+        evt.taskId,
+        evt.lastStatus || "running",
+        evt.consumerLabel || evt.lastLabel || "Starting",
+      );
     } else if (evt.phase === "log") {
-      const cls = evt.level === "err" ? "err" : evt.level === "ok" ? "ok" : "muted";
-      appendLog(esc(evt.message || ""), cls);
+      const msg = String(evt.message || "");
+      // Belt-and-suspenders: hide recipe/debug lines when detailed diagnostics is off.
+      if (
+        state?.settings?.detailedLogs === false &&
+        /^(failedStep=|detail:|MATCH |LOCAL |global poll |local poll |Bandai monitor mode=|Subscribed watch |Backend PID |Bandai policy )/i.test(
+          msg,
+        )
+      ) {
+        /* skip */
+      } else {
+        const cls = evt.level === "err" ? "err" : evt.level === "ok" ? "ok" : "muted";
+        appendLog(esc(msg), cls);
+      }
     } else if (evt.phase === "progress") {
       const line = evt.consumerLabel || evt.message || evt.progress?.label || "Starting";
+      patchTaskLiveStatus(evt.taskId, "running", line);
       appendLog(esc(line), "muted");
     } else if (evt.phase === "done") {
       const label =
@@ -4855,6 +4949,15 @@ window.desktop.onEvent((evt) => {
     }
   }
 });
+
+function patchTaskLiveStatus(taskId, lastStatus, lastLabel) {
+  if (!taskId || !state?.tasks) return;
+  const t = state.tasks.find((x) => x.id === taskId);
+  if (!t) return;
+  t.lastStatus = lastStatus || "running";
+  t.lastLabel = lastLabel || t.lastLabel;
+  renderTasks();
+}
 
 wireWindowControls();
 tickClock();

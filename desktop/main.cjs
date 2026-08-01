@@ -7,14 +7,27 @@ const path = require("path");
 const os = require("os");
 const fs = require("fs");
 
-// Isolated profile for DESKTOP_FEATURE_SMOKE (must run before store.loadAll).
-if (process.env.DESKTOP_FEATURE_SMOKE === "1") {
+// Isolated profile for smoke / live-status demo (must run before store.loadAll).
+if (
+  process.env.DESKTOP_FEATURE_SMOKE === "1" ||
+  process.env.DESKTOP_LIVE_STATUS_DEMO === "1"
+) {
   const smokeDir =
     process.env.DESKTOP_SMOKE_DIR ||
-    path.join(os.tmpdir(), `j1ms-feature-smoke-${Date.now()}`);
+    process.env.DESKTOP_DEMO_DIR ||
+    path.join(
+      os.tmpdir(),
+      process.env.DESKTOP_LIVE_STATUS_DEMO === "1"
+        ? `j1ms-live-status-${Date.now()}`
+        : `j1ms-feature-smoke-${Date.now()}`,
+    );
   fs.mkdirSync(smokeDir, { recursive: true });
   app.setPath("userData", smokeDir);
-  console.log("[feature-smoke] userData →", smokeDir);
+  console.log(
+    process.env.DESKTOP_LIVE_STATUS_DEMO === "1" ? "[live-status-demo]" : "[feature-smoke]",
+    "userData →",
+    smokeDir,
+  );
 }
 
 const store = require("./store.cjs");
@@ -71,9 +84,17 @@ const {
 const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 const { appendMonitorEvent, readMonitorEvents } = require("./monitor-event-log.cjs");
 const { appendCheckoutRun, readCheckoutRuns } = require("./checkout-run-log.cjs");
-const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
+const {
+  postDiscordWebhook,
+  checkoutResultDiscordPayload,
+  publicCheckoutWinReport,
+  resolveDiscordWebhookUrl,
+  classifyCheckoutDiscordKind,
+  normalizeEmbedFields,
+} = require("./discord-webhook.cjs");
 const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
+const { resolveTaskLabel } = require("./task-label.cjs");
 const {
   defaultCatalogState,
   normalizeCatalogState,
@@ -159,6 +180,8 @@ if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "obje
   state.db.smartActionCatalog = normalizeCatalogState(state.db.smartActionCatalog);
 }
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+if (state.settings.detailedLogs == null) state.settings.detailedLogs = true;
+runner.configure({ detailedLogs: state.settings.detailedLogs !== false });
 if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
   state.db.taskGroupColors = {};
 }
@@ -631,25 +654,71 @@ function persistSettings() {
 }
 
 /**
- * User Discord webhooks — route success / fail / 3DS.
- * Global restock pings stay on the operator Railway webhook.
+ * User Discord webhooks — route success / fail(decline) / 3DS.
+ * Public checkout feed is reported separately to Railway (no PII).
  */
 async function notifyUserCheckoutDiscord(result) {
   const kind = classifyCheckoutDiscordKind(result);
   if (kind === "skip") return;
   const url = resolveDiscordWebhookUrl(state.settings, kind);
-  if (!url) return;
   const task = (state.db.tasks || []).find((t) => t.id === result.taskId);
   const storeId = task?.store || result.store || "checkout";
+  const profile = (state.db.profiles || []).find((p) => p.id === task?.profileId);
+  if (url) {
+    try {
+      const payload = checkoutResultDiscordPayload(result, {
+        store: storeId,
+        label: task?.label || result.taskId,
+        kind,
+        profileName: profile?.name || profile?.label || null,
+        mode: task?.bandaiCheckoutMode || task?.bandaiMode || task?.toymateMode,
+        qty: task?.qty,
+        pdpUrl: task?.pdpUrl,
+        sku: task?.bandaiWatchSku,
+        proxy: result.proxyHost || null,
+        embedFields: normalizeEmbedFields(state.settings.discordEmbedFields),
+        source: result.source || "Desktop",
+      });
+      await postDiscordWebhook(url, payload);
+    } catch {
+      /* ignore webhook errors */
+    }
+  }
+  // Public feed — only confirmed orders; webhook URL never leaves the monitor host.
+  if (kind === "success" && result.orderNumber) {
+    void reportPublicCheckoutWin(result, task);
+  }
+}
+
+async function reportPublicCheckoutWin(result, task) {
   try {
-    const payload = checkoutResultDiscordPayload(result, {
-      store: storeId,
-      label: task?.label || result.taskId,
-      kind,
+    const base = String(
+      state.settings.bandaiGlobalMonitorUrl ||
+        "https://j1ms-bandai-monitor-production.up.railway.app",
+    )
+      .trim()
+      .replace(/\/+$/, "");
+    if (!base) return;
+    const body = publicCheckoutWinReport(result, {
+      store: task?.store || result.store,
+      label: task?.label || result.taskLabel,
+      sku: task?.bandaiWatchSku || result.productCode,
+      pdpUrl: task?.pdpUrl || result.pdpUrl,
+      mode: task?.bandaiCheckoutMode || task?.bandaiMode || "Checkout",
+      areaItemNo: result.areaItemNo || task?.bandaiAreaItemNo,
     });
-    await postDiscordWebhook(url, payload);
+    const token = String(state.settings.bandaiGlobalMonitorToken || "").trim();
+    await fetch(`${base}/checkout-win`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(12_000),
+    });
   } catch {
-    /* ignore webhook errors */
+    /* ignore — public feed is best-effort */
   }
 }
 
@@ -994,7 +1063,34 @@ ipcMain.handle("desktop:window-close", () => {
 });
 ipcMain.handle("desktop:window-is-maximized", () => Boolean(win?.isMaximized()));
 
-runner.setEmitter((evt) => send(evt));
+runner.setEmitter((evt) => {
+  // Live status → task row badge (Logging in / Rotating proxy / …).
+  if (
+    evt?.type === "job" &&
+    evt.taskId &&
+    (evt.phase === "start" || evt.phase === "status" || evt.phase === "progress")
+  ) {
+    const t = state.db.tasks.find((x) => x.id === evt.taskId);
+    if (t) {
+      const label =
+        evt.consumerLabel ||
+        evt.lastLabel ||
+        (evt.phase === "start" ? "Starting" : null);
+      if (label) {
+        t.lastStatus = evt.lastStatus || "running";
+        t.lastLabel = String(label);
+        t.updatedAt = Date.now();
+        send({
+          type: "taskStatus",
+          taskId: t.id,
+          lastStatus: t.lastStatus,
+          lastLabel: t.lastLabel,
+        });
+      }
+    }
+  }
+  send(evt);
+});
 runner.setFinishedHandler((result) => {
   // Keep step tail for Results UI (same info the web dashboard surfaces).
   state.db.results.unshift({
@@ -1214,6 +1310,7 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = next;
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   persistSettings();
@@ -1276,6 +1373,7 @@ async function bootEngine() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   wireProductCacheIntoRunner();
@@ -1697,7 +1795,12 @@ function upsertTaskRow(task) {
   const row = {
     id: task.id || store.id("task"),
     store: storeId,
-    label: String(task.label || "").slice(0, 120),
+    label: resolveTaskLabel({
+      ...task,
+      store: storeId,
+      // Prefer PDP / watch fields already on the draft for empty labels.
+      title: task.title || task.productName || task.label,
+    }),
     taskGroup: String(task.taskGroup || "").trim().slice(0, 80),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
@@ -1815,8 +1918,23 @@ function upsertTaskRow(task) {
     updatedAt: now,
   };
   const i = state.db.tasks.findIndex((t) => t.id === row.id);
-  if (i >= 0) state.db.tasks[i] = { ...state.db.tasks[i], ...row };
-  else state.db.tasks.push({ ...row, createdAt: now, lastStatus: "idle" });
+  if (i >= 0) {
+    const prev = state.db.tasks[i];
+    const prevSku = String(prev.bandaiWatchSku || prev.pdpUrl || "")
+      .match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1]
+      ?.toUpperCase();
+    const nextSku = String(row.bandaiWatchSku || row.pdpUrl || "")
+      .match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1]
+      ?.toUpperCase();
+    // New SKU / PDP → drop stale held cart + NAI from the previous product.
+    if (prevSku && nextSku && prevSku !== nextSku) {
+      row.heldCart = null;
+      row.bandaiAreaItemNo = undefined;
+    }
+    state.db.tasks[i] = { ...prev, ...row };
+  } else {
+    state.db.tasks.push({ ...row, createdAt: now, lastStatus: "idle" });
+  }
   persistDb();
   return state.db.tasks.find((t) => t.id === row.id);
 }
@@ -2231,20 +2349,54 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
   if (!url) {
     return { ok: false, error: `No webhook configured for ${kind}` };
   }
-  const colors = { success: 0x8a9a8a, fail: 0xb07070, threeds: 0xc4b08a, monitor: 0x9098a8 };
-  const payload = {
-    username: "Vanta",
-    embeds: [
-      {
-        title: `Webhook test · ${kind}`,
-        description: "Desktop Settings ping — routing works if you see this.",
-        color: colors[kind] || 0xc8c8cc,
-        fields: [{ name: "Route", value: kind, inline: true }],
-        timestamp: new Date().toISOString(),
-        footer: { text: "Vanta · desktop" },
-      },
-    ],
-  };
+  const fields = normalizeEmbedFields(state.settings.discordEmbedFields);
+  let payload;
+  if (kind === "monitor") {
+    payload = {
+      username: "Vanta",
+      embeds: [
+        {
+          title: "Smart Action completed!",
+          description: "Your Smart Action was triggered and ran successfully",
+          color: 0x3b82f6,
+          fields: [
+            { name: "Trigger", value: "Webhook test", inline: false },
+            { name: "Actions", value: "Notify Discord", inline: false },
+          ],
+          footer: { text: "Vanta" },
+          timestamp: new Date().toISOString(),
+        },
+      ],
+    };
+  } else {
+    const sample =
+      kind === "success"
+        ? {
+            ok: true,
+            orderNumber: "TEST-ORDER",
+            account: { email: "test@example.com" },
+            profileName: "Test Profile",
+            price: "99.00",
+          }
+        : kind === "threeds"
+          ? { ok: false, checkoutStage: "threeds", consumerLabel: "Waiting for bank approval" }
+          : {
+              ok: false,
+              paymentStatus: "declined",
+              consumerLabel: "Payment declined",
+              consumerCode: "declined",
+            };
+    payload = checkoutResultDiscordPayload(sample, {
+      store: "bandai",
+      label: "Webhook test product",
+      kind,
+      profileName: "Test Profile",
+      mode: "Checkout",
+      embedFields: fields,
+      source: "Settings test",
+      proxy: "1.2.3.4:12323",
+    });
+  }
   const res = await postDiscordWebhook(url, payload);
   return { ...res, kind, urlHost: (() => { try { return new URL(url).host; } catch { return ""; } })() };
 });
@@ -2521,6 +2673,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       continue;
     }
     task.lastStatus = "queued";
+    task.lastLabel = "Queued";
     task.updatedAt = Date.now();
   }
   // Monitor → checkout: arm Bandai F5 harvest at enqueue (claim still at restock).
@@ -2778,7 +2931,8 @@ async function runQuickTaskPayload(payload = {}) {
   }
 
   const built = buildQuickTaskDraft(preset, target, {
-    label: payload.label || target.title || target.productId,
+    // Only pass an explicit custom label — otherwise defaultTaskLabel builds SKU · title.
+    label: payload.label || "",
   });
   if (!built.ok) {
     return { ok: false, error: built.error, snapshot: snapshot() };
@@ -3270,7 +3424,7 @@ ipcMain.handle("desktop:smart-action-from-hit", (_e, hit = {}) => {
             usePreset: true,
             store: "bandai",
             bandaiMode: "checkout",
-            labelTemplate: "{{title}}",
+            labelTemplate: "{{sku}} · {{title}}",
             count: 1,
           },
         },
@@ -3584,8 +3738,11 @@ async function e2eAutorun() {
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
     let hyper = String(state.settings.hyperApiKey || "").trim();
     const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    // Bandai F5 checkout does not need Hyper/CapSolver — match bootEngine.
     if (!hyper && !capsolver) {
-      return { ok: false, error: "Need Hyper and/or CapSolver in Settings" };
+      console.log(
+        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney need keys",
+      );
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,
@@ -3604,6 +3761,7 @@ async function e2eAutorun() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   runner.start();
@@ -3768,7 +3926,27 @@ async function e2eAutorun() {
       };
       require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
       console.log("[e2e] wrote", outPath, "ok=", payload.ok, "bankHit=", bankHit);
-      setTimeout(() => app.quit(), 500);
+      // Best-effort Tasks screenshot before quit (for cloud/agent proof).
+      void (async () => {
+        try {
+          if (win) {
+            await win.webContents.executeJavaScript(
+              `document.querySelector('[data-tab="tasks"]')?.click(); true`,
+            );
+            await new Promise((r) => setTimeout(r, 400));
+            const shotDir = path.dirname(outPath);
+            fs.mkdirSync(shotDir, { recursive: true });
+            const png = await win.capturePage();
+            const shotPath = path.join(shotDir, "e2e-tasks-final.png");
+            fs.writeFileSync(shotPath, png.toPNG());
+            console.log("[e2e] screenshot", shotPath);
+          }
+        } catch (e) {
+          console.warn("[e2e] screenshot failed", e?.message || e);
+        } finally {
+          setTimeout(() => app.quit(), 300);
+        }
+      })();
     }
   });
 
@@ -3786,6 +3964,7 @@ async function e2eAutorun() {
 app.whenReady().then(async () => {
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
 
@@ -3849,6 +4028,13 @@ app.whenReady().then(async () => {
     setTimeout(() => {
       void featureSmokeToday();
     }, 2500);
+  } else if (process.env.DESKTOP_LIVE_STATUS_DEMO === "1") {
+    setTimeout(() => {
+      void liveStatusDemo().catch((e) => {
+        console.error("[live-status-demo] fatal", e);
+        app.quit();
+      });
+    }, 2000);
   } else if (process.env.DESKTOP_E2E_AUTORUN === "1") {
     try {
       await e2eAutorun();
@@ -3858,6 +4044,148 @@ app.whenReady().then(async () => {
     }
   }
 });
+
+/**
+ * DESKTOP_LIVE_STATUS_DEMO=1 — drive live task-row statuses + PNG screenshots, then quit.
+ * Does not place orders; exercises UI + emitter path only.
+ */
+async function liveStatusDemo() {
+  const outDir =
+    process.env.DESKTOP_DEMO_OUT ||
+    (fs.existsSync("/opt/cursor/artifacts")
+      ? "/opt/cursor/artifacts/bandai-live-status"
+      : path.join(app.getPath("userData"), "live-status-demo"));
+  fs.mkdirSync(outDir, { recursive: true });
+  console.log("[live-status-demo] out →", outDir);
+
+  // Seed a Bandai Autocheckout task for the Tasks table.
+  const demoTask = upsertTaskRow({
+    store: "bandai",
+    label: "N2847890001 · Demo Gundam",
+    bandaiWatchSku: "N2847890001",
+    bandaiMode: "checkout",
+    bandaiCheckoutMode: "fast",
+    pdpUrl: "https://p-bandai.com/au/item/N2847890001",
+    qty: 1,
+    quantity: 1,
+    placeOrder: false,
+    enabled: true,
+  });
+  send({ type: "snapshot", data: snapshot() });
+
+  // Open Tasks tab.
+  for (let i = 0; i < 20 && !win; i++) await new Promise((r) => setTimeout(r, 200));
+  if (!win) throw new Error("no window");
+  await win.webContents.executeJavaScript(
+    `document.querySelector('[data-tab="tasks"]')?.click(); true`,
+  );
+  await new Promise((r) => setTimeout(r, 400));
+
+  const frames = [
+    { status: "queued", label: "Queued" },
+    { status: "running", label: "Starting" },
+    { status: "running", label: "Logging in" },
+    { status: "running", label: "Loading product" },
+    { status: "running", label: "Adding to cart" },
+    { status: "running", label: "Checking out" },
+    { status: "rotating", label: "Rotating proxy" },
+    { status: "retry_atc", label: "Retrying ATC" },
+    { status: "retry_pay", label: "Retrying pay" },
+    { status: "waiting_restock", label: "Waiting for restock" },
+    { status: "waiting_restock", label: "Out of stock — waiting" },
+    { status: "declined", label: "Payment declined" },
+  ];
+
+  const saved = [];
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    // Same path as real job-runner live status.
+    send({
+      type: "job",
+      phase: "status",
+      taskId: demoTask.id,
+      consumerLabel: f.label,
+      lastLabel: f.label,
+      lastStatus: f.status,
+    });
+    send({
+      type: "taskStatus",
+      taskId: demoTask.id,
+      lastStatus: f.status,
+      lastLabel: f.label,
+    });
+    const t = state.db.tasks.find((x) => x.id === demoTask.id);
+    if (t) {
+      t.lastStatus = f.status;
+      t.lastLabel = f.label;
+    }
+    await new Promise((r) => setTimeout(r, 350));
+    const png = await win.capturePage();
+    const name = `${String(i + 1).padStart(2, "0")}-${f.label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")}.png`;
+    const file = path.join(outDir, name);
+    fs.writeFileSync(file, png.toPNG());
+    saved.push(file);
+    console.log("[live-status-demo] shot", name);
+  }
+
+  // Policy sanity board (text artifact).
+  const {
+    classifyBandaiRunResult,
+  } = require("./bandai-retry-policy.cjs");
+  const policyBoard = [
+    {
+      name: "403 SoftBlock",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "login",
+        debugError: "SoftBlock 403",
+      }),
+    },
+    {
+      name: "soft pay process",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "ge_payment",
+        debugError: "failed to process payment — try again",
+        cartSn: 1,
+        cartItemSn: 2,
+        heldPayRetry: true,
+        heldCart: { cartSn: 1, cartItemSn: 2 },
+      }),
+    },
+    {
+      name: "hard decline",
+      d: classifyBandaiRunResult({
+        ok: false,
+        failedStep: "ge_payment",
+        debugError: "do not honor",
+        paymentStatus: "declined",
+      }),
+    },
+    {
+      name: "OOS",
+      d: classifyBandaiRunResult(
+        { ok: false, failedStep: "addToCart", debugError: "SoldOut" },
+        { mode: "checkout" },
+      ),
+    },
+  ].map((r) => ({
+    case: r.name,
+    action: r.d.action,
+    liveLabel: r.d.liveLabel,
+    reason: r.d.reason,
+  }));
+  fs.writeFileSync(
+    path.join(outDir, "policy-board.json"),
+    JSON.stringify({ ok: true, taskId: demoTask.id, frames: saved, policyBoard }, null, 2),
+  );
+
+  console.log("[live-status-demo] done", saved.length, "shots");
+  app.quit();
+}
 
 if (gotLock) {
   app.on("second-instance", (_event, argv) => {

@@ -131,7 +131,7 @@ const DEFAULT_TEMPLATES = [
       { field: "sku", op: "matches", value: "{{sku}}" },
     ],
     actions: [
-      { type: "create_tasks", config: checkoutCreateConfig("{{title}}") },
+      { type: "create_tasks", config: checkoutCreateConfig("{{sku}} · {{title}}") },
       { type: "goto_task_group", config: { taskGroup: "{{taskGroup}}" } },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
       {
@@ -173,7 +173,7 @@ const DEFAULT_TEMPLATES = [
       { type: "wait", config: { delaySec: 1800 } },
       {
         type: "create_tasks",
-        config: checkoutCreateConfig("{{title}} +30m"),
+        config: checkoutCreateConfig("{{sku}} · +30m"),
       },
       { type: "goto_task_group", config: { taskGroup: "{{taskGroup}}" } },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
@@ -211,7 +211,7 @@ const DEFAULT_TEMPLATES = [
           usePreset: true,
           store: "{{store}}",
           bandaiMode: "monitor",
-          labelTemplate: "Watch {{title}}",
+          labelTemplate: "Watch · {{sku}}",
           count: 1,
           qty: 1,
           taskGroup: "{{taskGroup}}",
@@ -241,7 +241,7 @@ const DEFAULT_TEMPLATES = [
       { field: "sku", op: "matches", value: "{{sku}}" },
     ],
     actions: [
-      { type: "create_tasks", config: checkoutCreateConfig("QT {{title}}") },
+      { type: "create_tasks", config: checkoutCreateConfig("QT · {{sku}}") },
       { type: "start_tasks", config: { target: { scope: "created", taskGroup: "" } } },
     ],
   },
@@ -276,7 +276,7 @@ const DEFAULT_TEMPLATES = [
         config: {
           target: { scope: "group", taskGroup: "{{taskGroup}}" },
           product: "{{sku}}",
-          labelTemplate: "{{title}}",
+          labelTemplate: "{{sku}} · {{title}}",
         },
       },
       {
