@@ -60,6 +60,12 @@ const DEFAULT_SETTINGS = {
   placeOrderDefault: true,
   /** Flash taskbar + play sound + OS toast on checkout win. */
   successAlertEnabled: true,
+  /**
+   * When true, UI live log shows failedStep / detail / monitor polls.
+   * Keep on while solo-testing; turn off for beta-facing consumer logs.
+   * Console + disk checkout-run log always keep analytical detail.
+   */
+  detailedLogs: true,
   licenseStatus: "unknown", // unknown | open | valid | invalid
   licenseMessage: "",
   /**

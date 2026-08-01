@@ -338,7 +338,7 @@ function saBlankAction(type) {
         qty: 1,
         quantity: 1,
         placeOrder: true,
-        labelTemplate: "{{title}}",
+        labelTemplate: "{{sku}} · {{title}}",
         count: 1,
         taskGroup: "",
       },
@@ -501,7 +501,7 @@ function draftFromTemplate(tmpl, row) {
         if (a.type === "create_tasks") {
           if (!config.profileId && preset.profileId) config.profileId = preset.profileId;
           if (!config.proxyGroupId && preset.proxyGroupId) config.proxyGroupId = preset.proxyGroupId;
-          if (!config.labelTemplate) config.labelTemplate = "{{title}}";
+          if (!config.labelTemplate) config.labelTemplate = "{{sku}} · {{title}}";
         }
         return { type: a.type, config };
       })
@@ -889,8 +889,8 @@ function renderSaActionsEditor() {
             <div class="sa-field sa-field-span">
               <label>Task name</label>
               <input data-sa-ac="${i}" data-k="labelTemplate" value="${esc(
-                cfg.labelTemplate || "{{title}}",
-              )}" placeholder="{{title}} or a custom name" />
+                cfg.labelTemplate || "{{sku}} · {{title}}",
+              )}" placeholder="{{sku}} · {{title}} or a custom name" />
             </div>
             <div class="sa-field sa-field-span">
               <label>Task group</label>

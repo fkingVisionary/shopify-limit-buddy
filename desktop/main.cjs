@@ -73,6 +73,7 @@ const { appendCheckoutRun, readCheckoutRuns } = require("./checkout-run-log.cjs"
 const { postDiscordWebhook, checkoutResultDiscordPayload, resolveDiscordWebhookUrl, classifyCheckoutDiscordKind } = require("./discord-webhook.cjs");
 const { testProxyEntries, PROXY_TEST_PRESETS } = require("./proxy-test.cjs");
 const { createSmartActionsEngine } = require("./smart-actions-engine.cjs");
+const { resolveTaskLabel } = require("./task-label.cjs");
 const {
   defaultCatalogState,
   normalizeCatalogState,
@@ -158,6 +159,8 @@ if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "obje
   state.db.smartActionCatalog = normalizeCatalogState(state.db.smartActionCatalog);
 }
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+if (state.settings.detailedLogs == null) state.settings.detailedLogs = true;
+runner.configure({ detailedLogs: state.settings.detailedLogs !== false });
 if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
   state.db.taskGroupColors = {};
 }
@@ -1165,6 +1168,7 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   state.settings = next;
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   persistSettings();
@@ -1227,6 +1231,7 @@ async function bootEngine() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   wireProductCacheIntoRunner();
@@ -1648,7 +1653,12 @@ function upsertTaskRow(task) {
   const row = {
     id: task.id || store.id("task"),
     store: storeId,
-    label: String(task.label || "").slice(0, 120),
+    label: resolveTaskLabel({
+      ...task,
+      store: storeId,
+      // Prefer PDP / watch fields already on the draft for empty labels.
+      title: task.title || task.productName || task.label,
+    }),
     taskGroup: String(task.taskGroup || "").trim().slice(0, 80),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
@@ -2663,7 +2673,8 @@ async function runQuickTaskPayload(payload = {}) {
   }
 
   const built = buildQuickTaskDraft(preset, target, {
-    label: payload.label || target.title || target.productId,
+    // Only pass an explicit custom label — otherwise defaultTaskLabel builds SKU · title.
+    label: payload.label || "",
   });
   if (!built.ok) {
     return { ok: false, error: built.error, snapshot: snapshot() };
@@ -3155,7 +3166,7 @@ ipcMain.handle("desktop:smart-action-from-hit", (_e, hit = {}) => {
             usePreset: true,
             store: "bandai",
             bandaiMode: "checkout",
-            labelTemplate: "{{title}}",
+            labelTemplate: "{{sku}} · {{title}}",
             count: 1,
           },
         },
@@ -3489,6 +3500,7 @@ async function e2eAutorun() {
 
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
   runner.start();
@@ -3671,6 +3683,7 @@ async function e2eAutorun() {
 app.whenReady().then(async () => {
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
+    detailedLogs: state.settings.detailedLogs !== false,
     ...runnerHarvestHooks(),
   });
 

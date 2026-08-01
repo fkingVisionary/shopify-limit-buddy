@@ -69,7 +69,7 @@ function blankAction(type = ACTION_TYPES.CREATE_TASKS) {
         qty: 1,
         quantity: 1,
         placeOrder: true,
-        labelTemplate: "{{title}}",
+        labelTemplate: "{{sku}} · {{title}}",
         count: 1,
         taskGroup: "",
       },
@@ -1026,8 +1026,12 @@ function createSmartActionsEngine(deps = {}) {
     if (!target.ok) throw new Error(target.error || "Create Tasks: bad product");
 
     const label = applyTemplate(
-      config.labelTemplate || "{{title}}",
-      { ...runCtx, title: runCtx.title || target.title || target.productId },
+      config.labelTemplate || "{{sku}} · {{title}}",
+      {
+        ...runCtx,
+        sku: runCtx.sku || target.productId || "",
+        title: runCtx.title || target.title || target.productId || "",
+      },
     );
 
     const baseProxy = config.proxyGroupId || (usePreset ? preset.proxyGroupId : null);

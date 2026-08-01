@@ -148,12 +148,22 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
     return { ok: false, error: target?.error || "missing product target" };
   }
   const productId = target.productId;
-  const title = extra.label || target.title || productId;
   const mode = p.bandaiMode;
+  const { resolveTaskLabel } = require("./task-label.cjs");
   const draft = {
     id: extra.id || undefined,
     store: p.store,
-    label: String(title).slice(0, 120),
+    label: resolveTaskLabel({
+      store: p.store,
+      label: extra.label || "",
+      title: target.title || "",
+      productName: target.title || "",
+      bandaiWatchSku: productId,
+      productId,
+      bandaiMode: mode,
+      pdpUrl: target.pdpUrl || "",
+      bandaiAreaItemNo: target.areaItemNo || "",
+    }),
     pdpUrl: target.pdpUrl || (productId && !/^NAI/i.test(productId)
       ? `https://p-bandai.com/${target.area || "au"}/item/${productId}`
       : ""),
