@@ -25,11 +25,12 @@ const {
  * Soft “failed to process” vs hard issuer decline.
  * Soft → retry pay; hard → stop (even if cart still held).
  */
-/** Cart line no longer matches product / stale hold — clear + ATC, don't spray pay. */
+/** Cart product mismatch from Bandai — clear + ATC, don't spray pay. */
 function isStaleCartProductChanged(res) {
   if (!res || res.ok) return false;
   const blob = resultBlob(res);
-  return /CouldNotOrderByProductInfoChanged|ProductInfoChanged|held cart empty for/i.test(blob);
+  // Do NOT match "held cart empty for" — that is heldCartGone / ID miss, not ProductInfoChanged.
+  return /CouldNotOrderByProductInfoChanged|ProductInfoChanged/i.test(blob);
 }
 
 function isSoftPaymentProcessFail(res) {
@@ -252,10 +253,13 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
-  // OOS → wait (monitor or checkout lane). EndOfSale is final for that SKU —
-  // stop so e2e/SKU cycling can move on instead of burning maxLoops.
+  // OOS → wait (monitor always; checkout soft-OOS waits). EndOfSale on checkout
+  // is final for that fire — stop. Monitor must keep waiting for restock.
   if (isOutOfStock(res)) {
-    if (/EndOfSale|CouldNotAddToCartByEndOfSale/i.test(resultBlob(res))) {
+    if (
+      mode !== "monitor" &&
+      /EndOfSale|CouldNotAddToCartByEndOfSale/i.test(resultBlob(res))
+    ) {
       return {
         action: "stop",
         liveLabel: "Out of stock",

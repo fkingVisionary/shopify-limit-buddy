@@ -986,6 +986,7 @@ function applyHeldCartForPayRetry(job, result) {
     .trim()
     .toUpperCase();
   const heldSku = String(held.productCode || held.sku || "").trim().toUpperCase();
+  // Only reject when hold explicitly names a different product.
   if (taskSku && heldSku && heldSku !== taskSku) {
     console.log(
       `[job] skip heldCart pay-retry task=${job.task.id} heldSku=${heldSku} taskSku=${taskSku}`,
@@ -994,12 +995,11 @@ function applyHeldCartForPayRetry(job, result) {
     job.task.bandaiPayFromCart = false;
     return;
   }
+  // Stamp productCode so later heldMatchesProduct stays true on Retry pay.
+  if (!held.productCode && taskSku) held.productCode = taskSku;
   job.task.heldCart = held;
   job.task.bandaiPayFromCart = true;
   if (held.areaItemNo) job.task.bandaiAreaItemNo = held.areaItemNo;
-  if (held.productCode || heldSku) {
-    job.task.heldCart.productCode = held.productCode || heldSku || null;
-  }
 }
 
 function finishResult(job, res, summary) {

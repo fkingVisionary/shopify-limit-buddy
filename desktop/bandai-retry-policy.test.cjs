@@ -96,7 +96,7 @@ test("OOS → wait_restock", () => {
   assert.match(d.liveLabel, /waiting|Out of stock/i);
 });
 
-test("EndOfSale → stop (do not burn loops)", () => {
+test("EndOfSale on checkout → stop", () => {
   const d = classifyBandaiRunResult(
     {
       ok: false,
@@ -108,6 +108,32 @@ test("EndOfSale → stop (do not burn loops)", () => {
   );
   assert.equal(d.action, "stop");
   assert.equal(d.consumerCode, "oos");
+});
+
+test("EndOfSale on monitor → wait_restock", () => {
+  const d = classifyBandaiRunResult(
+    {
+      ok: false,
+      failedStep: "addToCart",
+      debugError: "CouldNotAddToCartByEndOfSale cart=[]",
+      lastSteps: [{ step: "addToCart", ok: false, note: "CouldNotAddToCartByEndOfSale cart=[]" }],
+    },
+    { mode: "monitor" },
+  );
+  assert.equal(d.action, "wait_restock");
+});
+
+test("held cart empty is not ProductInfoChanged stale-cart ATC", () => {
+  const { isStaleCartProductChanged } = require("./bandai-retry-policy.cjs");
+  assert.equal(
+    isStaleCartProductChanged({
+      ok: false,
+      failedStep: "held_cart_verify",
+      error: "held cart empty for [N123] cart=[]",
+      heldCartGone: true,
+    }),
+    false,
+  );
 });
 
 test("success → stop", () => {
