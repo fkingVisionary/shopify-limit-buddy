@@ -44,6 +44,14 @@ function isSoftPaymentProcessFail(res) {
   if (isPaymentDeclined(res) && !isSoftDeclineBlob(res)) return false;
   // Already touched PSP — retrying pay doubles the bank auth.
   if (isPaymentAlreadySubmitted(res)) return false;
+  // Lab / intentional hydrate-only stop — never soft-retry into a real issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return false;
+  }
   // Product-info / foreign-cart mismatches are not soft pay — retry ATC fresh.
   if (isStaleCartProductChanged(res)) return false;
   const blob = resultBlob(res);

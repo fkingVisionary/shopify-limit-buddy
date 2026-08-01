@@ -97,6 +97,22 @@ test("RESPONSE_LOST / pay already submitted → stop (no second charge)", () => 
   assert.notEqual(d.retryPay, true);
 });
 
+test("stop_before_issuer / http_ge_hydrated → stop (no soft-retry loop)", () => {
+  const res = {
+    ok: false,
+    failedStep: "ge_http_stop",
+    paymentStatus: "http_ge_hydrated",
+    paymentAttempted: false,
+    chargeReqCount: null,
+    error: "stop_before_issuer",
+    note: "HTTP GE hydrated guid=…",
+  };
+  assert.equal(isSoftPaymentProcessFail(res), false);
+  const d = classifyBandaiRunResult(res);
+  assert.equal(d.action, "stop");
+  assert.notEqual(d.retryPay, true);
+});
+
 test("issuer_http_failed + chargeReqCount>=1 → stop (not soft retry pay)", () => {
   const res = {
     ok: false,
