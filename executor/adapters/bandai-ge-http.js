@@ -1627,12 +1627,27 @@ export async function runBandaiGeHttpPay(opts = {}) {
     // merge cookies into undici jar, then drop page before hydrate/issuer.
     const pctx = opts.page.context?.();
     const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
+    let mutedIssuerPosts = 0;
     const geMuteRoute = async (route) => {
       const req = route.request();
       const method = String(req.method() || "GET").toUpperCase();
+      const url = String(req.url() || "");
       if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
         await route.continue();
         return;
+      }
+      // Count suppressed issuer attempts — these were the invisible half of
+      // Revolut pairs when mute was lifted while Checkout/v2 was still live.
+      if (isBandaiGeIssuerPaymentUrl(url)) {
+        mutedIssuerPosts += 1;
+        browserReqLog.push({
+          t: new Date().toISOString(),
+          method,
+          url: url.slice(0, 320),
+          issuer: true,
+          phase: "riskHydrate-muted",
+          suppressed: true,
+        });
       }
       await route.fulfill({
         status: 204,
@@ -1652,6 +1667,32 @@ export async function runBandaiGeHttpPay(opts = {}) {
         settleMs: opts.iovationSettleMs,
         jar: ctx?.jar || null,
       });
+      // CRITICAL: blank Checkout/v2 WHILE mute is still active.
+      // Previously we unrouted geMute in finally, then blanked — GEM JS had a
+      // live Checkout/v2 window and could fire HandleCreditCard before undici,
+      // producing Revolut pairs with app posts=1 (2026-08-02 live).
+      const preferPageIssuer =
+        opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
+      const keepPage =
+        preferPageIssuer ||
+        opts.keepPageAfterIovation === true ||
+        opts.scrapeCardFormViaPage === true;
+      opts = { ...opts, preferPageIssuer };
+      if (!keepPage && opts.page) {
+        try {
+          await neutralizeGePaymentFrames(opts.page);
+        } catch {
+          /* ignore */
+        }
+        try {
+          await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+        } catch {
+          /* ignore */
+        }
+        issuerPage = null;
+      } else if (keepPage) {
+        issuerPage = opts.page;
+      }
     } finally {
       if (pctx?.unroute) {
         try {
@@ -1663,12 +1704,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
     const blockedMutates = browserReqLog.length;
     const jarNames = mint.cookies ? Object.keys(mint.cookies) : [];
+    const issuerPostsDuringMint = browserReqLog.filter((r) => r.issuer).length;
     push("ge_iovation_mint", {
       ok: mint.ok,
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(riskHydrate) forter=${Boolean(mint.forterToken || mint.cookies?.forterToken)} cookieKeys=${jarNames.length} browserMutatesSeen=${blockedMutates}`
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(riskHydrate) forter=${Boolean(mint.forterToken || mint.cookies?.forterToken)} cookieKeys=${jarNames.length} browserMutatesSeen=${blockedMutates} mutedIssuer=${mutedIssuerPosts} issuerSeen=${issuerPostsDuringMint}`
         : `iovation fail ${mint.error || ""}`.slice(0, 160),
     });
     if (mint.machineId) {
@@ -1700,38 +1742,28 @@ export async function runBandaiGeHttpPay(opts = {}) {
     // Bible Fast: undici issuer after riskHydrate + page drop. Page issuer is
     // opt-in only (preferPageIssuer===true). Defaulting page issuer produced
     // Revolut pairs with posts=1 / sameCart=False while phone stayed single.
-    const preferPageIssuer =
-      opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
-    const keepPage =
-      preferPageIssuer ||
-      opts.keepPageAfterIovation === true ||
-      opts.scrapeCardFormViaPage === true;
-    // Stash resolved flag for issuer branch (opts may be read-only).
-    opts = { ...opts, preferPageIssuer };
-    if (keepPage) {
-      // Stay on Checkout/v2 — do not blank before page issuer.
-      issuerPage = opts.page;
+    if (issuerPage) {
       mark("ge_page_kept_after_iovation", {
         ok: true,
-        preferPageIssuer,
-        warn: preferPageIssuer ? "page_issuer_after_riskHydrate" : "live_cart_browser_may_pair_revolut",
+        preferPageIssuer: opts.preferPageIssuer === true,
+        warn:
+          opts.preferPageIssuer === true
+            ? "page_issuer_after_riskHydrate"
+            : "live_cart_browser_may_pair_revolut",
+        mutedIssuerPosts,
       });
     } else {
-      try {
-        await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
-      } catch {
-        /* ignore */
-      }
       mark("ge_page_dropped_after_iovation", {
         ok: true,
         liveGuid: guid,
         geMuted: true,
+        blankedUnderMute: true,
         beforeHydrate: true,
         riskHydrate: true,
         browserMutatesDuringMint: blockedMutates,
-        issuerPostsDuringMint: browserReqLog.filter((r) => r.issuer).length,
+        issuerPostsDuringMint,
+        mutedIssuerPosts,
       });
-      issuerPage = null;
     }
   }
 

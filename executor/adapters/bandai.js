@@ -1531,6 +1531,39 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     };
   }
 
+  // Drop foreign leftovers before GE pay. Live 2026-08-02 had lines=2
+  // (stale NAI + new SKU) while app still posted one issuer — Revolut pairs.
+  {
+    const wantIds = new Set(
+      [pdp.areaItemNo, productCode].filter(Boolean).map((x) => String(x).toUpperCase()),
+    );
+    const allLines = listCartLines(cart.json);
+    const foreign = allLines.filter((l) => {
+      if (!l.cartItemSn || String(l.cartItemSn) === String(cartItemSn)) return false;
+      const ids = [l.areaItemNo, l.productCode]
+        .filter(Boolean)
+        .map((x) => String(x).toUpperCase());
+      return !ids.some((id) => wantIds.has(id));
+    });
+    if (foreign.length) {
+      const sns = foreign.map((l) => l.cartItemSn).filter(Boolean);
+      const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(sns.join(","))}`;
+      const rem = await session.apiJson("DELETE", remPath, {
+        referer: `${session.base}/cart`,
+      });
+      steps.push({
+        step: "cart_clear_foreign",
+        ok: rem.status >= 200 && rem.status < 300,
+        status: rem.status,
+        ms: 0,
+        note: `cleared foreign=[${foreign
+          .map((l) => l.areaItemNo || l.productCode || "?")
+          .join(",")}] kept=${cartItemSn}`,
+      });
+      ctx.onProgress?.("cart_clear_foreign", steps[steps.length - 1].note);
+    }
+  }
+
   // Optional early stop before checkout POST (default continues to checkoutSn).
   // Modes: bandaiMode=atc|atc_only, or explicit bandaiStopAtCart.
   const modeLc = String(task.bandaiMode || task.mode || "").toLowerCase();
