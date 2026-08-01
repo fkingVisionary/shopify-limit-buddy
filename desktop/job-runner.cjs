@@ -1596,7 +1596,13 @@ function pathToFileUrl(p) {
     : `file://${u}`;
 }
 
+/** @type {null | ((job: object, opts: object) => Promise<object>)} */
+let executeOnceOverride = null;
+
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  if (typeof executeOnceOverride === "function") {
+    return executeOnceOverride(job, { rotateSession, attemptLabel });
+  }
   // Bandai Autocheckout / ATC: claim F5 at run-start (not enqueue) so bank TTL
   // stays fresh through the queue — matches Monitor restock claim timing.
   if (
@@ -2202,4 +2208,8 @@ module.exports = {
   normalizeProxy,
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
+  /** Test-only: replace executeOnce (null restores real sidecar path). */
+  __setExecuteOnceForTests(fn) {
+    executeOnceOverride = typeof fn === "function" ? fn : null;
+  },
 };

@@ -3895,6 +3895,12 @@ async function e2eAutorun() {
       via: result.via || null,
       note: result.note || null,
       isSameCartToken: result.isSameCartToken ?? null,
+      // Double-charge latch diagnostics (per-run only)
+      chargeReqCount: result.chargeReqCount ?? null,
+      undiciAttempts: result.undiciAttempts ?? null,
+      bigpayAuthPosts: result.bigpayAuthPosts ?? null,
+      responseLost: Boolean(result.responseLost),
+      paymentAttempted: Boolean(result.paymentAttempted),
       error: result.error,
       consumerLabel: result.consumerLabel || null,
       elapsedMs: result.elapsedMs,

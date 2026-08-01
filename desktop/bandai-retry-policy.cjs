@@ -174,7 +174,8 @@ function classifyBandaiRunResult(res, ctx = {}) {
   if (isPaymentAlreadySubmitted(res)) {
     return {
       action: "stop",
-      liveLabel: outcome.label || "Payment submitted — check bank",
+      // Prefer explicit bank-check label over generic "Something went wrong".
+      liveLabel: "Payment submitted — check bank",
       reason: "pay_already_submitted",
       delayMs: 0,
       consumerCode: outcome.code || "error",
