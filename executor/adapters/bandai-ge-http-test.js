@@ -1026,7 +1026,13 @@ export function buildIssuerFormBody(opts = {}) {
   params.set("PaymentData.customerScreenColorDepth", String(opts.colorDepth || "24"));
   params.set("PaymentData.customerScreenWidth", String(opts.screenWidth || "1280"));
   params.set("PaymentData.customerScreenHeight", String(opts.screenHeight || "800"));
-  params.set("PaymentData.customerTimeZoneOffset", String(opts.tzOffset || "0"));
+  // Chrome HAR (2026-08-02): browser posts real getTimezoneOffset() (e.g. -600 AEST),
+  // not "0". Prod Fast still defaults 0 — only this test fork matches browser.
+  const tz =
+    opts.tzOffset != null && opts.tzOffset !== ""
+      ? opts.tzOffset
+      : new Date().getTimezoneOffset();
+  params.set("PaymentData.customerTimeZoneOffset", String(tz));
   params.set("PaymentData.customerLanguage", opts.language || "en-AU");
   params.set("PaymentData.UrlStructureTokenEncoded", String(opts.urlStructureToken || ""));
   params.set("PaymentData.IsValidationMessagesV2", "true");
@@ -2025,6 +2031,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ms: Date.now() - tCc,
     domJwt: extractUrlStructureToken(httpCc.text),
     domMachineId: extractMachineId(httpCc.text),
+    // Chrome HAR: CreditCardForm HTML can carry pm=2 (not the old pm=1 default).
+    // Prod Fast viaHttp path never scraped these — dual-auth lab suspect.
+    domPm: htmlFormValue(httpCc.text, "PaymentData.paymentMethodId") || null,
+    domGw: htmlFormValue(httpCc.text, "PaymentData.gatewayId") || null,
     viaHttp: true,
   };
 

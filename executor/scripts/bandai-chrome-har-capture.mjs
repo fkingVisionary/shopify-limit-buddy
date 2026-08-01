@@ -243,4 +243,8 @@ if ((summary.har.handleCreditCardCount || 0) > 1) {
   console.log("NOTE: browser HAR saw >1 HandleCreditCard — dual-rail exists even in Chromium.");
 } else if (summary.har.handleCreditCardCount === 1) {
   console.log("Browser baseline: exactly 1 HandleCreditCard POST (matches manual Safari/Chrome).");
+} else {
+  console.log(
+    "No issuer in Safe-path HAR. Force-submit fallback: node executor/scripts/bandai-ccform-submit-har.mjs",
+  );
 }
