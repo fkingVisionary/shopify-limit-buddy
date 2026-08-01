@@ -294,4 +294,83 @@ export function vantaOosDiscordBody(hit, opts = {}) {
   };
 }
 
-export { VANTA_NAME, VANTA_COLOR, VANTA_OOS_COLOR, pickTitle, pickImage, pickPrice };
+const VANTA_CHECKOUT_COLOR = 0x22c55e; // green — public checkout feed
+
+/**
+ * Public checkout feed — no profile / email / order / proxy / address.
+ * Posted by monitor-host after Desktop reports a win (server holds the webhook).
+ */
+export function vantaPublicCheckoutDiscordBody(win, opts = {}) {
+  const store = String(win?.store || "store").trim() || "store";
+  const title = String(win?.title || win?.sku || "Checkout").slice(0, 250);
+  const sku = String(win?.sku || "").trim();
+  const pdp = String(win?.pdpUrl || "").trim();
+  const mode = String(win?.mode || "").trim();
+  const payment = String(win?.payment || "Card").trim() || "Card";
+  const price = win?.price != null && String(win.price).trim() ? String(win.price) : null;
+  const image = win?.imageUrl && String(win.imageUrl).startsWith("http") ? String(win.imageUrl) : null;
+  const isTest = opts.test === true;
+
+  let qtLine = "";
+  if (sku && /^N\d|^A\d/i.test(sku)) {
+    const qtHit = {
+      productId: sku,
+      title,
+      areaItemNo: win?.areaItemNo || null,
+      area: win?.area || "au",
+      pdpUrl: pdp || undefined,
+    };
+    const qtUrl = buildQuickTaskBridgeUrl(qtHit, { area: win?.area || "au" });
+    const setupUrl = buildQuickTaskSetupUrl();
+    qtLine = `[⚡ Quick Task](${qtUrl}) · [Setup presets](${setupUrl})`;
+  }
+
+  const fields = [
+    { name: "Store", value: storeDisplay(store), inline: true },
+    ...(sku ? [{ name: "SKU", value: `\`${sku}\``, inline: true }] : []),
+    ...(price ? [{ name: "Price", value: price, inline: true }] : []),
+    ...(mode ? [{ name: "Mode", value: mode, inline: true }] : []),
+    { name: "Payment", value: payment, inline: true },
+    ...(pdp ? [{ name: "Query", value: `[Open product](${pdp})` }] : []),
+  ];
+
+  return {
+    username: VANTA_NAME,
+    embeds: [
+      {
+        author: {
+          name: isTest ? `${VANTA_NAME} · test checkout feed` : `${VANTA_NAME} · Public Checkout Feed`,
+        },
+        title,
+        url: pdp || undefined,
+        description: qtLine || undefined,
+        color: VANTA_CHECKOUT_COLOR,
+        fields,
+        ...(image ? { thumbnail: { url: image } } : {}),
+        footer: {
+          text: isTest ? "Vanta · test public checkout" : "Vanta Public Checkout Feed",
+        },
+        timestamp: win?.at ? new Date(win.at).toISOString() : new Date().toISOString(),
+      },
+    ],
+  };
+}
+
+function storeDisplay(sid) {
+  const s = String(sid || "").toLowerCase();
+  if (s === "bandai") return "Premium Bandai";
+  if (s === "toymate") return "Toymate AU";
+  if (s === "kmart") return "Kmart AU";
+  if (s === "disney") return "Disney Store AU";
+  return String(sid || "Store");
+}
+
+export {
+  VANTA_NAME,
+  VANTA_COLOR,
+  VANTA_OOS_COLOR,
+  VANTA_CHECKOUT_COLOR,
+  pickTitle,
+  pickImage,
+  pickPrice,
+};

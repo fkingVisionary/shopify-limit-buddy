@@ -1204,12 +1204,12 @@
         <div class="settings-pane" data-pane="alerts">
           <h2>Alerts</h2>
           <p class="hint">Split Discord channels so wins stay visible. Empty fields fall back to Success.</p>
-          <label>Success (checkouts OK)</label>
+          <label>Success (confirmed checkouts)</label>
           <div class="row webhook-row">
             <input id="setDiscordSuccess" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
             <button type="button" class="secondary" id="btnDiscordTestSuccess" data-discord-test="success">Test</button>
           </div>
-          <label>Fail (checkout errors)</label>
+          <label>Declines / Fail</label>
           <div class="row webhook-row">
             <input id="setDiscordFail" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
             <button type="button" class="secondary" id="btnDiscordTestFail" data-discord-test="fail">Test</button>
@@ -1219,12 +1219,25 @@
             <input id="setDiscord3ds" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
             <button type="button" class="secondary" id="btnDiscordTest3ds" data-discord-test="threeds">Test</button>
           </div>
-          <label>Monitor / Smart Action notify</label>
+          <label>Misc (Smart Actions / notify)</label>
           <div class="row webhook-row">
             <input id="setDiscordMonitor" placeholder="https://discord.com/api/webhooks/…" autocomplete="off" />
             <button type="button" class="secondary" id="btnDiscordTestMonitor" data-discord-test="monitor">Test</button>
           </div>
-          <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty.</p>
+          <p class="hint" style="margin-top:12px">Personal Success / Decline embed fields (tick to include). Public checkout feed never shows these.</p>
+          <div class="discord-field-toggles" id="discordFieldToggles">
+            <label class="check"><input type="checkbox" data-embed-field="product" checked /> Product</label>
+            <label class="check"><input type="checkbox" data-embed-field="store" checked /> Store</label>
+            <label class="check"><input type="checkbox" data-embed-field="price" checked /> Price</label>
+            <label class="check"><input type="checkbox" data-embed-field="profile" checked /> Profile</label>
+            <label class="check"><input type="checkbox" data-embed-field="order" checked /> Order #</label>
+            <label class="check"><input type="checkbox" data-embed-field="mode" checked /> Mode</label>
+            <label class="check"><input type="checkbox" data-embed-field="payment" checked /> Payment</label>
+            <label class="check"><input type="checkbox" data-embed-field="source" checked /> Source</label>
+            <label class="check"><input type="checkbox" data-embed-field="email" checked /> Email</label>
+            <label class="check"><input type="checkbox" data-embed-field="proxy" checked /> Proxy</label>
+          </div>
+          <p class="hint">Legacy single “checkout” webhook still works as Success if Success is empty. Public wins also go to the admin checkout feed on Railway.</p>
           <div class="row" style="margin-top:16px">
             <button type="button" class="secondary" data-settings-save>Save settings</button>
           </div>

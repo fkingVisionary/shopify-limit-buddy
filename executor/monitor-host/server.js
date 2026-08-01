@@ -23,6 +23,7 @@ import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
 import {
   vantaRestockDiscordBody,
   vantaOosDiscordBody,
+  vantaPublicCheckoutDiscordBody,
   buildQuickTaskBridgeUrl,
   buildQuickTaskLocalUrl,
   QUICKTASK_BRIDGE_PORT,
@@ -136,12 +137,55 @@ function feedAuthOk(req) {
   return authOk(req);
 }
 
+function isDiscordWebhookUrl(url) {
+  return /^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(String(url || ""));
+}
+
+/** Restock / OOS channel — runtime admin override, else env. */
 function discordHook() {
-  const hook = String(process.env.DISCORD_WEBHOOK_URL || "").trim();
-  if (!hook || !/^https:\/\/(discord\.com|discordapp\.com)\/api\/webhooks\//i.test(hook)) {
-    return null;
+  const hook = String(runtime.restockWebhook || process.env.DISCORD_WEBHOOK_URL || "").trim();
+  return isDiscordWebhookUrl(hook) ? hook : null;
+}
+
+/** Public checkouts feed — no PII; runtime admin override, else env. */
+function checkoutFeedHook() {
+  const hook = String(
+    runtime.checkoutFeedWebhook || process.env.DISCORD_CHECKOUT_FEED_WEBHOOK || "",
+  ).trim();
+  return isDiscordWebhookUrl(hook) ? hook : null;
+}
+
+function maskWebhook(url) {
+  const u = String(url || "");
+  if (!u) return "";
+  if (u.length < 24) return "••••";
+  return `${u.slice(0, 40)}…${u.slice(-8)}`;
+}
+
+/** Sanitize Desktop win report — never forward PII to the public feed. */
+function sanitizeCheckoutWin(body) {
+  const b = body && typeof body === "object" ? body : {};
+  const sku = String(b.sku || b.productId || "").trim().slice(0, 40);
+  let pdp = String(b.pdpUrl || "").trim().slice(0, 400);
+  if (pdp && !/^https:\/\/(www\.)?p-bandai\.com\//i.test(pdp) && sku) {
+    pdp = `https://p-bandai.com/au/item/${encodeURIComponent(sku)}`;
   }
-  return hook;
+  if (pdp && !/^https:\/\//i.test(pdp)) pdp = "";
+  let imageUrl = String(b.imageUrl || "").trim().slice(0, 500);
+  if (imageUrl && !/^https:\/\//i.test(imageUrl)) imageUrl = "";
+  return {
+    store: String(b.store || "").trim().slice(0, 40),
+    title: String(b.title || b.label || sku || "Checkout").trim().slice(0, 200),
+    sku,
+    pdpUrl: pdp,
+    mode: String(b.mode || "").trim().slice(0, 60),
+    payment: String(b.payment || "Card").trim().slice(0, 40) || "Card",
+    price: b.price != null ? String(b.price).trim().slice(0, 40) : null,
+    imageUrl: imageUrl || null,
+    areaItemNo: String(b.areaItemNo || "").trim().slice(0, 40) || null,
+    area: String(b.area || "au").trim().slice(0, 4) || "au",
+    at: b.at || new Date().toISOString(),
+  };
 }
 
 function mutedSkuList() {
@@ -197,8 +241,7 @@ function hitPayload(ev) {
   };
 }
 
-async function postDiscord(body) {
-  const hook = discordHook();
+async function postDiscordTo(hook, body, logTag = "discord") {
   if (!hook) return { ok: false, skipped: true, error: "no_webhook" };
   const timeoutMs = Math.max(
     3_000,
@@ -213,19 +256,28 @@ async function postDiscord(body) {
     });
     const text = await res.text().catch(() => "");
     if (!res.ok) {
-      labLog("discord", "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
+      labLog(logTag, "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
       return { ok: false, status: res.status, error: text.slice(0, 200) };
     }
     const title = body?.embeds?.[0]?.title || body?.username || "ping";
-    labLog("discord", "info", `sent · ${title}`.slice(0, 200));
+    labLog(logTag, "info", `sent · ${title}`.slice(0, 200));
     return { ok: true, status: res.status };
   } catch (e) {
-    const msg = e?.name === "TimeoutError" || e?.name === "AbortError"
-      ? `webhook_timeout_${timeoutMs}ms`
-      : e?.message || String(e);
-    labLog("discord", "err", msg);
+    const msg =
+      e?.name === "TimeoutError" || e?.name === "AbortError"
+        ? `webhook_timeout_${timeoutMs}ms`
+        : e?.message || String(e);
+    labLog(logTag, "err", msg);
     return { ok: false, error: msg };
   }
+}
+
+async function postDiscord(body) {
+  return postDiscordTo(discordHook(), body, "discord");
+}
+
+async function postCheckoutFeed(body) {
+  return postDiscordTo(checkoutFeedHook(), body, "checkout-feed");
 }
 
 /** Post Discord; if components are rejected, retry embed-only (QT link stays in description). */
@@ -668,10 +720,37 @@ app.get("/admin/config", async (req, reply) => {
     dcProxies: runtime.dcProxies || "",
     intervalMs: m.intervalMs ?? runtime.intervalMs,
     notifyOos: runtime.notifyOos !== false,
+    restockWebhook: runtime.restockWebhook || "",
+    checkoutFeedWebhook: runtime.checkoutFeedWebhook || "",
+    restockWebhookSet: Boolean(discordHook()),
+    checkoutFeedWebhookSet: Boolean(checkoutFeedHook()),
+    restockWebhookMasked: maskWebhook(discordHook() || ""),
+    checkoutFeedWebhookMasked: maskWebhook(checkoutFeedHook() || ""),
     updatedAt: runtime.updatedAt || null,
     pool: m.pool || null,
     persistence: persistence(),
   };
+});
+
+/**
+ * Desktop reports a confirmed checkout → public feed (no PII).
+ * Feed-public like /hits so members don't need MONITOR_TOKEN; webhook stays server-side.
+ */
+app.post("/checkout-win", async (req, reply) => {
+  if (!feedAuthOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  if (!checkoutFeedHook()) {
+    return reply.code(400).send({ ok: false, error: "checkout_feed_webhook_not_configured" });
+  }
+  const win = sanitizeCheckoutWin(req.body);
+  if (!win.sku && !win.title) {
+    return reply.code(400).send({ ok: false, error: "sku_or_title_required" });
+  }
+  const payload = vantaPublicCheckoutDiscordBody(win, { test: Boolean(req.body?.test) });
+  const r = await postCheckoutFeed(payload);
+  if (!r.ok) {
+    return reply.code(r.skipped ? 400 : 502).send({ ok: false, error: r.error || "discord_failed" });
+  }
+  return { ok: true, posted: true };
 });
 
 /** Desktop Action Store — curated SKU library (public read; writes stay authed). */
@@ -781,6 +860,23 @@ app.put("/admin/config", async (req, reply) => {
     if (body.notifyOos != null) {
       runtime.notifyOos = Boolean(body.notifyOos);
     }
+    if (body.restockWebhook != null) {
+      const w = String(body.restockWebhook || "").trim();
+      if (w && !isDiscordWebhookUrl(w)) {
+        return reply.code(400).send({ ok: false, error: "restockWebhook must be a Discord webhook URL" });
+      }
+      // Ignore masked placeholders from the admin form (keep previous).
+      if (!w || !w.includes("…")) runtime.restockWebhook = w;
+    }
+    if (body.checkoutFeedWebhook != null) {
+      const w = String(body.checkoutFeedWebhook || "").trim();
+      if (w && !isDiscordWebhookUrl(w)) {
+        return reply
+          .code(400)
+          .send({ ok: false, error: "checkoutFeedWebhook must be a Discord webhook URL" });
+      }
+      if (!w || !w.includes("…")) runtime.checkoutFeedWebhook = w;
+    }
     const proxPatch = {};
     if (body.ispProxies != null) {
       runtime.ispProxies = String(body.ispProxies);
@@ -805,6 +901,10 @@ app.put("/admin/config", async (req, reply) => {
       productCacheCount: Object.keys(productCache.entries || {}).length,
       intervalMs: hub.monitor.status().intervalMs,
       notifyOos: runtime.notifyOos !== false,
+      restockWebhook: runtime.restockWebhook || "",
+      checkoutFeedWebhook: runtime.checkoutFeedWebhook || "",
+      restockWebhookSet: Boolean(discordHook()),
+      checkoutFeedWebhookSet: Boolean(checkoutFeedHook()),
       ispProxies: runtime.ispProxies || "",
       dcProxies: runtime.dcProxies || "",
       pool: hub.monitor.status().pool,
@@ -901,16 +1001,37 @@ app.delete("/logs", async (req, reply) => {
   return { ok: true, ...labLogStats() };
 });
 
-/** Operator test: POST /test-discord?sku=…&kind=restock|oos */
+/** Operator test: POST /test-discord?sku=…&kind=restock|oos|checkout */
 app.post("/test-discord", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
-  if (!discordHook()) {
-    return reply.code(400).send({ ok: false, error: "DISCORD_WEBHOOK_URL not configured" });
-  }
   const q = req.query || {};
   const body = req.body && typeof req.body === "object" ? req.body : {};
   const sku = String(q.sku || body.sku || "N2890904001").trim();
   const kind = String(q.kind || body.kind || "restock").toLowerCase();
+
+  if (kind === "checkout") {
+    if (!checkoutFeedHook()) {
+      return reply.code(400).send({ ok: false, error: "checkout feed webhook not configured" });
+    }
+    const win = sanitizeCheckoutWin({
+      store: "bandai",
+      title: body.title || `Test checkout · ${sku}`,
+      sku,
+      pdpUrl: `https://p-bandai.com/au/item/${encodeURIComponent(sku)}`,
+      mode: "Checkout",
+      payment: "Card",
+      test: true,
+    });
+    const payload = vantaPublicCheckoutDiscordBody(win, { test: true });
+    const r = await postCheckoutFeed(payload);
+    return r.ok
+      ? { ok: true, kind: "checkout", posted: true }
+      : reply.code(502).send({ ok: false, error: r.error || "discord_failed" });
+  }
+
+  if (!discordHook()) {
+    return reply.code(400).send({ ok: false, error: "restock webhook not configured" });
+  }
 
   if ((hub.monitor.status()?.products || 0) === 0) {
     try {
