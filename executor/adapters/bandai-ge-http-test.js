@@ -130,6 +130,34 @@ function cookieHeaderFromJar(jar) {
     .join("; ");
 }
 
+/**
+ * Chrome HAR (secure-bandai HandleCreditCard): Cookie was only
+ * GlobalE_Data + __cf_bm. Bot Fast dumps the entire name-keyed jar
+ * (Bandai + Forter + iovation + GE) onto the issuer POST — dual-auth suspect.
+ */
+function slimIssuerCookieHeader(jar, opts = {}) {
+  const dump =
+    jar && typeof jar.dump === "function"
+      ? jar.dump() || {}
+      : typeof opts.cookies === "object" && opts.cookies
+        ? opts.cookies
+        : {};
+  const allow = Array.isArray(opts.allow)
+    ? opts.allow
+    : ["GlobalE_Data", "__cf_bm", "GlobalE_CT_Data", "GlobalE_Data_Extension"];
+  const parts = [];
+  for (const name of allow) {
+    if (dump[name] != null && dump[name] !== "") {
+      parts.push(`${name}=${dump[name]}`);
+    }
+  }
+  // Always prefer GlobalE_Data if present even when allow list empty.
+  if (!parts.length && dump.GlobalE_Data) {
+    parts.push(`GlobalE_Data=${dump.GlobalE_Data}`);
+  }
+  return parts.join("; ");
+}
+
 async function httpText(url, opts = {}) {
   const ctx = opts.ctx;
   if (!ctx?.jar || !ctx?.dispatcher) {
@@ -1205,17 +1233,72 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     return { ok: false, error: "body_required", note: "Need issuer POST body (capture or build)" };
   }
 
+  // Default: match Chrome form navigation (HAR 2026-08-02), not XHR-ish undici.
+  // Opt out with opts.legacyIssuerHeaders=true / BANDAI_GE_TEST_LEGACY_ISSUER_HEADERS=1.
+  const legacyHeaders =
+    opts.legacyIssuerHeaders === true ||
+    process.env.BANDAI_GE_TEST_LEGACY_ISSUER_HEADERS === "1";
+  const navigateAccept =
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
   const headers = {
-    accept: "text/html,application/xhtml+xml,application/json,*/*",
+    accept: legacyHeaders
+      ? "text/html,application/xhtml+xml,application/json,*/*"
+      : navigateAccept,
     "content-type":
-      opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+      opts.contentType ||
+      (legacyHeaders
+        ? "application/x-www-form-urlencoded; charset=UTF-8"
+        : "application/x-www-form-urlencoded"),
     origin: BANDAI_GE_SECURE,
     referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
     "user-agent": opts.userAgent || DEFAULT_UA,
+    "accept-language": "en-AU",
+    ...(legacyHeaders
+      ? {}
+      : {
+          "sec-fetch-dest": "document",
+          "sec-fetch-mode": "navigate",
+          "sec-fetch-site": "same-origin",
+          "sec-fetch-user": "?1",
+          "upgrade-insecure-requests": "1",
+          "cache-control": "max-age=0",
+        }),
     ...(opts.headers || {}),
   };
-  const cookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
+  const fullCookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
+  const slimCookies =
+    opts.slimIssuerCookies === false ||
+    process.env.BANDAI_GE_TEST_FULL_ISSUER_COOKIES === "1"
+      ? false
+      : true;
+  const cookie = slimCookies
+    ? slimIssuerCookieHeader(opts.ctx?.jar, { cookies: opts.cookieMap }) || fullCookie
+    : fullCookie;
   if (cookie) headers.cookie = cookie;
+  try {
+    const cookieNames = cookie
+      ? cookie.split(";").map((p) => p.trim().split("=")[0]).filter(Boolean)
+      : [];
+    console.log(
+      `[bandai-ge-http-TEST] issuer cookies=${cookieNames.length} [${cookieNames.join(",")}] slim=${slimCookies} legacyHeaders=${legacyHeaders}`,
+    );
+    payForensics("psp_issuer_headers", {
+      via: "http-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      cookieCount: cookieNames.length,
+      cookieNames,
+      slimCookies,
+      legacyHeaders,
+      contentType: headers["content-type"],
+      secFetchMode: headers["sec-fetch-mode"] || null,
+    });
+  } catch {
+    /* ignore */
+  }
 
   // GE often holds the TCP stream while the bank auth completes (60–120s+).
   // Default was effectively ~60s proxy/idle flake → "fetch failed" after Revolut
