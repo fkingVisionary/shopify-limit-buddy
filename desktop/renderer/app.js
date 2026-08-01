@@ -73,6 +73,16 @@ function colorForGroup(name, colorMap) {
   return GROUP_PALETTE[h % GROUP_PALETTE.length];
 }
 
+function confirmDelete(label) {
+  return window.confirm(`Delete ${label}?`);
+}
+
+function searchQuery(id) {
+  return String($(id)?.value || "")
+    .trim()
+    .toLowerCase();
+}
+
 function toast(message, cls = "") {
   const host = $("toastHost");
   if (!host) return;
@@ -696,13 +706,40 @@ function taskStatusBadge(t) {
 }
 
 function filteredTasks() {
-  const tasks = state?.tasks || [];
-  if (taskGroupFilter === "all") return tasks;
+  let tasks = state?.tasks || [];
   if (taskGroupFilter === "ungrouped") {
-    return tasks.filter((t) => !String(t.taskGroup || "").trim());
+    tasks = tasks.filter((t) => !String(t.taskGroup || "").trim());
+  } else if (taskGroupFilter !== "all") {
+    const key = groupKey(taskGroupFilter);
+    tasks = tasks.filter((t) => groupKey(t.taskGroup) === key);
   }
-  const key = groupKey(taskGroupFilter);
-  return tasks.filter((t) => groupKey(t.taskGroup) === key);
+  const q = searchQuery("taskSearch");
+  if (!q) return tasks;
+  return tasks.filter((t) => {
+    const prof = (state.profiles || []).find((p) => p.id === t.profileId);
+    const px = (state.proxyGroups || []).find((g) => g.id === t.proxyGroupId);
+    const hay = [
+      t.label,
+      t.taskGroup,
+      t.store,
+      taskStoreLabel(t),
+      taskProductSubline(t),
+      t.pdpUrl,
+      t.bandaiWatchSku,
+      t.sku,
+      t.lastLabel,
+      t.lastStatus,
+      t.lastOrderNumber,
+      t.lastDropSummary,
+      prof?.name,
+      prof?.email,
+      px?.name,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(q);
+  });
 }
 
 function renderTaskGroupRail() {
@@ -762,7 +799,10 @@ function renderTasks() {
   if (!el) return;
   const tasks = filteredTasks();
   if (!tasks.length) {
-    el.innerHTML = `<tr><td colspan="8" class="empty-cell">Press <kbd>N</kbd> for a new task.</td></tr>`;
+    const searching = Boolean(searchQuery("taskSearch"));
+    el.innerHTML = `<tr><td colspan="8" class="empty-cell">${
+      searching ? "No tasks match this search." : "Press <kbd>N</kbd> for a new task."
+    }</td></tr>`;
     return;
   }
   el.innerHTML = tasks
@@ -1428,25 +1468,55 @@ function renderAccountGroupRail() {
 }
 
 function filteredProfiles() {
-  const profiles = state?.profiles || [];
-  if (profileGroupFilter === "all") return profiles;
+  let profiles = state?.profiles || [];
   if (profileGroupFilter === "ungrouped") {
-    return profiles.filter((p) => !String(p.profileGroup || "").trim());
+    profiles = profiles.filter((p) => !String(p.profileGroup || "").trim());
+  } else if (profileGroupFilter !== "all") {
+    const key = groupKey(profileGroupFilter);
+    profiles = profiles.filter((p) => groupKey(p.profileGroup) === key);
   }
-  const key = groupKey(profileGroupFilter);
-  return profiles.filter((p) => groupKey(p.profileGroup) === key);
+  const q = searchQuery("profileSearch");
+  if (!q) return profiles;
+  return profiles.filter((p) => {
+    const hay = [
+      p.name,
+      p.profileGroup,
+      p.email,
+      p.first_name,
+      p.last_name,
+      p.phone,
+      p.city,
+      p.province,
+      p.zip,
+      p.address1,
+      String(p.card_number || "").slice(-4),
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(q);
+  });
 }
 
 function filteredAccounts() {
   const filter = $("accStoreFilter")?.value || "";
   let rows = state.accounts || [];
   if (filter) rows = rows.filter((a) => (a.storeId || "") === filter);
-  if (accountGroupFilter === "all") return rows;
   if (accountGroupFilter === "ungrouped") {
-    return rows.filter((a) => !String(a.accountGroup || "").trim());
+    rows = rows.filter((a) => !String(a.accountGroup || "").trim());
+  } else if (accountGroupFilter !== "all") {
+    const key = groupKey(accountGroupFilter);
+    rows = rows.filter((a) => groupKey(a.accountGroup) === key);
   }
-  const key = groupKey(accountGroupFilter);
-  return rows.filter((a) => groupKey(a.accountGroup) === key);
+  const q = searchQuery("accountSearch");
+  if (!q) return rows;
+  return rows.filter((a) => {
+    const hay = [a.email, a.accountGroup, a.storeId, a.storeName, a.status, a.notes, a.phone]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return hay.includes(q);
+  });
 }
 
 function renderAccounts() {
@@ -1456,7 +1526,12 @@ function renderAccounts() {
   if (!el) return;
   const rows = filteredAccounts();
   if (!rows.length) {
-    el.innerHTML = `<tr><td colspan="6" class="empty-cell">No accounts yet — Add, Import, or run Account gen.</td></tr>`;
+    const searching = Boolean(searchQuery("accountSearch"));
+    el.innerHTML = `<tr><td colspan="6" class="empty-cell">${
+      searching
+        ? "No accounts match this search."
+        : "No accounts yet — Add, Import, or run Account gen."
+    }</td></tr>`;
     return;
   }
   el.innerHTML = rows
@@ -1494,7 +1569,12 @@ function renderProfiles() {
   if (!el) return;
   const rows = filteredProfiles();
   if (!rows.length) {
-    el.innerHTML = `<tr><td colspan="6" class="empty-cell">No profiles yet — add one from Home checklist or New profile.</td></tr>`;
+    const searching = Boolean(searchQuery("profileSearch"));
+    el.innerHTML = `<tr><td colspan="6" class="empty-cell">${
+      searching
+        ? "No profiles match this search."
+        : "No profiles yet — add one from Home checklist or New profile."
+    }</td></tr>`;
     return;
   }
   el.innerHTML = rows
@@ -1627,7 +1707,20 @@ function renderProxyEntryList(g) {
       return Number(!!ra?.ok) - Number(!!rb?.ok);
     });
   }
-  const n = entries.length;
+  const totalN = entries.length;
+  const q = searchQuery("proxySearch");
+  if (q) {
+    entries = entries.filter((entry) => {
+      const parts = parseProxyParts(entry);
+      const r = byEntry.get(entry);
+      const hay = [entry, parts.host, parts.port, parts.user, r?.ip, r?.error]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }
+  const n = totalN;
   if ($("proxyGroupMeta")) {
     if (test?.alive != null) {
       $("proxyGroupMeta").textContent = `${n} prox${n === 1 ? "y" : "ies"} · ${test.alive}/${test.total} alive`;
@@ -1642,8 +1735,13 @@ function renderProxyEntryList(g) {
       $("pxTestHint").textContent = `${test.alive}/${test.total} alive · dead ${test.dead}${targetBit}`;
     else $("pxTestHint").textContent = n ? "Ready to test" : "Add proxies first";
   }
-  el.innerHTML = entries.length
-    ? entries
+  if (!entries.length) {
+    el.innerHTML = `<tr><td colspan="5" class="empty-cell">${
+      q ? "No proxies match this search." : "No proxies in this group — Add proxies."
+    }</td></tr>`;
+    return;
+  }
+  el.innerHTML = entries
         .map((entry) => {
           const parts = parseProxyParts(entry);
           const r = byEntry.get(entry);
@@ -1667,8 +1765,7 @@ function renderProxyEntryList(g) {
             </div></td>
           </tr>`;
         })
-        .join("")
-    : `<tr><td colspan="5" class="empty-cell">No proxies yet — click <strong>Add proxies</strong>.</td></tr>`;
+        .join("");
 }
 
 function renderProxies() {
@@ -2355,6 +2452,8 @@ document.body.addEventListener("click", async (e) => {
     t.closest?.("[data-del-proxy-entry]") || (t.dataset.delProxyEntry ? t : null);
   if (delProxyBtn) {
     const entry = delProxyBtn.getAttribute("data-del-proxy-entry");
+    const parts = parseProxyParts(entry);
+    if (!confirmDelete(`proxy ${parts.host}:${parts.port}`)) return;
     const lines = String($("pxEntries")?.value || "")
       .split(/\r?\n/)
       .map((l) => l.trim())
@@ -2417,6 +2516,8 @@ document.body.addEventListener("click", async (e) => {
     if (acc) fillAccountForm(acc);
   }
   if (t.dataset.delAcc) {
+    const acc = (state.accounts || []).find((a) => a.id === t.dataset.delAcc);
+    if (!confirmDelete(`account “${acc?.email || "account"}”`)) return;
     applyState(await window.desktop.deleteAccount(t.dataset.delAcc));
   }
   if (t.dataset.copyAccEmail || t.dataset.copyAccPass) {
@@ -2433,6 +2534,8 @@ document.body.addEventListener("click", async (e) => {
     }
   }
   if (t.dataset.delTask) {
+    const task = (state.tasks || []).find((x) => x.id === t.dataset.delTask);
+    if (!confirmDelete(`task “${task?.label || "Task"}”`)) return;
     applyState(await window.desktop.deleteTask(t.dataset.delTask));
   }
   if (t.dataset.dupTask) {
@@ -2492,6 +2595,8 @@ document.body.addEventListener("click", async (e) => {
     openDialog("profileDialog");
   }
   if (t.dataset.delProf) {
+    const p = (state.profiles || []).find((x) => x.id === t.dataset.delProf);
+    if (!confirmDelete(`profile “${p?.name || "Profile"}”`)) return;
     applyState(await window.desktop.deleteProfile(t.dataset.delProf));
   }
   if (t.dataset.dupProf) {
@@ -2556,6 +2661,7 @@ document.body.addEventListener("click", async (e) => {
       applyState(await window.desktop.upsertTask({ ...task, enabled: false }));
       toast("Task stopped (disabled)", "muted");
     } else if (t.dataset.ctx === "del") {
+      if (!confirmDelete(`task “${task.label || "Task"}”`)) return;
       applyState(await window.desktop.deleteTask(task.id));
       toast("Task deleted", "muted");
     }
@@ -2590,6 +2696,8 @@ document.body.addEventListener("click", async (e) => {
     return;
   }
   if (t.dataset.delPx) {
+    const g = (state.proxyGroups || []).find((x) => x.id === t.dataset.delPx);
+    if (!confirmDelete(`proxy group “${g?.name || "group"}”`)) return;
     applyState(await window.desktop.deleteProxyGroup(t.dataset.delPx));
   }
 });
@@ -5078,6 +5186,10 @@ $("btnNewProxyGroup")?.addEventListener("click", async () => {
   openProxyAddDialog();
 });
 $("accStoreFilter")?.addEventListener("change", () => renderAccounts());
+$("taskSearch")?.addEventListener("input", () => renderTasks());
+$("profileSearch")?.addEventListener("input", () => renderProfiles());
+$("accountSearch")?.addEventListener("input", () => renderAccounts());
+$("proxySearch")?.addEventListener("input", () => renderProxies());
 
 document.addEventListener("keydown", (e) => {
   const tag = (e.target instanceof HTMLElement ? e.target.tagName : "").toLowerCase();

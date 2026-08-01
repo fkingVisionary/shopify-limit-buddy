@@ -158,6 +158,7 @@
               <p class="hint">Press <kbd>N</kbd> for a new task. Pick a group on the left, then Start / Stop group — or use each row.</p>
             </div>
             <div class="toolbar-actions">
+              <input type="search" id="taskSearch" class="table-search" placeholder="Search tasks…" autocomplete="off" />
               <button type="button" class="secondary" id="btnExportTasks">Export</button>
               <button type="button" class="secondary" id="btnImportTasks">Import</button>
               <input type="file" id="taskImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
@@ -784,6 +785,7 @@
             <p class="hint">Shipping + card details. Stored only on this computer.</p>
           </div>
           <div class="toolbar-actions">
+            <input type="search" id="profileSearch" class="table-search" placeholder="Search profiles…" autocomplete="off" />
             <button type="button" class="secondary" id="btnExportProfiles">Export</button>
             <button type="button" class="secondary" id="btnImportProfiles">Import</button>
             <input type="file" id="profImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
@@ -883,6 +885,7 @@
             <p class="hint">Store logins for checkout. Keep email + password exact.</p>
           </div>
           <div class="toolbar-actions">
+            <input type="search" id="accountSearch" class="table-search" placeholder="Search accounts…" autocomplete="off" />
             <select id="accStoreFilter" class="toolbar-select">
               <option value="">All stores</option>
               <option value="bandai">Bandai</option>
@@ -991,6 +994,7 @@
             <p class="hint" id="proxyGroupMeta">Select or create a group</p>
           </div>
           <div class="toolbar-actions">
+            <input type="search" id="proxySearch" class="table-search" placeholder="Search proxies…" autocomplete="off" />
             <button type="button" class="secondary" id="btnExportProxies">Export</button>
             <button type="button" class="secondary" id="btnImportProxies">Import</button>
             <input type="file" id="pxImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
