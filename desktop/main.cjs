@@ -1206,9 +1206,16 @@ runner.setFinishedHandler((result) => {
           t.lastDropSummary = formatLaneAfterAction(result);
         }
         // Bandai: persist held cart for Retry pay (live cart is still source of truth).
+        // Hard decline / fraud clears the Bandai cart — never keep stale cartSn.
         if (result.ok && result.orderNumber) {
           t.heldCart = null;
-        } else if (result.heldCartGone || result.consumerCode === "held_cart_gone") {
+        } else if (
+          result.heldCartGone ||
+          result.consumerCode === "held_cart_gone" ||
+          result.consumerCode === "declined" ||
+          /^declined$/i.test(String(result.checkoutStage || "")) ||
+          /declined_or_auth_failed|fraud_refused/i.test(String(result.paymentStatus || ""))
+        ) {
           t.heldCart = null;
         } else if (result.heldCart && result.heldCart.cartSn && result.heldCart.cartItemSn) {
           t.heldCart = {

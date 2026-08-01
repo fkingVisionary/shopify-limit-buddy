@@ -61,8 +61,8 @@ test("buildCheckoutRunRow classifies oos and threeds", () => {
   const heldPay = buildCheckoutRunRow({
     ok: false,
     consumerCode: "held_pay_retry",
-    checkoutStage: "declined",
-    paymentStatus: "declined",
+    checkoutStage: "tokenize",
+    paymentStatus: "ge_reload_only_no_bank",
     cartSn: "c1",
     heldPayRetry: true,
   });

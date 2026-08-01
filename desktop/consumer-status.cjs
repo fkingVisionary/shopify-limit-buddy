@@ -93,30 +93,46 @@ function isPaymentDeclined(res) {
   ]
     .filter(Boolean)
     .join("\n");
-  const ps = res?.paymentSummary || {};
-  if (/declin|chargeAuthReject|payment.*fail|card.*fail|do.?not.?honor/i.test(text)) return true;
-  if (ps.processStatus === "error" || ps.acsOk === false) {
+  const ps = String(res?.paymentStatus || "");
+  const stage = String(res?.checkoutStage || "");
+  // Explicit GE/issuer hard outcomes (Bandai stage=declined).
+  if (/^declined$/i.test(stage)) return true;
+  if (/declined_or_auth_failed|auth_failed|fraud_refused|ge_fraud/i.test(ps)) return true;
+  if (/^declined$/i.test(ps)) return true;
+  // Soft "failed to process / try again" is NOT a hard decline (cart may still be held).
+  if (
+    /failed to process|try again|temporarily unavailable|processing error/i.test(text) &&
+    !/do.?not.?honor|chargeAuthReject|hard.?declin|declined_or_auth_failed/i.test(text)
+  ) {
+    return false;
+  }
+  const summary = res?.paymentSummary || {};
+  if (/declin|chargeAuthReject|do.?not.?honor|card.*declin/i.test(text)) return true;
+  if (summary.processStatus === "error" || summary.acsOk === false) {
     // 3DS reject / process error after tokenize — consumer "declined"
-    if (ps.oneTimeToken || ps.charge3dsId) return true;
+    if (summary.oneTimeToken || summary.charge3dsId) return true;
   }
   return false;
 }
 
-/** Bandai: cart still held after pay fail — Retry pay (cart-verified). */
+/** Bandai: cart still held after soft pay fail — Retry pay (cart-verified). */
 function isHeldPayRetry(res) {
   if (!res || res.ok) return false;
   if (res.heldCartGone === true || String(res.checkoutStage || "") === "held_cart_gone") {
     return false;
   }
+  // Hard decline clears Bandai cart — never label as held retry.
+  if (isPaymentDeclined(res)) return false;
+  const ps = String(res.paymentStatus || "");
+  const stage = String(res.checkoutStage || "");
+  if (/declined|auth_failed|fraud/i.test(ps) || /^declined$/i.test(stage)) return false;
   if (res.heldPayRetry === true && (res.heldCart?.cartSn || res.cartSn)) return true;
   const cartSn = res.cartSn ?? res.heldCart?.cartSn;
   const cartItemSn = res.cartItemSn ?? res.heldCart?.cartItemSn;
   if (!cartSn || !cartItemSn) return false;
-  const ps = String(res.paymentStatus || "");
-  const stage = String(res.checkoutStage || "");
-  if (/declined|auth_failed|fraud/i.test(ps)) return true;
-  if (/^declined$/i.test(stage)) return true;
-  if (/tokenize|threeds|http_ge|ge_/i.test(ps) || /tokenize|threeds/i.test(stage)) return true;
+  if (/tokenize|threeds|http_ge|ge_|pay_submitted|reload/i.test(ps) || /tokenize|threeds/i.test(stage)) {
+    return true;
+  }
   return false;
 }
 
@@ -211,12 +227,13 @@ function consumerOutcome(res) {
       stockStatus: "unknown",
     };
   }
-  // Prefer held-cart retry over plain declined when cart ids survived pay fail.
-  if (isHeldPayRetry(res)) {
-    return { code: "held_pay_retry", label: OUTCOME.held_pay_retry, stockStatus: "ok" };
-  }
+  // Hard decline wins — Bandai clears the cart; do not show "Cart held — retry pay".
   if (isPaymentDeclined(res)) {
     return { code: "declined", label: OUTCOME.declined, stockStatus: "ok" };
+  }
+  // Soft pay fail with surviving cart ids → Retry pay.
+  if (isHeldPayRetry(res)) {
+    return { code: "held_pay_retry", label: OUTCOME.held_pay_retry, stockStatus: "ok" };
   }
   // Soft member-address POST failed and nothing later recovered — treat as address.
   if (String(res.failedStep || "") === "shipping_ensure") {

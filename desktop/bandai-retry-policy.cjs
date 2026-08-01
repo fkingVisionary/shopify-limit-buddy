@@ -33,9 +33,29 @@ function isStaleCartProductChanged(res) {
   return /CouldNotOrderByProductInfoChanged|ProductInfoChanged/i.test(blob);
 }
 
+/**
+ * Issuer POST already left the client (bank may have moved). Never soft-retry
+ * pay — that is the cross-store double-charge path after RESPONSE_LOST.
+ */
+function isPaymentAlreadySubmitted(res) {
+  if (!res || res.ok) return false;
+  if (res.responseLost === true) return true;
+  const posts = Number(res.chargeReqCount ?? res.undiciAttempts ?? 0);
+  if (posts >= 1) {
+    const ps = String(res.paymentStatus || "");
+    if (/pay_submitted|response_lost|issuer_response_lost/i.test(ps)) return true;
+  }
+  const blob = resultBlob(res);
+  return /RESPONSE_LOST|pay_submitted_no_response|issuer_response_lost|POST in-flight\/sent/i.test(
+    blob,
+  );
+}
+
 function isSoftPaymentProcessFail(res) {
   if (!res || res.ok) return false;
   if (isPaymentDeclined(res) && !isSoftDeclineBlob(res)) return false;
+  // Already touched PSP — retrying pay doubles the bank auth.
+  if (isPaymentAlreadySubmitted(res)) return false;
   // Product-info / foreign-cart mismatches are not soft pay — retry ATC fresh.
   if (isStaleCartProductChanged(res)) return false;
   const blob = resultBlob(res);
@@ -169,6 +189,17 @@ function classifyBandaiRunResult(res, ctx = {}) {
       reason: "hard_decline",
       delayMs: 0,
       consumerCode: outcome.code || "declined",
+    };
+  }
+
+  // Issuer POST already sent / response lost — stop. Never re-fire pay.
+  if (isPaymentAlreadySubmitted(res)) {
+    return {
+      action: "stop",
+      liveLabel: outcome.label || "Payment submitted — check bank",
+      reason: "pay_already_submitted",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
     };
   }
 
@@ -360,6 +391,7 @@ function sleep(ms) {
 module.exports = {
   classifyBandaiRunResult,
   isSoftPaymentProcessFail,
+  isPaymentAlreadySubmitted,
   isStaleCartProductChanged,
   isBlocked403,
   isBadCredentials,

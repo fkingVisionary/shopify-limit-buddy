@@ -38,6 +38,25 @@ let queue = [];
 let inflight = 0;
 let running = false;
 let maxConcurrent = 5;
+/**
+ * Refcount of task ids currently queued or running.
+ * Blocks a second Start on the same task row while it's already live —
+ * does NOT block other tasks, duplicated task rows (new ids), or quantity>1
+ * jobs from the same enqueue batch.
+ */
+const activeTaskCounts = new Map();
+
+function acquireTaskId(tid) {
+  if (!tid) return;
+  activeTaskCounts.set(tid, (activeTaskCounts.get(tid) || 0) + 1);
+}
+
+function releaseTaskId(tid) {
+  if (!tid) return;
+  const n = (activeTaskCounts.get(tid) || 1) - 1;
+  if (n <= 0) activeTaskCounts.delete(tid);
+  else activeTaskCounts.set(tid, n);
+}
 /** When false, UI only gets consumer labels (failedStep/detail/polls stay on console). */
 let detailedLogs = true;
 let emit = () => {};
@@ -869,14 +888,32 @@ function buildPayload(job) {
 
 function enqueue(jobs) {
   const list = Array.isArray(jobs) ? jobs : [jobs];
+  // Snapshot before this batch — quantity>1 siblings share a task id and must all enqueue.
+  const priorActive = new Set(activeTaskCounts.keys());
+  let skipped = 0;
   for (const job of list) {
+    const tid = job?.task?.id;
+    // Same task row already live from a previous start → skip (double-click / double fire).
+    if (tid && priorActive.has(tid)) {
+      skipped += 1;
+      console.warn(`[desktop:run] skip duplicate enqueue taskId=${tid}`);
+      emit({
+        type: "job",
+        phase: "log",
+        taskId: tid,
+        level: "warn",
+        message: "Already running — skipped duplicate start",
+      });
+      continue;
+    }
+    acquireTaskId(tid);
     queue.push({
       ...job,
       runId: job.runId || id("run"),
       enqueuedAt: Date.now(),
     });
   }
-  emit({ type: "queue", ...state() });
+  emit({ type: "queue", ...state(), skippedDuplicates: skipped || undefined });
   pump();
 }
 
@@ -889,6 +926,7 @@ function start() {
 function stop() {
   running = false;
   queue = [];
+  activeTaskCounts.clear();
   emit({ type: "runner", ...state(), message: "stopped — queue cleared" });
 }
 
@@ -1079,9 +1117,19 @@ function finishResult(job, res, summary) {
     areaItemNo: res?.areaItemNo ?? null,
     productCode: res?.productCode ?? null,
     cartHoldAt: res?.cartHoldAt ?? res?.heldCart?.cartHoldAt ?? null,
-    heldPayRetry: Boolean(res?.heldPayRetry),
+    // Decline / already-submitted must never look like held retry pay.
+    heldPayRetry:
+      outcome.code === "declined" || outcome.code === "held_cart_gone"
+        ? false
+        : Boolean(res?.heldPayRetry),
     heldCartGone: Boolean(res?.heldCartGone),
-    heldCart: res?.heldCart || null,
+    heldCart:
+      outcome.code === "declined" || outcome.code === "held_cart_gone"
+        ? null
+        : res?.heldCart || null,
+    chargeReqCount: res?.chargeReqCount ?? null,
+    undiciAttempts: res?.undiciAttempts ?? null,
+    responseLost: Boolean(res?.responseLost),
     loginCheck: Boolean(res?.loginCheck),
     atcWallMs: res?.atcWallMs ?? null,
     transactionId: res?.transactionId || res?.geTransactionId || null,
@@ -1955,6 +2003,18 @@ async function runOneBandai(job, { sticky, entries }) {
       if (decision.liveLabel && decision.liveLabel !== result.consumerLabel) {
         result = { ...result, consumerLabel: decision.liveLabel, consumerCode: decision.consumerCode || result.consumerCode };
       }
+      // Hard decline / pay already submitted — never keep a held-cart retry latch.
+      if (
+        job.task &&
+        (decision.reason === "hard_decline" ||
+          decision.reason === "pay_already_submitted" ||
+          decision.consumerCode === "declined" ||
+          result.consumerCode === "declined")
+      ) {
+        job.task.heldCart = null;
+        job.task.bandaiPayFromCart = false;
+        result = { ...result, heldCart: null, heldPayRetry: false };
+      }
       break;
     }
 
@@ -2021,10 +2081,11 @@ async function runOneBandai(job, { sticky, entries }) {
 }
 
 async function runOne(job) {
+  const tid = job?.task?.id || null;
   emit({
     type: "job",
     phase: "start",
-    taskId: job.task?.id,
+    taskId: tid,
     runId: job.runId,
     label: job.task?.label || job.task?.pdpUrl,
     consumerLabel: "Starting",
@@ -2052,6 +2113,17 @@ async function runOne(job) {
       ? await runOneBandai(job, { sticky, entries })
       : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
 
+    // Decline → drop in-memory hold so Retry pay cannot re-fire on stale cartSn.
+    if (
+      isBandai &&
+      job.task &&
+      (result?.consumerCode === "declined" ||
+        /^declined$/i.test(String(result?.checkoutStage || "")))
+    ) {
+      job.task.heldCart = null;
+      job.task.bandaiPayFromCart = false;
+    }
+
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   } catch (e) {
@@ -2059,7 +2131,7 @@ async function runOne(job) {
     console.error(`[desktop:run] executor threw: ${debugError}`);
     const result = {
       ok: false,
-      taskId: job.task?.id,
+      taskId: tid,
       runId: job.runId,
       error: "Something went wrong",
       consumerLabel: "Something went wrong",
@@ -2068,9 +2140,11 @@ async function runOne(job) {
       debugError,
       at: Date.now(),
     };
-    emitLog(job.runId, job.task?.id, "err", result.consumerLabel);
+    emitLog(job.runId, tid, "err", result.consumerLabel);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
+  } finally {
+    releaseTaskId(tid);
   }
 }
 

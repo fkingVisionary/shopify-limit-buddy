@@ -82,6 +82,21 @@ test("hard decline → stop", () => {
   assert.match(d.liveLabel, /declined|Payment declined/i);
 });
 
+test("RESPONSE_LOST / pay already submitted → stop (no second charge)", () => {
+  const d = classifyBandaiRunResult({
+    ok: false,
+    paymentStatus: "pay_submitted_no_response",
+    checkoutStage: "tokenize",
+    chargeReqCount: 1,
+    responseLost: true,
+    debugError: "RESPONSE_LOST posts=1 — check bank",
+    note: "HTTP issuer POST in-flight/sent but response lost",
+  });
+  assert.equal(d.action, "stop");
+  assert.equal(d.reason, "pay_already_submitted");
+  assert.notEqual(d.retryPay, true);
+});
+
 test("OOS → wait_restock", () => {
   const d = classifyBandaiRunResult(
     {

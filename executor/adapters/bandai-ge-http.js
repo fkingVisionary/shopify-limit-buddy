@@ -722,8 +722,12 @@ export function buildBandaiGeTiming(timeline = [], steps = [], totalMs = 0) {
 }
 
 /**
- * Block browser/iframe HandleCreditCard* so only our intentional undici/page
- * issuer POST can hit the PSP (stops Revolut doubles from live GEM iframe).
+ * Block browser/iframe HandleCreditCard* so only our intentional issuer POST
+ * (undici or Playwright APIRequestContext) can hit the PSP.
+ *
+ * APIRequestContext bypasses page routes — keep this block active through pay.
+ * Unrouting before page-issuer let GEM iframe fire a 2nd HandleCreditCard
+ * (app posts=1, Revolut pair) — 2026-08-01 live tx=172341111 sameCart=False.
  */
 async function installBrowserIssuerBlock(page) {
   const context = page?.context?.();
@@ -1004,7 +1008,7 @@ export function buildIssuerFormBody(opts = {}) {
   params.set("PaymentData.gatewayId", String(opts.gatewayId || "2"));
   params.set("PaymentData.paymentMethodId", String(opts.paymentMethodId || "1"));
   params.set("PaymentData.machineId", String(opts.machineId || ""));
-  // Form default is "true". Opt false to probe GE soft-decline dual-rail.
+  // Browser CreditCardForm defaults this to "true". Keep that unless explicitly off.
   const createTxn =
     opts.createTransaction === false || opts.createTransaction === "false"
       ? "false"
@@ -1040,82 +1044,49 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
   if (!body) return { ok: false, error: "body_required", via: "page-ge-issuer" };
   const t0 = Date.now();
   try {
-    // Prefer Playwright APIRequestContext — page.evaluate(fetch) often hides
-    // 302 Location (opaqueredirect), which forced undici fallback.
+    // MUST use APIRequestContext — it bypasses page routes so we can keep the
+    // browser HandleCreditCard block active (GEM iframe dual-rail fix).
+    // Never page.evaluate(fetch): that hits routes and/or races live GEM JS.
     const api = page.context()?.request || page.request;
+    if (!api?.post) {
+      return {
+        ok: false,
+        error: "page_api_request_required",
+        via: "page-ge-issuer",
+        ms: Date.now() - t0,
+        note: "Refuse evaluate(fetch) issuer — dual-rail risk with browser block",
+      };
+    }
     let status = 0;
     let location = "";
     let text = "";
-    if (api?.post) {
-      const res = await api.post(url, {
-        data: body,
-        headers: {
-          accept: "text/html,application/xhtml+xml,application/json,*/*",
-          "content-type":
-            opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
-          origin: BANDAI_GE_SECURE,
-          referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
-        },
-        maxRedirects: 0,
-        timeout: Math.min(60_000, Number(opts.timeoutMs) || 45_000),
-      });
-      status = res.status();
-      location =
-        res.headers()?.location ||
-        res.headers()?.Location ||
-        (typeof res.headerValue === "function"
-          ? (await res.headerValue("location").catch(() => null)) || ""
-          : "") ||
-        "";
-      text = await res.text().catch(() => "");
-      // Some Playwright builds follow anyway — scrape Object moved / body.
-      if (!location) {
-        const m = String(text || "").match(
-          /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
-        );
-        if (m) location = m[1];
-      }
-    } else {
-      const result = await page.evaluate(
-        async ({ url: u, body: b, referer, contentType }) => {
-          const res = await fetch(u, {
-            method: "POST",
-            headers: {
-              accept: "text/html,application/xhtml+xml,application/json,*/*",
-              "content-type":
-                contentType || "application/x-www-form-urlencoded; charset=UTF-8",
-              origin: "https://secure-bandai.global-e.com",
-              referer:
-                referer || "https://secure-bandai.global-e.com/payments/CreditCardForm/",
-            },
-            body: b,
-            redirect: "manual",
-            credentials: "include",
-          });
-          const t = await res.text().catch(() => "");
-          return {
-            status: res.status,
-            location: res.headers.get("location") || "",
-            bodySnippet: String(t || "").replace(/\s+/g, " ").slice(0, 240),
-            body: t,
-          };
-        },
-        {
-          url,
-          body,
-          referer: opts.referer || null,
-          contentType: opts.contentType || null,
-        },
+    const res = await api.post(url, {
+      data: body,
+      headers: {
+        accept: "text/html,application/xhtml+xml,application/json,*/*",
+        "content-type":
+          opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
+        origin: BANDAI_GE_SECURE,
+        referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
+      },
+      maxRedirects: 0,
+      timeout: Math.min(60_000, Number(opts.timeoutMs) || 45_000),
+    });
+    status = res.status();
+    location =
+      res.headers()?.location ||
+      res.headers()?.Location ||
+      (typeof res.headerValue === "function"
+        ? (await res.headerValue("location").catch(() => null)) || ""
+        : "") ||
+      "";
+    text = await res.text().catch(() => "");
+    // Some Playwright builds follow anyway — scrape Object moved / body.
+    if (!location) {
+      const m = String(text || "").match(
+        /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
       );
-      status = result.status;
-      location = result.location || "";
-      text = result.body || result.bodySnippet || "";
-      if (!location) {
-        const m = String(text || "").match(
-          /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
-        );
-        if (m) location = m[1];
-      }
+      if (m) location = m[1];
     }
 
     const redirectUrl = location || null;
@@ -1726,14 +1697,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
       forterBytes: forterToken ? String(forterToken).length : 0,
       cookieKeys: jarNames.slice(0, 40),
     });
-    // Prefer page issuer after riskHydrate (same cookies/TLS as mint). Undici
-    // after page-drop often → DataCorruption / IsTheSameCartToken=False.
+    // Bible Fast: undici issuer after riskHydrate + page drop. Page issuer is
+    // opt-in only (preferPageIssuer===true). Defaulting page issuer produced
+    // Revolut pairs with posts=1 / sameCart=False while phone stayed single.
     const preferPageIssuer =
-      opts.preferPageIssuer === true ||
-      (opts.preferPageIssuer !== false &&
-        riskHydrate &&
-        Boolean(opts.page) &&
-        opts.forceUndiciIssuer !== true);
+      opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
     const keepPage =
       preferPageIssuer ||
       opts.keepPageAfterIovation === true ||
@@ -2212,34 +2180,38 @@ export async function runBandaiGeHttpPay(opts = {}) {
   });
 
   // Hard-lock single issuer POST.
-  // Root cause of Revolut pairs (2026-07-22): undici retried POST after proxy
-  // RST once GE had already authorized — app saw posts=1, bank saw 2.
-  // Also: no live CreditCardForm iframe by default; close Playwright before pay.
+  // Revolut pairs with app posts=1:
+  //  (1) undici retry on RST after GE already authorized (retry:false)
+  //  (2) page-issuer unroute → GEM iframe 2nd HandleCreditCard (2026-08-01)
+  // Keep browserIssuerBlock through pay; park page so GEM JS cannot race.
   let framesNeutralized = 0;
   let issuerPostCount = 0;
   let issuer = null;
   try {
+    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
     if (issuerPage) {
+      // Sync jar first (page issuer needs undici save/CC cookies on the context).
+      if (usePageIssuer) {
+        await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
+      }
       framesNeutralized = await neutralizeGePaymentFrames(issuerPage);
+      // Always park — kill CreditCardForm/Checkout GEM before the one POST.
+      // APIRequestContext cookies survive about:blank.
+      await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
       mark("ge_issuer_lock", {
         framesNeutralized,
         browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
-        preferPageIssuer: opts.preferPageIssuer === true,
+        preferPageIssuer: usePageIssuer,
+        browserBlockKept: true,
+        pageParked: true,
         mergeIovationCookies: opts.mergeIovationCookies === true,
       });
-      // Park Checkout/v2 away from payment UI before undici issuer (no GEM race).
-      if (opts.preferPageIssuer !== true) {
-        await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
-        mark("ge_browser_parked_before_issuer", { ok: true });
-      }
     }
 
-    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
     issuerPostCount = 1;
     if (usePageIssuer) {
-      // Push undici save/CC session cookies into Playwright before page issuer.
-      await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
-      await browserIssuerBlock.unroute();
+      // DO NOT unroute browserIssuerBlock — page.request bypasses routes;
+      // unrouting was the dual-rail (iframe + intentional POST).
       issuer = await postBandaiGeIssuerViaPage({
         page: issuerPage,
         url: issuerUrl,
