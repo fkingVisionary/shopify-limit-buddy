@@ -1529,6 +1529,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     skipHydrateMutations ||
     opts.skipHandleActions === true ||
     process.env.BANDAI_GE_TEST_SKIP_HANDLEACTION === "1";
+  // Keep handleaction 1 (shipping pick) but skip 2/3 (tax/totals) — dual-arm binary search.
+  const skipHandleActionsAfter1 =
+    !skipHandleActions &&
+    (opts.skipHandleActionsAfter1 === true ||
+      process.env.BANDAI_GE_TEST_SKIP_HANDLEACTION_2_3 === "1");
   const skipCheckoutSave =
     skipHydrateMutations ||
     opts.skipCheckoutSave === true ||
@@ -1540,10 +1545,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
       /* ignore */
     }
   }
-  if (skipHydrateMutations || skipHandleActions || skipCheckoutSave) {
+  if (
+    skipHydrateMutations ||
+    skipHandleActions ||
+    skipHandleActionsAfter1 ||
+    skipCheckoutSave
+  ) {
     try {
       console.log(
-        `[bandai-ge-http-TEST] hydrate skips handleaction=${skipHandleActions} save=${skipCheckoutSave}`,
+        `[bandai-ge-http-TEST] hydrate skips handleaction=${skipHandleActions} ha2_3=${skipHandleActionsAfter1} save=${skipCheckoutSave}`,
       );
     } catch {
       /* ignore */
@@ -1891,57 +1901,65 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
   // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
   // TEST: skip handleaction POSTs (dual-auth arming binary search).
+  // SKIP_HANDLEACTION_2_3 keeps only action 1 (shipping) so save can succeed.
   if (!skipHandleActions) {
-  for (const actionId of [1, 2, 3]) {
-    const bodies = buildHandleActionBodies(form, {
-      cartToken: guid,
-      shippingMethodId,
-      paymentMethodId: form.selectedPaymentMethodId || "1",
-    });
-    const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
-    const ha = await httpText(haUrl, {
-      ctx,
-      method: "POST",
-      userAgent: opts.userAgent,
-      accept: "application/json, text/plain, */*",
-      headers: {
-        origin: BANDAI_GE_WEBSERVICES,
-        referer: v2Url,
-        "content-type": "application/json",
-        "x-requested-with": "XMLHttpRequest",
-        "X-merchantId": String(mid),
-      },
-      body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
-    });
-    let haJson = null;
-    try {
-      haJson = JSON.parse(String(ha.text || ""));
-    } catch {
-      haJson = null;
+    const handleActionIds = skipHandleActionsAfter1 ? [1] : [1, 2, 3];
+    for (const actionId of handleActionIds) {
+      const bodies = buildHandleActionBodies(form, {
+        cartToken: guid,
+        shippingMethodId,
+        paymentMethodId: form.selectedPaymentMethodId || "1",
+      });
+      const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
+      const ha = await httpText(haUrl, {
+        ctx,
+        method: "POST",
+        userAgent: opts.userAgent,
+        accept: "application/json, text/plain, */*",
+        headers: {
+          origin: BANDAI_GE_WEBSERVICES,
+          referer: v2Url,
+          "content-type": "application/json",
+          "x-requested-with": "XMLHttpRequest",
+          "X-merchantId": String(mid),
+        },
+        body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
+      });
+      let haJson = null;
+      try {
+        haJson = JSON.parse(String(ha.text || ""));
+      } catch {
+        haJson = null;
+      }
+      if (actionId === 1) {
+        const picked = pickShippingMethodId(haJson);
+        if (picked) shippingMethodId = picked;
+        hydrateShippingOk = Boolean(
+          ha.ok &&
+            (haJson?.success === true ||
+              haJson?.Success === true ||
+              haJson?.exists === true ||
+              (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
+        );
+      }
+      if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
+      push(`ge_handleaction_${actionId}`, {
+        ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
+        status: ha.status,
+        ms: ha.ms,
+        note: (
+          actionId === 1
+            ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} addr=${form.hasAddress} state=${form.shipping?.StateId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
+            : String(ha.text || "").replace(/\s+/g, " ")
+        ).slice(0, 200),
+      });
     }
-    if (actionId === 1) {
-      const picked = pickShippingMethodId(haJson);
-      if (picked) shippingMethodId = picked;
-      hydrateShippingOk = Boolean(
-        ha.ok &&
-          (haJson?.success === true ||
-            haJson?.Success === true ||
-            haJson?.exists === true ||
-            (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
-      );
+    if (skipHandleActionsAfter1) {
+      push("ge_handleaction_2_3_skipped", {
+        ok: true,
+        note: "TEST — handleaction 2/3 skipped (kept 1 for shipping)",
+      });
     }
-    if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
-    push(`ge_handleaction_${actionId}`, {
-      ok: ha.ok && (actionId !== 1 || hydrateShippingOk || haJson?.success !== false),
-      status: ha.status,
-      ms: ha.ms,
-      note: (
-        actionId === 1
-          ? `shipOk=${hydrateShippingOk} method=${shippingMethodId || "none"} addr=${form.hasAddress} state=${form.shipping?.StateId || "none"} ${String(ha.text || "").replace(/\s+/g, " ")}`
-          : String(ha.text || "").replace(/\s+/g, " ")
-      ).slice(0, 200),
-    });
-  }
   } else {
     hydrateShippingOk = true;
     push("ge_handleaction_skipped", {
