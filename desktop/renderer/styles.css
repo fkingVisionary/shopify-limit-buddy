@@ -1302,6 +1302,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   padding: 7px 10px;
   font-size: 12px;
 }
+.table-search {
+  width: min(220px, 42vw);
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--fg);
+  padding: 6px 10px;
+  font-size: 12.5px;
+}
+.table-search::placeholder {
+  color: var(--muted-2);
+}
 kbd {
   display: inline-block;
   padding: 1px 5px;
