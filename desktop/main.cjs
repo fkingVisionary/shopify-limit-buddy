@@ -3638,6 +3638,131 @@ async function e2eAutorun() {
 
   let remaining = jobs.length;
   const results = [];
+  const skuPoolPath = path.join(path.dirname(outPath), "e2e-sku-pool.json");
+  const reachedPayment = (r) => {
+    if (!r) return false;
+    if (r.transactionId && String(r.transactionId) !== "0") return true;
+    if (/declined|auth_failed|fraud/i.test(String(r.paymentStatus || ""))) return true;
+    if (/^(tokenize|threeds|declined|payment)$/i.test(String(r.checkoutStage || ""))) return true;
+    if (/ge_payment|tokenize|threeds|place_order|charge/i.test(String(r.failedStep || ""))) {
+      return true;
+    }
+    if (/Payment declined|declined/i.test(String(r.consumerLabel || r.error || ""))) return true;
+    // GetCartToken / GE after cart hold counts as payment path once ATC worked.
+    const steps = Array.isArray(r.lastSteps) ? r.lastSteps : [];
+    if (steps.some((s) => /ge_payment|threeds|place_order/i.test(String(s.step || "")))) {
+      return true;
+    }
+    return false;
+  };
+  const isOosEnd = (r) => {
+    if (!r || r.ok) return false;
+    if (r.stockStatus === "oos" || r.consumerCode === "oos") return true;
+    const blob = [r.error, r.debugError, r.consumerLabel, r.failedStep, ...(r.lastSteps || []).map((s) => s.note)]
+      .filter(Boolean)
+      .join("\n");
+    return /EndOfSale|SoldOut|OutOfStock|CouldNotAddToCartBy(SoldOut|OutOfStock|EndOfSale)/i.test(blob);
+  };
+  const advanceSkuAndRequeue = (taskId) => {
+    let poolDoc = null;
+    try {
+      poolDoc = JSON.parse(fs.readFileSync(skuPoolPath, "utf8"));
+    } catch {
+      return null;
+    }
+    const pool = Array.isArray(poolDoc?.pool) ? poolDoc.pool : [];
+    let idx = Number(poolDoc.index) + 1;
+    if (!Number.isFinite(idx) || idx < 0) idx = 1;
+    if (idx >= pool.length) return null;
+    const next = pool[idx];
+    if (!next?.sku) return null;
+    const t = state.db.tasks.find((x) => x.id === taskId);
+    const baseJob = jobs.find((j) => j.task?.id === taskId) || jobs[0];
+    if (!t || !baseJob) return null;
+    t.bandaiWatchSku = next.sku;
+    t.pdpUrl = `https://p-bandai.com/au/item/${next.sku}`;
+    t.label = `${next.sku} · ${next.title || next.sku}`.slice(0, 120);
+    t.bandaiAreaItemNo = next.areaItemNo || null;
+    t.heldCart = null;
+    t.bandaiPayFromCart = false;
+    t.lastStatus = "idle";
+    t.lastLabel = null;
+    t.lastError = null;
+    t.updatedAt = Date.now();
+    persistDb();
+    poolDoc.index = idx;
+    fs.writeFileSync(skuPoolPath, JSON.stringify(poolDoc, null, 2));
+    const taskCopy = {
+      ...baseJob.task,
+      ...t,
+      placeOrder,
+      pwEdgeRetries: 5,
+      heldCart: null,
+      bandaiPayFromCart: false,
+      account: baseJob.task.account,
+      accountAssignSource: baseJob.task.accountAssignSource,
+    };
+    const job = {
+      ...baseJob,
+      task: taskCopy,
+      placeOrder,
+    };
+    console.log(
+      "[e2e] OOS → next SKU",
+      JSON.stringify({ sku: next.sku, index: idx, poolSize: pool.length }),
+    );
+    remaining += 1;
+    runner.enqueue([job]);
+    return next;
+  };
+  const finishE2e = () => {
+    const bankHit = results.some(
+      (r) =>
+        r.transactionId &&
+        String(r.transactionId) !== "0" &&
+        !/RELOAD_ONLY|DataCorruption/i.test(String(r.note || "")),
+    );
+    const paymentAttempted = results.some(reachedPayment);
+    const payload = {
+      ok: results.some((r) => r.ok) || paymentAttempted,
+      bankHit,
+      paymentAttempted,
+      viaElectron: true,
+      results,
+      at: Date.now(),
+    };
+    require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
+    console.log(
+      "[e2e] wrote",
+      outPath,
+      "ok=",
+      payload.ok,
+      "bankHit=",
+      bankHit,
+      "paymentAttempted=",
+      paymentAttempted,
+    );
+    void (async () => {
+      try {
+        if (win) {
+          await win.webContents.executeJavaScript(
+            `document.querySelector('[data-tab="tasks"]')?.click(); true`,
+          );
+          await new Promise((r) => setTimeout(r, 400));
+          const shotDir = path.dirname(outPath);
+          fs.mkdirSync(shotDir, { recursive: true });
+          const png = await win.capturePage();
+          const shotPath = path.join(shotDir, "e2e-tasks-final.png");
+          fs.writeFileSync(shotPath, png.toPNG());
+          console.log("[e2e] screenshot", shotPath);
+        }
+      } catch (e) {
+        console.warn("[e2e] screenshot failed", e?.message || e);
+      } finally {
+        setTimeout(() => app.quit(), 300);
+      }
+    })();
+  };
   runner.setFinishedHandler((result) => {
     // Preserve normal persist path then capture for e2e.
     state.db.results.unshift({
@@ -3708,44 +3833,12 @@ async function e2eAutorun() {
         remaining,
       }),
     );
-    if (remaining <= 0) {
-      const bankHit = results.some(
-        (r) =>
-          r.transactionId &&
-          String(r.transactionId) !== "0" &&
-          !/RELOAD_ONLY|DataCorruption/i.test(String(r.note || "")),
-      );
-      const payload = {
-        ok: results.every((r) => r.ok),
-        bankHit,
-        viaElectron: true,
-        results,
-        at: Date.now(),
-      };
-      require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
-      console.log("[e2e] wrote", outPath, "ok=", payload.ok, "bankHit=", bankHit);
-      // Best-effort Tasks screenshot before quit (for cloud/agent proof).
-      void (async () => {
-        try {
-          if (win) {
-            await win.webContents.executeJavaScript(
-              `document.querySelector('[data-tab="tasks"]')?.click(); true`,
-            );
-            await new Promise((r) => setTimeout(r, 400));
-            const shotDir = path.dirname(outPath);
-            fs.mkdirSync(shotDir, { recursive: true });
-            const png = await win.capturePage();
-            const shotPath = path.join(shotDir, "e2e-tasks-final.png");
-            fs.writeFileSync(shotPath, png.toPNG());
-            console.log("[e2e] screenshot", shotPath);
-          }
-        } catch (e) {
-          console.warn("[e2e] screenshot failed", e?.message || e);
-        } finally {
-          setTimeout(() => app.quit(), 300);
-        }
-      })();
+    // Catalog items are often EndOfSale — advance SKU until payment (expect decline).
+    if (!reachedPayment(result) && isOosEnd(result) && result.taskId) {
+      const next = advanceSkuAndRequeue(result.taskId);
+      if (next) return;
     }
+    if (remaining <= 0) finishE2e();
   });
 
   runner.enqueue(jobs);

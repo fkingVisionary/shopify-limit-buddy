@@ -50,7 +50,7 @@ function isOutOfStock(res) {
   const text = [stepText(res), res?.debugError, res?.note].filter(Boolean).join("\n");
   if (/Access Denied|AkamaiGHost|akamai_unsolved/i.test(text)) return false;
   if (
-    /out\s*of\s*stock|sold\s*out|SoldOut|CouldNotAddToCartBy(SoldOut|OutOfStock)|not\s+available|unavailable|INSUFFICIENT|no\s+stock|OOS\b/i.test(
+    /out\s*of\s*stock|sold\s*out|SoldOut|EndOfSale|CouldNotAddToCartBy(SoldOut|OutOfStock|EndOfSale)|not\s*available|unavailable|INSUFFICIENT|no\s+stock|OOS\b/i.test(
       text,
     )
   ) {

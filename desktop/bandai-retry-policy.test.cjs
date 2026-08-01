@@ -96,6 +96,20 @@ test("OOS → wait_restock", () => {
   assert.match(d.liveLabel, /waiting|Out of stock/i);
 });
 
+test("EndOfSale → stop (do not burn loops)", () => {
+  const d = classifyBandaiRunResult(
+    {
+      ok: false,
+      failedStep: "addToCart",
+      debugError: "CouldNotAddToCartByEndOfSale cart=[]",
+      lastSteps: [{ step: "addToCart", ok: false, note: "CouldNotAddToCartByEndOfSale cart=[]" }],
+    },
+    { mode: "checkout" },
+  );
+  assert.equal(d.action, "stop");
+  assert.equal(d.consumerCode, "oos");
+});
+
 test("success → stop", () => {
   const d = classifyBandaiRunResult({ ok: true, orderNumber: "X1" });
   assert.equal(d.action, "stop");

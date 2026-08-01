@@ -252,8 +252,18 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
-  // OOS → wait (monitor or checkout lane)
+  // OOS → wait (monitor or checkout lane). EndOfSale is final for that SKU —
+  // stop so e2e/SKU cycling can move on instead of burning maxLoops.
   if (isOutOfStock(res)) {
+    if (/EndOfSale|CouldNotAddToCartByEndOfSale/i.test(resultBlob(res))) {
+      return {
+        action: "stop",
+        liveLabel: "Out of stock",
+        reason: "end_of_sale",
+        delayMs: 0,
+        consumerCode: "oos",
+      };
+    }
     return {
       action: "wait_restock",
       liveLabel: mode === "monitor" ? "Waiting for restock" : "Out of stock — waiting",
