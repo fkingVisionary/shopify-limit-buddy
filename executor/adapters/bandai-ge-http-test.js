@@ -1,11 +1,11 @@
 /**
- * EXPERIMENTAL FORK of bandai-ge-http.js — used only by
- * bandaiCheckoutMode=autocheckout_test.
+ * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
+ * Keep this file a near-copy of production Fast; one lab delta at a time.
  *
- * Production Fast Autocheckout still imports bandai-ge-http.js unchanged.
- * Dual-charge experiments land here so we never risk the shipping pay path.
+ * Current delta (2026-08-02): after riskHydrate mint+blank on guid A, re-GetCartToken
+ * and pay on guid B. Prod Fast mints on the live pay guid (bible header says not to).
  *
- * Keep in sync manually when promoting a proven fix back to bandai-ge-http.js.
+ * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
 import { request } from "../http.js";
@@ -128,34 +128,6 @@ function cookieHeaderFromJar(jar) {
   return Object.entries(dump)
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
-}
-
-/**
- * Chrome HAR (secure-bandai HandleCreditCard): Cookie was only
- * GlobalE_Data + __cf_bm. Bot Fast dumps the entire name-keyed jar
- * (Bandai + Forter + iovation + GE) onto the issuer POST — dual-auth suspect.
- */
-function slimIssuerCookieHeader(jar, opts = {}) {
-  const dump =
-    jar && typeof jar.dump === "function"
-      ? jar.dump() || {}
-      : typeof opts.cookies === "object" && opts.cookies
-        ? opts.cookies
-        : {};
-  const allow = Array.isArray(opts.allow)
-    ? opts.allow
-    : ["GlobalE_Data", "__cf_bm", "GlobalE_CT_Data", "GlobalE_Data_Extension"];
-  const parts = [];
-  for (const name of allow) {
-    if (dump[name] != null && dump[name] !== "") {
-      parts.push(`${name}=${dump[name]}`);
-    }
-  }
-  // Always prefer GlobalE_Data if present even when allow list empty.
-  if (!parts.length && dump.GlobalE_Data) {
-    parts.push(`GlobalE_Data=${dump.GlobalE_Data}`);
-  }
-  return parts.join("; ");
 }
 
 async function httpText(url, opts = {}) {
@@ -1054,13 +1026,7 @@ export function buildIssuerFormBody(opts = {}) {
   params.set("PaymentData.customerScreenColorDepth", String(opts.colorDepth || "24"));
   params.set("PaymentData.customerScreenWidth", String(opts.screenWidth || "1280"));
   params.set("PaymentData.customerScreenHeight", String(opts.screenHeight || "800"));
-  // Chrome HAR (2026-08-02): browser posts real getTimezoneOffset() (e.g. -600 AEST),
-  // not "0". Prod Fast still defaults 0 — only this test fork matches browser.
-  const tz =
-    opts.tzOffset != null && opts.tzOffset !== ""
-      ? opts.tzOffset
-      : new Date().getTimezoneOffset();
-  params.set("PaymentData.customerTimeZoneOffset", String(tz));
+  params.set("PaymentData.customerTimeZoneOffset", String(opts.tzOffset || "0"));
   params.set("PaymentData.customerLanguage", opts.language || "en-AU");
   params.set("PaymentData.UrlStructureTokenEncoded", String(opts.urlStructureToken || ""));
   params.set("PaymentData.IsValidationMessagesV2", "true");
@@ -1188,254 +1154,6 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
 }
 
 /**
- * Real Chromium form navigation to HandleCreditCard (document POST).
- * Undici + page.request both still dual-charged on Revolut with posts=1;
- * Chrome HAR single-auth was a form navigation (sec-fetch-mode:navigate).
- *
- * One-shot route allow: all other GE mutates stay 204 so GEM cannot dual-rail.
- */
-export async function postBandaiGeIssuerViaFormNav(opts = {}) {
-  const page = opts.page;
-  const ccUrl = String(opts.ccUrl || opts.referer || "");
-  const issuerUrl = String(opts.url || "");
-  const body = String(opts.body || "");
-  if (!page) return { ok: false, error: "page_required", via: "form-nav-issuer" };
-  if (!ccUrl || !/CreditCardForm|secure-bandai/i.test(ccUrl)) {
-    return { ok: false, error: "ccUrl_required", via: "form-nav-issuer" };
-  }
-  if (!isBandaiGeIssuerPaymentUrl(issuerUrl)) {
-    return { ok: false, error: "not_issuer_url", via: "form-nav-issuer" };
-  }
-  if (!body) return { ok: false, error: "body_required", via: "form-nav-issuer" };
-
-  const t0 = Date.now();
-  const flags = issuerBodyFlags(body);
-  const fields = Object.fromEntries(new URLSearchParams(body));
-  payForensics("psp_post_start", {
-    via: "form-nav-issuer",
-    store: "bandai",
-    desktopTaskId: opts.desktopTaskId || null,
-    desktopRunId: opts.desktopRunId || null,
-    desktopAttempt: opts.desktopAttempt || null,
-    executorTaskId: opts.executorTaskId || null,
-    issuerHost: (() => {
-      try {
-        return new URL(issuerUrl).host;
-      } catch {
-        return null;
-      }
-    })(),
-    bodyBytes: body.length,
-    ...flags,
-  });
-
-  const context = page.context?.();
-  if (!context?.route) {
-    return { ok: false, error: "context_route_required", via: "form-nav-issuer", ms: Date.now() - t0 };
-  }
-
-  let allowIssuer = 0;
-  let seenIssuer = 0;
-  const geMatch = (url) => /global-e\.com/i.test(url.href || String(url));
-  const handler = async (route) => {
-    const req = route.request();
-    const method = String(req.method() || "GET").toUpperCase();
-    const url = req.url();
-    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
-      await route.continue();
-      return;
-    }
-    const issuer = isBandaiGeIssuerPaymentUrl(url);
-    if (issuer && allowIssuer > 0) {
-      allowIssuer -= 1;
-      seenIssuer += 1;
-      await route.continue();
-      return;
-    }
-    // Mute everything else (including extra issuer attempts).
-    await route.fulfill({
-      status: 204,
-      contentType: "text/plain",
-      body: "",
-    });
-  };
-
-  try {
-    await context.route(geMatch, handler);
-    if (opts.jar) {
-      await syncJarToPage(page, opts.jar).catch(() => 0);
-    }
-
-    await page.goto(ccUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
-
-    await page.evaluate((vals) => {
-      const set = (name, val) => {
-        if (val == null) return;
-        const el = document.querySelector(`[name="${name}"]`);
-        if (!el) return;
-        el.value = String(val);
-        el.dispatchEvent(new Event("input", { bubbles: true }));
-        el.dispatchEvent(new Event("change", { bubbles: true }));
-      };
-      for (const [k, v] of Object.entries(vals || {})) {
-        if (/cardNum|cvdNumber|cardExpiry|PaymentData\./i.test(k)) set(k, v);
-      }
-      // Prefer DOM machineId if snare filled it; else keep whatever we set.
-      const mid = document.querySelector('[name="PaymentData.machineId"]');
-      if (mid && !mid.value && vals["PaymentData.machineId"]) {
-        mid.value = vals["PaymentData.machineId"];
-      }
-    }, fields);
-
-    allowIssuer = 1;
-    let status = 0;
-    let redirectUrl = null;
-    let text = "";
-    try {
-      const [resp] = await Promise.all([
-        page.waitForResponse(
-          (r) =>
-            /HandleCreditCard/i.test(r.url()) &&
-            String(r.request().method() || "").toUpperCase() === "POST",
-          { timeout: Math.min(180_000, Number(opts.timeoutMs) || 120_000) },
-        ),
-        page.evaluate(() => {
-          const form = document.querySelector("form");
-          if (!form) throw new Error("no_form");
-          if (form.requestSubmit) form.requestSubmit();
-          else form.submit();
-        }),
-      ]);
-      status = resp.status();
-      text = await resp.text().catch(() => "");
-      redirectUrl =
-        resp.headers()?.location ||
-        resp.headers()?.Location ||
-        null;
-      if (!redirectUrl) {
-        try {
-          redirectUrl = page.url();
-        } catch {
-          /* ignore */
-        }
-      }
-      if (!redirectUrl || !/CCPaymentRedirect/i.test(String(redirectUrl))) {
-        const m = String(text || "").match(
-          /href=["']([^"']*CCPaymentRedirect[^"']*)["']/i,
-        );
-        if (m) redirectUrl = m[1];
-      }
-      // Navigation may land on redirect URL shortly after 302.
-      if (!/CCPaymentRedirect/i.test(String(redirectUrl || ""))) {
-        await page.waitForTimeout(1500).catch(() => null);
-        try {
-          if (/CCPaymentRedirect/i.test(page.url())) redirectUrl = page.url();
-        } catch {
-          /* ignore */
-        }
-      }
-    } catch (e) {
-      payForensics("psp_post_end", {
-        via: "form-nav-issuer",
-        store: "bandai",
-        desktopTaskId: opts.desktopTaskId || null,
-        desktopRunId: opts.desktopRunId || null,
-        desktopAttempt: opts.desktopAttempt || null,
-        executorTaskId: opts.executorTaskId || null,
-        ok: false,
-        ms: Date.now() - t0,
-        error: String(e?.message || e).slice(0, 160),
-        seenIssuer,
-      });
-      return {
-        ok: false,
-        error: e?.message || "form_nav_issuer_failed",
-        ms: Date.now() - t0,
-        via: "form-nav-issuer",
-        undiciAttempts: seenIssuer || 0,
-        seenIssuer,
-      };
-    }
-
-    const isPaymentRedirect = /CCPaymentRedirect/i.test(String(redirectUrl || ""));
-    const redirectPayload = isPaymentRedirect
-      ? decodeCcPaymentRedirectData(redirectUrl)
-      : null;
-    const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", text || "");
-    const declineOnRedirect = isBandaiGeRedirectDecline(redirectUrl || "", text || "");
-    const ok = Boolean(isPaymentRedirect && (bankSignal || declineOnRedirect));
-    const out = {
-      ok,
-      status,
-      ms: Date.now() - t0,
-      bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 240),
-      redirectUrl: redirectUrl ? String(redirectUrl).slice(0, 320) : null,
-      redirectUrlFull: redirectUrl,
-      redirectPayload,
-      isPaymentRedirect,
-      reloadOnly: Boolean(isPaymentRedirect && !bankSignal && !declineOnRedirect),
-      bankSignal: Boolean(bankSignal || declineOnRedirect),
-      declineOnRedirect,
-      sawAuthWire: Boolean(ok || seenIssuer >= 1),
-      via: "form-nav-issuer",
-      undiciAttempts: Math.max(1, seenIssuer),
-      seenIssuer,
-      error: ok
-        ? null
-        : isPaymentRedirect
-          ? "ge_reload_only_no_bank"
-          : status
-            ? "issuer_form_nav_no_redirect"
-            : "issuer_form_nav_failed",
-    };
-    writeIssuerLast({
-      at: new Date().toISOString(),
-      phase: "response",
-      issuerUrl: issuerUrl.slice(0, 320),
-      status,
-      ok,
-      ms: out.ms,
-      undiciAttempts: out.undiciAttempts,
-      isPaymentRedirect,
-      bankSignal: out.bankSignal,
-      declineOnRedirect,
-      redirectUrl: out.redirectUrl,
-      redirectPayload,
-      via: "form-nav-issuer",
-      seenIssuer,
-    });
-    payForensics("psp_post_end", {
-      via: "form-nav-issuer",
-      store: "bandai",
-      desktopTaskId: opts.desktopTaskId || null,
-      desktopRunId: opts.desktopRunId || null,
-      desktopAttempt: opts.desktopAttempt || null,
-      executorTaskId: opts.executorTaskId || null,
-      status,
-      ok,
-      ms: out.ms,
-      undiciAttempts: out.undiciAttempts,
-      bankSignal: out.bankSignal,
-      ...flags,
-    });
-    return out;
-  } catch (e) {
-    return {
-      ok: false,
-      error: e?.message || "form_nav_issuer_failed",
-      ms: Date.now() - t0,
-      via: "form-nav-issuer",
-    };
-  } finally {
-    try {
-      await context.unroute(geMatch, handler);
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-/**
  * POST HandleCreditCardRequestV2 via undici (optional ctx jar/proxy).
  * Wire often returns 302 → CCPaymentRedirect?Data=JWT.
  * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
@@ -1481,72 +1199,17 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
     return { ok: false, error: "body_required", note: "Need issuer POST body (capture or build)" };
   }
 
-  // Default: match Chrome form navigation (HAR 2026-08-02), not XHR-ish undici.
-  // Opt out with opts.legacyIssuerHeaders=true / BANDAI_GE_TEST_LEGACY_ISSUER_HEADERS=1.
-  const legacyHeaders =
-    opts.legacyIssuerHeaders === true ||
-    process.env.BANDAI_GE_TEST_LEGACY_ISSUER_HEADERS === "1";
-  const navigateAccept =
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7";
   const headers = {
-    accept: legacyHeaders
-      ? "text/html,application/xhtml+xml,application/json,*/*"
-      : navigateAccept,
+    accept: "text/html,application/xhtml+xml,application/json,*/*",
     "content-type":
-      opts.contentType ||
-      (legacyHeaders
-        ? "application/x-www-form-urlencoded; charset=UTF-8"
-        : "application/x-www-form-urlencoded"),
+      opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
     origin: BANDAI_GE_SECURE,
     referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
     "user-agent": opts.userAgent || DEFAULT_UA,
-    "accept-language": "en-AU",
-    ...(legacyHeaders
-      ? {}
-      : {
-          "sec-fetch-dest": "document",
-          "sec-fetch-mode": "navigate",
-          "sec-fetch-site": "same-origin",
-          "sec-fetch-user": "?1",
-          "upgrade-insecure-requests": "1",
-          "cache-control": "max-age=0",
-        }),
     ...(opts.headers || {}),
   };
-  const fullCookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
-  const slimCookies =
-    opts.slimIssuerCookies === false ||
-    process.env.BANDAI_GE_TEST_FULL_ISSUER_COOKIES === "1"
-      ? false
-      : true;
-  const cookie = slimCookies
-    ? slimIssuerCookieHeader(opts.ctx?.jar, { cookies: opts.cookieMap }) || fullCookie
-    : fullCookie;
+  const cookie = opts.cookieHeader || cookieHeaderFromJar(opts.ctx?.jar);
   if (cookie) headers.cookie = cookie;
-  try {
-    const cookieNames = cookie
-      ? cookie.split(";").map((p) => p.trim().split("=")[0]).filter(Boolean)
-      : [];
-    console.log(
-      `[bandai-ge-http-TEST] issuer cookies=${cookieNames.length} [${cookieNames.join(",")}] slim=${slimCookies} legacyHeaders=${legacyHeaders}`,
-    );
-    payForensics("psp_issuer_headers", {
-      via: "http-ge-issuer",
-      store: "bandai",
-      desktopTaskId: opts.desktopTaskId || null,
-      desktopRunId: opts.desktopRunId || null,
-      desktopAttempt: opts.desktopAttempt || null,
-      executorTaskId: opts.executorTaskId || null,
-      cookieCount: cookieNames.length,
-      cookieNames,
-      slimCookies,
-      legacyHeaders,
-      contentType: headers["content-type"],
-      secFetchMode: headers["sec-fetch-mode"] || null,
-    });
-  } catch {
-    /* ignore */
-  }
 
   // GE often holds the TCP stream while the bank auth completes (60–120s+).
   // Default was effectively ~60s proxy/idle flake → "fetch failed" after Revolut
@@ -1821,7 +1484,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const steps = [];
   const timeline = [];
   const t0 = Date.now();
-  // Loud marker so logs never confuse this fork with production Fast.
   try {
     console.log(
       "[bandai-ge-http-TEST] experimental Autocheckout test fork — production bandai-ge-http.js untouched",
@@ -1949,7 +1611,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   let guid = tokenOut.cartToken;
 
-  const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
+  let v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
     ctx,
     userAgent: opts.userAgent,
@@ -1971,7 +1633,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     note: `Checkout/v2 ${v2.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${opts.machineId ? "opts" : htmlMachineId ? "html" : "none"} bytes=${(v2.text || "").length}`,
   });
 
-  const form = applyProfileToGeForm(
+  let form = applyProfileToGeForm(
     parseCheckoutV2Form(v2.text),
     opts.profile || {},
     v2.text,
@@ -2191,6 +1853,72 @@ export async function runBandaiGeHttpPay(opts = {}) {
         mutedIssuerPosts,
       });
     }
+
+    // TEST-ONLY: guid just opened in Playwright is throwaway. Re-GetCartToken so
+    // undici hydrate/issuer runs on a pay guid the browser never loaded.
+    // (Prod Fast header documents this; prod body still mints on the live guid.)
+    if (!issuerPage && mint?.ok !== false) {
+      const mintGuid = guid;
+      const payToken = await getBandaiGeCartToken({
+        ctx,
+        merchantCartToken,
+        merchantId: mid,
+        area,
+        webStoreInstanceCode: area,
+        customerEmail: opts.customerEmail,
+        cultureCode: opts.cultureCode || "en-GB",
+        preferedCultureCode: opts.preferedCultureCode || "en-GB",
+        cookieConsent: opts.cookieConsent,
+        captchaResponseToken: opts.captchaResponseToken,
+        checkoutParams: opts.checkoutParams,
+        userAgent: opts.userAgent,
+        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+      });
+      const payGuid = payToken?.cartToken || null;
+      if (payToken?.ok && payGuid && payGuid !== mintGuid) {
+        guid = payGuid;
+        v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
+        const v2pay = await httpText(v2Url, {
+          ctx,
+          userAgent: opts.userAgent,
+          accept: "text/html,application/xhtml+xml,*/*",
+          headers: {
+            referer: `${BANDAI_GE_WEBSERVICES}/`,
+            "upgrade-insecure-requests": "1",
+          },
+        });
+        form = applyProfileToGeForm(
+          parseCheckoutV2Form(v2pay.text),
+          opts.profile || {},
+          v2pay.text,
+        );
+        shippingMethodId = form.selectedShippingOptionId || shippingMethodId || "";
+        urlStructureToken =
+          extractUrlStructureToken(v2pay.text) || urlStructureToken;
+        const htmlMid2 = extractMachineId(v2pay.text);
+        if (htmlMid2 && !machineId) machineId = htmlMid2;
+        push("ge_pay_guid_rebind", {
+          ok: true,
+          status: v2pay.status,
+          ms: v2pay.ms,
+          note: `mintGuid=${mintGuid} → payGuid=${payGuid} (browser never opened pay guid)`,
+        });
+        mark("ge_guid", { guid, mintGuid, rebound: true });
+        try {
+          console.log(
+            `[bandai-ge-http-TEST] pay guid rebind mint=${mintGuid} pay=${payGuid}`,
+          );
+        } catch {
+          /* ignore */
+        }
+      } else {
+        push("ge_pay_guid_rebind", {
+          ok: false,
+          status: payToken?.status || 0,
+          note: `rebind skipped — payGuid=${payGuid || "none"} mintGuid=${mintGuid} (same or missing)`,
+        });
+      }
+    }
   }
 
   // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
@@ -2362,10 +2090,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
     ms: Date.now() - tCc,
     domJwt: extractUrlStructureToken(httpCc.text),
     domMachineId: extractMachineId(httpCc.text),
-    // Chrome HAR: CreditCardForm HTML can carry pm=2 (not the old pm=1 default).
-    // Prod Fast viaHttp path never scraped these — dual-auth lab suspect.
-    domPm: htmlFormValue(httpCc.text, "PaymentData.paymentMethodId") || null,
-    domGw: htmlFormValue(httpCc.text, "PaymentData.gatewayId") || null,
     viaHttp: true,
   };
 
@@ -2631,114 +2355,49 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const issuerUrl =
     opts.issuerUrl ||
     `${BANDAI_GE_SECURE}/1/Payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${opts.issuerMode || "13534"}`;
-  // Dual-charge lab (2026-08-02): Chrome single-auth HAR posted machineId="".
-  // Bot Fast posts the full iovation blackbox (~1.4KB) → body ~2574 vs browser ~1064.
-  // Test fork default: omit machineId on issuer (still mint for Forter cookies).
-  // Opt back in with BANDAI_GE_TEST_SEND_MACHINE_ID=1 or opts.sendIssuerMachineId=true.
-  const sendIssuerMachineId =
-    opts.sendIssuerMachineId === true ||
-    process.env.BANDAI_GE_TEST_SEND_MACHINE_ID === "1";
-  const issuerMachineId = sendIssuerMachineId ? machineId : "";
-  try {
-    console.log(
-      `[bandai-ge-http-TEST] issuer machineId bytes=${String(issuerMachineId || "").length} (minted=${String(machineId || "").length}) send=${sendIssuerMachineId}`,
-    );
-  } catch {
-    /* ignore */
-  }
   const body = buildIssuerFormBody({
     card,
     cartToken: guid,
-    machineId: issuerMachineId,
+    machineId,
     urlStructureToken,
     gatewayId,
     paymentMethodId,
     createTransaction: opts.createTransaction,
-    tzOffset:
-      opts.tzOffset != null
-        ? opts.tzOffset
-        : new Date().getTimezoneOffset(),
-  });
-  payForensics("psp_body_shape", {
-    via: "http-ge-issuer",
-    store: "bandai",
-    desktopTaskId: opts.desktopTaskId || null,
-    desktopRunId: opts.desktopRunId || null,
-    desktopAttempt: opts.desktopAttempt || null,
-    executorTaskId: opts.executorTaskId || null,
-    bodyBytes: body.length,
-    machineIdBytes: String(issuerMachineId || "").length,
-    mintedMachineIdBytes: String(machineId || "").length,
-    sendIssuerMachineId,
-    paymentMethodId: String(paymentMethodId || ""),
-    gatewayId: String(gatewayId || ""),
-    createTransaction:
-      opts.createTransaction === false || opts.createTransaction === "false"
-        ? "false"
-        : "true",
   });
 
   // Hard-lock single issuer POST.
-  // Test-fork default: Chromium form navigation (document POST) — undici and
-  // page.request both still dual-charged on Revolut with app posts=1.
-  // Opt back to undici with BANDAI_GE_TEST_UNDICI_ISSUER=1.
+  // Revolut pairs with app posts=1:
+  //  (1) undici retry on RST after GE already authorized (retry:false)
+  //  (2) page-issuer unroute → GEM iframe 2nd HandleCreditCard (2026-08-01)
+  // Keep browserIssuerBlock through pay; park page so GEM JS cannot race.
   let framesNeutralized = 0;
   let issuerPostCount = 0;
   let issuer = null;
-  const formNavIssuer =
-    opts.formNavIssuer !== false &&
-    process.env.BANDAI_GE_TEST_UNDICI_ISSUER !== "1" &&
-    process.env.BANDAI_GE_TEST_FORM_NAV_ISSUER !== "0";
-  const formNavPage = issuerPage || opts.page || null;
   try {
-    const usePageIssuer =
-      !formNavIssuer && Boolean(issuerPage && opts.preferPageIssuer === true);
-    if (issuerPage && !formNavIssuer) {
+    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
+    if (issuerPage) {
+      // Sync jar first (page issuer needs undici save/CC cookies on the context).
       if (usePageIssuer) {
         await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
       }
       framesNeutralized = await neutralizeGePaymentFrames(issuerPage);
+      // Always park — kill CreditCardForm/Checkout GEM before the one POST.
+      // APIRequestContext cookies survive about:blank.
       await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
       mark("ge_issuer_lock", {
         framesNeutralized,
         browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
         preferPageIssuer: usePageIssuer,
-        formNavIssuer: false,
         browserBlockKept: true,
         pageParked: true,
+        mergeIovationCookies: opts.mergeIovationCookies === true,
       });
     }
 
     issuerPostCount = 1;
-    if (formNavIssuer && formNavPage) {
-      // Drop issuer-only block — formNav installs its own full GE mute + one-shot allow.
-      await browserIssuerBlock.unroute().catch(() => {});
-      browserIssuerBlock = { blocked: 0, unroute: async () => {} };
-      try {
-        console.log(
-          "[bandai-ge-http-TEST] issuer via=form-nav (Chromium document POST) — undici skipped",
-        );
-      } catch {
-        /* ignore */
-      }
-      push("ge_issuer_transport", {
-        ok: true,
-        note: "form-nav Chromium document POST (test fork; prod Fast still undici)",
-      });
-      issuer = await postBandaiGeIssuerViaFormNav({
-        page: formNavPage,
-        url: issuerUrl,
-        ccUrl,
-        body,
-        jar: ctx?.jar,
-        referer: ccUrl,
-        timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
-        desktopTaskId: opts.desktopTaskId,
-        desktopRunId: opts.desktopRunId,
-        desktopAttempt: opts.desktopAttempt,
-        executorTaskId: opts.executorTaskId,
-      });
-    } else if (usePageIssuer) {
+    if (usePageIssuer) {
+      // DO NOT unroute browserIssuerBlock — page.request bypasses routes;
+      // unrouting was the dual-rail (iframe + intentional POST).
       issuer = await postBandaiGeIssuerViaPage({
         page: issuerPage,
         url: issuerUrl,
@@ -2750,12 +2409,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
         executorTaskId: opts.executorTaskId,
       });
     } else {
-      if (formNavIssuer && !formNavPage) {
-        push("ge_issuer_transport", {
-          ok: false,
-          note: "form-nav requested but no Playwright page — falling back to undici",
-        });
-      }
       issuer = await postBandaiGeIssuerHttp({
         url: issuerUrl,
         body,
@@ -2763,6 +2416,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
         userAgent: opts.userAgent,
         referer: ccUrl,
         followRedirect: false,
+        // Hold for GE/bank settle — short waits were scoring "fetch failed"
+        // after Revolut already moved (2026-07-23 ~12:45 AEST).
         timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
         desktopTaskId: opts.desktopTaskId,
         desktopRunId: opts.desktopRunId,
@@ -2980,9 +2635,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   };
 }
 
-/** Alias so bandai.js can import the fork without colliding with prod. */
-export { runBandaiGeHttpPay as runBandaiGeHttpPayTest };
-
 export default {
   extractGeCheckoutGuid,
   parseJsonp,
@@ -3010,7 +2662,6 @@ export default {
   loadIssuerCapture,
   postBandaiGeIssuerHttp,
   postBandaiGeIssuerViaPage,
-  postBandaiGeIssuerViaFormNav,
   replayCapturedIssuerHttp,
   runBandaiGeHttpPay,
   runBandaiGeHttpPayTest: runBandaiGeHttpPay,
@@ -3018,3 +2669,6 @@ export default {
   BANDAI_GE_MID,
   BANDAI_GE_ENCODED_MERCHANT,
 };
+
+/** Alias so bandai.js can import the fork without colliding with prod. */
+export { runBandaiGeHttpPay as runBandaiGeHttpPayTest };
