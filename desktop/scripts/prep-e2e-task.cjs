@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * Prep the real-checkout e2e task on the user's vanta-desktop db.json.
- * Picks a catalog SKU (or BANDAI_E2E_SKU), clears stale held cart, writes a
- * shuffled SKU pool so e2e can advance on EndOfSale until payment.
+ * Prep one e2e task on the user's vanta-desktop db.json.
+ * One SKU per task — set BANDAI_E2E_SKU to pin, else pick one catalog line.
+ * Clears stale held cart so a leftover account cart cannot hijack pay.
  */
 const fs = require("fs");
 const path = require("path");
@@ -13,13 +13,6 @@ const dbPath = path.join(
   "vanta-desktop",
   "j1ms-desktop",
   "db.json",
-);
-
-const poolPath = path.join(
-  process.env.DESKTOP_E2E_OUT
-    ? path.dirname(process.env.DESKTOP_E2E_OUT)
-    : path.join(__dirname, "..", "..", "artifacts", "bandai-real-checkout"),
-  "e2e-sku-pool.json",
 );
 
 function get(url) {
@@ -40,36 +33,6 @@ function get(url) {
   });
 }
 
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function applySku(t, sku, title, areaItemNo) {
-  t.store = "bandai";
-  t.label = `${sku} · ${title}`.slice(0, 120);
-  t.pdpUrl = `https://p-bandai.com/au/item/${sku}`;
-  t.bandaiWatchSku = sku;
-  t.bandaiMode = "checkout";
-  t.bandaiCheckoutMode = "fast";
-  t.placeOrder = true;
-  t.profileId = t.profileId || "prof_4c10061c8213";
-  t.proxyGroupId = t.proxyGroupId || "px_e6d1db558a16";
-  t.enabled = true;
-  t.bandaiMaxLoops = Number(process.env.BANDAI_MAX_LOOPS || 12) || 12;
-  t.bandaiAreaItemNo = areaItemNo || null;
-  t.heldCart = null;
-  t.bandaiPayFromCart = false;
-  t.lastStatus = "idle";
-  t.lastLabel = null;
-  t.lastError = null;
-  t.updatedAt = Date.now();
-}
-
 async function main() {
   const catalog = await get(
     "https://j1ms-bandai-monitor-production.up.railway.app/preset-catalog",
@@ -83,7 +46,9 @@ async function main() {
     .filter((l) => /^bandai\s+N\d+/i.test(l))
     .map((l) => {
       const m = l.match(/^bandai\s+(N\d+)\s+(.+)$/i);
-      return m ? { sku: m[1], title: m[2].trim() } : null;
+      return m
+        ? { sku: m[1].toUpperCase(), title: m[2].trim(), areaItemNo: null }
+        : null;
     })
     .filter(Boolean);
 
@@ -100,40 +65,38 @@ async function main() {
       bySku.get(sku).areaItemNo = r.areaItemNo;
     }
   }
-  const pool = shuffle([...bySku.values()]);
-  if (!pool.length) throw new Error("empty catalog");
+  const all = [...bySku.values()];
+  if (!all.length) throw new Error("empty catalog");
 
   const force = String(process.env.BANDAI_E2E_SKU || "").trim().toUpperCase();
-  let pick = force ? pool.find((p) => p.sku === force) : pool[0];
-  if (force && !pick) {
-    pick = { sku: force, title: force, areaItemNo: null };
-    pool.unshift(pick);
-  }
-  if (!pick) pick = pool[0];
+  const pick =
+    (force && (bySku.get(force) || { sku: force, title: force, areaItemNo: null })) ||
+    all[Math.floor(Math.random() * all.length)];
 
   const db = JSON.parse(fs.readFileSync(dbPath, "utf8"));
   const taskId = process.env.DESKTOP_E2E_TASK_ID || "task_c13e31bb45ce";
   const t = (db.tasks || []).find((x) => x.id === taskId);
   if (!t) throw new Error(`task ${taskId} not found`);
 
+  t.store = "bandai";
+  t.label = `${pick.sku} · ${pick.title}`.slice(0, 120);
+  t.pdpUrl = `https://p-bandai.com/au/item/${pick.sku}`;
+  t.bandaiWatchSku = pick.sku;
+  t.bandaiMode = "checkout";
+  t.bandaiCheckoutMode = "fast";
+  t.placeOrder = true;
   t.profileId = "prof_4c10061c8213";
   t.proxyGroupId = "px_e6d1db558a16";
-  applySku(t, pick.sku, pick.title, pick.areaItemNo);
+  t.enabled = true;
+  t.bandaiMaxLoops = Number(process.env.BANDAI_MAX_LOOPS || 12) || 12;
+  t.bandaiAreaItemNo = pick.areaItemNo || null;
+  t.heldCart = null;
+  t.bandaiPayFromCart = false;
+  t.lastStatus = "idle";
+  t.lastLabel = null;
+  t.lastError = null;
+  t.updatedAt = Date.now();
 
-  fs.mkdirSync(path.dirname(poolPath), { recursive: true });
-  fs.writeFileSync(
-    poolPath,
-    JSON.stringify(
-      {
-        taskId,
-        index: pool.findIndex((p) => p.sku === pick.sku),
-        pool,
-        at: Date.now(),
-      },
-      null,
-      2,
-    ),
-  );
   fs.writeFileSync(dbPath, JSON.stringify(db, null, 2));
   console.log(
     JSON.stringify(
@@ -143,8 +106,6 @@ async function main() {
         sku: pick.sku,
         title: pick.title,
         areaItemNo: pick.areaItemNo,
-        poolSize: pool.length,
-        poolPath,
         label: t.label,
         profileId: t.profileId,
         proxyGroupId: t.proxyGroupId,
