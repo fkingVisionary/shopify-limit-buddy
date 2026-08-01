@@ -1062,8 +1062,41 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     }
   }
 
+  // Reuse held-cart / task NAI only when it belongs to THIS product.
+  // upsertTaskRow clears heldCart when the task SKU changes, so on payFromCart
+  // a task-scoped hold is trusted even if productCode was never stamped.
+  const heldMatchesProduct = (() => {
+    const held = task.heldCart;
+    if (!held || typeof held !== "object") return false;
+    const want = String(productCode || "").toUpperCase();
+    if (!want) return false;
+    const heldCodes = [held.productCode, held.sku]
+      .filter(Boolean)
+      .map((x) => String(x).toUpperCase());
+    // Explicit conflicting SKU on the hold → never reuse (cross-SKU hijack).
+    if (heldCodes.length && !heldCodes.includes(want)) return false;
+    if (heldCodes.includes(want)) return true;
+    const heldNai = String(held.areaItemNo || "").toUpperCase();
+    const resolvedNai = String(backendAreaItemNo || "").toUpperCase();
+    if (heldNai && resolvedNai && heldNai === resolvedNai) return true;
+    // Retry pay: hold lives on this task; resolve may be skipped when NAI already set.
+    if (payFromCart && heldNai) return true;
+    return false;
+  })();
+  // Trust task NAI when watch SKU matches, or watch SKU is empty (PDP-only tasks).
+  const taskSku = String(task.bandaiWatchSku || "").toUpperCase();
+  const wantSku = String(productCode || "").toUpperCase();
+  const taskNaiMatches =
+    Boolean(task.bandaiAreaItemNo) &&
+    (/^NAI/i.test(String(task.bandaiAreaItemNo)) || /^AAI/i.test(String(task.bandaiAreaItemNo))) &&
+    Boolean(wantSku) &&
+    (!taskSku || taskSku === wantSku);
+
   const pdpLookup = await resolveAreaItemNo(session, productCode, tStep, {
-    fallbackAreaItemNo: backendAreaItemNo || task.bandaiAreaItemNo || task.heldCart?.areaItemNo,
+    fallbackAreaItemNo:
+      backendAreaItemNo ||
+      (taskNaiMatches ? task.bandaiAreaItemNo : null) ||
+      (heldMatchesProduct ? task.heldCart?.areaItemNo : null),
   });
   if ((!pdpLookup.ok || !pdpLookup.areaItemNo) && !payFromCart) {
     await closeBridge();
@@ -1082,9 +1115,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       // Prefer explicit / auto-resolved backend NAI for ATC; else product_get / frontend.
       backendAreaItemNo ||
       pdpLookup.areaItemNo ||
-      task.bandaiAreaItemNo ||
+      (taskNaiMatches ? task.bandaiAreaItemNo : null) ||
       task.areaItemNo ||
-      task.heldCart?.areaItemNo ||
+      (heldMatchesProduct ? task.heldCart?.areaItemNo : null) ||
       productCode,
     title: pdpLookup.title || productCode,
     productCode,
@@ -1100,13 +1133,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   let atcWallMs = 0;
 
   if (payFromCart) {
+    // Only verify THIS product's line. Including a foreign held NAI here made
+    // verify succeed on a stale cart from another SKU, then hang on pay retry.
     const cartIds = [
       pdp.areaItemNo,
       productCode,
-      task.bandaiAreaItemNo,
-      task.areaItemNo,
-      task.heldCart?.areaItemNo,
-      task.heldCart?.productCode,
+      ...(taskNaiMatches ? [task.bandaiAreaItemNo] : []),
+      ...(heldMatchesProduct
+        ? [task.heldCart?.areaItemNo, task.heldCart?.productCode].filter(Boolean)
+        : []),
     ].filter(Boolean);
     atc = await tStep("held_cart_verify", async () => {
       let again = await session.apiJson("GET", "/api/cart/detail", {
@@ -1246,10 +1281,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       }
       const err = json?.detail || json?.errorCode || json?.error || json?.message || null;
       const textHint = !json ? await readText(res).then((t) => t.slice(0, 80)) : "";
-      // Preallocation / MaxPurchaseQty often means the line is ALREADY held for this
-      // member — treat existing cart line as ATC success. Match NAI + frontend N-code.
+      // Preallocation / MaxPurchaseQty: reuse THIS SKU's line if present.
+      // EndOfSale / SoldOut: reuse only — do not delete other lines (true OOS).
       const cartIds = [pdp.areaItemNo, productCode].filter(Boolean);
-      if (/CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(String(err || ""))) {
+      const errStr = String(err || "");
+      if (
+        /CouldNotAddToCartBy(MaxPurchaseQty|Preallocation|EndOfSale|SoldOut|OutOfStock)/i.test(
+          errStr,
+        )
+      ) {
         let again = await session.apiJson("GET", "/api/cart/detail", {
           referer: `${session.base}/cart`,
         });
@@ -1271,13 +1311,18 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
             cartLines: listCartLines(again.json),
           };
         }
-        // Foreign lines left over from a prior SKU / control run can still trip
-        // Preallocation. Clear them once, then retry ATC (don't spray forever).
-        const foreign = listCartLines(again.json).filter((l) => l.cartItemSn);
+        // Clear foreign leftovers only on hold/qty conflicts — never on true OOS.
+        const mayClearForeign = /CouldNotAddToCartBy(MaxPurchaseQty|Preallocation)/i.test(errStr);
+        const wantSet = new Set(cartIds.map((x) => String(x).toUpperCase()));
+        const foreign = listCartLines(again.json).filter((l) => {
+          if (!l.cartItemSn) return false;
+          const ids = [l.areaItemNo, l.productCode].filter(Boolean).map((x) => String(x).toUpperCase());
+          return !ids.some((id) => wantSet.has(id));
+        });
         const alreadyCleared = attempts.some((a) =>
           /cleared foreign cart/i.test(String(a?.note || "")),
         );
-        if (foreign.length && !alreadyCleared && attempt < maxAttempts) {
+        if (mayClearForeign && foreign.length && !alreadyCleared && attempt < maxAttempts) {
           const sns = foreign.map((l) => l.cartItemSn).filter(Boolean);
           const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(sns.join(","))}`;
           const rem = await session.apiJson("DELETE", remPath, {
@@ -1343,17 +1388,17 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           attempts,
         };
       }
-      // Last-chance on any ATC fail: if line already in cart, proceed (don't re-POST).
+      // Last-chance: only proceed if THIS SKU/NAI is already in cart — never a foreign line.
       {
         const peek = await session.apiJson("GET", "/api/cart/detail", {
           referer: `${session.base}/cart`,
         });
-        const held = findCartLineAny(peek.json, cartIds);
+        const held = cartIds.length ? findCartLineAny(peek.json, cartIds) : null;
         if (held?.cartItemSn) {
           return {
             ok: true,
             status: last.status,
-            note: `${last.note} → cart already has line=${held.cartItemSn}`,
+            note: `${last.note} → cart already has line=${held.cartItemSn} aino=${held.areaItemNo || "?"}`,
             json: { items: [{ cartLineItemSn: held.cartItemSn, addedNewCart: false }] },
             attempts,
             cartLines: listCartLines(peek.json),
@@ -1419,9 +1464,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     const { status, json } = await session.apiJson("GET", "/api/cart/detail", {
       referer: `${session.base}/cart`,
     });
-    let hit =
-      findCartLineAny(json, [pdp.areaItemNo, productCode].filter(Boolean)) ||
-      findCartLine(json, pdp.areaItemNo);
+    let hit = findCartLineAny(json, [pdp.areaItemNo, productCode].filter(Boolean));
     if (hit?.cartItemSn && Number(hit.qty) > qty) {
       let sensors = {};
       const modPath = `/api/cart/modifyCartItem?cartItemSn=${encodeURIComponent(hit.cartItemSn)}&qty=${qty}`;

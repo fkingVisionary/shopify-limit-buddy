@@ -3,9 +3,10 @@
 
 export const WORKFLOW_STAGES = [
   { id: "warm", label: "Starting", hint: "" },
+  { id: "login", label: "Logging in", hint: "" },
   { id: "product", label: "Loading product", hint: "" },
   { id: "cart", label: "Adding to cart", hint: "" },
-  { id: "details", label: "Proceeding to checkout", hint: "" },
+  { id: "details", label: "Checking out", hint: "" },
   { id: "tokenize", label: "Processing payment", hint: "" },
   { id: "threeds", label: "Waiting for bank approval", hint: "" },
   { id: "order", label: "Placing order", hint: "" },
@@ -23,11 +24,21 @@ export function stageForStep(stepName) {
   const s = String(stepName || "");
   if (!s) return null;
   if (/^(warm_|akamai_|sbsd_|home_|api_get_token|api_sensor|antibot_|proxy_)/i.test(s)) return "warm";
-  if (/^(pdp_|sku_|akamai_pixel|category_)/i.test(s)) return "product";
-  if (/^(cart_|http_handoff)/i.test(s)) return "cart";
+  // Bandai / F5 login path
+  if (/^(login|f5_bridge|member_refresh|login_)/i.test(s)) return "login";
+  if (/^(pdp_|sku_|akamai_pixel|category_|product_get|product$)/i.test(s)) return "product";
+  // Checkout-ish cart_* before generic cart_ (cart_detail / cart_checkout = Checking out).
+  if (/^(cart_detail|cart_checkout|shipping_ensure)/i.test(s)) return "details";
+  if (/^(cart_|http_handoff|addToCart|cart_hold)/i.test(s)) return "cart";
   if (/^checkout_(set_address|set_billing|gate)/i.test(s)) return "details";
-  if (/^paydock_(pk|tokenize)/i.test(s) || s === "place_order_gate") return "tokenize";
-  if (/create_3ds|paydock_3ds/i.test(s)) return "threeds";
+  if (
+    /^paydock_(pk|tokenize)/i.test(s) ||
+    s === "place_order_gate" ||
+    /^ge_|http_ge|tokenize|ge_payment/i.test(s)
+  ) {
+    return "tokenize";
+  }
+  if (/create_3ds|paydock_3ds|threeds/i.test(s)) return "threeds";
   if (/^(place_order|payment_summary|checkout_soh_event)/i.test(s)) return "order";
   return null;
 }

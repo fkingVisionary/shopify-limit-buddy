@@ -16,6 +16,10 @@ const {
   summarizePayload,
 } = require("./run-format.cjs");
 const { consumerProgressMessage, consumerOutcome } = require("./consumer-status.cjs");
+const {
+  classifyBandaiRunResult,
+  sleep: sleepMs,
+} = require("./bandai-retry-policy.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
@@ -928,6 +932,76 @@ function emitDetailedLog(runId, taskId, level, message, extra) {
   emitLog(runId, taskId, level, message, { ...(extra || {}), detailed: true });
 }
 
+/** Live status for the Tasks table badge (optionally also activity log). */
+function emitLiveStatus(job, label, status = "running", { log = true } = {}) {
+  const line = String(label || "Starting");
+  emit({
+    type: "job",
+    phase: "status",
+    taskId: job?.task?.id,
+    runId: job?.runId,
+    consumerLabel: line,
+    lastLabel: line,
+    lastStatus: status,
+  });
+  if (log) emitLog(job?.runId, job?.task?.id, "info", line);
+}
+
+function advanceJobProxy(job, { sticky, entries, dropHarvest = false } = {}) {
+  if (entries.length > 1) {
+    job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
+    job.proxyRaw = entries[job.proxyIndex];
+  }
+  if (dropHarvest && job.task) {
+    delete job.task.harvestedBridgeId;
+    delete job.task.harvestedProxy;
+    delete job.task.proxyOverride;
+  }
+  // Sticky single-line or after walking the list → mint a fresh session- token next run.
+  return Boolean(sticky);
+}
+
+function applyHeldCartForPayRetry(job, result) {
+  if (!job?.task || !result) return;
+  const held =
+    result.heldCart && result.heldCart.cartSn
+      ? result.heldCart
+      : result.cartSn
+        ? {
+            cartSn: result.cartSn,
+            cartId: result.cartId ?? null,
+            cartItemSn: result.cartItemSn ?? null,
+            areaItemNo: result.areaItemNo ?? result.productCode ?? null,
+            productCode: result.productCode ?? null,
+            cartHoldAt: result.cartHoldAt ?? Date.now(),
+          }
+        : null;
+  if (!held?.cartSn) return;
+  const taskSku = String(
+    job.task.bandaiWatchSku ||
+      job.task.sku ||
+      String(job.task.pdpUrl || "").match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1] ||
+      "",
+  )
+    .trim()
+    .toUpperCase();
+  const heldSku = String(held.productCode || held.sku || "").trim().toUpperCase();
+  // Only reject when hold explicitly names a different product.
+  if (taskSku && heldSku && heldSku !== taskSku) {
+    console.log(
+      `[job] skip heldCart pay-retry task=${job.task.id} heldSku=${heldSku} taskSku=${taskSku}`,
+    );
+    job.task.heldCart = null;
+    job.task.bandaiPayFromCart = false;
+    return;
+  }
+  // Stamp productCode so later heldMatchesProduct stays true on Retry pay.
+  if (!held.productCode && taskSku) held.productCode = taskSku;
+  job.task.heldCart = held;
+  job.task.bandaiPayFromCart = true;
+  if (held.areaItemNo) job.task.bandaiAreaItemNo = held.areaItemNo;
+}
+
 function finishResult(job, res, summary) {
   const debugError = res?.ok ? null : formatExecutorFailure(res);
   const outcome = consumerOutcome(res);
@@ -1737,6 +1811,8 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
             progress: p.progress,
             message: line,
             consumerLabel: line,
+            lastLabel: line,
+            lastStatus: "running",
           });
         }
       }
@@ -1766,6 +1842,184 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
   }
 }
 
+async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
+  let result = await executeOnce(job, {
+    rotateSession: false,
+    attemptLabel: sticky ? "resi" : "run",
+  });
+  logResultTail(job, result);
+
+  const maxProxyRetriesBase = sticky
+    ? Math.min(4, Math.max(2, entries.length || 2))
+    : entries.length > 1
+      ? Math.min(3, entries.length - 1)
+      : 0;
+  const maxProxyRetries =
+    harvestLocked && !isBandaiLoginBlock(result) ? 0 : maxProxyRetriesBase;
+  let proxyRetries = 0;
+  while (
+    !result.ok &&
+    shouldStickyResiRetry(result) &&
+    proxyRetries < maxProxyRetries &&
+    (entries.length > 1 || sticky)
+  ) {
+    proxyRetries += 1;
+    const why = isStickyTunnelDead(result)
+      ? "tunnel/TLS failure"
+      : isBandaiLoginBlock(result)
+        ? "Bandai login SoftBlock"
+        : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
+          ? "unsolved _abck"
+          : "Akamai denial";
+
+    const rotateSession = advanceJobProxy(job, {
+      sticky,
+      entries,
+      dropHarvest: isBandaiLoginBlock(result),
+    });
+    // advanceJobProxy returns whether to mint session; for multi-entry sticky, mint after full walk
+    const mint =
+      entries.length > 1 ? sticky && proxyRetries >= entries.length : rotateSession;
+
+    console.warn(
+      `[desktop:run] proxy rotate ${proxyRetries}/${maxProxyRetries} (${why}) entry ${
+        entries.length ? `${(job.proxyIndex || 0) + 1}/${entries.length}` : "session"
+      }${mint ? " fresh session" : ""}`,
+    );
+    emitLiveStatus(job, "Rotating proxy");
+    emitDetailedLog(
+      job.runId,
+      job.task?.id,
+      "warn",
+      `Switching proxy (${proxyRetries}/${maxProxyRetries}) — ${why}`,
+    );
+
+    result = await executeOnce(job, {
+      rotateSession: mint,
+      attemptLabel: sticky
+        ? proxyRetries === 1
+          ? "resi-retry"
+          : `resi-retry#${proxyRetries}`
+        : proxyRetries === 1
+          ? "isp-retry"
+          : `isp-retry#${proxyRetries}`,
+    });
+    logResultTail(job, result);
+  }
+  return result;
+}
+
+/**
+ * Bandai persistent lane: retry / rotate / wait-restock until stop, decline, or success.
+ */
+async function runOneBandai(job, { sticky, entries }) {
+  const mode = String(job.task?.bandaiMode || "checkout").toLowerCase();
+  const maxLoops = Math.max(
+    8,
+    Math.min(80, Number(job.task?.bandaiMaxLoops || process.env.BANDAI_MAX_LOOPS) || 40),
+  );
+  let rotateCount = 0;
+  let retryCount = 0;
+  let rotateSession = false;
+  let result = null;
+
+  for (let loop = 1; loop <= maxLoops && running; loop++) {
+    if (mode === "monitor") {
+      emitLiveStatus(job, "Waiting for restock");
+    } else if (job.task?.bandaiPayFromCart) {
+      emitLiveStatus(job, "Retrying pay");
+    } else if (loop === 1) {
+      emitLiveStatus(job, "Starting");
+    }
+
+    result = await executeOnce(job, {
+      rotateSession,
+      attemptLabel: `bandai#${loop}`,
+    });
+    rotateSession = false;
+    logResultTail(job, result);
+
+    // Clear one-shot pay-from-cart flag after the attempt (re-applied if policy says retry pay).
+    if (job.task) job.task.bandaiPayFromCart = false;
+
+    const decision = classifyBandaiRunResult(result, {
+      mode,
+      loop,
+      rotateCount,
+      retryCount,
+      maxRotate: Math.max(8, entries.length * 4 || 24),
+      maxRetry: 16,
+    });
+
+    if (decision.action === "stop") {
+      if (decision.liveLabel && decision.liveLabel !== result.consumerLabel) {
+        result = { ...result, consumerLabel: decision.liveLabel, consumerCode: decision.consumerCode || result.consumerCode };
+      }
+      break;
+    }
+
+    emitLiveStatus(job, decision.liveLabel || "Retrying");
+    emitDetailedLog(
+      job.runId,
+      job.task?.id,
+      "info",
+      `Bandai policy ${decision.action} (${decision.reason}) loop=${loop}/${maxLoops}`,
+    );
+
+    if (decision.action === "rotate") {
+      rotateCount += 1;
+      rotateSession = advanceJobProxy(job, {
+        sticky,
+        entries,
+        dropHarvest: true,
+      });
+      if (entries.length > 1) {
+        // After a full walk of the list, mint a fresh sticky session token.
+        if (sticky && rotateCount >= entries.length) rotateSession = true;
+      } else {
+        rotateSession = sticky;
+      }
+      await sleepMs(decision.delayMs);
+      continue;
+    }
+
+    if (decision.action === "retry") {
+      retryCount += 1;
+      if (decision.clearHeldCart && job.task) {
+        job.task.heldCart = null;
+        job.task.bandaiPayFromCart = false;
+        // Keep bandaiAreaItemNo only when it still matches the watch SKU resolve path;
+        // drop orphan NAI so the next loop resolves fresh for this product.
+        if (!job.task.bandaiWatchSku) job.task.bandaiAreaItemNo = null;
+        emitDetailedLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          "Cleared held cart — will ATC this SKU fresh",
+        );
+      } else if (decision.retryPay) {
+        applyHeldCartForPayRetry(job, result);
+      }
+      await sleepMs(decision.delayMs);
+      continue;
+    }
+
+    if (decision.action === "wait_restock") {
+      retryCount += 1;
+      // Drop pay-from-cart; next loop is a fresh ATC / monitor wait.
+      if (job.task) {
+        delete job.task.bandaiPayFromCart;
+      }
+      await sleepMs(decision.delayMs);
+      continue;
+    }
+
+    break;
+  }
+
+  return result;
+}
+
 async function runOne(job) {
   emit({
     type: "job",
@@ -1773,6 +2027,9 @@ async function runOne(job) {
     taskId: job.task?.id,
     runId: job.runId,
     label: job.task?.label || job.task?.pdpUrl,
+    consumerLabel: "Starting",
+    lastLabel: "Starting",
+    lastStatus: "running",
   });
 
   try {
@@ -1785,87 +2042,15 @@ async function runOne(job) {
     }
 
     const sticky = isStickyProxy(job.proxyRaw || "") || entries.some((e) => isStickyProxy(e));
-    // Harvested CF / F5 sessions are IP-bound — do not rotate off that exit
-    // unless login SoftBlock forces a new sticky (adapter also rotates in-process).
     if (entries.length && job.task) job.task._proxyEntries = entries;
     const harvestLocked = Boolean(
       job.task?.harvestedSession?.cookies || job.task?.harvestedBridgeId || job.task?.harvestedProxy,
     );
 
-    // Sticky: use the listed session- token first (user-provided exits).
-    // Always minting a random session on attempt 1 ignored the proxy list and
-    // often landed on worse Noontide exits. ISP advances host:port lines only.
-    let result = await executeOnce(job, {
-      rotateSession: false,
-      attemptLabel: sticky ? "resi" : "run",
-    });
-    logResultTail(job, result);
-
-    // Rotate when Akamai walls the run (incl. GraphQL cart_get after get-token).
-    // ISP: walk listed host:port exits. Sticky: walk entries, then mint session-.
-    // Skip entirely when a harvested Toymate CF session is locked to this proxy —
-    // except Bandai login SoftBlock (exit is burned for login).
-    const maxProxyRetriesBase = sticky
-      ? Math.min(4, Math.max(2, entries.length || 2))
-      : entries.length > 1
-        ? Math.min(3, entries.length - 1)
-        : 0;
-    const maxProxyRetries =
-      harvestLocked && !isBandaiLoginBlock(result) ? 0 : maxProxyRetriesBase;
-    let proxyRetries = 0;
-    while (
-      !result.ok &&
-      shouldStickyResiRetry(result) &&
-      proxyRetries < maxProxyRetries &&
-      (entries.length > 1 || sticky)
-    ) {
-      proxyRetries += 1;
-      const why = isStickyTunnelDead(result)
-        ? "tunnel/TLS failure"
-        : isBandaiLoginBlock(result)
-          ? "Bandai login SoftBlock"
-          : /akamai_unsolved/i.test(`${result.failedStep} ${result.debugError || ""}`)
-            ? "unsolved _abck"
-            : "Akamai denial";
-
-      let rotateSession = false;
-      if (entries.length > 1) {
-        job.proxyIndex = (Number(job.proxyIndex) + 1) % entries.length;
-        job.proxyRaw = entries[job.proxyIndex];
-        rotateSession = sticky && proxyRetries >= entries.length;
-        // Drop burned harvest binding so next attempt can use the new sticky.
-        if (isBandaiLoginBlock(result) && job.task) {
-          delete job.task.harvestedBridgeId;
-          delete job.task.harvestedProxy;
-          delete job.task.proxyOverride;
-        }
-      } else {
-        rotateSession = sticky;
-      }
-      console.warn(
-        `[desktop:run] proxy rotate ${proxyRetries}/${maxProxyRetries} (${why}) entry ${
-          entries.length ? `${(job.proxyIndex || 0) + 1}/${entries.length}` : "session"
-        }${rotateSession ? " fresh session" : ""}`,
-      );
-      emitLog(
-        job.runId,
-        job.task?.id,
-        "warn",
-        `Switching proxy (${proxyRetries}/${maxProxyRetries})`,
-      );
-
-      result = await executeOnce(job, {
-        rotateSession,
-        attemptLabel: sticky
-          ? proxyRetries === 1
-            ? "resi-retry"
-            : `resi-retry#${proxyRetries}`
-          : proxyRetries === 1
-            ? "isp-retry"
-            : `isp-retry#${proxyRetries}`,
-      });
-      logResultTail(job, result);
-    }
+    const isBandai = String(job.task?.store || "") === "bandai";
+    const result = isBandai
+      ? await runOneBandai(job, { sticky, entries })
+      : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
 
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);

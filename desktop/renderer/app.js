@@ -655,7 +655,19 @@ function tickHeldCartCountdowns() {
 function taskStatusBadge(t) {
   const s = t.lastStatus;
   if (s === "confirmed" || s === "complete" || s === "ok" || s === "login_ok") return "ok";
-  if (s === "held_pay_retry" || s === "cart_held" || s === "queued") return "run";
+  if (
+    s === "held_pay_retry" ||
+    s === "cart_held" ||
+    s === "queued" ||
+    s === "running" ||
+    s === "rotating" ||
+    s === "retry_pay" ||
+    s === "retry_atc" ||
+    s === "retry" ||
+    s === "waiting_restock"
+  ) {
+    return "run";
+  }
   if (
     s === "failed" ||
     s === "error" ||
@@ -4798,15 +4810,32 @@ window.desktop.onEvent((evt) => {
       engineUi();
     }
   }
+  if (evt.type === "taskStatus" && evt.taskId && state?.tasks) {
+    const t = state.tasks.find((x) => x.id === evt.taskId);
+    if (t) {
+      t.lastStatus = evt.lastStatus || t.lastStatus;
+      t.lastLabel = evt.lastLabel || t.lastLabel;
+      if (document.querySelector("#tab-tasks.panel.active, #tab-tasks:not([hidden])") || true) {
+        renderTasks();
+      }
+    }
+  }
   if (evt.type === "job") {
     if (evt.phase === "start") {
       appendLog(`${esc(evt.label || evt.runId)} — Starting`, "muted");
+      patchTaskLiveStatus(evt.taskId, "running", evt.consumerLabel || "Starting");
+    } else if (evt.phase === "status") {
+      patchTaskLiveStatus(
+        evt.taskId,
+        evt.lastStatus || "running",
+        evt.consumerLabel || evt.lastLabel || "Starting",
+      );
     } else if (evt.phase === "log") {
       const msg = String(evt.message || "");
       // Belt-and-suspenders: hide recipe/debug lines when detailed diagnostics is off.
       if (
         state?.settings?.detailedLogs === false &&
-        /^(failedStep=|detail:|MATCH |LOCAL |global poll |local poll |Bandai monitor mode=|Subscribed watch |Backend PID )/i.test(
+        /^(failedStep=|detail:|MATCH |LOCAL |global poll |local poll |Bandai monitor mode=|Subscribed watch |Backend PID |Bandai policy )/i.test(
           msg,
         )
       ) {
@@ -4817,6 +4846,7 @@ window.desktop.onEvent((evt) => {
       }
     } else if (evt.phase === "progress") {
       const line = evt.consumerLabel || evt.message || evt.progress?.label || "Starting";
+      patchTaskLiveStatus(evt.taskId, "running", line);
       appendLog(esc(line), "muted");
     } else if (evt.phase === "done") {
       const label =
@@ -4827,6 +4857,15 @@ window.desktop.onEvent((evt) => {
     }
   }
 });
+
+function patchTaskLiveStatus(taskId, lastStatus, lastLabel) {
+  if (!taskId || !state?.tasks) return;
+  const t = state.tasks.find((x) => x.id === taskId);
+  if (!t) return;
+  t.lastStatus = lastStatus || "running";
+  t.lastLabel = lastLabel || t.lastLabel;
+  renderTasks();
+}
 
 wireWindowControls();
 tickClock();
