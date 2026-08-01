@@ -25,9 +25,18 @@ const {
  * Soft “failed to process” vs hard issuer decline.
  * Soft → retry pay; hard → stop (even if cart still held).
  */
+/** Cart line no longer matches product / stale hold — clear + ATC, don't spray pay. */
+function isStaleCartProductChanged(res) {
+  if (!res || res.ok) return false;
+  const blob = resultBlob(res);
+  return /CouldNotOrderByProductInfoChanged|ProductInfoChanged|held cart empty for/i.test(blob);
+}
+
 function isSoftPaymentProcessFail(res) {
   if (!res || res.ok) return false;
   if (isPaymentDeclined(res) && !isSoftDeclineBlob(res)) return false;
+  // Product-info / foreign-cart mismatches are not soft pay — retry ATC fresh.
+  if (isStaleCartProductChanged(res)) return false;
   const blob = resultBlob(res);
   // Hard decline signals win over soft wording.
   if (
@@ -159,6 +168,32 @@ function classifyBandaiRunResult(res, ctx = {}) {
       reason: "hard_decline",
       delayMs: 0,
       consumerCode: outcome.code || "declined",
+    };
+  }
+
+  // Stale / wrong-SKU cart → drop hold and ATC again (new cart for new item).
+  // Check before heldCartGone — "held cart empty for [this SKU]" often means a
+  // foreign line is still on the account; waiting for restock stalls forever.
+  if (isStaleCartProductChanged(res)) {
+    const retryCount = Number(ctx.retryCount) || 0;
+    const maxRetry = Number(ctx.maxRetry) || 12;
+    if (retryCount >= maxRetry) {
+      return {
+        action: "stop",
+        liveLabel: outcome.label,
+        reason: "stale_cart_exhausted",
+        delayMs: 0,
+        consumerCode: outcome.code,
+      };
+    }
+    return {
+      action: "retry",
+      liveLabel: "Retrying ATC",
+      reason: "stale_cart_product",
+      retryPay: false,
+      clearHeldCart: true,
+      delayMs: 1500,
+      consumerCode: "retry_atc",
     };
   }
 
@@ -311,6 +346,7 @@ function sleep(ms) {
 module.exports = {
   classifyBandaiRunResult,
   isSoftPaymentProcessFail,
+  isStaleCartProductChanged,
   isBlocked403,
   isBadCredentials,
   isRetryableAtcOuter,

@@ -977,9 +977,29 @@ function applyHeldCartForPayRetry(job, result) {
           }
         : null;
   if (!held?.cartSn) return;
+  const taskSku = String(
+    job.task.bandaiWatchSku ||
+      job.task.sku ||
+      String(job.task.pdpUrl || "").match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1] ||
+      "",
+  )
+    .trim()
+    .toUpperCase();
+  const heldSku = String(held.productCode || held.sku || "").trim().toUpperCase();
+  if (taskSku && heldSku && heldSku !== taskSku) {
+    console.log(
+      `[job] skip heldCart pay-retry task=${job.task.id} heldSku=${heldSku} taskSku=${taskSku}`,
+    );
+    job.task.heldCart = null;
+    job.task.bandaiPayFromCart = false;
+    return;
+  }
   job.task.heldCart = held;
   job.task.bandaiPayFromCart = true;
   if (held.areaItemNo) job.task.bandaiAreaItemNo = held.areaItemNo;
+  if (held.productCode || heldSku) {
+    job.task.heldCart.productCode = held.productCode || heldSku || null;
+  }
 }
 
 function finishResult(job, res, summary) {
@@ -1965,7 +1985,21 @@ async function runOneBandai(job, { sticky, entries }) {
 
     if (decision.action === "retry") {
       retryCount += 1;
-      if (decision.retryPay) applyHeldCartForPayRetry(job, result);
+      if (decision.clearHeldCart && job.task) {
+        job.task.heldCart = null;
+        job.task.bandaiPayFromCart = false;
+        // Keep bandaiAreaItemNo only when it still matches the watch SKU resolve path;
+        // drop orphan NAI so the next loop resolves fresh for this product.
+        if (!job.task.bandaiWatchSku) job.task.bandaiAreaItemNo = null;
+        emitDetailedLog(
+          job.runId,
+          job.task?.id,
+          "info",
+          "Cleared held cart — will ATC this SKU fresh",
+        );
+      } else if (decision.retryPay) {
+        applyHeldCartForPayRetry(job, result);
+      }
       await sleepMs(decision.delayMs);
       continue;
     }

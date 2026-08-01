@@ -1816,8 +1816,23 @@ function upsertTaskRow(task) {
     updatedAt: now,
   };
   const i = state.db.tasks.findIndex((t) => t.id === row.id);
-  if (i >= 0) state.db.tasks[i] = { ...state.db.tasks[i], ...row };
-  else state.db.tasks.push({ ...row, createdAt: now, lastStatus: "idle" });
+  if (i >= 0) {
+    const prev = state.db.tasks[i];
+    const prevSku = String(prev.bandaiWatchSku || prev.pdpUrl || "")
+      .match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1]
+      ?.toUpperCase();
+    const nextSku = String(row.bandaiWatchSku || row.pdpUrl || "")
+      .match(/\b(N\d{7,}[A-Za-z0-9]*|A\d{7,}[A-Za-z0-9]*)\b/i)?.[1]
+      ?.toUpperCase();
+    // New SKU / PDP → drop stale held cart + NAI from the previous product.
+    if (prevSku && nextSku && prevSku !== nextSku) {
+      row.heldCart = null;
+      row.bandaiAreaItemNo = undefined;
+    }
+    state.db.tasks[i] = { ...prev, ...row };
+  } else {
+    state.db.tasks.push({ ...row, createdAt: now, lastStatus: "idle" });
+  }
   persistDb();
   return state.db.tasks.find((t) => t.id === row.id);
 }
@@ -3521,8 +3536,11 @@ async function e2eAutorun() {
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
     let hyper = String(state.settings.hyperApiKey || "").trim();
     const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    // Bandai F5 checkout does not need Hyper/CapSolver — match bootEngine.
     if (!hyper && !capsolver) {
-      return { ok: false, error: "Need Hyper and/or CapSolver in Settings" };
+      console.log(
+        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney need keys",
+      );
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,
@@ -3706,7 +3724,27 @@ async function e2eAutorun() {
       };
       require("fs").writeFileSync(outPath, JSON.stringify(payload, null, 2));
       console.log("[e2e] wrote", outPath, "ok=", payload.ok, "bankHit=", bankHit);
-      setTimeout(() => app.quit(), 500);
+      // Best-effort Tasks screenshot before quit (for cloud/agent proof).
+      void (async () => {
+        try {
+          if (win) {
+            await win.webContents.executeJavaScript(
+              `document.querySelector('[data-tab="tasks"]')?.click(); true`,
+            );
+            await new Promise((r) => setTimeout(r, 400));
+            const shotDir = path.dirname(outPath);
+            fs.mkdirSync(shotDir, { recursive: true });
+            const png = await win.capturePage();
+            const shotPath = path.join(shotDir, "e2e-tasks-final.png");
+            fs.writeFileSync(shotPath, png.toPNG());
+            console.log("[e2e] screenshot", shotPath);
+          }
+        } catch (e) {
+          console.warn("[e2e] screenshot failed", e?.message || e);
+        } finally {
+          setTimeout(() => app.quit(), 300);
+        }
+      })();
     }
   });
 

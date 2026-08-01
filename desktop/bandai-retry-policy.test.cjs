@@ -39,6 +39,38 @@ test("soft payment process fail → retry pay", () => {
   assert.equal(d.liveLabel, "Retrying pay");
 });
 
+test("ProductInfoChanged on stale cart → retry ATC (not pay)", () => {
+  const res = {
+    ok: false,
+    failedStep: "ge_get_cart_token",
+    checkoutStage: "tokenize",
+    paymentStatus: "ge_token_failed",
+    debugError: "CouldNotOrderByProductInfoChanged",
+    cartSn: 72846608,
+    cartItemSn: 15609155,
+    heldPayRetry: true,
+    heldCart: { cartSn: 72846608, cartItemSn: 15609155, areaItemNo: "NAI0873518AU" },
+    lastSteps: [
+      {
+        step: "cart_checkout",
+        ok: false,
+        note: "CouldNotOrderByProductInfoChanged",
+      },
+      {
+        step: "ge_get_cart_token",
+        ok: false,
+        note: "We are sorry we could not process your request",
+      },
+    ],
+  };
+  assert.equal(isSoftPaymentProcessFail(res), false);
+  const d = classifyBandaiRunResult(res);
+  assert.equal(d.action, "retry");
+  assert.equal(d.retryPay, false);
+  assert.equal(d.clearHeldCart, true);
+  assert.equal(d.liveLabel, "Retrying ATC");
+});
+
 test("hard decline → stop", () => {
   const d = classifyBandaiRunResult({
     ok: false,
