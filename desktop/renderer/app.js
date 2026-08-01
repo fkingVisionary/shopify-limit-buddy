@@ -628,6 +628,7 @@ function taskStatusBadge(t) {
   const s = t.lastStatus;
   if (s === "confirmed" || s === "complete" || s === "ok" || s === "login_ok") return "ok";
   if (s === "held_pay_retry" || s === "cart_held" || s === "queued") return "run";
+  if (s === "limit_reached") return "warn";
   if (
     s === "failed" ||
     s === "error" ||
@@ -3165,7 +3166,42 @@ async function massGroupOpts() {
   };
 }
 
+function activeCheckoutLimits() {
+  const name = activeTaskGroupName();
+  if (!name) return null;
+  const key = groupKey(name);
+  const map = state?.checkoutLimits || {};
+  return map[key] || map[name] || null;
+}
+
+function syncCheckoutLimitFields() {
+  const lim = activeCheckoutLimits();
+  const gIn = $("limitGroupMax");
+  const pIn = $("limitProfileMax");
+  const usage = $("limitUsageLine");
+  if (gIn && document.activeElement !== gIn) {
+    gIn.value = lim?.groupMax != null ? String(lim.groupMax) : "";
+  }
+  if (pIn && document.activeElement !== pIn) {
+    pIn.value = lim?.profileMax != null ? String(lim.profileMax) : "";
+  }
+  if (usage) {
+    if (!lim || (lim.groupMax == null && lim.profileMax == null && !(lim.groupUsed > 0))) {
+      usage.hidden = true;
+      usage.textContent = "";
+    } else {
+      const g =
+        lim.groupMax != null ? `${lim.groupUsed || 0}/${lim.groupMax} group` : `${lim.groupUsed || 0} group`;
+      const p =
+        lim.profileMax != null ? ` · per-profile max ${lim.profileMax}` : "";
+      usage.textContent = `${g}${p}`;
+      usage.hidden = false;
+    }
+  }
+}
+
 function syncTaskGroupOpsBar() {
+  syncCheckoutLimitFields();
   const ops = $("taskGroupOps");
   if (!ops) return;
   const group = activeTaskGroupName();
@@ -3206,6 +3242,39 @@ if ($("btnGroupDup")) {
       );
       if (res.destGroup) taskGroupFilter = res.destGroup;
       if ($("massTaskGroup")) $("massTaskGroup").value = res.destGroup || opts.taskGroup;
+      if (res.snapshot) applyState(res.snapshot);
+    }
+  };
+}
+if ($("btnLimitSave")) {
+  $("btnLimitSave").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
+    const groupMax = String($("limitGroupMax")?.value || "").trim();
+    const profileMax = String($("limitProfileMax")?.value || "").trim();
+    const res = await window.desktop.setCheckoutLimits({
+      taskGroup: opts.taskGroup,
+      groupMax: groupMax === "" ? null : Number(groupMax),
+      profileMax: profileMax === "" ? null : Number(profileMax),
+    });
+    if (!res.ok) appendLog(esc(res.error || "save limits failed"), "err");
+    else {
+      appendLog(
+        `Limits saved for “${esc(opts.taskGroup)}” · group ${res.limits?.groupMax ?? "∞"} · per profile ${res.limits?.profileMax ?? "∞"}`,
+        "ok",
+      );
+      if (res.snapshot) applyState(res.snapshot);
+    }
+  };
+}
+if ($("btnLimitReset")) {
+  $("btnLimitReset").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
+    const res = await window.desktop.resetCheckoutLimits({ taskGroup: opts.taskGroup });
+    if (!res.ok) appendLog(esc(res.error || "reset limits failed"), "err");
+    else {
+      appendLog(`Checkout used counts reset for “${esc(opts.taskGroup)}”`, "ok");
       if (res.snapshot) applyState(res.snapshot);
     }
   };

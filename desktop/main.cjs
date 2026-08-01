@@ -46,6 +46,7 @@ const {
   duplicateTaskDraft,
   duplicateTaskGroupDrafts,
 } = require("./task-group-style.cjs");
+const checkoutLimits = require("./checkout-limits.cjs");
 const { createBandaiHarvestPool } = require("./bandai-harvest.cjs");
 const { createDisneyHarvestPool } = require("./disney-harvest.cjs");
 const { createBandaiHarvestAutoArm } = require("./bandai-harvest-autoarm.cjs");
@@ -160,6 +161,9 @@ if (!state.db.smartActionCatalog || typeof state.db.smartActionCatalog !== "obje
 state.settings.quickTaskPreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
 if (!state.db.taskGroupColors || typeof state.db.taskGroupColors !== "object") {
   state.db.taskGroupColors = {};
+}
+if (!state.db.checkoutLimits || typeof state.db.checkoutLimits !== "object") {
+  state.db.checkoutLimits = {};
 }
 if (!state.db.profileGroupColors || typeof state.db.profileGroupColors !== "object") {
   state.db.profileGroupColors = {};
@@ -900,6 +904,7 @@ function snapshot() {
     taskGroupColors: state.db.taskGroupColors || {},
     profileGroupColors: state.db.profileGroupColors || {},
     accountGroupColors: state.db.accountGroupColors || {},
+    checkoutLimits: checkoutLimits.publicSnapshot(state.db),
     results: state.db.results.slice(-50),
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
@@ -1135,6 +1140,11 @@ runner.setFinishedHandler((result) => {
       t.lastCheckoutStage = result.checkoutStage || null;
       t.stockStatus = result.stockStatus || null;
       t.updatedAt = Date.now();
+
+      // Group / per-profile checkout limits (count orderNumber only).
+      if (result.ok && result.orderNumber && String(t.taskGroup || "").trim()) {
+        applyCheckoutLimitAfterConfirm(t);
+      }
     }
   }
   // Release Monitor → checkout harvest auto-arm ref (stops refill if we started it).
@@ -1148,6 +1158,45 @@ runner.setFinishedHandler((result) => {
   persistDb();
   send({ type: "snapshot", data: snapshot() });
 });
+
+/**
+ * After a confirmed order: increment counters and soft-stop siblings that hit
+ * group or per-profile-in-group max. Does not cancel in-flight pay races.
+ */
+function applyCheckoutLimitAfterConfirm(task) {
+  if (!task) return;
+  const rec = checkoutLimits.recordConfirmedOrder(state.db, {
+    taskGroup: task.taskGroup,
+    profileId: task.profileId,
+  });
+  if (!rec.ok || (!rec.groupHit && !rec.profileHit)) {
+    if (rec.ok) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "info",
+        taskId: task.id,
+        message: `Checkout limit ${rec.groupUsed}${rec.groupMax != null ? `/${rec.groupMax}` : ""} group · profile ${rec.profileUsed}${rec.profileMax != null ? `/${rec.profileMax}` : ""}`,
+      });
+    }
+    return;
+  }
+  const stopIds = checkoutLimits.siblingIdsToStop(state.db.tasks, {
+    taskGroup: task.taskGroup,
+    profileId: task.profileId,
+    excludeTaskId: task.id,
+    groupHit: rec.groupHit,
+    profileHit: rec.profileHit,
+  });
+  const n = checkoutLimits.markLimitReached(state.db.tasks, stopIds);
+  send({
+    type: "job",
+    phase: "log",
+    level: "ok",
+    taskId: task.id,
+    message: `Limit reached (${rec.groupHit ? "group" : "profile"}) — stopped ${n} task(s)`,
+  });
+}
 
 // ── IPC ────────────────────────────────────────────────────────────────────
 
@@ -2110,6 +2159,44 @@ ipcMain.handle("desktop:duplicate-task-group", (_e, opts = {}) => {
   };
 });
 
+ipcMain.handle("desktop:set-checkout-limits", (_e, opts = {}) => {
+  const group = String(opts.taskGroup || opts.group || "").trim();
+  if (!group) return { ok: false, error: "task group required", snapshot: snapshot() };
+  const res = checkoutLimits.setGroupLimits(state.db, group, {
+    groupMax: opts.groupMax,
+    profileMax: opts.profileMax,
+  });
+  if (!res.ok) return { ...res, snapshot: snapshot() };
+  persistDb();
+  return { ok: true, limits: res.bucket, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:reset-checkout-limits", (_e, opts = {}) => {
+  const group = String(opts.taskGroup || opts.group || "").trim();
+  if (!group) return { ok: false, error: "task group required", snapshot: snapshot() };
+  const res = checkoutLimits.resetGroupUses(state.db, group);
+  if (!res.ok) return { ...res, snapshot: snapshot() };
+  // Clear Limit reached status on group tasks so they can run again after reset.
+  const key = groupKey(group);
+  for (const t of state.db.tasks || []) {
+    if (groupKey(t.taskGroup) !== key) continue;
+    if (t.lastStatus === checkoutLimits.LIMIT_REACHED_CODE) {
+      t.lastStatus = "idle";
+      t.lastLabel = null;
+      t.enabled = true;
+      t.updatedAt = Date.now();
+    }
+  }
+  persistDb();
+  send({
+    type: "job",
+    phase: "log",
+    level: "info",
+    message: `Checkout limits reset for “${group}”`,
+  });
+  return { ok: true, limits: res.bucket, snapshot: snapshot() };
+});
+
 ipcMain.handle("desktop:set-task-group-color", (_e, opts = {}) => {
   const key = groupKey(opts.taskGroup || opts.group || "");
   if (!key) return { ok: false, error: "task group required", snapshot: snapshot() };
@@ -2220,6 +2307,17 @@ function enqueueGlobalMonitorCheckout(checkoutTask) {
     });
   }
 
+  const limitGate = checkoutLimits.checkLimit(state.db, {
+    taskGroup: task.taskGroup,
+    profileId: task.profileId,
+  });
+  if (limitGate.limited) {
+    checkoutLimits.markLimitReached(state.db.tasks, [task.id]);
+    persistDb();
+    send({ type: "snapshot", data: snapshot() });
+    return { ok: false, error: checkoutLimits.LIMIT_REACHED, skipped: "limit" };
+  }
+
   const job = {
     task,
     profile,
@@ -2264,6 +2362,23 @@ function enqueueTaskIds(taskIds, opts = {}) {
         taskId: tid,
         ok: false,
         error: "No held cart on this task — run checkout first",
+      });
+      continue;
+    }
+    const limitGate = checkoutLimits.checkLimit(state.db, {
+      taskGroup: task.taskGroup,
+      profileId: task.profileId,
+    });
+    if (limitGate.limited) {
+      checkoutLimits.markLimitReached(state.db.tasks, [tid]);
+      send({
+        type: "job",
+        phase: "done",
+        taskId: tid,
+        ok: false,
+        error: checkoutLimits.LIMIT_REACHED,
+        consumerLabel: checkoutLimits.LIMIT_REACHED,
+        consumerCode: checkoutLimits.LIMIT_REACHED_CODE,
       });
       continue;
     }

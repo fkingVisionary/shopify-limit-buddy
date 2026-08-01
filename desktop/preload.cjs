@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld("desktop", {
   runTaskGroup: (opts) => ipcRenderer.invoke("desktop:run-task-group", opts || {}),
   stopTaskGroup: (opts) => ipcRenderer.invoke("desktop:stop-task-group", opts || {}),
   patchTaskGroup: (opts) => ipcRenderer.invoke("desktop:patch-task-group", opts || {}),
+  setCheckoutLimits: (opts) => ipcRenderer.invoke("desktop:set-checkout-limits", opts || {}),
+  resetCheckoutLimits: (opts) => ipcRenderer.invoke("desktop:reset-checkout-limits", opts || {}),
   dropReady: () => ipcRenderer.invoke("desktop:drop-ready"),
   dropScheduleArm: (opts) => ipcRenderer.invoke("desktop:drop-schedule-arm", opts || {}),
   dropScheduleCancel: () => ipcRenderer.invoke("desktop:drop-schedule-cancel"),
