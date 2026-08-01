@@ -25,6 +25,7 @@ import { createBandaiAccount } from "./bandai-agen.js";
 import { browserBandaiCheckout } from "./bandai-browser-checkout.js";
 import { browserBandaiGeFromCart } from "./bandai-ge-pay.js";
 import { runBandaiGeHttpPay } from "./bandai-ge-http.js";
+import { runBandaiGeHttpPayTest } from "./bandai-ge-http-test.js";
 import { createBandaiF5Bridge, parseBandaiProxy } from "./bandai-f5.js";
 import { takeHarvestSlot, takeNextHarvestSlot } from "./bandai-harvest-pool.js";
 import { findCartLine, findCartLineAny, listCartLines } from "./bandai-cart.js";
@@ -159,7 +160,7 @@ function sleepMs(ms) {
  * Resolve Fast vs Safe pay path after HTTP ATC / cart_hold.
  * Explicit bandaiBrowserCheckout / bandaiBrowserFull still win for labs.
  * @param {object} [task]
- * @returns {{ mode: "fast"|"safe"|"full", placeOrderGeHttp: boolean, placeOrderGe: boolean, browserFull: boolean }}
+ * @returns {{ mode: "fast"|"safe"|"full"|"autocheckout_test", placeOrderGeHttp: boolean, placeOrderGe: boolean, browserFull: boolean, useGeHttpTestFork?: boolean }}
  */
 export function resolveBandaiCheckoutPayPath(task = {}) {
   const raw = String(task.bandaiCheckoutMode || task.checkoutMode || "")
@@ -171,6 +172,22 @@ export function resolveBandaiCheckoutPayPath(task = {}) {
       placeOrderGeHttp: false,
       placeOrderGe: false,
       browserFull: true,
+    };
+  }
+  // Experimental Fast fork — same HTTP GE shape, separate module file so
+  // dual-charge labs cannot regress production Autocheckout (fast).
+  if (
+    raw === "autocheckout_test" ||
+    raw === "test" ||
+    raw === "fast_test" ||
+    task.bandaiGeHttpPayTest === true
+  ) {
+    return {
+      mode: "autocheckout_test",
+      placeOrderGeHttp: true,
+      placeOrderGe: false,
+      browserFull: false,
+      useGeHttpTestFork: true,
     };
   }
   const safe =
@@ -1969,7 +1986,16 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       !geNoPage &&
       task.bandaiGeRiskHydrate !== false &&
       process.env.BANDAI_GE_RISK_HYDRATE !== "0";
-    const geOut = await runBandaiGeHttpPay({
+    const runGeHttpPay =
+      opts.useGeHttpTestFork === true ? runBandaiGeHttpPayTest : runBandaiGeHttpPay;
+    if (opts.useGeHttpTestFork === true) {
+      steps.push({
+        step: "bandai_ge_http_fork",
+        ok: true,
+        note: "autocheckout_test → bandai-ge-http-test.js (prod fast untouched)",
+      });
+    }
+    const geOut = await runGeHttpPay({
       ctx,
       page: geNoPage ? null : bridge?.page || null,
       // Force fresh mint when risk-hydrating (ignore stale file/opts mid).
@@ -2246,6 +2272,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       frontendCode: frontendCode || productCode || null,
       backendAreaItemNo: backendHint,
       placeOrderGeHttp: true,
+      useGeHttpTestFork: payPath.useGeHttpTestFork === true,
       card,
     });
   }

@@ -50,6 +50,18 @@ test("Safe placeOrder uses Playwright GE, not HTTP issuer", () => {
   assert.equal(r.bandaiGeNoPage, undefined);
 });
 
+test("autocheckout_test keeps Fast shape + test fork flag", () => {
+  const r = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "autocheckout_test" },
+    { mode: "checkout", placeOrder: true },
+  );
+  assert.equal(r.bandaiCheckoutMode, "autocheckout_test");
+  assert.equal(r.bandaiGeHttpPay, true);
+  assert.equal(r.bandaiGeHttpPayTest, true);
+  assert.equal(r.bandaiGeUndiciIssuer, true);
+  assert.equal(r.bandaiBrowserCheckout, false);
+});
+
 test("dry-run checkout does not enable pay paths", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "fast" },

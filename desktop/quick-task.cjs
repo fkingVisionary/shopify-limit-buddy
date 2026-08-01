@@ -33,11 +33,12 @@ function normalizeQuickTaskPreset(raw = {}) {
   return {
     store,
     bandaiMode,
-    bandaiCheckoutMode: ["fast", "fast_undici", "safe"].includes(
-      String(raw.bandaiCheckoutMode || "").toLowerCase(),
-    )
-      ? String(raw.bandaiCheckoutMode).toLowerCase()
-      : "fast",
+    bandaiCheckoutMode: (() => {
+      const m = String(raw.bandaiCheckoutMode || "").toLowerCase();
+      if (m === "test" || m === "fast_test") return "autocheckout_test";
+      if (["fast", "fast_undici", "safe", "autocheckout_test"].includes(m)) return m;
+      return "fast";
+    })(),
     profileId: raw.profileId || null,
     proxyGroupId: raw.proxyGroupId || null,
     qty: Math.max(1, Math.min(20, Number(raw.qty) || 1)),

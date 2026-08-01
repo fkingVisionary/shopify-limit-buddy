@@ -1829,8 +1829,13 @@ function upsertTaskRow(task) {
     })(),
     bandaiCheckoutMode:
       storeId === "bandai"
-        ? ["fast", "fast_undici", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
-          ? String(task.bandaiCheckoutMode).toLowerCase()
+        ? ["fast", "fast_undici", "safe", "autocheckout_test", "test", "fast_test"].includes(
+            String(task.bandaiCheckoutMode || "").toLowerCase(),
+          )
+          ? String(task.bandaiCheckoutMode).toLowerCase() === "test" ||
+            String(task.bandaiCheckoutMode).toLowerCase() === "fast_test"
+            ? "autocheckout_test"
+            : String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
         : undefined,
     bandaiMonitorMode:
