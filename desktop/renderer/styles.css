@@ -1888,6 +1888,23 @@ button.danger-soft {
   font-size: 11px;
 }
 
+.checkout-limit-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--muted, #9a9aa0);
+}
+.checkout-limit-field input {
+  width: 3.25rem;
+  min-width: 3.25rem;
+  padding: 0.2rem 0.35rem;
+}
+.checkout-limit-usage {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .task-group-ops {
   display: flex;
   flex-wrap: wrap;

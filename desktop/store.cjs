@@ -176,6 +176,7 @@ function loadAll() {
   if (!db.taskGroupColors || typeof db.taskGroupColors !== "object") db.taskGroupColors = {};
   if (!db.profileGroupColors || typeof db.profileGroupColors !== "object") db.profileGroupColors = {};
   if (!db.accountGroupColors || typeof db.accountGroupColors !== "object") db.accountGroupColors = {};
+  if (!db.checkoutLimits || typeof db.checkoutLimits !== "object") db.checkoutLimits = {};
   return { settings, db };
 }
 
@@ -196,6 +197,7 @@ function saveDb(db) {
     taskGroupColors: db.taskGroupColors || {},
     profileGroupColors: db.profileGroupColors || {},
     accountGroupColors: db.accountGroupColors || {},
+    checkoutLimits: db.checkoutLimits || {},
     bandaiProductCache: db.bandaiProductCache || undefined,
   });
 }

@@ -180,6 +180,17 @@
             <button type="button" id="btnGroupStart" title="Start every enabled task in the group selected on the left">Start group</button>
             <button type="button" id="btnGroupStop" class="secondary" title="Stop every task in the group selected on the left">Stop group</button>
             <button type="button" id="btnGroupDup" class="secondary" title="Copy all tasks in this group into a new group">Duplicate group</button>
+            <label class="checkout-limit-field" title="Max confirmed orders (order number) for this whole group. Blank = unlimited.">
+              <span>Group max</span>
+              <input id="limitGroupMax" type="number" min="1" max="999" placeholder="∞" inputmode="numeric" />
+            </label>
+            <label class="checkout-limit-field" title="Max confirmed orders per profile inside this group. Blank = unlimited.">
+              <span>Per profile</span>
+              <input id="limitProfileMax" type="number" min="1" max="999" placeholder="∞" inputmode="numeric" />
+            </label>
+            <span id="limitUsageLine" class="checkout-limit-usage muted" hidden></span>
+            <button type="button" id="btnLimitSave" class="secondary" title="Save checkout limits for this group">Save limits</button>
+            <button type="button" id="btnLimitReset" class="secondary" title="Reset used checkout counts for this group">Reset used</button>
             <!-- Hidden stubs — kept so older JS helpers don't throw -->
             <select id="massTaskGroup" hidden aria-hidden="true"></select>
             <datalist id="taskGroupList" hidden></datalist>

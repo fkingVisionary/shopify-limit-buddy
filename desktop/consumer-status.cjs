@@ -31,6 +31,7 @@ const OUTCOME = {
   checkout_address: "Checkout needs address/name",
   error: "Something went wrong",
   stopped: "Stopped",
+  limit_reached: "Limit reached",
 };
 
 function stepText(res) {
