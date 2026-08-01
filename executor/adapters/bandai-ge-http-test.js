@@ -2,10 +2,7 @@
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
  * Near-copy of production Fast; one lab delta at a time.
  *
- * Hydrate skip experiments abandoned: dual Revolut persists across modules, so
- * Bandai-only handleaction/save is not the shared root cause. Keep this file
- * aligned with prod unless a new shared-path lever is under test.
- *
+ * Current delta: BANDAI_GE_TEST_PAYMENT_METHOD_ID (browser HAR posts pm=2; prod defaults 1).
  * Optional diagnostic: BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 (no HandleCreditCard).
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
@@ -1519,6 +1516,18 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const stopBeforeIssuer =
     opts.stopBeforeIssuer === true || process.env.BANDAI_GE_TEST_STOP_BEFORE_ISSUER === "1";
   const forceIssuer = opts.forceIssuer === true;
+  // Browser CreditCardForm HAR posts PaymentData.paymentMethodId=2 (prod default 1).
+  const testPaymentMethodId = String(
+    opts.paymentMethodId || process.env.BANDAI_GE_TEST_PAYMENT_METHOD_ID || "",
+  ).trim();
+  if (testPaymentMethodId) {
+    opts = { ...opts, paymentMethodId: testPaymentMethodId };
+    try {
+      console.log(`[bandai-ge-http-TEST] force paymentMethodId=${testPaymentMethodId}`);
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (!merchantCartToken) {
     return {
