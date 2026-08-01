@@ -622,16 +622,28 @@ function formatCartHoldCountdown(ms) {
   return `${sec}s`;
 }
 
+function taskHasHeldCart(t) {
+  return t?.store === "bandai" && Boolean(t.heldCart?.cartSn);
+}
+
+function heldCartsInGroup(groupName) {
+  const key = groupKey(groupName);
+  if (!key) return [];
+  return (state?.tasks || []).filter(
+    (t) => taskHasHeldCart(t) && groupKey(t.taskGroup) === key,
+  );
+}
+
 function heldCartCountdownHtml(t) {
-  if (t.store !== "bandai" || !t.heldCart?.cartSn) return "";
+  if (!taskHasHeldCart(t)) return "";
   const start = Number(t.heldCart.cartHoldAt) || 0;
   const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
   if (!start) {
-    return `<div class="task-sub cart-countdown">cart held — retry pay</div>`;
+    return `<div class="task-sub cart-countdown">cart held — checkout now</div>`;
   }
   const left = Math.max(0, start + win - Date.now());
   if (left <= 0) {
-    return `<div class="task-sub cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}">cart held? (window may be up)</div>`;
+    return `<div class="task-sub cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}">hold may be up — verify &amp; pay</div>`;
   }
   return `<div class="task-sub cart-countdown" data-hold-at="${start}" data-hold-win="${win}">cart held · ${formatCartHoldCountdown(left)}</div>`;
 }
@@ -763,10 +775,9 @@ function renderTasks() {
       const groupChip = groupName
         ? `<span class="group-chip" style="--g:${esc(colorForGroup(groupName))}">${esc(groupName)}</span>`
         : "";
-      const retryPayBtn =
-        t.store === "bandai" && t.heldCart?.cartSn
-          ? `<button type="button" class="secondary" data-retry-pay="${t.id}">Retry pay</button>`
-          : "";
+      const checkoutHeldBtn = taskHasHeldCart(t)
+        ? `<button type="button" class="secondary" data-checkout-held="${t.id}" title="Pay from held cart (live verify)">Checkout now</button>`
+        : "";
       const running = t.lastStatus === "queued" || t.lastStatus === "running";
       return `<tr class="${t.enabled === false ? "is-disabled" : ""} ${running ? "is-running" : ""}" data-task-row="${t.id}">
         <td class="col-check"><input type="checkbox" class="toggle" data-toggle-task="${t.id}" ${t.enabled !== false ? "checked" : ""} title="Enabled" /></td>
@@ -782,7 +793,7 @@ function renderTasks() {
         <td class="col-actions"><div class="row-actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
           <button type="button" class="secondary" data-dup-task="${t.id}">Dup</button>
-          ${retryPayBtn}
+          ${checkoutHeldBtn}
           <button type="button" data-run-task="${t.id}">Run</button>
           <button type="button" class="danger" data-del-task="${t.id}">Del</button>
         </div></td>
@@ -2438,10 +2449,11 @@ document.body.addEventListener("click", async (e) => {
     else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
     if (res.snapshot) applyState(res.snapshot);
   }
-  if (t.dataset.retryPay) {
-    const res = await window.desktop.runTasks([t.dataset.retryPay], { payFromCart: true });
+  if (t.dataset.checkoutHeld || t.dataset.retryPay) {
+    const id = t.dataset.checkoutHeld || t.dataset.retryPay;
+    const res = await window.desktop.runTasks([id], { payFromCart: true });
     if (!res.ok) appendLog(esc(res.error), "err");
-    else appendLog(`Retry pay enqueued (${res.enqueued}) — live cart verify`, "ok");
+    else appendLog(`Checkout now enqueued (${res.enqueued}) — live cart verify`, "ok");
     if (res.snapshot) applyState(res.snapshot);
   }
   if (t.dataset.editProf) {
@@ -3270,6 +3282,13 @@ function syncTaskGroupOpsBar() {
   const group = activeTaskGroupName();
   ops.hidden = !group;
   if ($("massTaskGroup") && group) $("massTaskGroup").value = group;
+  const heldBtn = $("btnGroupCheckoutHeld");
+  if (heldBtn) {
+    const held = group ? heldCartsInGroup(group) : [];
+    heldBtn.hidden = !group || held.length === 0;
+    heldBtn.textContent =
+      held.length > 0 ? `Checkout held (${held.length})` : "Checkout held";
+  }
 }
 
 if ($("btnGroupStart")) {
@@ -3289,6 +3308,35 @@ if ($("btnGroupStop")) {
     const res = await window.desktop.stopTaskGroup(opts);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Stopped group “${esc(opts.taskGroup)}” · ${res.stopped} task(s)`, "ok");
+    if (res.snapshot) applyState(res.snapshot);
+  };
+}
+if ($("btnGroupCheckoutHeld")) {
+  $("btnGroupCheckoutHeld").onclick = async () => {
+    const opts = await massGroupOpts();
+    if (!opts.taskGroup) return appendLog("Pick a task group on the left first", "err");
+    const held = heldCartsInGroup(opts.taskGroup);
+    if (!held.length) {
+      appendLog("No held carts in this group", "err");
+      syncTaskGroupOpsBar();
+      return;
+    }
+    if (
+      !confirm(
+        `Checkout ${held.length} held cart${held.length === 1 ? "" : "s"} in “${opts.taskGroup}”?\n\nEach task pays from its live Bandai cart (pay window ~30 min).`,
+      )
+    ) {
+      return;
+    }
+    const ids = held.map((t) => t.id);
+    const res = await window.desktop.runTasks(ids, { payFromCart: true });
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else {
+      appendLog(
+        `Checkout held · “${esc(opts.taskGroup)}” · ${res.enqueued || 0}/${ids.length} enqueued`,
+        "ok",
+      );
+    }
     if (res.snapshot) applyState(res.snapshot);
   };
 }
