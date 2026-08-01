@@ -97,6 +97,21 @@ test("RESPONSE_LOST / pay already submitted → stop (no second charge)", () => 
   assert.notEqual(d.retryPay, true);
 });
 
+test("issuer_http_failed + chargeReqCount>=1 → stop (not soft retry pay)", () => {
+  const res = {
+    ok: false,
+    failedStep: "ge_payment",
+    paymentStatus: "issuer_http_failed",
+    chargeReqCount: 1,
+    undiciAttempts: 1,
+    debugError: "timeout / fetch failed / ECONNRESET",
+  };
+  assert.equal(isSoftPaymentProcessFail(res), false);
+  const d = classifyBandaiRunResult(res);
+  assert.equal(d.action, "stop");
+  assert.equal(d.reason, "pay_already_submitted");
+});
+
 test("OOS → wait_restock", () => {
   const d = classifyBandaiRunResult(
     {

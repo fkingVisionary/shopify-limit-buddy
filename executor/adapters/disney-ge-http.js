@@ -337,12 +337,28 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
       textBytes: text.length,
     };
   } catch (e) {
+    const ms = Date.now() - t0;
+    const undiciAttempts = Math.max(1, Number(e?.undiciAttempts || 1));
+    const timedOut = Boolean(
+      e?.timedOut ||
+        e?.name === "TimeoutError" ||
+        e?.code === "ABORT_ERR" ||
+        /timeout|aborted/i.test(String(e?.message || e)),
+    );
+    // Fast CONNECT / tunnel death (<1.5s) likely never delivered the POST —
+    // allow Disney proxy→direct fallback. Slow throw / timeout = bank risk.
+    const likelyDelivered = timedOut || ms >= 1_500;
     return {
       ok: false,
       error: e?.message || String(e),
-      ms: Date.now() - t0,
-      responseLost: /fetch failed|aborted|timeout|UND_ERR/i.test(String(e?.message || e)),
-      note: "issuer POST threw — bank may still have moved",
+      ms,
+      undiciAttempts,
+      timedOut,
+      responseLost: likelyDelivered,
+      paymentAttempted: likelyDelivered,
+      note: likelyDelivered
+        ? "issuer POST threw — bank may still have moved"
+        : "issuer transport fail before delivery — may retry alternate egress",
     };
   }
 }
@@ -807,7 +823,12 @@ export async function runDisneyGeHttpPay(opts = {}) {
     });
 
     let issuer = null;
+    // Hard single-flight: once ANY issuer POST leaves the client, stop spraying
+    // alternate URL shapes / proxy→direct. Outer URL loop used to continue after
+    // RESPONSE_LOST on URL#1 → second Revolut auth (2026-08 live).
+    let issuerWireTouched = false;
     for (const issuerUrl of issuerCandidates) {
+      if (issuerWireTouched) break;
       // Try proxy jar ctx first, then bare direct undici (same cookies).
       const issuerContexts = [geCtx];
       let ownedIssuerDirect = null;
@@ -821,6 +842,7 @@ export async function runDisneyGeHttpPay(opts = {}) {
       }
       try {
         for (const ictx of issuerContexts) {
+          if (issuerWireTouched) break;
           const via = ictx.dispatcher?.proxy ? "proxy-undici" : "direct-undici";
           issuer = await tStep("ge_issuer_http", async () => {
             const r = await postDisneyGeIssuerHttp({
@@ -844,9 +866,18 @@ export async function runDisneyGeHttpPay(opts = {}) {
               r.sawAuthWire || r.declineOnRedirect || r.bankSignal || transactionId,
             );
             const emptyOk = Boolean(r.ok && Number(r.textBytes || 0) === 0 && !bankHit && !r.redirectUrl);
-            // Instant CONNECT/fetch fail is transport, not "bank may have moved".
-            const slowLost =
-              Boolean(r.responseLost) && Number(r.ms || 0) >= 5_000;
+            // Wire touch = HTTP status, bank JWT, or slow RESPONSE_LOST.
+            // Instant CONNECT fail must NOT latch so proxy→direct can still run.
+            const posts = Math.max(
+              Number(r.status || 0) > 0 || bankHit || r.responseLost ? 1 : 0,
+              Number(r.undiciAttempts || 0),
+            );
+            const wireTouched = Boolean(
+              r.responseLost === true ||
+                Number(r.status || 0) > 0 ||
+                bankHit ||
+                (Number(r.ms || 0) >= 1_500 && Number(r.undiciAttempts || 0) >= 1),
+            );
             const authFailed = /Auth|Decline|Fail|Refuse/i.test(statusType);
             const paymentStatus = fraudDetected
               ? "ge_fraud_refused"
@@ -856,7 +887,7 @@ export async function runDisneyGeHttpPay(opts = {}) {
                   ? "declined_or_auth_failed"
                   : emptyOk
                     ? "issuer_empty_response"
-                    : slowLost
+                    : r.responseLost
                       ? "pay_submitted_no_response"
                       : /DataCorruption/i.test(String(txMap.RedirectErrorType || r.bodySnippet || ""))
                         ? "ge_data_corruption"
@@ -902,22 +933,29 @@ export async function runDisneyGeHttpPay(opts = {}) {
               txMap,
               fraudFlags,
               isSameCartToken,
+              undiciAttempts: Number(r.undiciAttempts || posts || 0) || null,
+              chargeReqCount: wireTouched ? Math.max(1, posts) : posts || null,
+              responseLost: Boolean(r.responseLost),
+              paymentAttempted: Boolean(wireTouched),
               note: (
                 paymentStatus === "declined_or_auth_failed" || paymentStatus === "ge_fraud_refused"
                   ? `DECLINE/AUTH wire status=${r.status} payStatus=${paymentStatus} tx=${transactionId || "-"} fraud=${fraudDetected} sameCart=${txMap.IsTheSameCartToken || "?"} type=${statusType || "-"} via=${via}`
-                  : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} fraud=${fraudDetected} sameCart=${txMap.IsTheSameCartToken || "?"} via=${via} ${String(r.bodySnippet || r.error || "").slice(0, 100)}`
+                  : `issuer ${r.status} payStatus=${paymentStatus} bank=${bankHit} fraud=${fraudDetected} sameCart=${txMap.IsTheSameCartToken || "?"} via=${via} posts=${wireTouched ? Math.max(1, posts) : 0} ${String(r.bodySnippet || r.error || "").slice(0, 100)}`
               ).slice(0, 320),
             };
           });
+          // Latch: wire-touched POST ends the spray (inner + outer). Never try
+          // URL#2 after RESPONSE_LOST / HTTP status on URL#1.
           if (
+            issuer?.paymentAttempted ||
+            issuer?.responseLost ||
             issuer?.paymentStatus === "declined_or_auth_failed" ||
             issuer?.paymentStatus === "ge_fraud_refused" ||
-            issuer?.paymentStatus === "pay_submitted_no_response"
+            issuer?.paymentStatus === "pay_submitted_no_response" ||
+            issuer?.paymentStatus === "pay_submitted_http" ||
+            Number(issuer?.status || 0) > 0
           ) {
-            break;
-          }
-          // Empty 200 / wrong path → try next dispatcher or URL shape
-          if (issuer?.paymentStatus === "pay_submitted_http" && issuer?.bankSignal) {
+            issuerWireTouched = true;
             break;
           }
         }
@@ -926,12 +964,13 @@ export async function runDisneyGeHttpPay(opts = {}) {
       }
 
       if (
+        issuerWireTouched ||
         issuer?.paymentStatus === "declined_or_auth_failed" ||
         issuer?.paymentStatus === "ge_fraud_refused"
       ) {
         break;
       }
-      // Try next URL shape on empty / DataCorruption / hard fail
+      // Only try next URL shape when prior candidate never touched the wire.
     }
 
     const decline = /decline|auth_failed|fraud_refused/i.test(String(issuer?.paymentStatus || ""));
@@ -950,6 +989,11 @@ export async function runDisneyGeHttpPay(opts = {}) {
       forterTokenPresent: Boolean(forterToken),
       jwtPresent: Boolean(urlStructureToken),
     };
+    const chargeReqCount = Math.max(
+      issuerWireTouched ? 1 : 0,
+      Number(issuer?.chargeReqCount || issuer?.undiciAttempts || 0),
+    );
+    const responseLost = Boolean(issuer?.responseLost);
     return {
       ok: wireOk,
       steps,
@@ -983,6 +1027,11 @@ export async function runDisneyGeHttpPay(opts = {}) {
         : fraudFlags.possibleFraudDetected
           ? "ge_fraud_refused"
           : issuer?.paymentStatus || "ge_issuer",
+      // Desktop latch fields — must surface or sticky rotate re-fires placeOrder.
+      chargeReqCount: chargeReqCount || null,
+      undiciAttempts: Number(issuer?.undiciAttempts || chargeReqCount || 0) || null,
+      responseLost,
+      paymentAttempted: Boolean(issuerWireTouched || chargeReqCount >= 1 || responseLost),
     };
   } finally {
     await closeOwned();

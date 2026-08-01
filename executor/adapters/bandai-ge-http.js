@@ -2396,6 +2396,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     chargeReqCount,
     undiciAttempts,
     responseLost,
+    paymentAttempted: Boolean(responseLost || chargeReqCount >= 1 || undiciAttempts >= 1),
     browserIssuerBlocked: browserBlocked,
     framesNeutralized,
     isSameCartToken,

@@ -18,6 +18,10 @@ const {
   isHeldCartGone,
   isCheckoutAddressFail,
 } = require("./consumer-status.cjs");
+const {
+  isPaymentAlreadySubmitted,
+  resultBlob: latchResultBlob,
+} = require("./payment-latch.cjs");
 
 /** @typedef {'stop'|'retry'|'rotate'|'wait_restock'} BandaiAction */
 
@@ -31,24 +35,6 @@ function isStaleCartProductChanged(res) {
   const blob = resultBlob(res);
   // Do NOT match "held cart empty for" — that is heldCartGone / ID miss, not ProductInfoChanged.
   return /CouldNotOrderByProductInfoChanged|ProductInfoChanged/i.test(blob);
-}
-
-/**
- * Issuer POST already left the client (bank may have moved). Never soft-retry
- * pay — that is the cross-store double-charge path after RESPONSE_LOST.
- */
-function isPaymentAlreadySubmitted(res) {
-  if (!res || res.ok) return false;
-  if (res.responseLost === true) return true;
-  const posts = Number(res.chargeReqCount ?? res.undiciAttempts ?? 0);
-  if (posts >= 1) {
-    const ps = String(res.paymentStatus || "");
-    if (/pay_submitted|response_lost|issuer_response_lost/i.test(ps)) return true;
-  }
-  const blob = resultBlob(res);
-  return /RESPONSE_LOST|pay_submitted_no_response|issuer_response_lost|POST in-flight\/sent/i.test(
-    blob,
-  );
 }
 
 function isSoftPaymentProcessFail(res) {
@@ -116,17 +102,7 @@ function isRetryableAtcOuter(res) {
 }
 
 function resultBlob(res) {
-  return [
-    res?.debugError,
-    res?.error,
-    res?.failedStep,
-    res?.checkoutStage,
-    res?.paymentStatus,
-    res?.note,
-    ...(res?.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note || ""}`),
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return latchResultBlob(res);
 }
 
 /**

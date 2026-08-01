@@ -943,6 +943,9 @@ export async function runGlobalEPayHttp(opts = {}) {
     chargeReqCount,
     undiciAttempts: Number(issuer?.undiciAttempts || 1),
     responseLost: Boolean(issuer?.responseLost),
+    paymentAttempted: Boolean(
+      issuer?.responseLost || Number(issuer?.undiciAttempts || chargeReqCount || 0) >= 1,
+    ),
     sawAuthWire: Boolean(bankHit),
     redirectUrl: issuer?.redirectUrl || null,
     redirectPayload: issuer?.redirectPayload || null,

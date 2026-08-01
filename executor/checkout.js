@@ -253,11 +253,18 @@ export async function runCheckout(task) {
         declineSnippet: out.declineSnippet ?? null,
         payClickCount: out.payClickCount ?? null,
         sawAuthWire: out.sawAuthWire ?? null,
-        chargeReqCount: out.chargeReqCount ?? null,
+        chargeReqCount: out.chargeReqCount ?? out.bigpayAuthPosts ?? null,
         blockedChargeReqCount: out.blockedChargeReqCount ?? null,
         browserIssuerBlocked: out.browserIssuerBlocked ?? null,
         framesNeutralized: out.framesNeutralized ?? null,
         undiciAttempts: out.undiciAttempts ?? null,
+        bigpayAuthPosts: out.bigpayAuthPosts ?? null,
+        responseLost: Boolean(out.responseLost),
+        paymentAttempted: Boolean(
+          out.paymentAttempted ||
+            out.responseLost ||
+            Number(out.chargeReqCount ?? out.undiciAttempts ?? out.bigpayAuthPosts ?? 0) >= 1,
+        ),
         isSameCartToken: out.isSameCartToken ?? null,
         transactionId: out.transactionId ?? null,
         cartToken: out.cartToken ?? null,

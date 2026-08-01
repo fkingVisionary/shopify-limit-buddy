@@ -1266,6 +1266,12 @@ export const toymateAdapter = {
         cartId: checkoutId,
         paymentLogs: pay.paymentLogs || [],
         bigpayAuthPosts: authPosts,
+        chargeReqCount: authPosts || null,
+        paymentAttempted: authPosts >= 1,
+        responseLost: Boolean(
+          pay.responseLost ||
+            /RESPONSE_LOST|timeout|fetch failed|ECONN/i.test(String(pay.note || pay.error || "")),
+        ),
         elapsedMs: Date.now() - t0,
         finalUrl: orderNumber
           ? `${apex}/checkout/order-confirmation`

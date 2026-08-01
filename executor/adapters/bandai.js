@@ -1739,6 +1739,13 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         payClickCount: geOut.payClickCount,
         sawAuthWire: geOut.sawAuthWire,
         chargeReqCount: geOut.chargeReqCount ?? null,
+        undiciAttempts: geOut.undiciAttempts ?? null,
+        responseLost: Boolean(geOut.responseLost),
+        paymentAttempted: Boolean(
+          geOut.paymentAttempted ||
+            geOut.responseLost ||
+            Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1,
+        ),
         blockedChargeReqCount: geOut.blockedChargeReqCount ?? null,
         geNetTail: geOut.geNetTail ?? null,
         finalUrl: geOut.finalUrl || `${session.base}/orderdetails`,
@@ -2037,6 +2044,12 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       blockers: geOut.blockers || [],
       chargeReqCount: geOut.chargeReqCount ?? null,
       undiciAttempts: geOut.undiciAttempts ?? null,
+      responseLost: Boolean(geOut.responseLost),
+      paymentAttempted: Boolean(
+        geOut.paymentAttempted ||
+          geOut.responseLost ||
+          Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1,
+      ),
       browserIssuerBlocked: geOut.browserIssuerBlocked ?? null,
       framesNeutralized: geOut.framesNeutralized ?? null,
       isSameCartToken: geOut.isSameCartToken ?? null,

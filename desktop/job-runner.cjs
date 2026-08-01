@@ -20,6 +20,7 @@ const {
   classifyBandaiRunResult,
   sleep: sleepMs,
 } = require("./bandai-retry-policy.cjs");
+const { isPaymentAlreadySubmitted } = require("./payment-latch.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
@@ -1127,9 +1128,15 @@ function finishResult(job, res, summary) {
       outcome.code === "declined" || outcome.code === "held_cart_gone"
         ? null
         : res?.heldCart || null,
-    chargeReqCount: res?.chargeReqCount ?? null,
+    chargeReqCount: res?.chargeReqCount ?? res?.bigpayAuthPosts ?? null,
     undiciAttempts: res?.undiciAttempts ?? null,
+    bigpayAuthPosts: res?.bigpayAuthPosts ?? null,
     responseLost: Boolean(res?.responseLost),
+    paymentAttempted: Boolean(
+      res?.paymentAttempted ||
+        res?.responseLost ||
+        Number(res?.chargeReqCount ?? res?.undiciAttempts ?? res?.bigpayAuthPosts ?? 0) >= 1,
+    ),
     loginCheck: Boolean(res?.loginCheck),
     atcWallMs: res?.atcWallMs ?? null,
     transactionId: res?.transactionId || res?.geTransactionId || null,
@@ -1897,6 +1904,26 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
   });
   logResultTail(job, result);
 
+  // Cross-store latch: Disney/PKC/Toymate used to re-enter placeOrder after
+  // tunnel death / RESPONSE_LOST → second Revolut auth. Stop cold.
+  if (!result.ok && isPaymentAlreadySubmitted(result)) {
+    console.warn(
+      `[desktop:run] pay latch — skip sticky rotate (posts=${result.chargeReqCount ?? result.bigpayAuthPosts ?? result.undiciAttempts ?? "?"} responseLost=${Boolean(result.responseLost)})`,
+    );
+    emitLiveStatus(job, "Payment submitted — check bank");
+    emitDetailedLog(
+      job.runId,
+      job.task?.id,
+      "warn",
+      "Payment already submitted — not rotating / not retrying placeOrder (double-charge guard)",
+    );
+    return {
+      ...result,
+      consumerLabel: result.consumerLabel || "Payment submitted — check bank",
+      paymentAttempted: true,
+    };
+  }
+
   const maxProxyRetriesBase = sticky
     ? Math.min(4, Math.max(2, entries.length || 2))
     : entries.length > 1
@@ -1911,6 +1938,19 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
     proxyRetries < maxProxyRetries &&
     (entries.length > 1 || sticky)
   ) {
+    // Re-check latch each loop — a prior attempt may have reached issuer.
+    if (isPaymentAlreadySubmitted(result)) {
+      console.warn(
+        `[desktop:run] pay latch mid-rotate — abort further placeOrder retries`,
+      );
+      emitLiveStatus(job, "Payment submitted — check bank");
+      return {
+        ...result,
+        consumerLabel: result.consumerLabel || "Payment submitted — check bank",
+        paymentAttempted: true,
+      };
+    }
+
     proxyRetries += 1;
     const why = isStickyTunnelDead(result)
       ? "tunnel/TLS failure"
