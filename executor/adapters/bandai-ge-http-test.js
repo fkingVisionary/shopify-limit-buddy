@@ -2300,14 +2300,51 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const issuerUrl =
     opts.issuerUrl ||
     `${BANDAI_GE_SECURE}/1/Payments/HandleCreditCardRequestV2/${encodedMerchant}/${guid}?mode=${opts.issuerMode || "13534"}`;
+  // Dual-charge lab (2026-08-02): Chrome single-auth HAR posted machineId="".
+  // Bot Fast posts the full iovation blackbox (~1.4KB) → body ~2574 vs browser ~1064.
+  // Test fork default: omit machineId on issuer (still mint for Forter cookies).
+  // Opt back in with BANDAI_GE_TEST_SEND_MACHINE_ID=1 or opts.sendIssuerMachineId=true.
+  const sendIssuerMachineId =
+    opts.sendIssuerMachineId === true ||
+    process.env.BANDAI_GE_TEST_SEND_MACHINE_ID === "1";
+  const issuerMachineId = sendIssuerMachineId ? machineId : "";
+  try {
+    console.log(
+      `[bandai-ge-http-TEST] issuer machineId bytes=${String(issuerMachineId || "").length} (minted=${String(machineId || "").length}) send=${sendIssuerMachineId}`,
+    );
+  } catch {
+    /* ignore */
+  }
   const body = buildIssuerFormBody({
     card,
     cartToken: guid,
-    machineId,
+    machineId: issuerMachineId,
     urlStructureToken,
     gatewayId,
     paymentMethodId,
     createTransaction: opts.createTransaction,
+    tzOffset:
+      opts.tzOffset != null
+        ? opts.tzOffset
+        : new Date().getTimezoneOffset(),
+  });
+  payForensics("psp_body_shape", {
+    via: "http-ge-issuer",
+    store: "bandai",
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+    bodyBytes: body.length,
+    machineIdBytes: String(issuerMachineId || "").length,
+    mintedMachineIdBytes: String(machineId || "").length,
+    sendIssuerMachineId,
+    paymentMethodId: String(paymentMethodId || ""),
+    gatewayId: String(gatewayId || ""),
+    createTransaction:
+      opts.createTransaction === false || opts.createTransaction === "false"
+        ? "false"
+        : "true",
   });
 
   // Hard-lock single issuer POST.
