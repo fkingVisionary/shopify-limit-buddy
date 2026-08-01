@@ -4,6 +4,11 @@
 //
 // Rule: once the wire was touched, bank may have moved. Never soft-retry pay
 // or sticky-rotate a full /run with placeOrder still true.
+//
+// SCOPE (critical): per task-run result only. Pure function of one `/run`
+// finish blob — no module-level Map, no profileId/card lock, no shared latch
+// across concurrent jobs. 10 tasks on the same profile still placeOrder in
+// parallel; Task B is never blocked because Task A already paid.
 
 function resultBlob(res) {
   return [
@@ -41,7 +46,9 @@ function paymentPostCount(res) {
 
 /**
  * True when an issuer/BigPay POST already left the client (or we cannot prove
- * it did not). Outer desktop retry / sticky rotate must STOP.
+ * it did not). Outer desktop retry / sticky rotate must STOP for THIS result.
+ *
+ * Stateless / per-result only — never consult other jobs, profiles, or cards.
  */
 function isPaymentAlreadySubmitted(res) {
   if (!res || res.ok) return false;

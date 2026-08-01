@@ -112,6 +112,32 @@ test("issuer_http_failed + chargeReqCount>=1 → stop (not soft retry pay)", () 
   assert.equal(d.reason, "pay_already_submitted");
 });
 
+test("sibling task same profile still soft-retries when it has not paid", () => {
+  // Simulate: task A latched; task B (same profileId) still soft-fails pre-pay.
+  classifyBandaiRunResult({
+    ok: false,
+    taskId: "a",
+    profileId: "p1",
+    chargeReqCount: 1,
+    responseLost: true,
+    paymentStatus: "pay_submitted_no_response",
+  });
+  const sibling = {
+    ok: false,
+    taskId: "b",
+    profileId: "p1",
+    failedStep: "ge_payment",
+    debugError: "failed to process payment — try again",
+    cartSn: 1,
+    heldPayRetry: true,
+    heldCart: { cartSn: 1, cartItemSn: 2 },
+  };
+  assert.equal(isSoftPaymentProcessFail(sibling), true);
+  const d = classifyBandaiRunResult(sibling);
+  assert.equal(d.action, "retry");
+  assert.equal(d.retryPay, true);
+});
+
 test("OOS → wait_restock", () => {
   const d = classifyBandaiRunResult(
     {

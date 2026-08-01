@@ -7,6 +7,8 @@
 // - Hard decline / bad password / address → stop
 // - OOS → wait for restock (task stays alive)
 // - Success / cart held (ATC-only) → stop
+// - Pay-already-submitted latch is per THIS result only (see payment-latch.cjs) —
+//   concurrent tasks on the same profile are unaffected.
 
 const {
   consumerOutcome,

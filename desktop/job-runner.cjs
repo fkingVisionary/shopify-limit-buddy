@@ -1904,8 +1904,10 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
   });
   logResultTail(job, result);
 
-  // Cross-store latch: Disney/PKC/Toymate used to re-enter placeOrder after
-  // tunnel death / RESPONSE_LOST → second Revolut auth. Stop cold.
+  // Cross-store latch (THIS job's result only): Disney/PKC/Toymate used to
+  // re-enter placeOrder after tunnel death / RESPONSE_LOST → second Revolut
+  // auth. Stop cold for this runId — sibling tasks on the same profile keep
+  // running; nothing here is profile/card-global.
   if (!result.ok && isPaymentAlreadySubmitted(result)) {
     console.warn(
       `[desktop:run] pay latch — skip sticky rotate (posts=${result.chargeReqCount ?? result.bigpayAuthPosts ?? result.undiciAttempts ?? "?"} responseLost=${Boolean(result.responseLost)})`,

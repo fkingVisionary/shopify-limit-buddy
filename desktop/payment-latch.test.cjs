@@ -65,3 +65,49 @@ test("withPaymentLatchFields stamps paymentAttempted", () => {
 test("ok results never latch", () => {
   assert.equal(isPaymentAlreadySubmitted({ ok: true, chargeReqCount: 1 }), false);
 });
+
+test("latch is per-result — sibling task on same profile is unaffected", () => {
+  // Task A already touched issuer; Task B is a fresh concurrent checkout.
+  const taskA = {
+    ok: false,
+    taskId: "task-a",
+    profileId: "prof-1",
+    chargeReqCount: 1,
+    responseLost: true,
+    paymentStatus: "pay_submitted_no_response",
+  };
+  const taskB = {
+    ok: false,
+    taskId: "task-b",
+    profileId: "prof-1", // same profile, different task row
+    chargeReqCount: 0,
+    undiciAttempts: 0,
+    failedStep: "ge_payment",
+    debugError: "failed to process payment — try again",
+  };
+  assert.equal(isPaymentAlreadySubmitted(taskA), true);
+  assert.equal(isPaymentAlreadySubmitted(taskB), false);
+  // Calling latch on A must not mutate or poison B (pure function, no globals).
+  assert.equal(isPaymentAlreadySubmitted(taskB), false);
+  assert.equal(paymentPostCount(taskB), 0);
+});
+
+test("quantity>1 siblings: each result latches independently", () => {
+  const siblingPaid = {
+    ok: false,
+    taskId: "task-qty",
+    runId: "run-1",
+    chargeReqCount: 1,
+    paymentAttempted: true,
+  };
+  const siblingFresh = {
+    ok: false,
+    taskId: "task-qty",
+    runId: "run-2",
+    chargeReqCount: 0,
+    failedStep: "addToCart",
+    debugError: "CouldNotAddToCartBySoldOut",
+  };
+  assert.equal(isPaymentAlreadySubmitted(siblingPaid), true);
+  assert.equal(isPaymentAlreadySubmitted(siblingFresh), false);
+});
