@@ -1,24 +1,29 @@
 # Dual Revolut auths — cross-module investigation brief
 
-**Status:** GE dual-rail confirmed (Bandai + PKC)  
+**Status:** Cross-PSP dual confirmed (GE + BigPay/Adyen) — outside store modules  
 **Date:** 2026-08-02  
-**Working rule:** Prefer shared layers over store-specific adapters. Bandai-only edits are **suspect by default** unless a shared control is proven missing there.
+**Working rule:** Prefer shared layers over store-specific adapters. Bandai-only / GE-only / Toymate-only edits are **suspect by default**.
 
 ## Verdict (2026-08-02)
 
-**Global-E `HandleCreditCard` dual-rail — not a Bandai-module bug.**
+**Not a store-module bug. Not Global-E-only.** Three modules, two issuer stacks, same shape: **1 client PSP POST → 2 Revolut lines** (user-confirmed, same amount, not refund).
 
-| Store | Client posts | Revolut | Notes |
-|---|---|---|---|
-| Bandai Fast / Autocheckout test | 1 `psp_post` | **2** same amount | Many Bandai field levers failed |
-| Pokémon Centre HTTP GE | 1 `psp_post` | **2** same amount | tx `172438100`; same processor name; **not** a refund/void line (user) |
-| Toymate BigCommerce / BigPay (non-GE) | 1 `psp_post` | **CHECK** | `run_1d56805758fc` ~11:07 AEST 2026-08-02; BigPay `422/30106` insufficient funds; `bigpayAuthPosts=1`; CSE skipped after decline |
+| Store | Issuer stack | Client posts | Revolut | Notes |
+|---|---|---|---|---|
+| Bandai Fast / Autocheckout test | Global-E `HandleCreditCard` | 1 `psp_post` | **2** | Many Bandai field levers failed |
+| Pokémon Centre HTTP | Global-E | 1 `psp_post` | **2** | tx `172438100`; same processor name; **not** refund/void |
+| Toymate guest HTTP | BigCommerce BigPay / Adyen `scheme` | 1 `psp_post` | **2** | `run_1d56805758fc` ~11:07 AEST; BigPay `422/30106`; `bigpayAuthPosts=1`; CSE skipped |
 
-Both GE stores share Global-E issuer (`HandleCreditCardRequestV2`). Desktop orchestration ruled out (`quantity=1`, 1 enqueue, 1 `/run`). Soft-retry latch is a separate bug (already fixed).
+Desktop orchestration ruled out on these labs (`quantity=1`, 1 enqueue, 1 `/run`, 1 instrumented issuer POST). Soft-retry latch is a separate bug (already fixed) and is **not** today’s shape.
 
-**Toymate control (Noontide AU resi + CapSolver):** guest placeOrder reached issuer with **exactly one** BigPay POST. Draculaura PDP was OOS (remote ATC 200 stock error) — use in-stock LEGO City van `https://toymate.com.au/lego-city-the-lego-van-60500/`. ISP (royal) blocked CapSolver connect; Noontide resi cleared CF.
+**Ruled out as root:** Bandai adapter, PKC adapter, Toymate adapter, Global-E-only dual-rail, BigPay CSE double-post (skipped after decline).
 
-**Implication:** Stop Bandai hydrate / `pm` / `machineId` / cookie A/B as the main hunt. Client already sends one POST on GE. If Revolut shows **1** on Toymate for `run_1d56805758fc`, that further isolates dual-rail to **GE/acquirer**. If Revolut shows **2** on Toymate with `posts=1`, dual is broader than GE (shared PSP/acquirer path).
+**Still plausible (shared / outside modules):**
+1. **Revolut / issuer display or dual auth** on this PAN (manual browser = 1; bot path = 2) — strongest “outside our PSP code” candidate once posts=1 is trusted on both stacks.
+2. **Shared bot payment presentation** that both GE and Adyen/BigPay turn into two issuer auths (same profile/card metadata, AVS, 3DS signaling, etc.) — not store checkout orchestration.
+3. **Uninstrumented second wire** — low probability after GE + BigPay hooks both show `posts=1`, but keep as a check if a new store is added.
+
+**Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette. Next proof should be **manual browser vs bot on the same Toymate/GE cart amount** (Revolut 1 vs 2) and/or a **different card/issuer** on one bot run. If another issuer shows single while Revolut duals, root is Revolut-side; if every issuer duals with `posts=1`, dig shared card payload / 3DS / proxy identity — not module ATC.
 
 ---
 
