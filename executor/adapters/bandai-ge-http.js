@@ -1753,8 +1753,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const shouldMint = Boolean(opts.page) && (!machineId || riskHydrate);
   if (shouldMint) {
     logPageRequests(opts.page);
-    // Risk hydrate: load Checkout/v2 for snare/Forter with GE POSTs muted,
-    // merge cookies into undici jar, then drop page before hydrate/issuer.
+    // Proof 2026-07-22 AEST:
+    //   07:22 Playwright goto(LIVE Checkout/v2) → undici issuer → Revolut PAIR
+    //   07:24 pure undici / throwaway snare host → Revolut SINGLE
+    // liveHtml riskHydrate (2026-08 GE-all-tls tx 172528639) still ×2 + sameCart=False.
+    // Default: mint snare/Forter on a THROWAWAY CartToken — never open the pay guid.
     const pctx = opts.page.context?.();
     const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
     let mutedIssuerPosts = 0;
@@ -1766,8 +1769,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
         await route.continue();
         return;
       }
-      // Count suppressed issuer attempts — these were the invisible half of
-      // Revolut pairs when mute was lifted while Checkout/v2 was still live.
       if (isBandaiGeIssuerPaymentUrl(url)) {
         mutedIssuerPosts += 1;
         browserReqLog.push({
@@ -1799,19 +1800,54 @@ export async function runBandaiGeHttpPay(opts = {}) {
       await pctx.route(geMuteMatch, geMuteRoute);
     }
     let mint;
+    let mintUrl = null;
+    let throwawayGuid = null;
+    let mintVia = "none";
+    const allowLiveCartIovation =
+      opts.allowLiveCartIovation === true ||
+      process.env.BANDAI_GE_ALLOW_LIVE_CART_IOVATION === "1";
     try {
-      // GE-all-tls holds chrome_131 sticky while Chromium also loads Checkout/v2 —
-      // labs timed out at 20s; give snare more runway without changing Fast path.
+      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}`;
+      const iovToken = await getBandaiGeCartToken({
+        ctx,
+        merchantCartToken: iovMct,
+        merchantId: mid,
+        area,
+        webStoreInstanceCode: area,
+        customerEmail: opts.customerEmail,
+        cultureCode: opts.cultureCode || "en-GB",
+        preferedCultureCode: opts.preferedCultureCode || "en-GB",
+        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+        userAgent: opts.userAgent,
+      });
+      if (iovToken.ok && iovToken.cartToken) {
+        throwawayGuid = iovToken.cartToken;
+        mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
+        mintVia = "throwaway";
+      }
+    } catch {
+      /* fall through */
+    }
+    if (!mintUrl && allowLiveCartIovation) {
+      // Escape hatch only — known to pair Revolut (live cart in Chromium).
+      mintUrl = v2Url;
+      throwawayGuid = guid;
+      mintVia = "liveCart";
+    }
+    try {
       const ioTimeout =
         opts.iovationTimeoutMs ||
         (process.env.PAY_GE_TLS_WORKER !== "0" ? 40_000 : undefined);
-      mint = await mintIovationBlackbox({
-        page: opts.page,
-        checkoutV2Url: v2Url,
-        timeoutMs: ioTimeout,
-        settleMs: opts.iovationSettleMs,
-        jar: ctx?.jar || null,
-      });
+      mint = mintUrl
+        ? await mintIovationBlackbox({
+            page: opts.page,
+            checkoutV2Url: mintUrl,
+            timeoutMs: ioTimeout,
+            settleMs: opts.iovationSettleMs,
+            // Do not seed the pay jar into the throwaway browser session.
+            jar: null,
+          })
+        : { ok: false, error: "no_throwaway_cart_for_iovation", ms: 0, cookies: null };
     } finally {
       if (pctx?.unroute) {
         try {
@@ -1822,15 +1858,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
       }
     }
     const blockedMutates = browserReqLog.length;
-    const jarNames = mint.cookies ? Object.keys(mint.cookies) : [];
     const issuerPostsDuringMint = browserReqLog.filter((r) => r.issuer).length;
     push("ge_iovation_mint", {
       ok: mint.ok,
       status: null,
       ms: mint.ms,
       note: mint.ok
-        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=liveHtml+geMute(riskHydrate) forter=${Boolean(mint.forterToken || mint.cookies?.forterToken)} cookieKeys=${jarNames.length} browserMutatesSeen=${blockedMutates} mutedIssuer=${mutedIssuerPosts} issuerSeen=${issuerPostsDuringMint}`
-        : `iovation fail ${mint.error || ""}`.slice(0, 160),
+        ? `ioBlackBox bytes=${String(mint.machineId || "").length} via=${mintVia}:${String(throwawayGuid || "").slice(0, 8)}… liveCart=${throwawayGuid === guid} forter=${Boolean(mint.forterToken || mint.cookies?.forterToken)} mutedIssuer=${mutedIssuerPosts} browserMutatesSeen=${blockedMutates} issuerSeen=${issuerPostsDuringMint}`
+        : `iovation fail ${mint.error || "no_mint_url"}`.slice(0, 160),
     });
     if (mint.machineId) {
       machineId = mint.machineId;
@@ -1842,12 +1877,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
     if (mint.forterToken) forterToken = mint.forterToken;
     else if (mint.cookies?.forterToken) forterToken = mint.cookies.forterToken;
-    // Always merge mint cookies into undici jar on risk hydrate (GE + forterToken).
-    if (mint.cookies && ctx?.jar?.load) {
+    // Attach Forter only — never merge Playwright GE session cookies into the
+    // pay jar (that jar merge → IsTheSameCartToken=False / Revolut pair).
+    if (forterToken && ctx?.jar?.load) {
       try {
-        const merged = { ...ctx.jar.dump(), ...mint.cookies };
-        // forterToken from cdn host: still attach so save/issuer jar has it.
-        if (forterToken) merged.forterToken = forterToken;
+        const merged = { ...ctx.jar.dump(), forterToken };
         ctx.jar.load(merged);
       } catch {
         /* ignore */
@@ -1856,10 +1890,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
     mark("ge_risk_cookies", {
       forterToken: Boolean(forterToken),
       forterBytes: forterToken ? String(forterToken).length : 0,
-      cookieKeys: jarNames.slice(0, 40),
+      mintVia,
+      throwawayGuid: throwawayGuid || null,
+      liveGuid: guid,
+      cookieMerge: "forterToken-only",
     });
-    // Fast = undici issuer (hard no Playwright pay). Page issuer only when
-    // explicitly requested — Safe owns Playwright checkout fingerprinting.
     const preferPageIssuer =
       opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
     const keepPage =
@@ -1868,13 +1903,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
       opts.scrapeCardFormViaPage === true;
     opts = { ...opts, preferPageIssuer };
     if (keepPage) {
-      // Stay on Checkout/v2 — do not blank before page issuer.
       issuerPage = opts.page;
       mark("ge_page_kept_after_iovation", {
         ok: true,
         preferPageIssuer,
-        warn: preferPageIssuer ? "page_issuer_after_riskHydrate" : "live_cart_browser_may_pair_revolut",
+        warn: preferPageIssuer
+          ? "page_issuer_after_riskHydrate"
+          : "live_cart_browser_may_pair_revolut",
         mutedIssuerPosts,
+        mintVia,
       });
     } else {
       try {
@@ -1890,10 +1927,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
       issuerPage = null;
       mark("ge_page_dropped_after_iovation", {
         ok: true,
+        throwawayGuid: throwawayGuid || null,
         liveGuid: guid,
         geMuted: true,
         beforeHydrate: true,
         riskHydrate: true,
+        mintVia,
         browserMutatesDuringMint: blockedMutates,
         issuerPostsDuringMint,
         mutedIssuerPosts,

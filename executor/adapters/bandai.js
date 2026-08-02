@@ -2346,9 +2346,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         /* ignore */
       }
     }
-    // Fast anti-fraud default: riskHydrate (fresh snare/Forter mint + cookie
-    // merge, then undici pay). Stale noPage blackbox was scoring
-    // PossibleFraudDetected=True. Opt into pure noPage only explicitly.
+    // Fast anti-fraud default: riskHydrate = fresh snare/Forter on a THROWAWAY
+    // CartToken (never Playwright-open the pay guid — liveHtml dualed Revolut).
+    // Stale noPage blackbox scored PossibleFraudDetected=True; opt-in only.
     const geNoPage =
       task.bandaiGeNoPage === true || process.env.BANDAI_GE_NO_PAGE === "1";
     let geMachineId =
@@ -2411,8 +2411,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       ),
       allowThinRisk:
         task.bandaiGeAllowThinRisk === true || process.env.BANDAI_GE_ALLOW_THIN_RISK === "1",
-      mergeIovationCookies:
-        riskHydrate || task.bandaiGeMergeIovationCookies === true,
+      // Throwaway mint attaches forterToken only; full GE jar merge duals.
+      mergeIovationCookies: task.bandaiGeMergeIovationCookies === true,
+      allowLiveCartIovation:
+        task.bandaiGeAllowLiveCartIovation === true ||
+        process.env.BANDAI_GE_ALLOW_LIVE_CART_IOVATION === "1",
       iovationSettleMs:
         Number(task.bandaiGeIovationSettleMs) ||
         Number(process.env.BANDAI_GE_IOVATION_SETTLE_MS) ||

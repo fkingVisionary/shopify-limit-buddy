@@ -1,22 +1,22 @@
 # Dual Revolut — investigation bible (handoff)
 
-**Updated:** 2026-08-02  
+**Updated:** 2026-08-03  
 **PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
-### VERDICT (updated 2026-08-02 ~16:44 AEST) — PARTIAL
+### VERDICT (updated 2026-08-03 ~04:31 AEST) — PARTIAL
 
-**Shared undici issuer TLS** duals (Toymate control). **Issuer chrome_131 tls-worker** → Revolut×1 on Toymate BigPay `run_20651586e4b2` @14:54.
+**Toymate:** issuer chrome_131 tls-worker → Revolut×1 (`run_20651586e4b2`).
 
-**Bandai Fast still duals** with the same issuer tls-worker:
-| Field | `run_efb49f4c05df` / tx `172456937` @16:44 AEST |
+**Bandai Fast still duals** after full GE tls-worker stack + `ct=false`:
+| Field | tx `172528639` @04:25 AEST · last4 `1964` |
 |---|---|
-| Wire | `via=http-ge-issuer` · `payTransport=tls-worker` · **posts=1** |
-| GE | `AuthorizationFailed` · `possibleFraudDetected=false` |
-| **Revolut** | **×2** (user 2026-08-02) |
+| Wire | ha×3+save+issuer **tls-worker** · posts=1 · `ct=false` · fraud=false |
+| GE | `sameCart=False` · via=`http-ge-issuer` |
+| **Revolut** | **×2** (user 2026-08-03) |
 
-Client forensics: exactly one `HandleCreditCard` POST. Dual is not a second app POST.
-GE prepay (handleaction/save) was still **undici** while issuer was tls-worker — active A/B: put **all payHost mutates** on tls-worker (`PAY_PAYHOST_TLS_WORKER`, default ON).
+Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
+**Active A/B:** restore **throwaway-cart iovation** (proven single Revolut 2026-07-22 07:24) — stop Playwright `goto` of the **live** pay Checkout/v2 (liveHtml riskHydrate correlated with `sameCart=False`).
 
 ---
 
@@ -42,14 +42,15 @@ LOCKED FACTS — do not re-argue:
 PARTIAL FIX (keep; do not revert without wire proof):
 - Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 on **Toymate** @14:54.
 - Keep `PAY_ISSUER_TLS_WORKER` default ON. Do not “simplify” back to undici issuer.
-- **Bandai Fast counterexample:** tx `172456937` @16:44 — issuer tls-worker + posts=1 still Revolut×2. Not fixed for GE yet.
-- Active A/B: `PAY_PAYHOST_TLS_WORKER` default ON — GE/BigPay **prepay** mutates also chrome_131 (same stack as issuer). Opt out `=0`.
+- **Bandai Fast counterexample:** issuer/prepay/GE-all tls-worker + ct=false still ×2 (`172528639`). Not fixed for GE yet.
+- Keep pay TLS knobs ON. Active A/B: **throwaway iovation** (no Playwright on live pay Checkout/v2).
 
 FORBIDDEN:
 - Reverting issuer tls-worker without a new Revolut×2 wire proof on Toymate/Bandai.
 - Using Playwright / page-issuer as the Fast dual fix.
 - Bandai GE field / form-nav / settle / mute ceremony churn.
-- Claiming payment-latch or issuer-only tls-worker solved Bandai dual.
+- Claiming payment-latch or GE-all-tls solved Bandai dual.
+- Re-enabling liveHtml Checkout/v2 iovation without `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
 Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
@@ -163,9 +164,9 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **PayHost tls wire (2026-08-02 ~17:40 AEST):** tx `172460612` / `run_27ef1bff8056` — handleaction×3 + save + HandleCreditCard all `payTransport=tls-worker`, posts=1, `possibleFraudDetected=false`, `createTransaction=true`. Revolut score was entangled with later card misreads — **re-score on fresh disposable**.
 
-**createTransaction=false — NOT locked:** tx `172465275` @18:41/44 did **not** fire Revolut (user 2026-08-03: disposable card rotated; prior ×2 was a misread of earlier txs). **ct A/B still open.**
+**GE-all-tls + ct=false FAIL (locked):** tx `172528639` @04:25 — Revolut **×2** (user). posts=1, fraud=false, `sameCart=False`. TLS-stack + ct knobs insufficient for Bandai.
 
-**Active A/B:** `PAY_GE_TLS_WORKER` default ON — all `global-e.com` hops on chrome_131. Re-bank on fresh card (last4 `1964`). Keep `BANDAI_GE_CREATE_TRANSACTION=0` for this score unless GE-all-tls ×1 first.
+**Active A/B:** throwaway CartToken iovation mint (never Playwright-open pay guid). Keep `PAY_GE_TLS_WORKER` ON. Opt into liveHtml only via `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -219,7 +220,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Card | last4 `3083` (rotated — do not score Revolut) |
 | **Revolut** | **re-run on last4 `1964`** |
 
-### Lab 2026-08-03 ~04:25 AEST — GE-all-tls + ct=false on fresh card (Revolut TBD)
+### Lab 2026-08-03 ~04:25 AEST — GE-all-tls + ct=false FAIL
 
 | Field | Value |
 |---|---|
@@ -227,8 +228,10 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | GE tx | **`172528639`** |
 | Wire | ha×3 + save + HandleCreditCard → **tls-worker** · posts=1 · `ct=false` |
 | PSP | `AutherizationFailed` · `possibleFraudDetected=false` · `sameCart=False` |
-| Via | `http-ge-issuer` · bankSignal |
-| **Revolut** | **user score** — 1 vs 2 |
+| Via | `http-ge-issuer` · bankSignal · iovation `liveHtml+geMute` |
+| **Revolut** | **×2** (user 2026-08-03 ~04:31) |
+
+**Next:** throwaway iovation (commit `9d313ae` recipe) — mint snare on disposable GetCartToken guid; forterToken-only jar attach; no live Checkout/v2 in Playwright.
 
 ### Ruled out / parked
 
@@ -237,8 +240,8 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | GE field / form-nav / settle | Revolut×2 |
 | Page-issuer baseline / CH A/B | ×2 — and off Fast product path |
 | Playwright stealth as dual fix | parked — not shared; Fast no-PW pay |
-| Bandai issuer-only tls-worker | ×2 (`172456937`) — still the last trusted Bandai dual |
-| Bandai prepay+issuer / ct=false / GE-all-tls | wire proven; **Revolut re-score pending** on fresh card |
+| Bandai issuer-only tls-worker | ×2 (`172456937`) |
+| Bandai GE-all-tls + `ct=false` | ×2 (`172528639`) — liveHtml riskHydrate still on |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
