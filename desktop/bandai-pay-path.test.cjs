@@ -2,12 +2,12 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 
-test("fast default unchanged — page issuer product path", () => {
+test("fast default — undici issuer, no Playwright pay", () => {
   const p = resolveDesktopBandaiPayPath({ bandaiCheckoutMode: "fast" }, { placeOrder: true, mode: "checkout" });
   assert.equal(p.bandaiCheckoutMode, "fast");
   assert.equal(p.bandaiGeHttpPay, true);
-  assert.equal(p.bandaiGePreferPageIssuer, true);
-  assert.equal(p.bandaiGeUndiciIssuer, false);
+  assert.equal(p.bandaiGePreferPageIssuer, false);
+  assert.equal(p.bandaiGeUndiciIssuer, true);
   assert.notEqual(p.bandaiGeHttpPayTest, true);
 });
 

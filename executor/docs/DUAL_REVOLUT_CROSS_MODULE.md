@@ -27,25 +27,26 @@ LOCKED FACTS — do not re-argue:
 
 YOUR JOB:
 1. Accept the dual is outside store modules and outside “GE issuer body”.
-2. Find what the shared bot stack does that a real browser does not, such that ONE outbound pay POST becomes TWO issuer/bank auths.
+2. Find what the **shared undici/http** bot stack does that a real browser does not, such that ONE outbound pay POST becomes TWO issuer/bank auths.
 3. Change shared code (executor/http.js, TLS/client choice, proxy binding, desktop card packaging, sidecar /run semantics — as justified by evidence).
-4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1 on **stock Fast** (page issuer). Do not invent a new Bandai pay mode to “fix” the dual.
+4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1 on **stock Fast undici** (`via=http-ge-issuer`).
 
 FORBIDDEN:
-- Rewriting Bandai Fast defaults (page issuer → undici, blank-under-mute ceremony, form-nav, settle, headed Chrome, GE field A/B) as the main strategy. User correction 2026-08-02 PM: that is dismantling Bandai again; dual is outside that scope.
-- Editing `bandai-ge-http.js` / `bandai-ge-http-test.js` pay ceremony except for inert forensics / latch signals.
+- Using Playwright / page-issuer / stealth / headed Chrome as the dual fix for Fast. User lock 2026-08-02: Fast has a hard no-Playwright-pay rule (speed/CPU); Playwright checkout fingerprinting is **Safe mode only**. Playwright also does not live in the shared path that explains Toymate.
+- Bandai GE field / form-nav / settle / mute ceremony churn.
+- Editing `bandai-ge-http.js` pay ceremony except inert forensics / latch signals.
 - Chasing `IsTheSameCartToken` or other GE JWT flags.
 - “Let’s just fix Toymate too” product work.
 - Claiming payment-latch solved this dual.
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE (SHARED ONLY):
-- Chase angles **A fan-out / B pre-pay / C stock Fast** — see §4 Active chase. Score with `node executor/scripts/score-stock-fast-angles.mjs` after one Fast placeOrder.
-- Bandai is the **scoreboard** only. Product Fast = riskHydrate + **page issuer**. Workshop = `executor/http.js` + forensics, not GE ceremony.
-- Form-nav / settle / mute / undici-default labs are **closed digressions**.
-- Next change must be justifiable for Bandai **and** Toymate BigPay. If it only lives in Bandai GE code, stop.
+- Workshop = `executor/http.js` / undici / TLS — the path Bandai Fast pay **and** Toymate BigPay share.
+- Product Fast = HTTP GE + **undici issuer** (not page-ge-issuer). Score with `node executor/scripts/score-stock-fast-angles.mjs`.
+- Page-issuer CH labs (13:17 / 13:39) are evidence only — off Fast product path.
+- Next change must be justifiable for Bandai Fast undici **and** Toymate BigPay.
 
-Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** (not autocheckout_test). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
+Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** undici. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---
@@ -62,7 +63,8 @@ The bot causes **two Revolut auth/decline lines for one checkout attempt**. A no
 |---|---|---|---|---|
 | Manual browser | Real Chrome/Safari | (browser) | **1** | Same merchants, same cards |
 | Bandai bot | Global-E | **1** `psp_post` | **2** | Many GE field levers failed |
-| Bandai stock Fast @13:17 | Global-E page issuer | **1** | **2** | tx `172447213` / `run_38055c505199` |
+| Bandai stock Fast @13:17 | Global-E page issuer | **1** | **2** | tx `172447213` — off Fast product path (Playwright pay) |
+| Bandai @13:39 CH A/B | Global-E page issuer | **1** | **2** | tx `172448160` — headers still ×2; Playwright pay |
 | PKC bot | Global-E | **1** `psp_post` | **2** | tx `172438100`; not refund |
 | Toymate bot | BigPay / Adyen | **1** `psp_post` | **2** | `run_1d56805758fc` ~11:07 AEST 2026-08-02; `422/30106`; CSE skipped after decline |
 | Bot, other cards/banks | various | (same shape) | **2** | User history |
@@ -105,54 +107,48 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 |---|---|---|
 | **A — PSP fan-out** | Does one accepted pay POST yield one `transactionId` / redirect while Revolut still shows 2? | `psp_post_end` now logs `transactionId`, `redirectHost`, `statusType`, `locationLooksAcs` (page + undici + Toymate/PKC). |
 | **B — Shared pre-pay** | What pay-host mutates happen *before* the charge on undici? | `http.js` always audits GE/BigPay mutates with `stage=prepay\|issuer` + `http_mutate_response` (status/Location). |
-| **C — Stock Fast scoreboard** | Score only product Fast (`via=page-ge-issuer`), not autocheckout_test. | Page issuer now emits `psp_post_end` + `scoreboard:"stock_fast"`. |
+| **C — Stock Fast scoreboard** | Score product Fast **undici** (`via=http-ge-issuer`). Playwright pay = Safe only. | Classifier `stockFast` = `http-ge-issuer`. |
 
 **How to test (desktop):**
-1. Task `bandaiCheckoutMode=fast` (default). Do **not** use Autocheckout test.
-2. One placeOrder run → confirm no `bandai_ge_http_fork` step.
+1. Task `bandaiCheckoutMode=fast` (default). Do **not** use Autocheckout test or Safe/Playwright pay.
+2. One placeOrder run → confirm `via=http-ge-issuer` (undici), not `page-ge-issuer`.
 3. `node executor/scripts/score-stock-fast-angles.mjs` (or `classify-pay-forensics.mjs`).
 4. User: Revolut **1 or 2** for the printed `transactionId`.
 
-### Live stock Fast score (2026-08-02 ~13:17 AEST) — CONFIRMED Revolut×2
+### Product lock (2026-08-02 ~13:54) — Fast ≠ Playwright
 
-| Field | Value |
-|---|---|
-| Run | `run_38055c505199` |
-| Mode | stock Fast · `via=page-ge-issuer` |
-| GE tx | **`172447213`** |
-| Client posts | **1** (`one_post_two_bank_suspect`) |
-| Bank hit | yes (`declined_or_auth_failed`) |
-| Revolut | **×2** (user confirmed) |
-| Prepay mutates | 4 (`handleaction` 1/2/3 + `save`) — no second issuer hop |
-| Issuer http_mutate | 0 (page issuer bypasses `http.js` — expected) |
+User correction:
+- **Fast: hard no Playwright pay** (speed / CPU). Playwright checkout fingerprinting = **Safe mode only**.
+- Dual is confirmed on shared paths (Bandai + Toymate); Playwright does **not** live in that shared surface — do not chase Playwright stealth/page-issuer as the fix.
+- Restored product Fast → **undici issuer** (`via=http-ge-issuer`). Page issuer is Safe/opt-in only.
 
-**Verdict:** dual survives **product Fast** (page issuer). Angle A (PSP/merchant fan-out after one POST) is the lead; B showed a normal prepay chain with no hidden second issuer mutate.
+### Page-issuer labs (evidence only — off Fast product path)
 
-### Shared presentation A/B (after 13:17 confirm)
+| Time | tx | Notes |
+|---|---|---|
+| 13:17 | `172447213` | page-ge-issuer, posts=1, Revolut×2 |
+| 13:39 | `172448160` | CH+Sec-Fetch+Win UA on page issuer, posts=1, Revolut×2 |
 
-Naked undici / page-issuer hops omitted Chrome Client Hints; GE prepay lacked Sec-Fetch. Shipped in `executor/http.js` (applies to Toymate BigPay + Bandai prepay) and thin shared-helper merge on stock Fast `page.request` edge only:
+Header cosmetics on Playwright pay do not fix the dual and were the wrong Fast workshop.
+
+### Shared undici presentation still shipped (valid for Fast + Toymate)
+
+In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 - Platform-matched Chrome 131 UA on win32
-- `chromeClientHints()` on `request()` when omitted (`PAY_CHROME_CH=0` to opt out)
-- `chromePayFetchHeaders()` for all pay-host mutates incl. handleaction/save
+- `chromeClientHints()` when omitted (`PAY_CHROME_CH=0` to opt out)
+- `chromePayFetchHeaders()` for pay-host mutates incl. handleaction/save
 
-**Score (~13:39 AEST):** `run_a71f2d4462d6` · tx **`172448160`** · stock Fast · `hasSecChUa=true` · `secChPlatform="Windows"` · `secFetchMode=navigate` · posts=1 · bank hit (`AutherizationFailed`).
+**Next score:** stock Fast **undici** → Revolut 1 vs 2. No Playwright pay A/B.
 
-**User confirmed: Revolut ×2** — Client Hints + Sec-Fetch + platform UA **do not fix** the dual. Park header-only presentation as insufficient.
+Do **not** change Bandai issuer body / form-nav / mute; do **not** expand Playwright on Fast.
 
-### Next shared A/B (still angle A, not GE ceremony)
-
-Risk hydrate runs in Playwright; `navigator.webdriver` may stamp Forter/GE. Shared helper: `executor/chrome-pay-stealth.js` on F5 context — **opt-in** `PAY_CHROME_STEALTH=1` (default off after proxy login-501 burn on first attempt). No HandleCreditCard / form-nav / field changes.
-
-Do **not** change Bandai issuer body / form-nav / mute to chase these.
-
-### Ruled out presentation levers (keep growing)
+### Ruled out / parked
 
 | Lever | Result |
 |---|---|
 | GE field / form-nav / settle | Revolut×2 |
-| Stock Fast page issuer baseline | tx `172447213` ×2 |
-| CH + Sec-Fetch + Win UA | tx `172448160` ×2 (user confirmed) |
-| Playwright stealth (default on) | not scored — login/ATC 501 proxy burn; now opt-in only |
+| Page-issuer baseline / CH A/B | ×2 — and off Fast product path |
+| Playwright stealth as dual fix | parked — not shared; Fast no-PW pay |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
@@ -161,8 +157,8 @@ Do **not** change Bandai issuer body / form-nav / mute to chase these.
 - `executor/http.js`: mutations never retry unless `allowMutationRetry:true` (ignores bare `retry:true`).
 - `executor/http.js`: `http_mutate` — all pay-host mutates (`stage=prepay|issuer`); `http_mutate_response` with status/Location.
 - `executor/http.js`: `chromeIssuerNavigateHeaders` — Chrome `Sec-Fetch-*` on issuer-like POSTs when omitted (`PAY_ISSUER_CHROME_NAV=0` to opt out).
-- `psp_post_end` fan-out fields + stock Fast page-issuer `psp_post_end` (was missing).
-- Classifier / scoreboard: `classify-pay-forensics.mjs`, `score-stock-fast-angles.mjs`.
+- `psp_post_end` fan-out fields (page + undici).
+- Classifier / scoreboard: Fast = `http-ge-issuer` only (`score-stock-fast-angles.mjs`).
 - Do **not** treat Revolut×2 as “expected GE dual-rail” in Bandai bible anymore.
 
 ### Wire-audit result (Bandai clean, 2026-08-02 ~11:48 AEST)
@@ -172,28 +168,26 @@ Do **not** change Bandai issuer body / form-nav / mute to chase these.
 - Other GE mutates were hydrate/save only (`issuerLike=false`) — not a second issuer POST.
 - So dual (if Revolut still shows 2 on this tx) is **not** a hidden second HTTP from our client.
 
-### Digression closed (2026-08-02 PM) — stop dismantling Bandai
+### Digression closed — stop dismantling Bandai / stop Playwright-on-Fast dual hunt
 
-User correction: dual Revolut is **outside** Bandai. Form-nav / settle / mute / headed Chrome / flipping Fast to undici inside Bandai adapters is dismantling the module again.
+User corrections:
+- Dual is **outside** Bandai GE ceremony.
+- Fast has **hard no Playwright pay**; Safe owns Playwright checkout fingerprinting.
+- Playwright is not the shared dual surface (Toymate proves it).
 
-**Restored product Fast (do not re-break):**
-- Desktop + `bandai.js` + `bandai-ge-http.js`: riskHydrate → **page issuer** default.
-- Undici issuer / autocheckout_test fork = opt-in research only.
-- Blank-under-mute + always-park-before-page-issuer digressions reverted on prod Fast.
+**Product Fast (locked):** undici issuer. Page-issuer / stealth / form-nav = not the Fast dual workshop.
 
-Research evidence kept (not a Bandai fix path):
+Research evidence kept:
 
 | Lab | tx | Notes |
 |---|---|---|
 | Clean undici | `172442728` @11:48 | posts=1, Revolut×2 |
-| Fat form-nav | `172443438` @12:02 | posts=1, Revolut×2 |
-| Form-nav + settle | `172443854` @12:09 | postGeMut=6, Revolut×2 |
-| Headed Chrome form-nav | `172444504` @12:23 | ~5s Revolut gap |
-| Form-nav settle=0 | `172445269` @12:39 | postGeMut=0, **Revolut×2** (user confirmed) |
+| Form-nav / settle / headed | various | Revolut×2 — closed |
+| Page-issuer + CH | `172447213` / `172448160` | Revolut×2 — off Fast path |
 
-Also parked: `IsTheSameCartToken` (GE-only); desktop card packaging (audited clean).
+Also parked: `IsTheSameCartToken`; card packaging; Playwright stealth as dual fix.
 
-Next edits = **shared stack only**. Score on stock Fast.
+Next edits = **shared undici/http only**. Score on Fast undici.
 
 ---
 
@@ -225,10 +219,10 @@ Desktop Start
 ## 6. Bandai lab reference (measurement only)
 
 - Task `task_c13e31bb45ce` · Profile `prof_4c10061c8213` · SKU `N2847904001`
-- Score on **`bandaiCheckoutMode=fast`** → `bandai-ge-http.js` page issuer (product path)
-- `autocheckout_test` / form-nav = parked research fork only — not the workshop
+- Score on **`bandaiCheckoutMode=fast`** → undici `via=http-ge-issuer` (hard no Playwright pay)
+- Safe = Playwright checkout fingerprinting; not the dual workshop
 - Forensics: `PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics*.jsonl`
-- Failed Bandai levers (do not resume): empty `machineId`, slim cookies, pay-guid rebind, skip hydrate, `pm=2`, form-nav/settle/mute, Fast→undici default flip
+- Failed / parked: GE field roulette, form-nav, page-issuer CH A/B, Playwright stealth as dual fix
 
 ---
 
@@ -247,7 +241,8 @@ Desktop Start
 3. Turning research controls (Toymate) into multi-hour product debugging.  
 4. Re-proposing direct/no-proxy after the user already said it duals.  
 5. Confusing payment-latch success with fixing `posts=1` / Revolut×2.  
-6. Flipping production Fast defaults (page issuer → undici, park/mute ceremony) “to chase dual” — user: stop dismantling Bandai.
+6. Using Playwright / page-issuer / stealth as the Fast dual fix — Fast hard no-PW pay; dual is shared undici.  
+7. Treating page-issuer CH labs as Fast product scores.
 
 ---
 

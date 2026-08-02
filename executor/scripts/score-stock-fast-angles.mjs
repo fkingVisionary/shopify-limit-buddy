@@ -7,7 +7,7 @@
  *
  * Expect:
  *   - bandaiCheckoutMode=fast (not autocheckout_test)
- *   - psp via=page-ge-issuer
+ *   - psp via=http-ge-issuer (undici Fast — hard no Playwright pay)
  *   - psp_post_start count = 1
  *   - User confirms Revolut 1 vs 2 for that transactionId
  */
@@ -33,9 +33,9 @@ if (!fs.existsSync(file)) {
     JSON.stringify(
       {
         howToTest: [
-          "1. Desktop task: bandaiCheckoutMode=fast (UI default). Do NOT use Autocheckout test.",
+          "1. Desktop task: bandaiCheckoutMode=fast (UI default). Do NOT use Autocheckout test or Safe/Playwright pay.",
           "2. Start engine, run one Bandai checkout with placeOrder.",
-          "3. Confirm steps include Fast GE http pay, NOT bandai_ge_http_fork.",
+          "3. Confirm issuer via=http-ge-issuer (undici), NOT page-ge-issuer / bandai_ge_http_fork.",
           "4. node executor/scripts/score-stock-fast-angles.mjs",
           "5. Report Revolut 1 vs 2 for the printed transactionId.",
         ],
@@ -89,9 +89,9 @@ const out = {
     },
   },
   howToTest: [
-    "1. Desktop task: bandaiCheckoutMode=fast (UI default). Do NOT use Autocheckout test.",
+    "1. Desktop task: bandaiCheckoutMode=fast (UI default). Do NOT use Autocheckout test or Safe/Playwright pay.",
     "2. Start engine, run one Bandai checkout with placeOrder.",
-    "3. Confirm steps include Fast GE http pay, NOT bandai_ge_http_fork.",
+    "3. Confirm issuer via=http-ge-issuer (undici), NOT page-ge-issuer / bandai_ge_http_fork.",
     "4. node executor/scripts/score-stock-fast-angles.mjs",
     "5. Report Revolut 1 vs 2 for the printed transactionId.",
   ],
@@ -100,7 +100,7 @@ const out = {
 console.log(JSON.stringify(out, null, 2));
 if (!stock.length) {
   console.log(
-    "\nNo stock Fast (page-ge-issuer) groups yet. Run one Bandai Fast checkout, then re-score.",
+    "\nNo stock Fast (http-ge-issuer / undici) groups yet. Run one Bandai Fast checkout, then re-score.",
   );
   process.exit(0);
 }

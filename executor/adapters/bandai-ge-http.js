@@ -1157,7 +1157,7 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
       ms: Date.now() - t0,
       bankSignal: Boolean(bankSignal || declineOnRedirect),
       responseLost: false,
-      scoreboard: "stock_fast",
+      scoreboard: "page_issuer_optin",
       ...fanout,
       ...flags,
     });
@@ -1196,7 +1196,7 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
       ms: Date.now() - t0,
       responseLost: true,
       error: String(e?.message || e).slice(0, 160),
-      scoreboard: "stock_fast",
+      scoreboard: "page_issuer_optin",
       ...flags,
     });
     return {
@@ -1453,6 +1453,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       undiciAttempts: out.undiciAttempts,
       bankSignal: out.bankSignal,
       responseLost: false,
+      scoreboard: "stock_fast",
       ...redirectFanoutFields(out.redirectUrlFull || out.redirectUrl, out.redirectPayload),
       ...flags,
     });
@@ -1850,14 +1851,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
       forterBytes: forterToken ? String(forterToken).length : 0,
       cookieKeys: jarNames.slice(0, 40),
     });
-    // Product Fast: page issuer after riskHydrate (same cookies/TLS as mint).
-    // Undici after page-drop is A/B only — do not flip this for dual-Revolut labs.
+    // Fast = undici issuer (hard no Playwright pay). Page issuer only when
+    // explicitly requested — Safe owns Playwright checkout fingerprinting.
     const preferPageIssuer =
-      opts.preferPageIssuer === true ||
-      (opts.preferPageIssuer !== false &&
-        riskHydrate &&
-        Boolean(opts.page) &&
-        opts.forceUndiciIssuer !== true);
+      opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
     const keepPage =
       preferPageIssuer ||
       opts.keepPageAfterIovation === true ||

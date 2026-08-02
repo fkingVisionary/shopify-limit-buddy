@@ -117,6 +117,9 @@ for (const [k, g] of byRun) {
   else if (pspN === 0) cls = "no_psp";
   const ends = g.psp_post_end;
   const vias = [...new Set(g.psp_post_start.map((x) => x.via).filter(Boolean))];
+  // Stock Fast pay = undici http-ge-issuer (hard no Playwright pay).
+  // page-ge-issuer is Safe/opt-in only — do not treat as Fast scoreboard.
+  const stockFast = vias.includes("http-ge-issuer");
   classes.push({
     key: k,
     class: cls,
@@ -128,7 +131,7 @@ for (const [k, g] of byRun) {
       ),
     ],
     vias,
-    stockFast: vias.includes("page-ge-issuer"),
+    stockFast,
     bankSignals: ends.filter((x) => x.bankSignal).length,
     // Angle A
     fanout: {
