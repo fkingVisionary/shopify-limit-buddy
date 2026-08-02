@@ -137,7 +137,7 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - Post-issuer mute soften **failed** (ceremony ran; still dual).
 - **`IsTheSameCartToken` is a Global-E JWT field** (Bandai/PKC only). It cannot explain Toymate BigPay duals. **Do not chase it as the fix** — that is GE/Bandai-path again.
 - Desktop→`/run` card packaging audited: **clean** (one `{number,cvv,exp,holder}`; no token+PAN; latch cannot create posts=1×2).
-- **Next shared score:** headed Playwright `channel:"chrome"` F5 bridge for Autocheckout test form-nav (real Chrome, not HeadlessChromium). If still 2 → shared fingerprint/SCA data across undici+Chrome, not GE fields.
+- **Headed Chrome lab (2026-08-02 ~12:23 AEST):** `run_e7eb2aa1489b` / GE tx **`172444504`** — form-nav, fat iovation (`bodyBytes≈2725`), `posts=1`, `postGeMut=6`. Autocheckout test F5 bridge forced `channel:chrome` headed. **Awaiting Revolut 1 vs 2.** If still 2 → not HeadlessChromium either; stay on shared signals that also explain Toymate (not GE JWT fields).
 
 ---
 
