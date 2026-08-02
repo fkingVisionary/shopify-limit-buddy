@@ -978,7 +978,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         .replace(/^61/, "")
         .replace(/^0/, "")
         .slice(-9);
-      const body = {
+      // API wants nested ShippingAddressInfo (see BANDAI_AU_MODULE.md) — flat
+      // countryCode/address1 at root returns HTTP 400 Invalid request content
+      // and then GetCartToken fails even when login/cart succeed.
+      const address = {
         countryCode: "AU",
         zipCode: String(shipProfile.zip || shipProfile.postcode || "4160")
           .replace(/\D/g, "")
@@ -991,10 +994,14 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           .trim()
           .toUpperCase()
           .slice(0, 3) || "QLD",
+      };
+      const body = {
         name: {
           name1: String(shipProfile.first_name || shipProfile.firstName || "Alex").trim(),
           name2: String(shipProfile.last_name || shipProfile.lastName || "Buyer").trim(),
         },
+        address,
+        areaCode: "AU",
         defaultFlag: true,
       };
       // Bandai rejects phone1 with wrong shape (HTTP 400 Invalid request content).
