@@ -2,8 +2,9 @@
 
 **Status:** Cross-PSP dual confirmed (GE + BigPay/Adyen) — outside store modules  
 **Date:** 2026-08-02  
-**Delivery target:** **Bandai only.** Toymate / PKC were research controls to prove the dual is not Bandai-module-specific. Do **not** spend implementation effort fixing Toymate (or other stores) unless explicitly asked — use them only if a shared-layer experiment needs a control.  
-**Working rule:** Prefer shared layers over store-specific adapters. Bandai field roulette is **suspect by default** once a shared pay-hop cause is in play.
+**Delivery target:** **Bandai checkout must stop dualing** (product). Toymate / PKC were research only — do not build those products.  
+**Fix surface (locked):** **Shared bot stack only** — `executor/http.js` / undici / TLS / proxy / desktop→executor card packaging.  
+**Not the fix surface:** Bandai `HandleCreditCard` fields, GE hydrate/`pm`/`machineId`, Toymate BigPay body, or any other store issuer payload. Research already showed two PSPs dual with `posts=1`; tweaking Bandai GE request shape is the mistake we keep making.
 
 ## Verdict (2026-08-02)
 
