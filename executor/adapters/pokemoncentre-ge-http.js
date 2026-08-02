@@ -871,6 +871,10 @@ export async function runGlobalEPayHttp(opts = {}) {
     userAgent: ua,
     referer: ccUrl,
     timeoutMs: Number(opts.issuerTimeoutMs) || 180_000,
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
   });
 
   const txMap = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");

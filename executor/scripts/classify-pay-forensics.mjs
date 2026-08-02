@@ -21,18 +21,20 @@ if (!fs.existsSync(file)) {
   process.exit(2);
 }
 
-const rows = fs
-  .readFileSync(file, "utf8")
-  .split("\n")
-  .filter(Boolean)
-  .map((l) => {
-    try {
-      return JSON.parse(l);
-    } catch {
-      return null;
-    }
-  })
-  .filter(Boolean);
+const rows = attachOrphanPsp(
+  fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      try {
+        return JSON.parse(l);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean),
+);
 
 const enqueues = rows.filter((r) => r.event === "desktop_enqueue_batch");
 const jobs = rows.filter((r) => r.event === "desktop_enqueue_job");
@@ -46,23 +48,43 @@ function groupKey(r) {
     r.desktopTaskId ||
     r.executorTaskId ||
     r.cardLast4 ||
-    "unknown"
+    null
   );
+}
+
+/** If PSP rows lack desktop ids (older adapters), attach to nearest run_start within 3 min. */
+function attachOrphanPsp(rows) {
+  const starts = rows.filter((r) => r.event === "run_start").sort((a, b) => a.ts - b.ts);
+  return rows.map((r) => {
+    if (r.event !== "psp_post_start" && r.event !== "psp_post_end") return r;
+    if (groupKey(r)) return r;
+    const near = starts
+      .filter((s) => s.ts <= r.ts && r.ts - s.ts < 180_000)
+      .sort((a, b) => b.ts - a.ts)[0];
+    if (!near) return r;
+    return {
+      ...r,
+      desktopRunId: near.desktopRunId || r.desktopRunId,
+      desktopTaskId: near.desktopTaskId || r.desktopTaskId,
+      executorTaskId: near.executorTaskId || r.executorTaskId,
+      _linkedFromRunStart: true,
+    };
+  });
 }
 
 const byRun = new Map();
 for (const r of runs) {
-  const k = groupKey(r);
+  const k = groupKey(r) || "unknown";
   if (!byRun.has(k)) byRun.set(k, { run_start: [], psp_post_start: [], psp_post_end: [] });
   byRun.get(k).run_start.push(r);
 }
 for (const r of pspStarts) {
-  const k = groupKey(r);
+  const k = groupKey(r) || "unknown";
   if (!byRun.has(k)) byRun.set(k, { run_start: [], psp_post_start: [], psp_post_end: [] });
   byRun.get(k).psp_post_start.push(r);
 }
 for (const r of pspEnds) {
-  const k = groupKey(r);
+  const k = groupKey(r) || "unknown";
   if (!byRun.has(k)) byRun.set(k, { run_start: [], psp_post_start: [], psp_post_end: [] });
   byRun.get(k).psp_post_end.push(r);
 }

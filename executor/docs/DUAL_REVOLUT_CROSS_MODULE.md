@@ -161,7 +161,7 @@ Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`
 
 | Store | Feasible now? | Notes |
 |---|---|---|
-| **PKC** | **Blocked in this environment** | Edge smoke 2026-08-02: `HYPER_API_KEY missing — cannot solve DataDome`. No Hyper in desktop settings / env. No PKC task in DB. Hooks are ready; need Hyper (+ PDP task) before a bank-touching dual classify. Same GE family as Bandai anyway. |
+| **PKC** | **Bank hit 2026-08-02 ~10:18 AEST** | Hyper via env + PDP `72-10917-101`. Forensics: 1 enqueue job, 1 `run_start`, 1 `psp_post` (body 2581), `bankSignal=true`, GE tx **`172438100`**, class **`one_post_two_bank_suspect`**. **Need Revolut 1 vs 2.** Same Global-E family as Bandai (not an independent PSP control). |
 | **Toymate** | Likely blocked | Guest checkout may work if already registered; **account_gen / CF** needs CapSolver / 2captcha credits (not in env). Do not burn time on gen until captcha is wired. Hooks ready on BigPay. |
 | Kmart / Disney | Benched | Hooks compile only; no product fix work in this PR. |
 

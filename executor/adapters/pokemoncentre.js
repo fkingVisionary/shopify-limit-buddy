@@ -440,6 +440,10 @@ async function runCheckout(task, ctx, session, tStep, steps) {
         stopBeforeIssuer: task.stopBeforeIssuer === true,
         forceIssuer: task.forceIssuer === true,
         debugDir: task.debugDir || task.pcCaptureDir || null,
+        desktopTaskId: task.desktopTaskId || null,
+        desktopRunId: task.desktopRunId || null,
+        desktopAttempt: task.desktopAttempt || null,
+        executorTaskId: task.taskId || null,
         onProgress: (n, note) => ctx.onProgress?.(n, note),
       });
     });
