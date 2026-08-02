@@ -26,7 +26,7 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 2. `PAY_ISSUER_FORM_AS_CORS` — tx **`172548067`** @07:11 · posts=1 · tls-worker · **Revolut ×2** (user).
 3. `PAY_ISSUER_COLD_TLS` — tx **`172549600`** @07:24 · posts=1 · cold prepay+issuer workers · **Revolut ×2** (user).
 4. `BANDAI_GE_SKIP_CC_FORM=1` — **pre-bank fail** (JWT only on CreditCardForm after save; Checkout/v2 refresh empty).
-5. **In flight:** `PAY_ISSUER_CCFORM_TLS` default ON — CreditCardForm GET on **cold issuer** tls-worker (same chrome_131 session as HandleCreditCard; not undici).
+5. `PAY_ISSUER_CCFORM_TLS` default ON — CreditCardForm GET on cold issuer tls-worker. **Bank score blocked** by login SoftBlock (2026-08-03 ~08:00 AEST remints) — re-run when sessions clear.
 
 ---
 
