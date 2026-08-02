@@ -45,3 +45,16 @@ test("angle A: redirect fan-out extracts GE transaction id", () => {
   assert.equal(f.statusType, "1");
   assert.equal(f.redirectHost, "webservices.global-e.com");
 });
+
+test("angle A: GE Key/Value JWT array flattens to transactionId", () => {
+  const f = redirectFanoutFields(
+    "https://webservices.global-e.com/payments/CCPaymentRedirect?Data=eyJ",
+    [
+      { Key: "TransactionId", Value: "172447213" },
+      { Key: "TransactionStatusType", Value: "AutherizationFailed" },
+      { Key: "RedirectErrorType", Value: "PaymentAuthenticationFailed" },
+    ],
+  );
+  assert.equal(f.transactionId, "172447213");
+  assert.equal(f.statusType, "AutherizationFailed");
+});

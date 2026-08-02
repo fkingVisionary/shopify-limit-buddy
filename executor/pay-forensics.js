@@ -55,10 +55,24 @@ export function classifyPayWireStage(host, pathName) {
   return "other";
 }
 
+/** Flatten GE CCPaymentRedirect JWT payload (Key/Value[] or already-flat map). */
+function flattenRedirectPayload(redirectPayload) {
+  if (Array.isArray(redirectPayload)) {
+    const map = {};
+    for (const row of redirectPayload) {
+      const k = String(row?.Key || row?.key || "");
+      if (k) map[k] = String(row?.Value ?? row?.value ?? "");
+    }
+    return map;
+  }
+  if (redirectPayload && typeof redirectPayload === "object") return redirectPayload;
+  return {};
+}
+
 /**
  * Behavior-neutral fan-out fields from a PSP redirect / JWT map (angle A).
  * @param {string|null|undefined} redirectUrl
- * @param {Record<string, unknown>|null|undefined} redirectPayload
+ * @param {Record<string, unknown>|Array|null|undefined} redirectPayload
  */
 export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
   let redirectHost = null;
@@ -76,8 +90,7 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
       redirectPath = raw.slice(0, 180);
     }
   }
-  const map =
-    redirectPayload && typeof redirectPayload === "object" ? redirectPayload : {};
+  const map = flattenRedirectPayload(redirectPayload);
   const transactionId =
     map.TransactionId != null && String(map.TransactionId) !== "0"
       ? String(map.TransactionId)
@@ -85,11 +98,15 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
         ? String(map.MerchantReference)
         : null;
   const statusType =
-    map.StatusType != null
-      ? String(map.StatusType)
-      : map.ErrorCode != null
-        ? String(map.ErrorCode)
-        : null;
+    map.TransactionStatusType != null
+      ? String(map.TransactionStatusType)
+      : map.StatusType != null
+        ? String(map.StatusType)
+        : map.RedirectErrorType != null
+          ? String(map.RedirectErrorType)
+          : map.ErrorCode != null
+            ? String(map.ErrorCode)
+            : null;
   return {
     redirectHost,
     redirectPath,

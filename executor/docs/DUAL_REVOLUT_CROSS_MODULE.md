@@ -112,6 +112,20 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 3. `node executor/scripts/score-stock-fast-angles.mjs` (or `classify-pay-forensics.mjs`).
 4. User: Revolut **1 or 2** for the printed `transactionId`.
 
+### Live stock Fast score (2026-08-02 ~13:17 AEST)
+
+| Field | Value |
+|---|---|
+| Run | `run_38055c505199` |
+| Mode | stock Fast · `via=page-ge-issuer` |
+| GE tx | **`172447213`** |
+| Client posts | **1** (`one_post_two_bank_suspect`) |
+| Bank hit | yes (`declined_or_auth_failed`) |
+| Prepay mutates | 4 (`handleaction` 1/2/3 + `save`) — no second issuer hop |
+| Issuer http_mutate | 0 (page issuer bypasses `http.js` — expected) |
+
+**Awaiting user:** Revolut lines for tx **`172447213`** — **1 or 2?**
+
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
