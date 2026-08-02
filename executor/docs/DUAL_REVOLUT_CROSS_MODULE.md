@@ -33,20 +33,22 @@ Desktop orchestration ruled out on these labs (`quantity=1`, 1 enqueue, 1 `/run`
 
 **Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette and stop “try another card.”
 
-## Next ladder — **Bandai only** (one fork each)
+## Next ladder — **shared stack** (score on Bandai Revolut)
 
-1. **Browser HAR vs bot GE pay hop (primary)**  
-   Manual Bandai Namco AU checkout → DevTools → the **one** `HandleCreditCard` / GE issuer POST. Diff against bot Bandai `psp_post` / Fast path (headers, `sec-fetch-*`, content-type, body keys, cookie count, `pm` / machineId only as parity fields). Align **shared HTTP / Bandai pay request** to browser one delta at a time. Score with Revolut 1 vs 2.
+Do **not** open Bandai GE field / HandleCreditCard body diffs. Those are ruled out by cross-PSP proof.
 
-2. **Proxy / home egress on Bandai**  
-   Manual = home; bot = proxy. If Bandai can placeOrder direct from this machine, A/B Revolut. Do not derail into Toymate CF/CapSolver work for this fork.
+1. **Proxy vs home (primary shared fork)**  
+   Same Bandai task, bot placeOrder **direct (no proxy)** vs sticky proxy. Manual is home; bot has always been proxied.  
+   - Revolut **1** on direct → proxy/egress identity.  
+   - Revolut **2** on direct → not proxy; go to (2).
 
-3. **Bandai full-browser issuer (only if HAR inconclusive)**  
-   Headed Chrome/Playwright for the GE pay hop on home IP (not Toymate).  
-   - Revolut **1** → undici/TLS/proxy presentation.  
-   - Revolut **2** → automation/session/pre-pay state.
+2. **Shared HTTP transport**  
+   `executor/http.js` undici client: TLS fingerprint / default headers / redirect / cookie jar behavior on the issuer hop (any store). Change transport, not Bandai payload. Score Bandai Revolut.
 
-Research note (do not expand): GE Chromium form-nav already dualed while proxied; Toymate BigPay also dualed with `posts=1` — shared bot path, but **ship the fix on Bandai**.
+3. **Desktop→executor card packaging**  
+   Only if (1)+(2) fail: how profile/card is normalized once for all stores (not GE-specific fields).
+
+Bandai is where we **measure** the fix. The **code we change** is shared.
 
 ---
 
@@ -246,4 +248,4 @@ Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`
 
 ## 10. One-sentence brief for the next agent
 
-**Cross-PSP dual is proven (GE + BigPay research). Ship the fix on Bandai only: browser HAR vs bot `HandleCreditCard` / shared HTTP pay hop — not more Bandai field roulette and not Toymate product work.**
+**Cross-PSP dual is proven. Fix shared bot stack (proxy / undici / card packaging); score on Bandai Revolut. Do not edit Bandai HandleCreditCard fields or Toymate product code.**
