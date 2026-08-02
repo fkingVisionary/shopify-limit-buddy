@@ -418,6 +418,62 @@ const PAY_WIRE_HOST_RE =
 const ISSUER_PATH_RE =
   /HandleCreditCard|\/payments(?:\/|$)|\/charges|standalone-3ds|\/Payment|CreditCard/i;
 
+/**
+ * Chrome document-navigation Sec-Fetch-* for issuer-like POSTs when the caller
+ * omitted them. Manual browser pay sends these; naked undici often does not.
+ * Opt out: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
+ */
+export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
+  if (process.env.PAY_ISSUER_CHROME_NAV === "0") return {};
+  const existing = {};
+  for (const [k, v] of Object.entries(existingHeaders || {})) {
+    existing[String(k).toLowerCase()] = v;
+  }
+  if (existing["sec-fetch-mode"] != null) return {};
+  let host = "";
+  let path = "";
+  try {
+    const u = new URL(String(url || ""));
+    host = u.host;
+    path = u.pathname;
+  } catch {
+    return {};
+  }
+  const issuerLike =
+    ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
+  if (!issuerLike) return {};
+
+  let site = "cross-site";
+  const origin = existing.origin || "";
+  const hostName = host.replace(/:\d+$/, "");
+  if (origin) {
+    try {
+      const o = new URL(origin);
+      if (o.host === host || o.hostname === hostName) site = "same-origin";
+      else {
+        const base = (h) => String(h || "").split(".").slice(-2).join(".");
+        if (base(o.hostname) && base(o.hostname) === base(hostName)) site = "same-site";
+      }
+    } catch {
+      /* keep cross-site */
+    }
+  }
+
+  const out = {
+    "sec-fetch-site": site,
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  if (existing["upgrade-insecure-requests"] == null) {
+    out["upgrade-insecure-requests"] = "1";
+  }
+  if (existing["cache-control"] == null) {
+    out["cache-control"] = "max-age=0";
+  }
+  return out;
+}
+
 function auditPayWire(url, method, opts) {
   if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
   let host = null;
@@ -484,14 +540,22 @@ export async function request(url, opts, ctx) {
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
-  // headers themselves.
+  // headers themselves. Issuer-like POSTs get Chrome Sec-Fetch navigate
+  // parity when the adapter omitted them (dual-Revolut naked-CNP lead).
+  const mergedCallerHeaders = {
+    ...(extraHeaders ?? {}),
+    ...(opts?.headers ?? {}),
+  };
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
     ...(jar.header() ? { cookie: jar.header() } : {}),
-    ...(extraHeaders ?? {}),
-    ...(opts?.headers ?? {}),
+    // Chrome Sec-Fetch navigate defaults first; caller headers always win.
+    ...(method === "POST" || method === "PUT"
+      ? chromeIssuerNavigateHeaders(url, mergedCallerHeaders)
+      : {}),
+    ...mergedCallerHeaders,
   };
 
   // Crash-isolated chrome_131 (Hyper TLS-first). Prefer over in-process useTls

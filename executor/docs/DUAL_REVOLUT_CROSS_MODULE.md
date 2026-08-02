@@ -38,8 +38,9 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE:
-- Diff shared transport: how executor/http.js sends the issuer POST vs a real browser (TLS fingerprint, HTTP/2, header defaults, redirects, cookie jar) — not Bandai form fields.
-- Trace desktop→executor card/profile JSON once; look for anything that would make every PSP dual-auth (duplicate tokens, double CVV submit semantics, etc.).
+- Score Autocheckout test form-nav + fat iovation (default on test fork). Prior form-nav “dual” was thin machineId (~1064) — do not treat that as a failed fat form-nav.
+- Confirm Revolut 1 vs 2 on that run; classifier must show posts=1 / issuerLikeMutates=1 / bodyBytes≈2575 / via=form-nav-issuer.
+- If still 2: shared transport next (tls-worker for issuer-like, HTTP/2) — not GE field roulette.
 - Re-read forensics hooks in executor/pay-forensics.js + classify-pay-forensics.mjs; confirm posts=1 on any new Bandai lab before asking the user about Revolut.
 - If you need a non-GE control again, use existing Toymate evidence (run_1d56805758fc) — do not rebuild Toymate.
 
@@ -89,7 +90,7 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 
 ### Leading hypothesis (2026-08-02 evening)
 
-**Naked CNP / incomplete SCA ceremony.** Bot never shows an in-app 3DS challenge; pay goes straight to decline/auth. Manual browser often also frictionless, but still completes the browser 3DS2 data exchange. Incomplete SCA data can make some issuer rails emit two near-simultaneous notifications. Fits cross-PSP + simultaneous duals + `posts=1`.
+**Naked CNP / incomplete SCA ceremony.** Bot never shows an in-app 3DS challenge; pay goes straight to decline/auth. Manual browser often also frictionless, but still completes the browser 3DS2 data exchange (document form-nav + land `CCPaymentRedirect`). Incomplete SCA data can make some issuer rails emit two near-simultaneous notifications. Fits cross-PSP + simultaneous duals + `posts=1`.
 
 ### Other candidates
 
@@ -104,6 +105,7 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 
 - `executor/http.js`: mutations never retry unless `allowMutationRetry:true` (ignores bare `retry:true`).
 - `executor/http.js`: `http_mutate` audit — always for **issuer-like** paths; optional full dump via `PAY_WIRE_AUDIT=1`.
+- `executor/http.js`: `chromeIssuerNavigateHeaders` — fills Chrome `Sec-Fetch-*` navigate defaults on issuer-like POSTs when the adapter omitted them (`PAY_ISSUER_CHROME_NAV=0` to opt out).
 - Classifier reports `issuerLikeMutates` vs `pspPostStarts`.
 - Do **not** treat Revolut×2 as “expected GE dual-rail” in Bandai bible anymore.
 
@@ -113,6 +115,13 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - Run `run_0d541b37c80f` / GE tx **`172442728`**: **exactly one** `HandleCreditCard` (`bodyBytes≈2575`, iovation kept), `posts=1`, `undiciAttempts=1`.
 - Other GE mutates were hydrate/save only (`issuerLike=false`) — not a second issuer POST.
 - So dual (if Revolut still shows 2 on this tx) is **not** a hidden second HTTP from our client.
+
+### Form-nav contamination correction (2026-08-02 ~12:00 AEST)
+
+- Prior “Chromium form-nav dualed” lab (`via=form-nav-issuer`, tx `172432518`) had **`bodyBytes≈1064`** — empty `machineId` (same shape as `BANDAI_GE_TEST_EMPTY_MACHINE_ID`). **Not** a fat-iovation form-nav score.
+- Clean undici fat body (`172442728`, ~2575) also dual-suspect with `posts=1`.
+- **Next score:** Autocheckout test default restored to **form-nav + fat iovation** (refuses thin `machineId` unless `BANDAI_GE_TEST_ALLOW_THIN_FORM_NAV=1`). Confirm Revolut 1 vs 2. Undici restore: `BANDAI_GE_TEST_UNDICI_ISSUER=1`.
+- Clear `BANDAI_GE_TEST_EMPTY_MACHINE_ID` / `BANDAI_GE_TEST_PAYMENT_METHOD_ID` before the lab.
 
 ---
 
@@ -148,7 +157,8 @@ Desktop Start
 - Production Fast: `bandai-ge-http.js` (do not trash with random experiments; use test fork)
 - Forensics: `PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics*.jsonl`
 - Control: `BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1` → no Revolut (hydrate alone does not bank)
-- Failed Bandai levers: empty `machineId`, slim cookies + navigate, Chromium form-nav issuer, pay-guid rebind, skip hydrate parts, `pm=2`, `pm=2`+empty mid — **all dual when bank hit**
+- Failed Bandai levers: empty `machineId`, slim cookies + navigate, pay-guid rebind, skip hydrate parts, `pm=2`, `pm=2`+empty mid — **all dual when bank hit**
+- Form-nav with **thin** body dualed (contaminated) — **fat form-nav not yet scored** (now the Autocheckout test default)
 
 ---
 

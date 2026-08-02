@@ -442,4 +442,25 @@ assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).placeO
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserCheckout: true }).mode, "safe");
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserFull: true }).mode, "full");
 
+// Shared issuer Chrome navigate headers (dual-Revolut naked-CNP lead)
+const { chromeIssuerNavigateHeaders } = await import("../http.js");
+const geNav = chromeIssuerNavigateHeaders(
+  "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
+  { origin: "https://secure-bandai.global-e.com" },
+);
+assert.equal(geNav["sec-fetch-mode"], "navigate");
+assert.equal(geNav["sec-fetch-site"], "same-origin");
+assert.equal(geNav["sec-fetch-dest"], "document");
+const already = chromeIssuerNavigateHeaders(
+  "https://payments.bigcommerce.com/stores/x/payments",
+  { "sec-fetch-mode": "cors", origin: "https://www.toymate.com.au" },
+);
+assert.deepEqual(already, {});
+const bigpay = chromeIssuerNavigateHeaders(
+  "https://payments.bigcommerce.com/stores/x/payments",
+  { origin: "https://www.toymate.com.au" },
+);
+assert.equal(bigpay["sec-fetch-mode"], "navigate");
+assert.equal(bigpay["sec-fetch-site"], "cross-site");
+
 console.log("bandai-flow.test.mjs ok");
