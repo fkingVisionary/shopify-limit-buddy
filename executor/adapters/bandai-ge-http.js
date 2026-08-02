@@ -8,9 +8,10 @@
  *   GET gepi.global-e.com/Checkout/GetCartToken?MerchantCartToken=…&MerchantId=1925&…
  *   → CartToken GUID → Checkout/v2 → handleaction/1..3 → CreditCardForm → issuer
  *
- * Single Revolut (2026-07-22 07:24 AEST): never open the LIVE pay cart in Playwright.
- * Iovation mints on a throwaway Checkout/v2 guid; pay stays undici-only.
- * Remaining hard fields: machineId (iovation blackbox), UrlStructureTokenEncoded (JWT).
+ * Iovation: prefer mint on a throwaway Checkout/v2 guid (never Playwright-open the
+ * live pay cart). July 2026 “07:24 Bandai Revolut×1” in git history is unproven
+ * agent claim — do not treat as scoreboard. Remaining hard fields: machineId,
+ * UrlStructureTokenEncoded (JWT).
  */
 
 import {
@@ -1821,11 +1822,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const shouldMint = Boolean(opts.page) && (!machineId || riskHydrate);
   if (shouldMint) {
     logPageRequests(opts.page);
-    // Proof 2026-07-22 AEST:
-    //   07:22 Playwright goto(LIVE Checkout/v2) → undici issuer → Revolut PAIR
-    //   07:24 pure undici / throwaway snare host → Revolut SINGLE
-    // liveHtml riskHydrate (2026-08 GE-all-tls tx 172528639) still ×2 + sameCart=False.
-    // Default: mint snare/Forter on a THROWAWAY CartToken — never open the pay guid.
+    // liveHtml riskHydrate (2026-08 GE-all-tls tx 172528639) ×2 + sameCart=False.
+    // throwaway mint (2026-08 iov7 tx 172538665) also ×2 — not a dual fix.
+    // Default: mint snare/Forter on a THROWAWAY CartToken — never open the pay guid
+    // (avoids live Checkout/v2 Playwright contamination; does not claim Bandai ×1).
     const pctx = opts.page.context?.();
     const geMuteMatch = (url) => /global-e\.com/i.test(url.href || String(url));
     let mutedIssuerPosts = 0;

@@ -16,8 +16,10 @@
 | throwaway mint + bank | `172538665` @05:49 | `via=throwaway` · forter · posts=1 · `sameCart=False` · issuer tls-worker 302 | **×2** |
 
 Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
-July tip `9d313ae` (07:24 pure undici / throwaway snare → ×1) **does not reproduce** on current Fast+tls-worker stack.
-**Active A/B:** re-score July-like stack — throwaway snare + **undici** payHost/issuer (`PAY_*_TLS_WORKER=0`) — then decide if dual is GE+tls-worker interaction vs throwaway tip dead.
+
+**RETRACTED — Bandai July “single Revolut”:** commit `9d313ae` (2026-07-22) and later comments claim 07:24 pure undici / throwaway → Revolut×1. That is **agent commit text only** — no user Revolut confirm, no GE tx id, no forensics artifact. Treat as **unproven**. User (2026-08-03): Bandai has never had a confirmed single; only **Toymate** issuer tls-worker @14:54 is locked ×1.
+
+**Confirmed ×1 only:** Toymate `run_20651586e4b2`. **Bandai:** every bank-scored lab so far → Revolut×2.
 
 ---
 
@@ -44,13 +46,15 @@ PARTIAL FIX (keep; do not revert without wire proof):
 - Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 on **Toymate** @14:54.
 - Keep `PAY_ISSUER_TLS_WORKER` default ON. Do not “simplify” back to undici issuer.
 - **Bandai Fast counterexample:** issuer/prepay/GE-all tls-worker + ct=false still ×2 (`172528639`). Not fixed for GE yet.
-- Keep pay TLS knobs ON by default. Bandai throwaway+tls-worker still ×2 — next lab may opt out tls-worker once to match July undici tip (not a product revert).
+- Keep pay TLS knobs ON by default. Bandai throwaway+tls-worker still ×2.
+- Do **not** treat commit `9d313ae` / “07:24 Bandai ×1” as locked proof — unconfirmed agent claim.
 
 FORBIDDEN:
 - Reverting issuer tls-worker **as product default** without Toymate×1 + Bandai×1 proof.
 - Using Playwright / page-issuer as the Fast dual fix.
 - Bandai GE field / form-nav / settle / mute ceremony churn.
-- Claiming payment-latch, GE-all-tls, or throwaway iovation solved Bandai dual.
+- Claiming payment-latch, GE-all-tls, throwaway iovation, or July `9d313ae` solved Bandai dual.
+- Inventing Bandai Revolut×1 wins without user bank confirm + GE tx id.
 - Re-enabling liveHtml Checkout/v2 iovation without `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
 Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
@@ -168,7 +172,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **GE-all-tls + ct=false FAIL (locked):** tx `172528639` @04:25 — Revolut **×2** (user). posts=1, fraud=false, `sameCart=False`. TLS-stack + ct knobs insufficient for Bandai.
 
-**Throwaway FAIL (locked):** iov7 tx `172538665` @05:49 + iov6 ~05:39 EOF — Revolut **×2** (user). `PAY_GE_TLS_WORKER` stays default OFF. Next: throwaway + undici payHost/issuer (`PAY_PAYHOST_TLS_WORKER=0` `PAY_ISSUER_TLS_WORKER=0`) to match July 07:24 stack.
+**Throwaway FAIL (locked):** iov7 tx `172538665` @05:49 + iov6 ~05:39 EOF — Revolut **×2** (user). `PAY_GE_TLS_WORKER` stays default OFF. Do not chase July “Bandai ×1 tip” — unproven. Next levers = shared transport / new theory with Bandai bank scoreboard only.
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -246,8 +250,8 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 Notes:
 - Client issuer EOF ≠ no bank — 05:39 still dualed.
 - Do **not** retry issuer after EOF (adds dual risk).
-- July `9d313ae` tip does not hold on this stack; next A/B = throwaway + undici pay TLS off.
-- **iov-undici (pre-bank fail):** reminted Noontide · `PAY_*_TLS_WORKER=0` · thrash login 501 / GetCartToken `Success=false` — no bank/Revolut score. Retry when proxy/session clean.
+- July `9d313ae` “Bandai ×1” claim **retracted** (agent folklore; never user-confirmed).
+- **iov-undici (pre-bank fail):** reminted Noontide · `PAY_*_TLS_WORKER=0` · thrash login 501 / GetCartToken `Success=false` — no bank/Revolut score.
 
 ### Ruled out / parked
 
