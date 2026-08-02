@@ -1247,13 +1247,24 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   }
 
   atc = await tStep("addToCart", async () => {
-    if (existing?.cartItemSn) {
+    if (existing?.cartItemSn && !placeOrder) {
       return {
         ok: true,
         status: 200,
         note: `already in cart line=${existing.cartItemSn} qty=${existing.qty}`,
         json: { items: [{ cartLineItemSn: existing.cartItemSn, addedNewCart: false }] },
       };
+    }
+    // placeOrder + stale line: drop it so the ATC loop can mint a fresh cart
+    // (stuck PreOrder lines SoftBlock /checkout → GetCartToken fail).
+    if (existing?.cartItemSn && placeOrder) {
+      try {
+        const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(existing.cartItemSn)}`;
+        await session.apiJson("DELETE", remPath, { referer: `${session.base}/cart` });
+      } catch {
+        /* continue into ATC */
+      }
+      existing = null;
     }
     const maxAttempts = Math.max(
       1,
@@ -1333,6 +1344,25 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           line = findCartLineAny(again.json, cartIds);
         }
         if (line?.cartItemSn) {
+          // Stale PreOrder lines SoftBlock cart_checkout (501) → GetCartToken fail.
+          // On placeOrder, drop the line once and re-ATC for a fresh checkout session.
+          const alreadyRefreshed = attempts.some((a) =>
+            /refreshed stale cart line/i.test(String(a?.note || "")),
+          );
+          if (placeOrder && !alreadyRefreshed && attempt < maxAttempts) {
+            const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(line.cartItemSn)}`;
+            const rem = await session.apiJson("DELETE", remPath, {
+              referer: `${session.base}/cart`,
+            });
+            attempts.push({
+              attempt,
+              ok: false,
+              status,
+              note: `refreshed stale cart line=${line.cartItemSn} rem=${rem.status}`,
+            });
+            await sleepMs(400);
+            continue;
+          }
           return {
             ok: true,
             status,
@@ -1426,6 +1456,23 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         });
         const held = cartIds.length ? findCartLineAny(peek.json, cartIds) : null;
         if (held?.cartItemSn) {
+          const alreadyRefreshed = attempts.some((a) =>
+            /refreshed stale cart line/i.test(String(a?.note || "")),
+          );
+          if (placeOrder && !alreadyRefreshed && attempt < maxAttempts) {
+            const remPath = `/api/cart/removeCartLineItems?cartLineItemSns=${encodeURIComponent(held.cartItemSn)}`;
+            const rem = await session.apiJson("DELETE", remPath, {
+              referer: `${session.base}/cart`,
+            });
+            attempts.push({
+              attempt,
+              ok: false,
+              status: last.status,
+              note: `refreshed stale cart line=${held.cartItemSn} rem=${rem.status}`,
+            });
+            await sleepMs(400);
+            continue;
+          }
           return {
             ok: true,
             status: last.status,
