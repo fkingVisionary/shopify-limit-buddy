@@ -650,22 +650,31 @@ function finalizePayResponse(url, method, opts, res) {
 }
 
 /**
- * Dual-Revolut: pay mutates on chrome_131 tls-worker (Kmart-like bank TLS).
+ * Dual-Revolut: pay hops on chrome_131 tls-worker (Kmart-like bank TLS).
  *
- * Toymate BigPay `run_20651586e4b2` @14:54 — issuer tls-worker → Revolut×1.
- * Bandai Fast `172456937` @16:44 — issuer tls-worker + undici GE prepay still
- * Revolut×2 with posts=1. So Bandai needs the same chrome_131 stack for GE
- * prepay (handleaction/save) as well as HandleCreditCard.
+ * Toymate BigPay @14:54 — issuer tls-worker → Revolut×1.
+ * Bandai Fast still Revolut×2 with posts=1 after:
+ *   - issuer-only tls-worker (172456937)
+ *   - prepay+issuer tls-worker (172460612)
+ *   - + createTransaction=false (172465275 @18:44)
+ * Undici GET CreditCardForm (and GetCartToken / Checkout/v2) still sat between
+ * tls-worker mutates — GE session split. PAY_GE_TLS_WORKER puts ALL global-e.com
+ * methods (incl GET) on the same chrome_131 worker.
  *
  * Defaults ON:
- *   PAY_ISSUER_TLS_WORKER  — issuer stage (opt out =0)
- *   PAY_PAYHOST_TLS_WORKER — GE/BigPay prepay stage (opt out =0)
+ *   PAY_GE_TLS_WORKER       — any global-e.com hop (opt out =0)
+ *   PAY_ISSUER_TLS_WORKER   — issuer stage non-GE (BigPay etc; opt out =0)
+ *   PAY_PAYHOST_TLS_WORKER  — non-GE prepay mutates (opt out =0)
  * Merchant cart ATC stays undici (stage=other).
  */
 export function shouldUseIssuerTlsWorker(url, method) {
-  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
   const { host, path: pathName } = parsePayUrl(url);
   if (!host) return false;
+  // Bandai GE dual A/B: one TLS stack for token + v2 + CreditCardForm + pay.
+  if (/global-e\.com/i.test(host) && process.env.PAY_GE_TLS_WORKER !== "0") {
+    return true;
+  }
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
   const stage = classifyPayWireStage(host, pathName);
   if (stage === "issuer") {
     return process.env.PAY_ISSUER_TLS_WORKER !== "0";
