@@ -410,9 +410,13 @@ function wrapFetchResponse(res, requestedUrl) {
   };
 }
 
-/** Hosts that can touch a card issuer / PSP — always forensics-audited on mutate. */
+/** Hosts that may participate in checkout/pay (audited when PAY_WIRE_AUDIT=1). */
 const PAY_WIRE_HOST_RE =
   /global-e\.com|payments\.bigcommerce\.com|paydock\.com|adyen\.com|checkout\.com|stripe\.com|braintree|paypal\.com/i;
+
+/** Paths that can actually hit a card issuer — always audited. */
+const ISSUER_PATH_RE =
+  /HandleCreditCard|\/payments(?:\/|$)|\/charges|standalone-3ds|\/Payment|CreditCard/i;
 
 function auditPayWire(url, method, opts) {
   if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
@@ -425,8 +429,10 @@ function auditPayWire(url, method, opts) {
   } catch {
     return;
   }
+  const issuerLike = ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
   const forceAll = process.env.PAY_WIRE_AUDIT === "1";
-  if (!forceAll && !PAY_WIRE_HOST_RE.test(host)) return;
+  // Always record issuer-like mutates; optional full mutate dump via env.
+  if (!issuerLike && !forceAll) return;
   try {
     payForensics("http_mutate", {
       method,
@@ -434,6 +440,7 @@ function auditPayWire(url, method, opts) {
       path: String(path || "").slice(0, 180),
       bodyBytes: opts?.body != null ? String(opts.body).length : 0,
       payHost: PAY_WIRE_HOST_RE.test(host),
+      issuerLike,
       retryOpt:
         opts?.retry === true ? true : opts?.retry === false ? false : null,
       allowMutationRetry: opts?.allowMutationRetry === true,

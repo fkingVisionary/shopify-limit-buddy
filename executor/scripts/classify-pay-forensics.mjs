@@ -110,6 +110,7 @@ for (const [k, g] of byRun) {
 }
 
 const payHostMutates = httpMutates.filter((r) => r.payHost);
+const issuerLikeMutates = httpMutates.filter((r) => r.issuerLike);
 const summary = {
   file,
   enqueueBatches: enqueues.length,
@@ -118,6 +119,7 @@ const summary = {
   pspPostStarts: pspStarts.length,
   httpMutates: httpMutates.length,
   payHostMutates: payHostMutates.length,
+  issuerLikeMutates: issuerLikeMutates.length,
   byClass: classes.reduce((acc, c) => {
     acc[c.class] = (acc[c.class] || 0) + 1;
     return acc;
@@ -147,8 +149,8 @@ if (summary.byClass.one_post_two_bank_suspect) {
     "\nNOTE: one_post_two_bank_suspect = 1 client PSP POST. If Revolut shows 2, class is PSP/acquirer dual-rail (or missing uninstrumented second POST).",
   );
 }
-if (payHostMutates.length > pspStarts.length) {
+if (issuerLikeMutates.length > pspStarts.length) {
   console.log(
-    `\nNOTE: pay-host http_mutate (${payHostMutates.length}) > psp_post_start (${pspStarts.length}) — possible uninstrumented second pay hop.`,
+    `\nNOTE: issuerLike http_mutate (${issuerLikeMutates.length}) > psp_post_start (${pspStarts.length}) — possible uninstrumented second issuer hop.`,
   );
 }

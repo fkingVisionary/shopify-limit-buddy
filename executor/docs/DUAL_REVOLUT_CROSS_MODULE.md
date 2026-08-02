@@ -103,9 +103,16 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 ### Shipped shared instrumentation / guards (this branch)
 
 - `executor/http.js`: mutations never retry unless `allowMutationRetry:true` (ignores bare `retry:true`).
-- `executor/http.js`: `http_mutate` pay-host audit → same JSONL as `psp_post_*`.
-- Classifier reports `payHostMutates` vs `pspPostStarts`.
+- `executor/http.js`: `http_mutate` audit — always for **issuer-like** paths; optional full dump via `PAY_WIRE_AUDIT=1`.
+- Classifier reports `issuerLikeMutates` vs `pspPostStarts`.
 - Do **not** treat Revolut×2 as “expected GE dual-rail” in Bandai bible anymore.
+
+### Wire-audit result (Bandai clean, 2026-08-02 ~11:48 AEST)
+
+- Cleared leftover lab env that was blanking `machineId` / forcing `pm=2`.
+- Run `run_0d541b37c80f` / GE tx **`172442728`**: **exactly one** `HandleCreditCard` (`bodyBytes≈2575`, iovation kept), `posts=1`, `undiciAttempts=1`.
+- Other GE mutates were hydrate/save only (`issuerLike=false`) — not a second issuer POST.
+- So dual (if Revolut still shows 2 on this tx) is **not** a hidden second HTTP from our client.
 
 ---
 
