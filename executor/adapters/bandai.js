@@ -1351,6 +1351,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       }
       existing = null;
     }
+    // Undici login/shipping/cart DELETE update the jar — resync into the F5
+    // bridge before minting ATC sensors or the probe runs on a stale SESSION.
+    if (bridge && ctx.jar?.dump) {
+      try {
+        await bridge.syncCookies(ctx.jar.dump());
+      } catch {
+        /* ignore */
+      }
+    }
     const maxAttempts = Math.max(
       1,
       Math.min(5, Number(task.bandaiAtcRetries ?? process.env.BANDAI_ATC_RETRIES) || 3),
@@ -1583,6 +1592,102 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       attempts,
     };
   });
+
+  // SoftBlock recovery: mint+abort → undici ATC can 501 after a good login when
+  // the bridge session drifted. Complete ATC inside the F5 bridge (not pay).
+  if (
+    !atc.ok &&
+    bridge?.page &&
+    placeOrder &&
+    isRetryableAtcFailure({ status: atc.status, err: atc.note, textHint: atc.note })
+  ) {
+    atc = await tStep("addToCart_bridge", async () => {
+      if (ctx.jar?.dump) {
+        try {
+          await bridge.syncCookies(ctx.jar.dump());
+        } catch {
+          /* ignore */
+        }
+      }
+      try {
+        await bridge.goto(`${session.base}/cart`, { settleMs: Math.min(f5SettleMs, 2000) });
+      } catch {
+        /* continue — login context may still mint */
+      }
+      const csrf = session.state.csrfToken || (await bridge.csrfToken());
+      let result;
+      try {
+        result = await bridge.page.evaluate(
+          async ({ body, csrf: tok, areaCode }) => {
+            const res = await fetch("/api/cart/addToCart", {
+              method: "POST",
+              headers: {
+                accept: "application/json, text/plain, */*",
+                "content-type": "application/json",
+                "x-g1-area-code": areaCode,
+                "x-requested-with": "XMLHttpRequest",
+                ...(tok ? { "x-csrf-token": tok } : {}),
+              },
+              body,
+              credentials: "include",
+            });
+            const text = await res.text();
+            let json = null;
+            try {
+              json = JSON.parse(text);
+            } catch {
+              /* ignore */
+            }
+            return {
+              status: res.status,
+              json,
+              text: text.slice(0, 200),
+              restrictedType: res.headers.get("x-restricted-type"),
+            };
+          },
+          { body: atcBody, csrf, areaCode: session.area },
+        );
+      } catch (e) {
+        return {
+          ok: false,
+          status: null,
+          note: `bridge ATC throw: ${e?.message || e}`,
+        };
+      }
+      const cookies = await bridge.cookies();
+      if (cookies && ctx.jar?.load) {
+        ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+      }
+      const cartIds = [pdp.areaItemNo, productCode].filter(Boolean);
+      const detail = await session.apiJson("GET", "/api/cart/detail", {
+        referer: `${session.base}/cart`,
+      });
+      const line = cartIds.length ? findCartLineAny(detail.json, cartIds) : null;
+      const err =
+        result?.json?.detail ||
+        result?.json?.errorCode ||
+        result?.json?.error ||
+        result?.json?.message ||
+        null;
+      const status = Number(result?.status) || null;
+      const ok =
+        Boolean(line?.cartItemSn) ||
+        (status >= 200 &&
+          status < 300 &&
+          !/CouldNotAddToCart/i.test(String(err || "")));
+      return {
+        ok,
+        status,
+        note: ok
+          ? `ATC ok via=bridge line=${line?.cartItemSn || "?"}`
+          : `bridge ATC ${status}${err ? ` ${err}` : ""}`,
+        json: line?.cartItemSn
+          ? { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: true }] }
+          : result?.json,
+        cartLines: listCartLines(detail.json),
+      };
+    });
+  }
 
   if (!atc.ok) {
     await closeBridge();
