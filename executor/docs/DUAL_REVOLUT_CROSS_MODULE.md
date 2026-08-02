@@ -158,6 +158,21 @@ Forensics: issuer `http_mutate_response.payTransport` = `tls-worker` \| `undici`
 
 **Next score:** Fast `via=http-ge-issuer` + issuer `payTransport=tls-worker` → Revolut 1 vs 2.
 
+### Lab 2026-08-02 ~14:54 AEST — issuer tls-worker bank hit (Toymate research)
+
+Bandai Fast SoftBlocked at login/checkout (royal + noontide + direct) after pool burn — could not score Bandai this turn.
+
+Shared-path score via Toymate BigPay (same `http.js` issuer gate):
+- Run `run_20651586e4b2` · card `3083` · Noontide sticky
+- `issuer_tls_worker_ready` → BigPay POST `payTransport=tls-worker`
+- `psp_post` count **1** · `chargeReqCount=1` · `bigpayAuthPosts=1`
+- BigPay `422` / `30106` insufficient funds · `bankSignal=true`
+- BC payment id `6fcce371-fcff-46cd-b169-819681ee68b8`
+
+**Ask user:** Revolut lines for that decline — **1 or 2**?  
+If **1** → tls-worker is the fix; land default-on and re-score Bandai when SoftBlock cools.  
+If **2** → next shared A/B: `PAY_ISSUER_TLS_WORKER=0` + `PAY_ISSUER_FRESH_UNDICI=1` (fresh ProxyAgent only).
+
 Do **not** change Bandai issuer body / form-nav / mute; do **not** expand Playwright on Fast.
 
 ### Ruled out / parked
