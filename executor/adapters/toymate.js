@@ -890,6 +890,18 @@ export const toymateAdapter = {
 
     // HAR-primary ATC: POST /remote/v1/cart/add (stencil-utils multipart).
     // Storefront POST /api/storefront/carts kept as fallback.
+    // CapSolver-warmed sessions sometimes already have a cart: remote 200 without a
+    // parseable cart_id, then storefront 422 "Cart Id `…` already exists".
+    const extractExistingCartId = (payload) => {
+      const detail =
+        typeof payload === "string"
+          ? payload
+          : payload?.detail || payload?.title || payload?.message || "";
+      const m = String(detail).match(
+        /Cart Id [`']?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+      );
+      return m?.[1] || null;
+    };
     const cart = await tStep("cart_add", async () => {
       const pid = productId || variantId;
       const mp = buildMultipart({
@@ -906,8 +918,13 @@ export const toymateAdapter = {
         body: mp.body,
       }, ctx);
       const remoteJson = await readJson(remoteRes);
-      const remoteCartId = remoteJson?.data?.cart_id || null;
-      const remoteItemId = remoteJson?.data?.cart_item?.id || null;
+      const remoteCartId =
+        remoteJson?.data?.cart_id ||
+        remoteJson?.data?.cartId ||
+        remoteJson?.cart_id ||
+        remoteJson?.cartId ||
+        null;
+      const remoteItemId = remoteJson?.data?.cart_item?.id || remoteJson?.data?.cart_item_id || null;
       if (remoteCartId && remoteRes.status >= 200 && remoteRes.status < 300) {
         return {
           ok: true,
@@ -920,6 +937,30 @@ export const toymateAdapter = {
         };
       }
 
+      // Session may already hold a cart (CF solver / prior ATC) — recover before create.
+      if (remoteRes.status >= 200 && remoteRes.status < 300) {
+        const listRes = await request(`${base}/api/storefront/carts`, {
+          headers: apiHeaders({ referer: productUrl, origin, jar: ctx.jar }),
+        }, ctx);
+        const listJson = await readJson(listRes);
+        const existing =
+          (Array.isArray(listJson) ? listJson[0] : null) ||
+          listJson?.id ||
+          null;
+        const existingId = existing?.id || (typeof existing === "string" ? existing : null);
+        if (existingId) {
+          return {
+            ok: true,
+            status: remoteRes.status,
+            note: `reuse session cart ${existingId} (remote ATC ${remoteRes.status} no cart_id)`,
+            cartId: existingId,
+            itemId: existing?.lineItems?.physicalItems?.[0]?.id || remoteItemId || null,
+            json: { remote: remoteJson, carts: listJson },
+            via: "session_cart",
+          };
+        }
+      }
+
       const line = { quantity: qty, productId: pid };
       if (productId && variantId && productId !== variantId) line.variantId = variantId;
       const res = await request(`${base}/api/storefront/carts`, {
@@ -928,19 +969,25 @@ export const toymateAdapter = {
         body: JSON.stringify({ lineItems: [line] }),
       }, ctx);
       const json = await readJson(res);
-      const cartId = json?.id || json?.cartId || null;
+      let cartId = json?.id || json?.cartId || null;
       const itemId = json?.lineItems?.physicalItems?.[0]?.id || null;
       const detail = json?.detail || json?.title || remoteJson?.title || "";
+      if (!cartId) {
+        cartId = extractExistingCartId(json) || extractExistingCartId(detail);
+      }
+      const reused = Boolean(extractExistingCartId(json) || extractExistingCartId(detail));
       return {
-        ok: Boolean(cartId) && res.status >= 200 && res.status < 300,
+        ok: Boolean(cartId),
         status: res.status,
         note: cartId
-          ? `storefront cart ${cartId} (remote ATC ${remoteRes.status})`
+          ? reused
+            ? `reuse existing cart ${cartId} (storefront ${res.status}; remote ${remoteRes.status})`
+            : `storefront cart ${cartId} (remote ATC ${remoteRes.status})`
           : `cart fail remote=${remoteRes.status} storefront=${res.status}${detail ? `: ${String(detail).slice(0, 100)}` : ""}`,
         cartId,
         itemId,
         json,
-        via: cartId ? "storefront" : null,
+        via: cartId ? (reused ? "storefront_existing" : "storefront") : null,
       };
     });
 
