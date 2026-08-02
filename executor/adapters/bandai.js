@@ -1236,14 +1236,17 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     });
     ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
   } else {
-  // Pre-ATC cart peek costs a RTT; skip on fast path (drop race). Still OK to
-  // POST addToCart when a line already exists (soft business / qty paths).
+  // Pre-ATC cart peek costs a RTT; skip on fast path (drop race) — except
+  // placeOrder, where a stuck PreOrder line SoftBlocks /checkout → GetCartToken.
   let existing = null;
-  if (!fastAtc) {
+  if (!fastAtc || placeOrder) {
     const cartBefore = await session.apiJson("GET", "/api/cart/detail", {
       referer: `${session.base}/cart`,
     });
-    existing = findCartLine(cartBefore.json, pdp.areaItemNo);
+    const cartIds = [pdp.areaItemNo, productCode].filter(Boolean);
+    existing =
+      findCartLine(cartBefore.json, pdp.areaItemNo) ||
+      (placeOrder && cartIds.length ? findCartLineAny(cartBefore.json, cartIds) : null);
   }
 
   atc = await tStep("addToCart", async () => {
