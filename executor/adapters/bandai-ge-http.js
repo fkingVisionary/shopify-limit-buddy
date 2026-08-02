@@ -13,7 +13,12 @@
  * Remaining hard fields: machineId (iovation blackbox), UrlStructureTokenEncoded (JWT).
  */
 
-import { request } from "../http.js";
+import {
+  request,
+  chromeClientHints,
+  chromePayFetchHeaders,
+  UA as HTTP_UA,
+} from "../http.js";
 import fs from "node:fs";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
 import { payForensics, redirectFanoutFields } from "../pay-forensics.js";
@@ -1055,22 +1060,6 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
   if (!body) return { ok: false, error: "body_required", via: "page-ge-issuer" };
   const t0 = Date.now();
   const flags = issuerBodyFlags(body);
-  payForensics("psp_post_start", {
-    via: "page-ge-issuer",
-    store: "bandai",
-    desktopTaskId: opts.desktopTaskId || null,
-    desktopRunId: opts.desktopRunId || null,
-    desktopAttempt: opts.desktopAttempt || null,
-    executorTaskId: opts.executorTaskId || null,
-    issuerHost: (() => {
-      try {
-        return new URL(url).host;
-      } catch {
-        return null;
-      }
-    })(),
-    ...flags,
-  });
   try {
     // MUST use APIRequestContext — it bypasses page routes so we can keep the
     // browser HandleCreditCard block active (GEM iframe dual-rail fix).
@@ -1088,15 +1077,44 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
     let status = 0;
     let location = "";
     let text = "";
+    // Shared presentation only (http.js helpers) — stock Fast bypasses undici
+    // so CH/Sec-Fetch must be applied here or angle A cannot be scored on Fast.
+    const contentType =
+      opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8";
+    const pageIssuerHeaders = {
+      accept: "text/html,application/xhtml+xml,application/json,*/*",
+      "content-type": contentType,
+      origin: BANDAI_GE_SECURE,
+      referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
+      ...chromeClientHints(opts.userAgent || HTTP_UA, {}),
+      ...chromePayFetchHeaders(url, {
+        origin: BANDAI_GE_SECURE,
+        "content-type": contentType,
+      }),
+    };
+    payForensics("psp_post_start", {
+      via: "page-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      issuerHost: (() => {
+        try {
+          return new URL(url).host;
+        } catch {
+          return null;
+        }
+      })(),
+      // Angle A presentation fingerprint (no body/ceremony fields).
+      hasSecChUa: Boolean(pageIssuerHeaders["sec-ch-ua"]),
+      secFetchMode: pageIssuerHeaders["sec-fetch-mode"] || null,
+      secChPlatform: pageIssuerHeaders["sec-ch-ua-platform"] || null,
+      ...flags,
+    });
     const res = await api.post(url, {
       data: body,
-      headers: {
-        accept: "text/html,application/xhtml+xml,application/json,*/*",
-        "content-type":
-          opts.contentType || "application/x-www-form-urlencoded; charset=UTF-8",
-        origin: BANDAI_GE_SECURE,
-        referer: opts.referer || `${BANDAI_GE_SECURE}/payments/CreditCardForm/`,
-      },
+      headers: pageIssuerHeaders,
       maxRedirects: 0,
       timeout: Math.min(60_000, Number(opts.timeoutMs) || 45_000),
     });

@@ -442,8 +442,13 @@ assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).placeO
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserCheckout: true }).mode, "safe");
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserFull: true }).mode, "full");
 
-// Shared issuer Chrome navigate headers (dual-Revolut naked-CNP lead)
-const { chromeIssuerNavigateHeaders } = await import("../http.js");
+// Shared pay-host Chrome headers (dual-Revolut angle A presentation)
+const {
+  chromeIssuerNavigateHeaders,
+  chromePayFetchHeaders,
+  chromeClientHints,
+  UA,
+} = await import("../http.js");
 const geNav = chromeIssuerNavigateHeaders(
   "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
   { origin: "https://secure-bandai.global-e.com" },
@@ -463,6 +468,20 @@ const bigpay = chromeIssuerNavigateHeaders(
 assert.equal(bigpay["sec-fetch-mode"], "cors");
 assert.equal(bigpay["sec-fetch-dest"], "empty");
 assert.equal(bigpay["sec-fetch-site"], "cross-site");
+// GE prepay XHR must get cors (was previously unaudited / no Sec-Fetch)
+const ha = chromePayFetchHeaders(
+  "https://webservices.global-e.com/checkoutv2/handleaction/1/guid/8urc",
+  {
+    origin: "https://webservices.global-e.com",
+    "content-type": "application/json",
+    "x-requested-with": "XMLHttpRequest",
+  },
+);
+assert.equal(ha["sec-fetch-mode"], "cors");
+assert.equal(ha["sec-fetch-dest"], "empty");
+const ch = chromeClientHints(UA, {});
+assert.equal(ch["sec-ch-ua-mobile"], "?0");
+assert.match(String(ch["sec-ch-ua-platform"] || ""), /Windows|macOS|Linux/);
 
 // Dual-Revolut angles A/B helpers (shared; not Bandai ceremony)
 const { classifyPayWireStage, redirectFanoutFields } = await import("../pay-forensics.js");

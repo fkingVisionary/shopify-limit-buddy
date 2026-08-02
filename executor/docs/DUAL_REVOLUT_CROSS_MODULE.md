@@ -128,6 +128,15 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 
 **Verdict:** dual survives **product Fast** (page issuer). Angle A (PSP/merchant fan-out after one POST) is the lead; B showed a normal prepay chain with no hidden second issuer mutate.
 
+### Shared presentation A/B (after 13:17 confirm)
+
+Naked undici / page-issuer hops omitted Chrome Client Hints; GE prepay lacked Sec-Fetch. Shipped in `executor/http.js` (applies to Toymate BigPay + Bandai prepay) and thin shared-helper merge on stock Fast `page.request` edge only:
+- Platform-matched Chrome 131 UA on win32
+- `chromeClientHints()` on `request()` when omitted (`PAY_CHROME_CH=0` to opt out)
+- `chromePayFetchHeaders()` for all pay-host mutates incl. handleaction/save
+
+**Next score:** stock Fast placeOrder → Revolut 1 vs 2 for new `transactionId`.
+
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**

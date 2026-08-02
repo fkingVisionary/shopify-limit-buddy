@@ -23,8 +23,13 @@ import {
   ACS_OR_REDIRECT_RE,
 } from "./pay-forensics.js";
 
-const UA =
+// Platform-matched Chrome 131 — Mac UA on Windows desktop was a shared tell
+// on undici pre-pay / BigPay hops (dual-Revolut angle A presentation).
+const UA_WIN =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const UA_MAC =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const UA = process.platform === "win32" ? UA_WIN : UA_MAC;
 
 /** Child-process chrome_131 dispatcher (crash-isolated). Accepts raw proxy strings. */
 export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
@@ -416,17 +421,58 @@ function wrapFetchResponse(res, requestedUrl) {
   };
 }
 
-/**
- * Chrome document-navigation Sec-Fetch-* for issuer-like POSTs when the caller
- * omitted them. Manual browser pay sends these; naked undici often does not.
- * Opt out: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
- */
-export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
-  if (process.env.PAY_ISSUER_CHROME_NAV === "0") return {};
+function lowerHeaderMap(existingHeaders = {}) {
   const existing = {};
   for (const [k, v] of Object.entries(existingHeaders || {})) {
     existing[String(k).toLowerCase()] = v;
   }
+  return existing;
+}
+
+function secFetchSite(host, origin) {
+  let site = "cross-site";
+  const hostName = String(host || "").replace(/:\d+$/, "");
+  if (!origin) return site;
+  try {
+    const o = new URL(origin);
+    if (o.host === host || o.hostname === hostName) return "same-origin";
+    const base = (h) => String(h || "").split(".").slice(-2).join(".");
+    if (base(o.hostname) && base(o.hostname) === base(hostName)) return "same-site";
+  } catch {
+    /* keep cross-site */
+  }
+  return site;
+}
+
+/**
+ * Chrome Client Hints aligned to the spoofed UA (dual-Revolut angle A).
+ * Opt out: PAY_CHROME_CH=0. Callers that already set sec-ch-ua win.
+ */
+export function chromeClientHints(userAgent = UA, existingHeaders = {}) {
+  if (process.env.PAY_CHROME_CH === "0") return {};
+  const existing = lowerHeaderMap(existingHeaders);
+  if (existing["sec-ch-ua"] != null) return {};
+  const ua = String(userAgent || existing["user-agent"] || UA);
+  const platform = /Windows NT/i.test(ua)
+    ? "Windows"
+    : /Macintosh/i.test(ua)
+      ? "macOS"
+      : "Linux";
+  return {
+    "sec-ch-ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": `"${platform}"`,
+  };
+}
+
+/**
+ * Chrome Sec-Fetch-* for pay-host / issuer mutates when the caller omitted them.
+ * Covers GE prepay (handleaction/save) and BigPay — not issuer paths only.
+ * Opt out: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
+ */
+export function chromePayFetchHeaders(url, existingHeaders = {}) {
+  if (process.env.PAY_ISSUER_CHROME_NAV === "0") return {};
+  const existing = lowerHeaderMap(existingHeaders);
   if (existing["sec-fetch-mode"] != null) return {};
   let host = "";
   let path = "";
@@ -439,50 +485,25 @@ export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
   }
   const issuerLike =
     ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
-  if (!issuerLike) return {};
+  const payHost = PAY_WIRE_HOST_RE.test(host);
+  if (!issuerLike && !payHost) return {};
 
-  // JSON/API pay hops are XHR/fetch in a real browser (cors/empty) — never
-  // document-navigate. Only form-nav issuer paths get navigate defaults.
   const ct = String(existing["content-type"] || "");
-  const isJsonApi =
-    /application\/json/i.test(ct) || /payments\.bigcommerce\.com/i.test(host);
-  if (isJsonApi) {
-    let site = "cross-site";
-    const origin = existing.origin || "";
-    const hostName = host.replace(/:\d+$/, "");
-    if (origin) {
-      try {
-        const o = new URL(origin);
-        if (o.host === host || o.hostname === hostName) site = "same-origin";
-        else {
-          const base = (h) => String(h || "").split(".").slice(-2).join(".");
-          if (base(o.hostname) && base(o.hostname) === base(hostName)) site = "same-site";
-        }
-      } catch {
-        /* keep cross-site */
-      }
-    }
+  const xhrHint = /XMLHttpRequest/i.test(String(existing["x-requested-with"] || ""));
+  // JSON/API / XHR pay hops are cors/empty in a real browser — never document-navigate.
+  const isJsonOrXhr =
+    /application\/json/i.test(ct) ||
+    /payments\.bigcommerce\.com/i.test(host) ||
+    xhrHint ||
+    /checkoutv2\/(handleaction|save)/i.test(path);
+
+  const site = secFetchSite(host, existing.origin || "");
+  if (isJsonOrXhr) {
     return {
       "sec-fetch-site": site,
       "sec-fetch-mode": "cors",
       "sec-fetch-dest": "empty",
     };
-  }
-
-  let site = "cross-site";
-  const origin = existing.origin || "";
-  const hostName = host.replace(/:\d+$/, "");
-  if (origin) {
-    try {
-      const o = new URL(origin);
-      if (o.host === host || o.hostname === hostName) site = "same-origin";
-      else {
-        const base = (h) => String(h || "").split(".").slice(-2).join(".");
-        if (base(o.hostname) && base(o.hostname) === base(hostName)) site = "same-site";
-      }
-    } catch {
-      /* keep cross-site */
-    }
   }
 
   const out = {
@@ -498,6 +519,11 @@ export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
     out["cache-control"] = "max-age=0";
   }
   return out;
+}
+
+/** @deprecated use chromePayFetchHeaders — kept for existing imports/tests */
+export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
+  return chromePayFetchHeaders(url, existingHeaders);
 }
 
 function parsePayUrl(url) {
@@ -647,20 +673,24 @@ export async function request(url, opts, ctx) {
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
-  // headers themselves. Issuer-like POSTs get Chrome Sec-Fetch navigate
-  // parity when the adapter omitted them (dual-Revolut naked-CNP lead).
+  // headers themselves. Pay-host mutates get Chrome CH + Sec-Fetch when omitted
+  // (dual-Revolut angle A — presentation shared by Bandai prepay + Toymate BigPay).
   const mergedCallerHeaders = {
     ...(extraHeaders ?? {}),
     ...(opts?.headers ?? {}),
   };
+  const callerUa =
+    mergedCallerHeaders["user-agent"] ||
+    mergedCallerHeaders["User-Agent"] ||
+    UA;
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
     ...(jar.header() ? { cookie: jar.header() } : {}),
-    // Chrome Sec-Fetch navigate defaults first; caller headers always win.
+    ...chromeClientHints(callerUa, mergedCallerHeaders),
     ...(method === "POST" || method === "PUT"
-      ? chromeIssuerNavigateHeaders(url, mergedCallerHeaders)
+      ? chromePayFetchHeaders(url, mergedCallerHeaders)
       : {}),
     ...mergedCallerHeaders,
   };
@@ -792,4 +822,4 @@ export async function request(url, opts, ctx) {
   return finalizePayResponse(url, method, opts, wrapResponse(res, url));
 }
 
-export { UA };
+export { UA, UA_WIN, UA_MAC };
