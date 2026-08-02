@@ -1278,7 +1278,12 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
 
   let allowIssuer = 0;
   let seenIssuer = 0;
+  let blockedExtraIssuer = 0;
+  let postIssuerGeMutates = 0;
   const geMatch = (url) => /global-e\.com/i.test(url.href || String(url));
+  // Only hard-block EXTRA HandleCreditCard*. Fat form-nav still Revolut×2'd
+  // while muting ALL GE mutates (incl. post-redirect finalize) — that aborted
+  // the browser SCA land. Non-issuer GE traffic must continue like a real pay.
   const handler = async (route) => {
     const req = route.request();
     const method = String(req.method() || "GET").toUpperCase();
@@ -1288,18 +1293,23 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       return;
     }
     const issuer = isBandaiGeIssuerPaymentUrl(url);
-    if (issuer && allowIssuer > 0) {
-      allowIssuer -= 1;
-      seenIssuer += 1;
-      await route.continue();
+    if (issuer) {
+      if (allowIssuer > 0) {
+        allowIssuer -= 1;
+        seenIssuer += 1;
+        await route.continue();
+        return;
+      }
+      blockedExtraIssuer += 1;
+      await route.fulfill({
+        status: 204,
+        contentType: "text/plain",
+        body: "",
+      });
       return;
     }
-    // Mute everything else (including extra issuer attempts).
-    await route.fulfill({
-      status: 204,
-      contentType: "text/plain",
-      body: "",
-    });
+    if (seenIssuer > 0) postIssuerGeMutates += 1;
+    await route.continue();
   };
 
   try {
@@ -1380,6 +1390,20 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
           /* ignore */
         }
       }
+      // Stay on CCPaymentRedirect so GE finalize / 3DS method JS can run.
+      // Previous mute-all killed these mutates → naked CNP dual-rail suspect.
+      const settleMs = Math.max(
+        0,
+        Math.min(15_000, Number(opts.redirectSettleMs) || 5_000),
+      );
+      if (settleMs > 0) {
+        await page.waitForTimeout(settleMs).catch(() => null);
+        try {
+          if (/CCPaymentRedirect/i.test(page.url())) redirectUrl = page.url();
+        } catch {
+          /* ignore */
+        }
+      }
     } catch (e) {
       payForensics("psp_post_end", {
         via: "form-nav-issuer",
@@ -1427,6 +1451,8 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       via: "form-nav-issuer",
       undiciAttempts: Math.max(1, seenIssuer),
       seenIssuer,
+      blockedExtraIssuer,
+      postIssuerGeMutates,
       machineIdBytes: midBytes,
       error: ok
         ? null
@@ -1451,6 +1477,8 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       redirectPayload,
       via: "form-nav-issuer",
       seenIssuer,
+      blockedExtraIssuer,
+      postIssuerGeMutates,
       machineIdBytes: midBytes,
       bodyBytes: body.length,
     });
@@ -1467,6 +1495,8 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       undiciAttempts: out.undiciAttempts,
       bankSignal: out.bankSignal,
       machineIdBytes: midBytes,
+      blockedExtraIssuer,
+      postIssuerGeMutates,
       ...flags,
     });
     return out;
@@ -2841,7 +2871,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
               riskHydrate: Boolean(riskHydrate),
             })}`
           : issuer?.redirectUrl || bankHit
-            ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
+            ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} postGeMut=${issuer?.postIssuerGeMutates ?? "-"} extraIssBlocked=${issuer?.blockedExtraIssuer ?? 0} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
             : issuer?.bodySnippet || issuer?.error || "issuer_null"
     ).slice(0, 420),
   });

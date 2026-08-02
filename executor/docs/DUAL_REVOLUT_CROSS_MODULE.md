@@ -38,11 +38,11 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE:
-- Score Autocheckout test form-nav + fat iovation (default on test fork). Prior form-nav “dual” was thin machineId (~1064) — do not treat that as a failed fat form-nav.
-- Confirm Revolut 1 vs 2 on that run; classifier must show posts=1 / issuerLikeMutates=1 / bodyBytes≈2575 / via=form-nav-issuer.
-- If still 2: shared transport next (tls-worker for issuer-like, HTTP/2) — not GE field roulette.
-- Re-read forensics hooks in executor/pay-forensics.js + classify-pay-forensics.mjs; confirm posts=1 on any new Bandai lab before asking the user about Revolut.
-- If you need a non-GE control again, use existing Toymate evidence (run_1d56805758fc) — do not rebuild Toymate.
+- Fat form-nav + iovation STILL Revolut×2 (tx 172443438). Undici TLS is not the Bandai differentiator.
+- Next score: form-nav with post-issuer GE mutates allowed (only extra HandleCreditCard blocked) + redirect settle. Look for postIssuerGeMutates > 0 in forensics / issuer note.
+- If still 2: headed/`channel:chrome` Playwright, then card-packaging / createTransaction dual-rail — not GE field roulette, not tls-worker-as-step-1.
+- Re-read forensics; confirm posts=1 before asking the user about Revolut.
+- Toymate evidence stays research-only (run_1d56805758fc).
 
 Lab Bandai: task_c13e31bb45ce, prof_4c10061c8213, SKU N2847904001, mode autocheckout_test → bandai-ge-http-test.js. Card last4 often 3083. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
 ```
@@ -122,13 +122,14 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - Clean undici fat body (`172442728`, ~2575) also dual-suspect with `posts=1`.
 - Clear `BANDAI_GE_TEST_EMPTY_MACHINE_ID` / `BANDAI_GE_TEST_PAYMENT_METHOD_ID` before the lab.
 
-### Fat form-nav bank hit (2026-08-02 ~12:02 AEST) — **awaiting Revolut 1 vs 2**
+### Fat form-nav bank hit (2026-08-02 ~12:02 AEST) — **Revolut×2 confirmed**
 
 - Run `run_28b995d86d9e` attempt `#2` / GE tx **`172443438`**
-- `via=form-nav-issuer`, `bodyBytes≈2571`, `machineIdBytes≈1436`, `posts=1`, `undiciAttempts=1`, bank decline
-- `#1` failed at `ge_get_cart_token` (no pay) then soft-retried — classifier may say `two_runs`; only one `psp_post`
-- Forensics: `%TEMP%\j1m-pay-forensics-bandai-formnav-fat.jsonl`
-- **USER:** check Revolut for **`172443438`** (and earlier clean undici `172442728` if not already). If still 2 → TLS/shared transport next (`tls-worker` for issuer-like), not GE fields. If 1 → promote form-nav (or its ceremony) toward Fast.
+- `via=form-nav-issuer`, `bodyBytes≈2571`, `machineIdBytes≈1436`, `posts=1`, bank decline
+- User screenshot: **12:02 ×2**, **11:48 ×2** (clean undici `172442728`), **11:44 ×2** — all Global-E Bandai AU$39 insufficient-balance pairs
+- **Ruled out:** undici-only TLS (real Chromium document form-nav still dualed with fat iovation)
+- **Next:** form-nav was muting *all* post-issuer GE mutates (204). Softened to block only extra `HandleCreditCard*` + 5s settle on `CCPaymentRedirect` so finalize/3DS method JS can run. Re-score Revolut 1 vs 2.
+- Not GE field roulette. Not Toymate product work.
 
 ---
 
