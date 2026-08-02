@@ -1,7 +1,7 @@
 // node --test executor/issuer-tls-worker.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldUseIssuerTlsWorker } from "./http.js";
+import { shouldUseIssuerTlsWorker, payTlsWorkerCacheKey } from "./http.js";
 
 test("issuer tls-worker: GE HandleCreditCard POST is on by default", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
@@ -170,5 +170,20 @@ test("GE tls-worker: PAY_GE_TLS_WORKER=1 opts all GE hops incl GET", () => {
     else process.env.PAY_GE_TLS_WORKER = prevGe;
     if (prevPay === undefined) delete process.env.PAY_PAYHOST_TLS_WORKER;
     else process.env.PAY_PAYHOST_TLS_WORKER = prevPay;
+  }
+});
+
+test("cold issuer tls: separate cache keys by default; shared when =0", () => {
+  const prev = process.env.PAY_ISSUER_COLD_TLS;
+  delete process.env.PAY_ISSUER_COLD_TLS;
+  try {
+    assert.equal(payTlsWorkerCacheKey("prepay"), "_prepayRemoteTls");
+    assert.equal(payTlsWorkerCacheKey("issuer"), "_issuerRemoteTls");
+    process.env.PAY_ISSUER_COLD_TLS = "0";
+    assert.equal(payTlsWorkerCacheKey("prepay"), "_issuerRemoteTls");
+    assert.equal(payTlsWorkerCacheKey("issuer"), "_issuerRemoteTls");
+  } finally {
+    if (prev === undefined) delete process.env.PAY_ISSUER_COLD_TLS;
+    else process.env.PAY_ISSUER_COLD_TLS = prev;
   }
 });

@@ -23,9 +23,9 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 
 **Workshop (user 2026-08-03):** keep the Toymate fix (issuer chrome_131 tls-worker) on Bandai and work **outward** from remaining hop diffs — not GE field roulette, not July folklore.
 1. Keep `PAY_ISSUER_TLS_WORKER` + `PAY_PAYHOST_TLS_WORKER` ON (already on Bandai; still ×2 alone).
-2. **In flight:** `PAY_ISSUER_FORM_AS_CORS` default ON — GE HandleCreditCard Sec-Fetch `cors`/`empty` like BigPay.
-   - Bank wire: tx **`172548067`** ~07:11 AEST · posts=1 · issuer tls-worker 302 · `sameCart=False` · card `1964`. **Revolut 1 vs 2 TBD (user).**
-3. If still ×2: cold issuer tls session (no prepay worker reuse) → skip/relocate CreditCardForm GET on pay host.
+2. `PAY_ISSUER_FORM_AS_CORS` — tx **`172548067`** @07:11 · posts=1 · tls-worker · **Revolut ×2** (user).
+3. **In flight:** `PAY_ISSUER_COLD_TLS` default ON — separate chrome_131 worker for issuer vs prepay (Toymate never shared a prepay TLS session).
+4. If still ×2: skip/relocate CreditCardForm GET on pay host.
 
 ---
 
@@ -169,7 +169,8 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 |---|---|---|
 | `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker (**Toymate ×1**) |
 | `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 |
-| `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay (was navigate) |
+| `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay — **×2** (`172548067`) |
+| `PAY_ISSUER_COLD_TLS` | ON (`=0` off) | Separate chrome_131 worker for issuer vs prepay (Toymate-shaped) |
 | `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 
@@ -270,6 +271,7 @@ Notes:
 | Bandai issuer-only tls-worker | ×2 (`172456937`) |
 | Bandai GE-all-tls + `ct=false` | ×2 (`172528639`) — liveHtml riskHydrate still on |
 | Bandai throwaway iovation + tls-worker | ×2 (`172538665` @05:49; EOF dual @05:39) |
+| Bandai Sec-Fetch cors + tls-worker | ×2 (`172548067` @07:11) |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 

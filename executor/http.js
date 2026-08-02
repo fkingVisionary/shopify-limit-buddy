@@ -236,13 +236,14 @@ class Dispatcher {
     return this._tlsSession;
   }
   async close() {
-    if (this._issuerRemoteTls) {
+    for (const key of ["_issuerRemoteTls", "_prepayRemoteTls"]) {
+      if (!this[key]) continue;
       try {
-        await this._issuerRemoteTls.close?.();
+        await this[key].close?.();
       } catch {
         /* ignore */
       }
-      this._issuerRemoteTls = null;
+      this[key] = null;
     }
     if (this._tlsSession) {
       try {
@@ -667,9 +668,14 @@ function finalizePayResponse(url, method, opts, res) {
  *   PAY_ISSUER_TLS_WORKER   — issuer stage (opt out =0)
  *   PAY_PAYHOST_TLS_WORKER  — prepay mutates (opt out =0)
  *   PAY_ISSUER_FORM_AS_CORS — GE form issuer Sec-Fetch cors/empty like BigPay
+ *   PAY_ISSUER_COLD_TLS     — separate chrome_131 worker for issuer vs prepay
  * Opt-in:
  *   PAY_GE_TLS_WORKER=1     — any global-e.com hop incl GET
  * Merchant cart ATC stays undici (stage=other).
+ *
+ * Bandai Sec-Fetch cors + shared tls-worker still ×2 (tx 172548067). Cold
+ * issuer = Toymate-shaped single-hop TLS session (BigPay never shared a
+ * prepay worker). Opt out PAY_ISSUER_COLD_TLS=0 to share one worker again.
  */
 export function shouldUseIssuerTlsWorker(url, method) {
   const { host, path: pathName } = parsePayUrl(url);
@@ -689,31 +695,48 @@ export function shouldUseIssuerTlsWorker(url, method) {
   return false;
 }
 
-async function ensureIssuerRemoteTls(dispatcher) {
+/** Cache slot for stage-scoped chrome_131 workers (cold issuer A/B). */
+export function payTlsWorkerCacheKey(stage) {
+  const cold = process.env.PAY_ISSUER_COLD_TLS !== "0";
+  if (!cold) return "_issuerRemoteTls";
+  if (stage === "prepay") return "_prepayRemoteTls";
+  return "_issuerRemoteTls";
+}
+
+async function ensureIssuerRemoteTls(dispatcher, stage = "issuer") {
   if (!dispatcher || dispatcher.remoteTls) return dispatcher?.remoteTls ? dispatcher : null;
-  if (dispatcher._issuerRemoteTls?.remoteTls) return dispatcher._issuerRemoteTls;
-  if (dispatcher._issuerRemoteTlsFailed) return null;
+  const cacheKey = payTlsWorkerCacheKey(stage);
+  const failKey = `${cacheKey}Failed`;
+  if (dispatcher[cacheKey]?.remoteTls) return dispatcher[cacheKey];
+  if (dispatcher[failKey]) return null;
   try {
     const remote = await makeRemoteTlsDispatcher(dispatcher.proxy || null);
     if (!remote?.remoteTls) {
-      dispatcher._issuerRemoteTlsFailed = true;
+      dispatcher[failKey] = true;
       payForensics("issuer_tls_worker_init_failed", {
         error: "remoteTls_missing",
         proxy: Boolean(dispatcher.proxy),
+        stage,
+        cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
       });
       return null;
     }
-    dispatcher._issuerRemoteTls = remote;
+    dispatcher[cacheKey] = remote;
     payForensics("issuer_tls_worker_ready", {
       proxy: Boolean(dispatcher.proxy),
       sticky: Boolean(dispatcher.sticky),
+      stage,
+      cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
+      cacheKey,
     });
     return remote;
   } catch (e) {
-    dispatcher._issuerRemoteTlsFailed = true;
+    dispatcher[failKey] = true;
     payForensics("issuer_tls_worker_init_failed", {
       error: String(e?.message || e).slice(0, 160),
       proxy: Boolean(dispatcher.proxy),
+      stage,
+      cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
     });
     return null;
   }
@@ -781,7 +804,12 @@ export async function request(url, opts, ctx) {
   // is undici (Kmart bank was Chromium TLS; post-Kmart modules charged via undici).
   let issuerRemote = null;
   if (!dispatcher?.remoteTls && shouldUseIssuerTlsWorker(url, method)) {
-    issuerRemote = await ensureIssuerRemoteTls(dispatcher);
+    const { host: payHost, path: payPath } = parsePayUrl(url);
+    const payStage = classifyPayWireStage(payHost, payPath);
+    issuerRemote = await ensureIssuerRemoteTls(
+      dispatcher,
+      payStage === "prepay" ? "prepay" : "issuer",
+    );
   }
   const remoteTls = dispatcher?.remoteTls || issuerRemote?.remoteTls || null;
   if (remoteTls) {
