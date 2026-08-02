@@ -236,7 +236,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 - Synthetic `_iov_` / reshaped MCT → GE `Success=false` (2026-08-03).
 - Active recipe: pay GetCartToken first; optional second GetCartToken for distinct throwaway guid; else `liveCart-fallback` (unless `BANDAI_GE_THROWAY_ONLY=1`).
 - GetCartToken transport retries ×3 on EOF. `PAY_GE_TLS_WORKER` opt-in only.
-- Bank score still pending — **need clean placeOrder + Revolut 1 vs 2** (`via=throwaway` or `liveCart-fallback`).
+- **Wire OK (iov6):** `ge_iovation_mint via=throwaway` · forter=true · ha×3+save tls-worker 200 · CCForm machineId=iovation · issuer `HandleCreditCard` tls-worker **unexpected EOF** (posts=1, bankSignal=false). Do **not** retry issuer after EOF (dual risk). Re-run for bank/Revolut score.
 
 ### Ruled out / parked
 
