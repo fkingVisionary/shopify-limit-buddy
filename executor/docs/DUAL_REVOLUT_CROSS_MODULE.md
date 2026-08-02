@@ -141,9 +141,7 @@ Naked undici / page-issuer hops omitted Chrome Client Hints; GE prepay lacked Se
 
 ### Next shared A/B (still angle A, not GE ceremony)
 
-Risk hydrate runs in Playwright; a `navigator.webdriver` stamp can make Forter/GE fan out two bank lines from the later single pay POST. Shipped: shared `executor/chrome-pay-stealth.js` installed on F5/risk browser context (`PAY_CHROME_STEALTH=0` to opt out). No HandleCreditCard / form-nav / field changes.
-
-**Next score:** stock Fast → Revolut 1 vs 2 for new tx.
+Risk hydrate runs in Playwright; `navigator.webdriver` may stamp Forter/GE. Shared helper: `executor/chrome-pay-stealth.js` on F5 context — **opt-in** `PAY_CHROME_STEALTH=1` (default off after proxy login-501 burn on first attempt). No HandleCreditCard / form-nav / field changes.
 
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
@@ -153,7 +151,8 @@ Do **not** change Bandai issuer body / form-nav / mute to chase these.
 |---|---|
 | GE field / form-nav / settle | Revolut×2 |
 | Stock Fast page issuer baseline | tx `172447213` ×2 |
-| CH + Sec-Fetch + Win UA | tx `172448160` ×2 |
+| CH + Sec-Fetch + Win UA | tx `172448160` ×2 (user confirmed) |
+| Playwright stealth (default on) | not scored — login/ATC 501 proxy burn; now opt-in only |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 

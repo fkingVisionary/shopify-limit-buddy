@@ -8,12 +8,30 @@ test("installChromePayStealth no-ops cleanly without context", async () => {
   assert.equal(r.ok, false);
 });
 
-test("installChromePayStealth respects PAY_CHROME_STEALTH=0", async () => {
+test("installChromePayStealth is opt-in (default skipped)", async () => {
   const prev = process.env.PAY_CHROME_STEALTH;
-  process.env.PAY_CHROME_STEALTH = "0";
+  delete process.env.PAY_CHROME_STEALTH;
   try {
     const r = await installChromePayStealth({ addInitScript: async () => {} });
     assert.equal(r.skipped, true);
+  } finally {
+    if (prev == null) delete process.env.PAY_CHROME_STEALTH;
+    else process.env.PAY_CHROME_STEALTH = prev;
+  }
+});
+
+test("installChromePayStealth runs when PAY_CHROME_STEALTH=1", async () => {
+  const prev = process.env.PAY_CHROME_STEALTH;
+  process.env.PAY_CHROME_STEALTH = "1";
+  let called = false;
+  try {
+    const r = await installChromePayStealth({
+      addInitScript: async () => {
+        called = true;
+      },
+    });
+    assert.equal(r.ok, true);
+    assert.equal(called, true);
   } finally {
     if (prev == null) delete process.env.PAY_CHROME_STEALTH;
     else process.env.PAY_CHROME_STEALTH = prev;

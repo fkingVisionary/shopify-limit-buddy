@@ -4,14 +4,14 @@
  * one later PSP POST when the risk session was stamped automation=true.
  *
  * Does not change GE issuer body / form-nav / mute.
- * Opt out: PAY_CHROME_STEALTH=0
+ * Opt in only: PAY_CHROME_STEALTH=1 (default off — avoid F5/login churn).
  */
 
 /**
  * @param {import('playwright').BrowserContext} context
  */
 export async function installChromePayStealth(context) {
-  if (process.env.PAY_CHROME_STEALTH === "0") return { ok: false, skipped: true };
+  if (process.env.PAY_CHROME_STEALTH !== "1") return { ok: false, skipped: true };
   if (!context?.addInitScript) return { ok: false, error: "no_context" };
   await context.addInitScript(() => {
     try {
