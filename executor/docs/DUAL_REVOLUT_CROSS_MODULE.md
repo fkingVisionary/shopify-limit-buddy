@@ -113,7 +113,7 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 3. `node executor/scripts/score-stock-fast-angles.mjs` (or `classify-pay-forensics.mjs`).
 4. User: Revolut **1 or 2** for the printed `transactionId`.
 
-### Live stock Fast score (2026-08-02 ~13:17 AEST)
+### Live stock Fast score (2026-08-02 ~13:17 AEST) — CONFIRMED Revolut×2
 
 | Field | Value |
 |---|---|
@@ -122,10 +122,11 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 | GE tx | **`172447213`** |
 | Client posts | **1** (`one_post_two_bank_suspect`) |
 | Bank hit | yes (`declined_or_auth_failed`) |
+| Revolut | **×2** (user confirmed) |
 | Prepay mutates | 4 (`handleaction` 1/2/3 + `save`) — no second issuer hop |
 | Issuer http_mutate | 0 (page issuer bypasses `http.js` — expected) |
 
-**Awaiting user:** Revolut lines for tx **`172447213`** — **1 or 2?**
+**Verdict:** dual survives **product Fast** (page issuer). Angle A (PSP/merchant fan-out after one POST) is the lead; B showed a normal prepay chain with no hidden second issuer mutate.
 
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
