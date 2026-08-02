@@ -2145,16 +2145,26 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     items: [{ cartItemSn }],
   };
 
-  const chk = await tStep("cart_checkout", async () => {
+  const checkoutPath = `/api/cart/${encodeURIComponent(cartSn)}/checkout`;
+  const checkoutBodyJson = JSON.stringify(checkoutBody);
+
+  async function attemptCheckoutUndici() {
     if (!merchantCartToken) {
       return { ok: false, status: null, note: "missing merchantCartToken / preload suffix" };
     }
-    const path = `/api/cart/${encodeURIComponent(cartSn)}/checkout`;
     let sensors = {};
     if (bridge) {
+      // Keep bridge SESSION aligned with undici jar (login/ATC may have mutated it).
+      if (ctx.jar?.dump) {
+        try {
+          await bridge.syncCookies(ctx.jar.dump());
+        } catch {
+          /* ignore */
+        }
+      }
       await bridge.goto(`${session.base}/cart`);
-      const mint = await bridge.mint("POST", path, {
-        body: JSON.stringify(checkoutBody),
+      const mint = await bridge.mint("POST", checkoutPath, {
+        body: checkoutBodyJson,
         contentType: "application/json",
         csrf: session.state.csrfToken,
       });
@@ -2162,7 +2172,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       const c = await bridge.cookies();
       if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
     }
-    const { status, json } = await session.apiJson("POST", path, {
+    const { status, json } = await session.apiJson("POST", checkoutPath, {
       body: checkoutBody,
       referer: `${session.base}/cart`,
       extraHeaders: sensors,
@@ -2188,7 +2198,111 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       json,
       preloadSuffix,
     };
-  });
+  }
+
+  async function attemptCheckoutViaBridge() {
+    if (!bridge?.page || !merchantCartToken) {
+      return { ok: false, status: null, note: "bridge checkout skipped" };
+    }
+    if (ctx.jar?.dump) {
+      try {
+        await bridge.syncCookies(ctx.jar.dump());
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      await bridge.goto(`${session.base}/cart`, {
+        settleMs: Math.min(f5SettleMs, 2000),
+      });
+    } catch {
+      /* continue */
+    }
+    const csrf = session.state.csrfToken || (await bridge.csrfToken());
+    let result;
+    try {
+      result = await bridge.page.evaluate(
+        async ({ path, body, csrf: tok, areaCode }) => {
+          const res = await fetch(path, {
+            method: "POST",
+            headers: {
+              accept: "application/json, text/plain, */*",
+              "content-type": "application/json",
+              "x-g1-area-code": areaCode,
+              "x-requested-with": "XMLHttpRequest",
+              ...(tok ? { "x-csrf-token": tok } : {}),
+            },
+            body,
+            credentials: "include",
+          });
+          const text = await res.text();
+          let json = null;
+          try {
+            json = JSON.parse(text);
+          } catch {
+            /* ignore */
+          }
+          return {
+            status: res.status,
+            json,
+            text: text.slice(0, 220),
+            restrictedType: res.headers.get("x-restricted-type"),
+          };
+        },
+        {
+          path: checkoutPath,
+          body: checkoutBodyJson,
+          csrf,
+          areaCode: session.area,
+        },
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: `bridge checkout throw: ${e?.message || e}`,
+      };
+    }
+    const cookies = await bridge.cookies();
+    if (cookies && ctx.jar?.load) {
+      ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+    }
+    const checkoutSn = result?.json?.checkoutSn || result?.json?.checkoutSN || null;
+    const status = Number(result?.status) || null;
+    const errBits = [
+      result?.json?.error,
+      result?.json?.message,
+      result?.json?.detail,
+      result?.json?.errorCode,
+      result?.json?.title,
+    ]
+      .filter(Boolean)
+      .map(String)
+      .join(" | ");
+    return {
+      ok: status >= 200 && status < 300 && Boolean(checkoutSn),
+      status,
+      note: checkoutSn
+        ? `checkoutSn ${checkoutSn} via=bridge mct=${String(merchantCartToken || "").slice(0, 40)}`
+        : `bridge checkout ${status}${errBits ? ` ${errBits}` : ""} mctSuffix=${preloadSuffix ? "yes" : "EMPTY"}`.slice(
+            0,
+            220,
+          ),
+      checkoutSn,
+      json: result?.json,
+      preloadSuffix,
+    };
+  }
+
+  let chk = await tStep("cart_checkout", attemptCheckoutUndici);
+  if (
+    !chk.ok &&
+    bridge?.page &&
+    placeOrder &&
+    isRetryableAtcFailure({ status: chk.status, err: chk.note, textHint: chk.note })
+  ) {
+    chk = await tStep("cart_checkout_bridge", attemptCheckoutViaBridge);
+  }
 
   // ── HTTP GE Pay (no Playwright Pay UI): GetCartToken → hydrate → issuer ─
   // F5 bridge page kept only to mint iovation #ioBlackBox (snare.js) — not Pay.
