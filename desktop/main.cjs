@@ -3748,13 +3748,19 @@ async function e2eAutorun() {
       apiKey: state.settings.apiKey,
     });
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
-    let hyper = String(state.settings.hyperApiKey || "").trim();
-    const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    let hyper = String(
+      process.env.HYPER_API_KEY || state.settings.hyperApiKey || "",
+    ).trim();
+    const capsolver = String(
+      process.env.CAPSOLVER_API_KEY || state.settings.capsolverApiKey || "",
+    ).trim();
     // Bandai F5 checkout does not need Hyper/CapSolver — match bootEngine.
     if (!hyper && !capsolver) {
       console.log(
-        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney need keys",
+        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney/PKC need keys",
       );
+    } else if (hyper) {
+      console.log("[e2e] Hyper key present (env or settings) — PKC/Kmart antibot enabled");
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,
