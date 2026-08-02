@@ -247,6 +247,7 @@ Notes:
 - Client issuer EOF ≠ no bank — 05:39 still dualed.
 - Do **not** retry issuer after EOF (adds dual risk).
 - July `9d313ae` tip does not hold on this stack; next A/B = throwaway + undici pay TLS off.
+- **iov-undici (pre-bank fail):** reminted Noontide · `PAY_*_TLS_WORKER=0` · thrash login 501 / GetCartToken `Success=false` — no bank/Revolut score. Retry when proxy/session clean.
 
 ### Ruled out / parked
 
