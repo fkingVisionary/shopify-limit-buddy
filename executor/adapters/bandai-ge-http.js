@@ -1602,7 +1602,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: "https://p-bandai.com/",
   }).catch(() => null);
 
-  const tokenOut = await getBandaiGeCartToken({
+  const riskHydrate =
+    opts.riskHydrate === true ||
+    opts.forceFreshMint === true ||
+    (opts.mergeIovationCookies === true && Boolean(opts.page));
+  const willMint = Boolean(opts.page) && (!opts.machineId || riskHydrate);
+  const cartTokenArgs = {
     ctx,
     merchantCartToken,
     merchantId: mid,
@@ -1616,7 +1621,24 @@ export async function runBandaiGeHttpPay(opts = {}) {
     checkoutParams: opts.checkoutParams,
     userAgent: opts.userAgent,
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-  });
+  };
+
+  // Throwaway snare host: GetCartToken#1, pay cart: GetCartToken#2 (latest wins).
+  // Synthetic MCT is rejected by GE (2026-08-03). Distinct guid on the real MCT
+  // lets Playwright load Checkout/v2 without touching the pay cart.
+  let throwawayGuid = null;
+  let throwawayTokenNote = "skipped";
+  let preToken = null;
+  if (willMint) {
+    preToken = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
+      ok: false,
+      status: 0,
+      ms: 0,
+      bodySnippet: String(e?.message || e).slice(0, 160),
+    }));
+  }
+
+  const tokenOut = await getBandaiGeCartToken(cartTokenArgs);
   push("ge_get_cart_token", {
     ok: tokenOut.ok,
     status: tokenOut.status,
@@ -1628,6 +1650,29 @@ export async function runBandaiGeHttpPay(opts = {}) {
           220,
         ),
   });
+
+  if (willMint) {
+    if (
+      preToken?.ok &&
+      preToken.cartToken &&
+      tokenOut.ok &&
+      tokenOut.cartToken &&
+      preToken.cartToken !== tokenOut.cartToken
+    ) {
+      throwawayGuid = preToken.cartToken;
+      throwawayTokenNote = `ok pre≠pay guid=${String(throwawayGuid).slice(0, 8)}… pay=${String(tokenOut.cartToken).slice(0, 8)}…`;
+    } else if (preToken?.ok && preToken.cartToken === tokenOut.cartToken) {
+      throwawayTokenNote = "same-as-pay (GE returned identical CartToken twice)";
+    } else {
+      throwawayTokenNote = `pre-fail status=${preToken?.status} ${String(preToken?.bodySnippet || preToken?.message || "").slice(0, 120)}`;
+    }
+    push("ge_iovation_throwaway_token", {
+      ok: Boolean(throwawayGuid),
+      status: preToken?.status ?? null,
+      ms: preToken?.ms ?? 0,
+      note: throwawayTokenNote.slice(0, 220),
+    });
+  }
 
   try {
     fs.writeFileSync(
@@ -1644,6 +1689,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
             bodySnippet: tokenOut.bodySnippet,
             json: tokenOut.json,
           },
+          throwawayCartToken: throwawayGuid,
           merchantCartToken,
         },
         null,
@@ -1675,66 +1721,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   let guid = tokenOut.cartToken;
-
-  // Mint throwaway CartToken ASAP (before fat Checkout/v2 GET stresses tls-worker).
-  const riskHydrate =
-    opts.riskHydrate === true ||
-    opts.forceFreshMint === true ||
-    (opts.mergeIovationCookies === true && Boolean(opts.page));
-  let throwawayGuid = null;
-  let throwawayTokenNote = "skipped";
-  const willMint = Boolean(opts.page) && (!(opts.machineId) || riskHydrate);
-  if (willMint) {
-    let iovLast = null;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      // Fresh Checkout_ts each attempt — never append `_iov_` (GE Success=false).
-      const iovMct = synthesizeIovationMerchantCartToken(merchantCartToken);
-      try {
-        iovLast = await getBandaiGeCartToken({
-          ctx,
-          merchantCartToken: iovMct,
-          merchantId: mid,
-          area,
-          webStoreInstanceCode: area,
-          customerEmail: opts.customerEmail,
-          cultureCode: opts.cultureCode || "en-GB",
-          preferedCultureCode: opts.preferedCultureCode || "en-GB",
-          cookieConsent: opts.cookieConsent,
-          checkoutParams: opts.checkoutParams,
-          referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-          userAgent: opts.userAgent,
-        });
-      } catch (e) {
-        iovLast = {
-          ok: false,
-          status: 0,
-          ms: 0,
-          bodySnippet: String(e?.message || e).slice(0, 160),
-        };
-      }
-      if (iovLast?.ok && iovLast.cartToken) {
-        throwawayGuid = iovLast.cartToken;
-        throwawayTokenNote = `ok attempt=${attempt} guid=${String(throwawayGuid).slice(0, 8)}… mctTs=${iovMct.slice(-10)}`;
-        break;
-      }
-      const soft =
-        !iovLast?.status ||
-        iovLast.status === 0 ||
-        /EOF|failed to do request|TLS|timed?\s*out/i.test(
-          String(iovLast?.bodySnippet || iovLast?.message || ""),
-        );
-      throwawayTokenNote = `fail attempt=${attempt} status=${iovLast?.status} soft=${soft} ${String(iovLast?.bodySnippet || iovLast?.message || "").slice(0, 100)}`;
-      // Retry transport flake AND GE soft rejects (new MCT each loop).
-      if (attempt >= 3) break;
-      await new Promise((r) => setTimeout(r, 400 * attempt));
-    }
-    push("ge_iovation_throwaway_token", {
-      ok: Boolean(throwawayGuid),
-      status: iovLast?.status ?? null,
-      ms: iovLast?.ms ?? 0,
-      note: throwawayTokenNote.slice(0, 220),
-    });
-  }
 
   const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
