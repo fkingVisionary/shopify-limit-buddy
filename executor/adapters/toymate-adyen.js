@@ -594,6 +594,20 @@ export async function placeOrderViaHttp({
       url: payUrl,
       body: payBodyStr,
       paymentMethodId,
+      reqShape: {
+        method: "POST",
+        headerNames: Object.keys(payHeaders || {}).map((k) => k.toLowerCase()).sort(),
+        contentType: payHeaders?.["content-type"] || payHeaders?.["Content-Type"] || null,
+        accept: payHeaders?.accept || payHeaders?.Accept || null,
+        origin: payHeaders?.origin || payHeaders?.Origin || null,
+        referer: payHeaders?.referer || payHeaders?.Referer || null,
+        secFetchMode: payHeaders?.["sec-fetch-mode"] || null,
+        secFetchSite: payHeaders?.["sec-fetch-site"] || null,
+        secFetchDest: payHeaders?.["sec-fetch-dest"] || null,
+        hasAuth: Boolean(payHeaders?.Authorization || payHeaders?.authorization),
+        bodyKeys: ["payment.instrument.type", "payment.payment_method_id"],
+        instrumentType: "card",
+      },
     });
     const tPay = Date.now();
     payRes = await request(

@@ -44,25 +44,31 @@ const db = JSON.parse(
     "utf8",
   ),
 );
-const bandai = db.tasks.find((t) => t.id === "task_c13e31bb45ce") || db.tasks[0];
-const profile = db.profiles.find((p) => p.id === bandai.profileId) || db.profiles[0];
-const group = db.proxyGroups.find((g) => g.id === bandai.proxyGroupId);
+const task =
+  db.tasks.find((t) => t.id === (process.env.DESKTOP_E2E_TASK_ID || "task_toymate_dual_e2e")) ||
+  db.tasks.find((t) => t.id === "task_c13e31bb45ce") ||
+  db.tasks[0];
+const profile = db.profiles.find((p) => p.id === task.profileId) || db.profiles[0];
+const direct = process.env.TOYMATE_DIRECT === "1" || process.env.NO_PROXY === "1";
+const groupId = process.env.DESKTOP_E2E_PROXY_GROUP_ID || task.proxyGroupId;
+const group = !direct && groupId ? db.proxyGroups.find((g) => g.id === groupId) : null;
 const raws = ((group && group.entries) || [])
   .map((x) => (typeof x === "string" ? x : x.url || x.raw || ""))
   .filter(Boolean);
 const proxyIdx = Math.max(0, Number(process.env.TOYMATE_PROXY_INDEX || "0") | 0);
-const proxyUrl = toProxyUrl(raws[proxyIdx] || raws[0]);
+const proxyUrl = direct ? null : toProxyUrl(raws[proxyIdx] || raws[0]);
 const pdp =
   process.env.TOYMATE_PDP_URL ||
-  "https://toymate.com.au/monster-high-draculaura-doll/";
+  task.pdpUrl ||
+  "https://toymate.com.au/lego-city-the-lego-van-60500/";
 const placeOrder = process.env.PLACE_ORDER !== "0";
 const forensics =
   process.env.PAY_FORENSICS_PATH ||
   path.join(os.tmpdir(), "j1m-pay-forensics-toymate-localcf.jsonl");
 process.env.PAY_FORENSICS_PATH = forensics;
 
-if (!proxyUrl) {
-  console.error("no proxy");
+if (!direct && !proxyUrl) {
+  console.error("no proxy (set TOYMATE_DIRECT=1 for home egress)");
   process.exit(1);
 }
 
@@ -73,7 +79,8 @@ console.log(
   JSON.stringify({
     phase: "local_cf_start",
     pdp,
-    proxyHost: new URL(proxyUrl).hostname,
+    direct,
+    proxyHost: proxyUrl ? new URL(proxyUrl).hostname : "(direct)",
     placeOrder,
     hasCapsolver: Boolean(process.env.CAPSOLVER_API_KEY),
     forensics,
@@ -82,7 +89,7 @@ console.log(
 
 const browser = await chromium.launch({
   headless: true,
-  proxy: parsePwProxy(proxyUrl),
+  ...(proxyUrl ? { proxy: parsePwProxy(proxyUrl) } : {}),
   args: ["--disable-blink-features=AutomationControlled"],
 });
 const context = await browser.newContext({
@@ -140,7 +147,7 @@ const res = await runCheckout({
   pdpUrl: pdp,
   variantId: 1,
   qty: 1,
-  proxy: proxyUrl,
+  proxy: proxyUrl || undefined,
   dryRun: !placeOrder,
   placeOrder,
   forceUndici: true,
@@ -149,8 +156,8 @@ const res = await runCheckout({
   account: null,
   harvestedSession: {
     id: "local-cf-lab",
-    proxy: proxyUrl,
-    proxyHost: new URL(proxyUrl).hostname,
+    proxy: proxyUrl || null,
+    proxyHost: proxyUrl ? new URL(proxyUrl).hostname : "direct",
     userAgent: ua,
     cookies,
     harvestedAt: Date.now(),

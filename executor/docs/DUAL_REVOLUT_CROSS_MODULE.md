@@ -29,7 +29,22 @@ Desktop orchestration ruled out on these labs (`quantity=1`, 1 enqueue, 1 `/run`
 3. **Shared card/billing payload shape** built once in desktop→executor (not store-specific fields) that both GE and Adyen treat as “retry/auth twice” server-side while our wire count stays 1.
 4. **Uninstrumented second wire** — low probability after GE + BigPay hooks both show `posts=1`.
 
-**Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette and stop “try another card.” Next dig is **bot vs browser request parity on the shared pay hop** (Toymate BigPay and/or GE HandleCreditCard): browser HAR vs bot forensics for the same checkout — headers, body shape, TLS/proxy, 3DS flags — not module ATC.
+**Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette and stop “try another card.”
+
+## Next ladder (do in order — one fork each)
+
+1. **Browser HAR vs bot pay hop (primary)**  
+   Manual Toymate (or Bandai) checkout → DevTools → save the **one** issuer POST (`payments.bigcommerce.com/.../payments` or GE `HandleCreditCard`). Diff against bot `psp_post` shape (headers, `sec-fetch-*`, content-type, body keys, cookie count). Align bot to browser one delta at a time.
+
+2. **Proxy / home egress**  
+   Bot always proxied today; manual is home. Direct undici Toymate fails CapSolver (needs proxy). Local Chromium can clear CF on home IP but cookie handoff to undici still 403 — so either fix handoff or finish pay inside Chromium before calling this fork done.
+
+3. **Full-browser pay (only if HAR is inconclusive)**  
+   Same checkout entirely in headed Chrome/Playwright on home IP.  
+   - Revolut **1** → undici/TLS/proxy presentation is the dual trigger.  
+   - Revolut **2** → automation/session/pre-pay state (not the HTTP library).
+
+GE Chromium form-nav already dualed while proxied — so do not assume “use Playwright” alone is the fix without the home-IP / HAR forks.
 
 ---
 
