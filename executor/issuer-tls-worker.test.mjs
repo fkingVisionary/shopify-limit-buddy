@@ -121,9 +121,11 @@ test("issuer tls-worker: PAY_ISSUER_TLS_WORKER=0 opts out (non-GE)", () => {
   }
 });
 
-test("GE tls-worker: GET CreditCardForm / GetCartToken off by default", () => {
+test("GE tls-worker: GetCartToken GET off by default (CCForm uses issuer tls)", () => {
   const prevGe = process.env.PAY_GE_TLS_WORKER;
+  const prevCc = process.env.PAY_ISSUER_CCFORM_TLS;
   delete process.env.PAY_GE_TLS_WORKER;
+  process.env.PAY_ISSUER_CCFORM_TLS = "0";
   try {
     assert.equal(
       shouldUseIssuerTlsWorker(
@@ -142,6 +144,8 @@ test("GE tls-worker: GET CreditCardForm / GetCartToken off by default", () => {
   } finally {
     if (prevGe === undefined) delete process.env.PAY_GE_TLS_WORKER;
     else process.env.PAY_GE_TLS_WORKER = prevGe;
+    if (prevCc === undefined) delete process.env.PAY_ISSUER_CCFORM_TLS;
+    else process.env.PAY_ISSUER_CCFORM_TLS = prevCc;
   }
 });
 
@@ -170,6 +174,35 @@ test("GE tls-worker: PAY_GE_TLS_WORKER=1 opts all GE hops incl GET", () => {
     else process.env.PAY_GE_TLS_WORKER = prevGe;
     if (prevPay === undefined) delete process.env.PAY_PAYHOST_TLS_WORKER;
     else process.env.PAY_PAYHOST_TLS_WORKER = prevPay;
+  }
+});
+
+test("CreditCardForm GET uses issuer tls-worker by default", () => {
+  const prev = process.env.PAY_ISSUER_TLS_WORKER;
+  const prevCc = process.env.PAY_ISSUER_CCFORM_TLS;
+  delete process.env.PAY_ISSUER_TLS_WORKER;
+  delete process.env.PAY_ISSUER_CCFORM_TLS;
+  try {
+    assert.equal(
+      shouldUseIssuerTlsWorker(
+        "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+        "GET",
+      ),
+      true,
+    );
+    process.env.PAY_ISSUER_CCFORM_TLS = "0";
+    assert.equal(
+      shouldUseIssuerTlsWorker(
+        "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+        "GET",
+      ),
+      false,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.PAY_ISSUER_TLS_WORKER;
+    else process.env.PAY_ISSUER_TLS_WORKER = prev;
+    if (prevCc === undefined) delete process.env.PAY_ISSUER_CCFORM_TLS;
+    else process.env.PAY_ISSUER_CCFORM_TLS = prevCc;
   }
 });
 

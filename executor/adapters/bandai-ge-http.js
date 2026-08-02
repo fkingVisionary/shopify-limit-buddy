@@ -2180,13 +2180,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
       null;
   }
 
-  // Toymate-outward A/B: BigPay has zero pre-issuer GET on the pay host.
-  // Default SKIP undici CreditCardForm GET on secure-bandai (JWT/machineId from
-  // Checkout/v2 + iovation + save). Opt out: BANDAI_GE_SKIP_CC_FORM=0.
+  // Pure skip of CreditCardForm fails closed — JWT only appears there after
+  // save (2026-08-03 skip-ccform lab). Opt-in only: BANDAI_GE_SKIP_CC_FORM=1.
+  // Default: fetch CCForm on the cold issuer tls-worker (PAY_ISSUER_CCFORM_TLS).
   const skipCcForm =
     opts.skipCreditCardForm === true ||
-    (opts.skipCreditCardForm !== false &&
-      process.env.BANDAI_GE_SKIP_CC_FORM !== "0");
+    process.env.BANDAI_GE_SKIP_CC_FORM === "1";
 
   // Default: undici CreditCardForm only. Live iframe + radio click can race GEM
   // pay JS (and costs ~10s). Opt-in scrapeCardFormViaPage=true for iframe scrape.

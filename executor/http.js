@@ -684,8 +684,20 @@ export function shouldUseIssuerTlsWorker(url, method) {
   if (/global-e\.com/i.test(host) && process.env.PAY_GE_TLS_WORKER === "1") {
     return true;
   }
-  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
   const stage = classifyPayWireStage(host, pathName);
+  // CreditCardForm GET is issuer-stage but was undici while HandleCreditCard
+  // used tls-worker — split pay-host TLS. Default: same cold issuer worker.
+  // Opt out: PAY_ISSUER_CCFORM_TLS=0.
+  if (
+    stage === "issuer" &&
+    /CreditCardForm/i.test(pathName) &&
+    /^(GET|HEAD)$/i.test(method || "") &&
+    process.env.PAY_ISSUER_CCFORM_TLS !== "0" &&
+    process.env.PAY_ISSUER_TLS_WORKER !== "0"
+  ) {
+    return true;
+  }
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
   if (stage === "issuer") {
     return process.env.PAY_ISSUER_TLS_WORKER !== "0";
   }
