@@ -824,7 +824,82 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     };
   }
 
+  // SoftBlock recovery: mint+abort then undici /login often 501s (TLS ≠ Chromium
+  // F5 session) while the same account works in a real browser. Complete login
+  // inside the existing F5 bridge (not Playwright pay) and sync cookies to jar.
+  async function attemptLoginViaBridge() {
+    if (!bridge?.page) {
+      return { ok: false, status: null, note: "bridge login skipped: no page" };
+    }
+    const csrf = session.state.csrfToken || (await bridge.csrfToken());
+    let result;
+    try {
+      result = await bridge.page.evaluate(
+        async ({ body, csrf: tok, areaCode }) => {
+          const res = await fetch("/login", {
+            method: "POST",
+            headers: {
+              accept: "application/json, text/plain, */*",
+              "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+              "x-g1-area-code": areaCode,
+              "x-requested-with": "XMLHttpRequest",
+              ...(tok ? { "x-csrf-token": tok } : {}),
+            },
+            body,
+            credentials: "include",
+          });
+          const text = await res.text();
+          return {
+            status: res.status,
+            restrictedType: res.headers.get("x-restricted-type"),
+            csrf: res.headers.get("x-csrf-token"),
+            text: text.slice(0, 240),
+          };
+        },
+        { body: loginBody, csrf, areaCode: session.area },
+      );
+    } catch (e) {
+      return {
+        ok: false,
+        status: null,
+        note: `bridge login throw: ${e?.message || e}`,
+      };
+    }
+    try {
+      await bridge.page.waitForTimeout(800);
+    } catch {
+      /* ignore */
+    }
+    const cookies = await bridge.cookies();
+    if (cookies && ctx.jar?.load) {
+      ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+    }
+    if (result?.csrf) session.state.csrfToken = result.csrf;
+    const restricted = result?.restrictedType || null;
+    const blocking =
+      restricted &&
+      !/^NoRestriction$/i.test(restricted) &&
+      restricted !== "null" &&
+      restricted !== "";
+    const status = Number(result?.status) || null;
+    const ok = status >= 200 && status < 300 && !blocking;
+    return {
+      ok,
+      status,
+      restrictedType: restricted,
+      blocking: Boolean(blocking),
+      note: blocking
+        ? `bridge restricted:${restricted}`
+        : ok
+          ? "login ok via=bridge"
+          : `bridge login ${status}`,
+    };
+  }
+
   let login = await tStep("login", attemptLogin);
+  if (!login.ok && bridge && isRetryableLoginFailure(login)) {
+    login = await tStep("login_bridge", attemptLoginViaBridge);
+  }
 
   // SoftBlock / proxy flake: rotate sticky exit, remint cold F5, retry login.
   // Do not spray on bad password. Default 2 rotates; disable via bandaiLoginProxyRotate:false.
@@ -891,6 +966,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       });
       if (!seeded) continue;
       login = await tStep(`login_retry_${i + 1}`, attemptLogin);
+      if (!login.ok && bridge && isRetryableLoginFailure(login)) {
+        login = await tStep(`login_bridge_retry_${i + 1}`, attemptLoginViaBridge);
+      }
       if (login.ok) {
         login = {
           ...login,
@@ -900,6 +978,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       }
       if (!isRetryableLoginFailure(login)) break;
     }
+  }
+
+  if (!login.ok && bridge && isRetryableLoginFailure(login)) {
+    login = await tStep("login_bridge_final", attemptLoginViaBridge);
   }
 
   if (!login.ok) {
