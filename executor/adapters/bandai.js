@@ -901,25 +901,34 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     login = await tStep("login_bridge", attemptLoginViaBridge);
   }
 
-  // SoftBlock / proxy flake: rotate sticky exit, remint cold F5, retry login.
-  // Do not spray on bad password. Default 2 rotates; disable via bandaiLoginProxyRotate:false.
+  // SoftBlock / proxy flake: rotate sticky session, remint cold F5, retry login.
+  // Prefer distinct session lines (not just host as1↔as2) so reminted Noontide
+  // stickies actually get used. Do not spray on bad password.
+  // Default 2 rotates; disable via bandaiLoginProxyRotate:false.
   if (
     !login.ok &&
     task.bandaiLoginProxyRotate !== false &&
     isRetryableLoginFailure(login)
   ) {
     const pool = loadBandaiProxyPool(task);
-    const curHost = bandaiProxyHost(task.proxy);
+    const curLine = String(task.proxy || "").trim().toLowerCase();
     const maxRot = Math.max(
       0,
       Math.min(
-        3,
+        8,
         Number(task.bandaiLoginProxyRotates ?? process.env.BANDAI_LOGIN_PROXY_ROTATES) || 2,
       ),
     );
-    const candidates = pool
-      .filter((l) => bandaiProxyHost(l) && bandaiProxyHost(l) !== curHost)
-      .slice(0, maxRot);
+    const seen = new Set(curLine ? [curLine] : []);
+    const candidates = [];
+    for (const raw of pool) {
+      const line = String(raw || "").trim();
+      const key = line.toLowerCase();
+      if (!line || !bandaiProxyHost(line) || seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(line);
+      if (candidates.length >= maxRot) break;
+    }
     for (let i = 0; i < candidates.length; i++) {
       const line = candidates[i];
       const tRot = Date.now();
@@ -946,23 +955,31 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           seeded = Boolean(w.ok);
         }
       } catch (e) {
+        const sessHint = (() => {
+          const m = String(line).match(/session-([^-:]+)/i);
+          return m ? `session-${m[1]}` : bandaiProxyHost(line);
+        })();
         steps.push({
           step: "login_proxy_rotate",
           ok: false,
           status: null,
           ms: Date.now() - tRot,
-          note: `rotate→${bandaiProxyHost(line)} seed fail: ${e?.message || e}`,
+          note: `rotate→${sessHint} seed fail: ${e?.message || e}`,
         });
         continue;
       }
+      const sessHint = (() => {
+        const m = String(line).match(/session-([^-:]+)/i);
+        return m ? `session-${m[1]}` : bandaiProxyHost(line);
+      })();
       steps.push({
         step: "login_proxy_rotate",
         ok: seeded,
         status: null,
         ms: Date.now() - tRot,
         note: seeded
-          ? `rotated→${bandaiProxyHost(line)} remint F5 (attempt ${i + 1}/${candidates.length})`
-          : `rotate→${bandaiProxyHost(line)} seed incomplete`,
+          ? `rotated→${sessHint} remint F5 (attempt ${i + 1}/${candidates.length})`
+          : `rotate→${sessHint} seed incomplete`,
       });
       if (!seeded) continue;
       login = await tStep(`login_retry_${i + 1}`, attemptLogin);
@@ -972,7 +989,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       if (login.ok) {
         login = {
           ...login,
-          note: `${login.note} after proxy rotate→${bandaiProxyHost(line)}`,
+          note: `${login.note} after proxy rotate→${sessHint}`,
         };
         break;
       }
