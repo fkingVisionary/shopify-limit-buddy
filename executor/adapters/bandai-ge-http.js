@@ -1753,32 +1753,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
         settleMs: opts.iovationSettleMs,
         jar: ctx?.jar || null,
       });
-      // CRITICAL: blank Checkout/v2 WHILE mute is still active.
-      // Previously we unrouted geMute in finally, then blanked — GEM JS had a
-      // live Checkout/v2 window and could fire HandleCreditCard before undici,
-      // producing Revolut pairs with app posts=1 (2026-08-02 live).
-      const preferPageIssuer =
-        opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
-      const keepPage =
-        preferPageIssuer ||
-        opts.keepPageAfterIovation === true ||
-        opts.scrapeCardFormViaPage === true;
-      opts = { ...opts, preferPageIssuer };
-      if (!keepPage && opts.page) {
-        try {
-          await neutralizeGePaymentFrames(opts.page);
-        } catch {
-          /* ignore */
-        }
-        try {
-          await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
-        } catch {
-          /* ignore */
-        }
-        issuerPage = null;
-      } else if (keepPage) {
-        issuerPage = opts.page;
-      }
     } finally {
       if (pctx?.unroute) {
         try {
@@ -1825,25 +1799,44 @@ export async function runBandaiGeHttpPay(opts = {}) {
       forterBytes: forterToken ? String(forterToken).length : 0,
       cookieKeys: jarNames.slice(0, 40),
     });
-    // Bible Fast: undici issuer after riskHydrate + page drop. Page issuer is
-    // opt-in only (preferPageIssuer===true). Defaulting page issuer produced
-    // Revolut pairs with posts=1 / sameCart=False while phone stayed single.
-    if (issuerPage) {
+    // Product Fast: page issuer after riskHydrate (same cookies/TLS as mint).
+    // Undici after page-drop is A/B only — do not flip this for dual-Revolut labs.
+    const preferPageIssuer =
+      opts.preferPageIssuer === true ||
+      (opts.preferPageIssuer !== false &&
+        riskHydrate &&
+        Boolean(opts.page) &&
+        opts.forceUndiciIssuer !== true);
+    const keepPage =
+      preferPageIssuer ||
+      opts.keepPageAfterIovation === true ||
+      opts.scrapeCardFormViaPage === true;
+    opts = { ...opts, preferPageIssuer };
+    if (keepPage) {
+      // Stay on Checkout/v2 — do not blank before page issuer.
+      issuerPage = opts.page;
       mark("ge_page_kept_after_iovation", {
         ok: true,
-        preferPageIssuer: opts.preferPageIssuer === true,
-        warn:
-          opts.preferPageIssuer === true
-            ? "page_issuer_after_riskHydrate"
-            : "live_cart_browser_may_pair_revolut",
+        preferPageIssuer,
+        warn: preferPageIssuer ? "page_issuer_after_riskHydrate" : "live_cart_browser_may_pair_revolut",
         mutedIssuerPosts,
       });
     } else {
+      try {
+        await neutralizeGePaymentFrames(opts.page);
+      } catch {
+        /* ignore */
+      }
+      try {
+        await opts.page.goto("about:blank", { waitUntil: "commit", timeout: 5_000 });
+      } catch {
+        /* ignore */
+      }
+      issuerPage = null;
       mark("ge_page_dropped_after_iovation", {
         ok: true,
         liveGuid: guid,
         geMuted: true,
-        blankedUnderMute: true,
         beforeHydrate: true,
         riskHydrate: true,
         browserMutatesDuringMint: blockedMutates,
@@ -2298,38 +2291,33 @@ export async function runBandaiGeHttpPay(opts = {}) {
   });
 
   // Hard-lock single issuer POST.
-  // Revolut pairs with app posts=1:
-  //  (1) undici retry on RST after GE already authorized (retry:false)
-  //  (2) page-issuer unroute → GEM iframe 2nd HandleCreditCard (2026-08-01)
-  // Keep browserIssuerBlock through pay; park page so GEM JS cannot race.
+  // Shared-stack dual (posts=1 → Revolut×2) is outside this module — do not
+  // rewrite Fast page-issuer ceremony here. Keep local race guards only.
   let framesNeutralized = 0;
   let issuerPostCount = 0;
   let issuer = null;
   try {
-    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
     if (issuerPage) {
-      // Sync jar first (page issuer needs undici save/CC cookies on the context).
-      if (usePageIssuer) {
-        await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
-      }
       framesNeutralized = await neutralizeGePaymentFrames(issuerPage);
-      // Always park — kill CreditCardForm/Checkout GEM before the one POST.
-      // APIRequestContext cookies survive about:blank.
-      await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
       mark("ge_issuer_lock", {
         framesNeutralized,
         browserBlockedSoFar: Number(browserIssuerBlock.blocked || 0),
-        preferPageIssuer: usePageIssuer,
-        browserBlockKept: true,
-        pageParked: true,
+        preferPageIssuer: opts.preferPageIssuer === true,
         mergeIovationCookies: opts.mergeIovationCookies === true,
       });
+      // Park Checkout/v2 away from payment UI before undici issuer (no GEM race).
+      if (opts.preferPageIssuer !== true) {
+        await issuerPage.goto("about:blank", { waitUntil: "commit", timeout: 5_000 }).catch(() => null);
+        mark("ge_browser_parked_before_issuer", { ok: true });
+      }
     }
 
+    const usePageIssuer = Boolean(issuerPage && opts.preferPageIssuer === true);
     issuerPostCount = 1;
     if (usePageIssuer) {
-      // DO NOT unroute browserIssuerBlock — page.request bypasses routes;
-      // unrouting was the dual-rail (iframe + intentional POST).
+      // Push undici save/CC session cookies into Playwright before page issuer.
+      await syncJarToPage(issuerPage, ctx?.jar).catch(() => 0);
+      await browserIssuerBlock.unroute();
       issuer = await postBandaiGeIssuerViaPage({
         page: issuerPage,
         url: issuerUrl,

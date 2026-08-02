@@ -29,22 +29,22 @@ YOUR JOB:
 1. Accept the dual is outside store modules and outside “GE issuer body”.
 2. Find what the shared bot stack does that a real browser does not, such that ONE outbound pay POST becomes TWO issuer/bank auths.
 3. Change shared code (executor/http.js, TLS/client choice, proxy binding, desktop card packaging, sidecar /run semantics — as justified by evidence).
-4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1.
+4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1 on **stock Fast** (page issuer). Do not invent a new Bandai pay mode to “fix” the dual.
 
 FORBIDDEN:
-- More Bandai GE field A/B / form-nav / settle / mute as the main strategy (user correction 2026-08-02 PM: that is dismantling Bandai again).
+- Rewriting Bandai Fast defaults (page issuer → undici, blank-under-mute ceremony, form-nav, settle, headed Chrome, GE field A/B) as the main strategy. User correction 2026-08-02 PM: that is dismantling Bandai again; dual is outside that scope.
+- Editing `bandai-ge-http.js` / `bandai-ge-http-test.js` pay ceremony except for inert forensics / latch signals.
 - Chasing `IsTheSameCartToken` or other GE JWT flags.
 - “Let’s just fix Toymate too” product work.
 - Claiming payment-latch solved this dual.
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE (SHARED ONLY):
-- Bandai is the **scoreboard** (Revolut 1 vs 2 + posts=1). Workshop = `executor/http.js`, TLS/client, desktop sidecar `/run`, proxy binding — not `bandai-ge-http*.js` pay ceremony.
-- Autocheckout test fork defaults back to **prod-like undici** issuer. Form-nav is opt-in research only (`BANDAI_GE_TEST_FORM_NAV_ISSUER=1`).
-- Form-nav / settle / mute labs (txs 172443438, 172443854, 172444504, 172445269) are **evidence**, not a Bandai fix path — they dualed too, including Chromium document POST.
+- Bandai is the **scoreboard** only. Product Fast = riskHydrate + **page issuer** (restored). Workshop = `executor/http.js`, TLS/client, desktop sidecar `/run`, proxy binding.
+- Form-nav / settle / mute / undici-default labs are **closed digressions** — evidence only; they dualed too.
 - Next change must be justifiable for Bandai **and** Toymate BigPay. If it only lives in Bandai GE code, stop.
 
-Lab Bandai scoreboard: task_c13e31bb45ce, mode can be Fast or autocheckout_test (undici default). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
+Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** (not autocheckout_test). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
 ```
 
 ---
@@ -120,9 +120,14 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - Other GE mutates were hydrate/save only (`issuerLike=false`) — not a second issuer POST.
 - So dual (if Revolut still shows 2 on this tx) is **not** a hidden second HTTP from our client.
 
-### Digression closed (2026-08-02 PM) — stop Bandai pay-path churn
+### Digression closed (2026-08-02 PM) — stop dismantling Bandai
 
-User correction: form-nav / settle / mute / headed Chrome inside `bandai-ge-http-test.js` is **dismantling Bandai again** when the dual is already proven **outside** store modules (Toymate BigPay + PKC + `posts=1`).
+User correction: dual Revolut is **outside** Bandai. Form-nav / settle / mute / headed Chrome / flipping Fast to undici inside Bandai adapters is dismantling the module again.
+
+**Restored product Fast (do not re-break):**
+- Desktop + `bandai.js` + `bandai-ge-http.js`: riskHydrate → **page issuer** default.
+- Undici issuer / autocheckout_test fork = opt-in research only.
+- Blank-under-mute + always-park-before-page-issuer digressions reverted on prod Fast.
 
 Research evidence kept (not a Bandai fix path):
 
@@ -136,7 +141,7 @@ Research evidence kept (not a Bandai fix path):
 
 Also parked: `IsTheSameCartToken` (GE-only); desktop card packaging (audited clean).
 
-**Autocheckout test issuer default restored to prod-like undici.** Form-nav opt-in only. Next edits = shared stack only.
+Next edits = **shared stack only**. Score on stock Fast.
 
 ---
 
@@ -168,12 +173,10 @@ Desktop Start
 ## 6. Bandai lab reference (measurement only)
 
 - Task `task_c13e31bb45ce` · Profile `prof_4c10061c8213` · SKU `N2847904001`
-- Mode `bandaiCheckoutMode=autocheckout_test` → `executor/adapters/bandai-ge-http-test.js`
-- Production Fast: `bandai-ge-http.js` (do not trash with random experiments; use test fork)
+- Score on **`bandaiCheckoutMode=fast`** → `bandai-ge-http.js` page issuer (product path)
+- `autocheckout_test` / form-nav = parked research fork only — not the workshop
 - Forensics: `PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics*.jsonl`
-- Control: `BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1` → no Revolut (hydrate alone does not bank)
-- Failed Bandai levers: empty `machineId`, slim cookies + navigate, pay-guid rebind, skip hydrate parts, `pm=2`, `pm=2`+empty mid — **all dual when bank hit**
-- Form-nav with **thin** body dualed (contaminated) — **fat form-nav not yet scored** (now the Autocheckout test default)
+- Failed Bandai levers (do not resume): empty `machineId`, slim cookies, pay-guid rebind, skip hydrate, `pm=2`, form-nav/settle/mute, Fast→undici default flip
 
 ---
 
@@ -191,7 +194,8 @@ Desktop Start
 2. Suggesting “fix HandleCreditCard” after proving Toymate duals too.  
 3. Turning research controls (Toymate) into multi-hour product debugging.  
 4. Re-proposing direct/no-proxy after the user already said it duals.  
-5. Confusing payment-latch success with fixing `posts=1` / Revolut×2.
+5. Confusing payment-latch success with fixing `posts=1` / Revolut×2.  
+6. Flipping production Fast defaults (page issuer → undici, park/mute ceremony) “to chase dual” — user: stop dismantling Bandai.
 
 ---
 

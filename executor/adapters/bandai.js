@@ -2026,10 +2026,14 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
       forceIssuer: task.bandaiGeForceIssuer === true,
       keepPageAfterIovation: task.bandaiGeKeepPage === true,
-      // Bible Fast = undici. Page issuer only when explicitly requested.
-      preferPageIssuer: task.bandaiGePreferPageIssuer === true,
-      forceUndiciIssuer:
-        task.bandaiGeUndiciIssuer === true || task.bandaiGePreferPageIssuer !== true,
+      // undefined → ge-http defaults page issuer after riskHydrate; false = undici A/B.
+      preferPageIssuer:
+        task.bandaiGePreferPageIssuer === true
+          ? true
+          : task.bandaiGePreferPageIssuer === false || task.bandaiGeUndiciIssuer === true
+            ? false
+            : undefined,
+      forceUndiciIssuer: task.bandaiGeUndiciIssuer === true,
       scrapeCardFormViaPage: task.bandaiGeScrapeCardFormViaPage === true,
       harvestedBridge: Boolean(
         usedHarvestedBridge || task.harvestedBridgeId || task._harvestedBridge,

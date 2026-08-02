@@ -2,12 +2,12 @@
  * Resolve Bandai checkout pay-path flags for the desktop → executor payload.
  * ATC is always HTTP+F5; this only chooses Fast vs Safe GE pay after cart hold.
  *
- * Fast (bible / product default): riskHydrate → drop page → undici issuer.
- * Autocheckout test: same shape as Fast but executor uses bandai-ge-http-test.js
- * (experimental fork — production Fast stays on bandai-ge-http.js).
- * Page issuer is opt-in only (bandaiGePreferPageIssuer=true).
+ * Fast product default: riskHydrate + page issuer (same cookies/TLS as mint).
+ * Undici issuer is A/B only via bandaiCheckoutMode=fast_undici or
+ * bandaiGeUndiciIssuer=true — do not flip Fast defaults for dual-Revolut labs.
+ * Autocheckout test is an opt-in research fork (bandai-ge-http-test.js).
  *
- * @param {{ bandaiCheckoutMode?: string, bandaiBrowserCheckout?: boolean, bandaiGeHttpPay?: boolean, bandaiGeRiskHydrate?: boolean, bandaiGeNoPage?: boolean, bandaiGePreferPageIssuer?: boolean, bandaiGeUndiciIssuer?: boolean }} task
+ * @param {{ bandaiCheckoutMode?: string, bandaiBrowserCheckout?: boolean, bandaiGeHttpPay?: boolean, bandaiGeRiskHydrate?: boolean, bandaiGeNoPage?: boolean, bandaiGePreferPageIssuer?: boolean, bandaiGeUndiciIssuer?: boolean, bandaiGeHttpPayTest?: boolean }} task
  * @param {{ placeOrder?: boolean, mode?: string }} [opts]
  */
 function resolveDesktopBandaiPayPath(task = {}, opts = {}) {
@@ -24,6 +24,20 @@ function resolveDesktopBandaiPayPath(task = {}, opts = {}) {
     raw === "test" ||
     raw === "fast_test" ||
     task.bandaiGeHttpPayTest === true;
+  const undiciIssuer =
+    raw === "fast_undici" ||
+    raw === "fast-http" ||
+    raw === "undici" ||
+    task.bandaiGeUndiciIssuer === true ||
+    task.bandaiGePreferPageIssuer === false;
+
+  const bandaiCheckoutMode = safe
+    ? "safe"
+    : testFork
+      ? "autocheckout_test"
+      : undiciIssuer
+        ? "fast_undici"
+        : "fast";
 
   if (mode !== "checkout" || !placeOrder) {
     return {
@@ -64,28 +78,21 @@ function resolveDesktopBandaiPayPath(task = {}, opts = {}) {
     };
   }
 
+  // Fast: risk-hydrate on; stale noPage off unless task explicitly opts in.
   const noPage = task.bandaiGeNoPage === true;
-  // Opt-in only — do not default page issuer (bible = undici after riskHydrate).
   const preferPage =
     !noPage &&
-    task.bandaiGePreferPageIssuer === true &&
-    task.bandaiGeUndiciIssuer !== true &&
-    raw !== "fast_undici" &&
-    raw !== "fast-http" &&
-    raw !== "undici";
-
+    !undiciIssuer &&
+    task.bandaiGePreferPageIssuer !== false;
   return {
-    bandaiCheckoutMode: preferPage
-      ? "fast"
-      : raw === "fast_undici" || raw === "fast-http" || raw === "undici"
-        ? "fast_undici"
-        : "fast",
+    bandaiCheckoutMode,
     bandaiGeHttpPay: task.bandaiGeHttpPay !== false,
     bandaiBrowserCheckout: false,
     bandaiGeRiskHydrate: noPage ? false : task.bandaiGeRiskHydrate !== false,
     bandaiGeNoPage: noPage,
+    // Explicit true/false for executor (undefined would also default page issuer).
     bandaiGePreferPageIssuer: preferPage,
-    bandaiGeUndiciIssuer: !preferPage,
+    bandaiGeUndiciIssuer: undiciIssuer || noPage,
     bandaiGeHttpPayTest: undefined,
   };
 }

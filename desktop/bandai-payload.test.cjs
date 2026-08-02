@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 
-test("Fast placeOrder enables HTTP GE + riskHydrate + undici issuer (bible)", () => {
+test("Fast placeOrder enables HTTP GE + riskHydrate + page issuer (product default)", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "fast" },
     { mode: "checkout", placeOrder: true },
@@ -13,17 +13,17 @@ test("Fast placeOrder enables HTTP GE + riskHydrate + undici issuer (bible)", ()
   assert.equal(r.bandaiBrowserCheckout, false);
   assert.equal(r.bandaiGeRiskHydrate, true);
   assert.equal(r.bandaiGeNoPage, false);
-  assert.equal(r.bandaiGePreferPageIssuer, false);
-  assert.equal(r.bandaiGeUndiciIssuer, true);
-});
-
-test("explicit page issuer opt-in", () => {
-  const r = resolveDesktopBandaiPayPath(
-    { bandaiCheckoutMode: "fast", bandaiGePreferPageIssuer: true },
-    { mode: "checkout", placeOrder: true },
-  );
   assert.equal(r.bandaiGePreferPageIssuer, true);
   assert.equal(r.bandaiGeUndiciIssuer, false);
+});
+
+test("explicit undici issuer opt-in", () => {
+  const r = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "fast", bandaiGeUndiciIssuer: true },
+    { mode: "checkout", placeOrder: true },
+  );
+  assert.equal(r.bandaiGePreferPageIssuer, false);
+  assert.equal(r.bandaiGeUndiciIssuer, true);
 });
 
 test("fast_undici A/B keeps undici issuer", () => {
@@ -50,7 +50,7 @@ test("Safe placeOrder uses Playwright GE, not HTTP issuer", () => {
   assert.equal(r.bandaiGeNoPage, undefined);
 });
 
-test("autocheckout_test keeps Fast shape + test fork flag", () => {
+test("autocheckout_test is opt-in research fork only", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "autocheckout_test" },
     { mode: "checkout", placeOrder: true },
