@@ -135,7 +135,9 @@ Naked undici / page-issuer hops omitted Chrome Client Hints; GE prepay lacked Se
 - `chromeClientHints()` on `request()` when omitted (`PAY_CHROME_CH=0` to opt out)
 - `chromePayFetchHeaders()` for all pay-host mutates incl. handleaction/save
 
-**Next score:** stock Fast placeOrder → Revolut 1 vs 2 for new `transactionId`.
+**Next score (~13:39 AEST):** `run_a71f2d4462d6` · tx **`172448160`** · stock Fast · `hasSecChUa=true` · `secChPlatform="Windows"` · `secFetchMode=navigate` · posts=1 · bank hit (`AutherizationFailed`).
+
+**Awaiting user:** Revolut **1 or 2** for tx **`172448160`**?
 
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
