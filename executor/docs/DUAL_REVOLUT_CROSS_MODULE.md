@@ -161,7 +161,9 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 
 Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback` on prepay **and** issuer.
 
-**Next score:** Bandai Fast `via=http-ge-issuer` + prepay `payTransport=tls-worker` + issuer `payTransport=tls-worker` + posts=1 → Revolut 1 vs 2.
+**PayHost tls wire (2026-08-02 ~17:40 AEST):** tx `172460612` / `run_27ef1bff8056` — handleaction×3 + save + HandleCreditCard all `payTransport=tls-worker`, posts=1, `possibleFraudDetected=false`, `createTransaction=true`. **Revolut 1 vs 2 = user score** (if still ×2, tls stack alone is not enough for Bandai GE).
+
+**Active A/B next:** `BANDAI_GE_CREATE_TRANSACTION=0` → `PaymentData.createTransaction=false` (both Bandai duals so far had `ct=true`).
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
