@@ -41,12 +41,14 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE (SHARED ONLY):
-- Workshop = `executor/http.js` / undici / TLS — the path Bandai Fast pay **and** Toymate BigPay share.
-- Product Fast = HTTP GE + **undici issuer** (not page-ge-issuer). Score with `node executor/scripts/score-stock-fast-angles.mjs`.
-- Page-issuer CH labs (13:17 / 13:39) are evidence only — off Fast product path.
-- Next change must be justifiable for Bandai Fast undici **and** Toymate BigPay.
+- Workshop = `executor/http.js` / TLS — the path Bandai Fast pay **and** Toymate BigPay share.
+- User clue: when Kmart worked it was **single-firing**; dual appears on modules built after Kmart. Kmart bank hop was Paydock Canvas3ds (Chromium TLS), not undici PAN→PSP. Post-Kmart modules charge the bank through shared `http.js` undici — that is the suspect surface (old Fly/shared executor layer, not store adapters).
+- Active A/B: issuer-stage POSTs → chrome_131 **tls-worker** (`PAY_ISSUER_TLS_WORKER`, default ON; `=0` to opt out). Cart/prepay stay undici. Score `payTransport=tls-worker` on issuer `http_mutate_response`.
+- Secondary opt-in: `PAY_ISSUER_FRESH_UNDICI=1` (+ usually `PAY_ISSUER_TLS_WORKER=0`) for fresh ProxyAgent only.
+- Product Fast = HTTP GE issuer (`via=http-ge-issuer`, not page-ge-issuer). Score with `node executor/scripts/score-stock-fast-angles.mjs`.
+- Page-issuer CH labs are evidence only — off Fast product path.
 
-Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** undici. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
+Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---
@@ -138,7 +140,23 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 - `chromeClientHints()` when omitted (`PAY_CHROME_CH=0` to opt out)
 - `chromePayFetchHeaders()` for pay-host mutates incl. handleaction/save
 
-**Next score:** stock Fast **undici** → Revolut 1 vs 2. No Playwright pay A/B.
+### Kmart clue (user 2026-08-02) — shared executor, not post-Kmart modules
+
+- When Kmart worked: charges were **single-firing**. Dual shows on modules built **after** Kmart.
+- Kmart cart used undici; **bank** hop was Paydock Canvas3ds (Playwright Chromium TLS) — not undici PAN→PSP.
+- Bandai Fast / PKC / Toymate BigPay charge the bank through **shared `executor/http.js` undici** — the post-Kmart shared path. Matches “old Fly / shared executor layer” suspicion.
+- Do **not** resurrect Kmart product work; use the clue to justify shared TLS A/Bs only.
+
+### Active A/B — issuer tls-worker (global `http.js`)
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker; cart/prepay stay undici |
+| `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
+
+Forensics: issuer `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback`.
+
+**Next score:** Fast `via=http-ge-issuer` + issuer `payTransport=tls-worker` → Revolut 1 vs 2.
 
 Do **not** change Bandai issuer body / form-nav / mute; do **not** expand Playwright on Fast.
 
@@ -230,7 +248,7 @@ Desktop Start
 
 - **PKC** dual confirmed; same GE family — good cross-check, bad “non-GE control.”
 - **Toymate** `run_1d56805758fc`: non-GE control that dualed; CapSolver + Noontide resi used for that lab; Draculaura was OOS; LEGO van PDP worked. **No further Toymate implementation.**
-- Kmart / Disney: benched; hooks exist; leave alone.
+- Kmart / Disney: benched; hooks exist; leave alone. Kmart clue (single-fire when bank was Chromium TLS) informs the issuer tls-worker A/B only.
 
 ---
 

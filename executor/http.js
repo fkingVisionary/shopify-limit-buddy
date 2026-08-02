@@ -236,6 +236,14 @@ class Dispatcher {
     return this._tlsSession;
   }
   async close() {
+    if (this._issuerRemoteTls) {
+      try {
+        await this._issuerRemoteTls.close?.();
+      } catch {
+        /* ignore */
+      }
+      this._issuerRemoteTls = null;
+    }
     if (this._tlsSession) {
       try {
         await this._tlsSession.close();
@@ -600,6 +608,7 @@ function auditPayWireResponse(url, method, opts, resMeta = {}) {
       locationLooksAcs: Boolean(loc && ACS_OR_REDIRECT_RE.test(loc)),
       undiciAttempts:
         resMeta.undiciAttempts != null ? Number(resMeta.undiciAttempts) : null,
+      payTransport: resMeta.payTransport || null,
       payHost: PAY_WIRE_HOST_RE.test(host),
       issuerLike:
         ISSUER_PATH_RE.test(pathName || "") ||
@@ -632,11 +641,54 @@ function finalizePayResponse(url, method, opts, res) {
       status: res?.status,
       location: readResponseLocation(res),
       undiciAttempts: res?.undiciAttempts,
+      payTransport: res?.payTransport || null,
     });
   } catch {
     /* ignore */
   }
   return res;
+}
+
+/**
+ * Dual-Revolut A/B: issuer/pay POSTs on chrome_131 tls-worker (Kmart-like bank TLS).
+ * Cart/prepay stay on the task undici dispatcher. Default ON; opt out PAY_ISSUER_TLS_WORKER=0.
+ */
+export function shouldUseIssuerTlsWorker(url, method) {
+  if (process.env.PAY_ISSUER_TLS_WORKER === "0") return false;
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host) return false;
+  return classifyPayWireStage(host, pathName) === "issuer";
+}
+
+async function ensureIssuerRemoteTls(dispatcher) {
+  if (!dispatcher || dispatcher.remoteTls) return dispatcher?.remoteTls ? dispatcher : null;
+  if (dispatcher._issuerRemoteTls?.remoteTls) return dispatcher._issuerRemoteTls;
+  if (dispatcher._issuerRemoteTlsFailed) return null;
+  try {
+    const remote = await makeRemoteTlsDispatcher(dispatcher.proxy || null);
+    if (!remote?.remoteTls) {
+      dispatcher._issuerRemoteTlsFailed = true;
+      payForensics("issuer_tls_worker_init_failed", {
+        error: "remoteTls_missing",
+        proxy: Boolean(dispatcher.proxy),
+      });
+      return null;
+    }
+    dispatcher._issuerRemoteTls = remote;
+    payForensics("issuer_tls_worker_ready", {
+      proxy: Boolean(dispatcher.proxy),
+      sticky: Boolean(dispatcher.sticky),
+    });
+    return remote;
+  } catch (e) {
+    dispatcher._issuerRemoteTlsFailed = true;
+    payForensics("issuer_tls_worker_init_failed", {
+      error: String(e?.message || e).slice(0, 160),
+      proxy: Boolean(dispatcher.proxy),
+    });
+    return null;
+  }
 }
 
 export async function request(url, opts, ctx) {
@@ -697,14 +749,31 @@ export async function request(url, opts, ctx) {
 
   // Crash-isolated chrome_131 (Hyper TLS-first). Prefer over in-process useTls
   // — native faults stay in the worker and cannot empty-502 Fastify.
-  if (dispatcher?.remoteTls) {
-    const res = await dispatcher.remoteTls.request(url, {
-      method,
-      headers,
-      body: opts?.body,
-    });
-    jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
-    return finalizePayResponse(url, method, opts, res);
+  // Dual-Revolut: issuer/pay POSTs prefer tls-worker even when the task dispatcher
+  // is undici (Kmart bank was Chromium TLS; post-Kmart modules charged via undici).
+  let issuerRemote = null;
+  if (!dispatcher?.remoteTls && shouldUseIssuerTlsWorker(url, method)) {
+    issuerRemote = await ensureIssuerRemoteTls(dispatcher);
+  }
+  const remoteTls = dispatcher?.remoteTls || issuerRemote?.remoteTls || null;
+  if (remoteTls) {
+    try {
+      const res = await remoteTls.request(url, {
+        method,
+        headers,
+        body: opts?.body,
+      });
+      jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
+      if (res && typeof res === "object") res.payTransport = "tls-worker";
+      return finalizePayResponse(url, method, opts, res);
+    } catch (e) {
+      // Issuer tls-worker flake → one undici fallback (still single attempt).
+      if (!issuerRemote) throw e;
+      payForensics("issuer_tls_worker_fallback_undici", {
+        error: String(e?.message || e).slice(0, 160),
+        host: parsePayUrl(url).host,
+      });
+    }
   }
 
   if (!dispatcher.useTls) {
@@ -721,6 +790,20 @@ export async function request(url, opts, ctx) {
     const attempts = safeRetry ? 3 : 1;
     let lastError;
     let undiciAttempts = 0;
+    // Opt-in: fresh ProxyAgent for issuer POST (PAY_ISSUER_FRESH_UNDICI=1).
+    // Default off so the tls-worker A/B is not confounded by agent recycle.
+    // Use with PAY_ISSUER_TLS_WORKER=0 to test pooled-undici vs fresh-undici alone.
+    const wantFreshUndici = process.env.PAY_ISSUER_FRESH_UNDICI === "1";
+    if (
+      wantFreshUndici &&
+      classifyPayWireStage(parsePayUrl(url).host, parsePayUrl(url).path) === "issuer"
+    ) {
+      try {
+        await dispatcher.resetUndici?.();
+      } catch {
+        /* ignore */
+      }
+    }
     const timeoutMs = Number(opts?.timeoutMs);
     const headersTimeout =
       Number(opts?.headersTimeout) > 0
@@ -756,6 +839,7 @@ export async function request(url, opts, ctx) {
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
         const wrapped = wrapFetchResponse(res, url);
         wrapped.undiciAttempts = undiciAttempts;
+        wrapped.payTransport = issuerRemote ? "undici-fallback" : "undici";
         return finalizePayResponse(url, method, opts, wrapped);
       } catch (e) {
         lastError = e;
@@ -819,7 +903,9 @@ export async function request(url, opts, ctx) {
 
   // Capture cookies from this response into the jar.
   jar.ingest(res.headers);
-  return finalizePayResponse(url, method, opts, wrapResponse(res, url));
+  const wrappedTls = wrapResponse(res, url);
+  if (wrappedTls && typeof wrappedTls === "object") wrappedTls.payTransport = "tls";
+  return finalizePayResponse(url, method, opts, wrappedTls);
 }
 
 export { UA, UA_WIN, UA_MAC };

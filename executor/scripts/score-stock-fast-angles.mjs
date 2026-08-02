@@ -77,6 +77,9 @@ const out = {
       httpMutateResponses: summary.httpMutateResponses,
       acsOrRedirectLocations: summary.acsOrRedirectLocations,
       recentPrepay: summary.recentPrepay,
+      issuerPayTransports: summary.issuerPayTransports || [],
+      askUser:
+        "Confirm issuer payTransport=tls-worker (default A/B). Then Revolut 1 or 2?",
     },
     C_stockFast: {
       stockFastGroups: summary.stockFastGroups,

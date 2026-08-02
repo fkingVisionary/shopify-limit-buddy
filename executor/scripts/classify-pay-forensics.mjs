@@ -211,7 +211,15 @@ const summary = {
     locationLooksAcs: r.locationLooksAcs,
     stage: r.stage,
     undiciAttempts: r.undiciAttempts,
+    payTransport: r.payTransport || null,
   })),
+  issuerPayTransports: [
+    ...new Set(
+      httpMutateResponses
+        .filter((r) => r.stage === "issuer" && r.payTransport)
+        .map((r) => r.payTransport),
+    ),
+  ],
 };
 
 console.log(JSON.stringify(summary, null, 2));
