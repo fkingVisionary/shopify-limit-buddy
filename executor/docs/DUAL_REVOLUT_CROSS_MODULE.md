@@ -128,8 +128,9 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - `via=form-nav-issuer`, `bodyBytes≈2571`, `machineIdBytes≈1436`, `posts=1`, bank decline
 - User screenshot: **12:02 ×2**, **11:48 ×2** (clean undici `172442728`), **11:44 ×2** — all Global-E Bandai AU$39 insufficient-balance pairs
 - **Ruled out:** undici-only TLS (real Chromium document form-nav still dualed with fat iovation)
-- **Next:** form-nav was muting *all* post-issuer GE mutates (204). Softened to block only extra `HandleCreditCard*` + 5s settle on `CCPaymentRedirect` so finalize/3DS method JS can run. Re-score Revolut 1 vs 2.
-- Not GE field roulette. Not Toymate product work.
+- **Next lab run:** form-nav mute softened (only extra `HandleCreditCard*` blocked) + 5s settle.
+- Run `run_bf3e1d5bbea7` / GE tx **`172443854`** (~12:09 AEST): `posts=1`, `postGeMut=6`, `extraIssBlocked=0`, fat iovation, **still `sameCart=False`**. **Awaiting Revolut 1 vs 2.**
+- Not GE field roulette. Not Toymate product work. If still 2 with postGeMut>0 → focus `IsTheSameCartToken=False` / headed Chrome / card packaging — not mute.
 
 ---
 
