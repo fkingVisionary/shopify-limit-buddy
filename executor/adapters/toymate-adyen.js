@@ -616,6 +616,8 @@ export async function placeOrderViaHttp({
         method: "POST",
         headers: payHeaders,
         body: payBodyStr,
+        // Shared dual-Revolut rule: never replay a pay POST on socket flake.
+        retry: false,
       },
       ctx,
     );

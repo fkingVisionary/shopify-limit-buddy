@@ -15,6 +15,7 @@
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
+import { payForensics } from "./pay-forensics.js";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -409,9 +410,43 @@ function wrapFetchResponse(res, requestedUrl) {
   };
 }
 
+/** Hosts that can touch a card issuer / PSP — always forensics-audited on mutate. */
+const PAY_WIRE_HOST_RE =
+  /global-e\.com|payments\.bigcommerce\.com|paydock\.com|adyen\.com|checkout\.com|stripe\.com|braintree|paypal\.com/i;
+
+function auditPayWire(url, method, opts) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
+  let host = null;
+  let path = null;
+  try {
+    const u = new URL(String(url || ""));
+    host = u.host;
+    path = u.pathname;
+  } catch {
+    return;
+  }
+  const forceAll = process.env.PAY_WIRE_AUDIT === "1";
+  if (!forceAll && !PAY_WIRE_HOST_RE.test(host)) return;
+  try {
+    payForensics("http_mutate", {
+      method,
+      host,
+      path: String(path || "").slice(0, 180),
+      bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+      payHost: PAY_WIRE_HOST_RE.test(host),
+      retryOpt:
+        opts?.retry === true ? true : opts?.retry === false ? false : null,
+      allowMutationRetry: opts?.allowMutationRetry === true,
+    });
+  } catch {
+    /* forensics must never break checkout */
+  }
+}
+
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  auditPayWire(url, method, opts);
   // Optional GE mutate wire log (Bandai double-auth forensics).
   if (process.env.BANDAI_GE_WIRE_TAP === "1") {
     try {
@@ -466,13 +501,15 @@ export async function request(url, opts, ctx) {
 
   if (!dispatcher.useTls) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
-    // only — NEVER retry POST/PUT/PATCH/DELETE. A RST after GE/PSP already
-    // accepted HandleCreditCardRequestV2 produced paired Revolut auths
-    // (posts=1 in app code, two bank lines) on 2026-07-22 labs.
-    const safeRetry =
-      opts?.retry === true ||
-      (opts?.retry !== false &&
-        (method === "GET" || method === "HEAD" || method === "OPTIONS"));
+    // only — NEVER retry POST/PUT/PATCH/DELETE (unless allowMutationRetry).
+    // A RST replay after GE/PSP already accepted the pay POST produced paired
+    // Revolut auths (app posts=1, two bank lines) on 2026-07-22 labs.
+    // `retry:true` alone must NOT re-arm mutation retries.
+    const isSafeMethod =
+      method === "GET" || method === "HEAD" || method === "OPTIONS";
+    const safeRetry = isSafeMethod
+      ? opts?.retry !== false
+      : opts?.allowMutationRetry === true;
     const attempts = safeRetry ? 3 : 1;
     let lastError;
     let undiciAttempts = 0;

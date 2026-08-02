@@ -41,6 +41,7 @@ const jobs = rows.filter((r) => r.event === "desktop_enqueue_job");
 const runs = rows.filter((r) => r.event === "run_start");
 const pspStarts = rows.filter((r) => r.event === "psp_post_start");
 const pspEnds = rows.filter((r) => r.event === "psp_post_end");
+const httpMutates = rows.filter((r) => r.event === "http_mutate");
 
 function groupKey(r) {
   return (
@@ -108,12 +109,15 @@ for (const [k, g] of byRun) {
   });
 }
 
+const payHostMutates = httpMutates.filter((r) => r.payHost);
 const summary = {
   file,
   enqueueBatches: enqueues.length,
   enqueueJobs: jobs.length,
   runStarts: runs.length,
   pspPostStarts: pspStarts.length,
+  httpMutates: httpMutates.length,
+  payHostMutates: payHostMutates.length,
   byClass: classes.reduce((acc, c) => {
     acc[c.class] = (acc[c.class] || 0) + 1;
     return acc;
@@ -128,11 +132,23 @@ const summary = {
     desktopTaskId: r.desktopTaskId,
     desktopRunId: r.desktopRunId,
   })),
+  recentPayMutates: payHostMutates.slice(-20).map((r) => ({
+    t: r.t,
+    method: r.method,
+    host: r.host,
+    path: r.path,
+    bodyBytes: r.bodyBytes,
+  })),
 };
 
 console.log(JSON.stringify(summary, null, 2));
 if (summary.byClass.one_post_two_bank_suspect) {
   console.log(
     "\nNOTE: one_post_two_bank_suspect = 1 client PSP POST. If Revolut shows 2, class is PSP/acquirer dual-rail (or missing uninstrumented second POST).",
+  );
+}
+if (payHostMutates.length > pspStarts.length) {
+  console.log(
+    `\nNOTE: pay-host http_mutate (${payHostMutates.length}) > psp_post_start (${pspStarts.length}) — possible uninstrumented second pay hop.`,
   );
 }

@@ -85,16 +85,27 @@ Orchestration labs: `quantity=1`, one `desktop_enqueue_*`, one `run_start`, one 
 
 ## 4. What is still open (shared bot stack)
 
-Something about **how the bot presents the single pay attempt** makes issuers/acquirers record **two** bank lines, while a real browser’s single attempt records **one**.
+Something about **how the bot presents the single pay attempt** makes issuers/acquirers record **two** bank lines, while a real browser’s single attempt records **one**. User timing: the two Revolut lines arrive **together / within seconds** → looks like one merchant request fanning out to two issuer messages, not a slow client retry.
 
-Candidate layers (priority for a new agent — evidence-driven, not cargo-cult):
+### Leading hypothesis (2026-08-02 evening)
 
-1. **`executor/http.js` / undici / TLS** — JA3/ALPN/HTTP version, default headers, redirect following, connection reuse. Not store body fields.
-2. **How the process is identified** — automation, proxy binding *as used in practice* (direct already dualed historically, so “proxy vs home” is weak unless tied to a new TLS/client theory).
-3. **Desktop → executor card/profile packaging** — one shared serialization used by every store (duplicate payment tokens, odd expiry formatting, etc.) — only with proof.
-4. **Missing instrumentation** — second mutation we do not log. Low odds after GE + BigPay hooks both show `posts=1`, but verify on any new lab.
+**Naked CNP / incomplete SCA ceremony.** Bot never shows an in-app 3DS challenge; pay goes straight to decline/auth. Manual browser often also frictionless, but still completes the browser 3DS2 data exchange. Incomplete SCA data can make some issuer rails emit two near-simultaneous notifications. Fits cross-PSP + simultaneous duals + `posts=1`.
+
+### Other candidates
+
+1. **`executor/http.js` / undici / TLS** — fingerprint, connection reuse. Mutation auto-retry is now hard-blocked (`allowMutationRetry` only); historical RST-replay duals are documented.
+2. **Uninstrumented second pay hop** — `http_mutate` forensics now logs every POST/PUT/PATCH/DELETE to known pay hosts. Classifier warns if `payHostMutates > psp_post_start`.
+3. **Desktop → executor card packaging** — only with proof.
+4. **Proxy** — weak; direct already dualed historically.
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
+
+### Shipped shared instrumentation / guards (this branch)
+
+- `executor/http.js`: mutations never retry unless `allowMutationRetry:true` (ignores bare `retry:true`).
+- `executor/http.js`: `http_mutate` pay-host audit → same JSONL as `psp_post_*`.
+- Classifier reports `payHostMutates` vs `pspPostStarts`.
+- Do **not** treat Revolut×2 as “expected GE dual-rail” in Bandai bible anymore.
 
 ---
 
