@@ -51,8 +51,8 @@ Keep `PAY_ISSUER_TLS_WORKER` ON. Do **not** revert to undici issuer. Score Fast 
 
 | Priority | Lever | Status | Why |
 |---|---|---|---|
-| **NOW** | `PAY_ISSUER_GET_FETCH` (default ON) — Sec-Fetch `navigate`/`iframe` on CreditCardForm GET | **shipping** | CCForm rode cold tls but GET had no Sec-Fetch (only POST/PUT injected) |
-| **NOW** | Bandai `DEFAULT_UA` → shared platform `http.js` UA | **shipping** | Mac UA hardcoded on win32 desktop labs |
+| **NOW** | `PAY_ISSUER_GET_FETCH` (default ON) — Sec-Fetch `navigate`/`iframe` on CreditCardForm GET | **shipped; SoftBlock-blocked** | Code+tests in `ff0ca51`. E2e `get-fetch` SoftBlocked login (0×200 through #9). Re-bank when sessions clear. |
+| **NOW** | Bandai `DEFAULT_UA` → shared platform `http.js` UA | **shipped** (same tip) | Mac UA hardcoded on win32 desktop labs |
 | Next | `PAY_PAYHOST_TLS_WORKER=0` (Toymate-shaped: undici ha/save, chrome_131 only CCForm+HandleCredit) | untested combo with cold+ccform+get-fetch | issuer-only ×2 predates cold/ccform |
 | Next | Checkout/v2 GET on `_prepayRemoteTls` (narrow; not GE-all) | not built | GE document GET still undici |
 | Later | `PAY_ISSUER_FORM_AS_CORS=0` + current stack | untested combo | cors ×2 was before CCForm-tls |
