@@ -2168,6 +2168,26 @@ export async function runBandaiGeHttpPay(opts = {}) {
   let ccUrl = `${BANDAI_GE_SECURE}/payments/CreditCardForm/${guid}/${gatewayId}`;
   let cc = { ok: false, status: 0, ms: 0, text: "" };
 
+  // Pull JWT from save body when present (skip-CCForm path needs it without
+  // touching secure-bandai …/payments/CreditCardForm).
+  if (!urlStructureToken && saveRes?.text) {
+    urlStructureToken =
+      extractUrlStructureToken(saveRes.text) ||
+      (saveJson &&
+        (saveJson.UrlStructureTokenEncoded ||
+          saveJson.urlStructureToken ||
+          saveJson.UrlStructureToken)) ||
+      null;
+  }
+
+  // Toymate-outward A/B: BigPay has zero pre-issuer GET on the pay host.
+  // Default SKIP undici CreditCardForm GET on secure-bandai (JWT/machineId from
+  // Checkout/v2 + iovation + save). Opt out: BANDAI_GE_SKIP_CC_FORM=0.
+  const skipCcForm =
+    opts.skipCreditCardForm === true ||
+    (opts.skipCreditCardForm !== false &&
+      process.env.BANDAI_GE_SKIP_CC_FORM !== "0");
+
   // Default: undici CreditCardForm only. Live iframe + radio click can race GEM
   // pay JS (and costs ~10s). Opt-in scrapeCardFormViaPage=true for iframe scrape.
   // Do not pull Playwright cookies into undici here (keeps cart-token session pure).
@@ -2175,6 +2195,53 @@ export async function runBandaiGeHttpPay(opts = {}) {
     await neutralizeGePaymentFrames(issuerPage).catch(() => 0);
   }
 
+  if (skipCcForm) {
+    // JWT often only appears after save on CreditCardForm. Prefer a second
+    // Checkout/v2 GET on webservices (not secure-bandai pay host) over CCForm.
+    let jwtRefreshVia = "none";
+    if (!urlStructureToken) {
+      const tV2b = Date.now();
+      const v2b = await httpText(v2Url, {
+        ctx,
+        userAgent: opts.userAgent,
+        accept: "text/html,application/xhtml+xml,*/*",
+        headers: {
+          referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+        },
+      }).catch(() => null);
+      const refreshed = extractUrlStructureToken(v2b?.text || "");
+      if (refreshed) {
+        urlStructureToken = refreshed;
+        jwtRefreshVia = "checkout_v2_refresh";
+      }
+      push("ge_checkout_v2_jwt_refresh", {
+        ok: Boolean(refreshed),
+        status: v2b?.status ?? 0,
+        ms: Date.now() - tV2b,
+        note: refreshed
+          ? "JWT from post-save Checkout/v2 (no CreditCardForm)"
+          : "no JWT on Checkout/v2 refresh — issuer may block",
+      });
+    } else {
+      jwtRefreshVia = "preexisting";
+    }
+    cc = {
+      ok: Boolean(urlStructureToken && machineId),
+      status: null,
+      ms: 0,
+      text: "",
+      domJwt: urlStructureToken || null,
+      domMachineId: machineId || null,
+      viaHttp: false,
+      skipped: true,
+    };
+    push("ge_credit_card_form_skip", {
+      ok: cc.ok,
+      status: null,
+      ms: 0,
+      note: `skip CreditCardForm GET jwt=${Boolean(urlStructureToken)} mid=${Boolean(machineId)} jwtVia=${jwtRefreshVia} (no secure-bandai pre-issuer GET)`,
+    });
+  } else {
   const tCc = Date.now();
   const httpCc = await httpText(ccUrl, {
     ctx,
@@ -2262,6 +2329,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       });
     }
   }
+  } // end !skipCcForm
 
   paymentMethodId = String(
     opts.paymentMethodId || cc.domPm || form.selectedPaymentMethodId || paymentMethodId || "1",
@@ -2313,10 +2381,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
     });
   }
   push("ge_credit_card_form", {
-    ok: cc.ok,
+    ok: Boolean(urlStructureToken && machineId),
     status: cc.status,
     ms: cc.ms,
-    note: `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
+    note: cc.skipped
+      ? `CreditCardForm SKIPPED; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${machineId ? "iovation" : "none"} via=skip pm=${paymentMethodId} gw=${gatewayId}`
+      : `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
   try {
     const html = String(cc.text || "");

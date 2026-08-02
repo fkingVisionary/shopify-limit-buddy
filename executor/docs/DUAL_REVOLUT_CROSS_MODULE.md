@@ -24,8 +24,8 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 **Workshop (user 2026-08-03):** keep the Toymate fix (issuer chrome_131 tls-worker) on Bandai and work **outward** from remaining hop diffs — not GE field roulette, not July folklore.
 1. Keep `PAY_ISSUER_TLS_WORKER` + `PAY_PAYHOST_TLS_WORKER` ON (already on Bandai; still ×2 alone).
 2. `PAY_ISSUER_FORM_AS_CORS` — tx **`172548067`** @07:11 · posts=1 · tls-worker · **Revolut ×2** (user).
-3. `PAY_ISSUER_COLD_TLS` — wire OK: prepay=`_prepayRemoteTls` + issuer=`_issuerRemoteTls` · tx **`172549600`** ~07:24 AEST · posts=1 · tls-worker 302 · card `1964`. **Revolut TBD (user).**
-4. If still ×2: skip/relocate CreditCardForm GET on pay host.
+3. `PAY_ISSUER_COLD_TLS` — tx **`172549600`** @07:24 · posts=1 · cold prepay+issuer workers · **Revolut ×2** (user).
+4. **In flight:** `BANDAI_GE_SKIP_CC_FORM` default ON — no undici GET `secure-bandai…/CreditCardForm` before issuer (Toymate has zero pay-host pre-GET).
 
 ---
 
@@ -272,6 +272,7 @@ Notes:
 | Bandai GE-all-tls + `ct=false` | ×2 (`172528639`) — liveHtml riskHydrate still on |
 | Bandai throwaway iovation + tls-worker | ×2 (`172538665` @05:49; EOF dual @05:39) |
 | Bandai Sec-Fetch cors + tls-worker | ×2 (`172548067` @07:11) |
+| Bandai cold issuer tls (split workers) | ×2 (`172549600` @07:24) |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
