@@ -443,6 +443,34 @@ export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
     ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
   if (!issuerLike) return {};
 
+  // JSON/API pay hops are XHR/fetch in a real browser (cors/empty) — never
+  // document-navigate. Only form-nav issuer paths get navigate defaults.
+  const ct = String(existing["content-type"] || "");
+  const isJsonApi =
+    /application\/json/i.test(ct) || /payments\.bigcommerce\.com/i.test(host);
+  if (isJsonApi) {
+    let site = "cross-site";
+    const origin = existing.origin || "";
+    const hostName = host.replace(/:\d+$/, "");
+    if (origin) {
+      try {
+        const o = new URL(origin);
+        if (o.host === host || o.hostname === hostName) site = "same-origin";
+        else {
+          const base = (h) => String(h || "").split(".").slice(-2).join(".");
+          if (base(o.hostname) && base(o.hostname) === base(hostName)) site = "same-site";
+        }
+      } catch {
+        /* keep cross-site */
+      }
+    }
+    return {
+      "sec-fetch-site": site,
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+    };
+  }
+
   let site = "cross-site";
   const origin = existing.origin || "";
   const hostName = host.replace(/:\d+$/, "");

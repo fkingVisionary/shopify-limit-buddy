@@ -38,10 +38,10 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE:
-- Fat form-nav + iovation STILL Revolut×2 (tx 172443438). Undici TLS is not the Bandai differentiator.
-- Next score: form-nav with post-issuer GE mutates allowed (only extra HandleCreditCard blocked) + redirect settle. Look for postIssuerGeMutates > 0 in forensics / issuer note.
-- If still 2: headed/`channel:chrome` Playwright, then card-packaging / createTransaction dual-rail — not GE field roulette, not tls-worker-as-step-1.
-- Re-read forensics; confirm posts=1 before asking the user about Revolut.
+- Settle form-nav also Revolut×2 (tx 172443854, postGeMut=6). Mute/TLS/packaging are not the dual.
+- **Do not** chase `IsTheSameCartToken` — GE-only JWT noise; Toymate duals without it.
+- Next: headed `channel:chrome` F5 bridge + form-nav (`BANDAI_GE_TEST_HEADED_CHROME=1` / test-fork default). Score Revolut 1 vs 2 with posts=1.
+- If still 2: dig shared bot signals that both undici BigPay and Chrome GE share (automation / SCA data completeness) — still NOT Bandai HandleCreditCard field A/B.
 - Toymate evidence stays research-only (run_1d56805758fc).
 
 Lab Bandai: task_c13e31bb45ce, prof_4c10061c8213, SKU N2847904001, mode autocheckout_test → bandai-ge-http-test.js. Card last4 often 3083. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
@@ -76,11 +76,15 @@ Orchestration labs: `quantity=1`, one `desktop_enqueue_*`, one `run_start`, one 
 |---|---|
 | Bandai adapter / hydrate / `pm` / `machineId` / issuer body shape | Failed when bank hit; PKC duals without Bandai code; browser-like body still dualed |
 | Global-E-only dual-rail as the whole story | Toymate BigPay also duals with `posts=1` |
+| **`IsTheSameCartToken` / GE JWT cart flags** | GE response field only; Toymate has no such field and still duals. User correction 2026-08-02. |
+| Desktop card packaging (duplicate PAN/CVV/token) | Audited clean: one card object on `/run`; latch cannot create posts=1×2 |
+| Fat Chromium form-nav + post-issuer settle | tx `172443438` / `172443854` still Revolut×2 with `posts=1` |
 | Two `/run`s or quantity fan-out | Forensics: one run, one post |
 | Soft-retry / RESPONSE_LOST double placeOrder | Fixed by `desktop/payment-latch.cjs`; different shape (`posts≥2` or re-entry) |
 | Toymate CSE second BigPay after decline | Fixed (CSE skipped on 422); Toymate dual still happened with one BigPay POST |
 | “It’s the Revolut card” | Manual same card = 1; other cards on bot = 2 |
 | “Just try direct / no proxy” as a fresh idea | User: already tested, still 2 |
+| Undici-TLS-only | Real Chromium document form-nav still dualed |
 
 ---
 
@@ -129,8 +133,11 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - User screenshot: **12:02 ×2**, **11:48 ×2** (clean undici `172442728`), **11:44 ×2** — all Global-E Bandai AU$39 insufficient-balance pairs
 - **Ruled out:** undici-only TLS (real Chromium document form-nav still dualed with fat iovation)
 - **Next lab run:** form-nav mute softened (only extra `HandleCreditCard*` blocked) + 5s settle.
-- Run `run_bf3e1d5bbea7` / GE tx **`172443854`** (~12:09 AEST): `posts=1`, `postGeMut=6`, `extraIssBlocked=0`, fat iovation, **still `sameCart=False`**. **Awaiting Revolut 1 vs 2.**
-- Not GE field roulette. Not Toymate product work. If still 2 with postGeMut>0 → focus `IsTheSameCartToken=False` / headed Chrome / card packaging — not mute.
+- Run `run_bf3e1d5bbea7` / GE tx **`172443854`** (~12:09 AEST): `posts=1`, `postGeMut=6`, `extraIssBlocked=0`, fat iovation — **Revolut×2 confirmed**.
+- Post-issuer mute soften **failed** (ceremony ran; still dual).
+- **`IsTheSameCartToken` is a Global-E JWT field** (Bandai/PKC only). It cannot explain Toymate BigPay duals. **Do not chase it as the fix** — that is GE/Bandai-path again.
+- Desktop→`/run` card packaging audited: **clean** (one `{number,cvv,exp,holder}`; no token+PAN; latch cannot create posts=1×2).
+- **Next shared score:** headed Playwright `channel:"chrome"` F5 bridge for Autocheckout test form-nav (real Chrome, not HeadlessChromium). If still 2 → shared fingerprint/SCA data across undici+Chrome, not GE fields.
 
 ---
 

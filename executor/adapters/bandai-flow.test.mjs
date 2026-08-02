@@ -458,9 +458,10 @@ const already = chromeIssuerNavigateHeaders(
 assert.deepEqual(already, {});
 const bigpay = chromeIssuerNavigateHeaders(
   "https://payments.bigcommerce.com/stores/x/payments",
-  { origin: "https://www.toymate.com.au" },
+  { origin: "https://www.toymate.com.au", "content-type": "application/json" },
 );
-assert.equal(bigpay["sec-fetch-mode"], "navigate");
+assert.equal(bigpay["sec-fetch-mode"], "cors");
+assert.equal(bigpay["sec-fetch-dest"], "empty");
 assert.equal(bigpay["sec-fetch-site"], "cross-site");
 
 console.log("bandai-flow.test.mjs ok");

@@ -543,10 +543,17 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
 
   async function seedColdF5Bridge(proxyLine, { noteSuffix = "" } = {}) {
     const s0 = Date.now();
+    // Autocheckout test: real headed Chrome for form-nav score (HeadlessChromium
+    // already Revolut×2'd with fat iovation). Prod Fast stays headless Chromium.
+    const headedChrome =
+      opts.useGeHttpTestFork === true ||
+      process.env.BANDAI_GE_TEST_HEADED_CHROME === "1" ||
+      task.bandaiGeTestHeadedChrome === true;
     bridge = await createBandaiF5Bridge({
       proxy: proxyLine || null,
       area: session.area,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
+      ...(headedChrome ? { channel: "chrome", headless: false } : {}),
     });
     await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
     const csrf = await bridge.csrfToken();
@@ -559,8 +566,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       status: null,
       ms: Date.now() - s0,
       note: csrf
-        ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${noteSuffix}`
-        : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${noteSuffix}`,
+        ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${headedChrome ? " chrome:headed" : ""}${noteSuffix}`
+        : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${headedChrome ? " chrome:headed" : ""}${noteSuffix}`,
     });
     ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
     return Boolean(csrf) || Object.keys(cookies || {}).length > 0;
