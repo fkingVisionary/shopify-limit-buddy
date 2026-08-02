@@ -81,6 +81,19 @@ export function parseJsonp(text) {
   }
 }
 
+/**
+ * Synthetic MerchantCartToken for throwaway iovation mint only.
+ * Appending `_iov_` is rejected by GE (`Success:false`); keep
+ * `{32hex}_Checkout_{ts}` shape from the real checkout MCT.
+ */
+export function synthesizeIovationMerchantCartToken(merchantCartToken) {
+  const s = String(merchantCartToken || "");
+  const m = s.match(/^([0-9a-f]{32})_Checkout_/i);
+  if (m) return `${m[1]}_Checkout_${Date.now()}`;
+  const hex = (s.replace(/[^0-9a-f]/gi, "") + "0".repeat(32)).slice(0, 32);
+  return `${hex}_Checkout_${Date.now()}`;
+}
+
 /** Build GetCartToken query (GEM SerializeQueryParameter — omit null/empty). */
 export function buildGetCartTokenParams(opts = {}) {
   const additional =
@@ -1674,7 +1687,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
   if (willMint) {
     let iovLast = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}_${attempt}`;
+      // Fresh Checkout_ts each attempt — never append `_iov_` (GE Success=false).
+      const iovMct = synthesizeIovationMerchantCartToken(merchantCartToken);
       try {
         iovLast = await getBandaiGeCartToken({
           ctx,
@@ -1700,7 +1714,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       }
       if (iovLast?.ok && iovLast.cartToken) {
         throwawayGuid = iovLast.cartToken;
-        throwawayTokenNote = `ok attempt=${attempt} guid=${String(throwawayGuid).slice(0, 8)}…`;
+        throwawayTokenNote = `ok attempt=${attempt} guid=${String(throwawayGuid).slice(0, 8)}… mctTs=${iovMct.slice(-10)}`;
         break;
       }
       const soft =
@@ -1709,8 +1723,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
         /EOF|failed to do request|TLS|timed?\s*out/i.test(
           String(iovLast?.bodySnippet || iovLast?.message || ""),
         );
-      throwawayTokenNote = `fail attempt=${attempt} status=${iovLast?.status} ${String(iovLast?.bodySnippet || iovLast?.message || "").slice(0, 120)}`;
-      if (!soft || attempt >= 3) break;
+      throwawayTokenNote = `fail attempt=${attempt} status=${iovLast?.status} soft=${soft} ${String(iovLast?.bodySnippet || iovLast?.message || "").slice(0, 100)}`;
+      // Retry transport flake AND GE soft rejects (new MCT each loop).
+      if (attempt >= 3) break;
       await new Promise((r) => setTimeout(r, 400 * attempt));
     }
     push("ge_iovation_throwaway_token", {
@@ -2710,6 +2725,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
 export default {
   extractGeCheckoutGuid,
   parseJsonp,
+  synthesizeIovationMerchantCartToken,
   buildGetCartTokenParams,
   buildGetCartTokenUrl,
   getBandaiGeCartToken,
