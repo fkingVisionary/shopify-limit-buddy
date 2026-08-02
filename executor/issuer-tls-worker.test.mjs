@@ -31,22 +31,18 @@ test("issuer tls-worker: GE HandleCreditCard POST is on by default", () => {
   }
 });
 
-test("payHost tls-worker: GE prepay mutates on by default (Bandai dual A/B)", () => {
+test("payHost tls-worker: non-GE prepay uses PAY_PAYHOST_TLS_WORKER", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
   const prevPay = process.env.PAY_PAYHOST_TLS_WORKER;
+  const prevGe = process.env.PAY_GE_TLS_WORKER;
   delete process.env.PAY_ISSUER_TLS_WORKER;
   delete process.env.PAY_PAYHOST_TLS_WORKER;
+  process.env.PAY_GE_TLS_WORKER = "0";
   try {
+    // With GE-all off, GE prepay POST still follows PAY_PAYHOST_TLS_WORKER.
     assert.equal(
       shouldUseIssuerTlsWorker(
         "https://webservices.global-e.com/checkoutv2/handleaction/1/guid/8urc",
-        "POST",
-      ),
-      true,
-    );
-    assert.equal(
-      shouldUseIssuerTlsWorker(
-        "https://webservices.global-e.com/checkoutv2/save",
         "POST",
       ),
       true,
@@ -63,14 +59,18 @@ test("payHost tls-worker: GE prepay mutates on by default (Bandai dual A/B)", ()
     else process.env.PAY_ISSUER_TLS_WORKER = prev;
     if (prevPay === undefined) delete process.env.PAY_PAYHOST_TLS_WORKER;
     else process.env.PAY_PAYHOST_TLS_WORKER = prevPay;
+    if (prevGe === undefined) delete process.env.PAY_GE_TLS_WORKER;
+    else process.env.PAY_GE_TLS_WORKER = prevGe;
   }
 });
 
-test("payHost tls-worker: PAY_PAYHOST_TLS_WORKER=0 keeps prepay on undici", () => {
+test("payHost tls-worker: PAY_PAYHOST_TLS_WORKER=0 keeps GE prepay undici when GE-all off", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
   const prevPay = process.env.PAY_PAYHOST_TLS_WORKER;
+  const prevGe = process.env.PAY_GE_TLS_WORKER;
   delete process.env.PAY_ISSUER_TLS_WORKER;
   process.env.PAY_PAYHOST_TLS_WORKER = "0";
+  process.env.PAY_GE_TLS_WORKER = "0";
   try {
     assert.equal(
       shouldUseIssuerTlsWorker(
@@ -91,6 +91,8 @@ test("payHost tls-worker: PAY_PAYHOST_TLS_WORKER=0 keeps prepay on undici", () =
     else process.env.PAY_ISSUER_TLS_WORKER = prev;
     if (prevPay === undefined) delete process.env.PAY_PAYHOST_TLS_WORKER;
     else process.env.PAY_PAYHOST_TLS_WORKER = prevPay;
+    if (prevGe === undefined) delete process.env.PAY_GE_TLS_WORKER;
+    else process.env.PAY_GE_TLS_WORKER = prevGe;
   }
 });
 

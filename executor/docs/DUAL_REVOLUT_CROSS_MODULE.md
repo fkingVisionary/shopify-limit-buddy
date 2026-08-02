@@ -161,11 +161,11 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 
 Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback` on prepay **and** issuer.
 
-**PayHost tls wire (2026-08-02 ~17:40 AEST):** tx `172460612` / `run_27ef1bff8056` — handleaction×3 + save + HandleCreditCard all `payTransport=tls-worker`, posts=1, `possibleFraudDetected=false`, `createTransaction=true`. **Revolut 1 vs 2 = user score** (if still ×2, tls stack alone is not enough for Bandai GE).
+**PayHost tls wire (2026-08-02 ~17:40 AEST):** tx `172460612` / `run_27ef1bff8056` — handleaction×3 + save + HandleCreditCard all `payTransport=tls-worker`, posts=1, `possibleFraudDetected=false`, `createTransaction=true`. User later confirmed Bandai still duals on this stack.
 
-**createTransaction=false FAIL:** tx `172465275` fired Revolut ~18:44 — still **×2** (user). posts=1, ct=false, prepay+issuer tls-worker.
+**createTransaction=false FAIL (locked):** tx `172465275` Revolut ~18:44 — still **×2** (user reconfirmed). posts=1, ct=false, prepay+issuer tls-worker, fraud=false. **ct knob is dead for Bandai.**
 
-**Active A/B:** `PAY_GE_TLS_WORKER` default ON — **all** `global-e.com` hops incl GET GetCartToken / Checkout/v2 / CreditCardForm on chrome_131 (removes undici GET sandwich between tls-worker mutates). Opt out `=0`.
+**Active A/B:** `PAY_GE_TLS_WORKER` default ON — **all** `global-e.com` hops incl GET GetCartToken / Checkout/v2 / CreditCardForm on chrome_131 (removes undici GET sandwich between tls-worker mutates). Opt out `=0`. ha1/2 soft EOF retries + form shipping fallback so GE-all-tls can reach issuer for bank score.
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -199,7 +199,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Prepay | handleaction 1/2/3 + save → **tls-worker** |
 | Issuer | HandleCreditCard → **tls-worker** · posts=1 · `createTransaction=true` |
 | PSP | `AuthorizationFailed` · `possibleFraudDetected=false` |
-| **Revolut** | **user score** — if ×2, run `BANDAI_GE_CREATE_TRANSACTION=0` |
+| **Revolut** | **×2** (same stack as later ct=false; payHost tls alone insufficient) |
 
 ### Lab 2026-08-02 ~18:44 AEST — Bandai createTransaction=false FAIL
 
@@ -208,9 +208,13 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | GE tx | `172465275` |
 | Prepay+issuer | all **tls-worker** · posts=1 · `ct=false` |
 | PSP | `AuthorizationFailed` · `possibleFraudDetected=false` |
-| **Revolut** | **×2** (user; notify ~18:44) |
+| **Revolut** | **×2** (user; notify ~18:44, reconfirmed) |
 
-**Next:** `PAY_GE_TLS_WORKER` — GE GETs (CreditCardForm / GetCartToken / v2) on same tls-worker. Keep ct=false for this score. Do **not** expand Playwright on Fast.
+**Ruled out:** `BANDAI_GE_CREATE_TRANSACTION=0` does not collapse Bandai dual.
+
+**Next:** bank-score `PAY_GE_TLS_WORKER` (GE GETs on same chrome_131). Keep ct=false. Do **not** expand Playwright on Fast.
+
+**GE-all-tls lab note:** `run_39d7960e2b04` reached GetCartToken+Checkout/v2 on tls-worker then ha1/ha2 EOF + iovation 20s timeout → `http_ge_save_fail` (no ship id). Mitigations: ha transport retries, AU ship fallback `40073437`, iovation timeout 40s under GE-all-tls.
 
 ### Ruled out / parked
 
@@ -219,6 +223,9 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | GE field / form-nav / settle | Revolut×2 |
 | Page-issuer baseline / CH A/B | ×2 — and off Fast product path |
 | Playwright stealth as dual fix | parked — not shared; Fast no-PW pay |
+| Bandai issuer-only tls-worker | ×2 (`172456937`) |
+| Bandai prepay+issuer tls-worker | ×2 (`172460612` stack) |
+| `createTransaction=false` | ×2 (`172465275` @18:44) |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 

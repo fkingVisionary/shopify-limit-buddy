@@ -1800,10 +1800,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
     let mint;
     try {
+      // GE-all-tls holds chrome_131 sticky while Chromium also loads Checkout/v2 —
+      // labs timed out at 20s; give snare more runway without changing Fast path.
+      const ioTimeout =
+        opts.iovationTimeoutMs ||
+        (process.env.PAY_GE_TLS_WORKER !== "0" ? 40_000 : undefined);
       mint = await mintIovationBlackbox({
         page: opts.page,
         checkoutV2Url: v2Url,
-        timeoutMs: opts.iovationTimeoutMs,
+        timeoutMs: ioTimeout,
         settleMs: opts.iovationSettleMs,
         jar: ctx?.jar || null,
       });
@@ -1896,8 +1901,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
   }
 
-  // Hydrate shipping / tax / totals over undici only (no Playwright on cart).
+  // Hydrate shipping / tax / totals (HTTP only — no Playwright on cart).
   // Empty `{}` → 500 HandleAction_WithMerchantIdAndCartTokenInUrl (labs).
+  // tls-worker occasionally EOF/status=0 on ha1 — retry so SaveForm gets a ship method.
   for (const actionId of [1, 2, 3]) {
     const bodies = buildHandleActionBodies(form, {
       cartToken: guid,
@@ -1905,36 +1911,63 @@ export async function runBandaiGeHttpPay(opts = {}) {
       paymentMethodId: form.selectedPaymentMethodId || "1",
     });
     const haUrl = `${BANDAI_GE_WEBSERVICES}/checkoutv2/handleaction/${actionId}/${guid}/${encodedMerchant}`;
-    const ha = await httpText(haUrl, {
-      ctx,
-      method: "POST",
-      userAgent: opts.userAgent,
-      accept: "application/json, text/plain, */*",
-      headers: {
-        origin: BANDAI_GE_WEBSERVICES,
-        referer: v2Url,
-        "content-type": "application/json",
-        "x-requested-with": "XMLHttpRequest",
-        "X-merchantId": String(mid),
-      },
-      body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
-    });
+    const maxHaAttempts = actionId === 1 ? 3 : 2;
+    let ha = { ok: false, status: 0, ms: 0, text: "" };
     let haJson = null;
-    try {
-      haJson = JSON.parse(String(ha.text || ""));
-    } catch {
+    for (let attempt = 1; attempt <= maxHaAttempts; attempt++) {
+      const tHa = Date.now();
+      ha = await httpText(haUrl, {
+        ctx,
+        method: "POST",
+        userAgent: opts.userAgent,
+        accept: "application/json, text/plain, */*",
+        headers: {
+          origin: BANDAI_GE_WEBSERVICES,
+          referer: v2Url,
+          "content-type": "application/json",
+          "x-requested-with": "XMLHttpRequest",
+          "X-merchantId": String(mid),
+        },
+        body: JSON.stringify(opts.handleActionBodies?.[actionId] || bodies[actionId]),
+      });
+      ha.ms = (ha.ms || 0) + (Date.now() - tHa);
       haJson = null;
+      try {
+        haJson = JSON.parse(String(ha.text || ""));
+      } catch {
+        haJson = null;
+      }
+      // Transport flake only — never re-POST a real GE 4xx/5xx body.
+      const softFail =
+        !ha.status ||
+        ha.status === 0 ||
+        /EOF|failed to do request|ECONNRESET|socket hang up|TLS|timed?\s*out/i.test(
+          String(ha.text || ha.note || ha.error || ""),
+        );
+      if (!softFail || attempt >= maxHaAttempts) break;
+      await new Promise((r) => setTimeout(r, 400 * attempt));
     }
     if (actionId === 1) {
       const picked = pickShippingMethodId(haJson);
       if (picked) shippingMethodId = picked;
-      hydrateShippingOk = Boolean(
+      if (!shippingMethodId && form.selectedShippingOptionId) {
+        shippingMethodId = String(form.selectedShippingOptionId);
+      }
+      // tls-worker ha1 EOF left SelectedShippingOptionID empty → save refused.
+      // Bandai AU Standard Courier is stable across 2026-07/08 labs (40073437).
+      if (!shippingMethodId && form.hasAddress && Number(form.countryId) === 14) {
+        shippingMethodId = String(
+          process.env.BANDAI_GE_SHIPPING_METHOD_ID || "40073437",
+        );
+      }
+      const haShipSignal =
         ha.ok &&
-          (haJson?.success === true ||
-            haJson?.Success === true ||
-            haJson?.exists === true ||
-            (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0)),
-      );
+        (haJson?.success === true ||
+          haJson?.Success === true ||
+          haJson?.exists === true ||
+          (Array.isArray(haJson?.shippingOptions) && haJson.shippingOptions.length > 0));
+      // Allow save to proceed with form/lab ship id after transport flake.
+      hydrateShippingOk = Boolean(haShipSignal || shippingMethodId);
     }
     if (!urlStructureToken) urlStructureToken = extractUrlStructureToken(ha.text);
     push(`ge_handleaction_${actionId}`, {
