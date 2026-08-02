@@ -121,7 +121,7 @@ test("issuer tls-worker: PAY_ISSUER_TLS_WORKER=0 opts out (non-GE)", () => {
   }
 });
 
-test("GE tls-worker: GET CreditCardForm / GetCartToken on by default", () => {
+test("GE tls-worker: GET CreditCardForm / GetCartToken off by default", () => {
   const prevGe = process.env.PAY_GE_TLS_WORKER;
   delete process.env.PAY_GE_TLS_WORKER;
   try {
@@ -130,14 +130,14 @@ test("GE tls-worker: GET CreditCardForm / GetCartToken on by default", () => {
         "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
         "GET",
       ),
-      true,
+      false,
     );
     assert.equal(
       shouldUseIssuerTlsWorker(
         "https://gepi.global-e.com/Checkout/GetCartToken?x=1",
         "GET",
       ),
-      true,
+      false,
     );
   } finally {
     if (prevGe === undefined) delete process.env.PAY_GE_TLS_WORKER;
@@ -145,10 +145,10 @@ test("GE tls-worker: GET CreditCardForm / GetCartToken on by default", () => {
   }
 });
 
-test("GE tls-worker: PAY_GE_TLS_WORKER=0 falls back to mutate-only knobs", () => {
+test("GE tls-worker: PAY_GE_TLS_WORKER=1 opts all GE hops incl GET", () => {
   const prevGe = process.env.PAY_GE_TLS_WORKER;
   const prevPay = process.env.PAY_PAYHOST_TLS_WORKER;
-  process.env.PAY_GE_TLS_WORKER = "0";
+  process.env.PAY_GE_TLS_WORKER = "1";
   delete process.env.PAY_PAYHOST_TLS_WORKER;
   try {
     assert.equal(
@@ -156,7 +156,7 @@ test("GE tls-worker: PAY_GE_TLS_WORKER=0 falls back to mutate-only knobs", () =>
         "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
         "GET",
       ),
-      false,
+      true,
     );
     assert.equal(
       shouldUseIssuerTlsWorker(

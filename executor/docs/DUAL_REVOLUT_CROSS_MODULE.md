@@ -158,6 +158,7 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 |---|---|---|
 | `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker |
 | `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 (Bandai dual A/B after 16:44) |
+| `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 
 Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback` on prepay **and** issuer.
@@ -166,7 +167,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **GE-all-tls + ct=false FAIL (locked):** tx `172528639` @04:25 — Revolut **×2** (user). posts=1, fraud=false, `sameCart=False`. TLS-stack + ct knobs insufficient for Bandai.
 
-**Active A/B:** throwaway CartToken iovation mint (never Playwright-open pay guid). Keep `PAY_GE_TLS_WORKER` ON. Opt into liveHtml only via `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
+**Active A/B:** throwaway CartToken iovation mint (never Playwright-open pay guid). `PAY_GE_TLS_WORKER` default **OFF** again (GE-all-tls scored ×2 + gepi GetCartToken EOF flake). Keep payHost+issuer tls-worker ON. Opt into liveHtml only via `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -233,8 +234,9 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **Next / in flight:** throwaway iovation restored (no live Checkout/v2 in Playwright; forterToken-only jar attach).
 - Synthetic `_iov_` / reshaped MCT → GE `Success=false` (2026-08-03).
-- Active recipe: GetCartToken#1 = snare host, #2 = pay guid (real MCT both times).
-- Bank score blocked by proxy login 501 / prior hydrate blockers — **need clean placeOrder + Revolut 1 vs 2**.
+- Active recipe: pay GetCartToken first; optional second GetCartToken for distinct throwaway guid; else `liveCart-fallback` (unless `BANDAI_GE_THROWAY_ONLY=1`).
+- GetCartToken transport retries ×3 on EOF. `PAY_GE_TLS_WORKER` opt-in only.
+- Bank score still pending — **need clean placeOrder + Revolut 1 vs 2** (`via=throwaway` or `liveCart-fallback`).
 
 ### Ruled out / parked
 

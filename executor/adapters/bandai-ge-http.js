@@ -1602,9 +1602,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: "https://p-bandai.com/",
   }).catch(() => null);
 
-  // Single pay GetCartToken first (do not prefetch a second token — that
-  // bricked Fast hydrate when throwaway mint then failed closed).
-  const tokenOut = await getBandaiGeCartToken({
+  // Single pay GetCartToken (retry transport EOF — tls-worker flake on gepi).
+  const cartTokenArgs = {
     ctx,
     merchantCartToken,
     merchantId: mid,
@@ -1618,7 +1617,25 @@ export async function runBandaiGeHttpPay(opts = {}) {
     checkoutParams: opts.checkoutParams,
     userAgent: opts.userAgent,
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-  });
+  };
+  let tokenOut = { ok: false, status: 0, ms: 0 };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
+      ok: false,
+      status: 0,
+      ms: 0,
+      bodySnippet: String(e?.message || e).slice(0, 160),
+    }));
+    if (tokenOut.ok && tokenOut.cartToken) break;
+    const soft =
+      !tokenOut.status ||
+      tokenOut.status === 0 ||
+      /EOF|failed to do request|TLS|timed?\s*out/i.test(
+        String(tokenOut.bodySnippet || tokenOut.message || ""),
+      );
+    if (!soft || attempt >= 3) break;
+    await new Promise((r) => setTimeout(r, 400 * attempt));
+  }
   push("ge_get_cart_token", {
     ok: tokenOut.ok,
     status: tokenOut.status,
