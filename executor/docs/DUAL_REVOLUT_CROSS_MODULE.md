@@ -163,7 +163,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **PayHost tls wire (2026-08-02 ~17:40 AEST):** tx `172460612` / `run_27ef1bff8056` — handleaction×3 + save + HandleCreditCard all `payTransport=tls-worker`, posts=1, `possibleFraudDetected=false`, `createTransaction=true`. **Revolut 1 vs 2 = user score** (if still ×2, tls stack alone is not enough for Bandai GE).
 
-**Active A/B next:** `BANDAI_GE_CREATE_TRANSACTION=0` → `PaymentData.createTransaction=false` (both Bandai duals so far had `ct=true`).
+**Active A/B scored on wire:** `BANDAI_GE_CREATE_TRANSACTION=0` → tx `172465275` @18:41 — prepay+issuer tls-worker, posts=1, **`createTransaction=false`**, fraud=false. **Revolut 1 vs 2 = user score.**
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -188,7 +188,18 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | PSP | `AuthorizationFailed` · `possibleFraudDetected=false` · bankSignal |
 | **Revolut** | **×2** (user confirmed 2026-08-02) |
 
-**Lock:** keep issuer tls-worker ON. Score payHost-wide tls-worker next. Do **not** dismantle Bandai GE ceremony; do **not** expand Playwright on Fast.
+### Lab 2026-08-02 ~17:40 AEST — Bandai payHost tls wire (Revolut TBD)
+
+| Field | Value |
+|---|---|
+| Run | `run_27ef1bff8056` |
+| GE tx | `172460612` |
+| Prepay | handleaction 1/2/3 + save → **tls-worker** |
+| Issuer | HandleCreditCard → **tls-worker** · posts=1 · `createTransaction=true` |
+| PSP | `AuthorizationFailed` · `possibleFraudDetected=false` |
+| **Revolut** | **user score** — if ×2, run `BANDAI_GE_CREATE_TRANSACTION=0` |
+
+**Lock:** keep issuer + payHost tls-worker ON. Score `createTransaction=false` next. Do **not** dismantle Bandai GE ceremony; do **not** expand Playwright on Fast.
 
 ### Ruled out / parked
 
