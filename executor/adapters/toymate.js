@@ -975,6 +975,23 @@ export const toymateAdapter = {
         };
       }
 
+      const remoteErr = String(remoteJson?.error || remoteJson?.message || "");
+      if (
+        remoteRes.status >= 200 &&
+        remoteRes.status < 300 &&
+        /don't have enough|out of stock|sold out|not available|insufficient/i.test(remoteErr)
+      ) {
+        return {
+          ok: false,
+          status: remoteRes.status,
+          note: `OOS/stock: ${remoteErr.slice(0, 140)}`,
+          cartId: null,
+          itemId: null,
+          json: remoteJson,
+          via: null,
+        };
+      }
+
       // Remote 200 without cart_id: CapSolver sessions / rate-limits often still
       // created the cart — poll GET carts before storefront POST (avoids 429 create).
       if (remoteRes.status >= 200 && remoteRes.status < 300) {
