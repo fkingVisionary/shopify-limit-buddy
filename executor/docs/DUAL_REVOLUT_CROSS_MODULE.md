@@ -14,6 +14,9 @@
 | GE-all-tls + `ct=false` + liveHtml | `172528639` @04:25 | tls-worker stack · posts=1 · `sameCart=False` | **×2** |
 | throwaway mint + issuer EOF | ~05:39 · last4 `1964` | `via=throwaway` · client EOF · posts=1 | **×2** (user; bank fired despite client fail) |
 | throwaway mint + bank | `172538665` @05:49 | `via=throwaway` · forter · posts=1 · `sameCart=False` · issuer tls-worker 302 | **×2** |
+| Sec-Fetch cors | `172548067` @07:11 | form issuer cors/empty · posts=1 · tls-worker | **×2** |
+| cold issuer tls | `172549600` @07:24 | split `_prepay`/`_issuer` workers · posts=1 | **×2** |
+| CCForm GET on cold issuer tls | `172557593` @08:52 | CCForm+HandleCredit `_issuerRemoteTls` · posts=1 | **pending user** |
 
 Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 
@@ -26,7 +29,7 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 2. `PAY_ISSUER_FORM_AS_CORS` — tx **`172548067`** @07:11 · posts=1 · tls-worker · **Revolut ×2** (user).
 3. `PAY_ISSUER_COLD_TLS` — tx **`172549600`** @07:24 · posts=1 · cold prepay+issuer workers · **Revolut ×2** (user).
 4. `BANDAI_GE_SKIP_CC_FORM=1` — **pre-bank fail** (JWT only on CreditCardForm after save; Checkout/v2 refresh empty).
-5. `PAY_ISSUER_CCFORM_TLS` default ON — CreditCardForm GET on cold issuer tls-worker. **Bank score blocked** by login SoftBlock (2026-08-03 ~08:00 AEST remints) — re-run when sessions clear.
+5. `PAY_ISSUER_CCFORM_TLS` default ON — CreditCardForm GET on cold issuer tls-worker. Bank scored **`172557593`** @08:52 AEST (`run_966ff3c288e9` bandai#7) · posts=1 · cold `_issuerRemoteTls` before HandleCredit · CCForm 200 jwt · **Revolut pending user** (1 vs 2).
 
 ---
 
@@ -172,6 +175,7 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 | `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 |
 | `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay — **×2** (`172548067`) |
 | `PAY_ISSUER_COLD_TLS` | ON (`=0` off) | Separate chrome_131 worker for issuer vs prepay (Toymate-shaped) |
+| `PAY_ISSUER_CCFORM_TLS` | ON (`=0` off) | CreditCardForm GET → cold issuer chrome_131 (same `_issuerRemoteTls` as HandleCredit) |
 | `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 
@@ -182,6 +186,14 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 **GE-all-tls + ct=false FAIL (locked):** tx `172528639` @04:25 — Revolut **×2** (user). posts=1, fraud=false, `sameCart=False`. TLS-stack + ct knobs insufficient for Bandai.
 
 **Throwaway FAIL (locked):** iov7 tx `172538665` @05:49 + iov6 ~05:39 EOF — Revolut **×2** (user). `PAY_GE_TLS_WORKER` stays default OFF. Do not chase July “Bandai ×1 tip” — unproven. Next levers = shared transport / new theory with Bandai bank scoreboard only.
+
+**CCForm-tls bank (2026-08-03 ~08:52 AEST) — Revolut pending:**
+| Field | Value |
+|---|---|
+| Run | `run_966ff3c288e9` bandai#7 · forensics `%TEMP%\j1m-pay-forensics-bandai-ccform-tls4.jsonl` |
+| GE tx | **`172557593`** · `AutherizationFailed` · last4 `1964` |
+| Wire | posts=1 · cold `_prepayRemoteTls` + `_issuerRemoteTls` · HandleCredit `payTransport=tls-worker` 302 · CCForm 200 jwt · throwaway iov · `sameCart=False` |
+| Revolut | **ask user 1 vs 2** — do not invent |
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
