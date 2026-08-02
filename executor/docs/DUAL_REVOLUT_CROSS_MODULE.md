@@ -1,8 +1,21 @@
 # Dual Revolut auths — cross-module investigation brief
 
-**Status:** open  
+**Status:** GE dual-rail confirmed (Bandai + PKC)  
 **Date:** 2026-08-02  
 **Working rule:** Prefer shared layers over store-specific adapters. Bandai-only edits are **suspect by default** unless a shared control is proven missing there.
+
+## Verdict (2026-08-02)
+
+**Global-E `HandleCreditCard` dual-rail — not a Bandai-module bug.**
+
+| Store | Client posts | Revolut | Notes |
+|---|---|---|---|
+| Bandai Fast / Autocheckout test | 1 `psp_post` | **2** same amount | Many Bandai field levers failed |
+| Pokémon Centre HTTP GE | 1 `psp_post` | **2** same amount | tx `172438100`; same processor name; **not** a refund/void line (user) |
+
+Both share Global-E issuer (`HandleCreditCardRequestV2`). Desktop orchestration ruled out (`quantity=1`, 1 enqueue, 1 `/run`). Soft-retry latch is a separate bug (already fixed).
+
+**Implication:** Stop Bandai hydrate / `pm` / `machineId` / cookie A/B as the main hunt. Client already sends one POST. Remaining work is either (1) find a browser-vs-bot GE request shape that makes GE emit one acquirer auth, with a **bank-confirmed** browser single, or (2) treat paired Revolut lines as GE/PSP noise and score by GE `TransactionId` + forensics `posts=1`. Independent proof still needs a **non-GE** store (Toymate/Kmart) when captcha/Hyper allow it.
 
 ---
 
