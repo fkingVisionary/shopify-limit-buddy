@@ -107,6 +107,22 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
           : map.ErrorCode != null
             ? String(map.ErrorCode)
             : null;
+  // Explicit true/false when GE JWT carries PossibleFraudDetected; null if absent.
+  // Scoreboard must surface False (clean path) not only True / ge_fraud_refused.
+  const fraudRaw =
+    map.PossibleFraudDetected != null
+      ? String(map.PossibleFraudDetected)
+      : map.possibleFraudDetected != null
+        ? String(map.possibleFraudDetected)
+        : null;
+  const possibleFraudDetected =
+    fraudRaw == null
+      ? null
+      : /^(true|1)$/i.test(fraudRaw)
+        ? true
+        : /^(false|0)$/i.test(fraudRaw)
+          ? false
+          : null;
   return {
     redirectHost,
     redirectPath,
@@ -114,6 +130,8 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
     locationLooksAcs: Boolean(raw && ACS_OR_REDIRECT_RE.test(raw)),
     transactionId,
     statusType,
+    possibleFraudDetected,
+    possibleFraudDetectedRaw: fraudRaw,
   };
 }
 

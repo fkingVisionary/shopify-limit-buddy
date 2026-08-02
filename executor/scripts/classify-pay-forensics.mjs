@@ -143,6 +143,13 @@ for (const [k, g] of byRun) {
       ],
       statusTypes: [...new Set(ends.map((x) => x.statusType).filter(Boolean))],
       locationLooksAcs: ends.some((x) => x.locationLooksAcs),
+      // Explicit False = clean GE path; True = ge_fraud_refused. null = JWT omitted.
+      possibleFraudDetected: ends.map((x) => x.possibleFraudDetected),
+      possibleFraudDetectedRaw: [
+        ...new Set(ends.map((x) => x.possibleFraudDetectedRaw).filter((v) => v != null)),
+      ],
+      fraudClean: ends.some((x) => x.possibleFraudDetected === false),
+      fraudHot: ends.some((x) => x.possibleFraudDetected === true),
     },
   });
 }
@@ -191,7 +198,15 @@ const summary = {
     transactionId: r.transactionId || null,
     redirectHost: r.redirectHost || null,
     statusType: r.statusType || null,
+    possibleFraudDetected:
+      r.possibleFraudDetected === true
+        ? true
+        : r.possibleFraudDetected === false
+          ? false
+          : null,
+    possibleFraudDetectedRaw: r.possibleFraudDetectedRaw || null,
     scoreboard: r.scoreboard || null,
+    payTransport: r.payTransport || null,
   })),
   recentPrepay: prepayMutates.slice(-20).map((r) => ({
     t: r.t,

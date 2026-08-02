@@ -1414,6 +1414,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       json,
       sawAuthWire: Boolean(ok && (bankSignal || declineOnRedirect || jsonOk)),
       undiciAttempts,
+      payTransport: res.payTransport || "undici",
       via: "http-ge-issuer",
       responseLost: false,
       error: ok
@@ -1451,6 +1452,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       ok: out.ok,
       ms: out.ms,
       undiciAttempts: out.undiciAttempts,
+      payTransport: out.payTransport || null,
       bankSignal: out.bankSignal,
       responseLost: false,
       scoreboard: "stock_fast",

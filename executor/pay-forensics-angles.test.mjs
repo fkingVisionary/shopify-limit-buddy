@@ -58,3 +58,26 @@ test("angle A: GE Key/Value JWT array flattens to transactionId", () => {
   assert.equal(f.transactionId, "172447213");
   assert.equal(f.statusType, "AutherizationFailed");
 });
+
+test("angle A: PossibleFraudDetected False is explicit false (not null)", () => {
+  const clean = redirectFanoutFields(
+    "https://webservices.global-e.com/payments/CCPaymentRedirect?Data=x",
+    [
+      { Key: "TransactionId", Value: "172450001" },
+      { Key: "PossibleFraudDetected", Value: "False" },
+      { Key: "TransactionStatusType", Value: "AutherizationFailed" },
+    ],
+  );
+  assert.equal(clean.possibleFraudDetected, false);
+  assert.equal(clean.possibleFraudDetectedRaw, "False");
+  const hot = redirectFanoutFields(
+    "https://webservices.global-e.com/payments/CCPaymentRedirect?Data=x",
+    { TransactionId: "1", PossibleFraudDetected: "True" },
+  );
+  assert.equal(hot.possibleFraudDetected, true);
+  const missing = redirectFanoutFields(
+    "https://webservices.global-e.com/payments/CCPaymentRedirect?Data=x",
+    { TransactionId: "1" },
+  );
+  assert.equal(missing.possibleFraudDetected, null);
+});

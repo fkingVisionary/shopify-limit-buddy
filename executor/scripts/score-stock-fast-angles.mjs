@@ -69,8 +69,15 @@ const out = {
       key: g.key,
       class: g.class,
       fanout: g.fanout,
-      askUser: "Revolut lines for fanout.transactionIds — 1 or 2?",
+      askUser:
+        "Confirm PossibleFraudDetected=False (fraudClean) + Revolut 1 or 2 for fanout.transactionIds?",
     })),
+    fraud: {
+      cleanFalse: stock.filter((g) => g.fanout?.fraudClean).length,
+      hotTrue: stock.filter((g) => g.fanout?.fraudHot).length,
+      askUser:
+        "GE PossibleFraudDetected must be False on clean Fast declines (not True/Refused).",
+    },
     B_prepay: {
       prepayMutates: summary.prepayMutates,
       issuerStageMutates: summary.issuerStageMutates,

@@ -3911,6 +3911,13 @@ async function e2eAutorun() {
       via: result.via || null,
       note: result.note || null,
       isSameCartToken: result.isSameCartToken ?? null,
+      // GE JWT: explicit false = clean path; true = ge_fraud_refused.
+      possibleFraudDetected:
+        result.possibleFraudDetected === true
+          ? true
+          : result.possibleFraudDetected === false
+            ? false
+            : result.possibleFraudDetected ?? null,
       // Double-charge latch diagnostics (per-run only)
       chargeReqCount: result.chargeReqCount ?? null,
       undiciAttempts: result.undiciAttempts ?? null,
@@ -3936,6 +3943,12 @@ async function e2eAutorun() {
         stage: result.checkoutStage,
         paymentStatus: result.paymentStatus,
         tx: result.transactionId,
+        possibleFraudDetected:
+          result.possibleFraudDetected === true
+            ? true
+            : result.possibleFraudDetected === false
+              ? false
+              : null,
         remaining,
       }),
     );
