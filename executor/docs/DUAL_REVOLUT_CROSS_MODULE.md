@@ -120,26 +120,23 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - Other GE mutates were hydrate/save only (`issuerLike=false`) — not a second issuer POST.
 - So dual (if Revolut still shows 2 on this tx) is **not** a hidden second HTTP from our client.
 
-### Form-nav contamination correction (2026-08-02 ~12:00 AEST)
+### Digression closed (2026-08-02 PM) — stop Bandai pay-path churn
 
-- Prior “Chromium form-nav dualed” lab (`via=form-nav-issuer`, tx `172432518`) had **`bodyBytes≈1064`** — empty `machineId` (same shape as `BANDAI_GE_TEST_EMPTY_MACHINE_ID`). **Not** a fat-iovation form-nav score.
-- Clean undici fat body (`172442728`, ~2575) also dual-suspect with `posts=1`.
-- Clear `BANDAI_GE_TEST_EMPTY_MACHINE_ID` / `BANDAI_GE_TEST_PAYMENT_METHOD_ID` before the lab.
+User correction: form-nav / settle / mute / headed Chrome inside `bandai-ge-http-test.js` is **dismantling Bandai again** when the dual is already proven **outside** store modules (Toymate BigPay + PKC + `posts=1`).
 
-### Fat form-nav bank hit (2026-08-02 ~12:02 AEST) — **Revolut×2 confirmed**
+Research evidence kept (not a Bandai fix path):
 
-- Run `run_28b995d86d9e` attempt `#2` / GE tx **`172443438`**
-- `via=form-nav-issuer`, `bodyBytes≈2571`, `machineIdBytes≈1436`, `posts=1`, bank decline
-- User screenshot: **12:02 ×2**, **11:48 ×2** (clean undici `172442728`), **11:44 ×2** — all Global-E Bandai AU$39 insufficient-balance pairs
-- **Ruled out:** undici-only TLS (real Chromium document form-nav still dualed with fat iovation)
-- **Next lab run:** form-nav mute softened (only extra `HandleCreditCard*` blocked) + 5s settle.
-- Run `run_bf3e1d5bbea7` / GE tx **`172443854`** (~12:09 AEST): `posts=1`, `postGeMut=6`, `extraIssBlocked=0`, fat iovation — **Revolut×2 confirmed**.
-- Post-issuer mute soften **failed** (ceremony ran; still dual).
-- **`IsTheSameCartToken` is a Global-E JWT field** (Bandai/PKC only). It cannot explain Toymate BigPay duals. **Do not chase it as the fix** — that is GE/Bandai-path again.
-- Desktop→`/run` card packaging audited: **clean** (one `{number,cvv,exp,holder}`; no token+PAN; latch cannot create posts=1×2).
-- **Headed Chrome lab (2026-08-02 ~12:23 AEST):** `run_e7eb2aa1489b` / GE tx **`172444504`** — form-nav, fat iovation, `posts=1`, `postGeMut=6`. **Revolut×2 with a distinct ~5s gap** between lines — matches the 5s `CCPaymentRedirect` settle we added. Not the old “same-second” shape.
-- **Timing lead:** second bank line may be post-issuer ceremony during settle. Shipped settleMs=0 default + block post-issuer charge-like GE mutates + `ge_post_issuer_*` logs.
-- **Settle=0 lab (2026-08-02 ~12:39 AEST):** `run_fe309267ce28` / GE tx **`172445269`** — form-nav, `posts=1`, **`postGeMut=0`**, `extraChargeBlocked=0`, issuer ms≈5527. **Awaiting Revolut 1 vs 2** (and whether any second line is same-second vs ~5s gap).
+| Lab | tx | Notes |
+|---|---|---|
+| Clean undici | `172442728` @11:48 | posts=1, Revolut×2 |
+| Fat form-nav | `172443438` @12:02 | posts=1, Revolut×2 |
+| Form-nav + settle | `172443854` @12:09 | postGeMut=6, Revolut×2 |
+| Headed Chrome form-nav | `172444504` @12:23 | ~5s Revolut gap |
+| Form-nav settle=0 | `172445269` @12:39 | postGeMut=0 |
+
+Also parked: `IsTheSameCartToken` (GE-only); desktop card packaging (audited clean).
+
+**Autocheckout test issuer default restored to prod-like undici.** Form-nav opt-in only. Next edits = shared stack only.
 
 ---
 
