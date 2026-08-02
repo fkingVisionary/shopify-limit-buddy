@@ -62,6 +62,7 @@ The bot causes **two Revolut auth/decline lines for one checkout attempt**. A no
 |---|---|---|---|---|
 | Manual browser | Real Chrome/Safari | (browser) | **1** | Same merchants, same cards |
 | Bandai bot | Global-E | **1** `psp_post` | **2** | Many GE field levers failed |
+| Bandai stock Fast @13:17 | Global-E page issuer | **1** | **2** | tx `172447213` / `run_38055c505199` |
 | PKC bot | Global-E | **1** `psp_post` | **2** | tx `172438100`; not refund |
 | Toymate bot | BigPay / Adyen | **1** `psp_post` | **2** | `run_1d56805758fc` ~11:07 AEST 2026-08-02; `422/30106`; CSE skipped after decline |
 | Bot, other cards/banks | various | (same shape) | **2** | User history |
