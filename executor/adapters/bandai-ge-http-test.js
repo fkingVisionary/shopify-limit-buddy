@@ -2,16 +2,12 @@
  * EXPERIMENTAL FORK of bandai-ge-http.js — bandaiCheckoutMode=autocheckout_test only.
  * Near-copy of production Fast; one lab delta at a time.
  *
- * Lab deltas (env, Autocheckout test only):
- *   Default issuer = Chromium form-nav (document POST) with fat iovation body.
- *   BANDAI_GE_TEST_UNDICI_ISSUER=1 — restore undici HandleCreditCard
- *   BANDAI_GE_TEST_FORM_NAV_ISSUER=0 — disable form-nav (same as undici restore)
- *   BANDAI_GE_TEST_PAYMENT_METHOD_ID — browser HAR posts pm=2 (prod default 1); alone still dual
- *   BANDAI_GE_TEST_EMPTY_MACHINE_ID=1 — issuer body machineId="" (body ~1064). Contaminates labs —
- *     prior "form-nav dualed" bank hit was THIS thin body, not fat iovation. Cleared by default.
- *   BANDAI_GE_TEST_ALLOW_THIN_FORM_NAV=1 — allow form-nav with empty/short machineId
- *   BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 — hydrate only, no HandleCreditCard
- *   BANDAI_GE_TEST_REDIRECT_SETTLE_MS — default 0 (5s settle correlated with Revolut gap @12:23)
+ * Dual-Revolut is SHARED-stack (also Toymate/BigPay). Do NOT use this fork to
+ * "fix Bandai pay" as the main strategy — default issuer matches prod undici.
+ *
+ * Opt-in lab deltas only:
+ *   BANDAI_GE_TEST_FORM_NAV_ISSUER=1 — Chromium document form-nav (research; still dualed)
+ *   BANDAI_GE_TEST_PAYMENT_METHOD_ID / EMPTY_MACHINE_ID / STOP_BEFORE_ISSUER — A/B only
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
@@ -2209,14 +2205,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
       // producing Revolut pairs with app posts=1 (2026-08-02 live).
       const preferPageIssuer =
         opts.preferPageIssuer === true && opts.forceUndiciIssuer !== true;
-      // Form-nav (test default) needs a live page to document-POST CreditCardForm.
-      const formNavDefault =
-        opts.formNavIssuer !== false &&
-        process.env.BANDAI_GE_TEST_UNDICI_ISSUER !== "1" &&
-        process.env.BANDAI_GE_TEST_FORM_NAV_ISSUER !== "0";
+      // Form-nav is opt-in research only (BANDAI_GE_TEST_FORM_NAV_ISSUER=1).
+      const formNavOptIn =
+        opts.formNavIssuer === true ||
+        process.env.BANDAI_GE_TEST_FORM_NAV_ISSUER === "1";
       const keepPage =
         preferPageIssuer ||
-        formNavDefault ||
+        formNavOptIn ||
         opts.keepPageAfterIovation === true ||
         opts.scrapeCardFormViaPage === true;
       opts = { ...opts, preferPageIssuer };
@@ -2760,18 +2755,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
     createTransaction: opts.createTransaction,
   });
 
-  // Hard-lock single issuer POST.
-  // Test-fork default: Chromium form navigation (document POST) — undici and
-  // page.request both still dualed on Revolut with app posts=1. Prior form-nav
-  // bank hit was thin machineId (body≈1064); this default requires fat iovation.
-  // Opt back to undici with BANDAI_GE_TEST_UNDICI_ISSUER=1.
+  // Hard-lock single issuer POST — default undici like prod Fast.
+  // Form-nav left opt-in for research only; dual Revolut is shared-stack.
   let framesNeutralized = 0;
   let issuerPostCount = 0;
   let issuer = null;
   const formNavIssuer =
-    opts.formNavIssuer !== false &&
-    process.env.BANDAI_GE_TEST_UNDICI_ISSUER !== "1" &&
-    process.env.BANDAI_GE_TEST_FORM_NAV_ISSUER !== "0";
+    opts.formNavIssuer === true ||
+    process.env.BANDAI_GE_TEST_FORM_NAV_ISSUER === "1";
   const formNavPage = issuerPage || opts.page || null;
   try {
     const usePageIssuer =

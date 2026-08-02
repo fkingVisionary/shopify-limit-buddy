@@ -32,19 +32,19 @@ YOUR JOB:
 4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1.
 
 FORBIDDEN:
-- More Bandai GE field A/B as the main strategy.
+- More Bandai GE field A/B / form-nav / settle / mute as the main strategy (user correction 2026-08-02 PM: that is dismantling Bandai again).
+- Chasing `IsTheSameCartToken` or other GE JWT flags.
 - “Let’s just fix Toymate too” product work.
 - Claiming payment-latch solved this dual.
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
-START HERE:
-- Headed Chrome form-nav Revolut×2 with **~5s gap** (tx 172444504) — matches redirect settle, not same-second dual-rail.
-- Score form-nav with **settleMs=0** + block post-issuer charge-like GE mutates; read `ge_post_issuer_*` forensics.
-- **Do not** chase `IsTheSameCartToken` — GE-only; Toymate duals without it.
-- Undici same-second duals (e.g. 172442728) may be a second shape — do not collapse them without timing proof.
-- Toymate evidence stays research-only (run_1d56805758fc).
+START HERE (SHARED ONLY):
+- Bandai is the **scoreboard** (Revolut 1 vs 2 + posts=1). Workshop = `executor/http.js`, TLS/client, desktop sidecar `/run`, proxy binding — not `bandai-ge-http*.js` pay ceremony.
+- Autocheckout test fork defaults back to **prod-like undici** issuer. Form-nav is opt-in research only (`BANDAI_GE_TEST_FORM_NAV_ISSUER=1`).
+- Form-nav / settle / mute labs (txs 172443438, 172443854, 172444504, 172445269) are **evidence**, not a Bandai fix path — they dualed too, including Chromium document POST.
+- Next change must be justifiable for Bandai **and** Toymate BigPay. If it only lives in Bandai GE code, stop.
 
-Lab Bandai: task_c13e31bb45ce, prof_4c10061c8213, SKU N2847904001, mode autocheckout_test → bandai-ge-http-test.js. Card last4 often 3083. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
+Lab Bandai scoreboard: task_c13e31bb45ce, mode can be Fast or autocheckout_test (undici default). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
 ```
 
 ---
