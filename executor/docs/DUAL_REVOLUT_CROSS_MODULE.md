@@ -32,20 +32,20 @@ Desktop orchestration ruled out on these labs (`quantity=1`, 1 enqueue, 1 `/run`
 
 **Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette and stop “try another card.”
 
-## Next ladder (do in order — one fork each)
+## Next ladder — **Bandai only** (one fork each)
 
-1. **Browser HAR vs bot pay hop (primary)**  
-   Manual Toymate (or Bandai) checkout → DevTools → save the **one** issuer POST (`payments.bigcommerce.com/.../payments` or GE `HandleCreditCard`). Diff against bot `psp_post` shape (headers, `sec-fetch-*`, content-type, body keys, cookie count). Align bot to browser one delta at a time.
+1. **Browser HAR vs bot GE pay hop (primary)**  
+   Manual Bandai Namco AU checkout → DevTools → the **one** `HandleCreditCard` / GE issuer POST. Diff against bot Bandai `psp_post` / Fast path (headers, `sec-fetch-*`, content-type, body keys, cookie count, `pm` / machineId only as parity fields). Align **shared HTTP / Bandai pay request** to browser one delta at a time. Score with Revolut 1 vs 2.
 
-2. **Proxy / home egress**  
-   Bot always proxied today; manual is home. Direct undici Toymate fails CapSolver (needs proxy). Local Chromium can clear CF on home IP but cookie handoff to undici still 403 — so either fix handoff or finish pay inside Chromium before calling this fork done.
+2. **Proxy / home egress on Bandai**  
+   Manual = home; bot = proxy. If Bandai can placeOrder direct from this machine, A/B Revolut. Do not derail into Toymate CF/CapSolver work for this fork.
 
-3. **Full-browser pay (only if HAR is inconclusive)**  
-   Same checkout entirely in headed Chrome/Playwright on home IP.  
-   - Revolut **1** → undici/TLS/proxy presentation is the dual trigger.  
-   - Revolut **2** → automation/session/pre-pay state (not the HTTP library).
+3. **Bandai full-browser issuer (only if HAR inconclusive)**  
+   Headed Chrome/Playwright for the GE pay hop on home IP (not Toymate).  
+   - Revolut **1** → undici/TLS/proxy presentation.  
+   - Revolut **2** → automation/session/pre-pay state.
 
-GE Chromium form-nav already dualed while proxied — so do not assume “use Playwright” alone is the fix without the home-IP / HAR forks.
+Research note (do not expand): GE Chromium form-nav already dualed while proxied; Toymate BigPay also dualed with `posts=1` — shared bot path, but **ship the fix on Bandai**.
 
 ---
 
@@ -245,4 +245,4 @@ Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`
 
 ## 10. One-sentence brief for the next agent
 
-**Bandai + PKC both produce two Revolut auths from one Global-E `HandleCreditCard` (`posts=1`, not refund) — treat as GE/PSP dual-rail; do not keep editing Bandai-only hydrate/issuer fields; optional next proof is a non-GE store (Toymate/Kmart) or a bank-confirmed single browser GE HAR.**
+**Cross-PSP dual is proven (GE + BigPay research). Ship the fix on Bandai only: browser HAR vs bot `HandleCreditCard` / shared HTTP pay hop — not more Bandai field roulette and not Toymate product work.**
