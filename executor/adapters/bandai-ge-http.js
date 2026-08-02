@@ -1602,12 +1602,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: "https://p-bandai.com/",
   }).catch(() => null);
 
-  const riskHydrate =
-    opts.riskHydrate === true ||
-    opts.forceFreshMint === true ||
-    (opts.mergeIovationCookies === true && Boolean(opts.page));
-  const willMint = Boolean(opts.page) && (!opts.machineId || riskHydrate);
-  const cartTokenArgs = {
+  // Single pay GetCartToken first (do not prefetch a second token — that
+  // bricked Fast hydrate when throwaway mint then failed closed).
+  const tokenOut = await getBandaiGeCartToken({
     ctx,
     merchantCartToken,
     merchantId: mid,
@@ -1621,24 +1618,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     checkoutParams: opts.checkoutParams,
     userAgent: opts.userAgent,
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-  };
-
-  // Throwaway snare host: GetCartToken#1, pay cart: GetCartToken#2 (latest wins).
-  // Synthetic MCT is rejected by GE (2026-08-03). Distinct guid on the real MCT
-  // lets Playwright load Checkout/v2 without touching the pay cart.
-  let throwawayGuid = null;
-  let throwawayTokenNote = "skipped";
-  let preToken = null;
-  if (willMint) {
-    preToken = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
-      ok: false,
-      status: 0,
-      ms: 0,
-      bodySnippet: String(e?.message || e).slice(0, 160),
-    }));
-  }
-
-  const tokenOut = await getBandaiGeCartToken(cartTokenArgs);
+  });
   push("ge_get_cart_token", {
     ok: tokenOut.ok,
     status: tokenOut.status,
@@ -1650,29 +1630,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
           220,
         ),
   });
-
-  if (willMint) {
-    if (
-      preToken?.ok &&
-      preToken.cartToken &&
-      tokenOut.ok &&
-      tokenOut.cartToken &&
-      preToken.cartToken !== tokenOut.cartToken
-    ) {
-      throwawayGuid = preToken.cartToken;
-      throwawayTokenNote = `ok pre≠pay guid=${String(throwawayGuid).slice(0, 8)}… pay=${String(tokenOut.cartToken).slice(0, 8)}…`;
-    } else if (preToken?.ok && preToken.cartToken === tokenOut.cartToken) {
-      throwawayTokenNote = "same-as-pay (GE returned identical CartToken twice)";
-    } else {
-      throwawayTokenNote = `pre-fail status=${preToken?.status} ${String(preToken?.bodySnippet || preToken?.message || "").slice(0, 120)}`;
-    }
-    push("ge_iovation_throwaway_token", {
-      ok: Boolean(throwawayGuid),
-      status: preToken?.status ?? null,
-      ms: preToken?.ms ?? 0,
-      note: throwawayTokenNote.slice(0, 220),
-    });
-  }
 
   try {
     fs.writeFileSync(
@@ -1689,7 +1646,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
             bodySnippet: tokenOut.bodySnippet,
             json: tokenOut.json,
           },
-          throwawayCartToken: throwawayGuid,
           merchantCartToken,
         },
         null,
@@ -1721,6 +1677,50 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   let guid = tokenOut.cartToken;
+  const riskHydrate =
+    opts.riskHydrate === true ||
+    opts.forceFreshMint === true ||
+    (opts.mergeIovationCookies === true && Boolean(opts.page));
+  const willMint = Boolean(opts.page) && (!opts.machineId || riskHydrate);
+
+  // Optional distinct CartToken for snare-only Playwright (never the pay guid).
+  let throwawayGuid = null;
+  let throwawayTokenNote = "skipped";
+  if (willMint) {
+    const iovToken = await getBandaiGeCartToken({
+      ctx,
+      merchantCartToken,
+      merchantId: mid,
+      area,
+      webStoreInstanceCode: area,
+      customerEmail: opts.customerEmail,
+      cultureCode: opts.cultureCode || "en-GB",
+      preferedCultureCode: opts.preferedCultureCode || "en-GB",
+      cookieConsent: opts.cookieConsent,
+      checkoutParams: opts.checkoutParams,
+      referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+      userAgent: opts.userAgent,
+    }).catch((e) => ({
+      ok: false,
+      status: 0,
+      ms: 0,
+      bodySnippet: String(e?.message || e).slice(0, 160),
+    }));
+    if (iovToken?.ok && iovToken.cartToken && iovToken.cartToken !== guid) {
+      throwawayGuid = iovToken.cartToken;
+      throwawayTokenNote = `ok guid=${String(throwawayGuid).slice(0, 8)}… ≠pay`;
+    } else if (iovToken?.ok && iovToken.cartToken === guid) {
+      throwawayTokenNote = "same-as-pay → liveCart fallback for mint";
+    } else {
+      throwawayTokenNote = `fail status=${iovToken?.status} → liveCart fallback ${String(iovToken?.bodySnippet || "").slice(0, 80)}`;
+    }
+    push("ge_iovation_throwaway_token", {
+      ok: Boolean(throwawayGuid),
+      status: iovToken?.status ?? null,
+      ms: iovToken?.ms ?? 0,
+      note: throwawayTokenNote.slice(0, 220),
+    });
+  }
 
   const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
@@ -1853,17 +1853,19 @@ export async function runBandaiGeHttpPay(opts = {}) {
     let mint;
     let mintUrl = null;
     let mintVia = "none";
-    const allowLiveCartIovation =
-      opts.allowLiveCartIovation === true ||
-      process.env.BANDAI_GE_ALLOW_LIVE_CART_IOVATION === "1";
+    // Prefer throwaway snare host. If GE won't mint a distinct CartToken,
+    // fall back to live Checkout/v2 (banks again; may dual — scoreboard).
+    // Opt out of fallback: BANDAI_GE_THROWAY_ONLY=1.
+    const throwawayOnly =
+      opts.throwawayIovationOnly === true ||
+      process.env.BANDAI_GE_THROWAY_ONLY === "1";
     if (throwawayGuid) {
       mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
       mintVia = "throwaway";
-    } else if (allowLiveCartIovation) {
-      // Escape hatch only — known to pair Revolut (live cart in Chromium).
+    } else if (!throwawayOnly) {
       mintUrl = v2Url;
       throwawayGuid = guid;
-      mintVia = "liveCart";
+      mintVia = "liveCart-fallback";
     }
     try {
       const ioTimeout =
