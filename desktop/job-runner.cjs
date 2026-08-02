@@ -21,6 +21,7 @@ const {
   sleep: sleepMs,
 } = require("./bandai-retry-policy.cjs");
 const { isPaymentAlreadySubmitted } = require("./payment-latch.cjs");
+const { auditEnqueueBatch } = require("./pay-forensics-audit.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
@@ -892,6 +893,7 @@ function enqueue(jobs) {
   // Snapshot before this batch — quantity>1 siblings share a task id and must all enqueue.
   const priorActive = new Set(activeTaskCounts.keys());
   let skipped = 0;
+  const accepted = [];
   for (const job of list) {
     const tid = job?.task?.id;
     // Same task row already live from a previous start → skip (double-click / double fire).
@@ -908,11 +910,21 @@ function enqueue(jobs) {
       continue;
     }
     acquireTaskId(tid);
-    queue.push({
+    const queued = {
       ...job,
       runId: job.runId || id("run"),
       enqueuedAt: Date.now(),
+    };
+    queue.push(queued);
+    accepted.push(queued);
+  }
+  try {
+    auditEnqueueBatch(accepted, {
+      source: "job-runner.enqueue",
+      skippedDuplicates: skipped || 0,
     });
+  } catch {
+    /* forensics never blocks queue */
   }
   emit({ type: "queue", ...state(), skippedDuplicates: skipped || undefined });
   pump();

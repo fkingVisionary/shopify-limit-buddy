@@ -4,6 +4,7 @@
 
 import https from "node:https";
 import forge from "node-forge";
+import { pspPostForensics } from "../pay-forensics.js";
 
 export const BC_INTERNAL_HEADER =
   "This API endpoint is for internal use only and may change in the future";
@@ -585,17 +586,37 @@ export async function placeOrderViaHttp({
         payment_method_id: paymentMethodId,
       },
     };
+    const payUrl = `https://payments.bigcommerce.com/stores/${boot.storeHash}/payments`;
+    const payBodyStr = JSON.stringify(payBody);
+    pspPostForensics("start", {
+      store: "toymate",
+      via: "bigpay",
+      url: payUrl,
+      body: payBodyStr,
+      paymentMethodId,
+    });
+    const tPay = Date.now();
     payRes = await request(
-      `https://payments.bigcommerce.com/stores/${boot.storeHash}/payments`,
+      payUrl,
       {
         method: "POST",
         headers: payHeaders,
-        body: JSON.stringify(payBody),
+        body: payBodyStr,
       },
       ctx,
     );
     payText = await payRes.text().catch(() => "");
     usedMethod = paymentMethodId;
+    pspPostForensics("end", {
+      store: "toymate",
+      via: "bigpay",
+      url: payUrl,
+      status: payRes.status,
+      ms: Date.now() - tPay,
+      ok: payRes.status >= 200 && payRes.status < 300,
+      bankSignal: looksDeclined(payText) || payRes.status === 422 || (payRes.status >= 200 && payRes.status < 300),
+      paymentMethodId,
+    });
     logs.push({
       step: "bigpay",
       status: payRes.status,
@@ -628,8 +649,28 @@ export async function placeOrderViaHttp({
           cvv,
           holder,
         });
+        const cseUrl = "https://payments.bigcommerce.com/api/public/v1/orders/payments";
+        const cseBodyStr = JSON.stringify({
+          payment: {
+            payment_method_id: usedMethod || `${adyen.gateway}.${adyen.id}`,
+            ...(orderId ? { orderId: String(orderId) } : {}),
+            paymentData: JSON.stringify({
+              paymentMethod: encrypted,
+              browserInfo: browserInfo(),
+              clientStateDataIndicator: true,
+              origin: apex,
+            }),
+          },
+        });
+        pspPostForensics("start", {
+          store: "toymate",
+          via: "bigpay_cse",
+          url: cseUrl,
+          body: cseBodyStr,
+        });
+        const tCse = Date.now();
         const encRes = await request(
-          "https://payments.bigcommerce.com/api/public/v1/orders/payments",
+          cseUrl,
           {
             method: "POST",
             headers: {
@@ -640,22 +681,22 @@ export async function placeOrderViaHttp({
               origin: apex,
               referer: `${apex}/checkout`,
             },
-            body: JSON.stringify({
-              payment: {
-                payment_method_id: usedMethod || `${adyen.gateway}.${adyen.id}`,
-                ...(orderId ? { orderId: String(orderId) } : {}),
-                paymentData: JSON.stringify({
-                  paymentMethod: encrypted,
-                  browserInfo: browserInfo(),
-                  clientStateDataIndicator: true,
-                  origin: apex,
-                }),
-              },
-            }),
+            body: cseBodyStr,
           },
           ctx,
         );
         const encText = await encRes.text().catch(() => "");
+        pspPostForensics("end", {
+          store: "toymate",
+          via: "bigpay_cse",
+          url: cseUrl,
+          status: encRes.status,
+          ms: Date.now() - tCse,
+          ok: encRes.status >= 200 && encRes.status < 300,
+          bankSignal:
+            looksDeclined(encText) ||
+            (encRes.status >= 200 && encRes.status < 300),
+        });
         logs.push({ step: "bigpay_cse", status: encRes.status, body: encText.slice(0, 300) });
         if (encRes.status >= 200 && encRes.status < 300) {
           payRes = encRes;

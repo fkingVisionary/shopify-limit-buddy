@@ -13,6 +13,7 @@
  */
 
 import { request, makeDispatcher } from "../http.js";
+import { pspPostForensics } from "../pay-forensics.js";
 import {
   buildHandleActionBodies,
   buildCheckoutSaveBody,
@@ -257,6 +258,17 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
 
   const timeoutMs = Math.max(60_000, Math.min(300_000, Number(opts.timeoutMs) || 180_000));
   const t0 = Date.now();
+  const forensicsBase = {
+    store: "disney",
+    via: "http-ge-issuer",
+    url,
+    body,
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+  };
+  pspPostForensics("start", forensicsBase);
   try {
     const res = await request(
       url,
@@ -315,12 +327,24 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
         text,
       ) && !/DataCorruption/i.test(text);
 
+    const bank = Boolean(bankSignal || declineOnRedirect || htmlDecline);
+    pspPostForensics("end", {
+      ...forensicsBase,
+      status: res.status,
+      ok: Boolean(
+        (res.status >= 200 && res.status < 400) ||
+          bank ||
+          isPaymentRedirect,
+      ),
+      ms,
+      undiciAttempts,
+      bankSignal: bank,
+      responseLost: false,
+    });
     return {
       ok: Boolean(
         (res.status >= 200 && res.status < 400) ||
-          bankSignal ||
-          declineOnRedirect ||
-          htmlDecline ||
+          bank ||
           isPaymentRedirect,
       ),
       status: res.status,
@@ -330,9 +354,9 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
       redirectUrlFull,
       redirectPayload,
       isPaymentRedirect,
-      bankSignal: Boolean(bankSignal || declineOnRedirect || htmlDecline),
+      bankSignal: bank,
       declineOnRedirect: Boolean(declineOnRedirect || htmlDecline),
-      sawAuthWire: Boolean(bankSignal || declineOnRedirect || htmlDecline),
+      sawAuthWire: bank,
       bodySnippet: String(text || "").replace(/\s+/g, " ").slice(0, 280),
       textBytes: text.length,
     };
@@ -348,6 +372,16 @@ export async function postDisneyGeIssuerHttp(opts = {}) {
     // Fast CONNECT / tunnel death (<1.5s) likely never delivered the POST —
     // allow Disney proxy→direct fallback. Slow throw / timeout = bank risk.
     const likelyDelivered = timedOut || ms >= 1_500;
+    pspPostForensics("end", {
+      ...forensicsBase,
+      ok: false,
+      ms,
+      undiciAttempts,
+      bankSignal: false,
+      responseLost: likelyDelivered,
+      timedOut,
+      error: String(e?.message || e).slice(0, 160),
+    });
     return {
       ok: false,
       error: e?.message || String(e),

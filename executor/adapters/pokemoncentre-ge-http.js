@@ -18,6 +18,7 @@
 
 import { request } from "../http.js";
 import fs from "node:fs";
+import { pspPostForensics } from "../pay-forensics.js";
 import {
   extractGeCheckoutGuid,
   parseJsonp,
@@ -278,6 +279,17 @@ export async function postPcGeIssuerHttp(opts = {}) {
 
   const timeoutMs = Math.max(60_000, Math.min(300_000, Number(opts.timeoutMs) || 180_000));
   const t0 = Date.now();
+  const forensicsBase = {
+    store: "pokemoncentre",
+    via: "http-ge-issuer",
+    url,
+    body,
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+  };
+  pspPostForensics("start", forensicsBase);
   try {
     const res = await request(
       url,
@@ -314,6 +326,15 @@ export async function postPcGeIssuerHttp(opts = {}) {
     const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", "");
     const declineOnRedirect = isBandaiGeRedirectDecline(redirectUrl || "", "");
     const ok = Boolean(isPaymentRedirect && (bankSignal || declineOnRedirect));
+    pspPostForensics("end", {
+      ...forensicsBase,
+      status: res.status,
+      ok,
+      ms: Date.now() - t0,
+      undiciAttempts,
+      bankSignal: Boolean(bankSignal || declineOnRedirect),
+      responseLost: false,
+    });
     return {
       ok,
       status: res.status,
@@ -336,6 +357,15 @@ export async function postPcGeIssuerHttp(opts = {}) {
           : "issuer_http_no_redirect",
     };
   } catch (e) {
+    pspPostForensics("end", {
+      ...forensicsBase,
+      ok: false,
+      ms: Date.now() - t0,
+      undiciAttempts: 1,
+      bankSignal: false,
+      responseLost: true,
+      error: String(e?.message || e).slice(0, 160),
+    });
     return {
       ok: false,
       error: e?.message || "issuer_http_failed",

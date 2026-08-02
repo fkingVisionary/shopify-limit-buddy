@@ -129,32 +129,43 @@ Desktop Start
 
 ---
 
-## 7. Detection plan (shared-first — do this next)
+## 7. Detection plan (shared-first)
 
 Stop Bandai issuer body roulette until shared detection is in place.
 
-### Step 1 — Universal pay forensics (required)
+### Step 1 — Universal pay forensics — **DONE (2026-08-02)**
 
-Extend `executor/pay-forensics.js` + thin hooks so **every** adapter that can hit a bank emits:
+Helper: `pspPostForensics()` in `executor/pay-forensics.js`.
 
-- `run_start` / `run_end` (already mostly true)
-- `psp_post_start` / `psp_post_end` with: `store`, `desktopTaskId`, `desktopRunId`, `via`, `bodyBytes`, `urlHost`, `attempt`, `bankSignal`
+| Store | Instrumented mutation | File |
+|---|---|---|
+| Bandai | `HandleCreditCard` (already) | `bandai-ge-http.js` / test fork |
+| Pokémon Centre | `HandleCreditCard` | `pokemoncentre-ge-http.js` |
+| Disney | `HandleCreditCard` | `disney-ge-http.js` |
+| Toymate | BigPay + CSE fallback | `toymate-adyen.js` |
+| Kmart | Paydock `/process` + `chargePayDockWithToken` | `kmart.js` |
 
-Minimum stores: Bandai (done), PKC, Toymate, Kmart, Disney — even if those modules are broken, hooks should compile so the next live run is comparable.
+Classifier: `node executor/scripts/classify-pay-forensics.mjs [path.jsonl]`  
+→ `two_runs` | `two_psp_posts` | `one_post_two_bank_suspect` | `no_psp`
 
-**Pass criteria:** for any dual Revolut report, we can answer in one file: how many `/run`s, how many PSP POSTs, which store, which timestamps.
+### Step 2 — Desktop Start audit — **DONE**
 
-### Step 2 — Desktop Start audit (one click)
+`desktop/pay-forensics-audit.cjs` + `job-runner.enqueue` emits:
 
-On `DESKTOP_E2E_AUTORUN` / normal Start, log one line per enqueue:
+- `desktop_enqueue_batch` (jobCount, taskIds, quantities)
+- `desktop_enqueue_job` (taskId, store, quantity, profileId, cardLast4)
 
-- `taskId`, `quantity`, `jobIndex`, `profileId`, `cardLast4`, `store`
+Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`).
 
-**Pass criteria:** prove whether human “one Start” ever means N jobs outside Bandai labs.
+### Step 3 — Live non-Bandai smokes (in progress)
 
-### Step 3 — Classify historical duals
+| Store | Feasible now? | Notes |
+|---|---|---|
+| **PKC** | **Blocked in this environment** | Edge smoke 2026-08-02: `HYPER_API_KEY missing — cannot solve DataDome`. No Hyper in desktop settings / env. No PKC task in DB. Hooks are ready; need Hyper (+ PDP task) before a bank-touching dual classify. Same GE family as Bandai anyway. |
+| **Toymate** | Likely blocked | Guest checkout may work if already registered; **account_gen / CF** needs CapSolver / 2captcha credits (not in env). Do not burn time on gen until captcha is wired. Hooks ready on BigPay. |
+| Kmart / Disney | Benched | Hooks compile only; no product fix work in this PR. |
 
-Ask / pull Revolut timestamps for **non-Bandai** duals and pair with any leftover logs:
+### Step 4 — Classify then act
 
 | Class | Signature | Likely layer |
 |---|---|---|
@@ -162,14 +173,10 @@ Ask / pull Revolut timestamps for **non-Bandai** duals and pair with any leftove
 | One `run_start`, two `psp_post_*` | Adapter retry / fallback / 3DS ladder | Adapter or shared http |
 | One `run_start`, one `psp_post_*`, two Revolut | PSP / acquirer dual-rail | Outside our second POST |
 
-Until non-Bandai rows exist in forensics, **do not claim** Bandai hydrate/pm/machineId is the shared root.
-
-### Step 4 — Only after classification
-
 - If class = orchestration → fix job-runner / quantity UX / duplicate Start (shared).
 - If class = two PSP posts → find shared retry or per-store fallback; fix at that layer.
 - If class = one PSP post, two Revolut on **multiple PSPs** → escalate as acquirer/PSP behavior; stop burning Revolut on Bandai form-field A/B tests.
-- If class = one PSP post, two Revolut **only on GE stores** → then (and only then) GE dual-rail is the shared root for Bandai/PKC/Disney; document as expected bank noise vs fixable client bug.
+- If class = one PSP post, two Revolut **only on GE stores** → then GE dual-rail is the shared root for Bandai/PKC/Disney.
 
 ---
 

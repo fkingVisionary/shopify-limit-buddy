@@ -56,4 +56,51 @@ export function payForensicsPath() {
   return logPath();
 }
 
-export default { payForensics, payForensicsPath };
+function issuerHost(url) {
+  try {
+    return new URL(String(url || "")).host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Thin shared wrapper for PSP / issuer mutation posts across stores.
+ * Behavior-neutral — callers still own retry:false / single-flight.
+ *
+ * @param {"start"|"end"|"suppressed"} phase
+ * @param {Record<string, unknown>} fields — must include store + via
+ */
+export function pspPostForensics(phase, fields = {}) {
+  const event =
+    phase === "end"
+      ? "psp_post_end"
+      : phase === "suppressed"
+        ? "psp_post_suppressed"
+        : "psp_post_start";
+  const url = fields.url || fields.issuerUrl || null;
+  const {
+    url: _u,
+    issuerUrl: _iu,
+    body: _b,
+    ...rest
+  } = fields;
+  return payForensics(event, {
+    store: rest.store || null,
+    via: rest.via || null,
+    desktopTaskId: rest.desktopTaskId || null,
+    desktopRunId: rest.desktopRunId || null,
+    desktopAttempt: rest.desktopAttempt || null,
+    executorTaskId: rest.executorTaskId || null,
+    issuerHost: rest.issuerHost || issuerHost(url),
+    bodyBytes:
+      rest.bodyBytes != null
+        ? Number(rest.bodyBytes)
+        : _b != null
+          ? String(_b).length
+          : null,
+    ...rest,
+  });
+}
+
+export default { payForensics, payForensicsPath, pspPostForensics };
