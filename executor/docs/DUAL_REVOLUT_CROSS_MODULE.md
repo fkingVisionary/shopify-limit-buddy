@@ -212,9 +212,20 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **Ruled out:** `BANDAI_GE_CREATE_TRANSACTION=0` does not collapse Bandai dual.
 
-**Next:** bank-score `PAY_GE_TLS_WORKER` (GE GETs on same chrome_131). Keep ct=false. Do **not** expand Playwright on Fast.
+### Lab 2026-08-02 ~19:10 AEST — Bandai GE-all-tls bank hit (Revolut TBD)
 
-**GE-all-tls lab note:** `run_39d7960e2b04` reached GetCartToken+Checkout/v2 on tls-worker then ha1/ha2 EOF + iovation 20s timeout → `http_ge_save_fail` (no ship id). Mitigations: ha transport retries, AU ship fallback `40073437`, iovation timeout 40s under GE-all-tls.
+| Field | Value |
+|---|---|
+| Run | `run_725a0664a334` · attempt `bandai#3` |
+| GE tx | **`172467620`** |
+| Wire | ha1/2/3 + save + HandleCreditCard → **tls-worker** · posts=1 · `ct=false` |
+| PSP | `AutherizationFailed` · `possibleFraudDetected=false` · `sameCart=False` |
+| Via | `http-ge-issuer` · bankSignal |
+| **Revolut** | **user score** — 1 vs 2 |
+
+Prior flake `run_39d7960e2b04` (ha EOF / iovation 20s → save-fail) mitigated by ha retries + AU ship `40073437` + io timeout 40s.
+
+If still ×2: undici GET sandwich was not the dual root. Next: Playwright riskHydrate Checkout/v2 on Chromium vs HTTP tls-worker (`sameCart=False`). No Playwright pay on Fast.
 
 ### Ruled out / parked
 
