@@ -16,14 +16,20 @@
 
 Desktop orchestration ruled out on these labs (`quantity=1`, 1 enqueue, 1 `/run`, 1 instrumented issuer POST). Soft-retry latch is a separate bug (already fixed) and is **not** today’s shape.
 
-**Ruled out as root:** Bandai adapter, PKC adapter, Toymate adapter, Global-E-only dual-rail, BigPay CSE double-post (skipped after decline).
+**Ruled out as root:**
+- Bandai / PKC / Toymate adapters
+- Global-E-only dual-rail (Toymate BigPay duals too)
+- BigPay CSE double-post (skipped after decline)
+- Desktop orchestration double `/run` / quantity fan-out (`posts=1`, 1 enqueue)
+- **Card / bank / Revolut-PAN quirk** — user: same card on the **merchant website manually = 1**; bot = 2; reproduced across **different cards and banks** over the testing history
 
-**Still plausible (shared / outside modules):**
-1. **Revolut / issuer display or dual auth** on this PAN (manual browser = 1; bot path = 2) — strongest “outside our PSP code” candidate once posts=1 is trusted on both stacks.
-2. **Shared bot payment presentation** that both GE and Adyen/BigPay turn into two issuer auths (same profile/card metadata, AVS, 3DS signaling, etc.) — not store checkout orchestration.
-3. **Uninstrumented second wire** — low probability after GE + BigPay hooks both show `posts=1`, but keep as a check if a new store is added.
+**Still plausible (shared bot path, outside store modules):**
+1. **Shared HTTP pay transport** (`executor/http.js` / undici / TLS / headers / cookie jar) — one intentional issuer POST that PSPs turn into two issuer auths when the request doesn’t look like a browser form navigate.
+2. **Shared bot identity in front of the PSP** — sticky proxy / datacenter-vs-home / JA3 / missing browser Client Hints — manual is usually direct home browser; bot is proxy+undici.
+3. **Shared card/billing payload shape** built once in desktop→executor (not store-specific fields) that both GE and Adyen treat as “retry/auth twice” server-side while our wire count stays 1.
+4. **Uninstrumented second wire** — low probability after GE + BigPay hooks both show `posts=1`.
 
-**Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette. Next proof should be **manual browser vs bot on the same Toymate/GE cart amount** (Revolut 1 vs 2) and/or a **different card/issuer** on one bot run. If another issuer shows single while Revolut duals, root is Revolut-side; if every issuer duals with `posts=1`, dig shared card payload / 3DS / proxy identity — not module ATC.
+**Implication:** Stop store-field / GE-hydrate / Toymate-adapter roulette and stop “try another card.” Next dig is **bot vs browser request parity on the shared pay hop** (Toymate BigPay and/or GE HandleCreditCard): browser HAR vs bot forensics for the same checkout — headers, body shape, TLS/proxy, 3DS flags — not module ATC.
 
 ---
 
