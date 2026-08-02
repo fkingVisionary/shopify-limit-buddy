@@ -4,19 +4,20 @@
 **PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
-### VERDICT (updated 2026-08-03 ~04:31 AEST) — PARTIAL
+### VERDICT (updated 2026-08-03 ~05:54 AEST) — PARTIAL
 
 **Toymate:** issuer chrome_131 tls-worker → Revolut×1 (`run_20651586e4b2`).
 
-**Bandai Fast still duals** after full GE tls-worker stack + `ct=false`:
-| Field | tx `172528639` @04:25 AEST · last4 `1964` |
-|---|---|
-| Wire | ha×3+save+issuer **tls-worker** · posts=1 · `ct=false` · fraud=false |
-| GE | `sameCart=False` · via=`http-ge-issuer` |
-| **Revolut** | **×2** (user 2026-08-03) |
+**Bandai Fast still duals** — throwaway iovation does **not** fix it (2026-08):
+| Lab | tx / time | Wire | Revolut |
+|---|---|---|---|
+| GE-all-tls + `ct=false` + liveHtml | `172528639` @04:25 | tls-worker stack · posts=1 · `sameCart=False` | **×2** |
+| throwaway mint + issuer EOF | ~05:39 · last4 `1964` | `via=throwaway` · client EOF · posts=1 | **×2** (user; bank fired despite client fail) |
+| throwaway mint + bank | `172538665` @05:49 | `via=throwaway` · forter · posts=1 · `sameCart=False` · issuer tls-worker 302 | **×2** |
 
 Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
-**Active A/B:** restore **throwaway-cart iovation** (proven single Revolut 2026-07-22 07:24) — stop Playwright `goto` of the **live** pay Checkout/v2 (liveHtml riskHydrate correlated with `sameCart=False`).
+July tip `9d313ae` (07:24 pure undici / throwaway snare → ×1) **does not reproduce** on current Fast+tls-worker stack.
+**Active A/B:** re-score July-like stack — throwaway snare + **undici** payHost/issuer (`PAY_*_TLS_WORKER=0`) — then decide if dual is GE+tls-worker interaction vs throwaway tip dead.
 
 ---
 
@@ -43,13 +44,13 @@ PARTIAL FIX (keep; do not revert without wire proof):
 - Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 on **Toymate** @14:54.
 - Keep `PAY_ISSUER_TLS_WORKER` default ON. Do not “simplify” back to undici issuer.
 - **Bandai Fast counterexample:** issuer/prepay/GE-all tls-worker + ct=false still ×2 (`172528639`). Not fixed for GE yet.
-- Keep pay TLS knobs ON. Active A/B: **throwaway iovation** (no Playwright on live pay Checkout/v2).
+- Keep pay TLS knobs ON by default. Bandai throwaway+tls-worker still ×2 — next lab may opt out tls-worker once to match July undici tip (not a product revert).
 
 FORBIDDEN:
-- Reverting issuer tls-worker without a new Revolut×2 wire proof on Toymate/Bandai.
+- Reverting issuer tls-worker **as product default** without Toymate×1 + Bandai×1 proof.
 - Using Playwright / page-issuer as the Fast dual fix.
 - Bandai GE field / form-nav / settle / mute ceremony churn.
-- Claiming payment-latch or GE-all-tls solved Bandai dual.
+- Claiming payment-latch, GE-all-tls, or throwaway iovation solved Bandai dual.
 - Re-enabling liveHtml Checkout/v2 iovation without `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
 Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
@@ -167,7 +168,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **GE-all-tls + ct=false FAIL (locked):** tx `172528639` @04:25 — Revolut **×2** (user). posts=1, fraud=false, `sameCart=False`. TLS-stack + ct knobs insufficient for Bandai.
 
-**Active A/B:** throwaway CartToken iovation mint (never Playwright-open pay guid). `PAY_GE_TLS_WORKER` default **OFF** again (GE-all-tls scored ×2 + gepi GetCartToken EOF flake). Keep payHost+issuer tls-worker ON. Opt into liveHtml only via `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
+**Throwaway FAIL (locked):** iov7 tx `172538665` @05:49 + iov6 ~05:39 EOF — Revolut **×2** (user). `PAY_GE_TLS_WORKER` stays default OFF. Next: throwaway + undici payHost/issuer (`PAY_PAYHOST_TLS_WORKER=0` `PAY_ISSUER_TLS_WORKER=0`) to match July 07:24 stack.
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -232,12 +233,20 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Via | `http-ge-issuer` · bankSignal · iovation `liveHtml+geMute` |
 | **Revolut** | **×2** (user 2026-08-03 ~04:31) |
 
-**Next / in flight:** throwaway iovation restored (no live Checkout/v2 in Playwright; forterToken-only jar attach).
-- Synthetic `_iov_` / reshaped MCT → GE `Success=false` (2026-08-03).
-- Active recipe: pay GetCartToken first; optional second GetCartToken for distinct throwaway guid; else `liveCart-fallback` (unless `BANDAI_GE_THROWAY_ONLY=1`).
-- GetCartToken transport retries ×3 on EOF. `PAY_GE_TLS_WORKER` opt-in only.
-- **Wire OK (iov6):** `ge_iovation_mint via=throwaway` · forter=true · ha×3+save tls-worker 200 · CCForm machineId=iovation · issuer `HandleCreditCard` tls-worker **unexpected EOF** (posts=1, bankSignal=false). Do **not** retry issuer after EOF (dual risk).
-- **Bank OK (iov7 ~05:49 AEST):** tx **`172538665`** · `via=throwaway` · forter=true · posts=1 · `sameCart=False` · issuer tls-worker 302 · `bankSignal=true` · `declined_or_auth_failed` · card last4 `1964`. **Revolut 1 vs 2 TBD (user).**
+### Lab 2026-08-03 ~05:39 / 05:49 AEST — throwaway iovation FAIL
+
+| Field | iov6 ~05:39 | iov7 ~05:49 |
+|---|---|---|
+| Mint | `via=throwaway` · forter=true | `via=throwaway` · forter=true · guid≠pay |
+| Prepay | ha×3+save tls-worker 200 | ha×3+save tls-worker 200 |
+| Issuer | tls-worker **EOF** (client) | tls-worker **302** · tx **`172538665`** |
+| Client | posts=1 · bankSignal=false | posts=1 · `sameCart=False` · bankSignal |
+| **Revolut** | **×2** (user) | **×2** (user) |
+
+Notes:
+- Client issuer EOF ≠ no bank — 05:39 still dualed.
+- Do **not** retry issuer after EOF (adds dual risk).
+- July `9d313ae` tip does not hold on this stack; next A/B = throwaway + undici pay TLS off.
 
 ### Ruled out / parked
 
@@ -248,6 +257,7 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Playwright stealth as dual fix | parked — not shared; Fast no-PW pay |
 | Bandai issuer-only tls-worker | ×2 (`172456937`) |
 | Bandai GE-all-tls + `ct=false` | ×2 (`172528639`) — liveHtml riskHydrate still on |
+| Bandai throwaway iovation + tls-worker | ×2 (`172538665` @05:49; EOF dual @05:39) |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
