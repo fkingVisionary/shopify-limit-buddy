@@ -219,6 +219,17 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Card | last4 `3083` (rotated — do not score Revolut) |
 | **Revolut** | **re-run on last4 `1964`** |
 
+### Lab 2026-08-03 ~04:25 AEST — GE-all-tls + ct=false on fresh card (Revolut TBD)
+
+| Field | Value |
+|---|---|
+| Run | e2e `j1m-e2e-bandai-ge-all-tls3` · card last4 **`1964`** |
+| GE tx | **`172528639`** |
+| Wire | ha×3 + save + HandleCreditCard → **tls-worker** · posts=1 · `ct=false` |
+| PSP | `AutherizationFailed` · `possibleFraudDetected=false` · `sameCart=False` |
+| Via | `http-ge-issuer` · bankSignal |
+| **Revolut** | **user score** — 1 vs 2 |
+
 ### Ruled out / parked
 
 | Lever | Result |
