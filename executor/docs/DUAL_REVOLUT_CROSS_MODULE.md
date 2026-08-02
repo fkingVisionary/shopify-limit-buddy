@@ -4,13 +4,19 @@
 **PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
-### VERDICT (locked 2026-08-02 ~14:54 AEST) — FIXED on shared path
+### VERDICT (updated 2026-08-02 ~16:44 AEST) — PARTIAL
 
-**Cause:** post-Kmart modules charged the bank through shared `executor/http.js` **undici**. That TLS/stack presentation produced **Revolut×2** for one client PSP POST. Kmart single-fired because its bank hop was Chromium TLS (Paydock Canvas3ds), not undici PAN→PSP.
+**Shared undici issuer TLS** duals (Toymate control). **Issuer chrome_131 tls-worker** → Revolut×1 on Toymate BigPay `run_20651586e4b2` @14:54.
 
-**Fix (default ON):** issuer-stage mutates → chrome_131 **tls-worker** (`PAY_ISSUER_TLS_WORKER`, opt out `=0`). Cart/prepay stay undici.
+**Bandai Fast still duals** with the same issuer tls-worker:
+| Field | `run_efb49f4c05df` / tx `172456937` @16:44 AEST |
+|---|---|
+| Wire | `via=http-ge-issuer` · `payTransport=tls-worker` · **posts=1** |
+| GE | `AuthorizationFailed` · `possibleFraudDetected=false` |
+| **Revolut** | **×2** (user 2026-08-02) |
 
-**Proof:** Toymate BigPay `run_20651586e4b2` @14:54 AEST — `payTransport=tls-worker`, posts=1, BigPay 422/30106, user confirmed **Revolut×1**. Bandai Fast re-score when SoftBlock cools (`via=http-ge-issuer` + same transport).
+Client forensics: exactly one `HandleCreditCard` POST. Dual is not a second app POST.
+GE prepay (handleaction/save) was still **undici** while issuer was tls-worker — active A/B: put **all payHost mutates** on tls-worker (`PAY_PAYHOST_TLS_WORKER`, default ON).
 
 ---
 
@@ -33,16 +39,17 @@ LOCKED FACTS — do not re-argue:
 - Do NOT implement Toymate/Kmart/Disney product fixes. Toymate/PKC were research controls only.
 - Delivery: Bandai must stop dualing. Code changes should be in SHARED layers unless you prove a Bandai-only cause that somehow also explains Toymate (you won’t via GE fields).
 
-FIXED (do not reopen undici-issuer dual hunt):
-- Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 (Toymate @14:54).
-- Keep `PAY_ISSUER_TLS_WORKER` default ON in `executor/http.js`. Do not “simplify” back to undici issuer.
-- Next job if needed: confirm Bandai Fast (`via=http-ge-issuer`, `payTransport=tls-worker`) also Revolut×1 when SoftBlock allows a bank hit.
+PARTIAL FIX (keep; do not revert without wire proof):
+- Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 on **Toymate** @14:54.
+- Keep `PAY_ISSUER_TLS_WORKER` default ON. Do not “simplify” back to undici issuer.
+- **Bandai Fast counterexample:** tx `172456937` @16:44 — issuer tls-worker + posts=1 still Revolut×2. Not fixed for GE yet.
+- Active A/B: `PAY_PAYHOST_TLS_WORKER` default ON — GE/BigPay **prepay** mutates also chrome_131 (same stack as issuer). Opt out `=0`.
 
 FORBIDDEN:
-- Reverting issuer tls-worker without a new Revolut×2 wire proof.
+- Reverting issuer tls-worker without a new Revolut×2 wire proof on Toymate/Bandai.
 - Using Playwright / page-issuer as the Fast dual fix.
 - Bandai GE field / form-nav / settle / mute ceremony churn.
-- Claiming payment-latch solved this dual.
+- Claiming payment-latch or issuer-only tls-worker solved Bandai dual.
 
 Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
@@ -144,20 +151,19 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 - Bandai Fast / PKC / Toymate BigPay charge the bank through **shared `executor/http.js` undici** — the post-Kmart shared path. Matches “old Fly / shared executor layer” suspicion.
 - Do **not** resurrect Kmart product work; use the clue to justify shared TLS A/Bs only.
 
-### Active A/B — issuer tls-worker (global `http.js`)
+### Active A/B — payHost tls-worker (global `http.js`)
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker; cart/prepay stay undici |
+| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker |
+| `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 (Bandai dual A/B after 16:44) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 
-Forensics: issuer `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback`.
+Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback` on prepay **and** issuer.
 
-**Next score:** Fast `via=http-ge-issuer` + issuer `payTransport=tls-worker` → Revolut 1 vs 2.
+**Next score:** Bandai Fast `via=http-ge-issuer` + prepay `payTransport=tls-worker` + issuer `payTransport=tls-worker` + posts=1 → Revolut 1 vs 2.
 
-### Lab 2026-08-02 ~14:54 AEST — WIN (Toymate research → shared fix)
-
-Bandai Fast was SoftBlocked at login/checkout that session; scored shared path via Toymate BigPay:
+### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
 | Field | Value |
 |---|---|
@@ -169,7 +175,18 @@ Bandai Fast was SoftBlocked at login/checkout that session; scored shared path v
 | Payment id | `6fcce371-fcff-46cd-b169-819681ee68b8` |
 | **Revolut** | **×1** (user confirmed 2026-08-02) |
 
-**Lock:** default-on issuer tls-worker stays. Confirm Bandai Fast the same way when SoftBlock cools. Do **not** dismantle Bandai GE ceremony; do **not** expand Playwright on Fast.
+### Lab 2026-08-02 ~16:44 AEST — Bandai FAIL (issuer tls-worker insufficient)
+
+| Field | Value |
+|---|---|
+| Run | `run_efb49f4c05df` · attempt `bandai#7` |
+| GE tx | `172456937` |
+| Wire | `via=http-ge-issuer` · issuer `payTransport=tls-worker` · **posts=1** |
+| Prepay | handleaction/save still **undici** |
+| PSP | `AuthorizationFailed` · `possibleFraudDetected=false` · bankSignal |
+| **Revolut** | **×2** (user confirmed 2026-08-02) |
+
+**Lock:** keep issuer tls-worker ON. Score payHost-wide tls-worker next. Do **not** dismantle Bandai GE ceremony; do **not** expand Playwright on Fast.
 
 ### Ruled out / parked
 

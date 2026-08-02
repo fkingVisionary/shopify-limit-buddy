@@ -650,17 +650,30 @@ function finalizePayResponse(url, method, opts, res) {
 }
 
 /**
- * Dual-Revolut fix: issuer/pay POSTs on chrome_131 tls-worker (Kmart-like bank TLS).
- * Proven Revolut×1 on Toymate BigPay run_20651586e4b2 @2026-08-02 14:54 AEST
- * (undici issuer was Revolut×2). Cart/prepay stay undici.
- * Default ON; opt out PAY_ISSUER_TLS_WORKER=0 only for controlled A/B.
+ * Dual-Revolut: pay mutates on chrome_131 tls-worker (Kmart-like bank TLS).
+ *
+ * Toymate BigPay `run_20651586e4b2` @14:54 — issuer tls-worker → Revolut×1.
+ * Bandai Fast `172456937` @16:44 — issuer tls-worker + undici GE prepay still
+ * Revolut×2 with posts=1. So Bandai needs the same chrome_131 stack for GE
+ * prepay (handleaction/save) as well as HandleCreditCard.
+ *
+ * Defaults ON:
+ *   PAY_ISSUER_TLS_WORKER  — issuer stage (opt out =0)
+ *   PAY_PAYHOST_TLS_WORKER — GE/BigPay prepay stage (opt out =0)
+ * Merchant cart ATC stays undici (stage=other).
  */
 export function shouldUseIssuerTlsWorker(url, method) {
-  if (process.env.PAY_ISSUER_TLS_WORKER === "0") return false;
   if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
   const { host, path: pathName } = parsePayUrl(url);
   if (!host) return false;
-  return classifyPayWireStage(host, pathName) === "issuer";
+  const stage = classifyPayWireStage(host, pathName);
+  if (stage === "issuer") {
+    return process.env.PAY_ISSUER_TLS_WORKER !== "0";
+  }
+  if (stage === "prepay") {
+    return process.env.PAY_PAYHOST_TLS_WORKER !== "0";
+  }
+  return false;
 }
 
 async function ensureIssuerRemoteTls(dispatcher) {
