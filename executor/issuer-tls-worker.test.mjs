@@ -180,8 +180,10 @@ test("GE tls-worker: PAY_GE_TLS_WORKER=1 opts all GE hops incl GET", () => {
 test("CreditCardForm GET uses issuer tls-worker by default", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
   const prevCc = process.env.PAY_ISSUER_CCFORM_TLS;
+  const prevGe = process.env.PAY_GE_TLS_WORKER;
   delete process.env.PAY_ISSUER_TLS_WORKER;
   delete process.env.PAY_ISSUER_CCFORM_TLS;
+  delete process.env.PAY_GE_TLS_WORKER;
   try {
     assert.equal(
       shouldUseIssuerTlsWorker(
@@ -203,6 +205,8 @@ test("CreditCardForm GET uses issuer tls-worker by default", () => {
     else process.env.PAY_ISSUER_TLS_WORKER = prev;
     if (prevCc === undefined) delete process.env.PAY_ISSUER_CCFORM_TLS;
     else process.env.PAY_ISSUER_CCFORM_TLS = prevCc;
+    if (prevGe === undefined) delete process.env.PAY_GE_TLS_WORKER;
+    else process.env.PAY_GE_TLS_WORKER = prevGe;
   }
 });
 
