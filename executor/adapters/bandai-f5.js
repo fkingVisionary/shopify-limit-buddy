@@ -163,6 +163,14 @@ export async function createBandaiF5Bridge(opts = {}) {
         }
       : {}),
   });
+  // Shared stealth (not GE pay ceremony): hide webdriver before login/risk mint.
+  // Dual-Revolut angle A — bot-stamped Forter/GE sessions can fan out two bank lines.
+  try {
+    const { installChromePayStealth } = await import("../chrome-pay-stealth.js");
+    await installChromePayStealth(context);
+  } catch {
+    /* stealth is best-effort */
+  }
   const page = await context.newPage();
   page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
 

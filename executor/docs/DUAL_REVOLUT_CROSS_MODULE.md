@@ -135,11 +135,25 @@ Naked undici / page-issuer hops omitted Chrome Client Hints; GE prepay lacked Se
 - `chromeClientHints()` on `request()` when omitted (`PAY_CHROME_CH=0` to opt out)
 - `chromePayFetchHeaders()` for all pay-host mutates incl. handleaction/save
 
-**Next score (~13:39 AEST):** `run_a71f2d4462d6` · tx **`172448160`** · stock Fast · `hasSecChUa=true` · `secChPlatform="Windows"` · `secFetchMode=navigate` · posts=1 · bank hit (`AutherizationFailed`).
+**Score (~13:39 AEST):** `run_a71f2d4462d6` · tx **`172448160`** · stock Fast · `hasSecChUa=true` · `secChPlatform="Windows"` · `secFetchMode=navigate` · posts=1 · bank hit (`AutherizationFailed`).
 
-**Awaiting user:** Revolut **1 or 2** for tx **`172448160`**?
+**User confirmed: Revolut ×2** — Client Hints + Sec-Fetch + platform UA **do not fix** the dual. Park header-only presentation as insufficient.
+
+### Next shared A/B (still angle A, not GE ceremony)
+
+Risk hydrate runs in Playwright; a `navigator.webdriver` stamp can make Forter/GE fan out two bank lines from the later single pay POST. Shipped: shared `executor/chrome-pay-stealth.js` installed on F5/risk browser context (`PAY_CHROME_STEALTH=0` to opt out). No HandleCreditCard / form-nav / field changes.
+
+**Next score:** stock Fast → Revolut 1 vs 2 for new tx.
 
 Do **not** change Bandai issuer body / form-nav / mute to chase these.
+
+### Ruled out presentation levers (keep growing)
+
+| Lever | Result |
+|---|---|
+| GE field / form-nav / settle | Revolut×2 |
+| Stock Fast page issuer baseline | tx `172447213` ×2 |
+| CH + Sec-Fetch + Win UA | tx `172448160` ×2 |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
