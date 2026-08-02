@@ -464,4 +464,17 @@ assert.equal(bigpay["sec-fetch-mode"], "cors");
 assert.equal(bigpay["sec-fetch-dest"], "empty");
 assert.equal(bigpay["sec-fetch-site"], "cross-site");
 
+// Dual-Revolut angles A/B helpers (shared; not Bandai ceremony)
+const { classifyPayWireStage, redirectFanoutFields } = await import("../pay-forensics.js");
+assert.equal(
+  classifyPayWireStage("webservices.global-e.com", "/checkoutv2/handleaction/1/x/8urc"),
+  "prepay",
+);
+assert.equal(
+  redirectFanoutFields("https://webservices.global-e.com/payments/CCPaymentRedirect?Data=x", {
+    TransactionId: "1",
+  }).transactionId,
+  "1",
+);
+
 console.log("bandai-flow.test.mjs ok");

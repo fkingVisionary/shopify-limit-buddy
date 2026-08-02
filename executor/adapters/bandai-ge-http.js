@@ -16,7 +16,7 @@
 import { request } from "../http.js";
 import fs from "node:fs";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
-import { payForensics } from "../pay-forensics.js";
+import { payForensics, redirectFanoutFields } from "../pay-forensics.js";
 
 function issuerBodyFlags(body) {
   const s = String(body || "");
@@ -1125,6 +1125,24 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
     const bankSignal = isBandaiGePaymentRedirectSignal(redirectUrl || "", "");
     const declineOnRedirect = isBandaiGeRedirectDecline(redirectUrl || "", "");
     const ok = Boolean(isPaymentRedirect && (bankSignal || declineOnRedirect));
+    const fanout = redirectFanoutFields(redirectUrl, redirectPayload);
+    // Stock Fast scoreboard: page issuer must emit psp_post_end (angle A/C).
+    payForensics("psp_post_end", {
+      via: "page-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      status,
+      ok,
+      ms: Date.now() - t0,
+      bankSignal: Boolean(bankSignal || declineOnRedirect),
+      responseLost: false,
+      scoreboard: "stock_fast",
+      ...fanout,
+      ...flags,
+    });
     return {
       ok,
       status,
@@ -1149,6 +1167,20 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
             : "issuer_page_failed",
     };
   } catch (e) {
+    payForensics("psp_post_end", {
+      via: "page-ge-issuer",
+      store: "bandai",
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+      ok: false,
+      ms: Date.now() - t0,
+      responseLost: true,
+      error: String(e?.message || e).slice(0, 160),
+      scoreboard: "stock_fast",
+      ...flags,
+    });
     return {
       ok: false,
       error: e?.message || "issuer_page_failed",
@@ -1403,6 +1435,7 @@ export async function postBandaiGeIssuerHttp(opts = {}) {
       undiciAttempts: out.undiciAttempts,
       bankSignal: out.bankSignal,
       responseLost: false,
+      ...redirectFanoutFields(out.redirectUrlFull || out.redirectUrl, out.redirectPayload),
       ...flags,
     });
     return out;

@@ -6,10 +6,27 @@
  * Does NOT change checkout / retry / pay behavior.
  *
  * Log path: PAY_FORENSICS_PATH or <tmpdir>/j1m-pay-forensics.jsonl
+ *
+ * Dual-Revolut angles (see DUAL_REVOLUT_CROSS_MODULE.md):
+ *   A) merchant/PSP fan-out — enrich psp_post_end with redirect/tx fields
+ *   B) shared pre-pay hops — stage=prepay|issuer on http_mutate*
+ *   C) score on stock Fast (via=page-ge-issuer) only
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+/** Hosts that may participate in checkout/pay. */
+export const PAY_WIRE_HOST_RE =
+  /global-e\.com|payments\.bigcommerce\.com|paydock\.com|adyen\.com|checkout\.com|stripe\.com|braintree|paypal\.com/i;
+
+/** Paths that can actually hit a card issuer. */
+export const ISSUER_PATH_RE =
+  /HandleCreditCard|\/payments(?:\/|$)|\/charges|standalone-3ds|\/Payment|CreditCard/i;
+
+/** Redirect / ACS-ish locations (fan-out correlation, not a second client POST). */
+export const ACS_OR_REDIRECT_RE =
+  /CCPaymentRedirect|\/acs|3ds|cardinalcommerce|secure\.|pareq|creq|methodurl/i;
 
 function logPath() {
   const env = String(process.env.PAY_FORENSICS_PATH || "").trim();
@@ -20,6 +37,67 @@ function logPath() {
 function maskLast4(card) {
   const n = String(card?.number || "").replace(/\s+/g, "");
   return n.length >= 4 ? n.slice(-4) : null;
+}
+
+/**
+ * Classify a pay-host mutate as issuer vs prepay (angle B).
+ * @param {string} host
+ * @param {string} pathName
+ * @returns {"issuer"|"prepay"|"other"}
+ */
+export function classifyPayWireStage(host, pathName) {
+  const h = String(host || "");
+  const p = String(pathName || "");
+  if (ISSUER_PATH_RE.test(p) || /payments\.bigcommerce\.com/i.test(h)) {
+    return "issuer";
+  }
+  if (PAY_WIRE_HOST_RE.test(h)) return "prepay";
+  return "other";
+}
+
+/**
+ * Behavior-neutral fan-out fields from a PSP redirect / JWT map (angle A).
+ * @param {string|null|undefined} redirectUrl
+ * @param {Record<string, unknown>|null|undefined} redirectPayload
+ */
+export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
+  let redirectHost = null;
+  let redirectPath = null;
+  const raw = redirectUrl ? String(redirectUrl) : "";
+  if (raw) {
+    try {
+      const abs = /^https?:\/\//i.test(raw)
+        ? raw
+        : `https://webservices.global-e.com${raw.startsWith("/") ? "" : "/"}${raw}`;
+      const u = new URL(abs);
+      redirectHost = u.host;
+      redirectPath = u.pathname.slice(0, 180);
+    } catch {
+      redirectPath = raw.slice(0, 180);
+    }
+  }
+  const map =
+    redirectPayload && typeof redirectPayload === "object" ? redirectPayload : {};
+  const transactionId =
+    map.TransactionId != null && String(map.TransactionId) !== "0"
+      ? String(map.TransactionId)
+      : map.MerchantReference
+        ? String(map.MerchantReference)
+        : null;
+  const statusType =
+    map.StatusType != null
+      ? String(map.StatusType)
+      : map.ErrorCode != null
+        ? String(map.ErrorCode)
+        : null;
+  return {
+    redirectHost,
+    redirectPath,
+    isPaymentRedirect: /CCPaymentRedirect/i.test(raw),
+    locationLooksAcs: Boolean(raw && ACS_OR_REDIRECT_RE.test(raw)),
+    transactionId,
+    statusType,
+  };
 }
 
 /**
@@ -103,4 +181,13 @@ export function pspPostForensics(phase, fields = {}) {
   });
 }
 
-export default { payForensics, payForensicsPath, pspPostForensics };
+export default {
+  payForensics,
+  payForensicsPath,
+  pspPostForensics,
+  classifyPayWireStage,
+  redirectFanoutFields,
+  PAY_WIRE_HOST_RE,
+  ISSUER_PATH_RE,
+  ACS_OR_REDIRECT_RE,
+};

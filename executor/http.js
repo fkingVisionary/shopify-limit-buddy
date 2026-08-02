@@ -15,7 +15,13 @@
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
-import { payForensics } from "./pay-forensics.js";
+import {
+  payForensics,
+  classifyPayWireStage,
+  PAY_WIRE_HOST_RE,
+  ISSUER_PATH_RE,
+  ACS_OR_REDIRECT_RE,
+} from "./pay-forensics.js";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -410,14 +416,6 @@ function wrapFetchResponse(res, requestedUrl) {
   };
 }
 
-/** Hosts that may participate in checkout/pay (audited when PAY_WIRE_AUDIT=1). */
-const PAY_WIRE_HOST_RE =
-  /global-e\.com|payments\.bigcommerce\.com|paydock\.com|adyen\.com|checkout\.com|stripe\.com|braintree|paypal\.com/i;
-
-/** Paths that can actually hit a card issuer — always audited. */
-const ISSUER_PATH_RE =
-  /HandleCreditCard|\/payments(?:\/|$)|\/charges|standalone-3ds|\/Payment|CreditCard/i;
-
 /**
  * Chrome document-navigation Sec-Fetch-* for issuer-like POSTs when the caller
  * omitted them. Manual browser pay sends these; naked undici often does not.
@@ -502,29 +500,42 @@ export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
   return out;
 }
 
-function auditPayWire(url, method, opts) {
-  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
-  let host = null;
-  let path = null;
+function parsePayUrl(url) {
   try {
     const u = new URL(String(url || ""));
-    host = u.host;
-    path = u.pathname;
+    return { host: u.host, path: u.pathname };
   } catch {
-    return;
+    return { host: null, path: null };
   }
-  const issuerLike = ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
+}
+
+function shouldAuditPayWire(host, pathName) {
+  const payHost = Boolean(host && PAY_WIRE_HOST_RE.test(host));
+  const issuerLike =
+    Boolean(pathName && ISSUER_PATH_RE.test(pathName)) ||
+    /payments\.bigcommerce\.com/i.test(String(host || ""));
   const forceAll = process.env.PAY_WIRE_AUDIT === "1";
-  // Always record issuer-like mutates; optional full mutate dump via env.
-  if (!issuerLike && !forceAll) return;
+  // Angle B: always audit pay-host mutates (handleaction/save/BigPay), not only issuer paths.
+  return issuerLike || payHost || forceAll;
+}
+
+function auditPayWire(url, method, opts) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host) return;
+  const issuerLike =
+    ISSUER_PATH_RE.test(pathName || "") || /payments\.bigcommerce\.com/i.test(host);
+  const payHost = PAY_WIRE_HOST_RE.test(host);
+  if (!shouldAuditPayWire(host, pathName)) return;
   try {
     payForensics("http_mutate", {
       method,
       host,
-      path: String(path || "").slice(0, 180),
+      path: String(pathName || "").slice(0, 180),
       bodyBytes: opts?.body != null ? String(opts.body).length : 0,
-      payHost: PAY_WIRE_HOST_RE.test(host),
+      payHost,
       issuerLike,
+      stage: classifyPayWireStage(host, pathName),
       retryOpt:
         opts?.retry === true ? true : opts?.retry === false ? false : null,
       allowMutationRetry: opts?.allowMutationRetry === true,
@@ -532,6 +543,74 @@ function auditPayWire(url, method, opts) {
   } catch {
     /* forensics must never break checkout */
   }
+}
+
+/** Angle A/B: response side of pay-host mutates (status + Location, no body). */
+function auditPayWireResponse(url, method, opts, resMeta = {}) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host || !shouldAuditPayWire(host, pathName)) return;
+  let locationHost = null;
+  let locationPath = null;
+  const loc = resMeta.location != null ? String(resMeta.location) : "";
+  if (loc) {
+    try {
+      const abs = /^https?:\/\//i.test(loc) ? loc : new URL(loc, url).href;
+      const u = new URL(abs);
+      locationHost = u.host;
+      locationPath = u.pathname.slice(0, 180);
+    } catch {
+      locationPath = loc.slice(0, 180);
+    }
+  }
+  try {
+    payForensics("http_mutate_response", {
+      method,
+      host,
+      path: String(pathName || "").slice(0, 180),
+      status: resMeta.status != null ? Number(resMeta.status) : null,
+      locationHost,
+      locationPath,
+      locationLooksAcs: Boolean(loc && ACS_OR_REDIRECT_RE.test(loc)),
+      undiciAttempts:
+        resMeta.undiciAttempts != null ? Number(resMeta.undiciAttempts) : null,
+      payHost: PAY_WIRE_HOST_RE.test(host),
+      issuerLike:
+        ISSUER_PATH_RE.test(pathName || "") ||
+        /payments\.bigcommerce\.com/i.test(host),
+      stage: classifyPayWireStage(host, pathName),
+    });
+  } catch {
+    /* forensics must never break checkout */
+  }
+}
+
+function readResponseLocation(res) {
+  try {
+    if (typeof res?.headers?.get === "function") {
+      return res.headers.get("location") || res.headers.get("Location") || "";
+    }
+    const h = res?.headers;
+    if (h && typeof h === "object") {
+      return h.location || h.Location || "";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function finalizePayResponse(url, method, opts, res) {
+  try {
+    auditPayWireResponse(url, method, opts, {
+      status: res?.status,
+      location: readResponseLocation(res),
+      undiciAttempts: res?.undiciAttempts,
+    });
+  } catch {
+    /* ignore */
+  }
+  return res;
 }
 
 export async function request(url, opts, ctx) {
@@ -595,7 +674,7 @@ export async function request(url, opts, ctx) {
       body: opts?.body,
     });
     jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
-    return res;
+    return finalizePayResponse(url, method, opts, res);
   }
 
   if (!dispatcher.useTls) {
@@ -647,7 +726,7 @@ export async function request(url, opts, ctx) {
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
         const wrapped = wrapFetchResponse(res, url);
         wrapped.undiciAttempts = undiciAttempts;
-        return wrapped;
+        return finalizePayResponse(url, method, opts, wrapped);
       } catch (e) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
@@ -710,7 +789,7 @@ export async function request(url, opts, ctx) {
 
   // Capture cookies from this response into the jar.
   jar.ingest(res.headers);
-  return wrapResponse(res, url);
+  return finalizePayResponse(url, method, opts, wrapResponse(res, url));
 }
 
 export { UA };

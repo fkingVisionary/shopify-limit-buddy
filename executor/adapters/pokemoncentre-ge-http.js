@@ -18,7 +18,7 @@
 
 import { request } from "../http.js";
 import fs from "node:fs";
-import { pspPostForensics } from "../pay-forensics.js";
+import { pspPostForensics, redirectFanoutFields } from "../pay-forensics.js";
 import {
   extractGeCheckoutGuid,
   parseJsonp,
@@ -334,6 +334,7 @@ export async function postPcGeIssuerHttp(opts = {}) {
       undiciAttempts,
       bankSignal: Boolean(bankSignal || declineOnRedirect),
       responseLost: false,
+      ...redirectFanoutFields(redirectUrl, redirectPayload),
     });
     return {
       ok,

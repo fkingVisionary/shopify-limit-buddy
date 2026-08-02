@@ -623,6 +623,16 @@ export async function placeOrderViaHttp({
     );
     payText = await payRes.text().catch(() => "");
     usedMethod = paymentMethodId;
+    let payJson = null;
+    try {
+      payJson = JSON.parse(payText || "");
+    } catch {
+      /* ignore */
+    }
+    const loc =
+      (typeof payRes.headers?.get === "function" &&
+        (payRes.headers.get("location") || payRes.headers.get("Location"))) ||
+      "";
     pspPostForensics("end", {
       store: "toymate",
       via: "bigpay",
@@ -632,6 +642,27 @@ export async function placeOrderViaHttp({
       ok: payRes.status >= 200 && payRes.status < 300,
       bankSignal: looksDeclined(payText) || payRes.status === 422 || (payRes.status >= 200 && payRes.status < 300),
       paymentMethodId,
+      // Angle A: PSP response identity (no second client POST).
+      transactionId:
+        payJson?.id ||
+        payJson?.transaction_id ||
+        payJson?.payment_id ||
+        payJson?.three_ds_result?.trans_status ||
+        null,
+      statusType:
+        payJson?.status ||
+        payJson?.errors?.[0]?.code ||
+        (looksDeclined(payText) ? "declined" : null),
+      redirectHost: loc
+        ? (() => {
+            try {
+              return new URL(loc, payUrl).host;
+            } catch {
+              return null;
+            }
+          })()
+        : null,
+      locationLooksAcs: /3ds|acs|challenge/i.test(loc || payText || ""),
     });
     logs.push({
       step: "bigpay",

@@ -40,11 +40,12 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE (SHARED ONLY):
-- Bandai is the **scoreboard** only. Product Fast = riskHydrate + **page issuer** (restored). Workshop = `executor/http.js`, TLS/client, desktop sidecar `/run`, proxy binding.
-- Form-nav / settle / mute / undici-default labs are **closed digressions** — evidence only; they dualed too.
+- Chase angles **A fan-out / B pre-pay / C stock Fast** — see §4 Active chase. Score with `node executor/scripts/score-stock-fast-angles.mjs` after one Fast placeOrder.
+- Bandai is the **scoreboard** only. Product Fast = riskHydrate + **page issuer**. Workshop = `executor/http.js` + forensics, not GE ceremony.
+- Form-nav / settle / mute / undici-default labs are **closed digressions**.
 - Next change must be justifiable for Bandai **and** Toymate BigPay. If it only lives in Bandai GE code, stop.
 
-Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** (not autocheckout_test). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
+Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast** (not autocheckout_test). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---
@@ -97,23 +98,31 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 
 **Not** “missing document form-nav / settle / post-issuer GE mutates.” User confirmed settle=0 form-nav tx `172445269` @12:39 was still **Revolut×2** with `postGeMut=0`. Headed Chromium form-nav also dualed. So the dual survives a real browser document POST of HandleCreditCard.
 
-What remains plausible (shared / below our one POST):
+### Active chase — three angles (2026-08-02)
 
-1. **Merchant/PSP fan-out after our single POST** — GE/BigPay/Adyen emit two issuer messages from one accepted pay attempt; bot path triggers that fan-out, manual path does not (different risk/SCA/device signals upstream of the bank).
-2. **Shared transport / client identity** — `executor/http.js` undici/TLS/proxy presentation on *pre-pay* hops (session, tokenize, 3DS method URL, fingerprint) differs from manual and poisons the later single pay attempt. Mutation retry is already hard-blocked.
-3. **Uninstrumented second pay hop** — weaker now (`http_mutate` + clean posts=1 labs), keep as guardrail.
-4. **Proxy** — weak; direct already dualed historically.
+| Angle | Question | Instrumentation / test |
+|---|---|---|
+| **A — PSP fan-out** | Does one accepted pay POST yield one `transactionId` / redirect while Revolut still shows 2? | `psp_post_end` now logs `transactionId`, `redirectHost`, `statusType`, `locationLooksAcs` (page + undici + Toymate/PKC). |
+| **B — Shared pre-pay** | What pay-host mutates happen *before* the charge on undici? | `http.js` always audits GE/BigPay mutates with `stage=prepay\|issuer` + `http_mutate_response` (status/Location). |
+| **C — Stock Fast scoreboard** | Score only product Fast (`via=page-ge-issuer`), not autocheckout_test. | Page issuer now emits `psp_post_end` + `scoreboard:"stock_fast"`. |
 
-**Different angle:** stop changing the Bandai pay POST ceremony. Diff **manual vs bot** on the *shared* path that builds risk/SCA context *before* that one POST (and any redirect land), then change only shared infrastructure. Score on stock Fast.
+**How to test (desktop):**
+1. Task `bandaiCheckoutMode=fast` (default). Do **not** use Autocheckout test.
+2. One placeOrder run → confirm no `bandai_ge_http_fork` step.
+3. `node executor/scripts/score-stock-fast-angles.mjs` (or `classify-pay-forensics.mjs`).
+4. User: Revolut **1 or 2** for the printed `transactionId`.
+
+Do **not** change Bandai issuer body / form-nav / mute to chase these.
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
 ### Shipped shared instrumentation / guards (this branch)
 
 - `executor/http.js`: mutations never retry unless `allowMutationRetry:true` (ignores bare `retry:true`).
-- `executor/http.js`: `http_mutate` audit — always for **issuer-like** paths; optional full dump via `PAY_WIRE_AUDIT=1`.
-- `executor/http.js`: `chromeIssuerNavigateHeaders` — fills Chrome `Sec-Fetch-*` navigate defaults on issuer-like POSTs when the adapter omitted them (`PAY_ISSUER_CHROME_NAV=0` to opt out).
-- Classifier reports `issuerLikeMutates` vs `pspPostStarts`.
+- `executor/http.js`: `http_mutate` — all pay-host mutates (`stage=prepay|issuer`); `http_mutate_response` with status/Location.
+- `executor/http.js`: `chromeIssuerNavigateHeaders` — Chrome `Sec-Fetch-*` on issuer-like POSTs when omitted (`PAY_ISSUER_CHROME_NAV=0` to opt out).
+- `psp_post_end` fan-out fields + stock Fast page-issuer `psp_post_end` (was missing).
+- Classifier / scoreboard: `classify-pay-forensics.mjs`, `score-stock-fast-angles.mjs`.
 - Do **not** treat Revolut×2 as “expected GE dual-rail” in Bandai bible anymore.
 
 ### Wire-audit result (Bandai clean, 2026-08-02 ~11:48 AEST)
