@@ -79,6 +79,7 @@ Orchestration labs: `quantity=1`, one `desktop_enqueue_*`, one `run_start`, one 
 | **`IsTheSameCartToken` / GE JWT cart flags** | GE response field only; Toymate has no such field and still duals. User correction 2026-08-02. |
 | Desktop card packaging (duplicate PAN/CVV/token) | Audited clean: one card object on `/run`; latch cannot create posts=1×2 |
 | Fat Chromium form-nav + post-issuer settle | tx `172443438` / `172443854` still Revolut×2 with `posts=1` |
+| Form-nav settle=0 (`postGeMut=0`) | tx `172445269` @12:39 — user confirmed Revolut×2 |
 | Two `/run`s or quantity fan-out | Forensics: one run, one post |
 | Soft-retry / RESPONSE_LOST double placeOrder | Fixed by `desktop/payment-latch.cjs`; different shape (`posts≥2` or re-entry) |
 | Toymate CSE second BigPay after decline | Fixed (CSE skipped on 422); Toymate dual still happened with one BigPay POST |
@@ -92,16 +93,18 @@ Orchestration labs: `quantity=1`, one `desktop_enqueue_*`, one `run_start`, one 
 
 Something about **how the bot presents the single pay attempt** makes issuers/acquirers record **two** bank lines, while a real browser’s single attempt records **one**. User timing: the two Revolut lines arrive **together / within seconds** → looks like one merchant request fanning out to two issuer messages, not a slow client retry.
 
-### Leading hypothesis (2026-08-02 evening)
+### Leading hypothesis (revised after 12:39 confirm)
 
-**Naked CNP / incomplete SCA ceremony.** Bot never shows an in-app 3DS challenge; pay goes straight to decline/auth. Manual browser often also frictionless, but still completes the browser 3DS2 data exchange (document form-nav + land `CCPaymentRedirect`). Incomplete SCA data can make some issuer rails emit two near-simultaneous notifications. Fits cross-PSP + simultaneous duals + `posts=1`.
+**Not** “missing document form-nav / settle / post-issuer GE mutates.” User confirmed settle=0 form-nav tx `172445269` @12:39 was still **Revolut×2** with `postGeMut=0`. Headed Chromium form-nav also dualed. So the dual survives a real browser document POST of HandleCreditCard.
 
-### Other candidates
+What remains plausible (shared / below our one POST):
 
-1. **`executor/http.js` / undici / TLS** — fingerprint, connection reuse. Mutation auto-retry is now hard-blocked (`allowMutationRetry` only); historical RST-replay duals are documented.
-2. **Uninstrumented second pay hop** — `http_mutate` forensics now logs every POST/PUT/PATCH/DELETE to known pay hosts. Classifier warns if `payHostMutates > psp_post_start`.
-3. **Desktop → executor card packaging** — only with proof.
+1. **Merchant/PSP fan-out after our single POST** — GE/BigPay/Adyen emit two issuer messages from one accepted pay attempt; bot path triggers that fan-out, manual path does not (different risk/SCA/device signals upstream of the bank).
+2. **Shared transport / client identity** — `executor/http.js` undici/TLS/proxy presentation on *pre-pay* hops (session, tokenize, 3DS method URL, fingerprint) differs from manual and poisons the later single pay attempt. Mutation retry is already hard-blocked.
+3. **Uninstrumented second pay hop** — weaker now (`http_mutate` + clean posts=1 labs), keep as guardrail.
 4. **Proxy** — weak; direct already dualed historically.
+
+**Different angle:** stop changing the Bandai pay POST ceremony. Diff **manual vs bot** on the *shared* path that builds risk/SCA context *before* that one POST (and any redirect land), then change only shared infrastructure. Score on stock Fast.
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 
@@ -137,7 +140,7 @@ Research evidence kept (not a Bandai fix path):
 | Fat form-nav | `172443438` @12:02 | posts=1, Revolut×2 |
 | Form-nav + settle | `172443854` @12:09 | postGeMut=6, Revolut×2 |
 | Headed Chrome form-nav | `172444504` @12:23 | ~5s Revolut gap |
-| Form-nav settle=0 | `172445269` @12:39 | postGeMut=0 |
+| Form-nav settle=0 | `172445269` @12:39 | postGeMut=0, **Revolut×2** (user confirmed) |
 
 Also parked: `IsTheSameCartToken` (GE-only); desktop card packaging (audited clean).
 
