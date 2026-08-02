@@ -23,8 +23,9 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 
 **Workshop (user 2026-08-03):** keep the Toymate fix (issuer chrome_131 tls-worker) on Bandai and work **outward** from remaining hop diffs — not GE field roulette, not July folklore.
 1. Keep `PAY_ISSUER_TLS_WORKER` + `PAY_PAYHOST_TLS_WORKER` ON (already on Bandai; still ×2 alone).
-2. **Next:** `PAY_ISSUER_FORM_AS_CORS` default ON — GE HandleCreditCard Sec-Fetch `cors`/`empty` like BigPay (was `navigate`/`document`).
-3. Then: cold issuer tls session (no prepay worker reuse) → skip/relocate CreditCardForm GET on pay host.
+2. **In flight:** `PAY_ISSUER_FORM_AS_CORS` default ON — GE HandleCreditCard Sec-Fetch `cors`/`empty` like BigPay.
+   - Bank wire: tx **`172548067`** ~07:11 AEST · posts=1 · issuer tls-worker 302 · `sameCart=False` · card `1964`. **Revolut 1 vs 2 TBD (user).**
+3. If still ×2: cold issuer tls session (no prepay worker reuse) → skip/relocate CreditCardForm GET on pay host.
 
 ---
 
