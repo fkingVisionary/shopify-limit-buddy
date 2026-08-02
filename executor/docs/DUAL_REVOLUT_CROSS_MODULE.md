@@ -21,6 +21,11 @@ Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
 
 **Confirmed ×1 only:** Toymate `run_20651586e4b2`. **Bandai:** every bank-scored lab so far → Revolut×2.
 
+**Workshop (user 2026-08-03):** keep the Toymate fix (issuer chrome_131 tls-worker) on Bandai and work **outward** from remaining hop diffs — not GE field roulette, not July folklore.
+1. Keep `PAY_ISSUER_TLS_WORKER` + `PAY_PAYHOST_TLS_WORKER` ON (already on Bandai; still ×2 alone).
+2. **Next:** `PAY_ISSUER_FORM_AS_CORS` default ON — GE HandleCreditCard Sec-Fetch `cors`/`empty` like BigPay (was `navigate`/`document`).
+3. Then: cold issuer tls session (no prepay worker reuse) → skip/relocate CreditCardForm GET on pay host.
+
 ---
 
 ## 0. Prompt for the next agent (copy-paste)
@@ -161,8 +166,9 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker |
-| `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 (Bandai dual A/B after 16:44) |
+| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker (**Toymate ×1**) |
+| `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 |
+| `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay (was navigate) |
 | `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 

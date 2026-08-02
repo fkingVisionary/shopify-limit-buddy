@@ -449,13 +449,27 @@ const {
   chromeClientHints,
   UA,
 } = await import("../http.js");
+// Toymate BigPay ×1 used cors/empty — GE HandleCreditCard matches that by default.
 const geNav = chromeIssuerNavigateHeaders(
   "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
   { origin: "https://secure-bandai.global-e.com" },
 );
-assert.equal(geNav["sec-fetch-mode"], "navigate");
+assert.equal(geNav["sec-fetch-mode"], "cors");
 assert.equal(geNav["sec-fetch-site"], "same-origin");
-assert.equal(geNav["sec-fetch-dest"], "document");
+assert.equal(geNav["sec-fetch-dest"], "empty");
+const prevFormCors = process.env.PAY_ISSUER_FORM_AS_CORS;
+process.env.PAY_ISSUER_FORM_AS_CORS = "0";
+try {
+  const geNavLegacy = chromeIssuerNavigateHeaders(
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
+    { origin: "https://secure-bandai.global-e.com" },
+  );
+  assert.equal(geNavLegacy["sec-fetch-mode"], "navigate");
+  assert.equal(geNavLegacy["sec-fetch-dest"], "document");
+} finally {
+  if (prevFormCors === undefined) delete process.env.PAY_ISSUER_FORM_AS_CORS;
+  else process.env.PAY_ISSUER_FORM_AS_CORS = prevFormCors;
+}
 const already = chromeIssuerNavigateHeaders(
   "https://payments.bigcommerce.com/stores/x/payments",
   { "sec-fetch-mode": "cors", origin: "https://www.toymate.com.au" },

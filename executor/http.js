@@ -499,11 +499,17 @@ export function chromePayFetchHeaders(url, existingHeaders = {}) {
   const ct = String(existing["content-type"] || "");
   const xhrHint = /XMLHttpRequest/i.test(String(existing["x-requested-with"] || ""));
   // JSON/API / XHR pay hops are cors/empty in a real browser — never document-navigate.
+  // Toymate BigPay ×1 used cors/empty on the issuer POST. GE HandleCreditCard was
+  // classified as document-navigate (form POST) — A/B: match BigPay presentation.
+  // Opt out: PAY_ISSUER_FORM_AS_CORS=0 → restore navigate/document for form issuer.
+  const issuerFormAsCors =
+    issuerLike && process.env.PAY_ISSUER_FORM_AS_CORS !== "0";
   const isJsonOrXhr =
     /application\/json/i.test(ct) ||
     /payments\.bigcommerce\.com/i.test(host) ||
     xhrHint ||
-    /checkoutv2\/(handleaction|save)/i.test(path);
+    /checkoutv2\/(handleaction|save)/i.test(path) ||
+    issuerFormAsCors;
 
   const site = secFetchSite(host, existing.origin || "");
   if (isJsonOrXhr) {
@@ -652,15 +658,15 @@ function finalizePayResponse(url, method, opts, res) {
 /**
  * Dual-Revolut: pay hops on chrome_131 tls-worker (Kmart-like bank TLS).
  *
- * Toymate BigPay @14:54 — issuer tls-worker → Revolut×1.
- * Bandai Fast still Revolut×2 after GE-all-tls + ct=false (172528639).
- * PAY_GE_TLS_WORKER (all GE incl GET) default OFF again — gepi GetCartToken
- * EOF flake under chrome_131; dual A/B moved to throwaway iovation.
- * Opt in PAY_GE_TLS_WORKER=1 to force all global-e.com hops onto tls-worker.
+ * Toymate BigPay @14:54 — issuer tls-worker → Revolut×1 (locked).
+ * Bandai already ran issuer/prepay/GE-all tls-worker and still ×2 — keep
+ * issuer+prepay tls ON and work outward (Sec-Fetch cors parity next).
+ * PAY_GE_TLS_WORKER default OFF (GE-all-tls ×2 + gepi EOF flake).
  *
  * Defaults ON:
  *   PAY_ISSUER_TLS_WORKER   — issuer stage (opt out =0)
  *   PAY_PAYHOST_TLS_WORKER  — prepay mutates (opt out =0)
+ *   PAY_ISSUER_FORM_AS_CORS — GE form issuer Sec-Fetch cors/empty like BigPay
  * Opt-in:
  *   PAY_GE_TLS_WORKER=1     — any global-e.com hop incl GET
  * Merchant cart ATC stays undici (stage=other).
