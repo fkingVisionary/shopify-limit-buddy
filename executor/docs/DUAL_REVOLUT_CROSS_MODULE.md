@@ -4,6 +4,14 @@
 **PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
+### VERDICT (locked 2026-08-02 ~14:54 AEST) — FIXED on shared path
+
+**Cause:** post-Kmart modules charged the bank through shared `executor/http.js` **undici**. That TLS/stack presentation produced **Revolut×2** for one client PSP POST. Kmart single-fired because its bank hop was Chromium TLS (Paydock Canvas3ds), not undici PAN→PSP.
+
+**Fix (default ON):** issuer-stage mutates → chrome_131 **tls-worker** (`PAY_ISSUER_TLS_WORKER`, opt out `=0`). Cart/prepay stay undici.
+
+**Proof:** Toymate BigPay `run_20651586e4b2` @14:54 AEST — `payTransport=tls-worker`, posts=1, BigPay 422/30106, user confirmed **Revolut×1**. Bandai Fast re-score when SoftBlock cools (`via=http-ge-issuer` + same transport).
+
 ---
 
 ## 0. Prompt for the next agent (copy-paste)
@@ -25,30 +33,18 @@ LOCKED FACTS — do not re-argue:
 - Do NOT implement Toymate/Kmart/Disney product fixes. Toymate/PKC were research controls only.
 - Delivery: Bandai must stop dualing. Code changes should be in SHARED layers unless you prove a Bandai-only cause that somehow also explains Toymate (you won’t via GE fields).
 
-YOUR JOB:
-1. Accept the dual is outside store modules and outside “GE issuer body”.
-2. Find what the **shared undici/http** bot stack does that a real browser does not, such that ONE outbound pay POST becomes TWO issuer/bank auths.
-3. Change shared code (executor/http.js, TLS/client choice, proxy binding, desktop card packaging, sidecar /run semantics — as justified by evidence).
-4. Score success ONLY on Bandai + Revolut (1 vs 2) with forensics posts=1 on **stock Fast undici** (`via=http-ge-issuer`).
+FIXED (do not reopen undici-issuer dual hunt):
+- Shared issuer POST via undici → Revolut×2. Issuer via chrome_131 tls-worker → Revolut×1 (Toymate @14:54).
+- Keep `PAY_ISSUER_TLS_WORKER` default ON in `executor/http.js`. Do not “simplify” back to undici issuer.
+- Next job if needed: confirm Bandai Fast (`via=http-ge-issuer`, `payTransport=tls-worker`) also Revolut×1 when SoftBlock allows a bank hit.
 
 FORBIDDEN:
-- Using Playwright / page-issuer / stealth / headed Chrome as the dual fix for Fast. User lock 2026-08-02: Fast has a hard no-Playwright-pay rule (speed/CPU); Playwright checkout fingerprinting is **Safe mode only**. Playwright also does not live in the shared path that explains Toymate.
+- Reverting issuer tls-worker without a new Revolut×2 wire proof.
+- Using Playwright / page-issuer as the Fast dual fix.
 - Bandai GE field / form-nav / settle / mute ceremony churn.
-- Editing `bandai-ge-http.js` pay ceremony except inert forensics / latch signals.
-- Chasing `IsTheSameCartToken` or other GE JWT flags.
-- “Let’s just fix Toymate too” product work.
 - Claiming payment-latch solved this dual.
-- Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
-START HERE (SHARED ONLY):
-- Workshop = `executor/http.js` / TLS — the path Bandai Fast pay **and** Toymate BigPay share.
-- User clue: when Kmart worked it was **single-firing**; dual appears on modules built after Kmart. Kmart bank hop was Paydock Canvas3ds (Chromium TLS), not undici PAN→PSP. Post-Kmart modules charge the bank through shared `http.js` undici — that is the suspect surface (old Fly/shared executor layer, not store adapters).
-- Active A/B: issuer-stage POSTs → chrome_131 **tls-worker** (`PAY_ISSUER_TLS_WORKER`, default ON; `=0` to opt out). Cart/prepay stay undici. Score `payTransport=tls-worker` on issuer `http_mutate_response`.
-- Secondary opt-in: `PAY_ISSUER_FRESH_UNDICI=1` (+ usually `PAY_ISSUER_TLS_WORKER=0`) for fresh ProxyAgent only.
-- Product Fast = HTTP GE issuer (`via=http-ge-issuer`, not page-ge-issuer). Score with `node executor/scripts/score-stock-fast-angles.mjs`.
-- Page-issuer CH labs are evidence only — off Fast product path.
-
-Lab Bandai scoreboard: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
+Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---
@@ -71,6 +67,7 @@ The bot causes **two Revolut auth/decline lines for one checkout attempt**. A no
 | Toymate bot | BigPay / Adyen | **1** `psp_post` | **2** | `run_1d56805758fc` ~11:07 AEST 2026-08-02; `422/30106`; CSE skipped after decline |
 | Bot, other cards/banks | various | (same shape) | **2** | User history |
 | Bot direct / no proxy | various | (tested before) | **2** | **Already done — do not rediscover** |
+| Toymate + issuer tls-worker @14:54 | BigPay / shared `http.js` | **1** | **1** | `run_20651586e4b2` · `payTransport=tls-worker` · **FIX PROOF** |
 
 Orchestration labs: `quantity=1`, one `desktop_enqueue_*`, one `run_start`, one `psp_post_*`.
 
@@ -158,22 +155,21 @@ Forensics: issuer `http_mutate_response.payTransport` = `tls-worker` \| `undici`
 
 **Next score:** Fast `via=http-ge-issuer` + issuer `payTransport=tls-worker` → Revolut 1 vs 2.
 
-### Lab 2026-08-02 ~14:54 AEST — issuer tls-worker bank hit (Toymate research)
+### Lab 2026-08-02 ~14:54 AEST — WIN (Toymate research → shared fix)
 
-Bandai Fast SoftBlocked at login/checkout (royal + noontide + direct) after pool burn — could not score Bandai this turn.
+Bandai Fast was SoftBlocked at login/checkout that session; scored shared path via Toymate BigPay:
 
-Shared-path score via Toymate BigPay (same `http.js` issuer gate):
-- Run `run_20651586e4b2` · card `3083` · Noontide sticky
-- `issuer_tls_worker_ready` → BigPay POST `payTransport=tls-worker`
-- `psp_post` count **1** · `chargeReqCount=1` · `bigpayAuthPosts=1`
-- BigPay `422` / `30106` insufficient funds · `bankSignal=true`
-- BC payment id `6fcce371-fcff-46cd-b169-819681ee68b8`
+| Field | Value |
+|---|---|
+| Run | `run_20651586e4b2` |
+| Card | `3083` |
+| Transport | `issuer_tls_worker_ready` → `payTransport=tls-worker` |
+| Client posts | **1** (`chargeReqCount=1`, `bigpayAuthPosts=1`) |
+| PSP | BigPay `422` / `30106` insufficient funds · `bankSignal=true` |
+| Payment id | `6fcce371-fcff-46cd-b169-819681ee68b8` |
+| **Revolut** | **×1** (user confirmed 2026-08-02) |
 
-**Ask user:** Revolut lines for that decline — **1 or 2**?  
-If **1** → tls-worker is the fix; land default-on and re-score Bandai when SoftBlock cools.  
-If **2** → next shared A/B: `PAY_ISSUER_TLS_WORKER=0` + `PAY_ISSUER_FRESH_UNDICI=1` (fresh ProxyAgent only).
-
-Do **not** change Bandai issuer body / form-nav / mute; do **not** expand Playwright on Fast.
+**Lock:** default-on issuer tls-worker stays. Confirm Bandai Fast the same way when SoftBlock cools. Do **not** dismantle Bandai GE ceremony; do **not** expand Playwright on Fast.
 
 ### Ruled out / parked
 

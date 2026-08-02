@@ -650,8 +650,10 @@ function finalizePayResponse(url, method, opts, res) {
 }
 
 /**
- * Dual-Revolut A/B: issuer/pay POSTs on chrome_131 tls-worker (Kmart-like bank TLS).
- * Cart/prepay stay on the task undici dispatcher. Default ON; opt out PAY_ISSUER_TLS_WORKER=0.
+ * Dual-Revolut fix: issuer/pay POSTs on chrome_131 tls-worker (Kmart-like bank TLS).
+ * Proven Revolut×1 on Toymate BigPay run_20651586e4b2 @2026-08-02 14:54 AEST
+ * (undici issuer was Revolut×2). Cart/prepay stay undici.
+ * Default ON; opt out PAY_ISSUER_TLS_WORKER=0 only for controlled A/B.
  */
 export function shouldUseIssuerTlsWorker(url, method) {
   if (process.env.PAY_ISSUER_TLS_WORKER === "0") return false;
