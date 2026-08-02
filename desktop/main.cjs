@@ -3759,8 +3759,13 @@ async function e2eAutorun() {
       console.log(
         "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney/PKC need keys",
       );
-    } else if (hyper) {
-      console.log("[e2e] Hyper key present (env or settings) — PKC/Kmart antibot enabled");
+    } else {
+      if (hyper) {
+        console.log("[e2e] Hyper key present (env or settings) — PKC/Kmart antibot enabled");
+      }
+      if (capsolver) {
+        console.log("[e2e] CapSolver key present (env or settings) — Toymate CF/spam enabled");
+      }
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,

@@ -33,11 +33,11 @@ This has been reported on modules built **before Bandai** and **after Bandai**. 
 
 | Priority | Hypothesis | Why it fits cross-module | Current evidence |
 |---|---|---|---|
-| **A** | Shared desktop / executor orchestration fires pay twice (or two `/run`s) | Same for every store | **Ruled out for Bandai labs** with quantity=1, forensics `run_start=1`, `psp_post=1` |
-| **B** | Shared soft-retry / sticky-rotate re-enters `placeOrder` after wire touch | Same job-runner + latch for all stores | **Partially fixed** (`desktop/payment-latch.cjs`, commit `5e214c3`). Explains RESPONSE_LOST doubles; does **not** explain today’s `posts=1` dual |
-| **C** | Shared HTTP client / retry / proxy tunnel duplicates a mutation | All adapters use `executor/http.js` + undici | Mutations default `retry:false` on issuer paths we checked; still dual with `undiciAttempts=1` |
-| **D** | Issuer / PSP side double-auths from **one** client POST (GE dual-rail, Adyen, Paydock 3DS ladder, etc.) | Different PSPs, similar bank UX | GE docs already say `posts=1` can still pair; Toymate had CSE fallback double (fixed); Kmart has intentional 3DS process×2 |
-| **E** | Store adapter “extra” step arms a second auth (Bandai hydrate, iovation, save, pm id, …) | Bandai-specific — **weak** if pre-Bandai modules dual the same way | Many Bandai levers tried; **none** stopped dual when bank hit |
+| **D (primary)** | Global-E / acquirer double-auths from **one** client `HandleCreditCard` | Bandai + PKC share GE; same processor; not refund | **Confirmed** — both stores: `posts=1` + Revolut dual (user) |
+| **A** | Shared desktop / executor orchestration fires pay twice (or two `/run`s) | Same for every store | **Ruled out** Bandai + PKC: quantity=1, 1 enqueue, 1 `run_start`, 1 `psp_post` |
+| **B** | Shared soft-retry / sticky-rotate re-enters `placeOrder` after wire touch | Same job-runner + latch for all stores | **Fixed separately** (`payment-latch.cjs`). Not today’s shape |
+| **C** | Shared HTTP client / retry / proxy tunnel duplicates a mutation | All adapters use `executor/http.js` + undici | **Ruled out** for these labs (`undiciAttempts=1`, `retry:false`) |
+| **E** | Store adapter “extra” step arms a second auth (Bandai hydrate, iovation, save, pm id, …) | Bandai-specific | **Rejected as root** — PKC duals without Bandai code path; Bandai levers all failed when bank hit |
 
 **Agent process error to avoid:** treating (E) as primary because Bandai is the only live test bed. Live test bed ≠ root cause location.
 
@@ -174,8 +174,8 @@ Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`
 
 | Store | Feasible now? | Notes |
 |---|---|---|
-| **PKC** | **Bank hit 2026-08-02 ~10:18 AEST** | Hyper via env + PDP `72-10917-101`. Forensics: 1 enqueue job, 1 `run_start`, 1 `psp_post` (body 2581), `bankSignal=true`, GE tx **`172438100`**, class **`one_post_two_bank_suspect`**. **Need Revolut 1 vs 2.** Same Global-E family as Bandai (not an independent PSP control). |
-| **Toymate** | Likely blocked | Guest checkout may work if already registered; **account_gen / CF** needs CapSolver / 2captcha credits (not in env). Do not burn time on gen until captcha is wired. Hooks ready on BigPay. |
+| **PKC** | **Dual confirmed (user)** | Hyper + PDP `72-10917-101`. 1 enqueue / 1 `run_start` / 1 `psp_post` (body 2581), GE tx **`172438100`**, class `one_post_two_bank_suspect`. Revolut: **2** same amount, same processor, **not** refund. |
+| **Toymate** | **Blocked on proxy↔CapSolver** (2026-08-02) | CapSolver key OK (balance ~$9.7). Only proxy group `royal` (ISP). CapSolver `AntiCloudflareTask` → **`custom proxy connect failed`** on every probed exit; local Chromium also stuck on “Just a moment…”. Need CapSolver-reachable sticky/resi proxies (or whitelist CapSolver IPs on the proxy provider). Hooks ready on BigPay. |
 | Kmart / Disney | Benched | Hooks compile only; no product fix work in this PR. |
 
 ### Step 4 — Classify then act
@@ -215,4 +215,4 @@ Same JSONL as executor (`PAY_FORENSICS_PATH` or `%TEMP%\j1m-pay-forensics.jsonl`
 
 ## 10. One-sentence brief for the next agent
 
-**Dual Revolut with `posts=1` is confirmed on Bandai; user reports the same across modules before/after Bandai — so instrument shared forensics and classify duals (2 runs vs 2 PSP posts vs 1 post/2 bank) before any further Bandai-specific payment-field experiments.**
+**Bandai + PKC both produce two Revolut auths from one Global-E `HandleCreditCard` (`posts=1`, not refund) — treat as GE/PSP dual-rail; do not keep editing Bandai-only hydrate/issuer fields; optional next proof is a non-GE store (Toymate/Kmart) or a bank-confirmed single browser GE HAR.**
