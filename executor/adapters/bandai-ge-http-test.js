@@ -11,12 +11,16 @@
  *     prior "form-nav dualed" bank hit was THIS thin body, not fat iovation. Cleared by default.
  *   BANDAI_GE_TEST_ALLOW_THIN_FORM_NAV=1 — allow form-nav with empty/short machineId
  *   BANDAI_GE_TEST_STOP_BEFORE_ISSUER=1 — hydrate only, no HandleCreditCard
+ *   BANDAI_GE_TEST_REDIRECT_SETTLE_MS — default 0 (5s settle correlated with Revolut gap @12:23)
  * Production Fast still imports bandai-ge-http.js unchanged.
  */
 
 import { request } from "../http.js";
 import fs from "node:fs";
-import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
+import {
+  isBandaiGeIssuerPaymentUrl,
+  isBandaiGeChargeRequest,
+} from "./bandai-ge-pay.js";
 import { payForensics } from "../pay-forensics.js";
 
 function issuerBodyFlags(body) {
@@ -1278,12 +1282,15 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
 
   let allowIssuer = 0;
   let seenIssuer = 0;
+  let issuerFiredAt = 0;
   let blockedExtraIssuer = 0;
+  let blockedExtraCharge = 0;
   let postIssuerGeMutates = 0;
+  const postIssuerMutateLog = [];
   const geMatch = (url) => /global-e\.com/i.test(url.href || String(url));
-  // Only hard-block EXTRA HandleCreditCard*. Fat form-nav still Revolut×2'd
-  // while muting ALL GE mutates (incl. post-redirect finalize) — that aborted
-  // the browser SCA land. Non-issuer GE traffic must continue like a real pay.
+  // Allow one HandleCreditCard*. Block any further charge-like GE mutates
+  // (ProcessPayment/Authorize/…). User: headed Chrome dual had a ~5s Revolut
+  // gap matching redirect settle — second line may be post-issuer pay traffic.
   const handler = async (route) => {
     const req = route.request();
     const method = String(req.method() || "GET").toUpperCase();
@@ -1293,14 +1300,33 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       return;
     }
     const issuer = isBandaiGeIssuerPaymentUrl(url);
+    const chargeLike = isBandaiGeChargeRequest(method, url);
     if (issuer) {
       if (allowIssuer > 0) {
         allowIssuer -= 1;
         seenIssuer += 1;
+        issuerFiredAt = Date.now();
         await route.continue();
         return;
       }
       blockedExtraIssuer += 1;
+      try {
+        payForensics("ge_post_issuer_blocked", {
+          via: "form-nav-issuer",
+          kind: "extra_issuer",
+          method,
+          path: (() => {
+            try {
+              return new URL(url).pathname.slice(0, 160);
+            } catch {
+              return String(url).slice(0, 160);
+            }
+          })(),
+          msSinceIssuer: issuerFiredAt ? Date.now() - issuerFiredAt : null,
+        });
+      } catch {
+        /* ignore */
+      }
       await route.fulfill({
         status: 204,
         contentType: "text/plain",
@@ -1308,7 +1334,56 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       });
       return;
     }
-    if (seenIssuer > 0) postIssuerGeMutates += 1;
+    if (seenIssuer > 0 && chargeLike) {
+      blockedExtraCharge += 1;
+      try {
+        payForensics("ge_post_issuer_blocked", {
+          via: "form-nav-issuer",
+          kind: "extra_charge",
+          method,
+          path: (() => {
+            try {
+              return new URL(url).pathname.slice(0, 160);
+            } catch {
+              return String(url).slice(0, 160);
+            }
+          })(),
+          msSinceIssuer: issuerFiredAt ? Date.now() - issuerFiredAt : null,
+        });
+      } catch {
+        /* ignore */
+      }
+      await route.fulfill({
+        status: 204,
+        contentType: "text/plain",
+        body: "",
+      });
+      return;
+    }
+    if (seenIssuer > 0) {
+      postIssuerGeMutates += 1;
+      const row = {
+        method,
+        path: (() => {
+          try {
+            return new URL(url).pathname.slice(0, 160);
+          } catch {
+            return String(url).slice(0, 160);
+          }
+        })(),
+        msSinceIssuer: issuerFiredAt ? Date.now() - issuerFiredAt : null,
+        chargeLike: false,
+      };
+      if (postIssuerMutateLog.length < 20) postIssuerMutateLog.push(row);
+      try {
+        payForensics("ge_post_issuer_mutate", {
+          via: "form-nav-issuer",
+          ...row,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
     await route.continue();
   };
 
@@ -1390,12 +1465,15 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
           /* ignore */
         }
       }
-      // Stay on CCPaymentRedirect so GE finalize / 3DS method JS can run.
-      // Previous mute-all killed these mutates → naked CNP dual-rail suspect.
-      const settleMs = Math.max(
-        0,
-        Math.min(15_000, Number(opts.redirectSettleMs) || 5_000),
-      );
+      // Default settle 0 — 5s settle at 12:23 lined up with a ~5s Revolut gap
+      // between the two declines. Opt in: BANDAI_GE_TEST_REDIRECT_SETTLE_MS=5000.
+      const settleRaw =
+        opts.redirectSettleMs != null
+          ? Number(opts.redirectSettleMs)
+          : process.env.BANDAI_GE_TEST_REDIRECT_SETTLE_MS != null
+            ? Number(process.env.BANDAI_GE_TEST_REDIRECT_SETTLE_MS)
+            : 0;
+      const settleMs = Math.max(0, Math.min(15_000, Number.isFinite(settleRaw) ? settleRaw : 0));
       if (settleMs > 0) {
         await page.waitForTimeout(settleMs).catch(() => null);
         try {
@@ -1452,7 +1530,9 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       undiciAttempts: Math.max(1, seenIssuer),
       seenIssuer,
       blockedExtraIssuer,
+      blockedExtraCharge,
       postIssuerGeMutates,
+      postIssuerMutateLog,
       machineIdBytes: midBytes,
       error: ok
         ? null
@@ -1478,7 +1558,9 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       via: "form-nav-issuer",
       seenIssuer,
       blockedExtraIssuer,
+      blockedExtraCharge,
       postIssuerGeMutates,
+      postIssuerMutateLog,
       machineIdBytes: midBytes,
       bodyBytes: body.length,
     });
@@ -1496,7 +1578,9 @@ export async function postBandaiGeIssuerViaFormNav(opts = {}) {
       bankSignal: out.bankSignal,
       machineIdBytes: midBytes,
       blockedExtraIssuer,
+      blockedExtraCharge,
       postIssuerGeMutates,
+      postIssuerMutateSample: postIssuerMutateLog.slice(0, 8),
       ...flags,
     });
     return out;
@@ -2871,7 +2955,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
               riskHydrate: Boolean(riskHydrate),
             })}`
           : issuer?.redirectUrl || bankHit
-            ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} sameCart=${txMap.IsTheSameCartToken || "?"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} postGeMut=${issuer?.postIssuerGeMutates ?? "-"} extraIssBlocked=${issuer?.blockedExtraIssuer ?? 0} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
+            ? `redirect ${issuer?.status} via=${issuer?.via || "http"} bank=${bankHit} tx=${transactionId || "-"} posts=${chargeReqCount} undiciAttempts=${undiciAttempts} postGeMut=${issuer?.postIssuerGeMutates ?? "-"} extraIssBlocked=${issuer?.blockedExtraIssuer ?? 0} extraChargeBlocked=${issuer?.blockedExtraCharge ?? 0} blockedBrowser=${browserBlocked} framesOff=${framesNeutralized} ${issuer?.redirectUrl || ""}${declineOnRedirect ? " DECLINE?" : ""} ${issuer?.redirectSnippet || ""}`
             : issuer?.bodySnippet || issuer?.error || "issuer_null"
     ).slice(0, 420),
   });
