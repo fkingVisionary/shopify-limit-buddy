@@ -1663,6 +1663,64 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   let guid = tokenOut.cartToken;
 
+  // Mint throwaway CartToken ASAP (before fat Checkout/v2 GET stresses tls-worker).
+  const riskHydrate =
+    opts.riskHydrate === true ||
+    opts.forceFreshMint === true ||
+    (opts.mergeIovationCookies === true && Boolean(opts.page));
+  let throwawayGuid = null;
+  let throwawayTokenNote = "skipped";
+  const willMint = Boolean(opts.page) && (!(opts.machineId) || riskHydrate);
+  if (willMint) {
+    let iovLast = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}_${attempt}`;
+      try {
+        iovLast = await getBandaiGeCartToken({
+          ctx,
+          merchantCartToken: iovMct,
+          merchantId: mid,
+          area,
+          webStoreInstanceCode: area,
+          customerEmail: opts.customerEmail,
+          cultureCode: opts.cultureCode || "en-GB",
+          preferedCultureCode: opts.preferedCultureCode || "en-GB",
+          cookieConsent: opts.cookieConsent,
+          checkoutParams: opts.checkoutParams,
+          referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
+          userAgent: opts.userAgent,
+        });
+      } catch (e) {
+        iovLast = {
+          ok: false,
+          status: 0,
+          ms: 0,
+          bodySnippet: String(e?.message || e).slice(0, 160),
+        };
+      }
+      if (iovLast?.ok && iovLast.cartToken) {
+        throwawayGuid = iovLast.cartToken;
+        throwawayTokenNote = `ok attempt=${attempt} guid=${String(throwawayGuid).slice(0, 8)}…`;
+        break;
+      }
+      const soft =
+        !iovLast?.status ||
+        iovLast.status === 0 ||
+        /EOF|failed to do request|TLS|timed?\s*out/i.test(
+          String(iovLast?.bodySnippet || iovLast?.message || ""),
+        );
+      throwawayTokenNote = `fail attempt=${attempt} status=${iovLast?.status} ${String(iovLast?.bodySnippet || iovLast?.message || "").slice(0, 120)}`;
+      if (!soft || attempt >= 3) break;
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
+    push("ge_iovation_throwaway_token", {
+      ok: Boolean(throwawayGuid),
+      status: iovLast?.status ?? null,
+      ms: iovLast?.ms ?? 0,
+      note: throwawayTokenNote.slice(0, 220),
+    });
+  }
+
   const v2Url = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${guid}`;
   const v2 = await httpText(v2Url, {
     ctx,
@@ -1693,16 +1751,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
   let shippingMethodId = form.selectedShippingOptionId || "";
   let hydrateShippingOk = false;
 
-  // Iovation FIRST (before handleaction), then undici-only hydrate→pay.
-  //
-  // Fraud labs (2026-07-23): stale noPage machineId + thin jar →
-  // PossibleFraudDetected=True / Refused. Fast default is riskHydrate:
-  // liveHtml+geMute mint + cookie merge, then drop page (undici still pays).
-  // Explicit noPage (BANDAI_GE_NO_PAGE=1) keeps pure undici + reused blackbox.
-  const riskHydrate =
-    opts.riskHydrate === true ||
-    opts.forceFreshMint === true ||
-    (opts.mergeIovationCookies === true && Boolean(opts.page));
+  // Iovation FIRST (before handleaction), then HTTP-only hydrate→pay.
+  // Explicit noPage (BANDAI_GE_NO_PAGE=1) keeps pure HTTP + reused blackbox.
   if (machineId && !opts.page) {
     push("ge_iovation_mint", {
       ok: true,
@@ -1728,7 +1778,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           method,
           url: url.slice(0, 320),
           issuer: isBandaiGeIssuerPaymentUrl(url),
-          phase: "iovation-mint",
+          phase: "iovation-throwaway",
         };
         browserReqLog.push(row);
         try {
@@ -1801,34 +1851,14 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
     let mint;
     let mintUrl = null;
-    let throwawayGuid = null;
     let mintVia = "none";
     const allowLiveCartIovation =
       opts.allowLiveCartIovation === true ||
       process.env.BANDAI_GE_ALLOW_LIVE_CART_IOVATION === "1";
-    try {
-      const iovMct = `${merchantCartToken}_iov_${Date.now().toString(36)}`;
-      const iovToken = await getBandaiGeCartToken({
-        ctx,
-        merchantCartToken: iovMct,
-        merchantId: mid,
-        area,
-        webStoreInstanceCode: area,
-        customerEmail: opts.customerEmail,
-        cultureCode: opts.cultureCode || "en-GB",
-        preferedCultureCode: opts.preferedCultureCode || "en-GB",
-        referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
-        userAgent: opts.userAgent,
-      });
-      if (iovToken.ok && iovToken.cartToken) {
-        throwawayGuid = iovToken.cartToken;
-        mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
-        mintVia = "throwaway";
-      }
-    } catch {
-      /* fall through */
-    }
-    if (!mintUrl && allowLiveCartIovation) {
+    if (throwawayGuid) {
+      mintUrl = `${BANDAI_GE_WEBSERVICES}/Checkout/v2/${encodedMerchant}/${throwawayGuid}`;
+      mintVia = "throwaway";
+    } else if (allowLiveCartIovation) {
       // Escape hatch only — known to pair Revolut (live cart in Chromium).
       mintUrl = v2Url;
       throwawayGuid = guid;
