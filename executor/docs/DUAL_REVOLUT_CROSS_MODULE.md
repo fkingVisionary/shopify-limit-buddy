@@ -38,10 +38,10 @@ FORBIDDEN:
 - Re-running direct/no-proxy as step 1 without reading that it already dualed.
 
 START HERE:
-- Settle form-nav also Revolut×2 (tx 172443854, postGeMut=6). Mute/TLS/packaging are not the dual.
-- **Do not** chase `IsTheSameCartToken` — GE-only JWT noise; Toymate duals without it.
-- Next: headed `channel:chrome` F5 bridge + form-nav (`BANDAI_GE_TEST_HEADED_CHROME=1` / test-fork default). Score Revolut 1 vs 2 with posts=1.
-- If still 2: dig shared bot signals that both undici BigPay and Chrome GE share (automation / SCA data completeness) — still NOT Bandai HandleCreditCard field A/B.
+- Headed Chrome form-nav Revolut×2 with **~5s gap** (tx 172444504) — matches redirect settle, not same-second dual-rail.
+- Score form-nav with **settleMs=0** + block post-issuer charge-like GE mutates; read `ge_post_issuer_*` forensics.
+- **Do not** chase `IsTheSameCartToken` — GE-only; Toymate duals without it.
+- Undici same-second duals (e.g. 172442728) may be a second shape — do not collapse them without timing proof.
 - Toymate evidence stays research-only (run_1d56805758fc).
 
 Lab Bandai: task_c13e31bb45ce, prof_4c10061c8213, SKU N2847904001, mode autocheckout_test → bandai-ge-http-test.js. Card last4 often 3083. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics*.jsonl.
@@ -138,7 +138,8 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 - **`IsTheSameCartToken` is a Global-E JWT field** (Bandai/PKC only). It cannot explain Toymate BigPay duals. **Do not chase it as the fix** — that is GE/Bandai-path again.
 - Desktop→`/run` card packaging audited: **clean** (one `{number,cvv,exp,holder}`; no token+PAN; latch cannot create posts=1×2).
 - **Headed Chrome lab (2026-08-02 ~12:23 AEST):** `run_e7eb2aa1489b` / GE tx **`172444504`** — form-nav, fat iovation, `posts=1`, `postGeMut=6`. **Revolut×2 with a distinct ~5s gap** between lines — matches the 5s `CCPaymentRedirect` settle we added. Not the old “same-second” shape.
-- **Timing lead:** second bank line may be post-issuer ceremony / charge-like GE traffic during settle, not a simultaneous dual-rail inside one POST. Next score: **settleMs=0** + block post-issuer charge-like mutates (still allow non-pay GE). Log `ge_post_issuer_mutate` / `ge_post_issuer_blocked` with `msSinceIssuer`.
+- **Timing lead:** second bank line may be post-issuer ceremony during settle. Shipped settleMs=0 default + block post-issuer charge-like GE mutates + `ge_post_issuer_*` logs.
+- **Settle=0 lab (2026-08-02 ~12:39 AEST):** `run_fe309267ce28` / GE tx **`172445269`** — form-nav, `posts=1`, **`postGeMut=0`**, `extraChargeBlocked=0`, issuer ms≈5527. **Awaiting Revolut 1 vs 2** (and whether any second line is same-second vs ~5s gap).
 
 ---
 
