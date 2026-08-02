@@ -12,10 +12,13 @@
 |---|---|---|---|
 | Bandai Fast / Autocheckout test | 1 `psp_post` | **2** same amount | Many Bandai field levers failed |
 | Pokémon Centre HTTP GE | 1 `psp_post` | **2** same amount | tx `172438100`; same processor name; **not** a refund/void line (user) |
+| Toymate BigCommerce / BigPay (non-GE) | 1 `psp_post` | **CHECK** | `run_1d56805758fc` ~11:07 AEST 2026-08-02; BigPay `422/30106` insufficient funds; `bigpayAuthPosts=1`; CSE skipped after decline |
 
-Both share Global-E issuer (`HandleCreditCardRequestV2`). Desktop orchestration ruled out (`quantity=1`, 1 enqueue, 1 `/run`). Soft-retry latch is a separate bug (already fixed).
+Both GE stores share Global-E issuer (`HandleCreditCardRequestV2`). Desktop orchestration ruled out (`quantity=1`, 1 enqueue, 1 `/run`). Soft-retry latch is a separate bug (already fixed).
 
-**Implication:** Stop Bandai hydrate / `pm` / `machineId` / cookie A/B as the main hunt. Client already sends one POST. Remaining work is either (1) find a browser-vs-bot GE request shape that makes GE emit one acquirer auth, with a **bank-confirmed** browser single, or (2) treat paired Revolut lines as GE/PSP noise and score by GE `TransactionId` + forensics `posts=1`. Independent proof still needs a **non-GE** store (Toymate/Kmart) when captcha/Hyper allow it.
+**Toymate control (Noontide AU resi + CapSolver):** guest placeOrder reached issuer with **exactly one** BigPay POST. Draculaura PDP was OOS (remote ATC 200 stock error) — use in-stock LEGO City van `https://toymate.com.au/lego-city-the-lego-van-60500/`. ISP (royal) blocked CapSolver connect; Noontide resi cleared CF.
+
+**Implication:** Stop Bandai hydrate / `pm` / `machineId` / cookie A/B as the main hunt. Client already sends one POST on GE. If Revolut shows **1** on Toymate for `run_1d56805758fc`, that further isolates dual-rail to **GE/acquirer**. If Revolut shows **2** on Toymate with `posts=1`, dual is broader than GE (shared PSP/acquirer path).
 
 ---
 
