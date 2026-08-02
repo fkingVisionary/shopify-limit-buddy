@@ -231,7 +231,10 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 | Via | `http-ge-issuer` · bankSignal · iovation `liveHtml+geMute` |
 | **Revolut** | **×2** (user 2026-08-03 ~04:31) |
 
-**Next:** throwaway iovation (commit `9d313ae` recipe) — mint snare on disposable GetCartToken guid; forterToken-only jar attach; no live Checkout/v2 in Playwright.
+**Next / in flight:** throwaway iovation restored (no live Checkout/v2 in Playwright; forterToken-only jar attach).
+- Synthetic `_iov_` / reshaped MCT → GE `Success=false` (2026-08-03).
+- Active recipe: GetCartToken#1 = snare host, #2 = pay guid (real MCT both times).
+- Bank score blocked by proxy login 501 / prior hydrate blockers — **need clean placeOrder + Revolut 1 vs 2**.
 
 ### Ruled out / parked
 
