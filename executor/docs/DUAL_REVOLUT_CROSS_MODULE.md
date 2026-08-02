@@ -120,8 +120,15 @@ Something about **how the bot presents the single pay attempt** makes issuers/ac
 
 - Prior “Chromium form-nav dualed” lab (`via=form-nav-issuer`, tx `172432518`) had **`bodyBytes≈1064`** — empty `machineId` (same shape as `BANDAI_GE_TEST_EMPTY_MACHINE_ID`). **Not** a fat-iovation form-nav score.
 - Clean undici fat body (`172442728`, ~2575) also dual-suspect with `posts=1`.
-- **Next score:** Autocheckout test default restored to **form-nav + fat iovation** (refuses thin `machineId` unless `BANDAI_GE_TEST_ALLOW_THIN_FORM_NAV=1`). Confirm Revolut 1 vs 2. Undici restore: `BANDAI_GE_TEST_UNDICI_ISSUER=1`.
 - Clear `BANDAI_GE_TEST_EMPTY_MACHINE_ID` / `BANDAI_GE_TEST_PAYMENT_METHOD_ID` before the lab.
+
+### Fat form-nav bank hit (2026-08-02 ~12:02 AEST) — **awaiting Revolut 1 vs 2**
+
+- Run `run_28b995d86d9e` attempt `#2` / GE tx **`172443438`**
+- `via=form-nav-issuer`, `bodyBytes≈2571`, `machineIdBytes≈1436`, `posts=1`, `undiciAttempts=1`, bank decline
+- `#1` failed at `ge_get_cart_token` (no pay) then soft-retried — classifier may say `two_runs`; only one `psp_post`
+- Forensics: `%TEMP%\j1m-pay-forensics-bandai-formnav-fat.jsonl`
+- **USER:** check Revolut for **`172443438`** (and earlier clean undici `172442728` if not already). If still 2 → TLS/shared transport next (`tls-worker` for issuer-like), not GE fields. If 1 → promote form-nav (or its ceremony) toward Fast.
 
 ---
 
