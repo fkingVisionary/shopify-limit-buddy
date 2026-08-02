@@ -4,32 +4,59 @@
 **PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
-### VERDICT (updated 2026-08-03 ~05:54 AEST) — PARTIAL
+### VERDICT (updated 2026-08-03 ~09:00 AEST) — PARTIAL
 
-**Toymate:** issuer chrome_131 tls-worker → Revolut×1 (`run_20651586e4b2`).
+**Toymate:** issuer chrome_131 tls-worker → Revolut×1 (`run_20651586e4b2`).  
+**Bandai Fast:** every bank-scored lab → Revolut **×2**. Client always posts=1. Dual ≠ second app POST.
 
-**Bandai Fast still duals** — throwaway iovation does **not** fix it (2026-08):
-| Lab | tx / time | Wire | Revolut |
+**RETRACTED:** July `9d313ae` “Bandai ×1” — agent folklore only. User: Bandai has never had a confirmed single.
+
+---
+
+### SCOREBOARD — tried & failed (do not re-run as “the fix”)
+
+| # | Lever | GE tx / evidence | Revolut | Notes |
+|---|---|---|---|---|
+| 1 | Clean undici Fast | `172442728` | **×2** | posts=1; no hidden second HTTP |
+| 2 | Form-nav / settle / headed PW | `172443438`…`172445269` | **×2** | closed |
+| 3 | Page-issuer / CH (off Fast) | `172447213`, `172448160` | **×2** | not product Fast |
+| 4 | Issuer tls only (prepay undici) | `172456937` | **×2** | Toymate knob alone insufficient on GE |
+| 5 | PayHost+issuer tls stack | `172460612` wire | re-score voided | later card misreads |
+| 6 | GE-all-tls + `ct=false` + liveHtml | `172528639` @04:25 | **×2** | `PAY_GE_TLS_WORKER` stays OFF |
+| 7 | Throwaway iovation + tls | `172538665` @05:49 (+EOF ~05:39) | **×2** | keep throwaway; not the fix |
+| 8 | Sec-Fetch form-as-cors | `172548067` @07:11 | **×2** | `PAY_ISSUER_FORM_AS_CORS` |
+| 9 | Cold issuer tls (split workers) | `172549600` @07:24 | **×2** | `PAY_ISSUER_COLD_TLS` |
+| 10 | CCForm GET on cold issuer tls | `172557593` @08:52 | **×2** | `PAY_ISSUER_CCFORM_TLS` · user 2026-08-03 |
+| — | PKC control | `172438100` | **×2** | GE family cross-check |
+| — | Toymate undici BigPay | `run_1d56805758fc` | **×2** | non-GE control |
+| ★ | Toymate issuer tls-worker | `run_20651586e4b2` @14:54 | **×1** | **only confirmed single** |
+
+**Pre-bank / void (not dual scores):**
+| Lever | Result |
+|---|---|
+| `BANDAI_GE_SKIP_CC_FORM=1` | JWT fail — no bank |
+| `createTransaction=false` `172465275` | no bank fire |
+| Old-card `172467620` / 18:44 misreads | void |
+| SoftBlock / login 501 thrash | ops only — remint + climb loops |
+| Direct / no-proxy | historically ×2 — do not rediscover |
+| GE field / hydrate / pm / machineId roulette | failed when bank hit — parked |
+| Playwright pay as Fast dual fix | forbidden (Fast = no PW pay) |
+| payment-latch | fixed different dual (`posts≥2` / RESPONSE_LOST) |
+
+---
+
+### NEXT QUEUE (work outward from Toymate; one bank score each)
+
+Keep `PAY_ISSUER_TLS_WORKER` ON. Do **not** revert to undici issuer. Score Fast `via=http-ge-issuer` + user Revolut 1 vs 2 + GE tx.
+
+| Priority | Lever | Status | Why |
 |---|---|---|---|
-| GE-all-tls + `ct=false` + liveHtml | `172528639` @04:25 | tls-worker stack · posts=1 · `sameCart=False` | **×2** |
-| throwaway mint + issuer EOF | ~05:39 · last4 `1964` | `via=throwaway` · client EOF · posts=1 | **×2** (user; bank fired despite client fail) |
-| throwaway mint + bank | `172538665` @05:49 | `via=throwaway` · forter · posts=1 · `sameCart=False` · issuer tls-worker 302 | **×2** |
-| Sec-Fetch cors | `172548067` @07:11 | form issuer cors/empty · posts=1 · tls-worker | **×2** |
-| cold issuer tls | `172549600` @07:24 | split `_prepay`/`_issuer` workers · posts=1 | **×2** |
-| CCForm GET on cold issuer tls | `172557593` @08:52 | CCForm+HandleCredit `_issuerRemoteTls` · posts=1 | **pending user** |
-
-Client forensics: one `HandleCreditCard`. Dual ≠ second app POST.
-
-**RETRACTED — Bandai July “single Revolut”:** commit `9d313ae` (2026-07-22) and later comments claim 07:24 pure undici / throwaway → Revolut×1. That is **agent commit text only** — no user Revolut confirm, no GE tx id, no forensics artifact. Treat as **unproven**. User (2026-08-03): Bandai has never had a confirmed single; only **Toymate** issuer tls-worker @14:54 is locked ×1.
-
-**Confirmed ×1 only:** Toymate `run_20651586e4b2`. **Bandai:** every bank-scored lab so far → Revolut×2.
-
-**Workshop (user 2026-08-03):** keep the Toymate fix (issuer chrome_131 tls-worker) on Bandai and work **outward** from remaining hop diffs — not GE field roulette, not July folklore.
-1. Keep `PAY_ISSUER_TLS_WORKER` + `PAY_PAYHOST_TLS_WORKER` ON (already on Bandai; still ×2 alone).
-2. `PAY_ISSUER_FORM_AS_CORS` — tx **`172548067`** @07:11 · posts=1 · tls-worker · **Revolut ×2** (user).
-3. `PAY_ISSUER_COLD_TLS` — tx **`172549600`** @07:24 · posts=1 · cold prepay+issuer workers · **Revolut ×2** (user).
-4. `BANDAI_GE_SKIP_CC_FORM=1` — **pre-bank fail** (JWT only on CreditCardForm after save; Checkout/v2 refresh empty).
-5. `PAY_ISSUER_CCFORM_TLS` default ON — CreditCardForm GET on cold issuer tls-worker. Bank scored **`172557593`** @08:52 AEST (`run_966ff3c288e9` bandai#7) · posts=1 · cold `_issuerRemoteTls` before HandleCredit · CCForm 200 jwt · **Revolut pending user** (1 vs 2).
+| **NOW** | `PAY_ISSUER_GET_FETCH` (default ON) — Sec-Fetch `navigate`/`iframe` on CreditCardForm GET | **shipping** | CCForm rode cold tls but GET had no Sec-Fetch (only POST/PUT injected) |
+| **NOW** | Bandai `DEFAULT_UA` → shared platform `http.js` UA | **shipping** | Mac UA hardcoded on win32 desktop labs |
+| Next | `PAY_PAYHOST_TLS_WORKER=0` (Toymate-shaped: undici ha/save, chrome_131 only CCForm+HandleCredit) | untested combo with cold+ccform+get-fetch | issuer-only ×2 predates cold/ccform |
+| Next | Checkout/v2 GET on `_prepayRemoteTls` (narrow; not GE-all) | not built | GE document GET still undici |
+| Later | `PAY_ISSUER_FORM_AS_CORS=0` + current stack | untested combo | cors ×2 was before CCForm-tls |
+| Skip | `PAY_ISSUER_FRESH_UNDICI`, GE-all-tls, skip-CCForm, July folklore | parked | wrong direction / failed |
 
 ---
 
@@ -175,7 +202,8 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 | `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 |
 | `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay — **×2** (`172548067`) |
 | `PAY_ISSUER_COLD_TLS` | ON (`=0` off) | Separate chrome_131 worker for issuer vs prepay (Toymate-shaped) |
-| `PAY_ISSUER_CCFORM_TLS` | ON (`=0` off) | CreditCardForm GET → cold issuer chrome_131 (same `_issuerRemoteTls` as HandleCredit) |
+| `PAY_ISSUER_CCFORM_TLS` | ON (`=0` off) | CreditCardForm GET → cold issuer chrome_131 — **×2** (`172557593`) |
+| `PAY_ISSUER_GET_FETCH` | ON (`=0` off) | CreditCardForm GET Sec-Fetch navigate/iframe (dest override `PAY_ISSUER_GET_DEST=document`) |
 | `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
 | `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
 
@@ -187,13 +215,13 @@ Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `un
 
 **Throwaway FAIL (locked):** iov7 tx `172538665` @05:49 + iov6 ~05:39 EOF — Revolut **×2** (user). `PAY_GE_TLS_WORKER` stays default OFF. Do not chase July “Bandai ×1 tip” — unproven. Next levers = shared transport / new theory with Bandai bank scoreboard only.
 
-**CCForm-tls bank (2026-08-03 ~08:52 AEST) — Revolut pending:**
+**CCForm-tls FAIL (locked 2026-08-03 ~08:52 AEST):**
 | Field | Value |
 |---|---|
 | Run | `run_966ff3c288e9` bandai#7 · forensics `%TEMP%\j1m-pay-forensics-bandai-ccform-tls4.jsonl` |
 | GE tx | **`172557593`** · `AutherizationFailed` · last4 `1964` |
 | Wire | posts=1 · cold `_prepayRemoteTls` + `_issuerRemoteTls` · HandleCredit `payTransport=tls-worker` 302 · CCForm 200 jwt · throwaway iov · `sameCart=False` |
-| Revolut | **ask user 1 vs 2** — do not invent |
+| **Revolut** | **×2** (user 2026-08-03) |
 
 ### Lab 2026-08-02 ~14:54 AEST — Toymate WIN (issuer tls-worker)
 
@@ -286,6 +314,7 @@ Notes:
 | Bandai throwaway iovation + tls-worker | ×2 (`172538665` @05:49; EOF dual @05:39) |
 | Bandai Sec-Fetch cors + tls-worker | ×2 (`172548067` @07:11) |
 | Bandai cold issuer tls (split workers) | ×2 (`172549600` @07:24) |
+| Bandai CCForm GET on cold issuer tls | ×2 (`172557593` @08:52) |
 
 **Bandai is the scoreboard** (Revolut 1 vs 2 + forensics). **Shared code is the workshop.**
 

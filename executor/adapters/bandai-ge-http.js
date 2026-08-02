@@ -44,8 +44,9 @@ export const BANDAI_GE_WEBSERVICES = "https://webservices.global-e.com";
 export const BANDAI_GE_SECURE = "https://secure-bandai.global-e.com";
 export const BANDAI_GE_GEM = "https://gem-bandai.global-e.com";
 
-const DEFAULT_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+// Match shared http.js platform UA (win32 → Windows). Hardcoded Mac UA on
+// Windows desktop was a presentation tell vs Toymate / http.js defaults.
+const DEFAULT_UA = HTTP_UA;
 
 /** UUID-ish GUID from Checkout/v2 / handleaction / orderdetails HTML. */
 export function extractGeCheckoutGuid(htmlOrUrl) {

@@ -1,7 +1,11 @@
 // node --test executor/issuer-tls-worker.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
-import { shouldUseIssuerTlsWorker, payTlsWorkerCacheKey } from "./http.js";
+import {
+  shouldUseIssuerTlsWorker,
+  payTlsWorkerCacheKey,
+  chromePayFetchHeaders,
+} from "./http.js";
 
 test("issuer tls-worker: GE HandleCreditCard POST is on by default", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
@@ -222,5 +226,51 @@ test("cold issuer tls: separate cache keys by default; shared when =0", () => {
   } finally {
     if (prev === undefined) delete process.env.PAY_ISSUER_COLD_TLS;
     else process.env.PAY_ISSUER_COLD_TLS = prev;
+  }
+});
+
+test("CreditCardForm GET gets Sec-Fetch navigate/iframe by default", () => {
+  const prevNav = process.env.PAY_ISSUER_CHROME_NAV;
+  const prevGet = process.env.PAY_ISSUER_GET_FETCH;
+  const prevDest = process.env.PAY_ISSUER_GET_DEST;
+  delete process.env.PAY_ISSUER_CHROME_NAV;
+  delete process.env.PAY_ISSUER_GET_FETCH;
+  delete process.env.PAY_ISSUER_GET_DEST;
+  try {
+    const h = chromePayFetchHeaders(
+      "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+      { origin: "https://webservices.global-e.com" },
+      { method: "GET" },
+    );
+    assert.equal(h["sec-fetch-mode"], "navigate");
+    assert.equal(h["sec-fetch-dest"], "iframe");
+    // secure-bandai + webservices share eTLD+1 → same-site
+    assert.equal(h["sec-fetch-site"], "same-site");
+
+    process.env.PAY_ISSUER_GET_FETCH = "0";
+    assert.deepEqual(
+      chromePayFetchHeaders(
+        "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+        { origin: "https://webservices.global-e.com" },
+        { method: "GET" },
+      ),
+      {},
+    );
+
+    delete process.env.PAY_ISSUER_GET_FETCH;
+    process.env.PAY_ISSUER_GET_DEST = "document";
+    const doc = chromePayFetchHeaders(
+      "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+      { origin: "https://webservices.global-e.com" },
+      { method: "GET" },
+    );
+    assert.equal(doc["sec-fetch-dest"], "document");
+  } finally {
+    if (prevNav === undefined) delete process.env.PAY_ISSUER_CHROME_NAV;
+    else process.env.PAY_ISSUER_CHROME_NAV = prevNav;
+    if (prevGet === undefined) delete process.env.PAY_ISSUER_GET_FETCH;
+    else process.env.PAY_ISSUER_GET_FETCH = prevGet;
+    if (prevDest === undefined) delete process.env.PAY_ISSUER_GET_DEST;
+    else process.env.PAY_ISSUER_GET_DEST = prevDest;
   }
 });

@@ -475,11 +475,14 @@ export function chromeClientHints(userAgent = UA, existingHeaders = {}) {
 }
 
 /**
- * Chrome Sec-Fetch-* for pay-host / issuer mutates when the caller omitted them.
- * Covers GE prepay (handleaction/save) and BigPay — not issuer paths only.
- * Opt out: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
+ * Chrome Sec-Fetch for pay-host hops when the caller omitted them.
+ * Opt out all: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
+ *
+ * method POST/PUT → cors/empty (BigPay + GE form-as-cors) or navigate/document.
+ * method GET/HEAD on CreditCardForm → navigate/iframe (GEM iframe load).
+ *   Opt out: PAY_ISSUER_GET_FETCH=0. Dest override: PAY_ISSUER_GET_DEST=document.
  */
-export function chromePayFetchHeaders(url, existingHeaders = {}) {
+export function chromePayFetchHeaders(url, existingHeaders = {}, { method = "POST" } = {}) {
   if (process.env.PAY_ISSUER_CHROME_NAV === "0") return {};
   const existing = lowerHeaderMap(existingHeaders);
   if (existing["sec-fetch-mode"] != null) return {};
@@ -497,6 +500,23 @@ export function chromePayFetchHeaders(url, existingHeaders = {}) {
   const payHost = PAY_WIRE_HOST_RE.test(host);
   if (!issuerLike && !payHost) return {};
 
+  const site = secFetchSite(host, existing.origin || "");
+  const m = String(method || "POST").toUpperCase();
+
+  // CreditCardForm GET rides cold issuer tls but previously had no Sec-Fetch
+  // (request() only injected on POST/PUT). Browser loads it as an iframe.
+  if (/^(GET|HEAD)$/i.test(m) && /CreditCardForm/i.test(path)) {
+    if (process.env.PAY_ISSUER_GET_FETCH === "0") return {};
+    const dest =
+      process.env.PAY_ISSUER_GET_DEST === "document" ? "document" : "iframe";
+    return {
+      "sec-fetch-site": site,
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": dest,
+    };
+  }
+  if (/^(GET|HEAD)$/i.test(m)) return {};
+
   const ct = String(existing["content-type"] || "");
   const xhrHint = /XMLHttpRequest/i.test(String(existing["x-requested-with"] || ""));
   // JSON/API / XHR pay hops are cors/empty in a real browser — never document-navigate.
@@ -512,7 +532,6 @@ export function chromePayFetchHeaders(url, existingHeaders = {}) {
     /checkoutv2\/(handleaction|save)/i.test(path) ||
     issuerFormAsCors;
 
-  const site = secFetchSite(host, existing.origin || "");
   if (isJsonOrXhr) {
     return {
       "sec-fetch-site": site,
@@ -538,7 +557,7 @@ export function chromePayFetchHeaders(url, existingHeaders = {}) {
 
 /** @deprecated use chromePayFetchHeaders — kept for existing imports/tests */
 export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
-  return chromePayFetchHeaders(url, existingHeaders);
+  return chromePayFetchHeaders(url, existingHeaders, { method: "POST" });
 }
 
 function parsePayUrl(url) {
@@ -669,13 +688,14 @@ function finalizePayResponse(url, method, opts, res) {
  *   PAY_PAYHOST_TLS_WORKER  — prepay mutates (opt out =0)
  *   PAY_ISSUER_FORM_AS_CORS — GE form issuer Sec-Fetch cors/empty like BigPay
  *   PAY_ISSUER_COLD_TLS     — separate chrome_131 worker for issuer vs prepay
+ *   PAY_ISSUER_CCFORM_TLS   — CreditCardForm GET on cold issuer worker
+ *   PAY_ISSUER_GET_FETCH    — Sec-Fetch navigate/iframe on CreditCardForm GET
  * Opt-in:
  *   PAY_GE_TLS_WORKER=1     — any global-e.com hop incl GET
  * Merchant cart ATC stays undici (stage=other).
  *
- * Bandai Sec-Fetch cors + shared tls-worker still ×2 (tx 172548067). Cold
- * issuer = Toymate-shaped single-hop TLS session (BigPay never shared a
- * prepay worker). Opt out PAY_ISSUER_COLD_TLS=0 to share one worker again.
+ * Bandai scored ×2 through cors/cold/ccform-tls (see bible scoreboard). Next
+ * outward: GET Sec-Fetch on CCForm, then Toymate-shaped PAY_PAYHOST=0.
  */
 export function shouldUseIssuerTlsWorker(url, method) {
   const { host, path: pathName } = parsePayUrl(url);
@@ -804,9 +824,7 @@ export async function request(url, opts, ctx) {
     "accept-language": "en-AU,en;q=0.9",
     ...(jar.header() ? { cookie: jar.header() } : {}),
     ...chromeClientHints(callerUa, mergedCallerHeaders),
-    ...(method === "POST" || method === "PUT"
-      ? chromePayFetchHeaders(url, mergedCallerHeaders)
-      : {}),
+    ...chromePayFetchHeaders(url, mergedCallerHeaders, { method }),
     ...mergedCallerHeaders,
   };
 

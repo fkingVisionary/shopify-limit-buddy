@@ -493,6 +493,14 @@ const ha = chromePayFetchHeaders(
 );
 assert.equal(ha["sec-fetch-mode"], "cors");
 assert.equal(ha["sec-fetch-dest"], "empty");
+// CreditCardForm GET → iframe navigate (not cors/empty from form-as-cors)
+const ccGet = chromePayFetchHeaders(
+  "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+  { origin: "https://webservices.global-e.com" },
+  { method: "GET" },
+);
+assert.equal(ccGet["sec-fetch-mode"], "navigate");
+assert.equal(ccGet["sec-fetch-dest"], "iframe");
 const ch = chromeClientHints(UA, {});
 assert.equal(ch["sec-ch-ua-mobile"], "?0");
 assert.match(String(ch["sec-ch-ua-platform"] || ""), /Windows|macOS|Linux/);
