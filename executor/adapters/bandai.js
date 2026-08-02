@@ -543,10 +543,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
 
   async function seedColdF5Bridge(proxyLine, { noteSuffix = "" } = {}) {
     const s0 = Date.now();
-    // Autocheckout test: real headed Chrome for form-nav score (HeadlessChromium
-    // already Revolut×2'd with fat iovation). Prod Fast stays headless Chromium.
+    // Opt-in only — forcing headed Chrome for every Autocheckout test burnt
+    // Bandai login (HTTP 501) across the proxy pool. Headless form-nav still
+    // scores settleMs=0; set BANDAI_GE_TEST_HEADED_CHROME=1 when needed.
     const headedChrome =
-      opts.useGeHttpTestFork === true ||
       process.env.BANDAI_GE_TEST_HEADED_CHROME === "1" ||
       task.bandaiGeTestHeadedChrome === true;
     bridge = await createBandaiF5Bridge({
