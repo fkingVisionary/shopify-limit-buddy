@@ -834,13 +834,14 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
   // F5 session) while the same account works in a real browser. Complete login
   // inside the existing F5 bridge (not Playwright pay) and sync cookies to jar.
   async function attemptLoginViaBridge() {
-    if (!bridge?.page) {
-      return { ok: false, status: null, note: "bridge login skipped: no page" };
-    }
-    const csrf = session.state.csrfToken || (await bridge.csrfToken());
-    let result;
+    // Never throw — makeStep rethrows and desktop maps that to adapter_error,
+    // which aborts SoftBlock outer climb (failedStep must stay "login").
     try {
-      result = await bridge.page.evaluate(
+      if (!bridge?.page || bridge.page.isClosed?.()) {
+        return { ok: false, status: null, note: "bridge login skipped: no page" };
+      }
+      const csrf = session.state.csrfToken || (await bridge.csrfToken());
+      const result = await bridge.page.evaluate(
         async ({ body, csrf: tok, areaCode }) => {
           const res = await fetch("/login", {
             method: "POST",
@@ -864,6 +865,35 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         },
         { body: loginBody, csrf, areaCode: session.area },
       );
+      try {
+        await bridge.page.waitForTimeout(800);
+      } catch {
+        /* ignore */
+      }
+      const cookies = await bridge.cookies().catch(() => null);
+      if (cookies && ctx.jar?.load) {
+        ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+      }
+      if (result?.csrf) session.state.csrfToken = result.csrf;
+      const restricted = result?.restrictedType || null;
+      const blocking =
+        restricted &&
+        !/^NoRestriction$/i.test(restricted) &&
+        restricted !== "null" &&
+        restricted !== "";
+      const status = Number(result?.status) || null;
+      const ok = status >= 200 && status < 300 && !blocking;
+      return {
+        ok,
+        status,
+        restrictedType: restricted,
+        blocking: Boolean(blocking),
+        note: blocking
+          ? `bridge restricted:${restricted}`
+          : ok
+            ? "login ok via=bridge"
+            : `bridge login ${status}`,
+      };
     } catch (e) {
       return {
         ok: false,
@@ -871,35 +901,6 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         note: `bridge login throw: ${e?.message || e}`,
       };
     }
-    try {
-      await bridge.page.waitForTimeout(800);
-    } catch {
-      /* ignore */
-    }
-    const cookies = await bridge.cookies();
-    if (cookies && ctx.jar?.load) {
-      ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
-    }
-    if (result?.csrf) session.state.csrfToken = result.csrf;
-    const restricted = result?.restrictedType || null;
-    const blocking =
-      restricted &&
-      !/^NoRestriction$/i.test(restricted) &&
-      restricted !== "null" &&
-      restricted !== "";
-    const status = Number(result?.status) || null;
-    const ok = status >= 200 && status < 300 && !blocking;
-    return {
-      ok,
-      status,
-      restrictedType: restricted,
-      blocking: Boolean(blocking),
-      note: blocking
-        ? `bridge restricted:${restricted}`
-        : ok
-          ? "login ok via=bridge"
-          : `bridge login ${status}`,
-    };
   }
 
   let login = await tStep("login", attemptLogin);
@@ -922,7 +923,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       0,
       Math.min(
         8,
-        Number(task.bandaiLoginProxyRotates ?? process.env.BANDAI_LOGIN_PROXY_ROTATES) || 2,
+        // Default 6 — pool labs have many Noontide lines; 2 was too thin for SoftBlock.
+        Number(task.bandaiLoginProxyRotates ?? process.env.BANDAI_LOGIN_PROXY_ROTATES) || 6,
       ),
     );
     const seen = new Set(curLine ? [curLine] : []);
@@ -965,6 +967,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           const m = String(line).match(/session-([^-:]+)/i);
           return m ? `session-${m[1]}` : bandaiProxyHost(line);
         })();
+        // Seed threw mid-boot — drop stale bridge so login_bridge_final cannot
+        // page.evaluate on a destroyed context (was adapter_error).
+        bridge = null;
         steps.push({
           step: "login_proxy_rotate",
           ok: false,
@@ -1003,7 +1008,12 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     }
   }
 
-  if (!login.ok && bridge && isRetryableLoginFailure(login)) {
+  if (
+    !login.ok &&
+    bridge?.page &&
+    !bridge.page.isClosed?.() &&
+    isRetryableLoginFailure(login)
+  ) {
     login = await tStep("login_bridge_final", attemptLoginViaBridge);
   }
 

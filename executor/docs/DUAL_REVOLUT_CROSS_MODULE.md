@@ -85,6 +85,7 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 | Safe10 #4 | Checkout/v2 ok but `ge_iframe_not_filled` ? prefetcher mistaken for CCForm | **fixed** (CreditCardForm-only ready) |
 | Safe11 SoftBlock | login remints only ? never Pay; user: not clean-session, proxies bank on Fast | build gap confirmed |
 | **Safe hybrid** | HTTP cart_checkout + GetCartToken ? PW Checkout/v2 fill/Pay (no SPA Proceed) | **shipped** ? score `chargeReqCount>=1` / bank |
+| Safe12 e2e | SoftBlock wash; dead-bridge evaluate ? `adapter_error` burned rotate budget | **fixed** (no-throw bridge login + skip final + rotate default 6) |
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 
