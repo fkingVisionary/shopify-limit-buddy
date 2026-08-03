@@ -974,8 +974,13 @@ export async function browserBandaiGeFromCart(opts = {}) {
         /tnc|terms|privacy|consent/i.test(String(c.name || "")),
       );
       if (!checks.length) return true;
-      // Underscore + dotted variants must both be true when present (Safe7).
-      return checks.every((c) => c.checked);
+      if (checks.every((c) => c.checked)) return true;
+      // Safe7: Pay enabled with only CheckoutData.TnCConsent0 — underscore
+      // CheckoutData_TnCConsent often stays false (ghost / sync field). Don't
+      // deadlock the gate on it once the dotted Consent0 is checked.
+      const consent0 = checks.find((c) => /TnCConsent0/i.test(String(c.name || "")));
+      if (consent0?.checked) return true;
+      return false;
     };
 
     // Poll Pay enable — max ~18s (terms must stick before Pay).
