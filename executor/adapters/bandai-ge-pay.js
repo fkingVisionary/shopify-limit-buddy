@@ -966,27 +966,10 @@ export async function browserBandaiGeFromCart(opts = {}) {
           await tickTerms();
           // Playwright locator click only — bare btn.click() skips GE's issuer
           // chain (labs: eval1 → no HandleCreditCard; locator → issuer on wire).
-          // ONE click; soft-disable Pay CTAs immediately after.
+          // Soft-disable AFTER a short arm window: immediate disable raced GEM
+          // (2026-08-03 Safe labs: pay_clicked_no_payment_request ×2 with
+          // chargeReqCount=0). Still one intentional click; disable on wire or 1.5s.
           await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
-          await frame
-            .evaluate(() => {
-              const payLabel = (b) =>
-                (b.innerText || b.value || b.getAttribute("aria-label") || "")
-                  .replace(/\s+/g, " ")
-                  .trim();
-              const isPay = (b) =>
-                /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
-              for (const b of document.querySelectorAll(
-                "button, input[type=submit], a[role=button]",
-              )) {
-                if (!isPay(b)) continue;
-                b.dataset.j1mPaid = "1";
-                b.setAttribute("disabled", "true");
-                b.setAttribute("aria-disabled", "true");
-                b.style.pointerEvents = "none";
-              }
-            })
-            .catch(() => {});
           payClickCount += 1;
           paymentStatus = "pay_clicked";
           geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=locator`;
@@ -997,6 +980,38 @@ export async function browserBandaiGeFromCart(opts = {}) {
             enableMs: Date.now() - sGe,
             via: "locator",
             payDiag,
+          });
+          const softDisablePay = async () => {
+            await frame
+              .evaluate(() => {
+                const payLabel = (b) =>
+                  (b.innerText || b.value || b.getAttribute("aria-label") || "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                const isPay = (b) =>
+                  /^(pay|place order|pay now)\b/i.test(payLabel(b)) ||
+                  /^pay$/i.test(payLabel(b));
+                for (const b of document.querySelectorAll(
+                  "button, input[type=submit], a[role=button]",
+                )) {
+                  if (!isPay(b)) continue;
+                  b.dataset.j1mPaid = "1";
+                  b.setAttribute("disabled", "true");
+                  b.setAttribute("aria-disabled", "true");
+                  b.style.pointerEvents = "none";
+                }
+              })
+              .catch(() => {});
+          };
+          const armUntil = Date.now() + 1500;
+          while (Date.now() < armUntil && !issuerPaymentSent) {
+            await page.waitForTimeout(100);
+          }
+          await softDisablePay();
+          mark("pay_soft_disabled", {
+            issuerPaymentSent,
+            chargeReqCount,
+            waitMs: Math.min(1500, Date.now() - (armUntil - 1500)),
           });
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;

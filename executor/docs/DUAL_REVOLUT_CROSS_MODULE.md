@@ -58,6 +58,19 @@ Keep `PAY_ISSUER_TLS_WORKER` ON. Do **not** revert to undici issuer. Score Fast 
 | Later | `PAY_ISSUER_FORM_AS_CORS=0` + current stack | untested combo | cors ×2 was before CCForm-tls |
 | Skip | `PAY_ISSUER_FRESH_UNDICI`, GE-all-tls, skip-CCForm, July folklore | parked | wrong direction / failed |
 
+### Safe mode (Playwright GE) — beta path (Fast kept)
+
+ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via=http+ge` / page issuer). Fast undici workshop stays; Safe is the consistency/cart-hold beta candidate.
+
+| Lab | Evidence | Revolut |
+|---|---|---|
+| Page-issuer baseline @13:17 | tx `172447213` · posts=1 | **×2** (locked — off Fast, but same PW pay family) |
+| Page-issuer CH @13:39 | tx `172448160` · posts=1 | **×2** |
+| Safe e2e 2026-08-03 `run_bebdc64c9e69` | pay=safe · #6/#7 cart hold + CCForm fill + Pay click · `pay_clicked_no_payment_request` · chargeReqCount=0 · **no bank** | unscored |
+| Safe Pay soft-disable race | tip after #6/#7 — delay Pay CTA disable until issuer wire or 1.5s (`bandai-ge-pay.js`) | bank pending |
+
+If a fresh Safe bank still ×2 → dual is not Fast-transport-only (matches page-issuer ×2). If ×1 → Safe is the beta ship path while Fast workshop continues.
+
 ---
 
 ## 0. Prompt for the next agent (copy-paste)
