@@ -70,7 +70,9 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 | Safe Pay soft-disable delay `8a6da26` | delay Pay CTA disable until issuer wire or 1.5s | shipped |
 | Safe2 e2e `run_44ec41a9d08e` | pay=safe · #5 same `pay_clicked_no_payment_request` · chargeReqCount=0 after delay fix · SoftBlock after | **still no bank** |
 | Safe3 `run_a45a4ffaa28f` #5 | same stall · **`payNet=0/0`** (zero GE mutates after Pay) · SoftBlock after | **still no bank** |
-| Safe Pay wire fix (this tip) | exact Pay CTA (not PayPal `has-text`); no `force` first; **soft-disable after issuer or 12s** (1.5s raced GEM); 1.2s post-fill settle | pending bank |
+| Safe Pay wire fix | soft-disable after issuer/**12s**; no `force` first; post-fill settle | shipped |
+| Safe5 `run_e1d03865a5d8` #7 | over-strict `Pay` `$` anchor → `card_filled_no_pay_button` (`hasPay:false`; real CTA is `Pay AU$…`) | no bank |
+| Safe Pay label fix | restore `\b` match for `Pay AU$…`; still exclude PayPal/Apple/Google Pay | pending bank |
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 

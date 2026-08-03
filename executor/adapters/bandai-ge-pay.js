@@ -876,9 +876,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     let paid = false;
     const netBefore = geNet.length;
-    /** Exact Checkout Pay CTA — not PayPal / Pay with … (has-text("Pay") false-hits). */
-    const isExactPayLabel = (label) =>
-      /^(pay|place order|pay now)$/i.test(String(label || "").replace(/\s+/g, " ").trim());
+    // Checkout Pay CTA — GEM labels are often "Pay AU$ 11.00". Keep word-boundary
+    // match; exclude PayPal / Apple Pay / Google Pay (has-text("Pay") false-hits).
+    const isCheckoutPayLabel = (label) => {
+      const s = String(label || "").replace(/\s+/g, " ").trim();
+      if (!s) return false;
+      if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+      return /^(pay|place order|pay now)\b/i.test(s);
+    };
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
@@ -937,8 +942,11 @@ export async function browserBandaiGeFromCart(opts = {}) {
               (b.innerText || b.value || b.getAttribute("aria-label") || "")
                 .replace(/\s+/g, " ")
                 .trim();
-            const isPay = (b) =>
-              /^(pay|place order|pay now)$/i.test(payLabel(b));
+            const isPay = (b) => {
+              const s = payLabel(b);
+              if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+              return /^(pay|place order|pay now)\b/i.test(s);
+            };
             const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(
               (b) => isPay(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true",
             );
@@ -969,14 +977,21 @@ export async function browserBandaiGeFromCart(opts = {}) {
           .catch(() => null);
         if (state) payDiag = state;
 
-        // Exact role name — :has-text("Pay") also matches PayPal / Apple Pay.
-        const payBtn = frame.getByRole("button", { name: /^(Pay|Place Order|Pay now)$/i }).first();
+        // Prefer role+name with word boundary (matches "Pay AU$…"); fall back to
+        // filtered buttons. Never use bare :has-text("Pay") (PayPal).
+        let payBtn = frame.getByRole("button", { name: /^(Pay|Place Order|Pay now)\b/i }).first();
+        if (!(await payBtn.count().catch(() => 0))) {
+          payBtn = frame
+            .locator("button, input[type=submit], a[role=button]")
+            .filter({ hasText: /^(Pay|Place Order|Pay now)\b/i })
+            .first();
+        }
         if (!(await payBtn.count().catch(() => 0))) continue;
         if (!(await payBtn.isVisible().catch(() => false))) continue;
         const disabled = await payBtn.isDisabled().catch(() => true);
         if (disabled) continue;
         const btnLabel = ((await payBtn.innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
-        if (btnLabel && !isExactPayLabel(btnLabel)) {
+        if (btnLabel && !isCheckoutPayLabel(btnLabel)) {
           geNote += `; skip_non_pay_cta=${btnLabel.slice(0, 40)}`;
           continue;
         }
@@ -1023,7 +1038,11 @@ export async function browserBandaiGeFromCart(opts = {}) {
                   (b.innerText || b.value || b.getAttribute("aria-label") || "")
                     .replace(/\s+/g, " ")
                     .trim();
-                const isPay = (b) => /^(pay|place order|pay now)$/i.test(payLabel(b));
+                const isPay = (b) => {
+                  const s = payLabel(b);
+                  if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+                  return /^(pay|place order|pay now)\b/i.test(s);
+                };
                 for (const b of document.querySelectorAll(
                   "button, input[type=submit], a[role=button]",
                 )) {
