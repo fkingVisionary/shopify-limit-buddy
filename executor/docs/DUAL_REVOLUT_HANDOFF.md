@@ -171,13 +171,15 @@ Ordered by current strength:
 
 ---
 
-## 8. Suggested first week plan
+## 8. Suggested starting points (not a schedule)
+
+Highest-value next work, in no particular cadence:
 
 1. **Reproduce once** on Bandai Full or Fast; confirm Revolut ×2 and capture `transactionId` from forensics.
 2. **Manual HAR** on same SKU/card (Chrome DevTools → Export HAR, sanitize PAN).
 3. **Bot HAR** with `BANDAI_DUAL_HAR=1` on Full; run `bandai-dual-har-summary.mjs`.
 4. From the diff, pick **one** concrete delta (risk host, issuer headers, TLS JA3/shape, fingerprint script) and A/B it with a single bank score.
-5. In parallel, keep the Toymate tls-worker ×1 result in mind as the only positive control — ask what shared property that path has that Bandai Full Chromium still lacks.
+5. Keep the Toymate tls-worker ×1 result in mind as the only positive control — what shared property does that path have that Bandai Full Chromium still lacks?
 
 ---
 
