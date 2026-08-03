@@ -1,6 +1,7 @@
 # Dual Revolut ? investigation bible (session archive)
 
-> **Incoming developer?** Start here: [`DUAL_REVOLUT_HANDOFF.md`](./DUAL_REVOLUT_HANDOFF.md)  
+> **Pre-hire / quoting:** [`DUAL_REVOLUT_SCOPING_BRIEF.md`](./DUAL_REVOLUT_SCOPING_BRIEF.md)  
+> **After hire (technical handoff):** [`DUAL_REVOLUT_HANDOFF.md`](./DUAL_REVOLUT_HANDOFF.md)  
 > This file is the long session archive / scoreboard detail.
 
 **Updated:** 2026-08-03 ~16:08 AEST
