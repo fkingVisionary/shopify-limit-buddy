@@ -235,12 +235,18 @@ function extractDeclineSnippet(text) {
 }
 
 /**
- * Cart UI → PROCEED → fill CreditCardForm → single Checkout/v2 Pay.
+ * GE fill/Pay on an existing Playwright page.
+ * entry=cart (legacy): /cart → PROCEED → GEM.
+ * entry=checkoutV2 (Safe hybrid): open GetCartToken Checkout/v2 URL directly.
+ * entry=orderdetails: seed checkoutSn and wait for GEM on /orderdetails.
  * @param {object} opts
  * @param {import('playwright').Page} opts.page
  * @param {import('playwright').BrowserContext} opts.context
  * @param {string} opts.base — https://p-bandai.com/{area}
  * @param {object} opts.card
+ * @param {"cart"|"checkoutV2"|"orderdetails"} [opts.entry]
+ * @param {string} [opts.checkoutV2Url]
+ * @param {string} [opts.checkoutSn]
  * @param {number} [opts.wait3dsMs=45000]
  * @param {object} [opts.meta] — areaItemNo, cartSn, cartId, cartItemSn, title
  */
@@ -249,6 +255,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const context = opts.context;
   const base = String(opts.base || "").replace(/\/$/, "");
   const wait3dsMs = Math.min(90_000, Math.max(8_000, Number(opts.wait3dsMs) || 45_000));
+  const entryRaw = String(opts.entry || "").toLowerCase();
+  const checkoutV2Url = opts.checkoutV2Url ? String(opts.checkoutV2Url) : null;
+  const entry =
+    entryRaw === "checkoutv2" || (checkoutV2Url && entryRaw !== "cart" && entryRaw !== "orderdetails")
+      ? "checkoutV2"
+      : entryRaw === "orderdetails"
+        ? "orderdetails"
+        : "cart";
   const card = opts.card || {
     number: "4000000000000002",
     expMonth: "12",
@@ -284,6 +298,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
   if (!page || !context || !base) {
     return { ok: false, error: "page_context_base_required", steps, checkoutStage: "cart" };
+  }
+  if (entry === "checkoutV2" && !checkoutV2Url) {
+    return {
+      ok: false,
+      error: "checkoutV2Url_required",
+      steps,
+      checkoutStage: "tokenize",
+    };
   }
 
   const geNet = [];
@@ -530,7 +552,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
   page.on("request", onReq);
   page.on("response", onRes);
 
-  let checkoutSn = null;
+  let checkoutSn = opts.checkoutSn || null;
   let paymentStatus = "unknown";
   let reached3ds = false;
   let threeDsUrl = null;
@@ -541,200 +563,349 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let geNote = "";
 
   try {
-    mark("ge_from_cart_start");
     const sChk = Date.now();
-    await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    await dismissCookieBanner(page);
+    const geFrameRe =
+      /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i;
+    let geIframeReady = false;
+    let frameUrls = [];
+    let gemVia = "timeout";
 
-    // Vue cart hydrates async — wait for CTA (or empty-cart copy) before failing.
-    const proceedSel =
-      'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
-    let proceedVisible = false;
-    for (let i = 0; i < 20; i++) {
+    if (entry === "checkoutV2") {
+      // Safe hybrid — HTTP already minted CartToken; open GEM shell directly.
+      mark("ge_from_checkout_v2_start", { url: checkoutV2Url.slice(0, 120) });
+      await page.goto(checkoutV2Url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(600);
       await dismissCookieBanner(page);
-      const proceedProbe = page.locator(proceedSel).first();
-      if ((await proceedProbe.count().catch(() => 0)) && (await proceedProbe.isVisible().catch(() => false))) {
-        proceedVisible = true;
-        break;
-      }
-      // Nudge SPA — sometimes first paint is a skeleton.
-      if (i === 6 || i === 12) {
-        await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
-        await page.waitForTimeout(600);
-      }
-      await page.waitForTimeout(400);
-    }
-    mark("cart_ui_ready", { proceedVisible });
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
 
-    // Start GEM warm as soon as cart paints — overlaps checkbox / Proceed enable wait.
-    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
-    mark("gem_warm_started");
-
-    const areaBoxes = page.locator(
-      'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
-    );
-    const boxCount = await areaBoxes.count();
-    for (let i = 0; i < boxCount; i++) {
-      const box = areaBoxes.nth(i);
-      if (!(await box.isChecked().catch(() => true))) {
-        await box.check({ force: true }).catch(() => {});
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        frameUrls = page.frames().map((f) => f.url());
+        const mainOk = geFrameRe.test(page.url() || "");
+        if (mainOk || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = mainOk ? `main+poll${pollI}` : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
       }
-    }
-
-    const proceed = page.locator(proceedSel).first();
-    if (!proceedVisible) {
-      const bodyHint = (await page.locator("body").innerText().catch(() => ""))
-        .replace(/\s+/g, " ")
-        .slice(0, 160);
+      frameUrls = page.frames().map((f) => f.url());
+      if (!geIframeReady && (geFrameRe.test(page.url() || "") || frameUrls.some((u) => geFrameRe.test(u)))) {
+        geIframeReady = true;
+        gemVia = "late";
+      }
+      mark("after_checkout_v2", { checkoutSn, gemPoll: pollI, url: String(page.url() || "").slice(0, 100) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
+      }
       push("cart_checkout", {
-        ok: false,
+        ok: geIframeReady,
         ms: Date.now() - sChk,
-        note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
+        note: `hybrid entry=checkoutV2 geIframe=${geIframeReady} via=${gemVia} frames=${frameUrls.length} sn=${checkoutSn || "n/a"}`,
       });
-      return {
-        ok: false,
-        steps,
-        timeline,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT button missing",
-        checkoutStage: "cart",
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
-      };
-    }
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 never booted (hybrid)",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `checkoutV2 open failed; url=${page.url()} frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
+    } else if (entry === "orderdetails") {
+      mark("ge_from_orderdetails_start", { checkoutSn });
+      await page.goto(`${base}/orderdetails`, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(600);
+      await dismissCookieBanner(page);
+      if (checkoutSn) {
+        await page
+          .evaluate((sn) => {
+            try {
+              sessionStorage.setItem("bsp_checkout_sn", sn);
+            } catch {
+              /* ignore */
+            }
+          }, String(checkoutSn))
+          .catch(() => {});
+      }
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
 
-    let proceedReady = false;
-    for (let i = 0; i < 16; i++) {
-      for (let bi = 0; bi < boxCount; bi++) {
-        const box = areaBoxes.nth(bi);
+      let earlyFrameUrl = null;
+      const onFrame = (frame) => {
+        const u = frame.url() || "";
+        if (geFrameRe.test(u) && !earlyFrameUrl) {
+          earlyFrameUrl = u;
+          mark("ge_frame_event", { url: u.slice(0, 100) });
+        }
+      };
+      page.on("frameattached", onFrame);
+      page.on("framenavigated", onFrame);
+
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        checkoutSn =
+          checkoutSn ||
+          (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+        frameUrls = page.frames().map((f) => f.url());
+        if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
+      }
+      frameUrls = page.frames().map((f) => f.url());
+      if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
+        geIframeReady = true;
+        gemVia = earlyFrameUrl ? "event-late" : "poll-late";
+      }
+      page.off("frameattached", onFrame);
+      page.off("framenavigated", onFrame);
+      mark("after_orderdetails", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
+      }
+      push("cart_checkout", {
+        ok: geIframeReady,
+        ms: Date.now() - sChk,
+        note: `hybrid entry=orderdetails geIframe=${geIframeReady} via=${gemVia} sn=${checkoutSn || "n/a"}`,
+      });
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 iframe never booted (orderdetails)",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `orderdetails GEM missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
+    } else {
+      mark("ge_from_cart_start");
+      await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(800);
+      await dismissCookieBanner(page);
+
+      // Vue cart hydrates async — wait for CTA (or empty-cart copy) before failing.
+      const proceedSel =
+        'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
+      let proceedVisible = false;
+      for (let i = 0; i < 20; i++) {
+        await dismissCookieBanner(page);
+        const proceedProbe = page.locator(proceedSel).first();
+        if ((await proceedProbe.count().catch(() => 0)) && (await proceedProbe.isVisible().catch(() => false))) {
+          proceedVisible = true;
+          break;
+        }
+        // Nudge SPA — sometimes first paint is a skeleton.
+        if (i === 6 || i === 12) {
+          await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+          await page.waitForTimeout(600);
+        }
+        await page.waitForTimeout(400);
+      }
+      mark("cart_ui_ready", { proceedVisible });
+
+      // Start GEM warm as soon as cart paints — overlaps checkbox / Proceed enable wait.
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+      mark("gem_warm_started");
+
+      const areaBoxes = page.locator(
+        'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
+      );
+      const boxCount = await areaBoxes.count();
+      for (let i = 0; i < boxCount; i++) {
+        const box = areaBoxes.nth(i);
         if (!(await box.isChecked().catch(() => true))) {
           await box.check({ force: true }).catch(() => {});
         }
       }
-      if (!(await proceed.isDisabled().catch(() => true))) {
-        proceedReady = true;
-        break;
+
+      const proceed = page.locator(proceedSel).first();
+      if (!proceedVisible) {
+        const bodyHint = (await page.locator("body").innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .slice(0, 160);
+        push("cart_checkout", {
+          ok: false,
+          ms: Date.now() - sChk,
+          note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
+        });
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT button missing",
+          checkoutStage: "cart",
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+        };
       }
-      await page.waitForTimeout(300);
-    }
-    if (!proceedReady) {
-      push("cart_checkout", {
-        ok: false,
-        ms: Date.now() - sChk,
-        note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail)",
-      });
-      return {
-        ok: false,
-        steps,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT disabled",
-        checkoutStage: "cart",
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
+
+      let proceedReady = false;
+      for (let i = 0; i < 16; i++) {
+        for (let bi = 0; bi < boxCount; bi++) {
+          const box = areaBoxes.nth(bi);
+          if (!(await box.isChecked().catch(() => true))) {
+            await box.check({ force: true }).catch(() => {});
+          }
+        }
+        if (!(await proceed.isDisabled().catch(() => true))) {
+          proceedReady = true;
+          break;
+        }
+        await page.waitForTimeout(300);
+      }
+      if (!proceedReady) {
+        push("cart_checkout", {
+          ok: false,
+          ms: Date.now() - sChk,
+          note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail)",
+        });
+        return {
+          ok: false,
+          steps,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT disabled",
+          checkoutStage: "cart",
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      // Refresh warm right before Proceed (cache may have filled during checkbox wait).
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+
+      mark("proceed_click");
+      let earlyFrameUrl = null;
+      const onFrame = (frame) => {
+        const u = frame.url() || "";
+        if (geFrameRe.test(u) && !earlyFrameUrl) {
+          earlyFrameUrl = u;
+          mark("ge_frame_event", { url: u.slice(0, 100) });
+        }
       };
-    }
+      page.on("frameattached", onFrame);
+      page.on("framenavigated", onFrame);
 
-    // Refresh warm right before Proceed (cache may have filled during checkbox wait).
-    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+      // Do NOT block on waitForURL — prior tip burned ~28s here while GEM hadn't
+      // attached yet; listeners died at 28s and poll had to catch up (~18s more).
+      const urlWait = page
+        .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 20_000 })
+        .catch(() => null);
+      await proceed.click({ timeout: 8_000, noWaitAfter: true }).catch(() => {});
+      void dismissCookieBanner(page);
 
-    mark("proceed_click");
-    const geFrameRe =
-      /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i;
-    let earlyFrameUrl = null;
-    const onFrame = (frame) => {
-      const u = frame.url() || "";
-      if (geFrameRe.test(u) && !earlyFrameUrl) {
-        earlyFrameUrl = u;
-        mark("ge_frame_event", { url: u.slice(0, 100) });
+      // Cold GEM can land just past 45s (lab: event @58948ms after 45s deadline).
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        checkoutSn =
+          checkoutSn ||
+          (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+        frameUrls = page.frames().map((f) => f.url());
+        if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
       }
-    };
-    page.on("frameattached", onFrame);
-    page.on("framenavigated", onFrame);
+      await urlWait;
+      await dismissCookieBanner(page);
 
-    // Do NOT block on waitForURL — prior tip burned ~28s here while GEM hadn't
-    // attached yet; listeners died at 28s and poll had to catch up (~18s more).
-    const urlWait = page
-      .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 20_000 })
-      .catch(() => null);
-    await proceed.click({ timeout: 8_000, noWaitAfter: true }).catch(() => {});
-    void dismissCookieBanner(page);
-
-    let geIframeReady = false;
-    let frameUrls = [];
-    let gemVia = "timeout";
-    // Cold GEM can land just past 45s (lab: event @58948ms after 45s deadline).
-    const gemDeadline = Date.now() + 60_000;
-    let pollI = 0;
-    while (Date.now() < gemDeadline) {
       checkoutSn =
         checkoutSn ||
         (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+      // Re-check after wait — frameattached can win the race against loop exit.
       frameUrls = page.frames().map((f) => f.url());
-      if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+      if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
         geIframeReady = true;
-        gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
-        break;
+        gemVia = earlyFrameUrl ? "event-late" : "poll-late";
       }
-      if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
-      if (pollI === 5 || pollI === 12 || pollI === 20) {
-        await page
-          .locator(
-            'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
-          )
-          .first()
-          .click({ timeout: 800 })
-          .catch(() => {});
+      page.off("frameattached", onFrame);
+      page.off("framenavigated", onFrame);
+      mark("after_proceed", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
       }
-      await page.waitForTimeout(150);
-      pollI += 1;
-    }
-    await urlWait;
-    await dismissCookieBanner(page);
 
-    checkoutSn =
-      checkoutSn ||
-      (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
-    // Re-check after wait — frameattached can win the race against loop exit.
-    frameUrls = page.frames().map((f) => f.url());
-    if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
-      geIframeReady = true;
-      gemVia = earlyFrameUrl ? "event-late" : "poll-late";
-    }
-    page.off("frameattached", onFrame);
-    page.off("framenavigated", onFrame);
-    mark("after_proceed", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
-    if (geIframeReady) {
-      mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
-    }
-
-    push("cart_checkout", {
-      ok: Boolean(checkoutSn) && geIframeReady,
-      ms: Date.now() - sChk,
-      note: checkoutSn
-        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length} sample=${frameUrls
-            .filter((u) => /global/i.test(u))
-            .map((u) => u.slice(0, 60))
-            .join("|")}`
-        : `url=${page.url()} geIframe=${geIframeReady}`,
-    });
-    if (!geIframeReady) {
-      return {
-        ok: false,
-        steps,
-        timeline,
-        failedStep: "cart_checkout",
-        error: "Global-e Checkout/v2 iframe never booted",
-        checkoutStage: "tokenize",
-        checkoutSn,
-        paymentStatus: null,
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
-        note: `checkoutSn=${checkoutSn} but GEM iframe missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
-      };
+      push("cart_checkout", {
+        ok: Boolean(checkoutSn) && geIframeReady,
+        ms: Date.now() - sChk,
+        note: checkoutSn
+          ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length} sample=${frameUrls
+              .filter((u) => /global/i.test(u))
+              .map((u) => u.slice(0, 60))
+              .join("|")}`
+          : `url=${page.url()} geIframe=${geIframeReady}`,
+      });
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 iframe never booted",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `checkoutSn=${checkoutSn} but GEM iframe missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
     }
 
     const sGe = Date.now();

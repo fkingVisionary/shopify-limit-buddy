@@ -60,7 +60,7 @@ Keep `PAY_ISSUER_TLS_WORKER` ON. Do **not** revert to undici issuer. Score Fast 
 
 ### Safe mode (Playwright GE) — beta path (Fast kept)
 
-ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via=http+ge` / page issuer). Fast undici workshop stays; Safe is the consistency/cart-hold beta candidate.
+ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + GetCartToken (same mint as Fast) ? Playwright open Checkout/v2 ? fill/Pay (`entry=checkoutV2`). Skips SPA `/cart` Proceed (that path was the build bug ? SoftBlock proxies that bank on Fast). Legacy SPA Proceed: `bandaiSafeSpaProceed=true`. Fast undici workshop stays.
 
 | Lab | Evidence | Revolut |
 |---|---|---|
@@ -83,6 +83,8 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 | **Safe abort_pay bug** | pre-click `every()` undid Consent0 gate | **fixed** |
 | Safe `/run` timeout | Safe default **900s** | shipped |
 | Safe10 #4 | Checkout/v2 ok but `ge_iframe_not_filled` ? prefetcher mistaken for CCForm | **fixed** (CreditCardForm-only ready) |
+| Safe11 SoftBlock | login remints only ? never Pay; user: not clean-session, proxies bank on Fast | build gap confirmed |
+| **Safe hybrid** | HTTP cart_checkout + GetCartToken ? PW Checkout/v2 fill/Pay (no SPA Proceed) | **shipped** ? score `chargeReqCount>=1` / bank |
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 
