@@ -886,24 +886,66 @@ export async function browserBandaiGeFromCart(opts = {}) {
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
-        // IMPORTANT: do NOT set checked=true then el.click() — that toggles OFF
-        // (Safe6: Pay clicked with tnc checked:false → payNet=0/0).
-        // One path only: Playwright check() / label click when still unchecked.
+        // Safe7: CheckoutData_TnCConsent stayed false while TnCConsent0 was true.
+        // Playwright check() alone does not stick on the underscore field — use
+        // label click once, then Vue set+input/change WITHOUT el.click (click toggles).
+        await frame
+          .evaluate(() => {
+            const want = [
+              "CheckoutData_TnCConsent",
+              "CheckoutData.TnCConsent0",
+              "CheckoutData.TnCConsent",
+              "TnCConsent",
+            ];
+            const resolve = (name) =>
+              document.querySelector(`input[name="${name}"]`) ||
+              document.querySelector(`#${name.replace(/\./g, "\\.")}`) ||
+              document.getElementById(name);
+            for (const name of want) {
+              const el = resolve(name);
+              if (!el || el.checked) continue;
+              const lab =
+                (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) ||
+                el.closest("label");
+              if (lab) {
+                lab.click();
+                if (el.checked) continue;
+              }
+              // No native click on input — that toggled Safe6 OFF after a prior set.
+              el.checked = true;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+              try {
+                el.dispatchEvent(
+                  new InputEvent("input", { bubbles: true, inputType: "insertText" }),
+                );
+              } catch {
+                /* older engines */
+              }
+            }
+          })
+          .catch(() => {});
         const named = [
           'input[name="CheckoutData_TnCConsent"]',
           'input[name="CheckoutData.TnCConsent0"]',
           'input[name="CheckoutData.TnCConsent"]',
           'input[name="TnCConsent"]',
           "#CheckoutData_TnCConsent",
-          "#CheckoutData\\.TnCConsent0",
         ];
         for (const sel of named) {
           const box = frame.locator(sel).first();
           if (!(await box.count().catch(() => 0))) continue;
           if (await box.isChecked().catch(() => true)) continue;
-          await box.check({ force: true }).catch(async () => {
-            await box.click({ force: true }).catch(() => {});
-          });
+          const id = await box.getAttribute("id").catch(() => null);
+          if (id) {
+            const lab = frame.locator(`label[for="${id}"]`).first();
+            if (await lab.count().catch(() => 0)) {
+              await lab.click({ timeout: 800 }).catch(() => {});
+            }
+          }
+          if (!(await box.isChecked().catch(() => true))) {
+            await box.check({ force: true }).catch(() => {});
+          }
         }
         const labeled = frame.locator(
           'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree"), label:has-text("I agree")',
@@ -924,19 +966,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
           }
           if (!already) await lab.click({ timeout: 800 }).catch(() => {});
         }
-        const checks = frame.locator('input[type="checkbox"]');
-        const n = await checks.count().catch(() => 0);
-        for (let ci = 0; ci < n; ci++) {
-          const c = checks.nth(ci);
-          if (!(await c.isChecked().catch(() => true))) {
-            await c.check({ force: true }).catch(() => {});
-          }
-        }
       }
     };
+    /** Required GE consent — ignore non-TnC marketing boxes. */
     const termsOk = (diag) => {
-      const checks = diag?.checks || [];
-      if (!checks.length) return true; // no consent boxes visible
+      const checks = (diag?.checks || []).filter((c) =>
+        /tnc|terms|privacy|consent/i.test(String(c.name || "")),
+      );
+      if (!checks.length) return true;
+      // Underscore + dotted variants must both be true when present (Safe7).
       return checks.every((c) => c.checked);
     };
 

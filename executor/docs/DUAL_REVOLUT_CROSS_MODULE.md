@@ -74,7 +74,9 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 | Safe5 `run_e1d03865a5d8` #7 | over-strict `Pay` `$` anchor → `card_filled_no_pay_button` (`hasPay:false`; real CTA is `Pay AU$…`) | no bank |
 | Safe Pay label fix | restore `\b` match for `Pay AU$…`; still exclude PayPal/Apple/Google Pay | shipped |
 | Safe6 `run_1df9cff0851c` #2/#5 | clicked **`PAY AND PLACE ORDER`** with **tnc checked:false** → payNet=0 (set+click toggled consent OFF) | no bank |
-| Safe TnC gate | tickTerms: check-only (no toggle); refuse Pay until all checkboxes checked | pending bank |
+| Safe TnC gate | tickTerms: check-only (no toggle); refuse Pay until all checkboxes checked | shipped |
+| Safe7 #2/#3 | Pay enabled but blocked: `CheckoutData_TnCConsent=false` while `TnCConsent0=true` | no bank |
+| Safe TnC underscore | force `CheckoutData_TnCConsent` via own label + Vue set (no input.click) | pending bank |
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 
