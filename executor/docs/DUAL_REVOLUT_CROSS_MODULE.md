@@ -98,6 +98,7 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 | **Safe hybrid** | HTTP cart_checkout + GetCartToken ? PW Checkout/v2 fill/Pay (no SPA Proceed) | **shipped** ? score `chargeReqCount>=1` / bank |
 | Safe12 e2e | SoftBlock wash; dead-bridge evaluate ? `adapter_error` burned rotate budget | **fixed** (no-throw bridge login + skip final + rotate default 6) |
 | **Safe13 hybrid @13:25** | `run_b61668a5693e` #3 · CartToken + `entry=checkoutV2` · fill + Pay · **`chargeReqCount=1`** · `pay_submitted_no_3ds_seen` | **×2** (user) |
+| **Full1 @~14:00** | `run_e664ed0c11e5` · via=browser · checkoutSn + GEM · fill+Pay · **chargeReq=1** · `pay_submitted_no_3ds_seen` | **ask Revolut 1 vs 2** |
 
 **Read for beta:** Safe13 @13:25 still Revolut **×2** with Chromium Pay + `chargeReqCount=1`. Dual is **not** Fast-transport-only and **not** fixed by Safe mode.
 
@@ -106,6 +107,15 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 
 
 **Fast still banks (2026-08-03 ~10:35 AEST):** Fast smoke `run_84dcbd73c70f` bandai#6 ? GE tx **`172564570`** � posts=1 � user confirmed Revolut **�2**. Fast kept as fallback.
+
+### Full-browser lab (no HTTP GetCartToken)
+
+| Lab | Evidence | Revolut |
+|---|---|---|
+| **Full1 @~14:00** | `run_e664ed0c11e5` · via=browser · checkoutSn + GEM · fill+Pay · **chargeReq=1** · `pay_submitted_no_3ds_seen` | **ask Revolut 1 vs 2** |
+
+**Score rule:** ×1 ⇒ dual in HTTP ATC/GetCartToken handoff. ×2 ⇒ dual in automation/identity (not mode).
+
 
 ---
 
