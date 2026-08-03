@@ -876,45 +876,53 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     let paid = false;
     const netBefore = geNet.length;
-    // Checkout Pay CTA — GEM labels are often "Pay AU$ 11.00". Keep word-boundary
-    // match; exclude PayPal / Apple Pay / Google Pay (has-text("Pay") false-hits).
+    // Checkout Pay CTA — GEM: "Pay AU$…", "PAY AND PLACE ORDER". Exclude wallets.
     const isCheckoutPayLabel = (label) => {
       const s = String(label || "").replace(/\s+/g, " ").trim();
       if (!s) return false;
       if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
-      return /^(pay|place order|pay now)\b/i.test(s);
+      return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
     };
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
-        // Named GE consent boxes first (payDiag: CheckoutData_TnCConsent unchecked).
-        await frame
-          .evaluate(() => {
-            const names = [
-              "CheckoutData_TnCConsent",
-              "CheckoutData.TnCConsent0",
-              "CheckoutData.TnCConsent",
-              "TnCConsent",
-            ];
-            for (const name of names) {
-              const el =
-                document.querySelector(`input[name="${name}"]`) ||
-                document.querySelector(`#${CSS.escape(name)}`);
-              if (el && !el.checked) {
-                el.checked = true;
-                el.dispatchEvent(new Event("input", { bubbles: true }));
-                el.dispatchEvent(new Event("change", { bubbles: true }));
-                el.click?.();
-              }
-            }
-          })
-          .catch(() => {});
+        // IMPORTANT: do NOT set checked=true then el.click() — that toggles OFF
+        // (Safe6: Pay clicked with tnc checked:false → payNet=0/0).
+        // One path only: Playwright check() / label click when still unchecked.
+        const named = [
+          'input[name="CheckoutData_TnCConsent"]',
+          'input[name="CheckoutData.TnCConsent0"]',
+          'input[name="CheckoutData.TnCConsent"]',
+          'input[name="TnCConsent"]',
+          "#CheckoutData_TnCConsent",
+          "#CheckoutData\\.TnCConsent0",
+        ];
+        for (const sel of named) {
+          const box = frame.locator(sel).first();
+          if (!(await box.count().catch(() => 0))) continue;
+          if (await box.isChecked().catch(() => true)) continue;
+          await box.check({ force: true }).catch(async () => {
+            await box.click({ force: true }).catch(() => {});
+          });
+        }
         const labeled = frame.locator(
-          'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree")',
+          'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree"), label:has-text("I agree")',
         );
         const nLab = await labeled.count().catch(() => 0);
         for (let i = 0; i < nLab; i++) {
-          await labeled.nth(i).click({ timeout: 800 }).catch(() => {});
+          const lab = labeled.nth(i);
+          const forId = await lab.getAttribute("for").catch(() => null);
+          let already = false;
+          if (forId) {
+            already = await frame.locator(`[id="${forId}"]`).isChecked().catch(() => false);
+          }
+          if (!already) {
+            const inputInLabel = lab.locator('input[type="checkbox"]').first();
+            if (await inputInLabel.count().catch(() => 0)) {
+              already = await inputInLabel.isChecked().catch(() => false);
+            }
+          }
+          if (!already) await lab.click({ timeout: 800 }).catch(() => {});
         }
         const checks = frame.locator('input[type="checkbox"]');
         const n = await checks.count().catch(() => 0);
@@ -926,11 +934,16 @@ export async function browserBandaiGeFromCart(opts = {}) {
         }
       }
     };
+    const termsOk = (diag) => {
+      const checks = diag?.checks || [];
+      if (!checks.length) return true; // no consent boxes visible
+      return checks.every((c) => c.checked);
+    };
 
-    // Poll Pay enable — max ~12s. Diagnose why disabled (terms / card / captcha).
+    // Poll Pay enable — max ~18s (terms must stick before Pay).
     mark("wait_pay_enabled");
     let payDiag = null;
-    const payDeadline = Date.now() + 12_000;
+    const payDeadline = Date.now() + 18_000;
     while (Date.now() < payDeadline && !paid) {
       await tickTerms();
       for (const frame of page.frames()) {
@@ -945,7 +958,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
             const isPay = (b) => {
               const s = payLabel(b);
               if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
-              return /^(pay|place order|pay now)\b/i.test(s);
+              // GEM AU: "PAY AND PLACE ORDER" / "Pay AU$ 11.00"
+              return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
             };
             const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(
               (b) => isPay(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true",
@@ -977,13 +991,22 @@ export async function browserBandaiGeFromCart(opts = {}) {
           .catch(() => null);
         if (state) payDiag = state;
 
-        // Prefer role+name with word boundary (matches "Pay AU$…"); fall back to
-        // filtered buttons. Never use bare :has-text("Pay") (PayPal).
-        let payBtn = frame.getByRole("button", { name: /^(Pay|Place Order|Pay now)\b/i }).first();
+        // Gate: never click Pay while TnC unchecked (Safe6 no-op root cause).
+        if (state && !termsOk(state)) {
+          mark("tnc_still_unchecked", {
+            checks: (state.checks || []).slice(0, 6),
+          });
+          continue;
+        }
+
+        // Prefer role+name with word boundary (matches "Pay AU$…" / "PAY AND PLACE ORDER").
+        let payBtn = frame
+          .getByRole("button", { name: /^(Pay(\s+and\s+place\s+order)?|Place Order|Pay now)\b/i })
+          .first();
         if (!(await payBtn.count().catch(() => 0))) {
           payBtn = frame
             .locator("button, input[type=submit], a[role=button]")
-            .filter({ hasText: /^(Pay|Place Order|Pay now)\b/i })
+            .filter({ hasText: /^(Pay(\s+and\s+place\s+order)?|Place Order|Pay now)\b/i })
             .first();
         }
         if (!(await payBtn.count().catch(() => 0))) continue;
@@ -1000,6 +1023,20 @@ export async function browserBandaiGeFromCart(opts = {}) {
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
+          // Re-read consent after final tick — abort click if still unchecked.
+          const consent = await frame
+            .evaluate(() =>
+              [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
+                checked: !!c.checked,
+                name: c.name || c.id || "",
+              })),
+            )
+            .catch(() => []);
+          if (consent.length && !consent.every((c) => c.checked)) {
+            geNote += `; abort_pay_tnc=${JSON.stringify(consent).slice(0, 100)}`;
+            armChargeGuard = false;
+            continue;
+          }
           // Playwright locator click only — bare btn.click() skips GE's issuer
           // chain (labs: eval1 → no HandleCreditCard; locator → issuer on wire).
           // No force:true on first try (overlays / false-enabled CTAs → payNet=0).
@@ -1041,7 +1078,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
                 const isPay = (b) => {
                   const s = payLabel(b);
                   if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
-                  return /^(pay|place order|pay now)\b/i.test(s);
+                  return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
                 };
                 for (const b of document.querySelectorAll(
                   "button, input[type=submit], a[role=button]",
