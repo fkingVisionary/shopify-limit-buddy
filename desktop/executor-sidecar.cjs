@@ -275,9 +275,20 @@ function requestJson(method, urlPath, body, timeoutMs = 250_000) {
 
 async function runTask(task) {
   // CapSolver CF + spam reCAPTCHA + BigPay can exceed the default 250s wall.
+  // Bandai Safe (Playwright GE after cart hold) needs more headroom than Fast
+  // HTTP GE — SoftBlock remint + GEM boot + Pay observe easily exceeds 400s.
+  const mode = String(task?.bandaiCheckoutMode || task?.checkoutMode || "").toLowerCase();
+  const safePay =
+    task?.store === "bandai" &&
+    (mode === "safe" ||
+      mode === "full" ||
+      task?.bandaiBrowserCheckout === true ||
+      task?.bandaiBrowserFull === true ||
+      task?.placeOrderGe === true);
+  const defaultTimeout = safePay ? 900_000 : 400_000;
   const runTimeoutMs = Math.max(
     60_000,
-    Number(process.env.DESKTOP_EXECUTOR_RUN_TIMEOUT_MS || 400_000) || 400_000,
+    Number(process.env.DESKTOP_EXECUTOR_RUN_TIMEOUT_MS || defaultTimeout) || defaultTimeout,
   );
   const { status: httpStatus, json } = await requestJson("POST", "/run", task, runTimeoutMs);
   if (httpStatus === 429) {

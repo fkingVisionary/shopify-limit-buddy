@@ -553,6 +553,10 @@ function buildBandaiPayload({
           ? task.proxyEntries
           : undefined,
       bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
+      bandaiLoginProxyRotates:
+        task.bandaiLoginProxyRotates != null
+          ? Number(task.bandaiLoginProxyRotates)
+          : undefined,
       bandaiPayFromCart: task.bandaiPayFromCart === true,
       heldCart:
         task.heldCart && typeof task.heldCart === "object"
@@ -1242,7 +1246,7 @@ function isStickyTunnelDead(result) {
 /** Bandai login SoftBlock / sensor flake — outer belt when adapter rotate exhausted. */
 function isBandaiLoginBlock(result) {
   if (!result || result.ok) return false;
-  if (String(result.failedStep || "") !== "login") return false;
+  const step = String(result.failedStep || "");
   const blob = [
     result.debugError,
     result.error,
@@ -1251,9 +1255,16 @@ function isBandaiLoginBlock(result) {
   ]
     .filter(Boolean)
     .join(" ");
-  return /SoftBlock|sensor mint|NETWORK CONGESTION|PAGE NOT AVAILABLE|Access Denied|Request rejected|\b501\b|\b503\b|\b502\b|\b504\b/i.test(
-    blob,
-  );
+  const soft =
+    /SoftBlock|sensor mint|NETWORK CONGESTION|PAGE NOT AVAILABLE|Access Denied|Request rejected|\b501\b|\b503\b|\b502\b|\b504\b|Execution context was destroyed|ERR_CONNECTION/i.test(
+      blob,
+    );
+  if (step === "login") return soft;
+  // Adapter throw after SoftBlock rotate (dead bridge evaluate) — keep climbing.
+  if ((step === "adapter_error" || step === "run_error") && soft && /\blogin\b/i.test(blob)) {
+    return true;
+  }
+  return false;
 }
 
 function shouldStickyResiRetry(result) {

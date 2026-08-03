@@ -9,9 +9,13 @@
 
 /**
  * @param {import('playwright').BrowserContext} context
+ * @param {{ force?: boolean }} [opts] — force=true for Full-browser stealth A/B
  */
-export async function installChromePayStealth(context) {
-  if (process.env.PAY_CHROME_STEALTH !== "1") return { ok: false, skipped: true };
+export async function installChromePayStealth(context, opts = {}) {
+  const envOn = process.env.PAY_CHROME_STEALTH === "1";
+  const envOff = process.env.PAY_CHROME_STEALTH === "0";
+  if (envOff) return { ok: false, skipped: true, reason: "PAY_CHROME_STEALTH=0" };
+  if (!opts.force && !envOn) return { ok: false, skipped: true };
   if (!context?.addInitScript) return { ok: false, error: "no_context" };
   await context.addInitScript(() => {
     try {
@@ -26,7 +30,25 @@ export async function installChromePayStealth(context) {
       // HeadlessChromium often exposes chrome gaps Forter watches.
       if (!window.chrome) {
         window.chrome = { runtime: {} };
+      } else if (!window.chrome.runtime) {
+        window.chrome.runtime = {};
       }
+    } catch {
+      /* ignore */
+    }
+    try {
+      Object.defineProperty(navigator, "plugins", {
+        get: () => [1, 2, 3, 4, 5],
+        configurable: true,
+      });
+    } catch {
+      /* ignore */
+    }
+    try {
+      Object.defineProperty(navigator, "languages", {
+        get: () => ["en-AU", "en-GB", "en"],
+        configurable: true,
+      });
     } catch {
       /* ignore */
     }
@@ -42,7 +64,7 @@ export async function installChromePayStealth(context) {
       /* ignore */
     }
   });
-  return { ok: true };
+  return { ok: true, forced: Boolean(opts.force) };
 }
 
 /**

@@ -88,6 +88,17 @@ function isBlocked403(res) {
   if (String(res.failedStep || "") === "login" && /SoftBlock|Access Denied|sensor mint|501|503/i.test(blob)) {
     return true;
   }
+  // Dead F5 bridge after SoftBlock rotate used to surface as adapter_error
+  // (page.evaluate destroyed) and burn the unknown_rotate budget — treat as block.
+  if (
+    /adapter_error|run_error/i.test(String(res.failedStep || "")) &&
+    /\blogin\b/i.test(blob) &&
+    /SoftBlock|Access Denied|sensor mint|\b501\b|\b503\b|Execution context was destroyed|ERR_CONNECTION/i.test(
+      blob,
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
