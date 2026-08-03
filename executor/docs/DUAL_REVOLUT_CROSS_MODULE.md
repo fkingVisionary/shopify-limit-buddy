@@ -72,6 +72,8 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 
+**Fast still banks (2026-08-03 ~10:35 AEST):** after Safe3 also stuck on `pay_clicked_no_payment_request`, Fast smoke `run_84dcbd73c70f` bandai#6 → GE tx **`172564570`** · posts=1 · `via=http-ge-issuer` · HandleCredit 302. Charge path not broken — Safe Playwright pay click is the stall (no issuer wire). Fast kept.
+
 ---
 
 ## 0. Prompt for the next agent (copy-paste)
