@@ -1,21 +1,22 @@
 # Dual Revolut ‚Äî investigation bible (handoff)
 
-**Updated:** 2026-08-03 ~14:40 AEST
-**PR / branch:** `#151` ¬∑ `cursor/safe-pay-wire-fix-c402` (Safe hybrid); dual also `#150`
-**Product to fix:** Bandai checkout (desktop ‚Üí executor). Other stores = research evidence only.
+**Updated:** 2026-08-03 ~15:46 AEST
+**PR / branch:** `#151` ∑ `cursor/safe-pay-wire-fix-c402` (Safe hybrid); dual also `#150`
+**Product to fix:** Bandai checkout (desktop ? executor). Other stores = research evidence only.
 
-### VERDICT (updated 2026-08-03 ~14:40 AEST) ‚Äî PIVOT #2 (user reconfirm)
+### VERDICT (updated 2026-08-03 ~15:46 AEST) ? PIVOT #3
 
-**User @~14:37 AEST: Full path still double-charging** ? locks Full1 ◊2 again (not a one-off bank misread).
+**User: Full2 stealth @~14:50 also double-charged** ? tx `172578128` / `run_3efebe56be2b` ∑ chargeReq=1 ∑ stealth=true ? Revolut **◊2**.
 
 **Locked closures (do not re-run as the fix):**
-- Fast undici issuer ‚Üí √ó2
-- Safe hybrid Chromium Pay ‚Üí √ó2 (Safe13 @13:25)
-- Full-browser journey (no HTTP GetCartToken) ‚Üí √ó2 (Full1 @14:04 + user reconfirm)
+- Fast undici issuer ? ◊2
+- Safe hybrid Chromium Pay ? ◊2 (Safe13 @13:25)
+- Full-browser journey (no HTTP GetCartToken) ? ◊2 (Full1 @14:04 + reconfirm)
+- Full + chrome pay stealth ? ◊2 (Full2 @14:50)
 
-Dual is **not** Fast vs Safe, **not** undici vs Playwright pay, and **not** HTTP ATC/GetCartToken handoff. One client charge still fans out to two Revolut lines on every Bandai path scored so far.
+Dual is **not** Fast vs Safe, **not** undici vs Playwright pay, **not** HTTP GetCartToken handoff, and **not** basic Playwright stealth (webdriver/chrome/plugins). One client HandleCredit still fans out to two Revolut lines ? one GE tx id, two bank lines.
 
-**Still open:** automation/fingerprint/identity vs real manual browser; PSP fan-out (one HandleCredit ‚Üí two bank lines ? now instrumented on Safe/Full); why Toymate issuer tls-worker is the only confirmed √ó1.
+**Still open:** manual Chrome vs bot HAR (HandleCredit + Forter/iovation/risk); deeper fingerprint/CDP; why Toymate issuer tls-worker is the only confirmed ◊1.
 
 **Toymate:** issuer chrome_131 tls-worker ‚Üí Revolut √ó1 (`run_20651586e4b2`) ‚Äî only confirmed single; Bandai counterexample on same knobs + Full1 Chromium Pay.
 
@@ -40,8 +41,9 @@ Dual is **not** Fast vs Safe, **not** undici vs Playwright pay, and **not** HTTP
 | ‚Äî | PKC control | `172438100` | **√ó2** | GE family cross-check |
 | ‚Äî | Toymate undici BigPay | `run_1d56805758fc` | **√ó2** | non-GE control |
 | 11 | **Safe hybrid Chromium Pay** | `run_b61668a5693e` @13:25 | **√ó2** | **closes Fast/Safe mode hypothesis** |
-| 12 | **Full-browser journey (no GetCartToken)** | `run_e664ed0c11e5` @14:04 | **√ó2** | **closes HTTP handoff hypothesis** |
-| ‚òÖ | Toymate issuer tls-worker | `run_20651586e4b2` @14:54 | **√ó1** | **only confirmed single** |
+| 12 | **Full-browser journey (no GetCartToken)** | `run_e664ed0c11e5` @14:04 | **◊2** | **closes HTTP handoff hypothesis** |
+| 13 | **Full2 + chrome pay stealth** | `172578128` / `run_3efebe56be2b` @~14:50 | **◊2** | chargeReq=1 stealth=true ? **closes basic stealth** |
+| ? | Toymate issuer tls-worker | `run_20651586e4b2` @14:54 | **◊1** | **only confirmed single** |
 
 **Pre-bank / void (not dual scores):**
 | Lever | Result |
@@ -54,30 +56,29 @@ Dual is **not** Fast vs Safe, **not** undici vs Playwright pay, and **not** HTTP
 | GE field / hydrate / pm / machineId roulette | failed when bank hit ‚Äî parked |
 | Playwright pay as Fast dual fix | **closed** ‚Äî Safe13 Chromium Pay still √ó2 |
 | Fast vs Safe mode workshop | **closed** @13:25 ‚Äî both √ó2 with one client charge |
-| Full-browser / no GetCartToken | **closed** @14:04 ‚Äî still √ó2 with chargeReq=1 |
-| HTTP ATC/GetCartToken handoff as sole cause | **closed** @14:04 ‚Äî Full1 dualed without it |
-| payment-latch | fixed different dual (`posts‚â•2` / RESPONSE_LOST) |
+| Full-browser / no GetCartToken | **closed** @14:04 ? still ◊2 with chargeReq=1 |
+| HTTP ATC/GetCartToken handoff as sole cause | **closed** @14:04 ? Full1 dualed without it |
+| Playwright chrome pay stealth | **closed** @14:50 ? Full2 still ◊2 |
+| payment-latch | fixed different dual (`posts?2` / RESPONSE_LOST) |
 
 ---
 
-### NEXT QUEUE (pivot after Full1 √ó2 reconfirm ‚Äî one bank score each)
+### NEXT QUEUE (pivot #3 after Full2 stealth ◊2 ? one bank score each)
 
-Stop checkout-mode / HTTP-handoff / Bandai TLS-knob roulette. Dual survived **every** Bandai pay shape with `posts/chargeReq=1`.
+Stop checkout-mode / stealth / Bandai TLS-knob roulette. Dual survived **every** Bandai pay shape with `posts/chargeReq=1`, including stealth Full.
 
 | Priority | Lever | Status | Why |
 |---|---|---|---|
-| **NOW** | **Full2 stealth A/B** | **banked** tx `172578128` @~14:51 ? await Revolut | `run_3efebe56be2b` chargeReq=1 stealth=true |
-| **NOW** | **PSP fan-out forensics** | **shipped** (Full2 tx captured) | correlate GE tx vs Revolut pair timestamps |
-| Next | **Manual vs bot HAR** on the same card/merchant ? diff HandleCredit + pre-pay risk + CDP tells | not built | Manual = ◊1; bot Full = ◊2 in real Chromium |
-| Next | Proxy vs direct **only if new theory** (direct historically ◊2 ? do not rediscover casually) | parked | already dualed historically |
-| Later | Re-score Toymate tls-worker √ó1 still holds (control) | optional | only confirmed single |
-| Skip | Fast/Safe/full mode switches, GE-all-tls, GetCartToken handoff, liveHtml iov, July folklore | **closed** | scored √ó2 or void |
+| **NOW** | **Manual vs bot HAR** ? same card/SKU; diff HandleCredit + Forter/iovation/risk + issuer headers | **bot HAR wired** (`BANDAI_BROWSER_HAR_PATH` / `BANDAI_DUAL_HAR=1`) | Manual=◊1; bot Full2=◊2 with one GE tx |
+| Done | PSP fan-out forensics | **shipped** ? Full2 one tx `172578128` ? Revolut ◊2 | proves fan-out after single client POST |
+| Closed | Full2 stealth | **◊2** | not the fix |
+| Next | Deeper CDP / real Chrome channel (non-Playwright) only if HAR shows automation risk gap | parked | after HAR diff |
+| Later | Re-score Toymate tls-worker ◊1 still holds (control) | optional | only confirmed single |
+| Skip | Fast/Safe/full mode switches, GE-all-tls, GetCartToken, basic stealth, July folklore | **closed** | scored ◊2 or void |
 
-**Closed score rule (Full1):** √ó2 ‚áí dual lives **outside** HTTP ATC/GetCartToken. Chase shared bot identity / PSP fan-out, not checkout mode.
+**Closed score rule (Full2):** one GE `transactionId` + Revolut ◊2 ? chase risk/manual identity HAR, not another checkout-mode bank.
 
-**Lab command (Full2 stealth):** from `desktop/`:
-`BANDAI_CHECKOUT_MODE=full BANDAI_E2E_SKU=N2847904001 DESKTOP_E2E_AUTORUN=1 DESKTOP_E2E_PLACE_ORDER=1 DESKTOP_E2E_TASK_ID=task_c13e31bb45ce npm start`
-Confirm Revolut 1 vs 2 + note `transactionId` / `chromePayStealth=true` in result.
+**Bot HAR lab:** Full e2e with `BANDAI_DUAL_HAR=1` (writes `%TEMP%/bandai-full-dual.har`). Manual: Chrome DevTools ? Export HAR (sanitize). Diff: `node executor/scripts/bandai-dual-har-summary.mjs --bot ? --manual ?`
 
 
 ### Safe mode (Playwright GE) ‚Äî beta path (Fast kept)
@@ -125,9 +126,9 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 |---|---|---|
 | **Full1 @14:04** | `run_e664ed0c11e5` ¬∑ via=browser ¬∑ checkoutSn + GEM ¬∑ fill+Pay ¬∑ **chargeReq=1** ¬∑ `pay_submitted_no_3ds_seen` | **√ó2** (user) |
 | **Full1 reconfirm ~14:37** | user: "still double charging" | **◊2** (user) |
-| **Full2 stealth @~14:51** | `run_3efebe56be2b` ∑ chargeReq=1 ∑ **tx `172578128`** ∑ stealth=true | **await Revolut 1 vs 2** |
+| **Full2 stealth @~14:50** | `run_3efebe56be2b` ∑ chargeReq=1 ∑ **tx `172578128`** ∑ stealth=true | **◊2** (user) |
 
-**Locked:** Full1 Revolut **◊2**. Full2 banked with stealth ? **score Revolut against tx `172578128`**.
+**Locked:** Full2 stealth Revolut **◊2** ? basic automation stealth is not the fix. Next = manual vs bot HAR.
 
 
 ---
@@ -147,7 +148,7 @@ LOCKED FACTS ‚Äî do not re-argue:
 - Direct / no-proxy has ALREADY been tested historically and still dualed ‚Äî do not burn another direct Bandai bank hit ‚Äúto check proxy‚Äù unless you have a new transport theory.
 - Desktop orchestration ruled out on labs: quantity=1, 1 enqueue, 1 run_start, 1 psp_post.
 - Soft-retry latch (desktop/payment-latch.cjs) fixed a DIFFERENT dual (RESPONSE_LOST re-entry). Not today‚Äôs shape.
-- Bandai Fast + Safe + Full all Revolut √ó2 with posts/chargeReq=1 (Safe13 @13:25, Full1 @14:04). Dual is not checkout-mode and not HTTP GetCartToken handoff.
+- Bandai Fast + Safe + Full + Full-stealth all Revolut ◊2 with posts/chargeReq=1 (Safe13, Full1, Full2 tx 172578128 @14:50). Dual is not checkout-mode, not GetCartToken, not basic stealth.
 - Bandai HandleCreditCard / hydrate / pm / machineId / cookie field roulette FAILED when bank hit. Do not resume it.
 - Do NOT implement Toymate/Kmart/Disney product fixes. Toymate/PKC were research controls only.
 - Delivery: Bandai must stop dualing. Code changes should be in SHARED layers unless you prove a Bandai-only cause that somehow also explains Toymate (you won‚Äôt via GE fields).
@@ -167,7 +168,7 @@ FORBIDDEN:
 - Inventing Bandai Revolut√ó1 wins without user bank confirm + GE tx id.
 - Re-enabling liveHtml Checkout/v2 iovation without `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
-Lab Bandai confirm: task_c13e31bb45ce. Fast+Safe+Full all √ó2 with chargeReq/posts=1 ‚Äî next = manual-vs-bot HAR / PSP fan-out / automation identity. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
+Lab Bandai confirm: task_c13e31bb45ce. Fast+Safe+Full+Full-stealth all ◊2 (Full2 tx 172578128). Next = manual-vs-bot HAR (`BANDAI_DUAL_HAR=1`). Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---

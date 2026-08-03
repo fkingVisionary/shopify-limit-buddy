@@ -2,6 +2,9 @@
 // Default product path is HTTP + F5 sensor bridge (`bandai.js` / `bandai-f5.js`).
 // Enable only with task.bandaiBrowserCheckout === true.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { chromium } from "playwright";
 
 import { installChromePayStealth, probeChromePayStealth } from "../chrome-pay-stealth.js";
@@ -9,6 +12,15 @@ import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
 import { parseBandaiProxy } from "./bandai-f5.js";
 import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
+
+function resolveBandaiBrowserHarPath(opts = {}) {
+  const explicit = String(opts.recordHarPath || process.env.BANDAI_BROWSER_HAR_PATH || "").trim();
+  if (explicit) return explicit;
+  if (process.env.BANDAI_DUAL_HAR === "1") {
+    return path.join(os.tmpdir(), "bandai-full-dual.har");
+  }
+  return null;
+}
 
 // Match shared http.js platform UA — Mac UA on win32 was a dual tell.
 const BANDAI_BROWSER_UA =
@@ -233,19 +245,51 @@ export async function browserBandaiCheckout(opts = {}) {
 
   const proxy = proxyForPlaywright(opts.proxy);
   let browser;
+  let context;
+  const recordHarPath = resolveBandaiBrowserHarPath(opts);
+  const closeAll = async () => {
+    try {
+      await context?.close?.();
+    } catch {
+      /* ignore */
+    }
+    context = null;
+    try {
+      await browser?.close?.();
+    } catch {
+      /* ignore */
+    }
+    browser = null;
+  };
   try {
     browser = await chromium.launch({
       headless: opts.headless !== false,
       proxy: proxy || undefined,
       args: ["--disable-blink-features=AutomationControlled"],
     });
-    const context = await browser.newContext({
+    if (recordHarPath) {
+      try {
+        fs.mkdirSync(path.dirname(recordHarPath), { recursive: true });
+      } catch {
+        /* ignore */
+      }
+    }
+    context = await browser.newContext({
       locale: area === "fr" ? "fr-FR" : area === "us" ? "en-US" : "en-AU",
       userAgent: BANDAI_BROWSER_UA,
       viewport: { width: 1360, height: 900 },
+      serviceWorkers: "block",
+      ...(recordHarPath
+        ? {
+            recordHar: {
+              path: recordHarPath,
+              mode: "full",
+              content: "embed",
+            },
+          }
+        : {}),
     });
-    // Full stealth A/B (dual pivot): default ON unless PAY_CHROME_STEALTH=0.
-    // Full1 @14:04 scored ×2 without stealth — this is the next bank lever.
+    // Full stealth stays ON by default (Full2 ×2 locked — not a dual fix).
     const stealthForce = process.env.PAY_CHROME_STEALTH !== "0";
     let stealthInstall = { ok: false, skipped: true };
     try {
@@ -432,7 +476,7 @@ export async function browserBandaiCheckout(opts = {}) {
         : `login ${login.status} restricted=${login.restrictedType || "none"} refresh=${member.status}`,
     });
     if (!loginOk) {
-      await browser.close();
+      await closeAll();
       return {
         ok: false,
         steps,
@@ -469,7 +513,7 @@ export async function browserBandaiCheckout(opts = {}) {
         : `product ${product.status}`,
     });
     if (!areaItemNo) {
-      await browser.close();
+      await closeAll();
       return {
         ok: false,
         steps,
@@ -537,7 +581,7 @@ export async function browserBandaiCheckout(opts = {}) {
       });
     }
     if (!atcOk) {
-      await browser.close();
+      await closeAll();
       return {
         ok: false,
         steps,
@@ -586,7 +630,7 @@ export async function browserBandaiCheckout(opts = {}) {
     if (!placeOrder) {
       const cookies = {};
       for (const c of await context.cookies("https://p-bandai.com")) cookies[c.name] = c.value;
-      await browser.close();
+      await closeAll();
       return {
         ok: true,
         steps,
@@ -718,7 +762,7 @@ export async function browserBandaiCheckout(opts = {}) {
           ms: Date.now() - sChk,
           note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
         });
-        await browser.close();
+        await closeAll();
         return {
           ok: false,
           steps,
@@ -755,7 +799,7 @@ export async function browserBandaiCheckout(opts = {}) {
           ms: Date.now() - sChk,
           note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail / unticked area)",
         });
-        await browser.close();
+        await closeAll();
         return {
           ok: false,
           steps,
@@ -806,7 +850,7 @@ export async function browserBandaiCheckout(opts = {}) {
         : `url=${page.url()} geIframe=${geIframeReady}`,
     });
     if (!geIframeReady) {
-      await browser.close();
+      await closeAll();
       return {
         ok: false,
         steps,
@@ -1149,7 +1193,7 @@ export async function browserBandaiCheckout(opts = {}) {
         ms: Date.now() - sGe,
         note: `UNEXPECTED order ${orderNumber} on decline PAN — abort`,
       });
-      await browser.close();
+      await closeAll();
       return {
         ok: false,
         steps,
@@ -1185,8 +1229,7 @@ export async function browserBandaiCheckout(opts = {}) {
     const finalUrl = page.url();
     const cookies = {};
     for (const c of await context.cookies("https://p-bandai.com")) cookies[c.name] = c.value;
-    await browser.close();
-    browser = null;
+    await closeAll();
 
     return {
       ok: gePayOk,
@@ -1213,6 +1256,7 @@ export async function browserBandaiCheckout(opts = {}) {
       issuerRedirectUrl,
       chromePayStealth: Boolean(stealthInstall?.ok),
       stealthProbe,
+      recordHarPath: recordHarPath || null,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
         : orderNumber
@@ -1221,7 +1265,7 @@ export async function browserBandaiCheckout(opts = {}) {
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
             : payClickCount > 1
               ? `MULTI pay click (${payClickCount}) — investigate double charge`
-              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}`,
+              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}${recordHarPath ? `; har=${path.basename(recordHarPath)}` : ""}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,
@@ -1229,11 +1273,7 @@ export async function browserBandaiCheckout(opts = {}) {
       orderNumber,
     };
   } catch (e) {
-    try {
-      await browser?.close?.();
-    } catch {
-      /* ignore */
-    }
+    await closeAll();
     push("browser_error", { ok: false, note: String(e?.message || e).slice(0, 240) });
     return {
       ok: false,
@@ -1242,6 +1282,7 @@ export async function browserBandaiCheckout(opts = {}) {
       error: String(e?.message || e).slice(0, 300),
       checkoutStage: "pre_cart",
       via: "browser",
+      recordHarPath: recordHarPath || null,
     };
   }
 }

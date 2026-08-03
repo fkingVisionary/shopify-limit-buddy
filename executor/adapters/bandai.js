@@ -2776,6 +2776,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       desktopRunId: task.desktopRunId || task.runId || null,
       desktopAttempt: task.desktopAttempt || task.attempt || null,
       executorTaskId: task.executorTaskId || ctx?.taskId || null,
+      recordHarPath: task.recordHarPath || null,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -2812,6 +2813,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       issuerRedirectUrl: out.issuerRedirectUrl ?? null,
       chromePayStealth: out.chromePayStealth ?? null,
       stealthProbe: out.stealthProbe ?? null,
+      recordHarPath: out.recordHarPath ?? null,
       finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
