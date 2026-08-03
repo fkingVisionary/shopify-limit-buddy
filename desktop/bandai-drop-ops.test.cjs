@@ -115,7 +115,7 @@ test("planDropMode sets desired = lanes", () => {
   assert.equal(plan.proxyGroupId, "px");
 });
 
-test("formatLaneAfterAction includes stage + tx", () => {
+test("formatLaneAfterAction includes stage + tx (decline has no Retry pay)", () => {
   const line = formatLaneAfterAction({
     ok: false,
     checkoutStage: "declined",
@@ -124,8 +124,10 @@ test("formatLaneAfterAction includes stage + tx", () => {
     note: "AUTH_FAILED tx=171421200",
     atcWallMs: 25000,
     heldPayRetry: true,
+    consumerCode: "declined",
+    paymentStatus: "declined_or_auth_failed",
   });
   assert.match(line, /declined/);
   assert.match(line, /tx=171421200/);
-  assert.match(line, /Retry pay/);
+  assert.doesNotMatch(line, /Retry pay/);
 });

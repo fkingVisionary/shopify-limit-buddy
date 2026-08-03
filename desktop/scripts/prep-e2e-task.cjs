@@ -83,7 +83,12 @@ async function main() {
   t.pdpUrl = `https://p-bandai.com/au/item/${pick.sku}`;
   t.bandaiWatchSku = pick.sku;
   t.bandaiMode = "checkout";
-  t.bandaiCheckoutMode = "fast";
+  t.bandaiCheckoutMode = (() => {
+    const m = String(process.env.BANDAI_CHECKOUT_MODE || "fast").toLowerCase();
+    if (m === "test" || m === "fast_test") return "autocheckout_test";
+    if (["fast", "fast_undici", "safe", "autocheckout_test"].includes(m)) return m;
+    return "fast";
+  })();
   t.placeOrder = true;
   t.profileId = "prof_4c10061c8213";
   t.proxyGroupId = "px_e6d1db558a16";

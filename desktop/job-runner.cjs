@@ -20,6 +20,8 @@ const {
   classifyBandaiRunResult,
   sleep: sleepMs,
 } = require("./bandai-retry-policy.cjs");
+const { isPaymentAlreadySubmitted } = require("./payment-latch.cjs");
+const { auditEnqueueBatch } = require("./pay-forensics-audit.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 const { vaultRegisteredEmails, findRegisteredAccount } = require("./account-vault.cjs");
@@ -38,6 +40,25 @@ let queue = [];
 let inflight = 0;
 let running = false;
 let maxConcurrent = 5;
+/**
+ * Refcount of task ids currently queued or running.
+ * Blocks a second Start on the same task row while it's already live —
+ * does NOT block other tasks, duplicated task rows (new ids), or quantity>1
+ * jobs from the same enqueue batch.
+ */
+const activeTaskCounts = new Map();
+
+function acquireTaskId(tid) {
+  if (!tid) return;
+  activeTaskCounts.set(tid, (activeTaskCounts.get(tid) || 0) + 1);
+}
+
+function releaseTaskId(tid) {
+  if (!tid) return;
+  const n = (activeTaskCounts.get(tid) || 1) - 1;
+  if (n <= 0) activeTaskCounts.delete(tid);
+  else activeTaskCounts.set(tid, n);
+}
 /** When false, UI only gets consumer labels (failedStep/detail/polls stay on console). */
 let detailedLogs = true;
 let emit = () => {};
@@ -869,14 +890,43 @@ function buildPayload(job) {
 
 function enqueue(jobs) {
   const list = Array.isArray(jobs) ? jobs : [jobs];
+  // Snapshot before this batch — quantity>1 siblings share a task id and must all enqueue.
+  const priorActive = new Set(activeTaskCounts.keys());
+  let skipped = 0;
+  const accepted = [];
   for (const job of list) {
-    queue.push({
+    const tid = job?.task?.id;
+    // Same task row already live from a previous start → skip (double-click / double fire).
+    if (tid && priorActive.has(tid)) {
+      skipped += 1;
+      console.warn(`[desktop:run] skip duplicate enqueue taskId=${tid}`);
+      emit({
+        type: "job",
+        phase: "log",
+        taskId: tid,
+        level: "warn",
+        message: "Already running — skipped duplicate start",
+      });
+      continue;
+    }
+    acquireTaskId(tid);
+    const queued = {
       ...job,
       runId: job.runId || id("run"),
       enqueuedAt: Date.now(),
-    });
+    };
+    queue.push(queued);
+    accepted.push(queued);
   }
-  emit({ type: "queue", ...state() });
+  try {
+    auditEnqueueBatch(accepted, {
+      source: "job-runner.enqueue",
+      skippedDuplicates: skipped || 0,
+    });
+  } catch {
+    /* forensics never blocks queue */
+  }
+  emit({ type: "queue", ...state(), skippedDuplicates: skipped || undefined });
   pump();
 }
 
@@ -889,6 +939,7 @@ function start() {
 function stop() {
   running = false;
   queue = [];
+  activeTaskCounts.clear();
   emit({ type: "runner", ...state(), message: "stopped — queue cleared" });
 }
 
@@ -1079,9 +1130,25 @@ function finishResult(job, res, summary) {
     areaItemNo: res?.areaItemNo ?? null,
     productCode: res?.productCode ?? null,
     cartHoldAt: res?.cartHoldAt ?? res?.heldCart?.cartHoldAt ?? null,
-    heldPayRetry: Boolean(res?.heldPayRetry),
+    // Decline / already-submitted must never look like held retry pay.
+    heldPayRetry:
+      outcome.code === "declined" || outcome.code === "held_cart_gone"
+        ? false
+        : Boolean(res?.heldPayRetry),
     heldCartGone: Boolean(res?.heldCartGone),
-    heldCart: res?.heldCart || null,
+    heldCart:
+      outcome.code === "declined" || outcome.code === "held_cart_gone"
+        ? null
+        : res?.heldCart || null,
+    chargeReqCount: res?.chargeReqCount ?? res?.bigpayAuthPosts ?? null,
+    undiciAttempts: res?.undiciAttempts ?? null,
+    bigpayAuthPosts: res?.bigpayAuthPosts ?? null,
+    responseLost: Boolean(res?.responseLost),
+    paymentAttempted: Boolean(
+      res?.paymentAttempted ||
+        res?.responseLost ||
+        Number(res?.chargeReqCount ?? res?.undiciAttempts ?? res?.bigpayAuthPosts ?? 0) >= 1,
+    ),
     loginCheck: Boolean(res?.loginCheck),
     atcWallMs: res?.atcWallMs ?? null,
     transactionId: res?.transactionId || res?.geTransactionId || null,
@@ -1541,7 +1608,13 @@ function pathToFileUrl(p) {
     : `file://${u}`;
 }
 
+/** @type {null | ((job: object, opts: object) => Promise<object>)} */
+let executeOnceOverride = null;
+
 async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } = {}) {
+  if (typeof executeOnceOverride === "function") {
+    return executeOnceOverride(job, { rotateSession, attemptLabel });
+  }
   // Bandai Autocheckout / ATC: claim F5 at run-start (not enqueue) so bank TTL
   // stays fresh through the queue — matches Monitor restock claim timing.
   if (
@@ -1610,6 +1683,10 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 
   const payload = built.data;
   payload.taskId = `${job.runId}-${attemptLabel}`;
+  // Correlate desktop UI task ↔ executor /run ↔ issuer POSTs (forensics only).
+  payload.desktopTaskId = job.task?.id || null;
+  payload.desktopRunId = job.runId || null;
+  payload.desktopAttempt = attemptLabel;
   const summary = summarizePayload(payload);
 
   // Bandai monitor (global filter / task-local). Optionally hand off to checkout
@@ -1768,12 +1845,35 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
       /* ignore */
     }
   }
+  const cardLast4 = String(payload.card?.number || "")
+    .replace(/\s+/g, "")
+    .slice(-4) || null;
+  console.log(
+    "[pay-forensics]",
+    JSON.stringify({
+      t: new Date().toISOString(),
+      ts: Date.now(),
+      event: "desktop_run_start",
+      desktopTaskId: job.task?.id || null,
+      desktopRunId: job.runId,
+      desktopAttempt: attemptLabel,
+      executorTaskId: payload.taskId,
+      store: job.task?.store || null,
+      placeOrder: Boolean(payload.placeOrder),
+      cardLast4,
+      proxy: summary.proxy,
+      pdp: summary.storeUrl,
+      monitorHit: extra.monitorHit?.productId || null,
+    }),
+  );
   console.log(
     "[desktop:run]",
     JSON.stringify({
       runId: job.runId,
+      taskId: job.task?.id || null,
       phase: "start-executor",
       attempt: attemptLabel,
+      cardLast4,
       proxy: summary.proxy,
       transport: summary.transport,
       kmartMode: summary.kmartMode,
@@ -1849,6 +1949,28 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
   });
   logResultTail(job, result);
 
+  // Cross-store latch (THIS job's result only): Disney/PKC/Toymate used to
+  // re-enter placeOrder after tunnel death / RESPONSE_LOST → second Revolut
+  // auth. Stop cold for this runId — sibling tasks on the same profile keep
+  // running; nothing here is profile/card-global.
+  if (!result.ok && isPaymentAlreadySubmitted(result)) {
+    console.warn(
+      `[desktop:run] pay latch — skip sticky rotate (posts=${result.chargeReqCount ?? result.bigpayAuthPosts ?? result.undiciAttempts ?? "?"} responseLost=${Boolean(result.responseLost)})`,
+    );
+    emitLiveStatus(job, "Payment submitted — check bank");
+    emitDetailedLog(
+      job.runId,
+      job.task?.id,
+      "warn",
+      "Payment already submitted — not rotating / not retrying placeOrder (double-charge guard)",
+    );
+    return {
+      ...result,
+      consumerLabel: result.consumerLabel || "Payment submitted — check bank",
+      paymentAttempted: true,
+    };
+  }
+
   const maxProxyRetriesBase = sticky
     ? Math.min(4, Math.max(2, entries.length || 2))
     : entries.length > 1
@@ -1863,6 +1985,19 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
     proxyRetries < maxProxyRetries &&
     (entries.length > 1 || sticky)
   ) {
+    // Re-check latch each loop — a prior attempt may have reached issuer.
+    if (isPaymentAlreadySubmitted(result)) {
+      console.warn(
+        `[desktop:run] pay latch mid-rotate — abort further placeOrder retries`,
+      );
+      emitLiveStatus(job, "Payment submitted — check bank");
+      return {
+        ...result,
+        consumerLabel: result.consumerLabel || "Payment submitted — check bank",
+        paymentAttempted: true,
+      };
+    }
+
     proxyRetries += 1;
     const why = isStickyTunnelDead(result)
       ? "tunnel/TLS failure"
@@ -1955,6 +2090,18 @@ async function runOneBandai(job, { sticky, entries }) {
       if (decision.liveLabel && decision.liveLabel !== result.consumerLabel) {
         result = { ...result, consumerLabel: decision.liveLabel, consumerCode: decision.consumerCode || result.consumerCode };
       }
+      // Hard decline / pay already submitted — never keep a held-cart retry latch.
+      if (
+        job.task &&
+        (decision.reason === "hard_decline" ||
+          decision.reason === "pay_already_submitted" ||
+          decision.consumerCode === "declined" ||
+          result.consumerCode === "declined")
+      ) {
+        job.task.heldCart = null;
+        job.task.bandaiPayFromCart = false;
+        result = { ...result, heldCart: null, heldPayRetry: false };
+      }
       break;
     }
 
@@ -2021,10 +2168,11 @@ async function runOneBandai(job, { sticky, entries }) {
 }
 
 async function runOne(job) {
+  const tid = job?.task?.id || null;
   emit({
     type: "job",
     phase: "start",
-    taskId: job.task?.id,
+    taskId: tid,
     runId: job.runId,
     label: job.task?.label || job.task?.pdpUrl,
     consumerLabel: "Starting",
@@ -2052,6 +2200,17 @@ async function runOne(job) {
       ? await runOneBandai(job, { sticky, entries })
       : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
 
+    // Decline → drop in-memory hold so Retry pay cannot re-fire on stale cartSn.
+    if (
+      isBandai &&
+      job.task &&
+      (result?.consumerCode === "declined" ||
+        /^declined$/i.test(String(result?.checkoutStage || "")))
+    ) {
+      job.task.heldCart = null;
+      job.task.bandaiPayFromCart = false;
+    }
+
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
   } catch (e) {
@@ -2059,7 +2218,7 @@ async function runOne(job) {
     console.error(`[desktop:run] executor threw: ${debugError}`);
     const result = {
       ok: false,
-      taskId: job.task?.id,
+      taskId: tid,
       runId: job.runId,
       error: "Something went wrong",
       consumerLabel: "Something went wrong",
@@ -2068,9 +2227,11 @@ async function runOne(job) {
       debugError,
       at: Date.now(),
     };
-    emitLog(job.runId, job.task?.id, "err", result.consumerLabel);
+    emitLog(job.runId, tid, "err", result.consumerLabel);
     emit({ type: "job", phase: "done", ...result });
     onFinished?.(result);
+  } finally {
+    releaseTaskId(tid);
   }
 }
 
@@ -2086,4 +2247,8 @@ module.exports = {
   normalizeProxy,
   isAkamaiWwwBlocked,
   isProxyEgressFailed,
+  /** Test-only: replace executeOnce (null restores real sidecar path). */
+  __setExecuteOnceForTests(fn) {
+    executeOnceOverride = typeof fn === "function" ? fn : null;
+  },
 };

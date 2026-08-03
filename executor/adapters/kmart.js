@@ -12,6 +12,7 @@
 import { request, UA, makeDispatcher, makeRemoteTlsDispatcher, isStickyProxyUrl } from "../http.js";
 import { resolveEgressIp } from "../ip-resolve.js";
 import { hyperConfigured, solveAkamaiSensor, solveAkamaiPixel, solveAkamaiSbsd } from "../antibot.js";
+import { pspPostForensics } from "../pay-forensics.js";
 import { createHash } from "node:crypto";
 import {
   completeAcsChallenge,
@@ -3047,9 +3048,18 @@ fragment LineItemFields on LineItem {
               note: `refusing process: charge3dsId not UUID (len=${String(charge3dsId ?? "").length})`,
             };
           }
+          const processUrl = "https://api.paydock.com/v1/charges/standalone-3ds/process";
+          const processBody = JSON.stringify({ charge_3ds_id: String(charge3dsId) });
+          pspPostForensics("start", {
+            store: "kmart",
+            via: `paydock_process:${label || "process"}`,
+            url: processUrl,
+            body: processBody,
+          });
+          const tProcess = Date.now();
           const res = await tracedRequest(
             label,
-            "https://api.paydock.com/v1/charges/standalone-3ds/process",
+            processUrl,
             {
               method: "POST",
               headers: {
@@ -3064,10 +3074,19 @@ fragment LineItemFields on LineItem {
                 "sec-fetch-mode": "cors",
                 "sec-fetch-dest": "empty",
               },
-              body: JSON.stringify({ charge_3ds_id: String(charge3dsId) }),
+              body: processBody,
             },
           );
           const txt = await res.text();
+          pspPostForensics("end", {
+            store: "kmart",
+            via: `paydock_process:${label || "process"}`,
+            url: processUrl,
+            status: res.status,
+            ms: Date.now() - tProcess,
+            ok: res.status < 400,
+            bankSignal: res.status < 400,
+          });
           let frictionless = false;
           let status = null;
           let acsFromBody = null;
@@ -3419,6 +3438,13 @@ fragment LineItemFields on LineItem {
             });
           } else {
             await tStep("place_order", async () => {
+              pspPostForensics("start", {
+                store: "kmart",
+                via: "chargePayDockWithToken",
+                url: "kmart:graphql:chargePayDockWithToken",
+                bodyBytes: 0,
+              });
+              const tCharge = Date.now();
               const res = await gqlPost({
                 operationName: "chargePayDockWithToken",
                 variables: {
@@ -3441,6 +3467,16 @@ fragment LineItemFields on LineItem {
                   paymentStatus = orderNumber ? "captured" : (r ? "no_order" : null);
                 }
               } catch {}
+              pspPostForensics("end", {
+                store: "kmart",
+                via: "chargePayDockWithToken",
+                url: "kmart:graphql:chargePayDockWithToken",
+                status: res.status,
+                ms: Date.now() - tCharge,
+                ok: res.status < 400 && Boolean(orderNumber),
+                bankSignal: true,
+                orderNumber: orderNumber || null,
+              });
               return {
                 status: res.status,
                 ok: res.status < 400 && Boolean(orderNumber),

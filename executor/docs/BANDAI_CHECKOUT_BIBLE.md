@@ -383,7 +383,7 @@ Guest ATC → **501 PAGE NOT AVAILABLE**. Login + F5 required.
 | Hyper | not required | Not Akamai BM |
 | JP / bandai.com.au | out of scope | Wrong stack / cert |
 | Fail-closed deploy gates on F5 flake | **no** | Same philosophy as Kmart |
-| GE Pay click / issuer POST | **once** | Never double-submit; Revolut may still show two lines (dual-rail) |
+| GE Pay click / issuer POST | **once** | Never double-submit. Revolut×2 with posts=1 is a **bug to fix** (shared stack) — not “expected dual-rail”. See `DUAL_REVOLUT_CROSS_MODULE.md` |
 | Fast default | **riskHydrate** (not stale noPage) | Stale blackbox → `PossibleFraudDetected=True` / cancels |
 | Desktop Fast | `bandaiGeRiskHydrate:true`, `bandaiGeNoPage:false` | Do not inherit lab shell env |
 | Save tax option | numeric only — omit `{{:value}}` | Placeholder broke save / blocked decline JWT |
@@ -433,7 +433,7 @@ login 200 + NoRestriction
 | Soft decline, no 3DS | `AutherizationFailed` + fraud=False | Normal frictionless decline — scrape JWT |
 | Bank ping then cancel | Often `PossibleFraudDetected=True` / `Refused` | Use Fast riskHydrate; do not stale noPage |
 | Save fails after riskHydrate | `SelectedTaxOption={{:value}}` | Omit placeholders (fixed in adapter) |
-| Revolut two lines, posts=1 | GE/PSP dual-rail | Expected; one TransactionId |
+| Revolut two lines, posts=1 | Shared bot pay path (not Bandai-only; Toymate BigPay also) | **Not done** — see `DUAL_REVOLUT_CROSS_MODULE.md`; score TransactionId + Revolut 1 vs 2 |
 | Agen login 501 | Agen path may lack F5 mint | Harden agen with bridge |
 
 ---
@@ -514,7 +514,7 @@ Do **not** add fail-closed CI gates on sensor flake.
 | Funded Fast Success | fraud=False proven; `Success=True` / kept order TBD |
 | `preComplete` | `POST /api/checkout/{checkoutSn}/preComplete` not wired after GE success |
 | Paid order / orderNo | Soft-decline + fraud flip proven; success path open |
-| Revolut dual-rail | posts=1 still pairs — park; don’t double-post |
+| Revolut×2 with posts=1 | Active bug — shared stack; do not “park” as expected GE noise |
 | Bandai milestones | Prefer `ge_issuer_risk` / JWT fields over Kmart-centric names |
 | Agen under Shape | Ensure agen login/signup POSTs mint F5 when gated |
 | Chance scale | Multi-account `applyDraw` not proven at pool size |

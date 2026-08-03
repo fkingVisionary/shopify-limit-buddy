@@ -397,7 +397,17 @@ function formatLaneAfterAction(result = {}) {
   if (cart) bits.push(`cart ${cart}`);
   if (tx) bits.push(`tx=${tx}`);
   if (wall) bits.push(wall);
-  if (result.heldPayRetry || result.consumerCode === "held_pay_retry") bits.push("Retry pay");
+  // Decline clears cart — never append Retry pay on declined/fraud stages.
+  const declined =
+    result.consumerCode === "declined" ||
+    /^declined$/i.test(String(result.checkoutStage || "")) ||
+    /declined|fraud_refused|auth_failed/i.test(String(result.paymentStatus || ""));
+  if (
+    !declined &&
+    (result.heldPayRetry || result.consumerCode === "held_pay_retry")
+  ) {
+    bits.push("Retry pay");
+  }
   if (!bits.length) {
     bits.push(result.consumerLabel || result.error || (result.ok ? "ok" : "failed"));
   }

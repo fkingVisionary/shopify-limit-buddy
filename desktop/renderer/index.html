@@ -315,9 +315,13 @@
               <select id="taskBandaiCheckoutMode">
                 <option value="fast">Fast (default)</option>
                 <option value="fast_undici">Fast+</option>
+                <option value="autocheckout_test">Autocheckout test (experimental fork)</option>
                 <option value="safe">Safe (slower)</option>
               </select>
-              <p class="field-hint">Fast is recommended for drops. Safe is slower and more conservative.</p>
+              <p class="field-hint">
+                Fast is the shipping drop path. Autocheckout test uses a duplicated pay module for labs
+                so Fast stays untouched. Safe is slower / browser GE.
+              </p>
               <label>Product ID <span class="optional">(optional — advanced)</span></label>
               <input id="taskBandaiAreaItemNo" placeholder="Optional override" autocomplete="off" />
               <p class="field-hint">Leave blank unless you were given a specific product ID for the drop.</p>

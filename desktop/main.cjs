@@ -1206,9 +1206,16 @@ runner.setFinishedHandler((result) => {
           t.lastDropSummary = formatLaneAfterAction(result);
         }
         // Bandai: persist held cart for Retry pay (live cart is still source of truth).
+        // Hard decline / fraud clears the Bandai cart — never keep stale cartSn.
         if (result.ok && result.orderNumber) {
           t.heldCart = null;
-        } else if (result.heldCartGone || result.consumerCode === "held_cart_gone") {
+        } else if (
+          result.heldCartGone ||
+          result.consumerCode === "held_cart_gone" ||
+          result.consumerCode === "declined" ||
+          /^declined$/i.test(String(result.checkoutStage || "")) ||
+          /declined_or_auth_failed|fraud_refused/i.test(String(result.paymentStatus || ""))
+        ) {
           t.heldCart = null;
         } else if (result.heldCart && result.heldCart.cartSn && result.heldCart.cartItemSn) {
           t.heldCart = {
@@ -1822,8 +1829,13 @@ function upsertTaskRow(task) {
     })(),
     bandaiCheckoutMode:
       storeId === "bandai"
-        ? ["fast", "fast_undici", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
-          ? String(task.bandaiCheckoutMode).toLowerCase()
+        ? ["fast", "fast_undici", "safe", "autocheckout_test", "test", "fast_test"].includes(
+            String(task.bandaiCheckoutMode || "").toLowerCase(),
+          )
+          ? String(task.bandaiCheckoutMode).toLowerCase() === "test" ||
+            String(task.bandaiCheckoutMode).toLowerCase() === "fast_test"
+            ? "autocheckout_test"
+            : String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
         : undefined,
     bandaiMonitorMode:
@@ -3736,13 +3748,24 @@ async function e2eAutorun() {
       apiKey: state.settings.apiKey,
     });
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
-    let hyper = String(state.settings.hyperApiKey || "").trim();
-    const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    let hyper = String(
+      process.env.HYPER_API_KEY || state.settings.hyperApiKey || "",
+    ).trim();
+    const capsolver = String(
+      process.env.CAPSOLVER_API_KEY || state.settings.capsolverApiKey || "",
+    ).trim();
     // Bandai F5 checkout does not need Hyper/CapSolver — match bootEngine.
     if (!hyper && !capsolver) {
       console.log(
-        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney need keys",
+        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney/PKC need keys",
       );
+    } else {
+      if (hyper) {
+        console.log("[e2e] Hyper key present (env or settings) — PKC/Kmart antibot enabled");
+      }
+      if (capsolver) {
+        console.log("[e2e] CapSolver key present (env or settings) — Toymate CF/spam enabled");
+      }
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,
@@ -3888,6 +3911,19 @@ async function e2eAutorun() {
       via: result.via || null,
       note: result.note || null,
       isSameCartToken: result.isSameCartToken ?? null,
+      // GE JWT: explicit false = clean path; true = ge_fraud_refused.
+      possibleFraudDetected:
+        result.possibleFraudDetected === true
+          ? true
+          : result.possibleFraudDetected === false
+            ? false
+            : result.possibleFraudDetected ?? null,
+      // Double-charge latch diagnostics (per-run only)
+      chargeReqCount: result.chargeReqCount ?? null,
+      undiciAttempts: result.undiciAttempts ?? null,
+      bigpayAuthPosts: result.bigpayAuthPosts ?? null,
+      responseLost: Boolean(result.responseLost),
+      paymentAttempted: Boolean(result.paymentAttempted),
       error: result.error,
       consumerLabel: result.consumerLabel || null,
       elapsedMs: result.elapsedMs,
@@ -3907,6 +3943,12 @@ async function e2eAutorun() {
         stage: result.checkoutStage,
         paymentStatus: result.paymentStatus,
         tx: result.transactionId,
+        possibleFraudDetected:
+          result.possibleFraudDetected === true
+            ? true
+            : result.possibleFraudDetected === false
+              ? false
+              : null,
         remaining,
       }),
     );

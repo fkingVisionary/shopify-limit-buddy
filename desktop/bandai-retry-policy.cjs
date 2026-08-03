@@ -7,6 +7,8 @@
 // - Hard decline / bad password / address → stop
 // - OOS → wait for restock (task stays alive)
 // - Success / cart held (ATC-only) → stop
+// - Pay-already-submitted latch is per THIS result only (see payment-latch.cjs) —
+//   concurrent tasks on the same profile are unaffected.
 
 const {
   consumerOutcome,
@@ -18,6 +20,10 @@ const {
   isHeldCartGone,
   isCheckoutAddressFail,
 } = require("./consumer-status.cjs");
+const {
+  isPaymentAlreadySubmitted,
+  resultBlob: latchResultBlob,
+} = require("./payment-latch.cjs");
 
 /** @typedef {'stop'|'retry'|'rotate'|'wait_restock'} BandaiAction */
 
@@ -36,6 +42,16 @@ function isStaleCartProductChanged(res) {
 function isSoftPaymentProcessFail(res) {
   if (!res || res.ok) return false;
   if (isPaymentDeclined(res) && !isSoftDeclineBlob(res)) return false;
+  // Already touched PSP — retrying pay doubles the bank auth.
+  if (isPaymentAlreadySubmitted(res)) return false;
+  // Lab / intentional hydrate-only stop — never soft-retry into a real issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return false;
+  }
   // Product-info / foreign-cart mismatches are not soft pay — retry ATC fresh.
   if (isStaleCartProductChanged(res)) return false;
   const blob = resultBlob(res);
@@ -96,17 +112,7 @@ function isRetryableAtcOuter(res) {
 }
 
 function resultBlob(res) {
-  return [
-    res?.debugError,
-    res?.error,
-    res?.failedStep,
-    res?.checkoutStage,
-    res?.paymentStatus,
-    res?.note,
-    ...(res?.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note || ""}`),
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return latchResultBlob(res);
 }
 
 /**
@@ -140,6 +146,21 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
+  // Intentional hydrate-only lab stop — never retry/rotate into issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return {
+      action: "stop",
+      liveLabel: "Hydrated — stopped before pay",
+      reason: "stop_before_issuer",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
+    };
+  }
+
   if (isBadCredentials(res)) {
     return {
       action: "stop",
@@ -169,6 +190,18 @@ function classifyBandaiRunResult(res, ctx = {}) {
       reason: "hard_decline",
       delayMs: 0,
       consumerCode: outcome.code || "declined",
+    };
+  }
+
+  // Issuer POST already sent / response lost — stop. Never re-fire pay.
+  if (isPaymentAlreadySubmitted(res)) {
+    return {
+      action: "stop",
+      // Prefer explicit bank-check label over generic "Something went wrong".
+      liveLabel: "Payment submitted — check bank",
+      reason: "pay_already_submitted",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
     };
   }
 
@@ -360,6 +393,7 @@ function sleep(ms) {
 module.exports = {
   classifyBandaiRunResult,
   isSoftPaymentProcessFail,
+  isPaymentAlreadySubmitted,
   isStaleCartProductChanged,
   isBlocked403,
   isBadCredentials,

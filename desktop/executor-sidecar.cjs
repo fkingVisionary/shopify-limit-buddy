@@ -274,7 +274,12 @@ function requestJson(method, urlPath, body, timeoutMs = 250_000) {
 }
 
 async function runTask(task) {
-  const { status: httpStatus, json } = await requestJson("POST", "/run", task);
+  // CapSolver CF + spam reCAPTCHA + BigPay can exceed the default 250s wall.
+  const runTimeoutMs = Math.max(
+    60_000,
+    Number(process.env.DESKTOP_EXECUTOR_RUN_TIMEOUT_MS || 400_000) || 400_000,
+  );
+  const { status: httpStatus, json } = await requestJson("POST", "/run", task, runTimeoutMs);
   if (httpStatus === 429) {
     return { ok: false, error: json?.error || "local executor at capacity", atCapacity: true };
   }

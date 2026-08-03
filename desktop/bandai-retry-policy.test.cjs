@@ -82,6 +82,78 @@ test("hard decline → stop", () => {
   assert.match(d.liveLabel, /declined|Payment declined/i);
 });
 
+test("RESPONSE_LOST / pay already submitted → stop (no second charge)", () => {
+  const d = classifyBandaiRunResult({
+    ok: false,
+    paymentStatus: "pay_submitted_no_response",
+    checkoutStage: "tokenize",
+    chargeReqCount: 1,
+    responseLost: true,
+    debugError: "RESPONSE_LOST posts=1 — check bank",
+    note: "HTTP issuer POST in-flight/sent but response lost",
+  });
+  assert.equal(d.action, "stop");
+  assert.equal(d.reason, "pay_already_submitted");
+  assert.notEqual(d.retryPay, true);
+});
+
+test("stop_before_issuer / http_ge_hydrated → stop (no soft-retry loop)", () => {
+  const res = {
+    ok: false,
+    failedStep: "ge_http_stop",
+    paymentStatus: "http_ge_hydrated",
+    paymentAttempted: false,
+    chargeReqCount: null,
+    error: "stop_before_issuer",
+    note: "HTTP GE hydrated guid=…",
+  };
+  assert.equal(isSoftPaymentProcessFail(res), false);
+  const d = classifyBandaiRunResult(res);
+  assert.equal(d.action, "stop");
+  assert.notEqual(d.retryPay, true);
+});
+
+test("issuer_http_failed + chargeReqCount>=1 → stop (not soft retry pay)", () => {
+  const res = {
+    ok: false,
+    failedStep: "ge_payment",
+    paymentStatus: "issuer_http_failed",
+    chargeReqCount: 1,
+    undiciAttempts: 1,
+    debugError: "timeout / fetch failed / ECONNRESET",
+  };
+  assert.equal(isSoftPaymentProcessFail(res), false);
+  const d = classifyBandaiRunResult(res);
+  assert.equal(d.action, "stop");
+  assert.equal(d.reason, "pay_already_submitted");
+});
+
+test("sibling task same profile still soft-retries when it has not paid", () => {
+  // Simulate: task A latched; task B (same profileId) still soft-fails pre-pay.
+  classifyBandaiRunResult({
+    ok: false,
+    taskId: "a",
+    profileId: "p1",
+    chargeReqCount: 1,
+    responseLost: true,
+    paymentStatus: "pay_submitted_no_response",
+  });
+  const sibling = {
+    ok: false,
+    taskId: "b",
+    profileId: "p1",
+    failedStep: "ge_payment",
+    debugError: "failed to process payment — try again",
+    cartSn: 1,
+    heldPayRetry: true,
+    heldCart: { cartSn: 1, cartItemSn: 2 },
+  };
+  assert.equal(isSoftPaymentProcessFail(sibling), true);
+  const d = classifyBandaiRunResult(sibling);
+  assert.equal(d.action, "retry");
+  assert.equal(d.retryPay, true);
+});
+
 test("OOS → wait_restock", () => {
   const d = classifyBandaiRunResult(
     {
