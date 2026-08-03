@@ -1066,7 +1066,9 @@ export async function browserBandaiGeFromCart(opts = {}) {
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
-          // Re-read consent after final tick — abort click if still unchecked.
+          // Same gate as termsOk — do NOT require ghost CheckoutData_TnCConsent
+          // (Safe7: Consent0=true, underscore=false, Pay enabled; requiring
+          // every() here deadlocked the click after the Consent0 relax).
           const consent = await frame
             .evaluate(() =>
               [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
@@ -1075,7 +1077,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
               })),
             )
             .catch(() => []);
-          if (consent.length && !consent.every((c) => c.checked)) {
+          if (!termsOk({ checks: consent })) {
             geNote += `; abort_pay_tnc=${JSON.stringify(consent).slice(0, 100)}`;
             armChargeGuard = false;
             continue;
