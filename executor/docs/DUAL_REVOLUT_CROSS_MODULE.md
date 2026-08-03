@@ -1,6 +1,9 @@
-# Dual Revolut â€” investigation bible (handoff)
+# Dual Revolut ? investigation bible (session archive)
 
-**Updated:** 2026-08-03 ~15:46 AEST
+> **Incoming developer?** Start here: [`DUAL_REVOLUT_HANDOFF.md`](./DUAL_REVOLUT_HANDOFF.md)  
+> This file is the long session archive / scoreboard detail.
+
+**Updated:** 2026-08-03 ~16:08 AEST
 **PR / branch:** `#151` · `cursor/safe-pay-wire-fix-c402` (Safe hybrid); dual also `#150`
 **Product to fix:** Bandai checkout (desktop ? executor). Other stores = research evidence only.
 
