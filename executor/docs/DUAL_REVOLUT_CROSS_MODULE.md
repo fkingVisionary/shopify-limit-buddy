@@ -79,7 +79,10 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 | Safe TnC underscore | force `CheckoutData_TnCConsent` via own label + Vue set (no input.click) | shipped |
 | Safe8 SoftBlock wash | #1–#8 login 501 / f5 — never reached Pay; TnC fix unproven for bank | unscored |
 | Safe TnC gate relax | allow Pay when `TnCConsent0` checked even if underscore ghost stays false | shipped |
-| Safe9 SoftBlock timeout | single attempt burned 700s on login 501 remints � never reached Pay | unscored |
+| Safe9 SoftBlock timeout | single attempt burned 700s on login 501 remints ? never reached Pay | unscored |
+| **Safe abort_pay bug** | pre-click `every()` undid Consent0 gate | **fixed** |
+| Safe `/run` timeout | Safe default **900s** | shipped |
+| Safe10 #4 | Checkout/v2 ok but `ge_iframe_not_filled` ? prefetcher mistaken for CCForm | **fixed** (CreditCardForm-only ready) |
 
 **Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 

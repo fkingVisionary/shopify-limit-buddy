@@ -743,10 +743,12 @@ export async function browserBandaiGeFromCart(opts = {}) {
     page.setDefaultTimeout(8_000);
 
     // Card iframe trails Checkout/v2 — cold GEM often needs 15–25s + Credit Card click.
-    for (let i = 0; i < 100; i++) {
-      const hasCard = page
-        .frames()
-        .some((f) => /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url() || ""));
+    // IMPORTANT: do NOT treat secure-bandai …/payments/prefetcher as ready
+    // (Safe10 #4: geIframe=true, hasCard true via prefetcher, fill never found CCForm).
+    const isCreditCardFormFrame = (u) =>
+      /CreditCardForm/i.test(String(u || "")) && !/prefetcher/i.test(String(u || ""));
+    for (let i = 0; i < 150; i++) {
+      const hasCard = page.frames().some((f) => isCreditCardFormFrame(f.url()));
       if (hasCard) {
         mark("card_iframe_ready", { pollI: i });
         break;
@@ -756,7 +758,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
           if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
           await frame
             .locator(
-              'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card")',
+              'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card"), [data-payment*="card" i], input[type="radio"][value*="card" i]',
             )
             .first()
             .click({ timeout: 600 })
@@ -792,17 +794,33 @@ export async function browserBandaiGeFromCart(opts = {}) {
       .slice(-2);
     const pan = String(card.number).replace(/\s+/g, "");
 
-    for (let tick = 0; tick < 10 && !filled; tick++) {
-      if (tick) await page.waitForTimeout(200);
+    for (let tick = 0; tick < 20 && !filled; tick++) {
+      if (tick) {
+        // Keep nudging Credit Card if CCForm still missing.
+        if (!page.frames().some((f) => isCreditCardFormFrame(f.url()))) {
+          for (const frame of page.frames()) {
+            if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+            await frame
+              .locator('label:has-text("Credit Card"), button:has-text("Credit Card")')
+              .first()
+              .click({ timeout: 500 })
+              .catch(() => {});
+          }
+        }
+        await page.waitForTimeout(300);
+      }
       for (const frame of page.frames()) {
         const url = frame.url();
-        if (!/CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(url)) continue;
-        if (/prefetcher/i.test(url)) continue;
+        if (!isCreditCardFormFrame(url)) continue;
 
         // Prefer Bandai GE field ids from form inspect.
         const num = frame.locator("#cardNum, input[name='PaymentData.cardNum'], input[autocomplete='cc-number']").first();
         if (!(await num.count().catch(() => 0))) continue;
-        if (!(await num.isVisible().catch(() => false))) continue;
+        // Visible OR attached — cold GEM sometimes paints fields opacity-0 briefly.
+        const visible = await num.isVisible().catch(() => false);
+        if (!visible) {
+          await num.waitFor({ state: "attached", timeout: 1500 }).catch(() => {});
+        }
 
         // Do NOT kill card-iframe submit/listeners — that made Checkout Pay a
         // no-op after 14:09 (UI click ok, zero issuer POSTs, Revolut silent).
@@ -849,10 +867,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     if (!filled) {
       paymentStatus = "ge_iframe_not_filled";
+      const frameSample = page
+        .frames()
+        .map((f) => String(f.url() || "").slice(0, 80))
+        .filter((u) => /global-e|CreditCard|secure-bandai/i.test(u))
+        .slice(0, 8)
+        .join("|");
+      geNote += `; no_ccform frames=${frameSample || "none"}`;
       push("ge_payment", {
         ok: false,
         ms: Date.now() - sGe,
-        note: paymentStatus,
+        note: `${paymentStatus}; ${geNote}`.slice(0, 280),
       });
       return {
         ok: false,
@@ -863,6 +888,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
         checkoutStage: "tokenize",
         checkoutSn,
         paymentStatus,
+        note: geNote,
         ...meta,
         via: "http+ge",
         elapsedMs: Date.now() - t0,

@@ -553,6 +553,10 @@ function buildBandaiPayload({
           ? task.proxyEntries
           : undefined,
       bandaiLoginProxyRotate: task.bandaiLoginProxyRotate !== false,
+      bandaiLoginProxyRotates:
+        task.bandaiLoginProxyRotates != null
+          ? Number(task.bandaiLoginProxyRotates)
+          : undefined,
       bandaiPayFromCart: task.bandaiPayFromCart === true,
       heldCart:
         task.heldCart && typeof task.heldCart === "object"
