@@ -86,12 +86,17 @@ async function main() {
   t.bandaiCheckoutMode = (() => {
     const m = String(process.env.BANDAI_CHECKOUT_MODE || "fast").toLowerCase();
     if (m === "test" || m === "fast_test") return "autocheckout_test";
-    if (["fast", "fast_undici", "safe", "autocheckout_test"].includes(m)) return m;
+    if (["fast", "fast_undici", "safe", "full", "autocheckout_test"].includes(m)) return m;
     return "fast";
   })();
   t.placeOrder = true;
   t.profileId = "prof_4c10061c8213";
-  t.proxyGroupId = "px_e6d1db558a16";
+  t.proxyGroupId =
+    process.env.BANDAI_E2E_PROXY_GROUP ||
+    (String(t.bandaiCheckoutMode).toLowerCase() === "full" ||
+    String(t.bandaiCheckoutMode).toLowerCase() === "safe"
+      ? "px_noontide_resi_dual"
+      : "px_e6d1db558a16");
   t.enabled = true;
   t.bandaiMaxLoops = Number(process.env.BANDAI_MAX_LOOPS || 12) || 12;
   t.bandaiAreaItemNo = pick.areaItemNo || null;

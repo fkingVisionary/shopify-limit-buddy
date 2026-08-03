@@ -1930,6 +1930,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         card,
         entry: "cart",
         wait3dsMs: Number(task.wait3dsMs) || 45_000,
+        desktopTaskId: task.desktopTaskId || task.taskId || task.id || null,
+        desktopRunId: task.desktopRunId || task.runId || null,
+        desktopAttempt: task.desktopAttempt || task.attempt || null,
+        executorTaskId: task.executorTaskId || ctx?.taskId || null,
         onProgress: (event, row) => {
           try {
             ctx.onProgress?.(event, row?.note || row?.paymentStatus || event, row);
@@ -1971,6 +1975,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         payClickCount: geOut.payClickCount,
         sawAuthWire: geOut.sawAuthWire,
         chargeReqCount: geOut.chargeReqCount ?? null,
+        transactionId: geOut.transactionId ?? null,
+        issuerRedirectUrl: geOut.issuerRedirectUrl ?? null,
         undiciAttempts: geOut.undiciAttempts ?? null,
         responseLost: Boolean(geOut.responseLost),
         paymentAttempted: Boolean(
@@ -2554,6 +2560,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         checkoutSn: chk.checkoutSn || null,
         cartToken: tokenOut.cartToken,
         wait3dsMs: Number(task.wait3dsMs) || 45_000,
+        desktopTaskId: task.desktopTaskId || task.taskId || task.id || null,
+        desktopRunId: task.desktopRunId || task.runId || null,
+        desktopAttempt: task.desktopAttempt || task.attempt || null,
+        executorTaskId: task.executorTaskId || ctx?.taskId || null,
         onProgress: (event, row) => {
           try {
             ctx.onProgress?.(event, row?.note || row?.paymentStatus || event, row);
@@ -2596,6 +2606,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         payClickCount: geOut.payClickCount,
         sawAuthWire: geOut.sawAuthWire,
         chargeReqCount: geOut.chargeReqCount ?? null,
+        transactionId: geOut.transactionId ?? null,
+        issuerRedirectUrl: geOut.issuerRedirectUrl ?? null,
         undiciAttempts: geOut.undiciAttempts ?? null,
         responseLost: Boolean(geOut.responseLost),
         paymentAttempted: Boolean(
@@ -2760,6 +2772,10 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
       wait3dsMs: Number(task.wait3dsMs) || 45_000,
+      desktopTaskId: task.desktopTaskId || task.taskId || task.id || null,
+      desktopRunId: task.desktopRunId || task.runId || null,
+      desktopAttempt: task.desktopAttempt || task.attempt || null,
+      executorTaskId: task.executorTaskId || ctx?.taskId || null,
     });
     if (Array.isArray(out.steps)) {
       for (const s of out.steps) steps.push(s);
@@ -2792,6 +2808,10 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       payClickCount: out.payClickCount ?? null,
       chargeReqCount: out.chargeReqCount ?? null,
       sawAuthWire: out.sawAuthWire ?? null,
+      transactionId: out.transactionId ?? null,
+      issuerRedirectUrl: out.issuerRedirectUrl ?? null,
+      chromePayStealth: out.chromePayStealth ?? null,
+      stealthProbe: out.stealthProbe ?? null,
       finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,

@@ -3,6 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   classifyPayWireStage,
+  decodePaymentRedirectJwt,
+  issuerResponseForensics,
   redirectFanoutFields,
 } from "./pay-forensics.js";
 
@@ -57,6 +59,33 @@ test("angle A: GE Key/Value JWT array flattens to transactionId", () => {
   );
   assert.equal(f.transactionId, "172447213");
   assert.equal(f.statusType, "AutherizationFailed");
+});
+
+test("angle A: issuerResponseForensics scrapes Location + JWT transactionId", () => {
+  const payload = Buffer.from(
+    JSON.stringify([
+      { Key: "TransactionId", Value: "172999001" },
+      { Key: "PossibleFraudDetected", Value: "False" },
+    ]),
+  )
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+  const jwt = `eyJhbGciOiJub25lIn0.${payload}.x`;
+  const location = `https://webservices.global-e.com/payments/CCPaymentRedirect?Data=${jwt}`;
+  const out = issuerResponseForensics({
+    via: "browser-full",
+    status: 302,
+    location,
+    bodyText: "",
+    url: "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/x",
+    chargeN: 1,
+    scoreboard: "unit",
+  });
+  assert.equal(out.transactionId, "172999001");
+  assert.equal(out.fanout.possibleFraudDetected, false);
+  assert.equal(decodePaymentRedirectJwt(location)?.[0]?.Value, "172999001");
 });
 
 test("angle A: PossibleFraudDetected False is explicit false (not null)", () => {

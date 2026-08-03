@@ -2,6 +2,8 @@
 // Used after HTTP + F5 bridge already logged in and ATCed — no second login/PDP.
 // Single Pay click on Checkout/v2 only.
 
+import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
+
 /** Only the GEM Checkout/v2 shell — never the nested CreditCardForm. */
 export function isBandaiGeCheckoutPayFrame(url) {
   return /webservices\.global-e\.com\/Checkout\/v2|global-e\.com\/Checkout\/v2/i.test(
@@ -314,6 +316,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let armChargeGuard = false;
   let issuerPaymentSent = false;
   let issuerBodyCapture = null;
+  let transactionId = null;
+  let issuerRedirectUrl = null;
+  const issuerReqStartedAt = new Map();
+  const forensicsIds = {
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+  };
 
   // context.route — page.route can miss service-worker / cross-frame POSTs
   // (lab showed 1 client POST while Revolut still paired). Allow first issuer
@@ -337,6 +348,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
     } catch {
       /* ignore */
     }
+    const bodyBytes = postData ? String(postData).length : 0;
     geNet.push({
       t: Date.now(),
       kind: "req",
@@ -345,7 +357,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       issuer: true,
       chargeN: chargeReqCount,
       armed: armChargeGuard,
-      bodyBytes: postData ? String(postData).length : 0,
+      bodyBytes,
     });
     // HAR forensics: let every issuer hit the network (BANDAI_GE_ALLOW_ALL_ISSUERS=1).
     if (chargeReqCount > 1 && process.env.BANDAI_GE_ALLOW_ALL_ISSUERS !== "1") {
@@ -353,7 +365,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
       mark("issuer_req_fulfilled_local", {
         n: chargeReqCount,
         url: url.slice(0, 140),
-        bodyBytes: postData ? String(postData).length : 0,
+        bodyBytes,
+      });
+      pspPostForensics("suppressed", {
+        via: "safe-ge-pay",
+        store: "bandai",
+        url,
+        bodyBytes,
+        chargeN: chargeReqCount,
+        ...forensicsIds,
       });
       // Soft success — abort caused GE to hunt another charge path.
       await route.fulfill({
@@ -372,10 +392,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
       mark("issuer_req_allowed_for_har", {
         n: chargeReqCount,
         url: url.slice(0, 140),
-        bodyBytes: postData ? String(postData).length : 0,
+        bodyBytes,
       });
     }
     issuerPaymentSent = true;
+    issuerReqStartedAt.set(url, Date.now());
+    pspPostForensics("start", {
+      via: "safe-ge-pay",
+      store: "bandai",
+      url,
+      bodyBytes,
+      chargeN: chargeReqCount,
+      ...forensicsIds,
+    });
     if (postData && !issuerBodyCapture) {
       const rawBody = String(postData).slice(0, 50_000);
       // Redact PAN/CVD in on-disk capture (schema research still usable).
@@ -395,17 +424,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
       try {
         const fs = await import("node:fs");
-        fs.writeFileSync(
-          "/tmp/bandai-ge-issuer-capture.json",
-          JSON.stringify(issuerBodyCapture, null, 2),
-        );
+        const os = await import("node:os");
+        const path = await import("node:path");
+        const out = path.join(os.tmpdir(), "bandai-ge-issuer-capture.json");
+        fs.writeFileSync(out, JSON.stringify(issuerBodyCapture, null, 2));
       } catch {
         /* ignore */
       }
     }
     mark("issuer_req_allowed", {
       url: url.slice(0, 140),
-      bodyBytes: postData ? String(postData).length : 0,
+      bodyBytes,
     });
     await route.continue();
   };
@@ -522,8 +551,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const onRes = (res) => {
     const u = res.url();
     const method = res.request().method();
-    if (method === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay|handleaction/i.test(u)) return;
-    if (!/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
+    if (method === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay|handleaction|CCPaymentRedirect/i.test(u)) {
+      return;
+    }
+    if (
+      !/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment|HandleCreditCard/i.test(
+        u,
+      )
+    ) {
       return;
     }
     if (/WriteContextualLog|collectCheckout|prefetcher|\/static\//i.test(u) && !armChargeGuard) return;
@@ -543,6 +578,54 @@ export async function browserBandaiGeFromCart(opts = {}) {
             actionId: bandaiGeHandleActionId(u),
             status: res.status(),
             bodySnippet: row.bodySnippet,
+          });
+        })
+        .catch(() => {});
+    }
+    // PSP fan-out: capture HandleCredit / CCPaymentRedirect → transactionId.
+    const isIssuerRes =
+      isBandaiGeIssuerPaymentUrl(u) ||
+      /CCPaymentRedirect/i.test(u) ||
+      (method !== "GET" && /HandleCreditCard/i.test(u));
+    if (isIssuerRes && method !== "OPTIONS" && method !== "HEAD") {
+      const started = issuerReqStartedAt.get(u) || Date.now();
+      Promise.resolve()
+        .then(async () => {
+          const headers = res.headers() || {};
+          const location = headers.location || headers.Location || "";
+          let bodyText = "";
+          try {
+            bodyText = await res.text();
+          } catch {
+            /* ignore */
+          }
+          const captured = issuerResponseForensics({
+            via: "safe-ge-pay",
+            store: "bandai",
+            status: res.status(),
+            location,
+            bodyText,
+            url: u,
+            ms: Date.now() - started,
+            chargeN: chargeReqCount,
+            scoreboard: "safe_playwright_issuer",
+            ...forensicsIds,
+          });
+          if (captured.transactionId && !transactionId) {
+            transactionId = captured.transactionId;
+          }
+          if (captured.redirectUrl && !issuerRedirectUrl) {
+            issuerRedirectUrl = captured.redirectUrl;
+          }
+          row.redirectUrl = captured.redirectUrl
+            ? String(captured.redirectUrl).slice(0, 180)
+            : null;
+          row.transactionId = captured.transactionId;
+          mark("issuer_res_fanout", {
+            status: res.status(),
+            transactionId: captured.transactionId,
+            redirectHost: captured.fanout?.redirectHost || null,
+            possibleFraudDetected: captured.fanout?.possibleFraudDetected ?? null,
           });
         })
         .catch(() => {});
@@ -1554,6 +1637,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
       sawAuthWire,
       chargeReqCount,
       blockedChargeReqCount,
+      transactionId,
+      issuerRedirectUrl,
       declineSnippet,
       geNetTail: geNet.slice(-20),
       cookies,
@@ -1565,7 +1650,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
           ? `Order ${orderNumber}`
           : paymentStatus === "declined_or_auth_failed"
             ? `Payment declined${declineSnippet ? `: ${declineSnippet}` : ""}`
-            : `GE via http+bridge; ${paymentStatus}; elapsed=${Date.now() - t0}ms`,
+            : `GE via http+bridge; ${paymentStatus}; tx=${transactionId || "-"}; elapsed=${Date.now() - t0}ms`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,

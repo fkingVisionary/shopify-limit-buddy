@@ -4,6 +4,8 @@
 
 import { chromium } from "playwright";
 
+import { installChromePayStealth, probeChromePayStealth } from "../chrome-pay-stealth.js";
+import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
 import { parseBandaiProxy } from "./bandai-f5.js";
 import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
@@ -242,25 +244,61 @@ export async function browserBandaiCheckout(opts = {}) {
       userAgent: BANDAI_BROWSER_UA,
       viewport: { width: 1360, height: 900 },
     });
+    // Full stealth A/B (dual pivot): default ON unless PAY_CHROME_STEALTH=0.
+    // Full1 @14:04 scored ×2 without stealth — this is the next bank lever.
+    const stealthForce = process.env.PAY_CHROME_STEALTH !== "0";
+    let stealthInstall = { ok: false, skipped: true };
+    try {
+      stealthInstall = await installChromePayStealth(context, { force: stealthForce });
+    } catch {
+      stealthInstall = { ok: false, error: "stealth_install_failed" };
+    }
     const page = await context.newPage();
     page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
+    let stealthProbe = null;
 
     // Capture GE payment-related traffic so we know if Pay actually hit the wire.
     const geNet = [];
     let chargeReqCount = 0;
+    let transactionId = null;
+    let issuerRedirectUrl = null;
+    const issuerReqStartedAt = new Map();
+    const forensicsIds = {
+      desktopTaskId: opts.desktopTaskId || null,
+      desktopRunId: opts.desktopRunId || null,
+      desktopAttempt: opts.desktopAttempt || null,
+      executorTaskId: opts.executorTaskId || null,
+    };
     page.on("request", (req) => {
       const u = req.url();
-      if (req.method() !== "GET" && isBandaiGeIssuerPaymentUrl(u)) {
+      const method = req.method();
+      if (method !== "GET" && method !== "OPTIONS" && method !== "HEAD" && isBandaiGeIssuerPaymentUrl(u)) {
         chargeReqCount += 1;
+        issuerReqStartedAt.set(u, Date.now());
+        let bodyBytes = null;
+        try {
+          bodyBytes = req.postData() ? String(req.postData()).length : 0;
+        } catch {
+          /* ignore */
+        }
+        pspPostForensics("start", {
+          via: "browser-full",
+          store: "bandai",
+          url: u,
+          bodyBytes,
+          chargeN: chargeReqCount,
+          stealth: Boolean(stealthInstall?.ok),
+          ...forensicsIds,
+        });
       }
       if (
-        req.method() !== "GET" &&
+        method !== "GET" &&
         /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)
       ) {
         geNet.push({
           t: Date.now(),
           kind: "req",
-          method: req.method(),
+          method,
           url: u.slice(0, 200),
           issuer: isBandaiGeIssuerPaymentUrl(u),
           chargeN: isBandaiGeIssuerPaymentUrl(u) ? chargeReqCount : undefined,
@@ -269,15 +307,67 @@ export async function browserBandaiCheckout(opts = {}) {
     });
     page.on("response", (res) => {
       const u = res.url();
-      if (/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
-        if (res.request().method() === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay/i.test(u)) return;
-        geNet.push({
+      const method = res.request().method();
+      if (
+        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment|HandleCreditCard/i.test(
+          u,
+        )
+      ) {
+        if (
+          method === "GET" &&
+          !/ProcessPayment|Authorize|3ds|acs|Pay|CCPaymentRedirect|HandleCreditCard/i.test(u)
+        ) {
+          return;
+        }
+        const row = {
           t: Date.now(),
           kind: "res",
           status: res.status(),
-          method: res.request().method(),
+          method,
           url: u.slice(0, 200),
-        });
+        };
+        geNet.push(row);
+        const isIssuerRes =
+          isBandaiGeIssuerPaymentUrl(u) ||
+          /CCPaymentRedirect/i.test(u) ||
+          (method !== "GET" && /HandleCreditCard/i.test(u));
+        if (isIssuerRes && method !== "OPTIONS" && method !== "HEAD") {
+          const started = issuerReqStartedAt.get(u) || Date.now();
+          Promise.resolve()
+            .then(async () => {
+              const headers = res.headers() || {};
+              const location = headers.location || headers.Location || "";
+              let bodyText = "";
+              try {
+                bodyText = await res.text();
+              } catch {
+                /* ignore */
+              }
+              const captured = issuerResponseForensics({
+                via: "browser-full",
+                store: "bandai",
+                status: res.status(),
+                location,
+                bodyText,
+                url: u,
+                ms: Date.now() - started,
+                chargeN: chargeReqCount,
+                scoreboard: "full_playwright_issuer",
+                ...forensicsIds,
+              });
+              if (captured.transactionId && !transactionId) {
+                transactionId = captured.transactionId;
+              }
+              if (captured.redirectUrl && !issuerRedirectUrl) {
+                issuerRedirectUrl = captured.redirectUrl;
+              }
+              row.transactionId = captured.transactionId;
+              row.redirectUrl = captured.redirectUrl
+                ? String(captured.redirectUrl).slice(0, 180)
+                : null;
+            })
+            .catch(() => {});
+        }
       }
     });
 
@@ -285,6 +375,11 @@ export async function browserBandaiCheckout(opts = {}) {
     const sLogin = Date.now();
     await page.goto(`${base}/login`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(400);
+    try {
+      stealthProbe = await probeChromePayStealth(page);
+    } catch {
+      /* ignore */
+    }
     await dismissCookieBanner(page);
     const login = await page.evaluate(async ({ email: em, password: pw, areaCode }) => {
       const csrf = window.USER_DATA?.csrfToken || window.__bandaiCsrf || "";
@@ -1114,6 +1209,10 @@ export async function browserBandaiCheckout(opts = {}) {
       payClickCount,
       chargeReqCount,
       sawAuthWire,
+      transactionId,
+      issuerRedirectUrl,
+      chromePayStealth: Boolean(stealthInstall?.ok),
+      stealthProbe,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
         : orderNumber
@@ -1122,7 +1221,7 @@ export async function browserBandaiCheckout(opts = {}) {
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
             : payClickCount > 1
               ? `MULTI pay click (${payClickCount}) — investigate double charge`
-              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}`,
+              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,

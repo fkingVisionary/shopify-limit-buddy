@@ -69,6 +69,63 @@ function flattenRedirectPayload(redirectPayload) {
   return {};
 }
 
+/** Decode GE CCPaymentRedirect JWT (Data=eyJ… or bare JWT). */
+export function decodePaymentRedirectJwt(urlOrJwt) {
+  const s = String(urlOrJwt || "");
+  const m = s.match(/(?:Data=)?(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/);
+  if (!m) return null;
+  try {
+    const payload = m[1].split(".")[1];
+    const pad = payload + "=".repeat((4 - (payload.length % 4)) % 4);
+    return JSON.parse(
+      Buffer.from(pad.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Scrape Location / body / response URL for CCPaymentRedirect, emit psp_post_end.
+ * Behavior-neutral — Safe/Full Playwright pay lacked Fast's transactionId surface.
+ *
+ * @param {object} opts
+ * @returns {{ redirectUrl: string|null, fanout: object, transactionId: string|null }}
+ */
+export function issuerResponseForensics(opts = {}) {
+  const status = opts.status != null ? Number(opts.status) : null;
+  let redirectUrl = opts.location ? String(opts.location) : null;
+  const bodyText = String(opts.bodyText || "");
+  const url = String(opts.url || "");
+  if (!redirectUrl && bodyText) {
+    const m = bodyText.match(/href=["']([^"']*CCPaymentRedirect[^"']*)["']/i);
+    if (m) redirectUrl = m[1];
+  }
+  if (!redirectUrl && /CCPaymentRedirect/i.test(url)) redirectUrl = url;
+  const redirectPayload =
+    redirectUrl && /CCPaymentRedirect/i.test(redirectUrl)
+      ? decodePaymentRedirectJwt(redirectUrl)
+      : null;
+  const fanout = redirectFanoutFields(redirectUrl, redirectPayload);
+  const transactionId = fanout.transactionId || null;
+  payForensics("psp_post_end", {
+    via: opts.via || null,
+    store: opts.store || "bandai",
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+    status,
+    ok: Boolean(fanout.isPaymentRedirect && transactionId),
+    ms: opts.ms != null ? Number(opts.ms) : null,
+    bodyBytes: opts.bodyBytes != null ? Number(opts.bodyBytes) : bodyText ? bodyText.length : null,
+    chargeN: opts.chargeN != null ? Number(opts.chargeN) : null,
+    scoreboard: opts.scoreboard || "playwright_issuer_response",
+    ...fanout,
+  });
+  return { redirectUrl, fanout, transactionId, redirectPayload };
+}
+
 /**
  * Behavior-neutral fan-out fields from a PSP redirect / JWT map (angle A).
  * @param {string|null|undefined} redirectUrl
