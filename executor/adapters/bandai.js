@@ -2741,7 +2741,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
           : null;
 
   // Slow path: full Playwright login→PDP→ATC→GE (labs only).
-  if (task.bandaiBrowserFull === true) {
+  // Honor checkoutMode=full even if bandaiBrowserFull flag was dropped in transit.
+  if (
+    task.bandaiBrowserFull === true ||
+    String(task.bandaiCheckoutMode || "").toLowerCase() === "full"
+  ) {
     const s0 = Date.now();
     const out = await browserBandaiCheckout({
       email,

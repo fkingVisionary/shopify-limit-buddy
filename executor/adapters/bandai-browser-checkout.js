@@ -6,6 +6,13 @@ import { chromium } from "playwright";
 
 import { parseBandaiProxy } from "./bandai-f5.js";
 import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
+import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
+
+// Match shared http.js platform UA — Mac UA on win32 was a dual tell.
+const BANDAI_BROWSER_UA =
+  process.platform === "win32"
+    ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 function proxyForPlaywright(rawProxy) {
   return parseBandaiProxy(rawProxy).playwright;
@@ -232,8 +239,7 @@ export async function browserBandaiCheckout(opts = {}) {
     });
     const context = await browser.newContext({
       locale: area === "fr" ? "fr-FR" : area === "us" ? "en-US" : "en-AU",
-      userAgent:
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      userAgent: BANDAI_BROWSER_UA,
       viewport: { width: 1360, height: 900 },
     });
     const page = await context.newPage();
@@ -241,8 +247,12 @@ export async function browserBandaiCheckout(opts = {}) {
 
     // Capture GE payment-related traffic so we know if Pay actually hit the wire.
     const geNet = [];
+    let chargeReqCount = 0;
     page.on("request", (req) => {
       const u = req.url();
+      if (req.method() !== "GET" && isBandaiGeIssuerPaymentUrl(u)) {
+        chargeReqCount += 1;
+      }
       if (
         req.method() !== "GET" &&
         /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)
@@ -252,6 +262,8 @@ export async function browserBandaiCheckout(opts = {}) {
           kind: "req",
           method: req.method(),
           url: u.slice(0, 200),
+          issuer: isBandaiGeIssuerPaymentUrl(u),
+          chargeN: isBandaiGeIssuerPaymentUrl(u) ? chargeReqCount : undefined,
         });
       }
     });
@@ -302,8 +314,19 @@ export async function browserBandaiCheckout(opts = {}) {
     }, { email, password, areaCode: area });
     await page.waitForTimeout(300);
 
-    const member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
-    const memberNo = member.json?.memberNo || null;
+    let member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
+    let memberNo = member.json?.memberNo || member.json?.memberSN || null;
+    // Login 200 + refresh 200 can still miss memberNo on first paint — retry once.
+    if (login.status >= 200 && login.status < 300 && !memberNo) {
+      await page.waitForTimeout(700);
+      member = await pageApi(page, "GET", "/api/context/member/refresh", null, area);
+      memberNo = member.json?.memberNo || member.json?.memberSN || null;
+      if (!memberNo) {
+        const mem2 = await pageApi(page, "GET", "/api/context/member", null, area);
+        memberNo = mem2.json?.memberNo || mem2.json?.memberSN || null;
+        if (memberNo) member = mem2;
+      }
+    }
     const loginOk = login.status >= 200 && login.status < 300 && Boolean(memberNo);
     push("login_browser", {
       ok: loginOk,
@@ -490,11 +513,31 @@ export async function browserBandaiCheckout(opts = {}) {
     // ── UI checkout → Global-e iframe ────────────────────────────────────
     // SPA "PROCEED TO CHECKOUT" boots GEM correctly; raw API checkoutSn alone
     // often leaves orderdetails without the payment iframe.
+    // Vue cart hydrates async after API ATC — wait/reload like Safe ge-pay.
     const sChk = Date.now();
     await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
     await page.waitForTimeout(800);
     await dismissCookieBanner(page);
-    await page.waitForTimeout(400);
+
+    const proceedSel =
+      'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
+    let proceedVisible = false;
+    for (let i = 0; i < 24; i++) {
+      await dismissCookieBanner(page);
+      const proceedProbe = page.locator(proceedSel).first();
+      if (
+        (await proceedProbe.count().catch(() => 0)) &&
+        (await proceedProbe.isVisible().catch(() => false))
+      ) {
+        proceedVisible = true;
+        break;
+      }
+      if (i === 6 || i === 12 || i === 18) {
+        await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+        await page.waitForTimeout(700);
+      }
+      await page.waitForTimeout(400);
+    }
 
     // PreOrder carts may show a shipping-area checkbox — tick if present.
     // Skip OneTrust / analytics checkboxes.
@@ -509,72 +552,136 @@ export async function browserBandaiCheckout(opts = {}) {
       }
     }
 
-    const proceed = page
-      .locator('button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout")')
-      .first();
-    if (!(await proceed.count()) || !(await proceed.isVisible().catch(() => false))) {
-      push("cart_checkout", {
-        ok: false,
-        status: null,
-        ms: Date.now() - sChk,
-        note: "PROCEED TO CHECKOUT button missing",
-      });
-      await browser.close();
-      return {
-        ok: false,
-        steps,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT button missing",
-        checkoutStage: "tokenize",
-        areaItemNo,
-        cartSn,
-        cartItemSn,
-      };
-    }
-
-    // Re-tick + wait for enable — don't burn 90s on a permanently disabled CTA.
-    let proceedReady = false;
-    for (let i = 0; i < 20; i++) {
-      for (let bi = 0; bi < boxCount; bi++) {
-        const box = areaBoxes.nth(bi);
-        if (!(await box.isChecked().catch(() => true))) {
-          await box.check({ force: true }).catch(() => {});
+    const proceed = page.locator(proceedSel).first();
+    let skipProceedClick = false;
+    if (!proceedVisible) {
+      // Still in-browser (no GEPI GetCartToken): page-fetch Bandai cart checkout
+      // then land on /orderdetails so GEM can boot — keeps full-journey A/B intact.
+      let apiCheckoutSn = null;
+      if (cartSn && cartItemSn && cartId) {
+        try {
+          await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
+          await page.waitForTimeout(500);
+          const suffix = await page
+            .evaluate(() => {
+              const p = window.PRELOAD_DATA || window.__PRELOAD_DATA__ || {};
+              return p.globaleMerchantCartTokenSuffix || window.globaleMerchantCartTokenSuffix || null;
+            })
+            .catch(() => null);
+          const merchantCartToken = suffix
+            ? `${cartId}_Checkout_${suffix}`
+            : `${cartId}_Checkout_`;
+          const chk = await pageApi(
+            page,
+            "POST",
+            `/api/cart/${encodeURIComponent(cartSn)}/checkout`,
+            {
+              merchantCartToken,
+              shippingAreaCode: area,
+              defaultAreaCode: area,
+              items: [{ cartItemSn }],
+            },
+            area,
+          );
+          apiCheckoutSn = chk.json?.checkoutSn || chk.json?.checkoutSN || null;
+          push("cart_checkout_api", {
+            ok: Boolean(apiCheckoutSn),
+            status: chk.status,
+            note: apiCheckoutSn
+              ? `checkoutSn ${apiCheckoutSn} via=page_api (PROCEED missing)`
+              : `page checkout ${chk.status} ${(chk.json?.error || chk.title || "").toString().slice(0, 80)}`,
+          });
+          if (apiCheckoutSn) {
+            await page
+              .evaluate((sn) => {
+                try {
+                  sessionStorage.setItem("bsp_checkout_sn", sn);
+                } catch {
+                  /* ignore */
+                }
+              }, String(apiCheckoutSn))
+              .catch(() => {});
+            await page.goto(`${base}/orderdetails`, { waitUntil: "domcontentloaded" });
+            await page.waitForTimeout(1000);
+            await dismissCookieBanner(page);
+            skipProceedClick = true;
+          }
+        } catch (e) {
+          push("cart_checkout_api", {
+            ok: false,
+            note: `page checkout throw: ${e?.message || e}`,
+          });
         }
       }
-      if (!(await proceed.isDisabled().catch(() => true))) {
-        proceedReady = true;
-        break;
+      if (!apiCheckoutSn) {
+        const bodyHint = (await page.locator("body").innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .slice(0, 160);
+        push("cart_checkout", {
+          ok: false,
+          status: null,
+          ms: Date.now() - sChk,
+          note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
+        });
+        await browser.close();
+        return {
+          ok: false,
+          steps,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT button missing",
+          checkoutStage: "tokenize",
+          areaItemNo,
+          cartSn,
+          cartItemSn,
+        };
       }
-      await page.waitForTimeout(400);
-    }
-    if (!proceedReady) {
-      push("cart_checkout", {
-        ok: false,
-        status: null,
-        ms: Date.now() - sChk,
-        note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail / unticked area)",
-      });
-      await browser.close();
-      return {
-        ok: false,
-        steps,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT disabled",
-        checkoutStage: "cart",
-        areaItemNo,
-        cartSn,
-        cartItemSn,
-      };
     }
 
-    await Promise.all([
-      page
-        .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 45_000 })
-        .catch(() => null),
-      proceed.click({ timeout: 10_000 }),
-    ]);
-    await page.waitForTimeout(800);
-    await dismissCookieBanner(page);
+    if (!skipProceedClick) {
+      // Re-tick + wait for enable — don't burn 90s on a permanently disabled CTA.
+      let proceedReady = false;
+      for (let i = 0; i < 20; i++) {
+        for (let bi = 0; bi < boxCount; bi++) {
+          const box = areaBoxes.nth(bi);
+          if (!(await box.isChecked().catch(() => true))) {
+            await box.check({ force: true }).catch(() => {});
+          }
+        }
+        if (!(await proceed.isDisabled().catch(() => true))) {
+          proceedReady = true;
+          break;
+        }
+        await page.waitForTimeout(400);
+      }
+      if (!proceedReady) {
+        push("cart_checkout", {
+          ok: false,
+          status: null,
+          ms: Date.now() - sChk,
+          note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail / unticked area)",
+        });
+        await browser.close();
+        return {
+          ok: false,
+          steps,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT disabled",
+          checkoutStage: "cart",
+          areaItemNo,
+          cartSn,
+          cartItemSn,
+        };
+      }
+
+      await Promise.all([
+        page
+          .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 45_000 })
+          .catch(() => null),
+        proceed.click({ timeout: 10_000 }),
+      ]);
+      await page.waitForTimeout(800);
+      await dismissCookieBanner(page);
+    }
 
     const checkoutSn =
       (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn"))) || null;
@@ -961,10 +1068,12 @@ export async function browserBandaiCheckout(opts = {}) {
     }
 
     // Wire proof (single Pay → auth POST) counts even without ACS UI — bank is ground truth.
+    if (!sawAuthWire && chargeReqCount >= 1) sawAuthWire = true;
     const gePayOk =
       reached3ds ||
       Boolean(orderNumber) ||
       paymentStatus === "declined_or_auth_failed" ||
+      chargeReqCount >= 1 ||
       (payClickCount === 1 &&
         sawAuthWire &&
         (paymentStatus === "pay_submitted_no_3ds_seen" || paymentStatus === "pay_clicked"));
@@ -972,7 +1081,7 @@ export async function browserBandaiCheckout(opts = {}) {
       ok: gePayOk,
       status: null,
       ms: Date.now() - sGe,
-      note: `${paymentStatus}; reached3ds=${reached3ds}; payClicks=${payClickCount}; ${geNote}`.slice(
+      note: `${paymentStatus}; reached3ds=${reached3ds}; payClicks=${payClickCount}; chargeReq=${chargeReqCount}; ${geNote}`.slice(
         0,
         280,
       ),
@@ -1003,6 +1112,7 @@ export async function browserBandaiCheckout(opts = {}) {
       cookies,
       geNetTail: geNet.slice(-20),
       payClickCount,
+      chargeReqCount,
       sawAuthWire,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
@@ -1012,7 +1122,7 @@ export async function browserBandaiCheckout(opts = {}) {
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
             : payClickCount > 1
               ? `MULTI pay click (${payClickCount}) — investigate double charge`
-              : `GE UI handoff; paymentStatus=${paymentStatus}`,
+              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,
