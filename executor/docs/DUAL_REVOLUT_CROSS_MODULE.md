@@ -66,8 +66,8 @@ Stop checkout-mode / HTTP-handoff / Bandai TLS-knob roulette. Dual survived **ev
 
 | Priority | Lever | Status | Why |
 |---|---|---|---|
-| **NOW** | **Full2 stealth A/B** ? Full browser + `installChromePayStealth` (default ON; `PAY_CHROME_STEALTH=0` to off) + bank score | **wired** ? needs e2e bank | Full1 = stock PW ×2; next = hide webdriver/chrome gaps |
-| **NOW** | **PSP fan-out forensics** ? Safe/Full emit `psp_post_end` + `transactionId` from HandleCredit/CCPaymentRedirect | **shipped** | correlate one GE tx vs two Revolut timestamps |
+| **NOW** | **Full2 stealth A/B** | **banked** tx `172578128` @~14:51 ? await Revolut | `run_3efebe56be2b` chargeReq=1 stealth=true |
+| **NOW** | **PSP fan-out forensics** | **shipped** (Full2 tx captured) | correlate GE tx vs Revolut pair timestamps |
 | Next | **Manual vs bot HAR** on the same card/merchant ? diff HandleCredit + pre-pay risk + CDP tells | not built | Manual = ×1; bot Full = ×2 in real Chromium |
 | Next | Proxy vs direct **only if new theory** (direct historically ×2 ? do not rediscover casually) | parked | already dualed historically |
 | Later | Re-score Toymate tls-worker Ã—1 still holds (control) | optional | only confirmed single |
@@ -124,10 +124,10 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 | Lab | Evidence | Revolut |
 |---|---|---|
 | **Full1 @14:04** | `run_e664ed0c11e5` Â· via=browser Â· checkoutSn + GEM Â· fill+Pay Â· **chargeReq=1** Â· `pay_submitted_no_3ds_seen` | **Ã—2** (user) |
-| **Full1 reconfirm ~14:37** | user: "still double charging" | **Ã—2** (user) |
-| Full2 stealth | `chromePayStealth` default ON + `transactionId` forensics | **pending bank** |
+| **Full1 reconfirm ~14:37** | user: "still double charging" | **×2** (user) |
+| **Full2 stealth @~14:51** | `run_3efebe56be2b` · chargeReq=1 · **tx `172578128`** · stealth=true | **await Revolut 1 vs 2** |
 
-**Locked:** Full1 Revolut **Ã—2** â€” HTTP GetCartToken handoff is **not** sufficient cause. Next = Full2 stealth bank + PSP tx correlation.
+**Locked:** Full1 Revolut **×2**. Full2 banked with stealth ? **score Revolut against tx `172578128`**.
 
 
 ---
