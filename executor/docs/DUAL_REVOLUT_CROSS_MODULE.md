@@ -86,12 +86,13 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 | Safe11 SoftBlock | login remints only ? never Pay; user: not clean-session, proxies bank on Fast | build gap confirmed |
 | **Safe hybrid** | HTTP cart_checkout + GetCartToken ? PW Checkout/v2 fill/Pay (no SPA Proceed) | **shipped** ? score `chargeReqCount>=1` / bank |
 | Safe12 e2e | SoftBlock wash; dead-bridge evaluate ? `adapter_error` burned rotate budget | **fixed** (no-throw bridge login + skip final + rotate default 6) |
+| **Safe13 hybrid** | `run_b61668a5693e` #3 · CartToken + `entry=checkoutV2` · fill + Pay · **`chargeReqCount=1`** · `pay_submitted_no_3ds_seen` | **ask Revolut 1 vs 2** |
 
-**Read for beta:** prior page-issuer banks already Revolut **Ã—2** â€” Safe is the same Playwright pay family. Todayâ€™s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat â€œSafe untested for dualâ€ as true. Fresh Safe bank still wanted when sessions clear; if Ã—2 again â†’ dual is not Fast-transport-only.
+**Read for beta:** prior page-issuer banks already Revolut ×2 ? Safe is the same Playwright pay family. Safe13 cleared the old `payNet=0` stall (issuer wire fired). Score Revolut on Safe13; if ×2 again ? dual is not Fast-transport-only.
 
-**Safe stall shape (locked):** click lands on Checkout/v2, card filled, but **`payNet=0/0` / `issuerReqs=0`**. Soft-disable at 1.5s likely aborted GEMâ€™s deferred issuer (same family as disable-before-click). Dual guard stays `context.route` single-flight â€” do not re-arm early CTA disable.
+**Safe stall shape (updated):** old stall was click + fill with `payNet=0/0`. Safe13 hybrid fired **`chargeReqCount=1`**. Soft-disable / TnC / CreditCardForm-only fixes stay. Dual guard stays `context.route` single-flight.
 
-**Fast still banks (2026-08-03 ~10:35 AEST):** after Safe3 also stuck on `pay_clicked_no_payment_request`, Fast smoke `run_84dcbd73c70f` bandai#6 â†’ GE tx **`172564570`** Â· posts=1 Â· `via=http-ge-issuer` Â· HandleCredit 302 Â· user confirmed Revolut **Ã—2**. Charge path not broken â€” Safe Playwright pay click is the stall (no issuer wire). Fast kept.
+**Fast still banks (2026-08-03 ~10:35 AEST):** Fast smoke `run_84dcbd73c70f` bandai#6 ? GE tx **`172564570`** · posts=1 · user confirmed Revolut **×2**. Fast kept as fallback.
 
 ---
 
