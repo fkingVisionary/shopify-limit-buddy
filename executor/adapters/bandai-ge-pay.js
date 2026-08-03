@@ -869,8 +869,16 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
     }
 
+    // Let CreditCardForm postMessage card state into Checkout/v2 before Pay.
+    // Rushing Pay left payNet=0/0 (Safe labs 2026-08-03).
+    await page.waitForTimeout(1200);
+    mark("card_fill_settled", { ms: Date.now() - sGe });
+
     let paid = false;
     const netBefore = geNet.length;
+    /** Exact Checkout Pay CTA — not PayPal / Pay with … (has-text("Pay") false-hits). */
+    const isExactPayLabel = (label) =>
+      /^(pay|place order|pay now)$/i.test(String(label || "").replace(/\s+/g, " ").trim());
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
@@ -925,9 +933,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (!isBandaiGeCheckoutPayFrame(url)) continue;
         const state = await frame
           .evaluate(() => {
-            const payLabel = (b) => (b.innerText || b.value || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
-            const isPay = (b) => /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
-            const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(isPay);
+            const payLabel = (b) =>
+              (b.innerText || b.value || b.getAttribute("aria-label") || "")
+                .replace(/\s+/g, " ")
+                .trim();
+            const isPay = (b) =>
+              /^(pay|place order|pay now)$/i.test(payLabel(b));
+            const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(
+              (b) => isPay(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true",
+            );
             const checks = [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
               checked: !!c.checked,
               name: c.name || c.id || "",
@@ -936,29 +950,36 @@ export async function browserBandaiGeFromCart(opts = {}) {
               .map((e) => (e.innerText || "").replace(/\s+/g, " ").trim())
               .filter(Boolean)
               .slice(0, 4);
+            const recapEl = document.querySelector(
+              "#recapchaToken, [name='PaymentData.recapchaToken'], [name='recapchaToken']",
+            );
             return {
               hasPay: Boolean(pay),
+              payLabel: pay ? payLabel(pay) : null,
               disabled: pay ? !!pay.disabled || pay.getAttribute("aria-disabled") === "true" : null,
               checks,
               errs,
               recaptcha: Boolean(
-                document.querySelector("#recapchaToken, [name='PaymentData.recapchaToken']")?.value ||
+                recapEl?.value ||
                   document.querySelector("iframe[src*='recaptcha'], iframe[src*='hcaptcha']"),
               ),
+              recaptchaBytes: recapEl?.value ? String(recapEl.value).length : 0,
             };
           })
           .catch(() => null);
         if (state) payDiag = state;
 
-        const payBtn = frame
-          .locator(
-            'button:has-text("Pay"):visible, button:has-text("Place Order"):visible, button:has-text("Pay now"):visible',
-          )
-          .first();
+        // Exact role name — :has-text("Pay") also matches PayPal / Apple Pay.
+        const payBtn = frame.getByRole("button", { name: /^(Pay|Place Order|Pay now)$/i }).first();
         if (!(await payBtn.count().catch(() => 0))) continue;
         if (!(await payBtn.isVisible().catch(() => false))) continue;
         const disabled = await payBtn.isDisabled().catch(() => true);
         if (disabled) continue;
+        const btnLabel = ((await payBtn.innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+        if (btnLabel && !isExactPayLabel(btnLabel)) {
+          geNote += `; skip_non_pay_cta=${btnLabel.slice(0, 40)}`;
+          continue;
+        }
 
         try {
           armChargeGuard = true;
@@ -966,19 +987,33 @@ export async function browserBandaiGeFromCart(opts = {}) {
           await tickTerms();
           // Playwright locator click only — bare btn.click() skips GE's issuer
           // chain (labs: eval1 → no HandleCreditCard; locator → issuer on wire).
-          // Soft-disable AFTER a short arm window: immediate disable raced GEM
-          // (2026-08-03 Safe labs: pay_clicked_no_payment_request ×2 with
-          // chargeReqCount=0). Still one intentional click; disable on wire or 1.5s.
-          await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          // No force:true on first try (overlays / false-enabled CTAs → payNet=0).
+          // Soft-disable ONLY after issuer wire (or long arm): 1.5s disable raced
+          // GEM's deferred HandleCreditCard (Safe labs payNet=0/0 ×3). Dual guard
+          // remains context.route single-flight on issuer URLs.
+          let clickVia = "locator";
+          try {
+            await payBtn.scrollIntoViewIfNeeded().catch(() => {});
+            await payBtn.click({ timeout: 5_000, noWaitAfter: true });
+          } catch {
+            clickVia = "locator+force";
+            await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          }
           payClickCount += 1;
           paymentStatus = "pay_clicked";
-          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=locator`;
+          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=${clickVia} label=${JSON.stringify(btnLabel || state?.payLabel || "Pay")}`;
+          if (payDiag) {
+            geNote += `; payDiag=dis=${payDiag.disabled} tnc=${JSON.stringify(
+              (payDiag.checks || []).slice(0, 4),
+            ).slice(0, 80)} recap=${payDiag.recaptchaBytes || 0}`;
+          }
           paid = true;
           mark("pay_clicked", {
             payClickCount,
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
-            via: "locator",
+            via: clickVia,
+            btnLabel: btnLabel || state?.payLabel || null,
             payDiag,
           });
           const softDisablePay = async () => {
@@ -988,9 +1023,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
                   (b.innerText || b.value || b.getAttribute("aria-label") || "")
                     .replace(/\s+/g, " ")
                     .trim();
-                const isPay = (b) =>
-                  /^(pay|place order|pay now)\b/i.test(payLabel(b)) ||
-                  /^pay$/i.test(payLabel(b));
+                const isPay = (b) => /^(pay|place order|pay now)$/i.test(payLabel(b));
                 for (const b of document.querySelectorAll(
                   "button, input[type=submit], a[role=button]",
                 )) {
@@ -1003,16 +1036,23 @@ export async function browserBandaiGeFromCart(opts = {}) {
               })
               .catch(() => {});
           };
-          const armUntil = Date.now() + 1500;
+          // Issuer often lands 5–8s after Pay; disabling the CTA earlier made
+          // GEM abort with zero network (payNet=0/0). Wait for wire or 12s.
+          const armMs = 12_000;
+          const armUntil = Date.now() + armMs;
           while (Date.now() < armUntil && !issuerPaymentSent) {
-            await page.waitForTimeout(100);
+            await page.waitForTimeout(150);
           }
           await softDisablePay();
           mark("pay_soft_disabled", {
             issuerPaymentSent,
             chargeReqCount,
-            waitMs: Math.min(1500, Date.now() - (armUntil - 1500)),
+            waitMs: Math.min(armMs, Date.now() - (armUntil - armMs)),
+            disabledBeforeWire: !issuerPaymentSent,
           });
+          if (!issuerPaymentSent) {
+            geNote += "; soft_disable_before_issuer_wire";
+          }
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
