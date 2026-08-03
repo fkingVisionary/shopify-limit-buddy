@@ -280,7 +280,11 @@ async function runTask(task) {
   const mode = String(task?.bandaiCheckoutMode || task?.checkoutMode || "").toLowerCase();
   const safePay =
     task?.store === "bandai" &&
-    (mode === "safe" || task?.bandaiBrowserCheckout === true || task?.placeOrderGe === true);
+    (mode === "safe" ||
+      mode === "full" ||
+      task?.bandaiBrowserCheckout === true ||
+      task?.bandaiBrowserFull === true ||
+      task?.placeOrderGe === true);
   const defaultTimeout = safePay ? 900_000 : 400_000;
   const runTimeoutMs = Math.max(
     60_000,

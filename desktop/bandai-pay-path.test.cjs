@@ -21,3 +21,14 @@ test("autocheckout_test uses experimental fork flag", () => {
   assert.equal(p.bandaiGeHttpPayTest, true);
   assert.equal(p.bandaiGeUndiciIssuer, true);
 });
+
+test("full mode — all-Playwright journey, no HTTP GE pay", () => {
+  const p = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "full" },
+    { placeOrder: true, mode: "checkout" },
+  );
+  assert.equal(p.bandaiCheckoutMode, "full");
+  assert.equal(p.bandaiBrowserFull, true);
+  assert.equal(p.bandaiGeHttpPay, false);
+  assert.equal(p.bandaiBrowserCheckout, false);
+});

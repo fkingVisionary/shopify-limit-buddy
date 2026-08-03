@@ -1,15 +1,20 @@
 # Dual Revolut — investigation bible (handoff)
 
-**Updated:** 2026-08-03  
-**PR / branch:** `#150` · `cursor/macro-double-charge-latch-c402`  
+**Updated:** 2026-08-03 ~13:28 AEST
+**PR / branch:** `#151` · `cursor/safe-pay-wire-fix-c402` (Safe hybrid); dual also `#150`
 **Product to fix:** Bandai checkout (desktop → executor). Other stores = research evidence only.
 
-### VERDICT (updated 2026-08-03 ~09:00 AEST) — PARTIAL
+### VERDICT (updated 2026-08-03 ~13:28 AEST) — PIVOT
 
-**Toymate:** issuer chrome_131 tls-worker → Revolut×1 (`run_20651586e4b2`).  
-**Bandai Fast:** every bank-scored lab → Revolut **×2**. Client always posts=1. Dual ≠ second app POST.
+**Safe13 @13:25 AEST still Revolut ×2** (`run_b61668a5693e` #3 · hybrid Safe · `chargeReqCount=1` · Playwright Checkout/v2 Pay).
 
-**RETRACTED:** July `9d313ae` “Bandai ×1” — agent folklore only. User: Bandai has never had a confirmed single.
+**Locked:** dual is **outside Fast vs Safe**. Same shape on Fast undici issuer, Safe Chromium Pay, and earlier page-issuer labs. Do **not** keep chasing checkout-mode / pay-transport knobs as the Bandai dual fix.
+
+Shared surface across Fast + hybrid Safe = **HTTP+F5 login → HTTP ATC → GetCartToken**, not the Pay click vs undici issuer.
+
+**Toymate:** issuer chrome_131 tls-worker → Revolut ×1 (`run_20651586e4b2`) — only confirmed single; Bandai counterexample on same knobs.
+
+**RETRACTED:** July `9d313ae` “Bandai ×1” — agent folklore only.
 
 ---
 
@@ -29,6 +34,7 @@
 | 10 | CCForm GET on cold issuer tls | `172557593` @08:52 | **×2** | `PAY_ISSUER_CCFORM_TLS` · user 2026-08-03 |
 | — | PKC control | `172438100` | **×2** | GE family cross-check |
 | — | Toymate undici BigPay | `run_1d56805758fc` | **×2** | non-GE control |
+| 11 | **Safe hybrid Chromium Pay** | `run_b61668a5693e` @13:25 | **×2** | **closes Fast/Safe mode hypothesis** |
 | ★ | Toymate issuer tls-worker | `run_20651586e4b2` @14:54 | **×1** | **only confirmed single** |
 
 **Pre-bank / void (not dual scores):**
@@ -40,23 +46,28 @@
 | SoftBlock / login 501 thrash | ops only — remint + climb loops |
 | Direct / no-proxy | historically ×2 — do not rediscover |
 | GE field / hydrate / pm / machineId roulette | failed when bank hit — parked |
-| Playwright pay as Fast dual fix | forbidden (Fast = no PW pay) |
+| Playwright pay as Fast dual fix | **closed** — Safe13 Chromium Pay still ×2 |
+| Fast vs Safe mode workshop | **closed** @13:25 — both ×2 with one client charge |
 | payment-latch | fixed different dual (`posts≥2` / RESPONSE_LOST) |
 
 ---
 
-### NEXT QUEUE (work outward from Toymate; one bank score each)
+### NEXT QUEUE (pivot after Safe13 ×2 — one bank score each)
 
-Keep `PAY_ISSUER_TLS_WORKER` ON. Do **not** revert to undici issuer. Score Fast `via=http-ge-issuer` + user Revolut 1 vs 2 + GE tx.
+Stop Fast/Safe TLS/mode roulette. Shared surface to test:
 
 | Priority | Lever | Status | Why |
 |---|---|---|---|
-| **NOW** | `PAY_ISSUER_GET_FETCH` (default ON) — Sec-Fetch `navigate`/`iframe` on CreditCardForm GET | **shipped; SoftBlock-blocked** | Code+tests in `ff0ca51`. E2e `get-fetch` SoftBlocked login (0×200 through #9). Re-bank when sessions clear. |
-| **NOW** | Bandai `DEFAULT_UA` → shared platform `http.js` UA | **shipped** (same tip) | Mac UA hardcoded on win32 desktop labs |
-| Next | `PAY_PAYHOST_TLS_WORKER=0` (Toymate-shaped: undici ha/save, chrome_131 only CCForm+HandleCredit) | untested combo with cold+ccform+get-fetch | issuer-only ×2 predates cold/ccform |
-| Next | Checkout/v2 GET on `_prepayRemoteTls` (narrow; not GE-all) | not built | GE document GET still undici |
-| Later | `PAY_ISSUER_FORM_AS_CORS=0` + current stack | untested combo | cors ×2 was before CCForm-tls |
-| Skip | `PAY_ISSUER_FRESH_UNDICI`, GE-all-tls, skip-CCForm, July folklore | parked | wrong direction / failed |
+| **NOW** | **Full-browser journey** (`bandaiCheckoutMode=full` / `bandaiBrowserFull`) — login→PDP→ATC→Pay all in one Chromium, **no** HTTP GetCartToken | wire for lab | Isolates HTTP cart/token handoff shared by Fast + hybrid Safe |
+| **NOW** | **PSP fan-out forensics** — one HandleCredit → GE `transactionId` / redirect / auth refs; correlate Revolut times | partial | Safe13 had `chargeReqCount=1` but `transactionId=null` |
+| Next | Manual vs bot HAR on **pre-pay only** (GetCartToken → handleaction → CCForm) | not built | Dual may be decided before issuer POST |
+| Later | Toymate-shaped narrow (`PAY_PAYHOST_TLS_WORKER=0`) | parked for Bandai | Safe Chromium Pay ×2 makes Bandai TLS-knob chase low value |
+| Skip | More Fast/Safe mode switches, GE-all-tls, liveHtml iov, July folklore | parked | closed / failed |
+
+**Full-browser score rule:** one placeOrder → user Revolut 1 vs 2.
+- **×1** → dual lives in HTTP ATC/GetCartToken/risk handoff (fix Fast+Safe shared path).
+- **×2** → dual lives in automation/fingerprint/proxy/card-at-merchant; chase shared identity, not checkout mode.
+
 
 ### Safe mode (Playwright GE) — beta path (Fast kept)
 
@@ -86,13 +97,15 @@ ATC/cart_hold still HTTP+F5. **Hybrid Safe (default):** HTTP `cart_checkout` + G
 | Safe11 SoftBlock | login remints only ? never Pay; user: not clean-session, proxies bank on Fast | build gap confirmed |
 | **Safe hybrid** | HTTP cart_checkout + GetCartToken ? PW Checkout/v2 fill/Pay (no SPA Proceed) | **shipped** ? score `chargeReqCount>=1` / bank |
 | Safe12 e2e | SoftBlock wash; dead-bridge evaluate ? `adapter_error` burned rotate budget | **fixed** (no-throw bridge login + skip final + rotate default 6) |
-| **Safe13 hybrid** | `run_b61668a5693e` #3 � CartToken + `entry=checkoutV2` � fill + Pay � **`chargeReqCount=1`** � `pay_submitted_no_3ds_seen` | **ask Revolut 1 vs 2** |
+| **Safe13 hybrid @13:25** | `run_b61668a5693e` #3 · CartToken + `entry=checkoutV2` · fill + Pay · **`chargeReqCount=1`** · `pay_submitted_no_3ds_seen` | **×2** (user) |
 
-**Read for beta:** prior page-issuer banks already Revolut �2 ? Safe is the same Playwright pay family. Safe13 cleared the old `payNet=0` stall (issuer wire fired). Score Revolut on Safe13; if �2 again ? dual is not Fast-transport-only.
+**Read for beta:** Safe13 @13:25 still Revolut **×2** with Chromium Pay + `chargeReqCount=1`. Dual is **not** Fast-transport-only and **not** fixed by Safe mode.
 
-**Safe stall shape (updated):** old stall was click + fill with `payNet=0/0`. Safe13 hybrid fired **`chargeReqCount=1`**. Soft-disable / TnC / CreditCardForm-only fixes stay. Dual guard stays `context.route` single-flight.
 
-**Fast still banks (2026-08-03 ~10:35 AEST):** Fast smoke `run_84dcbd73c70f` bandai#6 ? GE tx **`172564570`** � posts=1 � user confirmed Revolut **�2**. Fast kept as fallback.
+**Safe stall shape (closed for dual):** old `payNet=0` was a build bug; Safe13 fires issuer. Dual remains on both modes.
+
+
+**Fast still banks (2026-08-03 ~10:35 AEST):** Fast smoke `run_84dcbd73c70f` bandai#6 ? GE tx **`172564570`** � posts=1 � user confirmed Revolut **�2**. Fast kept as fallback.
 
 ---
 
@@ -130,7 +143,7 @@ FORBIDDEN:
 - Inventing Bandai Revolut×1 wins without user bank confirm + GE tx id.
 - Re-enabling liveHtml Checkout/v2 iovation without `BANDAI_GE_ALLOW_LIVE_CART_IOVATION=1`.
 
-Lab Bandai confirm: task_c13e31bb45ce, mode **Fast**. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
+Lab Bandai confirm: task_c13e31bb45ce. Dual closed on Fast+Safe — next score **full** browser journey. Forensics: PAY_FORENSICS_PATH or %TEMP%\j1m-pay-forensics.jsonl.
 ```
 
 ---
