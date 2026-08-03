@@ -67,9 +67,10 @@ ATC/cart_hold still HTTP+F5; pay = Playwright on F5 bridge (`placeOrderGe`, `via
 | Page-issuer baseline @13:17 | tx `172447213` · posts=1 | **×2** (locked — off Fast, but same PW pay family) |
 | Page-issuer CH @13:39 | tx `172448160` · posts=1 | **×2** |
 | Safe e2e 2026-08-03 `run_bebdc64c9e69` | pay=safe · #6/#7 cart hold + CCForm fill + Pay click · `pay_clicked_no_payment_request` · chargeReqCount=0 · **no bank** | unscored |
-| Safe Pay soft-disable race | tip after #6/#7 — delay Pay CTA disable until issuer wire or 1.5s (`bandai-ge-pay.js`) | bank pending |
+| Safe Pay soft-disable delay `8a6da26` | delay Pay CTA disable until issuer wire or 1.5s | shipped |
+| Safe2 e2e `run_44ec41a9d08e` | pay=safe · #5 same `pay_clicked_no_payment_request` · chargeReqCount=0 after delay fix · SoftBlock after | **still no bank** |
 
-If a fresh Safe bank still ×2 → dual is not Fast-transport-only (matches page-issuer ×2). If ×1 → Safe is the beta ship path while Fast workshop continues.
+**Read for beta:** prior page-issuer banks already Revolut **×2** — Safe is the same Playwright pay family. Today’s SoftBlock + GEM no-wire cannot re-score Revolut; do not treat “Safe untested for dual” as true. Fresh Safe bank still wanted when sessions clear; if ×2 again → dual is not Fast-transport-only.
 
 ---
 
