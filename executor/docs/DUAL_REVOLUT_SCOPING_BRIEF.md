@@ -11,13 +11,13 @@ If engaged later, the deeper technical handoff is `executor/docs/DUAL_REVOLUT_HA
 
 ---
 
-## 1. Problem in plain English
+## 1. Problem in plain English (updated 2026-08-05)
 
-When our bot runs a checkout, the customer’s **Revolut** app often shows **two** payment attempts (auth/decline) for what should be **one** checkout.
+When a Bandai AU (Global-E) checkout declines, the customer’s **Revolut** app often shows **two** payment lines (same amount, seconds apart) for what feels like **one** attempt.
 
-When the same person checks out **manually in a normal browser** on the same website with the same card, Revolut shows **one**.
+**Important update:** this also happens on a **normal phone browser** on the same website — not only on the bot. Confirmed on a disposable card and a normal Revolut card (2026-08-05).
 
-So this is not “Revolut is broken for this card.” Something about the **bot’s checkout path** is causing a double bank-side attempt.
+So this is **not** (for Bandai) “the bot double-clicked Pay.” Our bot logs also show a single payment request and a single Global-E transaction id. The dual looks like **Global-E / acquirer / issuer behaviour**, visible on manual and automated checkouts.
 
 We have instrumented the bot heavily. In the bad cases we usually see:
 

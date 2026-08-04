@@ -12,19 +12,27 @@ Longer session notes (messy, agent-era): `DUAL_REVOLUT_CROSS_MODULE.md`.
 
 ---
 
-## What is broken
+## What is broken (revised 2026-08-05)
 
-When the bot places a Bandai (or related) checkout, **Revolut shows two auth/decline lines for one attempt** — same amount, not a refund.
+**Bandai / Global-E: dual Revolut lines are NOT bot-only.**
 
-When a normal person checks out in Chrome/Safari on the **same site with the same card**, Revolut shows **one** line.
+Owner confirmation 2026-08-05 ~08:19 AEST:
 
-Important nuance from our instrumentation:
+- Bot Full lab (`172835957`) → Revolut **×2**
+- **Manual phone checkout on the same Bandai AU site** → Revolut **×2**
+- Reproduced on the **disposable card** and a **normal Revolut card**
+- Same shape as before: same amount, ~same merchant, within seconds
 
-- The bot sends **one** payment request that we can see (`HandleCreditCard…` for Global-E, or one BigPay post for Toymate).
-- Revolut still shows **two**.
-- So this is usually **not** “the bot double-clicked Pay” or “two `/run` jobs.” We already checked that shape.
+Earlier assumption “manual browser = ×1, bot = ×2” is **wrong for Bandai soft-declines / this path** (at least as of this date). The dual can happen in a normal mobile browser with no bot involved.
+
+Instrumentation still matters:
+
+- Client still shows **one** `HandleCreditCard` / one GE `transactionId`
+- So even on manual, this looks like **Global-E / acquirer / issuer fan-out**, not two Pay clicks
 
 Empty / low-balance cards are fine for testing. We care about **how many Revolut lines appear**, not whether the charge succeeds.
+
+**Still open elsewhere:** Toymate (BigPay) previously showed bot undici ×2 vs tls-worker ×1 — that may be a *different* stack. Do not assume Bandai “manual also ×2” automatically explains Toymate without a fresh manual Toymate control.
 
 ---
 
