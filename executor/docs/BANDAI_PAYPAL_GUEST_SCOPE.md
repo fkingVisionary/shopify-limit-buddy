@@ -53,22 +53,23 @@ Artifacts: `artifacts/bandai-paypal-wire.json`, `artifacts/bandai-paypal-guest.h
 | Value | Behaviour |
 |---|---|
 | `credit_card` | Existing Fast card path (default) |
-| `paypal_auto` | Mint approve URL + Playwright login / Pay Now (needs profile `paypal_email` + `paypal_password`) |
+| `paypal_guest` | Mint approve URL + PayPal **guest card** checkout using the task billing profile (email / address / card) |
 | `paypal_manual` | Mint approve URL only (link-only / human finish) |
 
-Legacy `paypal_guest` normalizes to `paypal_manual`.
+Legacy `paypal_auto` normalizes to `paypal_guest`. No separate PayPal login vault.
 
 ---
 
 ## Recommended v1 — shipped baseline
 
-Bot races cart + checkout setup; PayPal auto completes Pay Now when credentials
-are on the profile. Link-only still supports human finish.
+Bot races cart + checkout setup; PayPal guest completes debit/credit card form
+with the **same billing profile** attached to the task. Link-only still supports
+human finish.
 
 ### Task / UI
 
-- Bandai task field: `paymentMethod: "credit_card" | "paypal_auto" | "paypal_manual"`.
-- Desktop: `#taskBandaiPay` + profile PayPal fields; Quick Task preset payment.
+- Bandai task field: `paymentMethod: "credit_card" | "paypal_guest" | "paypal_manual"`.
+- Desktop: `#taskBandaiPay`; billing comes from the selected profile (no PayPal password fields).
 - Persist via `desktop/main.cjs` → `job-runner` → executor `/run`.
 
 ### Executor Fast branch
@@ -95,11 +96,13 @@ After GetCartToken + address/shipping hydrate (same as card):
 }
 ```
 
-6. Desktop: `paypal_manual` surfaces approve URL; `paypal_auto` uses profile PayPal creds via `executor/adapters/paypal-approve.js` (headed by default; `PAYPAL_APPROVE_HEADLESS=1` opt-in).
+6. Desktop: `paypal_manual` surfaces approve URL; `paypal_guest` runs
+   `executor/adapters/paypal-approve.js` guest card path with billing profile
+   (headed by default; `PAYPAL_APPROVE_HEADLESS=1` opt-in).
 
 ### Out of scope / later
 
-- Sticky PayPal session vault / relogin across runs
+- PayPal account login / session vault
 - Apple Pay / Google Pay
 - Changing card Fast defaults
 
@@ -111,7 +114,7 @@ After GetCartToken + address/shipping hydrate (same as card):
 |---|---|
 | Method / gateway ids | **Done** (4 / 6) |
 | Init endpoint + approve URL | **Done** (webservices InitPayPalExpress) |
-| Guest vs PayPal login inside approve | Human finishes in browser (v1) |
+| Guest vs PayPal login inside approve | Guest card path uses billing profile |
 | Cancel / return URLs | Need one completed PP order or cancel |
 | SoftBlock under drop load | Same as card ATC — bridge fallback |
 

@@ -1920,9 +1920,14 @@ function upsertTaskRow(task) {
       if (storeId === "toymate") return String(task.paymentMethod || "credit_card");
       if (storeId === "bandai") {
         const pm = String(task.paymentMethod || "credit_card").toLowerCase();
-        if (pm === "paypal_auto" || pm === "paypal" || pm === "paypal_express") return "paypal_auto";
-        if (pm === "paypal_manual" || pm === "paypal_guest" || pm === "paypal_link")
-          return "paypal_manual";
+        if (
+          pm === "paypal_guest" ||
+          pm === "paypal_auto" ||
+          pm === "paypal" ||
+          pm === "paypal_express"
+        )
+          return "paypal_guest";
+        if (pm === "paypal_manual" || pm === "paypal_link") return "paypal_manual";
         return "credit_card";
       }
       return undefined;

@@ -2072,9 +2072,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // PayPal (HAR 2026-08-05): title=PayPal data-id=4 data-gw=6 fullredirect.
   const payMethodRaw = String(opts.paymentMethod || "").toLowerCase();
   const wantPaypal = /^paypal/i.test(payMethodRaw);
+  // Guest (default for PayPal) auto-completes with billing profile card.
+  // manual / link_only stops at the approve URL.
   const paypalAuto =
-    wantPaypal &&
-    !/manual|guest|link_only|url_only/i.test(payMethodRaw);
+    wantPaypal && !/manual|link_only|url_only/i.test(payMethodRaw);
   let paymentMethodId = String(
     opts.paymentMethodId ||
       (wantPaypal ? "4" : null) ||
@@ -2525,31 +2526,35 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
     let paypalApprove = null;
     if (paypalApproveUrl && paypalAuto) {
-      const ppEmail =
+      const billingProfile = opts.profile || {};
+      const billingEmail =
+        opts.customerEmail ||
+        billingProfile.email ||
         opts.paypal?.email ||
         opts.paypalEmail ||
-        opts.profile?.paypal_email ||
-        opts.profile?.paypalEmail ||
         null;
-      const ppPassword =
-        opts.paypal?.password ||
-        opts.paypalPassword ||
-        opts.profile?.paypal_password ||
-        opts.profile?.paypalPassword ||
-        null;
-      if (!ppEmail || !ppPassword) {
+      const guestCard = opts.card || null;
+      if (!billingEmail) {
         push("ge_paypal_approve", {
           ok: false,
           status: null,
           ms: 0,
-          note: "PayPal auto needs profile paypal_email + paypal_password",
+          note: "PayPal guest needs billing profile email",
+        });
+      } else if (!guestCard?.number || !guestCard?.cvv) {
+        push("ge_paypal_approve", {
+          ok: false,
+          status: null,
+          ms: 0,
+          note: "PayPal guest needs billing profile card",
         });
       } else {
         const tAp = Date.now();
         paypalApprove = await approvePaypalCheckout({
           approveUrl: paypalApproveUrl,
-          email: ppEmail,
-          password: ppPassword,
+          email: billingEmail,
+          profile: billingProfile,
+          card: guestCard,
           proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
           headless: opts.paypalHeadless === true,
           timeoutMs: Number(opts.paypalApproveTimeoutMs) || 90_000,
@@ -2565,7 +2570,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           ok: Boolean(paypalApprove?.ok),
           status: null,
           ms: paypalApprove?.ms ?? Date.now() - tAp,
-          note: paypalApprove?.note || paypalApprove?.error || "approve done",
+          note: paypalApprove?.note || paypalApprove?.error || "guest approve done",
         });
       }
     }
@@ -2579,7 +2584,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
       steps,
       timeline,
       timing,
-      paymentMethod: paypalAuto ? "paypal_auto" : "paypal_manual",
+      paymentMethod: paypalAuto ? "paypal_guest" : "paypal_manual",
       paypalApproveUrl,
       paymentStatus: paypalAuto
         ? autoOk
@@ -2595,12 +2600,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
       orderNumber: paypalApprove?.orderNumber || null,
       dryRun: !autoOk,
       chargeReqCount: 0,
-      via: paypalAuto ? "http-ge-paypal-auto" : "http-ge-paypal",
+      via: paypalAuto ? "http-ge-paypal-guest" : "http-ge-paypal",
       finalUrl: paypalApprove?.finalUrl || paypalApproveUrl || null,
       elapsedMs,
       note: (
         paypalAuto
-          ? `${ppNote}; auto=${autoOk ? "ok" : paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
+          ? `${ppNote}; guest=${autoOk ? "ok" : paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
           : `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
       ).slice(0, 320),
     };

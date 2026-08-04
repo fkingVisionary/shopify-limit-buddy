@@ -27,7 +27,7 @@ test("parse Bandai URL and SKU", () => {
 test("build draft from preset + hit", () => {
   const preset = normalizeQuickTaskPreset({
     store: "bandai-us",
-    paymentMethod: "paypal_auto",
+    paymentMethod: "paypal_guest",
     profileId: "prof_1",
     proxyGroupId: "px_1",
     bandaiMode: "checkout",
@@ -35,7 +35,7 @@ test("build draft from preset + hit", () => {
   });
   assert.equal(preset.store, "bandai");
   assert.equal(preset.bandaiArea, "us");
-  assert.equal(preset.paymentMethod, "paypal_auto");
+  assert.equal(preset.paymentMethod, "paypal_guest");
   const target = targetFromMonitorHit(
     {
       productId: "N2890904001",
@@ -50,7 +50,7 @@ test("build draft from preset + hit", () => {
   assert.equal(built.task.bandaiMode, "checkout");
   assert.equal(built.task.qty, 2);
   assert.equal(built.task.bandaiArea, "us");
-  assert.equal(built.task.paymentMethod, "paypal_auto");
+  assert.equal(built.task.paymentMethod, "paypal_guest");
   assert.equal(built.task.bandaiAreaItemNo, "NAI0859145AU");
   assert.match(built.task.pdpUrl, /N2890904001/);
   assert.match(built.task.pdpUrl, /\/us\//);

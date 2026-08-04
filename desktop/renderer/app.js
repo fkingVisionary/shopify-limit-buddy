@@ -1938,10 +1938,10 @@ function renderSettings() {
   if ($("qtPresetMode")) $("qtPresetMode").value = qt.bandaiMode || "checkout";
   if ($("qtPresetPay")) {
     const pm = String(qt.paymentMethod || "credit_card").toLowerCase();
-    $("qtPresetPay").value = /^paypal_manual|paypal_guest/i.test(pm)
+    $("qtPresetPay").value = /^paypal_manual|paypal_link/i.test(pm)
       ? "paypal_manual"
       : /^paypal/i.test(pm)
-        ? "paypal_auto"
+        ? "paypal_guest"
         : "credit_card";
   }
   if ($("qtPresetProfile") && qt.profileId) $("qtPresetProfile").value = qt.profileId;
@@ -2390,10 +2390,10 @@ function fillTaskForm(task) {
   if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
   if ($("taskBandaiPay")) {
     const pm = String(task.paymentMethod || "credit_card").toLowerCase();
-    $("taskBandaiPay").value = /^paypal_manual|paypal_guest/i.test(pm)
+    $("taskBandaiPay").value = /^paypal_manual|paypal_link/i.test(pm)
       ? "paypal_manual"
       : /^paypal/i.test(pm)
-        ? "paypal_auto"
+        ? "paypal_guest"
         : "credit_card";
   }
   if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
@@ -2677,9 +2677,6 @@ document.body.addEventListener("click", async (e) => {
     $("profMm").value = p.card_exp_month || "";
     $("profYy").value = p.card_exp_year || "";
     $("profCvv").value = p.card_cvv || "";
-    if ($("profPaypalEmail")) $("profPaypalEmail").value = p.paypal_email || p.paypalEmail || "";
-    if ($("profPaypalPassword"))
-      $("profPaypalPassword").value = p.paypal_password || p.paypalPassword || "";
     if ($("profileFormTitle")) $("profileFormTitle").textContent = "Edit profile";
     setTab("profiles");
     openDialog("profileDialog");
@@ -3174,8 +3171,6 @@ $("profileForm").onsubmit = async (e) => {
       card_exp_month: $("profMm").value,
       card_exp_year: $("profYy").value,
       card_cvv: $("profCvv").value,
-      paypal_email: $("profPaypalEmail")?.value?.trim() || "",
-      paypal_password: $("profPaypalPassword")?.value || "",
     }),
   );
   $("profReset").click();

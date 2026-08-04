@@ -512,15 +512,22 @@ function buildBandaiPayload({
 
   const paymentMethod = (() => {
     const pm = String(task.paymentMethod || "credit_card").toLowerCase();
-    if (pm === "paypal_auto" || pm === "paypal" || pm === "paypal_express") return "paypal_auto";
-    if (pm === "paypal_manual" || pm === "paypal_guest" || pm === "paypal_link")
-      return "paypal_manual";
+    if (
+      pm === "paypal_guest" ||
+      pm === "paypal_auto" ||
+      pm === "paypal" ||
+      pm === "paypal_express"
+    )
+      return "paypal_guest";
+    if (pm === "paypal_manual" || pm === "paypal_link") return "paypal_manual";
     return "credit_card";
   })();
   const wantPaypal = /^paypal/i.test(paymentMethod);
+  const paypalGuest = paymentMethod === "paypal_guest";
 
   let card = null;
-  if (mode === "checkout" && placeOrder && !wantPaypal) {
+  // Card Fast + PayPal guest both need the task billing profile card.
+  if (mode === "checkout" && placeOrder && (!wantPaypal || paypalGuest)) {
     const pan = String(profile?.card_number || "").replace(/\s+/g, "");
     const cvv = String(profile?.card_cvv || "").trim();
     const mm = String(profile?.card_exp_month || "").trim();
@@ -530,7 +537,12 @@ function buildBandaiPayload({
       [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
       "Cardholder";
     if (!pan || !cvv || !mm || !yy) {
-      return { ok: false, error: "Place order needs complete card on the profile" };
+      return {
+        ok: false,
+        error: paypalGuest
+          ? "PayPal guest needs complete card on the billing profile"
+          : "Place order needs complete card on the profile",
+      };
     }
     card = {
       number: pan,
@@ -541,17 +553,12 @@ function buildBandaiPayload({
     };
   }
 
-  const paypalEmail = String(
-    profile?.paypal_email || profile?.paypalEmail || "",
-  ).trim();
-  const paypalPassword = String(
-    profile?.paypal_password || profile?.paypalPassword || "",
-  );
-  if (mode === "checkout" && placeOrder && paymentMethod === "paypal_auto") {
-    if (!paypalEmail || !paypalPassword) {
+  if (mode === "checkout" && placeOrder && paypalGuest) {
+    const billingEmail = String(profile?.email || "").trim();
+    if (!billingEmail) {
       return {
         ok: false,
-        error: "PayPal auto needs PayPal email + password on the profile",
+        error: "PayPal guest needs email on the billing profile",
       };
     }
   }
@@ -633,12 +640,6 @@ function buildBandaiPayload({
           : undefined,
       productId: mode === "monitor" ? task.bandaiWatchSku || null : undefined,
       card,
-      paypal:
-        wantPaypal && paypalEmail
-          ? { email: paypalEmail, password: paypalPassword || null }
-          : undefined,
-      paypalEmail: wantPaypal ? paypalEmail || null : undefined,
-      paypalPassword: wantPaypal ? paypalPassword || null : undefined,
       campaignSn: task.campaignSn || null,
       accountPassword:
         typeof task.accountPassword === "string" && task.accountPassword.trim()
@@ -662,8 +663,7 @@ function buildBandaiPayload({
         province: profile?.province || null,
         zip: profile?.zip || null,
         phone: profile?.phone || null,
-        paypal_email: paypalEmail || null,
-        paypal_password: paypalPassword || null,
+        card_name: profile?.card_name || null,
       },
     },
   };

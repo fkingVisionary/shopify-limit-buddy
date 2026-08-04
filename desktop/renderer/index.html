@@ -321,11 +321,11 @@
                 <label>Payment</label>
                 <select id="taskBandaiPay">
                   <option value="credit_card">Credit card</option>
-                  <option value="paypal_auto">PayPal (auto approve)</option>
+                  <option value="paypal_guest">PayPal (guest)</option>
                   <option value="paypal_manual">PayPal (link only)</option>
                 </select>
                 <p class="field-hint">
-                  PayPal auto logs in with the profile’s PayPal email/password and confirms Pay Now.
+                  PayPal guest uses the task billing profile (email, address, card) on PayPal’s guest card form.
                   Link only stops at the approve URL.
                 </p>
               </div>
@@ -882,12 +882,6 @@
             <div><label>YY</label><input id="profYy" maxlength="4" /></div>
             <div><label>CVV</label><input id="profCvv" maxlength="4" /></div>
           </div>
-          <hr />
-          <label>PayPal email <span class="optional">(Bandai PayPal auto)</span></label>
-          <input id="profPaypalEmail" type="email" autocomplete="off" placeholder="paypal@example.com" />
-          <label>PayPal password</label>
-          <input id="profPaypalPassword" type="password" autocomplete="off" />
-          <p class="field-hint">Used when a Bandai task payment is set to PayPal (auto).</p>
           <div class="row">
             <button type="submit">Save profile</button>
             <button type="button" class="secondary" id="profReset">Clear</button>
@@ -1160,7 +1154,7 @@
           <label>Payment</label>
           <select id="qtPresetPay">
             <option value="credit_card">Credit card</option>
-            <option value="paypal_auto">PayPal (auto approve)</option>
+            <option value="paypal_guest">PayPal (guest)</option>
             <option value="paypal_manual">PayPal (link only)</option>
           </select>
           <label>Profile</label>

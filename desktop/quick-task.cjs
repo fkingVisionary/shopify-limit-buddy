@@ -47,9 +47,12 @@ function normalizeQuickTaskPreset(raw = {}) {
     : "checkout";
   const pmRaw = String(raw.paymentMethod || DEFAULT_PRESET.paymentMethod).toLowerCase();
   const paymentMethod =
-    pmRaw === "paypal_auto" || pmRaw === "paypal" || pmRaw === "paypal_express"
-      ? "paypal_auto"
-      : pmRaw === "paypal_manual" || pmRaw === "paypal_guest" || pmRaw === "paypal_link"
+    pmRaw === "paypal_guest" ||
+    pmRaw === "paypal_auto" ||
+    pmRaw === "paypal" ||
+    pmRaw === "paypal_express"
+      ? "paypal_guest"
+      : pmRaw === "paypal_manual" || pmRaw === "paypal_link"
         ? "paypal_manual"
         : "credit_card";
   return {
