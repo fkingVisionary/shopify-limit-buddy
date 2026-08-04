@@ -41,7 +41,7 @@ Artifacts: `artifacts/bandai-paypal-wire.json`, `artifacts/bandai-paypal-guest.h
 
 | Surface | PayPal |
 |---|---|
-| Bandai Fast HTTP | `paymentMethod=paypal_auto\|paypal_manual` → save pm=4/gw=6 → InitPayPalExpress → approve URL; auto runs Playwright login → Pay Now |
+| Bandai Fast HTTP | `paymentMethod=paypal_guest\|paypal_manual` → save pm=4/gw=6 → InitPayPalExpress → approve URL; guest fills billing profile card on PayPal |
 | Bandai Full browser HAR | Reached GE; tile click flaky / SoftBlock; IDs from HTML |
 | Desktop task UI | Bandai payment dropdown + profile PayPal email/password; region modules |
 | Toymate | `paypal_manual` → BigCommerce approve URL |
