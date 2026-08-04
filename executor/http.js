@@ -503,10 +503,9 @@ export function chromePayFetchHeaders(url, existingHeaders = {}, { method = "POS
   const site = secFetchSite(host, existing.origin || "");
   const m = String(method || "POST").toUpperCase();
 
-  // CreditCardForm GET rides cold issuer tls but previously had no Sec-Fetch
-  // (request() only injected on POST/PUT). Browser loads it as an iframe.
+  // CreditCardForm GET Sec-Fetch — dual-hunt opt-in only (product Fast: off).
   if (/^(GET|HEAD)$/i.test(m) && /CreditCardForm/i.test(path)) {
-    if (process.env.PAY_ISSUER_GET_FETCH === "0") return {};
+    if (process.env.PAY_ISSUER_GET_FETCH !== "1") return {};
     const dest =
       process.env.PAY_ISSUER_GET_DEST === "document" ? "document" : "iframe";
     return {
@@ -519,12 +518,10 @@ export function chromePayFetchHeaders(url, existingHeaders = {}, { method = "POS
 
   const ct = String(existing["content-type"] || "");
   const xhrHint = /XMLHttpRequest/i.test(String(existing["x-requested-with"] || ""));
-  // JSON/API / XHR pay hops are cors/empty in a real browser — never document-navigate.
-  // Toymate BigPay ×1 used cors/empty on the issuer POST. GE HandleCreditCard was
-  // classified as document-navigate (form POST) — A/B: match BigPay presentation.
-  // Opt out: PAY_ISSUER_FORM_AS_CORS=0 → restore navigate/document for form issuer.
+  // JSON/API / XHR pay hops are cors/empty. GE form issuer defaults to
+  // navigate/document; dual-hunt BigPay-shaped cors is opt-in only.
   const issuerFormAsCors =
-    issuerLike && process.env.PAY_ISSUER_FORM_AS_CORS !== "0";
+    issuerLike && process.env.PAY_ISSUER_FORM_AS_CORS === "1";
   const isJsonOrXhr =
     /application\/json/i.test(ct) ||
     /payments\.bigcommerce\.com/i.test(host) ||
@@ -678,41 +675,30 @@ function finalizePayResponse(url, method, opts, res) {
 /**
  * Dual-Revolut: pay hops on chrome_131 tls-worker (Kmart-like bank TLS).
  *
- * Toymate BigPay @14:54 — issuer tls-worker → Revolut×1 (locked).
- * Bandai already ran issuer/prepay/GE-all tls-worker and still ×2 — keep
- * issuer+prepay tls ON and work outward (Sec-Fetch cors parity next).
- * PAY_GE_TLS_WORKER default OFF (GE-all-tls ×2 + gepi EOF flake).
- *
- * Defaults ON:
- *   PAY_ISSUER_TLS_WORKER   — issuer stage (opt out =0)
- *   PAY_PAYHOST_TLS_WORKER  — prepay mutates (opt out =0)
- *   PAY_ISSUER_FORM_AS_CORS — GE form issuer Sec-Fetch cors/empty like BigPay
- *   PAY_ISSUER_COLD_TLS     — separate chrome_131 worker for issuer vs prepay
- *   PAY_ISSUER_CCFORM_TLS   — CreditCardForm GET on cold issuer worker
- *   PAY_ISSUER_GET_FETCH    — Sec-Fetch navigate/iframe on CreditCardForm GET
- * Opt-in:
- *   PAY_GE_TLS_WORKER=1     — any global-e.com hop incl GET
+ * Product Fast defaults (post dual-hunt trim 2026-08-05):
+ *   PAY_ISSUER_TLS_WORKER=ON  — issuer POST chrome_131 (Toymate ×1 proof; opt out =0)
+ *   PAY_PAYHOST_TLS_WORKER    — OFF (opt in =1) — dual-hunt prepay tls
+ *   PAY_ISSUER_CCFORM_TLS     — OFF (opt in =1)
+ *   PAY_ISSUER_COLD_TLS       — OFF (opt in =1) — split prepay/issuer workers
+ *   PAY_ISSUER_FORM_AS_CORS   — OFF (opt in =1)
+ *   PAY_ISSUER_GET_FETCH      — OFF (opt in =1)
+ *   PAY_GE_TLS_WORKER         — OFF (opt in =1)
  * Merchant cart ATC stays undici (stage=other).
- *
- * Bandai scored ×2 through cors/cold/ccform-tls (see bible scoreboard). Next
- * outward: GET Sec-Fetch on CCForm, then Toymate-shaped PAY_PAYHOST=0.
  */
 export function shouldUseIssuerTlsWorker(url, method) {
   const { host, path: pathName } = parsePayUrl(url);
   if (!host) return false;
-  // Opt-in only — default off after GE-all-tls scored ×2 and flaked GetCartToken.
+  // Opt-in only — GE-all-tls scored ×2 and flaked GetCartToken.
   if (/global-e\.com/i.test(host) && process.env.PAY_GE_TLS_WORKER === "1") {
     return true;
   }
   const stage = classifyPayWireStage(host, pathName);
-  // CreditCardForm GET is issuer-stage but was undici while HandleCreditCard
-  // used tls-worker — split pay-host TLS. Default: same cold issuer worker.
-  // Opt out: PAY_ISSUER_CCFORM_TLS=0.
+  // CreditCardForm GET on issuer tls — dual-hunt opt-in only.
   if (
     stage === "issuer" &&
     /CreditCardForm/i.test(pathName) &&
     /^(GET|HEAD)$/i.test(method || "") &&
-    process.env.PAY_ISSUER_CCFORM_TLS !== "0" &&
+    process.env.PAY_ISSUER_CCFORM_TLS === "1" &&
     process.env.PAY_ISSUER_TLS_WORKER !== "0"
   ) {
     return true;
@@ -722,14 +708,14 @@ export function shouldUseIssuerTlsWorker(url, method) {
     return process.env.PAY_ISSUER_TLS_WORKER !== "0";
   }
   if (stage === "prepay") {
-    return process.env.PAY_PAYHOST_TLS_WORKER !== "0";
+    return process.env.PAY_PAYHOST_TLS_WORKER === "1";
   }
   return false;
 }
 
 /** Cache slot for stage-scoped chrome_131 workers (cold issuer A/B). */
 export function payTlsWorkerCacheKey(stage) {
-  const cold = process.env.PAY_ISSUER_COLD_TLS !== "0";
+  const cold = process.env.PAY_ISSUER_COLD_TLS === "1";
   if (!cold) return "_issuerRemoteTls";
   if (stage === "prepay") return "_prepayRemoteTls";
   return "_issuerRemoteTls";
@@ -749,7 +735,7 @@ async function ensureIssuerRemoteTls(dispatcher, stage = "issuer") {
         error: "remoteTls_missing",
         proxy: Boolean(dispatcher.proxy),
         stage,
-        cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
+        cold: process.env.PAY_ISSUER_COLD_TLS === "1",
       });
       return null;
     }
@@ -758,7 +744,7 @@ async function ensureIssuerRemoteTls(dispatcher, stage = "issuer") {
       proxy: Boolean(dispatcher.proxy),
       sticky: Boolean(dispatcher.sticky),
       stage,
-      cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
+      cold: process.env.PAY_ISSUER_COLD_TLS === "1",
       cacheKey,
     });
     return remote;
@@ -768,7 +754,7 @@ async function ensureIssuerRemoteTls(dispatcher, stage = "issuer") {
       error: String(e?.message || e).slice(0, 160),
       proxy: Boolean(dispatcher.proxy),
       stage,
-      cold: process.env.PAY_ISSUER_COLD_TLS !== "0",
+      cold: process.env.PAY_ISSUER_COLD_TLS === "1",
     });
     return null;
   }

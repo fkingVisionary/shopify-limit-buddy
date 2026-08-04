@@ -36,11 +36,17 @@ Empty / low-balance cards are fine for testing. We care about **how many Revolut
 
 ---
 
-## What “fixed” looks like
+## What “fixed” looks like (revised)
 
-Bandai checkout through the desktop app → executor path produces **one** Revolut line per intentional place-order attempt, matching a manual browser on the same card.
+If Bandai **manual also ×2**, a bot-only code change cannot be the acceptance test anymore.
 
-We are **not** asking you to rebuild Bandai checkout from scratch, or to “productize” Toymate/Kmart/Disney as part of this engagement unless that is explicitly agreed.
+Realistic outcomes:
+
+1. **Document as rail/merchant behaviour** — one GE tx, two Revolut decline lines on manual and bot; not removable in checkout code.
+2. **Mitigate if possible** — only if we find a GE/3DS/exemption setting that makes *manual and bot* both go to ×1 (unlikely if manual already duals).
+3. **Separate Toymate question** — only re-open shared-transport work if Toymate *manual* is ×1 while bot undici is ×2.
+
+Do **not** keep paying for Fast/Safe/stealth/TLS A/Bs on Bandai aimed at “make bot match manual” — they already match (both ×2).
 
 ---
 
@@ -62,15 +68,15 @@ Operators run tasks from the desktop UI. Data (profiles, proxies, tasks) lives i
 
 These have been confirmed repeatedly. Please treat them as given unless you produce new wire proof.
 
-1. **Manual browser = 1 Revolut line** on the same merchants/cards.
-2. **Bot = 2 Revolut lines** across Bandai, Pokemon Centre (Global-E), and Toymate (BigPay/Adyen).
+1. **Bandai manual (phone) = Revolut ×2** on the same site — disposable + normal Revolut card (2026-08-05). **Not bot-exclusive.**
+2. **Bandai bot = Revolut ×2** with one client payment POST / one GE tx.
 3. **One client payment POST** in our logs when dual happens (`chargeReqCount` / `psp_post` = 1).
 4. **Global-E `transactionId` is always one** for a dual event (checked many times — not two GE txs).
 5. The two Revolut lines are **the same amount**, arrive **within seconds**, and **~95% of the time the same merchant name** (rarely two different names).
-6. Happens on **multiple cards**, not only one Revolut PAN.
-7. **Direct / no-proxy** was already tried historically and still dualed — don’t burn a bank hit just to rediscover that unless you have a new theory.
-8. Desktop was **not** enqueueing two jobs for these labs (`quantity=1`, one run start, one payment post).
-9. There was a *different* double-charge bug from soft retries (`RESPONSE_LOST` re-entry). That was fixed in `desktop/payment-latch.cjs`. Today’s bug is the `posts=1` / `chargeReq=1` shape.
+6. Happens on **multiple cards**, including normal Revolut (not only the disposable).
+7. Desktop was **not** enqueueing two jobs for these labs (`quantity=1`, one run start, one payment post).
+8. Soft-retry latch (`desktop/payment-latch.cjs`) fixed a *different* dual (`posts≥2` / RESPONSE_LOST). Keep it; not today’s GE shape.
+9. **RETRACTED for Bandai:** “manual browser always ×1.” That was the old premise; owner’s phone control disproved it for this path.
 
 ### Active lead (2026-08-05)
 
@@ -249,11 +255,12 @@ How we score a run:
 | `executor/scripts/bandai-dual-har-summary.mjs` | Bot vs manual HAR summary |
 | `executor/scripts/classify-pay-forensics.mjs` | Forensics classifier |
 
-Defaults currently left ON in shared pay transport (because of the Toymate ×1 result). Don’t rip them out “for cleanliness” without a Bandai ×1 proof:
+Product Fast transport defaults (trimmed 2026-08-05 — dual-hunt knobs opt-in):
 
-- `PAY_ISSUER_TLS_WORKER` (default on)
-- `PAY_PAYHOST_TLS_WORKER` (default on)
-- `PAY_ISSUER_COLD_TLS` (default on)
+- `PAY_ISSUER_TLS_WORKER` — **default ON** (Toymate ×1; keep)
+- `PAY_PAYHOST_TLS_WORKER` / `PAY_ISSUER_COLD_TLS` / `PAY_ISSUER_CCFORM_TLS` /
+  `PAY_ISSUER_FORM_AS_CORS` / `PAY_ISSUER_GET_FETCH` — **default OFF** (`=1` to re-lab)
+- See `BANDAI_FAST_TRIM.md`
 
 ---
 

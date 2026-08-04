@@ -45,14 +45,14 @@ Confirmed by the product owner against Revolut:
 
 | Path | Stack | Client payment posts (our logs) | Revolut |
 |---|---|---|---|
-| Manual Chrome/Safari | Real browser | n/a | **1** |
+| **Manual phone (Bandai AU)** | Real mobile browser | n/a | **2** (2026-08-05 — disposable + normal Revolut card) |
 | Bandai Fast (product path) | Global-E over our HTTP client | **1** | **2** |
 | Bandai Safe | Global-E via Playwright pay UI | **1** | **2** |
 | Bandai Full (lab) | Full Playwright journey | **1** | **2** |
-| Bandai Full + basic anti-automation stealth | Playwright | **1** | **2** |
-| Pokemon Centre | Global-E | **1** | **2** |
-| Toymate (undici) | BigPay / Adyen | **1** | **2** |
-| Toymate (issuer via chrome TLS worker) | BigPay / Adyen | **1** | **1** (only confirmed single) |
+| Bandai Full + HAR (`172835957`) | Playwright | **1** GE tx | **2** |
+| Pokemon Centre | Global-E | **1** | **2** (bot; manual not rechecked after 2026-08-05) |
+| Toymate (undici) | BigPay / Adyen | **1** | **2** (bot) |
+| Toymate (issuer via chrome TLS worker) | BigPay / Adyen | **1** | **1** (bot only — needs manual control) |
 
 So:
 
@@ -194,7 +194,7 @@ We may **not** hand over live funded cards. Decline-lab is enough for this bug.
 
 ## 12. One-line summary you can reuse
 
-> Our checkout bot triggers two Revolut auth/decline lines for a single attempt while a normal browser on the same site/card triggers one. Client logs show a single payment POST. Reproduced on Global-E and BigPay. Mode switches and basic stealth didn’t fix it. We want Bandai back to one bank line, preferably on the fast HTTP pay path.
+> Bandai/Global-E soft declines show two Revolut lines (same amount, seconds apart) for one attempt — on our bot and on a normal phone browser. Client/GE show a single payment/tx id. Likely merchant/PSP/issuer fan-out, not a bot double-submit. Older “manual = one line” assumption was wrong for this path.
 
 ---
 

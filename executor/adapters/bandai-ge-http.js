@@ -48,6 +48,40 @@ export const BANDAI_GE_GEM = "https://gem-bandai.global-e.com";
 // Windows desktop was a presentation tell vs Toymate / http.js defaults.
 const DEFAULT_UA = HTTP_UA;
 
+/** Dual-hunt /tmp dumps — product Fast keeps these OFF (BANDAI_GE_WIRE_TAP=1). */
+function geWireTapEnabled() {
+  return String(process.env.BANDAI_GE_WIRE_TAP || "").trim() === "1";
+}
+
+function geWireWrite(filePath, data) {
+  if (!geWireTapEnabled()) return;
+  try {
+    fs.writeFileSync(
+      filePath,
+      typeof data === "string" ? data : JSON.stringify(data, null, 2),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function geWireAppendJsonArray(filePath, row) {
+  if (!geWireTapEnabled()) return;
+  try {
+    let arr = [];
+    try {
+      arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    } catch {
+      /* ignore */
+    }
+    if (!Array.isArray(arr)) arr = [];
+    arr.push(row);
+    fs.writeFileSync(filePath, JSON.stringify(arr, null, 2));
+  } catch {
+    /* ignore */
+  }
+}
+
 /** UUID-ish GUID from Checkout/v2 / handleaction / orderdetails HTML. */
 export function extractGeCheckoutGuid(htmlOrUrl) {
   const s = String(htmlOrUrl || "");
@@ -81,19 +115,6 @@ export function parseJsonp(text) {
   } catch {
     return null;
   }
-}
-
-/**
- * Synthetic MerchantCartToken for throwaway iovation mint only.
- * Appending `_iov_` is rejected by GE (`Success:false`); keep
- * `{32hex}_Checkout_{ts}` shape from the real checkout MCT.
- */
-export function synthesizeIovationMerchantCartToken(merchantCartToken) {
-  const s = String(merchantCartToken || "");
-  const m = s.match(/^([0-9a-f]{32})_Checkout_/i);
-  if (m) return `${m[1]}_Checkout_${Date.now()}`;
-  const hex = (s.replace(/[^0-9a-f]/gi, "") + "0".repeat(32)).slice(0, 32);
-  return `${hex}_Checkout_${Date.now()}`;
 }
 
 /** Build GetCartToken query (GEM SerializeQueryParameter — omit null/empty). */
@@ -767,21 +788,9 @@ async function installBrowserIssuerBlock(page) {
   }
   let blocked = 0;
   const seen = [];
-  const logPath = "/tmp/bandai-ge-browser-wire.json";
   const logBrowser = (row) => {
     seen.push(row);
-    try {
-      let arr = [];
-      try {
-        arr = JSON.parse(fs.readFileSync(logPath, "utf8"));
-      } catch {
-        /* ignore */
-      }
-      arr.push(row);
-      fs.writeFileSync(logPath, JSON.stringify(arr, null, 2));
-    } catch {
-      /* ignore */
-    }
+    geWireAppendJsonArray("/tmp/bandai-ge-browser-wire.json", row);
   };
   // Catch ALL GE mutating browser traffic (not only HandleCreditCard*).
   const match = (url) => /global-e\.com/i.test(url.href || String(url));
@@ -1229,11 +1238,7 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
  * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
  */
 function writeIssuerLast(row) {
-  try {
-    fs.writeFileSync("/tmp/bandai-ge-issuer-last.json", JSON.stringify(row, null, 2));
-  } catch {
-    /* ignore */
-  }
+  geWireWrite("/tmp/bandai-ge-issuer-last.json", row);
 }
 
 function networkErrorMeta(e) {
@@ -1650,30 +1655,19 @@ export async function runBandaiGeHttpPay(opts = {}) {
         ),
   });
 
-  try {
-    fs.writeFileSync(
-      BOOT_CAPTURE,
-      JSON.stringify(
-        {
-          at: new Date().toISOString(),
-          getCartToken: {
-            url: tokenOut.urlFull,
-            status: tokenOut.status,
-            success: tokenOut.success,
-            cartToken: tokenOut.cartToken,
-            isCaptcha: tokenOut.isCaptcha,
-            bodySnippet: tokenOut.bodySnippet,
-            json: tokenOut.json,
-          },
-          merchantCartToken,
-        },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
-  }
+  geWireWrite(BOOT_CAPTURE, {
+    at: new Date().toISOString(),
+    getCartToken: {
+      url: tokenOut.urlFull,
+      status: tokenOut.status,
+      success: tokenOut.success,
+      cartToken: tokenOut.cartToken,
+      isCaptcha: tokenOut.isCaptcha,
+      bodySnippet: tokenOut.bodySnippet,
+      json: tokenOut.json,
+    },
+    merchantCartToken,
+  });
 
   if (!tokenOut.ok || !tokenOut.cartToken) {
     return {
@@ -1801,18 +1795,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           phase: "iovation-throwaway",
         };
         browserReqLog.push(row);
-        try {
-          let arr = [];
-          try {
-            arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-browser-wire.json", "utf8"));
-          } catch {
-            /* ignore */
-          }
-          arr.push(row);
-          fs.writeFileSync("/tmp/bandai-ge-browser-wire.json", JSON.stringify(arr, null, 2));
-        } catch {
-          /* ignore */
-        }
+        geWireAppendJsonArray("/tmp/bandai-ge-browser-wire.json", row);
       };
       pctx.on("request", onReq);
     } catch {
@@ -2183,7 +2166,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Pure skip of CreditCardForm fails closed — JWT only appears there after
   // save (2026-08-03 skip-ccform lab). Opt-in only: BANDAI_GE_SKIP_CC_FORM=1.
-  // Default: fetch CCForm on the cold issuer tls-worker (PAY_ISSUER_CCFORM_TLS).
+  // Default: undici CreditCardForm GET (PAY_ISSUER_CCFORM_TLS opt-in for tls-worker).
   const skipCcForm =
     opts.skipCreditCardForm === true ||
     process.env.BANDAI_GE_SKIP_CC_FORM === "1";
@@ -2388,70 +2371,62 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ? `CreditCardForm SKIPPED; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${machineId ? "iovation" : "none"} via=skip pm=${paymentMethodId} gw=${gatewayId}`
       : `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
-  try {
-    const html = String(cc.text || "");
-    if (html.length > 200) {
-      fs.writeFileSync("/tmp/bandai-cc-form.html", html);
-      const action = (html.match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1] || "";
-      const modeAttr = (html.match(/<form[^>]*\smode=["']([^"']+)["']/i) || [])[1] || "";
-      const names = [...html.matchAll(/name=["']([^"']+)["']/gi)].map((m) => m[1]);
-      fs.writeFileSync(
-        "/tmp/bandai-cc-form-meta.json",
-        JSON.stringify(
-          {
-            at: new Date().toISOString(),
-            ccUrl,
-            action,
-            modeAttr,
-            gatewayId,
-            paymentMethodId,
-            fieldNames: [...new Set(names)].slice(0, 80),
-            hasPreEnroll: /preEnroll/i.test(html),
-            hasDdc: /ddc|DeviceData|collection/i.test(html),
-            formSnippet: html.replace(/\s+/g, " ").slice(0, 1200),
-          },
-          null,
-          2,
-        ),
-      );
+  if (geWireTapEnabled()) {
+    try {
+      const html = String(cc.text || "");
+      if (html.length > 200) {
+        geWireWrite("/tmp/bandai-cc-form.html", html);
+        const action = (html.match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1] || "";
+        const modeAttr = (html.match(/<form[^>]*\smode=["']([^"']+)["']/i) || [])[1] || "";
+        const names = [...html.matchAll(/name=["']([^"']+)["']/gi)].map((m) => m[1]);
+        geWireWrite("/tmp/bandai-cc-form-meta.json", {
+          at: new Date().toISOString(),
+          ccUrl,
+          action,
+          modeAttr,
+          gatewayId,
+          paymentMethodId,
+          fieldNames: [...new Set(names)].slice(0, 80),
+          hasPreEnroll: /preEnroll/i.test(html),
+          hasDdc: /ddc|DeviceData|collection/i.test(html),
+          formSnippet: html.replace(/\s+/g, " ").slice(0, 1200),
+        });
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
 
-  try {
-    const prev = fs.existsSync(BOOT_CAPTURE)
-      ? JSON.parse(fs.readFileSync(BOOT_CAPTURE, "utf8"))
-      : {};
-    fs.writeFileSync(
-      BOOT_CAPTURE,
-      JSON.stringify(
-        {
-          ...prev,
-          cartToken: guid,
-          checkoutV2: { status: v2.status, bytes: (v2.text || "").length },
-          creditCardForm: { status: cc.status, bytes: (cc.text || "").length },
-          urlStructureToken: urlStructureToken ? `${urlStructureToken.slice(0, 40)}…` : null,
-          machineIdPresent: Boolean(machineId),
-          machineIdBytes: machineId ? String(machineId).length : 0,
-          paymentMethodId,
-          gatewayId,
-          shippingMethodId: shippingMethodId || null,
-          hydrateShippingOk,
-          form: {
-            hasAddress: form.hasAddress,
-            countryId: form.countryId,
-            stateId: form.shipping?.StateId || null,
-            zip: form.shipping?.Zip || null,
-            shippingType: form.shippingType,
-          },
+  if (geWireTapEnabled()) {
+    try {
+      const prev = fs.existsSync(BOOT_CAPTURE)
+        ? JSON.parse(fs.readFileSync(BOOT_CAPTURE, "utf8"))
+        : {};
+      geWireWrite(BOOT_CAPTURE, {
+        ...prev,
+        cartToken: guid,
+        checkoutV2: { status: v2.status, bytes: (v2.text || "").length },
+        creditCardForm: { status: cc.status, bytes: (cc.text || "").length },
+        urlStructureToken: urlStructureToken
+          ? `${urlStructureToken.slice(0, 40)}…`
+          : null,
+        machineIdPresent: Boolean(machineId),
+        machineIdBytes: machineId ? String(machineId).length : 0,
+        paymentMethodId,
+        gatewayId,
+        shippingMethodId: shippingMethodId || null,
+        hydrateShippingOk,
+        form: {
+          hasAddress: form.hasAddress,
+          countryId: form.countryId,
+          stateId: form.shipping?.StateId || null,
+          zip: form.shipping?.Zip || null,
+          shippingType: form.shippingType,
         },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   const blockers = [];
@@ -2597,52 +2572,49 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const chargeReqCount = Math.max(issuerPostCount, undiciAttempts);
   const responseLost = Boolean(issuer?.responseLost);
 
-  try {
-    const prev = fs.existsSync("/tmp/bandai-ge-issuer-last.json")
-      ? JSON.parse(fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8"))
-      : {};
-    fs.writeFileSync(
-      "/tmp/bandai-ge-issuer-last.json",
-      JSON.stringify(
-        {
-          ...prev,
-          at: new Date().toISOString(),
-          phase: prev.phase === "error" || responseLost ? "error" : "response",
-          issuerUrl,
-          status: issuer?.status,
-          ok: issuer?.ok,
-          reloadOnly: issuer?.reloadOnly,
-          bankSignal: issuer?.bankSignal,
-          redirectUrl: issuer?.redirectUrlFull || issuer?.redirectUrl,
-          redirectPayload: issuer?.redirectPayload,
-          redirectSnippet: issuer?.redirectSnippet,
-          bodySnippet: issuer?.bodySnippet,
-          bodyText: issuer?.bodyText || prev.bodyText || null,
-          error: issuer?.error,
-          errorCode: issuer?.errorCode || prev.errorCode || null,
-          errorMessage: issuer?.errorMessage || prev.errorMessage || null,
-          timedOut: issuer?.timedOut ?? prev.timedOut ?? null,
-          responseLost,
-          via: issuer?.via,
-          gatewayId,
-          paymentMethodId,
-          shippingMethodId,
-          hydrateShippingOk,
-          issuerPostCount,
-          undiciAttempts,
-          browserIssuerBlocked: browserBlocked,
-          framesNeutralized,
-          isSameCartToken: (() => {
-            const m = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");
-            return m.IsTheSameCartToken ?? null;
-          })(),
-        },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
+  if (geWireTapEnabled()) {
+    try {
+      const prev = fs.existsSync("/tmp/bandai-ge-issuer-last.json")
+        ? JSON.parse(fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8"))
+        : {};
+      geWireWrite("/tmp/bandai-ge-issuer-last.json", {
+        ...prev,
+        at: new Date().toISOString(),
+        phase: prev.phase === "error" || responseLost ? "error" : "response",
+        issuerUrl,
+        status: issuer?.status,
+        ok: issuer?.ok,
+        reloadOnly: issuer?.reloadOnly,
+        bankSignal: issuer?.bankSignal,
+        redirectUrl: issuer?.redirectUrlFull || issuer?.redirectUrl,
+        redirectPayload: issuer?.redirectPayload,
+        redirectSnippet: issuer?.redirectSnippet,
+        bodySnippet: issuer?.bodySnippet,
+        bodyText: issuer?.bodyText || prev.bodyText || null,
+        error: issuer?.error,
+        errorCode: issuer?.errorCode || prev.errorCode || null,
+        errorMessage: issuer?.errorMessage || prev.errorMessage || null,
+        timedOut: issuer?.timedOut ?? prev.timedOut ?? null,
+        responseLost,
+        via: issuer?.via,
+        gatewayId,
+        paymentMethodId,
+        shippingMethodId,
+        hydrateShippingOk,
+        issuerPostCount,
+        undiciAttempts,
+        browserIssuerBlocked: browserBlocked,
+        framesNeutralized,
+        isSameCartToken: (() => {
+          const m = mapCcPaymentRedirect(
+            issuer?.redirectPayload || issuer?.redirectUrlFull || "",
+          );
+          return m.IsTheSameCartToken ?? null;
+        })(),
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   const declineOnRedirect = Boolean(issuer?.declineOnRedirect);
@@ -2800,7 +2772,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
 export default {
   extractGeCheckoutGuid,
   parseJsonp,
-  synthesizeIovationMerchantCartToken,
   buildGetCartTokenParams,
   buildGetCartTokenUrl,
   getBandaiGeCartToken,

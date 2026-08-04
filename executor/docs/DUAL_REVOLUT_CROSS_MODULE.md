@@ -285,16 +285,17 @@ In `executor/http.js` (applies to Bandai Fast undici pay + Toymate BigPay):
 
 ### Active A/B — payHost tls-worker (global `http.js`)
 
-| Knob | Default | Meaning |
+| Knob | Default (product Fast 2026-08-05) | Meaning |
 |---|---|---|
-| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE → chrome_131 tls-worker (**Toymate ×1**) |
-| `PAY_PAYHOST_TLS_WORKER` | ON (`=0` off) | GE/BigPay **prepay** mutates → chrome_131 |
-| `PAY_ISSUER_FORM_AS_CORS` | ON (`=0` off) | GE form issuer Sec-Fetch `cors`/`empty` like BigPay — **×2** (`172548067`) |
-| `PAY_ISSUER_COLD_TLS` | ON (`=0` off) | Separate chrome_131 worker for issuer vs prepay (Toymate-shaped) |
-| `PAY_ISSUER_CCFORM_TLS` | ON (`=0` off) | CreditCardForm GET → cold issuer chrome_131 — **×2** (`172557593`) |
-| `PAY_ISSUER_GET_FETCH` | ON (`=0` off) | CreditCardForm GET Sec-Fetch navigate/iframe (dest override `PAY_ISSUER_GET_DEST=document`) |
-| `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET → chrome_131 (scored ×2; gepi EOF flake) |
-| `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST (test alone with tls-worker off) |
+| `PAY_ISSUER_TLS_WORKER` | ON (`=0` off) | Issuer-stage POST/PUT/PATCH/DELETE -> chrome_131 tls-worker (Toymate x1) |
+| `PAY_PAYHOST_TLS_WORKER` | OFF (`=1` on) | GE/BigPay prepay mutates -> chrome_131 (dual-hunt) |
+| `PAY_ISSUER_FORM_AS_CORS` | OFF (`=1` on) | GE form issuer Sec-Fetch cors/empty like BigPay - scored x2 (172548067) |
+| `PAY_ISSUER_COLD_TLS` | OFF (`=1` on) | Separate chrome_131 worker for issuer vs prepay |
+| `PAY_ISSUER_CCFORM_TLS` | OFF (`=1` on) | CreditCardForm GET -> issuer chrome_131 - scored x2 (172557593) |
+| `PAY_ISSUER_GET_FETCH` | OFF (`=1` on) | CreditCardForm GET Sec-Fetch navigate/iframe |
+| `PAY_GE_TLS_WORKER` | OFF (`=1` on) | All global-e.com hops incl GET -> chrome_131 (scored x2; gepi EOF flake) |
+| `PAY_ISSUER_FRESH_UNDICI` | OFF (`=1` on) | Recreate ProxyAgent before issuer undici POST |
+| `BANDAI_GE_WIRE_TAP` | OFF (`=1` on) | /tmp/bandai-* wire dumps (see BANDAI_FAST_TRIM.md) |
 
 Forensics: `http_mutate_response.payTransport` = `tls-worker` \| `undici` \| `undici-fallback` on prepay **and** issuer.
 
