@@ -2068,10 +2068,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
   //
   // CRITICAL: CreditCardForm URL path is GATEWAY id (secureFrameURL+"/"+currentGatewayID),
   // NOT paymentMethodId. Card UI is usually pm=1 with gateway=2.
+  // PayPal guest (HAR 2026-08-05): title=PayPal data-id=4 data-gw=6 fullredirect.
+  const wantPaypal = /^paypal/i.test(String(opts.paymentMethod || ""));
   let paymentMethodId = String(
-    opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+    opts.paymentMethodId ||
+      (wantPaypal ? "4" : null) ||
+      form.selectedPaymentMethodId ||
+      "1",
   );
-  let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
+  let gatewayId = String(
+    opts.gatewayId || (wantPaypal ? "6" : null) || form.gatewayId || "2",
+  );
 
   // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
   const saveBody = buildCheckoutSaveBody(form, {
@@ -2167,7 +2174,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
   // Pure skip of CreditCardForm fails closed — JWT only appears there after
   // save (2026-08-03 skip-ccform lab). Opt-in only: BANDAI_GE_SKIP_CC_FORM=1.
   // Default: undici CreditCardForm GET (PAY_ISSUER_CCFORM_TLS opt-in for tls-worker).
+  // PayPal guest never uses CreditCardForm / HandleCreditCard.
   const skipCcForm =
+    wantPaypal ||
     opts.skipCreditCardForm === true ||
     process.env.BANDAI_GE_SKIP_CC_FORM === "1";
 
@@ -2430,7 +2439,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   const blockers = [];
-  if (!urlStructureToken) blockers.push("urlStructureToken");
+  if (!wantPaypal && !urlStructureToken) blockers.push("urlStructureToken");
   if (!machineId) blockers.push("machineId");
   // Fail closed when riskHydrate ran but Forter never landed (thin mint → RELOAD_ONLY).
   const allowThinRisk =
@@ -2438,7 +2447,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     opts.bandaiGeAllowThinRisk === true ||
     process.env.BANDAI_GE_ALLOW_THIN_RISK === "1";
   if (riskHydrate && !forterToken && !allowThinRisk) blockers.push("forterToken");
-  if (!card?.number || !card?.cvv) blockers.push("card");
+  if (!wantPaypal && (!card?.number || !card?.cvv)) blockers.push("card");
   if (!hydrateShippingOk) blockers.push("hydrate_shipping");
   if (!form.hasAddress) blockers.push("checkout_address");
   if (!form.shipping?.StateId && !form.billing?.StateId) blockers.push("billing_state");
@@ -2456,7 +2465,80 @@ export async function runBandaiGeHttpPay(opts = {}) {
     shippingMethodId: shippingMethodId || null,
     harvestedBridge: Boolean(opts.harvestedBridge),
     preferPageIssuer: opts.preferPageIssuer === true,
+    paymentMethod: wantPaypal ? "paypal_guest" : "card",
   });
+
+  if (wantPaypal && !blockers.length) {
+    // webservices InitPayPalExpress works (2026-08-05); secure-bandai path 404s.
+    const ppCandidates = [
+      `${BANDAI_GE_WEBSERVICES}/Payments/InitPayPalExpressProcess?cartToken=${encodeURIComponent(guid)}`,
+      `${BANDAI_GE_SECURE}/Payments/InitPayPalExpressProcess?cartToken=${encodeURIComponent(guid)}`,
+    ];
+    let paypalApproveUrl = null;
+    let ppNote = "";
+    for (const ppUrl of ppCandidates) {
+      const tPp = Date.now();
+      const res = await request(
+        ppUrl,
+        {
+          method: "GET",
+          headers: {
+            accept: "text/html,application/xhtml+xml,*/*",
+            referer: v2Url,
+            "upgrade-insecure-requests": "1",
+          },
+          redirect: "manual",
+        },
+        ctx,
+      ).catch((e) => ({ status: 0, error: e }));
+      const loc =
+        typeof res?.headers?.get === "function"
+          ? res.headers.get("location") || res.headers.get("Location")
+          : null;
+      const text =
+        typeof res?.text === "function" ? await res.text().catch(() => "") : "";
+      const found =
+        (loc && /paypal\.com/i.test(loc) && loc) ||
+        (text.match(/https?:\/\/[^\s"'<>]*paypal\.com[^\s"'<>]*/i) || [])[0] ||
+        null;
+      push("ge_paypal_init", {
+        ok: Boolean(found) || (res?.status > 0 && res.status < 500),
+        status: res?.status ?? 0,
+        ms: Date.now() - tPp,
+        note: found
+          ? `approve ${String(found).slice(0, 140)}`
+          : `no_approve status=${res?.status} loc=${String(loc || "").slice(0, 100)} via=${ppUrl.slice(0, 80)}`,
+      });
+      if (found) {
+        paypalApproveUrl = found;
+        ppNote = `InitPayPalExpress ok pm=4 gw=6`;
+        break;
+      }
+      ppNote = `InitPayPalExpress miss status=${res?.status}`;
+    }
+    await browserIssuerBlock.unroute();
+    const elapsedMs = Date.now() - t0;
+    const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+    return {
+      ok: Boolean(paypalApproveUrl),
+      steps,
+      timeline,
+      timing,
+      paymentMethod: "paypal_guest",
+      paypalApproveUrl,
+      paymentStatus: paypalApproveUrl ? "paypal_approve_url" : "paypal_init_failed",
+      checkoutStage: paypalApproveUrl ? "tokenize" : "details",
+      cartToken: guid,
+      dryRun: true,
+      chargeReqCount: 0,
+      via: "http-ge-paypal",
+      elapsedMs,
+      note: `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`.slice(
+        0,
+        320,
+      ),
+    };
+  }
 
   if (stopBeforeIssuer || (blockers.length && !forceIssuer)) {
     const elapsedMs = Date.now() - t0;

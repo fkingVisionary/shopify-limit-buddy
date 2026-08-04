@@ -2353,6 +2353,12 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       referer: `${session.base}/orderdetails`,
       stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
       forceIssuer: task.bandaiGeForceIssuer === true,
+      paymentMethod: task.paymentMethod || null,
+      paymentMethodId: task.paymentMethodId || null,
+      gatewayId: task.gatewayId || null,
+      skipCreditCardForm:
+        task.bandaiGeSkipCreditCardForm === true ||
+        /^paypal/i.test(String(task.paymentMethod || "")),
       keepPageAfterIovation: task.bandaiGeKeepPage === true,
       // Fast = undici issuer (hard no Playwright pay). Page issuer is Safe/opt-in only.
       preferPageIssuer: task.bandaiGePreferPageIssuer === true,
@@ -2401,7 +2407,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       failedStep: geOut.failedStep || null,
       error: geOut.ok ? null : geOut.error || geOut.note || null,
       checkoutStage: geOut.checkoutStage || "tokenize",
-      dryRun: false,
+      dryRun: geOut.dryRun ?? false,
       areaItemNo: pdp.areaItemNo,
       cartSn,
       cartId,
@@ -2410,6 +2416,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       cartToken: geOut.cartToken || null,
       title: pdp.title,
       paymentStatus: geOut.paymentStatus,
+      paymentMethod: geOut.paymentMethod || task.paymentMethod || null,
+      paypalApproveUrl: geOut.paypalApproveUrl || null,
       blockers: geOut.blockers || [],
       chargeReqCount: geOut.chargeReqCount ?? null,
       undiciAttempts: geOut.undiciAttempts ?? null,
@@ -2417,7 +2425,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       paymentAttempted: Boolean(
         geOut.paymentAttempted ||
           geOut.responseLost ||
-          Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1,
+          Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1 ||
+          Boolean(geOut.paypalApproveUrl),
       ),
       browserIssuerBlocked: geOut.browserIssuerBlocked ?? null,
       framesNeutralized: geOut.framesNeutralized ?? null,
@@ -2425,7 +2434,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       sawAuthWire: geOut.sawAuthWire ?? null,
       transactionId: geOut.transactionId ?? null,
       timing: geOut.timing || null,
-      finalUrl: `${session.base}/orderdetails`,
+      finalUrl: geOut.paypalApproveUrl || `${session.base}/orderdetails`,
       cookies: ctx.jar?.dump?.() ?? {},
       note: geOut.note || null,
       via: geOut.via || "http-ge",
@@ -2768,6 +2777,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       proxy: parseBandaiProxy(task.proxy).url || task.proxy || null,
       placeOrder,
       card,
+      paymentMethod: task.paymentMethod || null,
+      headless: task.headless !== false && process.env.BANDAI_HEADED !== "1",
       shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
@@ -2804,6 +2815,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       checkoutSn: out.checkoutSn,
       title: out.title,
       paymentStatus: out.paymentStatus,
+      paymentMethod: out.paymentMethod ?? task.paymentMethod ?? null,
+      paypalApproveUrl: out.paypalApproveUrl ?? null,
       declineTarget: out.declineTarget,
       reached3ds: out.reached3ds ?? null,
       payClickCount: out.payClickCount ?? null,
@@ -2818,7 +2831,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
-      via: "browser",
+      via: out.via || "browser",
       globaleMid: GLOBALE_MID,
       orderNumber: out.orderNumber ?? null,
     };

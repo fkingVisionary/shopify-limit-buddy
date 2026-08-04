@@ -4,18 +4,35 @@
 **Goal:** Offer **PayPal guest** alongside card on Bandai Fast, because PayPal
 often clears better than card on high-traffic drops.
 
-This is a **scope / design note**, not an implementation.
+Lab status **2026-08-05:** wire IDs locked from Checkout/v2 HAR; **Fast HTTP**
+minted a live `paypal.com/checkoutnow?token=…` approve URL (disposable profile
+last4 `3562`). Desktop UI select still TODO.
 
 ---
 
 ## Why
 
-- Card path is solid enough to race ATC → GE hydrate → issuer, but issuer /
-  acquirer / soft-decline behaviour (incl. Revolut dual on **manual and bot**)
-  can still burn attempts under load.
-- Operators already use **PayPal (manual)** on Toymate when card rails flake.
-- Bandai GE mid **1925** exposes PayPal in the live checkout UI; we currently
-  hard-select **card** (`SelectedPaymentMethodID` / `pm=1`, gateway `2`).
+- Card Fast works (hydrate → issuer). Soft-decline Revolut ×2 is treated as
+  **rail behaviour** — not a reason to keep dual-hunt knobs.
+- PayPal often clears better on contested drops; Toymate already has manual PP.
+- Bandai GE mid **1925** exposes PayPal in Checkout/v2.
+
+---
+
+## Wire (captured)
+
+| Field | Value |
+|---|---|
+| `SelectedPaymentMethodID` / `data-id` | **4** |
+| Gateway (`data-gw`) | **6** |
+| Mode | `fullredirect` + `data-newwindow=true` |
+| Tile | `.payMet[title="PayPal"]` / `.payMet[data-id="4"]` (sprite, not text label) |
+| Init (works) | `GET webservices.global-e.com/Payments/InitPayPalExpressProcess?cartToken={guid}` |
+| Init (404) | `secure-bandai…/Payments/InitPayPalExpressProcess` |
+| Approve shape | `https://www.paypal.com/checkoutnow?token=…` |
+
+Artifacts: `artifacts/bandai-paypal-wire.json`, `artifacts/bandai-paypal-guest.har`
+(Checkout/v2), `artifacts/bandai-paypal-http-probe.json` (Fast approve mint).
 
 ---
 
@@ -23,13 +40,10 @@ This is a **scope / design note**, not an implementation.
 
 | Surface | PayPal |
 |---|---|
-| Bandai Fast (`bandai-ge-http.js`) | None — card form + HandleCreditCard only |
-| Bandai Safe / Full UI pay | Explicitly **excludes** PayPal/Apple/Google Pay buttons |
-| Desktop task UI | Pay method select is **Toymate-only** (`credit_card` / `paypal_manual`) |
-| Toymate | `paymentMethod: "paypal_manual"` → BigCommerce `paypalcommerce` → returns `paypalApproveUrl` for human approve |
-
-No Bandai GE PayPal wire capture exists in-repo yet. Open question in
-`BANDAI_AU_MODULE.md`: “3DS / ApplePay / PayPal express behaviour on mid 1925 AU”.
+| Bandai Fast HTTP | **Lab path:** `paymentMethod=paypal_guest` → save pm=4/gw=6 → InitPayPalExpress → `paypalApproveUrl` |
+| Bandai Full browser HAR | Reached GE; tile click flaky / SoftBlock; IDs from HTML |
+| Desktop task UI | Still Toymate-only pay select |
+| Toymate | `paypal_manual` → BigCommerce approve URL |
 
 ---
 
@@ -80,37 +94,27 @@ After GetCartToken + address/shipping hydrate (same as card):
 
 ---
 
-## Wire unknowns (must capture before coding)
+## Remaining unknowns
 
-One live Bandai AU checkout HAR (or Desktop DevTools) selecting **PayPal**:
-
-| Capture | Why |
+| Item | Status |
 |---|---|
-| `SelectedPaymentMethodID` / gateway id for PayPal on mid 1925 | Form fields |
-| Which GE call starts PayPal (save vs handleaction vs dedicated endpoint) | Branch point |
-| Approve / EC-token / redirect URL shape | Return to UI |
-| Whether guest PayPal needs BNID login or email-only | Account gate |
-| Risk scripts still required (iovation / Forter) before PP redirect | Keep or skip hydrate |
-| Success / cancel return URLs back to p-bandai / GE | Completion signal |
-| Behaviour under SoftBlock / drop load vs card | Ops guidance |
-
-Until that HAR exists, treat method ids and endpoints as **unknown**.
+| Method / gateway ids | **Done** (4 / 6) |
+| Init endpoint + approve URL | **Done** (webservices InitPayPalExpress) |
+| Guest vs PayPal login inside approve | Human finishes in browser (v1) |
+| Cancel / return URLs | Need one completed PP order or cancel |
+| SoftBlock under drop load | Same as card ATC — bridge fallback |
 
 ---
 
 ## Implementation phases
 
-| Phase | Work | Risk |
+| Phase | Work | Status |
 |---|---|---|
-| **0 — HAR** | Manual PayPal guest on Bandai AU; save HAR + note method ids | Blocker for code |
-| **1 — Fast branch** | `paypal_guest` in `runBandaiGeHttpPay` after hydrate; return approve URL | Low if wire clear |
-| **2 — Desktop** | Bandai pay select + open/copy approve URL in job UI | Low |
-| **3 — Ops** | Document “use PP on contested drops”; optional monitor auto-start still card-default | — |
-| **4 — later** | PayPal session vault / relogin (multi-store) | Higher product scope |
-
-Rough invasiveness: **Phase 1–2** touch `bandai-ge-http.js`, `bandai.js` return
-passthrough (already has `paypalApproveUrl` in `checkout.js`), and desktop task
-form — no shared card issuer changes.
+| **0 — HAR / wire** | Checkout/v2 + HTTP InitPayPalExpress | **Done** |
+| **1 — Fast branch** | `paypal_guest` in `runBandaiGeHttpPay` | **Lab in** |
+| **2 — Desktop** | Bandai pay select + open/copy approve URL | Next |
+| **3 — Ops** | “Use PP on contested drops” | — |
+| **4 — later** | PayPal session vault / relogin | Later |
 
 ---
 

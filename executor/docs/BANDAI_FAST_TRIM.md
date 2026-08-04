@@ -1,8 +1,19 @@
 # Bandai Fast — product trim (2026-08-05)
 
-Solidify **Autocheckout / Fast** after the dual-Revolut hunt. Dual on Bandai is
-now known to also happen on **manual phone checkout** — stop leaving dual-hunt
-knobs ON in the product path.
+Solidify **Autocheckout / Fast** after the dual-Revolut hunt.
+
+## Product stance (locked)
+
+**Assume Bandai soft-declines show Revolut ×2** (manual phone and bot). Treat that
+as Global-E / acquirer / issuer rail behaviour — **not** a bot double-submit bug.
+
+Focus:
+
+1. **ATC speed** (wall→ATC / cart hold)
+2. **Proven Fast checkout function** (hydrate → issuer → bank signal)
+
+Ignore dual-hunt knobs and anything sold as “the dual fix.” Do not re-open TLS /
+Sec-Fetch / cold-issuer A/Bs for Bandai decline line-count.
 
 ## Product Fast path (keep)
 
