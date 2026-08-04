@@ -23,6 +23,7 @@ import {
 import fs from "node:fs";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
 import { payForensics, redirectFanoutFields } from "../pay-forensics.js";
+import { approvePaypalCheckout } from "./paypal-approve.js";
 
 function issuerBodyFlags(body) {
   const s = String(body || "");
@@ -2068,8 +2069,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
   //
   // CRITICAL: CreditCardForm URL path is GATEWAY id (secureFrameURL+"/"+currentGatewayID),
   // NOT paymentMethodId. Card UI is usually pm=1 with gateway=2.
-  // PayPal guest (HAR 2026-08-05): title=PayPal data-id=4 data-gw=6 fullredirect.
-  const wantPaypal = /^paypal/i.test(String(opts.paymentMethod || ""));
+  // PayPal (HAR 2026-08-05): title=PayPal data-id=4 data-gw=6 fullredirect.
+  const payMethodRaw = String(opts.paymentMethod || "").toLowerCase();
+  const wantPaypal = /^paypal/i.test(payMethodRaw);
+  const paypalAuto =
+    wantPaypal &&
+    !/manual|guest|link_only|url_only/i.test(payMethodRaw);
   let paymentMethodId = String(
     opts.paymentMethodId ||
       (wantPaypal ? "4" : null) ||
@@ -2502,7 +2507,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
         (text.match(/https?:\/\/[^\s"'<>]*paypal\.com[^\s"'<>]*/i) || [])[0] ||
         null;
       push("ge_paypal_init", {
-        ok: Boolean(found) || (res?.status > 0 && res.status < 500),
+        ok: Boolean(found),
         status: res?.status ?? 0,
         ms: Date.now() - tPp,
         note: found
@@ -2517,26 +2522,87 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ppNote = `InitPayPalExpress miss status=${res?.status}`;
     }
     await browserIssuerBlock.unroute();
+
+    let paypalApprove = null;
+    if (paypalApproveUrl && paypalAuto) {
+      const ppEmail =
+        opts.paypal?.email ||
+        opts.paypalEmail ||
+        opts.profile?.paypal_email ||
+        opts.profile?.paypalEmail ||
+        null;
+      const ppPassword =
+        opts.paypal?.password ||
+        opts.paypalPassword ||
+        opts.profile?.paypal_password ||
+        opts.profile?.paypalPassword ||
+        null;
+      if (!ppEmail || !ppPassword) {
+        push("ge_paypal_approve", {
+          ok: false,
+          status: null,
+          ms: 0,
+          note: "PayPal auto needs profile paypal_email + paypal_password",
+        });
+      } else {
+        const tAp = Date.now();
+        paypalApprove = await approvePaypalCheckout({
+          approveUrl: paypalApproveUrl,
+          email: ppEmail,
+          password: ppPassword,
+          proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
+          headless: opts.paypalHeadless === true,
+          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 90_000,
+          log: (m) => {
+            try {
+              opts.onProgress?.("ge_paypal_approve", { note: m });
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+        push("ge_paypal_approve", {
+          ok: Boolean(paypalApprove?.ok),
+          status: null,
+          ms: paypalApprove?.ms ?? Date.now() - tAp,
+          note: paypalApprove?.note || paypalApprove?.error || "approve done",
+        });
+      }
+    }
+
     const elapsedMs = Date.now() - t0;
     const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+    const autoOk = Boolean(paypalApprove?.ok);
+    const minted = Boolean(paypalApproveUrl);
     return {
-      ok: Boolean(paypalApproveUrl),
+      ok: paypalAuto ? autoOk : minted,
       steps,
       timeline,
       timing,
-      paymentMethod: "paypal_guest",
+      paymentMethod: paypalAuto ? "paypal_auto" : "paypal_manual",
       paypalApproveUrl,
-      paymentStatus: paypalApproveUrl ? "paypal_approve_url" : "paypal_init_failed",
-      checkoutStage: paypalApproveUrl ? "tokenize" : "details",
+      paymentStatus: paypalAuto
+        ? autoOk
+          ? "paypal_approved"
+          : minted
+            ? "paypal_approve_failed"
+            : "paypal_init_failed"
+        : minted
+          ? "paypal_approve_url"
+          : "paypal_init_failed",
+      checkoutStage: autoOk || minted ? "tokenize" : "details",
       cartToken: guid,
-      dryRun: true,
+      orderNumber: paypalApprove?.orderNumber || null,
+      dryRun: !autoOk,
       chargeReqCount: 0,
-      via: "http-ge-paypal",
+      via: paypalAuto ? "http-ge-paypal-auto" : "http-ge-paypal",
+      finalUrl: paypalApprove?.finalUrl || paypalApproveUrl || null,
       elapsedMs,
-      note: `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`.slice(
-        0,
-        320,
-      ),
+      note: (
+        paypalAuto
+          ? `${ppNote}; auto=${autoOk ? "ok" : paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
+          : `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
+      ).slice(0, 320),
     };
   }
 

@@ -1,10 +1,17 @@
 // Quick Task helpers — build Bandai (v1) task rows from preset + SKU/URL/monitor hit.
 // Pure (no Electron / no network). Main process persists + enqueues.
 
+const {
+  parseBandaiStoreSelection,
+  normalizeBandaiAreaCode,
+} = require("./bandai-regions.cjs");
+
 const DEFAULT_PRESET = {
   store: "bandai",
+  bandaiArea: "au",
   bandaiMode: "checkout",
   bandaiCheckoutMode: "fast",
+  paymentMethod: "credit_card",
   profileId: null,
   proxyGroupId: null,
   qty: 1,
@@ -20,7 +27,15 @@ const DEFAULT_PRESET = {
  * @param {object} [raw]
  */
 function normalizeQuickTaskPreset(raw = {}) {
-  const store = String(raw.store || DEFAULT_PRESET.store).toLowerCase() || "bandai";
+  const parsed = parseBandaiStoreSelection(
+    raw.store || DEFAULT_PRESET.store,
+    raw.bandaiArea || DEFAULT_PRESET.bandaiArea,
+  );
+  const store = parsed.store || "bandai";
+  const bandaiArea =
+    store === "bandai"
+      ? normalizeBandaiAreaCode(parsed.bandaiArea || raw.bandaiArea) || "au"
+      : undefined;
   const modeRaw = String(raw.bandaiMode || "").toLowerCase();
   // Raffle / Chance applyDraw removed — map legacy tasks to checkout.
   const bandaiMode = ["checkout", "atc", "monitor", "account_gen"].includes(
@@ -30,8 +45,16 @@ function normalizeQuickTaskPreset(raw = {}) {
       ? "checkout"
       : modeRaw
     : "checkout";
+  const pmRaw = String(raw.paymentMethod || DEFAULT_PRESET.paymentMethod).toLowerCase();
+  const paymentMethod =
+    pmRaw === "paypal_auto" || pmRaw === "paypal" || pmRaw === "paypal_express"
+      ? "paypal_auto"
+      : pmRaw === "paypal_manual" || pmRaw === "paypal_guest" || pmRaw === "paypal_link"
+        ? "paypal_manual"
+        : "credit_card";
   return {
     store,
+    bandaiArea,
     bandaiMode,
     bandaiCheckoutMode: (() => {
       const m = String(raw.bandaiCheckoutMode || "").toLowerCase();
@@ -39,6 +62,7 @@ function normalizeQuickTaskPreset(raw = {}) {
       if (["fast", "fast_undici", "safe", "autocheckout_test"].includes(m)) return m;
       return "fast";
     })(),
+    paymentMethod,
     profileId: raw.profileId || null,
     proxyGroupId: raw.proxyGroupId || null,
     qty: Math.max(1, Math.min(20, Number(raw.qty) || 1)),
@@ -151,9 +175,11 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
   const productId = target.productId;
   const mode = p.bandaiMode;
   const { resolveTaskLabel } = require("./task-label.cjs");
+  const area = normalizeBandaiAreaCode(target.area || p.bandaiArea) || "au";
   const draft = {
     id: extra.id || undefined,
     store: p.store,
+    bandaiArea: p.store === "bandai" ? area : undefined,
     label: resolveTaskLabel({
       store: p.store,
       label: extra.label || "",
@@ -166,7 +192,7 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
       bandaiAreaItemNo: target.areaItemNo || "",
     }),
     pdpUrl: target.pdpUrl || (productId && !/^NAI/i.test(productId)
-      ? `https://p-bandai.com/${target.area || "au"}/item/${productId}`
+      ? `https://p-bandai.com/${area}/item/${productId}`
       : ""),
     qty: p.qty,
     quantity: p.quantity,
@@ -176,6 +202,7 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
     enabled: true,
     bandaiMode: mode,
     bandaiCheckoutMode: p.bandaiCheckoutMode,
+    paymentMethod: p.store === "bandai" ? p.paymentMethod : undefined,
     accountAssign: p.accountAssign,
     accountId: p.accountAssign === "manual" ? p.accountId : null,
   };

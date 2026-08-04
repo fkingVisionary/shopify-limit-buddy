@@ -2356,6 +2356,10 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       paymentMethod: task.paymentMethod || null,
       paymentMethodId: task.paymentMethodId || null,
       gatewayId: task.gatewayId || null,
+      paypal: task.paypal || null,
+      paypalEmail: task.paypalEmail || task.paypal?.email || null,
+      paypalPassword: task.paypalPassword || task.paypal?.password || null,
+      paypalHeadless: task.paypalHeadless === true,
       skipCreditCardForm:
         task.bandaiGeSkipCreditCardForm === true ||
         /^paypal/i.test(String(task.paymentMethod || "")),

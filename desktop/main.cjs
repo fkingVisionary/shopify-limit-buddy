@@ -159,6 +159,11 @@ const {
   contextFromQuickTask,
 } = require("./quick-task.cjs");
 const {
+  parseBandaiStoreSelection,
+  normalizeBandaiAreaCode,
+  isBandaiStoreId,
+} = require("./bandai-regions.cjs");
+const {
   PROTOCOL: QT_PROTOCOL,
   BRIDGE_PORT: QT_BRIDGE_PORT,
   parseQuickTaskDeepLink,
@@ -1798,7 +1803,15 @@ ipcMain.handle("desktop:test-proxy-entries", async (_e, entriesText, opts = {}) 
 // Tasks
 function upsertTaskRow(task) {
   const now = Date.now();
-  const storeId = task.store || "kmart";
+  // UI may send bandai-us / bandai-fr — normalize to store=bandai + bandaiArea.
+  const parsedStore = isBandaiStoreId(task.store)
+    ? parseBandaiStoreSelection(task.store, task.bandaiArea)
+    : null;
+  const storeId = parsedStore?.store || task.store || "kmart";
+  const bandaiArea =
+    storeId === "bandai"
+      ? normalizeBandaiAreaCode(parsedStore?.bandaiArea || task.bandaiArea) || "au"
+      : undefined;
   const row = {
     id: task.id || store.id("task"),
     store: storeId,
@@ -1819,6 +1832,7 @@ function upsertTaskRow(task) {
     // Toymate-only fields (ignored by Kmart / Bandai payload builders).
     toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
     // Bandai-only fields (ignored by Kmart / Toymate payload builders).
+    bandaiArea,
     bandaiMode: (() => {
       if (storeId !== "bandai") return undefined;
       const raw = String(task.bandaiMode || "checkout").toLowerCase();
@@ -1902,7 +1916,17 @@ function upsertTaskRow(task) {
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
         ? String(task.pcLocale || "en-au")
         : undefined,
-    paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
+    paymentMethod: (() => {
+      if (storeId === "toymate") return String(task.paymentMethod || "credit_card");
+      if (storeId === "bandai") {
+        const pm = String(task.paymentMethod || "credit_card").toLowerCase();
+        if (pm === "paypal_auto" || pm === "paypal" || pm === "paypal_express") return "paypal_auto";
+        if (pm === "paypal_manual" || pm === "paypal_guest" || pm === "paypal_link")
+          return "paypal_manual";
+        return "credit_card";
+      }
+      return undefined;
+    })(),
     accountPassword:
       (storeId === "toymate" || storeId === "bandai") && typeof task.accountPassword === "string"
         ? task.accountPassword
@@ -2928,10 +2952,12 @@ async function runQuickTaskPayload(payload = {}) {
   const preset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
   let target;
   if (payload.hit && payload.hit.productId) {
-    target = targetFromMonitorHit(payload.hit, { area: payload.area || "au" });
+    target = targetFromMonitorHit(payload.hit, {
+      area: payload.area || preset.bandaiArea || "au",
+    });
   } else {
     target = parseBandaiProductInput(payload.input || payload.sku || payload.url || "", {
-      area: payload.area || "au",
+      area: payload.area || preset.bandaiArea || "au",
     });
   }
   if (!target.ok) {

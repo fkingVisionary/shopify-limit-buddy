@@ -5,8 +5,9 @@
 often clears better than card on high-traffic drops.
 
 Lab status **2026-08-05:** wire IDs locked from Checkout/v2 HAR; **Fast HTTP**
-minted a live `paypal.com/checkoutnow?token=…` approve URL (disposable profile
-last4 `3562`). Desktop UI select still TODO.
+minted a live `paypal.com/checkoutnow?token=…` approve URL. Desktop now exposes
+**Credit card / PayPal (auto approve) / PayPal (link only)** plus per-region
+Bandai modules (`au|us|nz|sg|hk|tw|fr`).
 
 ---
 
@@ -40,24 +41,35 @@ Artifacts: `artifacts/bandai-paypal-wire.json`, `artifacts/bandai-paypal-guest.h
 
 | Surface | PayPal |
 |---|---|
-| Bandai Fast HTTP | **Lab path:** `paymentMethod=paypal_guest` → save pm=4/gw=6 → InitPayPalExpress → `paypalApproveUrl` |
+| Bandai Fast HTTP | `paymentMethod=paypal_auto\|paypal_manual` → save pm=4/gw=6 → InitPayPalExpress → approve URL; auto runs Playwright login → Pay Now |
 | Bandai Full browser HAR | Reached GE; tile click flaky / SoftBlock; IDs from HTML |
-| Desktop task UI | Still Toymate-only pay select |
+| Desktop task UI | Bandai payment dropdown + profile PayPal email/password; region modules |
 | Toymate | `paypal_manual` → BigCommerce approve URL |
 
 ---
 
-## Recommended v1 — PayPal guest / manual approve (Toymate-shaped)
+## Payment methods (desktop → executor)
 
-Mirror Toymate’s proven ops loop: bot races cart + checkout setup; human finishes
-PayPal in a browser when the approve URL is ready.
+| Value | Behaviour |
+|---|---|
+| `credit_card` | Existing Fast card path (default) |
+| `paypal_auto` | Mint approve URL + Playwright login / Pay Now (needs profile `paypal_email` + `paypal_password`) |
+| `paypal_manual` | Mint approve URL only (link-only / human finish) |
+
+Legacy `paypal_guest` normalizes to `paypal_manual`.
+
+---
+
+## Recommended v1 — shipped baseline
+
+Bot races cart + checkout setup; PayPal auto completes Pay Now when credentials
+are on the profile. Link-only still supports human finish.
 
 ### Task / UI
 
-- Extend Bandai task field: `paymentMethod: "credit_card" | "paypal_guest"`
-  (default `credit_card`).
-- Desktop: show a Bandai pay-method select (same pattern as `#taskToymatePay`).
-- Pass through `desktop/main.cjs` → executor `/run` like Toymate already does.
+- Bandai task field: `paymentMethod: "credit_card" | "paypal_auto" | "paypal_manual"`.
+- Desktop: `#taskBandaiPay` + profile PayPal fields; Quick Task preset payment.
+- Persist via `desktop/main.cjs` → `job-runner` → executor `/run`.
 
 ### Executor Fast branch
 
@@ -83,12 +95,11 @@ After GetCartToken + address/shipping hydrate (same as card):
 }
 ```
 
-6. Desktop surfaces the URL (open / copy) — **no** in-bot PayPal password vault in v1.
+6. Desktop: `paypal_manual` surfaces approve URL; `paypal_auto` uses profile PayPal creds via `executor/adapters/paypal-approve.js` (headed by default; `PAYPAL_APPROVE_HEADLESS=1` opt-in).
 
-### Out of scope for v1
+### Out of scope / later
 
-- PayPal account vault / auto-relogin (BUTT gap — later product)
-- Fully headless PayPal login + approve (fragile, ToS-heavy)
+- Sticky PayPal session vault / relogin across runs
 - Apple Pay / Google Pay
 - Changing card Fast defaults
 
@@ -111,8 +122,8 @@ After GetCartToken + address/shipping hydrate (same as card):
 | Phase | Work | Status |
 |---|---|---|
 | **0 — HAR / wire** | Checkout/v2 + HTTP InitPayPalExpress | **Done** |
-| **1 — Fast branch** | `paypal_guest` in `runBandaiGeHttpPay` | **Lab in** |
-| **2 — Desktop** | Bandai pay select + open/copy approve URL | Next |
+| **1 — Fast branch** | PayPal mint + auto-approve in `runBandaiGeHttpPay` | **In** |
+| **2 — Desktop** | Pay select + region modules + profile PP creds | **In** |
 | **3 — Ops** | “Use PP on contested drops” | — |
 | **4 — later** | PayPal session vault / relogin | Later |
 
