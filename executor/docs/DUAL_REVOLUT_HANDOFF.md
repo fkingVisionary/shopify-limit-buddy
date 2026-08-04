@@ -69,6 +69,17 @@ These have been confirmed repeatedly. Please treat them as given unless you prod
 **Silent / skipped 3DS-method or soft-decline retry below our HandleCredit.**  
 Many duals end as `pay_submitted_no_3ds_seen`. We do not implement a 3DS Method URL step on Fast; on Full/Safe, GE’s own JS may or may not run one. Instrumentation now logs `post_pay_wire` kinds (`three_ds_method`, `acs_challenge`, `alt_charge`, `risk`) and HAR summary flags `NO_3DS_METHOD_AFTER_ISSUER`.
 
+#### Lab Full3ds HAR — `run_efce811fb51e` (~08:03 AEST 2026-08-05)
+
+- Card last4 `3562` (disposable lab card) · GE tx **`172835957`** · chargeReq=**1**
+- HAR (~35MB): **HandleCreditPosts=1**, **threeDsMethodCount=0**, **acsChallengeCount=0**, **altChargeCount=0**
+- JWT: `AutherizationFailed`, `PossibleFraudDetected=False`, `threeDsHint=null`, `IsTheSameCartToken=False`
+- Issuer headers still advertise **`HeadlessChrome`** in `sec-ch-ua` (basic stealth did not remove that)
+- Forter CDN loaded earlier in the session; no 3DS Method URL after issuer
+- **Awaiting Revolut 1 vs 2** for this tx
+
+If Revolut is ×2 here, the strongest next A/Bs are: (1) headed Chromium (not headless) so `sec-ch-ua` is real Chrome, (2) manual HAR to confirm a real browser *does* hit a 3DS Method URL on the same SKU/card.
+
 ---
 
 ## What we already tried (and it still dualed)
