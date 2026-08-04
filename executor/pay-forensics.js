@@ -28,6 +28,50 @@ export const ISSUER_PATH_RE =
 export const ACS_OR_REDIRECT_RE =
   /CCPaymentRedirect|\/acs|3ds|cardinalcommerce|secure\.|pareq|creq|methodurl/i;
 
+/**
+ * Classify a URL seen after Pay / first issuer (3DS-method / retry lead).
+ * @param {string} url
+ * @returns {"issuer"|"three_ds_method"|"acs_challenge"|"payment_redirect"|"alt_charge"|"risk"|"ge_handleaction"|"ge_other"|"other"}
+ */
+export function classifyPostPayUrl(url) {
+  const u = String(url || "");
+  if (/HandleCreditCard/i.test(u)) return "issuer";
+  if (/methodurl|three.?ds.?method|3dsmethod|\/Method\b/i.test(u)) return "three_ds_method";
+  if (/creq|pareq|\/acs|cardinalcommerce|securecode|challenge/i.test(u)) return "acs_challenge";
+  if (/CCPaymentRedirect/i.test(u)) return "payment_redirect";
+  if (/Authorize|ProcessPayment|CompleteOrder|SubmitPayment|DoPayment|SendPayment/i.test(u)) {
+    return "alt_charge";
+  }
+  if (/forter|iovation|threatmetrix|sardine|fingerprint/i.test(u)) return "risk";
+  if (/handleaction/i.test(u)) return "ge_handleaction";
+  if (/global-e\.com|globale|CreditCard|Checkout\//i.test(u)) return "ge_other";
+  return "other";
+}
+
+/**
+ * Behavior-neutral: log post-Pay wire that is not the first HandleCredit itself.
+ * @param {Record<string, unknown>} fields
+ */
+export function postPayForensics(fields = {}) {
+  const url = fields.url || null;
+  const kind = fields.kind || classifyPostPayUrl(url);
+  if (kind === "other" && !fields.force) return null;
+  return payForensics("post_pay_wire", {
+    store: fields.store || "bandai",
+    via: fields.via || null,
+    desktopTaskId: fields.desktopTaskId || null,
+    desktopRunId: fields.desktopRunId || null,
+    desktopAttempt: fields.desktopAttempt || null,
+    executorTaskId: fields.executorTaskId || null,
+    method: fields.method || null,
+    status: fields.status != null ? Number(fields.status) : null,
+    chargeN: fields.chargeN != null ? Number(fields.chargeN) : null,
+    url: url ? String(url).slice(0, 220) : null,
+    kind,
+    note: fields.note || null,
+  });
+}
+
 function logPath() {
   const env = String(process.env.PAY_FORENSICS_PATH || "").trim();
   if (env) return env;
@@ -180,6 +224,17 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
         : /^(false|0)$/i.test(fraudRaw)
           ? false
           : null;
+  // 3DS / device-data lead: surface JWT keys if GE mentions a challenge path.
+  const threeDsHint =
+    map.ThreeDSStatus != null
+      ? String(map.ThreeDSStatus)
+      : map.ThreeDS != null
+        ? String(map.ThreeDS)
+        : map.CReq != null || map.creq != null
+          ? "creq_present"
+          : map.ACSUrl != null || map.AcsUrl != null
+            ? String(map.ACSUrl || map.AcsUrl).slice(0, 120)
+            : null;
   return {
     redirectHost,
     redirectPath,
@@ -189,6 +244,9 @@ export function redirectFanoutFields(redirectUrl, redirectPayload = null) {
     statusType,
     possibleFraudDetected,
     possibleFraudDetectedRaw: fraudRaw,
+    threeDsHint,
+    isTheSameCartToken:
+      map.IsTheSameCartToken != null ? String(map.IsTheSameCartToken) : null,
   };
 }
 
@@ -277,7 +335,9 @@ export default {
   payForensics,
   payForensicsPath,
   pspPostForensics,
+  postPayForensics,
   classifyPayWireStage,
+  classifyPostPayUrl,
   redirectFanoutFields,
   PAY_WIRE_HOST_RE,
   ISSUER_PATH_RE,

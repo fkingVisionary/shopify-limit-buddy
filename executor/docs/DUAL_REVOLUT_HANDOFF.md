@@ -57,11 +57,17 @@ These have been confirmed repeatedly. Please treat them as given unless you prod
 1. **Manual browser = 1 Revolut line** on the same merchants/cards.
 2. **Bot = 2 Revolut lines** across Bandai, Pokemon Centre (Global-E), and Toymate (BigPay/Adyen).
 3. **One client payment POST** in our logs when dual happens (`chargeReqCount` / `psp_post` = 1).
-4. The two Revolut lines usually show up **together / within a few seconds**.
-5. Happens on **multiple cards**, not only one Revolut PAN.
-6. **Direct / no-proxy** was already tried historically and still dualed — don’t burn a bank hit just to rediscover that unless you have a new theory.
-7. Desktop was **not** enqueueing two jobs for these labs (`quantity=1`, one run start, one payment post).
-8. There was a *different* double-charge bug from soft retries (`RESPONSE_LOST` re-entry). That was fixed in `desktop/payment-latch.cjs`. Today’s bug is the `posts=1` / `chargeReq=1` shape.
+4. **Global-E `transactionId` is always one** for a dual event (checked many times — not two GE txs).
+5. The two Revolut lines are **the same amount**, arrive **within seconds**, and **~95% of the time the same merchant name** (rarely two different names).
+6. Happens on **multiple cards**, not only one Revolut PAN.
+7. **Direct / no-proxy** was already tried historically and still dualed — don’t burn a bank hit just to rediscover that unless you have a new theory.
+8. Desktop was **not** enqueueing two jobs for these labs (`quantity=1`, one run start, one payment post).
+9. There was a *different* double-charge bug from soft retries (`RESPONSE_LOST` re-entry). That was fixed in `desktop/payment-latch.cjs`. Today’s bug is the `posts=1` / `chargeReq=1` shape.
+
+### Active lead (2026-08-05)
+
+**Silent / skipped 3DS-method or soft-decline retry below our HandleCredit.**  
+Many duals end as `pay_submitted_no_3ds_seen`. We do not implement a 3DS Method URL step on Fast; on Full/Safe, GE’s own JS may or may not run one. Instrumentation now logs `post_pay_wire` kinds (`three_ds_method`, `acs_challenge`, `alt_charge`, `risk`) and HAR summary flags `NO_3DS_METHOD_AFTER_ISSUER`.
 
 ---
 

@@ -2,7 +2,12 @@
 // Used after HTTP + F5 bridge already logged in and ATCed — no second login/PDP.
 // Single Pay click on Checkout/v2 only.
 
-import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
+import {
+  classifyPostPayUrl,
+  issuerResponseForensics,
+  postPayForensics,
+  pspPostForensics,
+} from "../pay-forensics.js";
 
 /** Only the GEM Checkout/v2 shell — never the nested CreditCardForm. */
 export function isBandaiGeCheckoutPayFrame(url) {
@@ -518,6 +523,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
     if (armChargeGuard) {
       const handleAction = isBandaiGeHandleAction(u);
       const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
+      const postKind = classifyPostPayUrl(u);
       const row = {
         t: Date.now(),
         kind: "req",
@@ -528,8 +534,28 @@ export async function browserBandaiGeFromCart(opts = {}) {
         noise,
         handleAction,
         actionId,
+        postKind,
       };
-      if (!noise) mark("post_pay_req", { method, url: u.slice(0, 140) });
+      if (!noise) mark("post_pay_req", { method, url: u.slice(0, 140), postKind });
+      // 3DS-method / alt-charge / risk lead — log even if previously "noise" (forter).
+      if (
+        postKind === "three_ds_method" ||
+        postKind === "acs_challenge" ||
+        postKind === "alt_charge" ||
+        postKind === "risk" ||
+        postKind === "ge_handleaction" ||
+        (!noise && postKind !== "other")
+      ) {
+        postPayForensics({
+          via: "safe-ge-pay",
+          store: "bandai",
+          method,
+          url: u,
+          chargeN: chargeReqCount,
+          kind: postKind,
+          ...forensicsIds,
+        });
+      }
       geNet.push(row);
       return;
     }

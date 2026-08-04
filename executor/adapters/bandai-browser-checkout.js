@@ -8,7 +8,12 @@ import path from "node:path";
 import { chromium } from "playwright";
 
 import { installChromePayStealth, probeChromePayStealth } from "../chrome-pay-stealth.js";
-import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
+import {
+  classifyPostPayUrl,
+  issuerResponseForensics,
+  postPayForensics,
+  pspPostForensics,
+} from "../pay-forensics.js";
 import { parseBandaiProxy } from "./bandai-f5.js";
 import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
@@ -313,6 +318,14 @@ export async function browserBandaiCheckout(opts = {}) {
       desktopAttempt: opts.desktopAttempt || null,
       executorTaskId: opts.executorTaskId || null,
     };
+    let postPayWire = {
+      threeDsMethod: 0,
+      acsChallenge: 0,
+      altCharge: 0,
+      risk: 0,
+      geOther: 0,
+      paymentRedirect: 0,
+    };
     page.on("request", (req) => {
       const u = req.url();
       const method = req.method();
@@ -335,9 +348,39 @@ export async function browserBandaiCheckout(opts = {}) {
           ...forensicsIds,
         });
       }
+      // After first issuer: log 3DS method / ACS / alt-charge / risk (incl. GET).
+      if (chargeReqCount >= 1) {
+        const postKind = classifyPostPayUrl(u);
+        if (
+          postKind === "three_ds_method" ||
+          postKind === "acs_challenge" ||
+          postKind === "alt_charge" ||
+          postKind === "risk" ||
+          postKind === "payment_redirect" ||
+          (postKind === "ge_other" && method !== "GET" && method !== "OPTIONS" && method !== "HEAD")
+        ) {
+          if (postKind === "three_ds_method") postPayWire.threeDsMethod += 1;
+          else if (postKind === "acs_challenge") postPayWire.acsChallenge += 1;
+          else if (postKind === "alt_charge") postPayWire.altCharge += 1;
+          else if (postKind === "risk") postPayWire.risk += 1;
+          else if (postKind === "payment_redirect") postPayWire.paymentRedirect += 1;
+          else postPayWire.geOther += 1;
+          postPayForensics({
+            via: "browser-full",
+            store: "bandai",
+            method,
+            url: u,
+            chargeN: chargeReqCount,
+            kind: postKind,
+            ...forensicsIds,
+          });
+        }
+      }
       if (
         method !== "GET" &&
-        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)
+        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment|forter|iovation/i.test(
+          u,
+        )
       ) {
         geNet.push({
           t: Date.now(),
@@ -346,6 +389,7 @@ export async function browserBandaiCheckout(opts = {}) {
           url: u.slice(0, 200),
           issuer: isBandaiGeIssuerPaymentUrl(u),
           chargeN: isBandaiGeIssuerPaymentUrl(u) ? chargeReqCount : undefined,
+          postKind: chargeReqCount >= 1 ? classifyPostPayUrl(u) : undefined,
         });
       }
     });
@@ -1087,7 +1131,12 @@ export async function browserBandaiCheckout(opts = {}) {
           sawAuthWire = authReqs().length > 0;
           const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
           // After first auth POST, only watch briefly for ACS/decline UI.
-          const postWireObserveMs = Math.min(12_000, wait3dsMs);
+          // Dual HAR / 3DS-method lead: keep the page alive longer so Method URL /
+          // ACS / alt-charge traffic can show up after HandleCredit.
+          const postWireObserveMs = Math.min(
+            recordHarPath || process.env.BANDAI_DUAL_HAR === "1" ? 28_000 : 12_000,
+            wait3dsMs,
+          );
 
           while (Date.now() < hardDeadline && !reached3ds && !orderNumber) {
             if (!sawAuthWire) {
@@ -1257,6 +1306,7 @@ export async function browserBandaiCheckout(opts = {}) {
       chromePayStealth: Boolean(stealthInstall?.ok),
       stealthProbe,
       recordHarPath: recordHarPath || null,
+      postPayWire,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
         : orderNumber
@@ -1265,7 +1315,7 @@ export async function browserBandaiCheckout(opts = {}) {
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
             : payClickCount > 1
               ? `MULTI pay click (${payClickCount}) — investigate double charge`
-              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}${recordHarPath ? `; har=${path.basename(recordHarPath)}` : ""}`,
+              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}; postPay=method:${postPayWire.threeDsMethod}/acs:${postPayWire.acsChallenge}/alt:${postPayWire.altCharge}/risk:${postPayWire.risk}${recordHarPath ? `; har=${path.basename(recordHarPath)}` : ""}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,

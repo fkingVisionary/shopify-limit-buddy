@@ -2814,6 +2814,7 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       chromePayStealth: out.chromePayStealth ?? null,
       stealthProbe: out.stealthProbe ?? null,
       recordHarPath: out.recordHarPath ?? null,
+      postPayWire: out.postPayWire ?? null,
       finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
