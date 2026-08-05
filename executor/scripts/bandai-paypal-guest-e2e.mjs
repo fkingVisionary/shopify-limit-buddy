@@ -91,20 +91,35 @@ function entriesOf(g) {
     .map((x) => (typeof x === "string" ? x : x?.url || x?.raw || ""))
     .filter(Boolean);
 }
-// Royal is dead — Noontide sticky AU only (override via BANDAI_PROXY_GROUP).
-const preferGroupId =
-  process.env.BANDAI_PROXY_GROUP ||
-  "px_noontide_resi_dual";
+
+function loadProxyFile(filePath) {
+  try {
+    return fs
+      .readFileSync(filePath, "utf8")
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("#"));
+  } catch {
+    return [];
+  }
+}
+
+// Prefer fresh file (chat paste) over DB — Royal is dead.
+const preferGroupId = process.env.BANDAI_PROXY_GROUP || "px_noontide_resi_dual";
 const group =
   (db.proxyGroups || []).find((g) => g.id === preferGroupId) ||
   (db.proxyGroups || []).find((g) => /noontide/i.test(String(g.name || ""))) ||
   (db.proxyGroups || []).find((g) => g.id === task?.proxyGroupId) ||
   (db.proxyGroups || [])[0];
-const proxies = entriesOf(group);
+const proxyFile =
+  process.env.BANDAI_PROXY_FILE ||
+  path.join(artifactsDir, "noontide-fresh.proxies.txt");
+const fromFile = loadProxyFile(proxyFile);
+const proxies = fromFile.length ? fromFile : entriesOf(group);
 // Use provided sticky sessions as-is. SoftBlock rotate picks another pool entry.
 const proxyPool = [...proxies];
 if (!proxies.length) {
-  console.error("No proxies on task proxy group");
+  console.error("No proxies on task proxy group / BANDAI_PROXY_FILE");
   process.exit(2);
 }
 if (!account?.email || !account?.password) {
@@ -123,7 +138,7 @@ const aest = () => new Date().toLocaleString("en-AU", { timeZone: "Australia/Syd
 const outPath = path.join(artifactsDir, "bandai-paypal-guest-e2e.json");
 
 console.log(
-  `[${aest()} AEST] PAYPAL_GUEST_E2E start sku=${sku} card=…${pan.slice(-4)} email=${profile?.email} account=${account.email} pm=paypal_guest proxyGroup=${group?.name || group?.id} pool=${proxyPool.length} sticky=${sessionTag(proxy)}`,
+  `[${aest()} AEST] PAYPAL_GUEST_E2E start sku=${sku} card=…${pan.slice(-4)} email=${profile?.email} account=${account.email} pm=paypal_guest proxySrc=${fromFile.length ? "file" : "db"} pool=${proxyPool.length} pick=${pickIdx} sticky=${sessionTag(proxy)}`,
 );
 
 const t0 = Date.now();
