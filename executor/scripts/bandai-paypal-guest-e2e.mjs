@@ -132,6 +132,8 @@ const pickIdx =
     ? Number(process.env.BANDAI_PROXY_PICK) % proxies.length
     : Math.floor(Math.random() * proxies.length);
 const proxy = rotateProxy(proxies[pickIdx]);
+// Put active sticky first so SoftBlock rotate walks unused lines next (not burnt heads).
+const proxyPool = [proxy, ...proxies.filter((_, i) => i !== pickIdx).map(rotateProxy)];
 const aest = () => new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 const outPath = path.join(artifactsDir, "bandai-paypal-guest-e2e.json");
 
