@@ -115,6 +115,13 @@ function looksCaptureFailed(url, text) {
   );
 }
 
+/** PayPal hard-reject of guest card — bail; do not spin the full timeout. */
+function looksCardRejected(text) {
+  return /that card can't be used|card can't be used for your payment|couldn't link your card|could not link your card|try a different card|card (was )?declined|use a different card/i.test(
+    String(text || ""),
+  );
+}
+
 function looksOrderLanding(url) {
   const u = String(url || "");
   return /p-bandai\.com\/.*(?:thank|confirm|order|complete|success)/i.test(u);
@@ -640,24 +647,30 @@ async function clickGuestPayOnly(page, payCtas, log) {
 /**
  * Address validation sheet after Continue as a Guest.
  * Lab 2026-08-05: clicking sheet "Continue" → checkoutweb/genericError U_ERROR.
- * Instead: close sheet, apply suggested suburb/postcode, then guest-submit again.
+ * Default: close sheet and keep the **entered** profile address (better AVS /
+ * Revolut billing match). Opt-in suggested suburb via PAYPAL_ADDRESS_USE_SUGGESTED=1.
  */
 async function dismissAddressMatchSheet(page, log) {
   const body = await page.locator("body").innerText().catch(() => "");
   if (!/We've found a match for your address|Use the address you entered|Use this address/i.test(body)) {
     return false;
   }
-  const suggested = await page
-    .evaluate(() => {
-      const t = String(document.body?.innerText || "");
-      // Block after "Use this address": line1, then "Suburb STATE POSTCODE"
-      const m = t.match(
-        /Use this address\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*([^\r\n]*?)\s+([A-Z]{2,3})\s+(\d{4})/i,
-      );
-      if (!m) return null;
-      return { line1: m[1].trim(), city: m[2].trim(), state: m[3].trim(), zip: m[4].trim() };
-    })
-    .catch(() => null);
+  const useSuggested =
+    process.env.PAYPAL_ADDRESS_USE_SUGGESTED === "1" ||
+    process.env.PAYPAL_ADDRESS_USE_SUGGESTED === "true";
+  const suggested = useSuggested
+    ? await page
+        .evaluate(() => {
+          const t = String(document.body?.innerText || "");
+          // Block after "Use this address": line1, then "Suburb STATE POSTCODE"
+          const m = t.match(
+            /Use this address\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*([^\r\n]*?)\s+([A-Z]{2,3})\s+(\d{4})/i,
+          );
+          if (!m) return null;
+          return { line1: m[1].trim(), city: m[2].trim(), state: m[3].trim(), zip: m[4].trim() };
+        })
+        .catch(() => null)
+    : null;
 
   // Close sheet — do NOT click sheet Continue (U_ERROR).
   await page.keyboard.press("Escape").catch(() => {});
@@ -689,10 +702,14 @@ async function dismissAddressMatchSheet(page, log) {
       );
     }
     log(
-      `paypal_guest address-match closed → city=${suggested.city} zip=${suggested.zip || "?"} (no sheet Continue)`,
+      `paypal_guest address-match closed → suggested city=${suggested.city} zip=${suggested.zip || "?"} (no sheet Continue)`,
     );
   } else {
-    log("paypal_guest address-match closed (no parseable suggestion)");
+    log(
+      useSuggested
+        ? "paypal_guest address-match closed (no parseable suggestion)"
+        : "paypal_guest address-match closed — keeping entered profile address",
+    );
   }
   await page.waitForTimeout(500);
   return true;
@@ -1356,6 +1373,10 @@ export async function approvePaypalCheckout(opts = {}) {
         log(`paypal_guest PayPal error page ${page.url().slice(0, 120)}`);
         break;
       }
+      if (looksCardRejected(bodyNow)) {
+        log(`paypal_guest card rejected by PayPal — bailing early`);
+        break;
+      }
 
       // At most 2 guest submits: (1) triggers address sheet, (2) after sheet = charge.
       const maySubmit =
@@ -1465,15 +1486,13 @@ export async function approvePaypalCheckout(opts = {}) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
 
-    const cardLinkFailed = /couldn't link your card|could not link your card|try a different card/i.test(
-      bodyText,
-    );
+    const cardLinkFailed = looksCardRejected(bodyText);
     const note = ok
       ? `PayPal guest ORDER${orderGuess ? ` order=${orderGuess}` : " confirmed"}${
           payerId ? ` payerId=${payerId}` : ""
         }`
       : cardLinkFailed
-        ? `PayPal UI: couldn't link card (…${String(card.number || "").slice(-4)}) — check Revolut/bank for auth attempt; merchant return may still fail`
+        ? `PayPal UI: card rejected (…${String(card.number || "").slice(-4)}) — try another card / check Revolut; no GE capture`
         : createAccountStuck
           ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
           : stillOnPaypalPayUi
