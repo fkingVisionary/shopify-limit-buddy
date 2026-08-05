@@ -1292,15 +1292,20 @@ export async function approvePaypalCheckout(opts = {}) {
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
 
+    const cardLinkFailed = /couldn't link your card|could not link your card|try a different card/i.test(
+      bodyText,
+    );
     const note = ok
       ? `PayPal guest charged${orderGuess ? ` order=${orderGuess}` : ""}${
           merchantReturned ? " merchant_return" : ""
         }${payerId ? ` payerId=${payerId}` : ""}`
-      : createAccountStuck
-        ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
-        : stillOnPaypalPayUi
-          ? `PayPal guest incomplete — still on PayPal UI (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} nav=${navClicks})`
-          : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
+      : cardLinkFailed
+        ? `PayPal rejected card link (…${String(card.number || "").slice(-4)}) — no Revolut auth expected; try another card`
+        : createAccountStuck
+          ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
+          : stillOnPaypalPayUi
+            ? `PayPal guest incomplete — still on PayPal UI (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} nav=${navClicks})`
+            : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
 
     log(`paypal_guest done ok=${ok} ${note}`);
     return {
