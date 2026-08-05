@@ -234,6 +234,47 @@ export async function getBandaiGeCartToken(opts = {}) {
     bodySnippet: String(res.text || "").replace(/\s+/g, " ").slice(0, 280),
     success: json?.Success,
     message: json?.Message || null,
+    via: "undici",
+  };
+}
+
+/** Chromium fetch GetCartToken — bypasses undici SoftBlock Success:false on gepi. */
+export async function getBandaiGeCartTokenViaPage(page, opts = {}) {
+  if (!page) return { ok: false, status: 0, ms: 0, via: "page", error: "no_page" };
+  const url = buildGetCartTokenUrl(opts);
+  const t0 = Date.now();
+  const referer = opts.referer || "https://p-bandai.com/au/orderdetails";
+  const raw = await page
+    .evaluate(async ({ fetchUrl, referer: ref }) => {
+      const res = await fetch(fetchUrl, {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          accept: "application/javascript, application/json, */*",
+          referer: ref,
+        },
+      });
+      const text = await res.text();
+      return { status: res.status, text: String(text || "").slice(0, 4000) };
+    }, { fetchUrl: url, referer })
+    .catch((e) => ({ status: 0, text: "", error: String(e?.message || e) }));
+  const json = parseJsonp(raw.text);
+  const cartToken =
+    json?.CartToken || json?.cartToken || extractGeCheckoutGuid(raw.text) || null;
+  const isCaptcha = Boolean(json?.IsCaptcha || json?.isCaptcha);
+  return {
+    ok: Boolean(raw.status >= 200 && raw.status < 300 && json?.Success !== false && cartToken),
+    status: raw.status || 0,
+    ms: Date.now() - t0,
+    url: url.slice(0, 260),
+    urlFull: url,
+    json,
+    cartToken,
+    isCaptcha,
+    bodySnippet: String(raw.text || "").replace(/\s+/g, " ").slice(0, 280),
+    success: json?.Success,
+    message: json?.Message || raw.error || null,
+    via: "page",
   };
 }
 
@@ -1650,12 +1691,39 @@ export async function runBandaiGeHttpPay(opts = {}) {
     if ((!softTransport && !softFalse) || attempt >= 4) break;
     await new Promise((r) => setTimeout(r, softFalse ? 1200 * attempt : 400 * attempt));
   }
+  // Undici SoftBlock Success:false → mint via F5 Chrome (same sticky / cookies).
+  if (
+    (!tokenOut.ok || !tokenOut.cartToken) &&
+    opts.page &&
+    Number(tokenOut.status) === 200 &&
+    tokenOut.success === false
+  ) {
+    const pageTok = await getBandaiGeCartTokenViaPage(opts.page, cartTokenArgs).catch((e) => ({
+      ok: false,
+      status: 0,
+      ms: 0,
+      via: "page",
+      bodySnippet: String(e?.message || e).slice(0, 160),
+    }));
+    push("ge_get_cart_token_page", {
+      ok: Boolean(pageTok?.ok),
+      status: pageTok?.status,
+      ms: pageTok?.ms,
+      note: pageTok?.ok
+        ? `CartToken ${pageTok.cartToken} via=page`
+        : `page GetCartToken fail success=${pageTok?.success} ${pageTok?.bodySnippet || pageTok?.message || ""}`.slice(
+            0,
+            220,
+          ),
+    });
+    if (pageTok?.ok && pageTok.cartToken) tokenOut = pageTok;
+  }
   push("ge_get_cart_token", {
     ok: tokenOut.ok,
     status: tokenOut.status,
     ms: tokenOut.ms,
     note: tokenOut.ok
-      ? `CartToken ${tokenOut.cartToken}${tokenOut.isCaptcha ? " IsCaptcha" : ""}`
+      ? `CartToken ${tokenOut.cartToken}${tokenOut.isCaptcha ? " IsCaptcha" : ""} via=${tokenOut.via || "undici"}`
       : `GetCartToken fail success=${tokenOut.success} captcha=${tokenOut.isCaptcha} ${tokenOut.bodySnippet || tokenOut.message || ""}`.slice(
           0,
           220,
