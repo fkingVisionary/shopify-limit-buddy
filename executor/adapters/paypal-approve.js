@@ -887,9 +887,15 @@ export async function approvePaypalCheckout(opts = {}) {
   const t0 = Date.now();
   try {
     // Prefer real Chrome channel — stock Chromium often lands DataDome blank shell.
+    // Direct (no proxy) for PayPal UI: Noontide resi often sticks on DataDome
+    // "security check" with Continue as a Guest disabled. Bandai/GE still use proxy.
+    const approveDirect =
+      opts.direct === true ||
+      process.env.PAYPAL_APPROVE_DIRECT === "1" ||
+      process.env.PAYPAL_APPROVE_DIRECT === "true";
     const launchOpts = {
       headless,
-      proxy: proxyForPlaywright(opts.proxy),
+      proxy: approveDirect ? undefined : proxyForPlaywright(opts.proxy),
       args: [
         "--disable-blink-features=AutomationControlled",
         "--disable-popup-blocking",

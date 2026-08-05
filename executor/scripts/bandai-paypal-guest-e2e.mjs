@@ -50,6 +50,10 @@ function loadDesktopSecrets() {
   }
 }
 loadDesktopSecrets();
+// PayPal guest UI: prefer direct Chrome (DataDome sticks on Noontide resi).
+if (process.env.PAYPAL_APPROVE_DIRECT == null) {
+  process.env.PAYPAL_APPROVE_DIRECT = "1";
+}
 
 /** Only remint sticky session when BANDAI_ROTATE_PROXY_SESSION=1 (fresh lists already have unique sessions). */
 function rotateProxy(raw) {
