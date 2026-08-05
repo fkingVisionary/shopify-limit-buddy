@@ -1675,55 +1675,72 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
   };
   let tokenOut = { ok: false, status: 0, ms: 0 };
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
-      ok: false,
-      status: 0,
-      ms: 0,
-      bodySnippet: String(e?.message || e).slice(0, 160),
-    }));
-    if (tokenOut.ok && tokenOut.cartToken) break;
-    const softTransport =
-      !tokenOut.status ||
-      tokenOut.status === 0 ||
-      /EOF|failed to do request|TLS|timed?\s*out/i.test(
-        String(tokenOut.bodySnippet || tokenOut.message || ""),
-      );
-    // SoftBlock-shaped: HTTP 200 + Success:false + null CartToken (lab 2026-08-05).
-    const softFalse =
-      Number(tokenOut.status) === 200 &&
-      tokenOut.success === false &&
-      !tokenOut.cartToken &&
-      !tokenOut.isCaptcha;
-    if ((!softTransport && !softFalse) || attempt >= 4) break;
-    await new Promise((r) => setTimeout(r, softFalse ? 1200 * attempt : 400 * attempt));
-  }
-  // Undici SoftBlock Success:false → mint via F5 Chrome (same sticky / cookies).
+  // Prefer CartToken harvested from GEM on /orderdetails (lab SoftBlock bypass).
   if (
-    (!tokenOut.ok || !tokenOut.cartToken) &&
-    opts.page &&
-    Number(tokenOut.status) === 200 &&
-    tokenOut.success === false
+    opts.prefetchedCartToken &&
+    /^[0-9a-f-]{36}$/i.test(String(opts.prefetchedCartToken))
   ) {
-    const pageTok = await getBandaiGeCartTokenViaPage(opts.page, cartTokenArgs).catch((e) => ({
-      ok: false,
-      status: 0,
+    tokenOut = {
+      ok: true,
+      status: 200,
       ms: 0,
-      via: "page",
-      bodySnippet: String(e?.message || e).slice(0, 160),
-    }));
-    push("ge_get_cart_token_page", {
-      ok: Boolean(pageTok?.ok),
-      status: pageTok?.status,
-      ms: pageTok?.ms,
-      note: pageTok?.ok
-        ? `CartToken ${pageTok.cartToken} via=page`
-        : `page GetCartToken fail success=${pageTok?.success} ${pageTok?.bodySnippet || pageTok?.message || ""}`.slice(
-            0,
-            220,
-          ),
-    });
-    if (pageTok?.ok && pageTok.cartToken) tokenOut = pageTok;
+      cartToken: String(opts.prefetchedCartToken),
+      success: true,
+      isCaptcha: false,
+      via: "gem-harvest",
+      bodySnippet: "prefetched from orderdetails GEM GetCartToken",
+    };
+  } else {
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
+        ok: false,
+        status: 0,
+        ms: 0,
+        bodySnippet: String(e?.message || e).slice(0, 160),
+      }));
+      if (tokenOut.ok && tokenOut.cartToken) break;
+      const softTransport =
+        !tokenOut.status ||
+        tokenOut.status === 0 ||
+        /EOF|failed to do request|TLS|timed?\s*out/i.test(
+          String(tokenOut.bodySnippet || tokenOut.message || ""),
+        );
+      // SoftBlock-shaped: HTTP 200 + Success:false + null CartToken (lab 2026-08-05).
+      const softFalse =
+        Number(tokenOut.status) === 200 &&
+        tokenOut.success === false &&
+        !tokenOut.cartToken &&
+        !tokenOut.isCaptcha;
+      if ((!softTransport && !softFalse) || attempt >= 4) break;
+      await new Promise((r) => setTimeout(r, softFalse ? 1200 * attempt : 400 * attempt));
+    }
+    // Undici SoftBlock Success:false → mint via F5 Chrome (same sticky / cookies).
+    if (
+      (!tokenOut.ok || !tokenOut.cartToken) &&
+      opts.page &&
+      Number(tokenOut.status) === 200 &&
+      tokenOut.success === false
+    ) {
+      const pageTok = await getBandaiGeCartTokenViaPage(opts.page, cartTokenArgs).catch((e) => ({
+        ok: false,
+        status: 0,
+        ms: 0,
+        via: "page",
+        bodySnippet: String(e?.message || e).slice(0, 160),
+      }));
+      push("ge_get_cart_token_page", {
+        ok: Boolean(pageTok?.ok),
+        status: pageTok?.status,
+        ms: pageTok?.ms,
+        note: pageTok?.ok
+          ? `CartToken ${pageTok.cartToken} via=page`
+          : `page GetCartToken fail success=${pageTok?.success} ${pageTok?.bodySnippet || pageTok?.message || ""}`.slice(
+              0,
+              220,
+            ),
+      });
+      if (pageTok?.ok && pageTok.cartToken) tokenOut = pageTok;
+    }
   }
   push("ge_get_cart_token", {
     ok: tokenOut.ok,

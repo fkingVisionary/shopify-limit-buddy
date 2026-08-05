@@ -2320,13 +2320,44 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         /* ignore */
       }
     }
-    // SoftBlock lab 2026-08-05: cart_checkout 200 then GetCartToken Success:false
-    // (null Message). Warm orderdetails in F5 so GE cookies land before gepi mint.
+    // SoftBlock lab 2026-08-05: undici/page GetCartToken Success:false even on
+    // fresh Noontide. Warm orderdetails and harvest CartToken from GEM's own
+    // GetCartToken wire (CookieConsent / full query) when present.
+    let harvestedCartToken = null;
     if (bridge?.page) {
       try {
+        const page = bridge.page;
+        const gemHits = [];
+        const onGem = async (res) => {
+          try {
+            const u = res.url();
+            if (!/GetCartToken/i.test(u)) return;
+            const text = await res.text().catch(() => "");
+            gemHits.push({
+              status: res.status(),
+              url: u.slice(0, 220),
+              text: String(text || "").slice(0, 500),
+            });
+          } catch {
+            /* ignore */
+          }
+        };
+        page.on("response", onGem);
         await bridge.goto(`${session.base}/orderdetails`, {
-          settleMs: Math.min(Math.max(f5SettleMs, 2_000), 5_000),
+          settleMs: Math.min(Math.max(f5SettleMs, 3_000), 8_000),
         });
+        // GEM often fires GetCartToken after first paint.
+        await page.waitForTimeout(4_000).catch(() => {});
+        page.off("response", onGem);
+        for (const h of gemHits) {
+          const m = String(h.text || "").match(
+            /"Success"\s*:\s*true[^]*?"CartToken"\s*:\s*"([0-9a-f-]{36})"/i,
+          ) || String(h.text || "").match(/"CartToken"\s*:\s*"([0-9a-f-]{36})"/i);
+          if (m?.[1] && /Success"\s*:\s*true/i.test(h.text)) {
+            harvestedCartToken = m[1];
+            break;
+          }
+        }
         const cookies = await bridge.cookies();
         if (cookies && ctx.jar?.load) {
           ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
@@ -2335,7 +2366,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           step: "ge_orderdetails_warm",
           ok: true,
           ms: 0,
-          note: "warmed /orderdetails before GetCartToken",
+          note: harvestedCartToken
+            ? `warmed orderdetails; harvested CartToken ${harvestedCartToken} gemHits=${gemHits.length}`
+            : `warmed orderdetails; no GEM CartToken gemHits=${gemHits.length} last=${String(gemHits.at?.(-1)?.text || "").slice(0, 80)}`,
         });
       } catch (e) {
         steps.push({
@@ -2391,6 +2424,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       executorTaskId: task.taskId || null,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
+      prefetchedCartToken: harvestedCartToken || null,
       card: opts.card,
       // Desktop/imported vaults: GE form often lacks BillingFirstName — fill from profile.
       profile: shipProfile || profileFromTask(task),
