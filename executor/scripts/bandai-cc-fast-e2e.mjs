@@ -184,6 +184,7 @@ const summary = {
     orderNumber: res.orderNumber || null,
     chargeReqCount: res.chargeReqCount ?? null,
     failedStep: res.failedStep || null,
+    error: String(res.error || "").slice(0, 500) || null,
     note: String(res.note || "").slice(0, 500),
     steps: paySteps.map((s) => ({
       step: s.step,
