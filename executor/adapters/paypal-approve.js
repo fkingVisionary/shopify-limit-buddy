@@ -1300,7 +1300,7 @@ export async function approvePaypalCheckout(opts = {}) {
           merchantReturned ? " merchant_return" : ""
         }${payerId ? ` payerId=${payerId}` : ""}`
       : cardLinkFailed
-        ? `PayPal rejected card link (…${String(card.number || "").slice(-4)}) — no Revolut auth expected; try another card`
+        ? `PayPal UI: couldn't link card (…${String(card.number || "").slice(-4)}) — check Revolut/bank for auth attempt; merchant return may still fail`
         : createAccountStuck
           ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
           : stillOnPaypalPayUi
