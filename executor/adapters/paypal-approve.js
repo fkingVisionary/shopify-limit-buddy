@@ -415,6 +415,16 @@ async function disableCreateAccountToggle(page, log) {
 
 /** Click pay only when CTA is guest pay — never Create Account. */
 async function clickGuestPayOnly(page, payCtas, log) {
+  // Spinner / disabled Continue as a Guest means validation or DataDome still running.
+  const spinner = page.locator('[data-testid="exit-loader-spinner"], [data-testid="spinner-icon"]');
+  if (await spinner.count().catch(() => 0)) {
+    const visible = await spinner.first().isVisible().catch(() => false);
+    if (visible) {
+      log("paypal_guest pay CTA deferred — spinner visible");
+      await page.waitForTimeout(1500);
+      return null;
+    }
+  }
   const submit = page.locator('[data-testid="submit-button"]').first();
   if (await submit.count().catch(() => 0)) {
     const text = String((await submit.innerText().catch(() => "")) || "");
@@ -427,8 +437,21 @@ async function clickGuestPayOnly(page, payCtas, log) {
         text.trim(),
       )
     ) {
-      await submit.click({ force: true, noWaitAfter: true }).catch(() => {});
-      log(`paypal_guest pay CTA (submit-button text=${text.slice(0, 40)})`);
+      const disabled = await submit.isDisabled().catch(() => true);
+      if (disabled) {
+        // Wait briefly for enable after fill / security check.
+        await submit.waitFor({ state: "visible", timeout: 2_000 }).catch(() => {});
+        const still = await submit.isDisabled().catch(() => true);
+        if (still) {
+          log(`paypal_guest pay CTA disabled ("${text.slice(0, 40)}") — waiting`);
+          await page.waitForTimeout(1200);
+          return null;
+        }
+      }
+      await submit.click({ noWaitAfter: true, timeout: 8_000 }).catch(async () => {
+        await submit.click({ force: true, noWaitAfter: true }).catch(() => {});
+      });
+      log(`paypal_guest pay CTA (submit-button text=${text.slice(0, 40)} enabled)`);
       return "submit-button";
     }
   }
@@ -807,7 +830,9 @@ async function dumpForensics(page, dir, tag) {
     fs.writeFileSync(`${base}.url.txt`, url);
     fs.writeFileSync(`${base}.txt`, String(text).slice(0, 12_000));
     fs.writeFileSync(`${base}.html`, String(html).slice(0, 200_000));
-    await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
+    await page
+      .screenshot({ path: `${base}.png`, fullPage: true, timeout: 8_000 })
+      .catch(() => {});
     return base;
   } catch {
     return null;
@@ -1043,26 +1068,25 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Weasley card form — fill once per few loops, force toggle OFF, then Pay.
-      if (/Pay with debit or credit card|Create Account and Continue|Continue as a Guest/i.test(bodyNow)) {
-        if (weasleyPasses < 3) {
+      // Weasley card form — fill at most twice. Re-selecting country remounts and
+      // undoes a successful Continue as a Guest click (lab 2026-08-05).
+      if (
+        !payClicked &&
+        /Pay with debit or credit card|Create Account and Continue|Continue as a Guest/i.test(bodyNow)
+      ) {
+        if (weasleyPasses < 2) {
           weasleyPasses += 1;
-          // Country first (remounts fields), then card + address, then toggle OFF.
-          await selectAustraliaCountry(page, log);
-          await page.waitForTimeout(1000);
+          if (weasleyPasses === 1) {
+            await selectAustraliaCountry(page, log);
+            await page.waitForTimeout(1000);
+          }
           await fillGuestCardFields(page, card, log);
           await fillGuestContactAndAddress(page, billing, log);
           const toggled = await disableCreateAccountToggle(page, log);
-          // Re-fill card after country remount / toggle animation.
           await fillGuestCardFields(page, card, log);
           await waitPaypalSecurityCheck(page, log, 20_000);
           log(`paypal_guest weasley pass=${weasleyPasses} toggled=${toggled}`);
           await dumpForensics(page, forensicsDir, `weasley-${weasleyPasses}`);
-        } else if (weasleyPasses === 3) {
-          weasleyPasses += 1;
-          await disableCreateAccountToggle(page, log);
-          await fillGuestCardFields(page, card, log);
-          await waitPaypalSecurityCheck(page, log, 15_000);
         }
       }
 
@@ -1082,7 +1106,15 @@ export async function approvePaypalCheckout(opts = {}) {
       const payHit = await clickGuestPayOnly(page, payCtas, log);
       if (payHit) {
         payClicked = payHit;
-        await page.waitForTimeout(2000);
+        log(`paypal_guest waiting after pay CTA (${payHit})`);
+        // Give EC return / bank auth time — do not remount form.
+        await Promise.race([
+          page.waitForURL(
+            (u) => isMerchantReturn(String(u)) || isPaypalSuccessUrl(String(u)),
+            { timeout: 45_000 },
+          ).catch(() => null),
+          page.waitForTimeout(45_000),
+        ]);
         continue;
       }
 
