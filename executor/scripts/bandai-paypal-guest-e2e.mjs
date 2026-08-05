@@ -209,6 +209,7 @@ const summary = {
     orderNumber: res.orderNumber || null,
     finalUrl: res.finalUrl || null,
     failedStep: res.failedStep || null,
+    error: String(res.error || "").slice(0, 500) || null,
     paypalGuest: res.paypalGuest || null,
     note: String(res.note || "").slice(0, 500),
     steps: ppSteps.map((s) => ({

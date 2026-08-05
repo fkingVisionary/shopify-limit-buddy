@@ -1110,6 +1110,8 @@ export async function approvePaypalCheckout(opts = {}) {
     await dumpForensics(page, forensicsDir, "after-advance");
 
     let payClicked = null;
+    let guestSubmits = 0;
+    let addressSheetDone = false;
     let navClicks = 0;
     let weasleyPasses = 0;
     const deadline = Date.now() + timeoutMs;
@@ -1142,10 +1144,9 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Weasley card form — fill at most twice. Re-selecting country remounts and
-      // undoes a successful Continue as a Guest click (lab 2026-08-05).
+      // Weasley card form — fill before first guest submit only.
       if (
-        !payClicked &&
+        guestSubmits === 0 &&
         /Pay with debit or credit card|Create Account and Continue|Continue as a Guest/i.test(bodyNow)
       ) {
         if (weasleyPasses < 2) {
@@ -1171,10 +1172,11 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Address suggestion sheet blocks EC return after guest submit.
+      // Address suggestion sheet — dismiss once, then allow second guest submit.
       if (/We've found a match for your address|Use the address you entered/i.test(bodyNow)) {
         await dismissAddressMatchSheet(page, log);
-        await page.waitForTimeout(1000);
+        addressSheetDone = true;
+        await page.waitForTimeout(1200);
         continue;
       }
 
@@ -1184,41 +1186,31 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // After first guest submit: ONLY dismiss address sheet + wait. Re-clicking
-      // Continue as a Guest caused checkoutweb/genericError U_ERROR (2026-08-05).
-      if (payClicked) {
-        if (/We've found a match for your address/i.test(bodyNow)) {
-          await dismissAddressMatchSheet(page, log);
+      if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${bodyNow}`)) {
+        log(`paypal_guest PayPal error page ${page.url().slice(0, 120)}`);
+        break;
+      }
+
+      // At most 2 guest submits: (1) triggers address sheet, (2) after sheet = charge.
+      const maySubmit =
+        guestSubmits === 0 ||
+        (guestSubmits === 1 && addressSheetDone && /Continue as a Guest/i.test(bodyNow));
+      if (maySubmit) {
+        const payHit = await clickGuestPayOnly(page, payCtas, log);
+        if (payHit) {
+          guestSubmits += 1;
+          payClicked = payHit;
+          log(`paypal_guest guest submit #${guestSubmits} (${payHit})`);
+          await page.waitForTimeout(2500);
+          continue;
         }
+      } else if (payClicked) {
         if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
-        if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${bodyNow}`)) {
-          log(`paypal_guest PayPal error page ${page.url().slice(0, 120)}`);
-          break;
-        }
         await page.waitForTimeout(1500);
         continue;
       }
 
-      const payHit = await clickGuestPayOnly(page, payCtas, log);
-      if (payHit) {
-        payClicked = payHit;
-        log(`paypal_guest waiting after pay CTA (${payHit}) — no re-click`);
-        for (let w = 0; w < 40; w++) {
-          if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
-          const b = await page.locator("body").innerText().catch(() => "");
-          if (/We've found a match for your address/i.test(b)) {
-            await dismissAddressMatchSheet(page, log);
-          }
-          if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${b}`)) {
-            log("paypal_guest hit PayPal genericError after submit");
-            break;
-          }
-          await page.waitForTimeout(1500);
-        }
-        continue;
-      }
-
-      if (navClicks < 4 && !/Create Account/i.test(bodyNow)) {
+      if (navClicks < 4 && !/Create Account/i.test(bodyNow) && guestSubmits === 0) {
         const navHit = await clickFirst(page, advanceCtas);
         if (navHit) {
           navClicks += 1;
@@ -1231,14 +1223,30 @@ export async function approvePaypalCheckout(opts = {}) {
       await page.waitForTimeout(700);
     }
 
-    // Wait for merchant return / success after a real Pay click.
-    const retDeadline = Date.now() + Math.min(60_000, timeoutMs);
+    // Wait for merchant return — do not re-click guest CTA here (U_ERROR risk).
+    const retDeadline = Date.now() + Math.min(90_000, timeoutMs);
     while (Date.now() < retDeadline) {
       if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
-      if (payClicked && !(await isCreateAccountMode(page))) {
-        await clickGuestPayOnly(page, payCtas, log);
+      const b = await page.locator("body").innerText().catch(() => "");
+      if (/We've found a match for your address/i.test(b)) {
+        await dismissAddressMatchSheet(page, log);
+        addressSheetDone = true;
       }
-      await page.waitForTimeout(600);
+      if (
+        guestSubmits === 1 &&
+        addressSheetDone &&
+        /Continue as a Guest/i.test(b) &&
+        !/genericError/i.test(page.url())
+      ) {
+        const payHit = await clickGuestPayOnly(page, payCtas, log);
+        if (payHit) {
+          guestSubmits += 1;
+          payClicked = payHit;
+          log(`paypal_guest guest submit #${guestSubmits} (final)`);
+        }
+      }
+      if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${b}`)) break;
+      await page.waitForTimeout(800);
     }
 
     const finalUrl = page.url();
