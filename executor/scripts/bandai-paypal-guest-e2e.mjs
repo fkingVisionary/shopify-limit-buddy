@@ -116,8 +116,6 @@ const proxyFile =
   path.join(artifactsDir, "noontide-fresh.proxies.txt");
 const fromFile = loadProxyFile(proxyFile);
 const proxies = fromFile.length ? fromFile : entriesOf(group);
-// Use provided sticky sessions as-is. SoftBlock rotate picks another pool entry.
-const proxyPool = [...proxies];
 if (!proxies.length) {
   console.error("No proxies on task proxy group / BANDAI_PROXY_FILE");
   process.exit(2);
