@@ -241,70 +241,130 @@ const AU_STATE_LABELS = {
   NT: "Northern Territory",
 };
 
+/** True when Weasley is still in create-account mode (forbidden). */
+async function isCreateAccountMode(page) {
+  const body = await page.locator("body").innerText().catch(() => "");
+  if (/Create Account and Continue/i.test(body)) return true;
+  const sw = page.locator('[data-testid="onboard-options-switch"], input[role="switch"][value="signup"]').first();
+  if (await sw.count().catch(() => 0)) {
+    const checked = await sw.isChecked().catch(() => false);
+    const aria = await sw.getAttribute("aria-checked").catch(() => "");
+    if (checked || aria === "true") return true;
+  }
+  return false;
+}
+
 /**
- * Live Weasley guest form (2026-08-05): create-account toggle defaults ON and
- * turns Pay into "Create Account and Continue". Guest path = toggle OFF.
+ * Guest-only: create-account toggle MUST be OFF.
+ * Never proceed with "Create Account and Continue".
  */
 async function disableCreateAccountToggle(page, log) {
-  // DOM click — Playwright isChecked/click was leaving the switch ON (2026-08-05).
-  const result = await page
-    .evaluate(() => {
-      const sw =
-        document.querySelector('[data-testid="onboard-options-switch"]') ||
-        document.querySelector('input[role="switch"][value="signup"]') ||
-        document.querySelector('input[role="switch"]');
-      if (!sw) return { found: false, off: false };
-      const isOn = () =>
-        sw.checked === true ||
-        String(sw.getAttribute("aria-checked") || "") === "true" ||
-        sw.hasAttribute("checked");
-      if (!isOn()) return { found: true, off: true, via: "already" };
-      sw.focus();
-      sw.click();
-      if (isOn()) {
-        sw.checked = false;
-        sw.removeAttribute("checked");
-        sw.setAttribute("aria-checked", "false");
-        sw.dispatchEvent(new Event("input", { bubbles: true }));
-        sw.dispatchEvent(new Event("change", { bubbles: true }));
-        sw.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      }
-      // Also click the visible label/text if still on.
-      if (isOn()) {
-        const label =
-          document.querySelector(`label[for="${sw.id}"]`) ||
-          [...document.querySelectorAll("label,span,div")].find((n) =>
-            /Save information.*create your PayPal account/i.test(n.textContent || ""),
-          );
-        label?.click?.();
-      }
-      return { found: true, off: !isOn(), via: "dom" };
-    })
-    .catch((e) => ({ found: false, off: false, err: String(e?.message || e) }));
-
-  if (!result?.found) {
-    // Fallback: Playwright force click on switch / label.
-    const sw = page.locator('[data-testid="onboard-options-switch"]').first();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    // 1) Playwright uncheck (best for real checkbox switches).
+    const sw = page
+      .locator('[data-testid="onboard-options-switch"], input[role="switch"][value="signup"], input[role="switch"]')
+      .first();
     if (await sw.count().catch(() => 0)) {
-      await sw.click({ force: true }).catch(() => {});
-      await page.waitForTimeout(400);
-      const checked = await sw.isChecked().catch(() => true);
-      log(`paypal_guest create-account toggle off=${!checked} via=pw`);
-      return !checked;
+      const checked = await sw.isChecked().catch(() => false);
+      if (checked) {
+        await sw.uncheck({ force: true }).catch(async () => {
+          await sw.click({ force: true }).catch(() => {});
+        });
+      }
     }
-    log("paypal_guest create-account toggle not found");
-    return false;
+
+    // 2) Click the visible "Save information & create..." control / nearby switch UI.
+    await page
+      .locator('text=/Save information.*create your PayPal account/i')
+      .first()
+      .click({ force: true })
+      .catch(() => {});
+    await page
+      .locator('[data-testid="onboard-options-switch"]')
+      .locator("xpath=ancestor::*[contains(@class,\"switch\") or contains(@class,\"Switch\") or @data-ppui][1]")
+      .first()
+      .click({ force: true })
+      .catch(() => {});
+
+    // 3) DOM: force checked=false + click parent visual track (PPUI often ignores input.click).
+    await page
+      .evaluate(() => {
+        const sw =
+          document.querySelector('[data-testid="onboard-options-switch"]') ||
+          document.querySelector('input[role="switch"][value="signup"]');
+        if (!sw) return;
+        const turnOff = () => {
+          sw.checked = false;
+          sw.removeAttribute("checked");
+          sw.setAttribute("aria-checked", "false");
+          sw.dispatchEvent(new Event("input", { bubbles: true }));
+          sw.dispatchEvent(new Event("change", { bubbles: true }));
+        };
+        if (sw.checked || sw.getAttribute("aria-checked") === "true") {
+          // Click parent/label first (visual switch), then force state.
+          const host =
+            sw.closest("[data-ppui]") ||
+            sw.closest("label") ||
+            sw.parentElement ||
+            sw;
+          host.click();
+          if (sw.checked || sw.getAttribute("aria-checked") === "true") turnOff();
+        } else {
+          turnOff();
+        }
+        // Prefer any explicit guest CTA if present.
+        for (const b of document.querySelectorAll("button,a")) {
+          const t = String(b.textContent || "");
+          if (/continue as guest|pay without (creating|an) account|guest checkout/i.test(t)) {
+            b.click();
+            break;
+          }
+        }
+      })
+      .catch(() => {});
+
+    await page.waitForTimeout(700);
+    const createMode = await isCreateAccountMode(page);
+    const body = await page.locator("body").innerText().catch(() => "");
+    const payVisible = /Pay Now|Pay now|Agree & Pay|Agree and Pay/i.test(body);
+    const off = !createMode || (payVisible && !/Create Account and Continue/i.test(body));
+    log(
+      `paypal_guest GUEST-ONLY toggle attempt=${attempt} off=${off} payVisible=${payVisible} createCta=${/Create Account and Continue/i.test(body)}`,
+    );
+    if (off && !/Create Account and Continue/i.test(body)) return true;
   }
-  await page.waitForTimeout(600);
-  // Success signal: Create Account CTA gone / Pay CTA present.
-  const body = await page.locator("body").innerText().catch(() => "");
-  const payVisible = /Pay Now|Agree & Pay|Agree and Pay|Pay now/i.test(body);
-  const createGone = !/Create Account and Continue/i.test(body);
-  const off = Boolean(result.off) || (payVisible && createGone);
-  log(
-    `paypal_guest create-account toggle off=${off} via=${result.via || "?"} payVisible=${payVisible}`,
-  );
-  return off;
+  log("paypal_guest GUEST-ONLY FAILED — still in create-account mode");
+  return false;
+}
+
+/** Click pay only when CTA is guest pay — never Create Account. */
+async function clickGuestPayOnly(page, payCtas, log) {
+  const submit = page.locator('[data-testid="submit-button"]').first();
+  if (await submit.count().catch(() => 0)) {
+    const text = String((await submit.innerText().catch(() => "")) || "");
+    if (/Create Account/i.test(text)) {
+      log(`paypal_guest blocked Create Account CTA: "${text.slice(0, 60)}"`);
+      return null;
+    }
+    if (/Pay Now|Pay now|Agree & Pay|Agree and Pay|Continue to Review|^Pay$/i.test(text.trim())) {
+      await submit.click({ force: true, noWaitAfter: true }).catch(() => {});
+      log(`paypal_guest pay CTA (submit-button text=${text.slice(0, 40)})`);
+      return "submit-button";
+    }
+  }
+  // Fallback selectors — still skip any Create Account match.
+  for (const sel of payCtas) {
+    if (/Create Account/i.test(sel)) continue;
+    const loc = page.locator(sel).first();
+    if (!(await loc.count().catch(() => 0))) continue;
+    const text = String((await loc.innerText().catch(() => "")) || "");
+    if (/Create Account/i.test(text)) continue;
+    if (!(await loc.isVisible().catch(() => false))) continue;
+    await loc.click({ force: true, noWaitAfter: true }).catch(() => {});
+    log(`paypal_guest pay CTA (${sel})`);
+    return sel;
+  }
+  return null;
 }
 
 /** Force AU country — PayPal defaulted to UK/GB on Noontide (2026-08-05). */
@@ -746,16 +806,21 @@ export async function approvePaypalCheckout(opts = {}) {
         }
       }
 
-      const payHit = await clickFirst(page, payCtas);
+      // HARD RULE: never click while Create Account CTA is showing.
+      if (/Create Account and Continue/i.test(bodyNow)) {
+        await disableCreateAccountToggle(page, log);
+        await page.waitForTimeout(800);
+        continue;
+      }
+
+      const payHit = await clickGuestPayOnly(page, payCtas, log);
       if (payHit) {
         payClicked = payHit;
-        log(`paypal_guest pay CTA (${payHit})`);
         await page.waitForTimeout(2000);
         continue;
       }
 
-      // Last resort: if Create Account CTA is the only submit, don't click it.
-      if (navClicks < 4 && !/Create Account and Continue/i.test(bodyNow)) {
+      if (navClicks < 4 && !/Create Account/i.test(bodyNow)) {
         const navHit = await clickFirst(page, advanceCtas);
         if (navHit) {
           navClicks += 1;
@@ -772,8 +837,8 @@ export async function approvePaypalCheckout(opts = {}) {
     const retDeadline = Date.now() + Math.min(60_000, timeoutMs);
     while (Date.now() < retDeadline) {
       if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
-      if (payClicked) {
-        await clickFirst(page, payCtas);
+      if (payClicked && !(await isCreateAccountMode(page))) {
+        await clickGuestPayOnly(page, payCtas, log);
       }
       await page.waitForTimeout(600);
     }
@@ -790,10 +855,13 @@ export async function approvePaypalCheckout(opts = {}) {
     const paypalSuccessPage = isPaypalSuccessUrl(finalUrl);
     const bodyOk = looksChargedBody(bodyText);
     const stillOnPaypalPayUi = /checkoutnow|paypal\.com\/pay\//i.test(finalUrl);
+    const createAccountStuck = /Create Account and Continue/i.test(bodyText);
 
     // Fail-closed: Express Checkout proof is merchant/GE return (ideally + PayerID).
     // Guest email "Continue" / staying on /pay/ is NOT a charge (false Revolut miss 2026-08-05).
+    // Create Account path is NEVER success — guest only.
     const ok =
+      !createAccountStuck &&
       (merchantReturned || paypalSuccessPage || (bodyOk && !stillOnPaypalPayUi && Boolean(payerId))) &&
       !stillOnPaypalPayUi;
 
@@ -806,9 +874,11 @@ export async function approvePaypalCheckout(opts = {}) {
       ? `PayPal guest charged${orderGuess ? ` order=${orderGuess}` : ""}${
           merchantReturned ? " merchant_return" : ""
         }${payerId ? ` payerId=${payerId}` : ""}`
-      : stillOnPaypalPayUi
-        ? `PayPal guest incomplete — still on PayPal UI (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} nav=${navClicks})`
-        : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
+      : createAccountStuck
+        ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
+        : stillOnPaypalPayUi
+          ? `PayPal guest incomplete — still on PayPal UI (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} nav=${navClicks})`
+          : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
 
     log(`paypal_guest done ok=${ok} ${note}`);
     return {
