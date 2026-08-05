@@ -2,9 +2,10 @@
  * Complete a PayPal checkoutnow / approve URL via guest card checkout.
  * Uses the task billing profile (email + card + address) — not a PayPal login.
  *
- * Success is fail-closed: merchant return (Bandai / Global-E) or an explicit
- * PayPal success page. Clicking "Continue" alone is NOT success — that caused
- * a false paypal_approved with no Revolut ping (2026-08-05).
+ * Success is fail-closed on a **fully processed order** (order number / thank-you),
+ * not bare merchant return. GE `PSPRedirectHandler?action=auth` + PayerID only
+ * proved AU$0 Revolut "Card verification" for …0286 (2026-08-05) — capture must
+ * finish after that redirect. Clicking PayPal "Continue" alone is also NOT success.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -69,11 +70,30 @@ function isMerchantReturn(url) {
   return /p-bandai\.com|global-e\.com/i.test(u);
 }
 
+/** GE entry after PayPal approve — capture/order not done yet. */
+function isPspAuthReturn(url) {
+  return /PSPRedirectHandler/i.test(String(url || "")) && /action=auth/i.test(String(url || ""));
+}
+
 function isPaypalSuccessUrl(url) {
   const u = String(url || "");
   // Still on checkoutnow = not done, even if query has "success" noise.
   if (/checkoutnow/i.test(u)) return false;
   return /paypal\.com\/.*(checkout\/done|receipt|thank|success|webapps\/hermes)/i.test(u);
+}
+
+function extractOrderNumber(text, url = "") {
+  const blob = `${String(text || "")}\n${String(url || "")}`;
+  const patterns = [
+    /order\s*(?:no|number|#|id)\s*[:：]?\s*([A-Z0-9-]{6,})/i,
+    /(?:confirmation|reference)\s*(?:no|number|#)?\s*[:：]?\s*([A-Z0-9-]{6,})/i,
+    /[?&](?:order(?:Number|Id)?|OrderID)=([A-Z0-9-]{6,})/i,
+  ];
+  for (const re of patterns) {
+    const m = blob.match(re);
+    if (m?.[1] && !/PayerID|token|cart/i.test(m[1])) return m[1];
+  }
+  return null;
 }
 
 function looksChargedBody(text) {
@@ -82,10 +102,139 @@ function looksChargedBody(text) {
     return false;
   }
   return (
-    /payment (was )?sent|you paid|thanks for your (order|payment)|order (is )?complete|transaction (id|completed)/i.test(
+    /payment (was )?sent|you paid|thanks for your (order|payment)|order (is )?complete|transaction (id|completed)|thank you for (your )?order|your order has been/i.test(
       t,
-    ) || /Order\s*(?:number|#|No\.?)[:\s]*[A-Z0-9-]{6,}/i.test(t)
+    ) || Boolean(extractOrderNumber(t))
   );
+}
+
+function looksCaptureFailed(url, text) {
+  const blob = `${String(url || "")}\n${String(text || "")}`;
+  return /genericError|payment.*(declined|failed|cancelled|canceled)|unable to (process|complete)|order.*(failed|not completed)|something went wrong|fraud|refused/i.test(
+    blob,
+  );
+}
+
+function looksOrderLanding(url) {
+  const u = String(url || "");
+  return /p-bandai\.com\/.*(?:thank|confirm|order|complete|success)/i.test(u);
+}
+
+/**
+ * Stay on GE/Bandai after PayPal return until capture finishes.
+ * Closing on PSPRedirectHandler?action=auth aborted the charge (…0286 / AU$0 verify).
+ */
+async function waitForGeOrderCapture(page, { timeoutMs, log, trail, forensicsDir }) {
+  const deadline = Date.now() + Math.max(20_000, Number(timeoutMs) || 90_000);
+  const wire = [];
+  const onResp = (res) => {
+    try {
+      const u = res.url();
+      if (
+        /DoExpress|ExpressCheckout|CompletePayment|Capture|PlaceOrder|CreateOrder|PerformOrder|SendOrder|PSPRedirect|thank|confirm|Order/i.test(
+          u,
+        )
+      ) {
+        wire.push({ status: res.status(), url: u.slice(0, 220) });
+        if (wire.length > 40) wire.shift();
+      }
+    } catch {
+      /* ignore */
+    }
+  };
+  page.on("response", onResp);
+
+  let orderNumber = null;
+  let charged = false;
+  let failed = false;
+  let failNote = null;
+  let lastUrl = "";
+  let clicks = 0;
+
+  try {
+    log(`paypal_guest ge_capture wait start url=${String(page.url()).slice(0, 140)}`);
+    await dumpForensics(page, forensicsDir, "ge-capture-start");
+
+    while (Date.now() < deadline) {
+      const url = page.url();
+      if (url !== lastUrl) {
+        lastUrl = url;
+        trail?.push?.(url);
+        log(`paypal_guest ge_capture nav ${url.slice(0, 160)}`);
+      }
+
+      const body = await page.locator("body").innerText().catch(() => "");
+      orderNumber = extractOrderNumber(body, url);
+      if (orderNumber || looksChargedBody(body) || looksOrderLanding(url)) {
+        charged = true;
+        orderNumber = orderNumber || extractOrderNumber(body, url);
+        log(
+          `paypal_guest ge_capture ORDER ok order=${orderNumber || "body"} url=${url.slice(0, 120)}`,
+        );
+        await dumpForensics(page, forensicsDir, "ge-capture-ok");
+        break;
+      }
+
+      if (looksCaptureFailed(url, body) && !isPspAuthReturn(url)) {
+        failed = true;
+        failNote = `GE/merchant capture failed: ${url.slice(0, 100)}`;
+        log(`paypal_guest ge_capture FAIL ${failNote}`);
+        await dumpForensics(page, forensicsDir, "ge-capture-fail");
+        break;
+      }
+
+      // Intermediate GE pages sometimes need an explicit continue (not PayPal sheet).
+      if (
+        clicks < 3 &&
+        /global-e\.com/i.test(url) &&
+        !isPspAuthReturn(url) &&
+        /continue|return to (shop|store|merchant)|complete (your )?order/i.test(body)
+      ) {
+        const hit = await clickFirst(
+          page,
+          [
+            'button:has-text("Continue")',
+            'a:has-text("Continue")',
+            'button:has-text("Return to")',
+            'a:has-text("Return to")',
+            'button:has-text("Complete")',
+          ],
+          { force: true },
+        );
+        if (hit) {
+          clicks += 1;
+          log(`paypal_guest ge_capture click (${hit}) #${clicks}`);
+          await page.waitForTimeout(1500);
+          continue;
+        }
+      }
+
+      // Keep the auth handler alive — GE JS / meta-refresh completes DoExpress.
+      if (isPspAuthReturn(url)) {
+        await page.waitForLoadState("networkidle", { timeout: 8_000 }).catch(() => {});
+      } else {
+        await page.waitForLoadState("domcontentloaded", { timeout: 5_000 }).catch(() => {});
+      }
+      await page.waitForTimeout(1000);
+    }
+
+    if (!charged && !failed) {
+      failNote = `GE capture timeout on ${String(page.url()).slice(0, 140)}`;
+      log(`paypal_guest ge_capture TIMEOUT ${failNote}`);
+      await dumpForensics(page, forensicsDir, "ge-capture-timeout");
+    }
+  } finally {
+    page.off("response", onResp);
+  }
+
+  return {
+    orderNumber,
+    charged,
+    failed,
+    failNote,
+    wire: wire.slice(-12),
+    finalUrl: page.url(),
+  };
 }
 
 /** PayPal Weasley cardNumber is minlength/maxlength 19 → spaced PAN. */
@@ -919,7 +1068,8 @@ async function dumpForensics(page, dir, tag) {
 export async function approvePaypalCheckout(opts = {}) {
   const approveUrl = String(opts.approveUrl || "").trim();
   const log = typeof opts.log === "function" ? opts.log : () => {};
-  const timeoutMs = Math.min(240_000, Math.max(30_000, Number(opts.timeoutMs) || 180_000));
+  // Guest UI + GE post-return capture needs headroom (bare auth return ≠ order).
+  const timeoutMs = Math.min(360_000, Math.max(60_000, Number(opts.timeoutMs) || 240_000));
   const headless =
     opts.headless === true ||
     process.env.PAYPAL_APPROVE_HEADLESS === "1" ||
@@ -1265,27 +1415,50 @@ export async function approvePaypalCheckout(opts = {}) {
       await page.waitForTimeout(800);
     }
 
+    const returnedUrl = page.url();
+    const merchantReturned = isMerchantReturn(returnedUrl);
+    const paypalSuccessPage = isPaypalSuccessUrl(returnedUrl);
+    const payerId =
+      extractPayerId(returnedUrl) ||
+      trail.map(extractPayerId).find(Boolean) ||
+      null;
+
+    // Critical: do not close on PSPRedirectHandler?action=auth — GE still capturing.
+    let capture = {
+      orderNumber: null,
+      charged: false,
+      failed: false,
+      failNote: null,
+      wire: [],
+      finalUrl: returnedUrl,
+    };
+    if (merchantReturned || paypalSuccessPage) {
+      const remain = Math.max(30_000, timeoutMs - (Date.now() - t0));
+      capture = await waitForGeOrderCapture(page, {
+        timeoutMs: Math.min(120_000, remain),
+        log,
+        trail,
+        forensicsDir,
+      });
+    }
+
     const finalUrl = page.url();
     const bodyText = await page.locator("body").innerText().catch(() => "");
     const orderGuess =
-      (bodyText.match(/Order\s*(?:number|#|No\.?)[:\s]*([A-Z0-9-]{6,})/i) || [])[1] || null;
-    const payerId =
-      extractPayerId(finalUrl) ||
-      trail.map(extractPayerId).find(Boolean) ||
-      null;
-    const merchantReturned = isMerchantReturn(finalUrl);
-    const paypalSuccessPage = isPaypalSuccessUrl(finalUrl);
+      capture.orderNumber || extractOrderNumber(bodyText, finalUrl) || null;
     const bodyOk = looksChargedBody(bodyText);
     const stillOnPaypalPayUi = /checkoutnow|paypal\.com\/pay\//i.test(finalUrl);
     const createAccountStuck = /Create Account and Continue/i.test(bodyText);
+    const stuckOnPspAuth = isPspAuthReturn(finalUrl);
 
-    // Fail-closed: Express Checkout proof is merchant/GE return (ideally + PayerID).
-    // Guest email "Continue" / staying on /pay/ is NOT a charge (false Revolut miss 2026-08-05).
-    // Create Account path is NEVER success — guest only.
+    // Fail-closed: fully processed order only. PayerID / action=auth ≠ charged
+    // (…0286 Revolut only showed AU$0 Card verification 2026-08-05).
     const ok =
       !createAccountStuck &&
-      (merchantReturned || paypalSuccessPage || (bodyOk && !stillOnPaypalPayUi && Boolean(payerId))) &&
-      !stillOnPaypalPayUi;
+      !stillOnPaypalPayUi &&
+      !stuckOnPspAuth &&
+      !capture.failed &&
+      (Boolean(orderGuess) || capture.charged || bodyOk);
 
     const forensicBase = await dumpForensics(page, forensicsDir, ok ? "done-ok" : "done-fail");
 
@@ -1296,16 +1469,22 @@ export async function approvePaypalCheckout(opts = {}) {
       bodyText,
     );
     const note = ok
-      ? `PayPal guest charged${orderGuess ? ` order=${orderGuess}` : ""}${
-          merchantReturned ? " merchant_return" : ""
-        }${payerId ? ` payerId=${payerId}` : ""}`
+      ? `PayPal guest ORDER${orderGuess ? ` order=${orderGuess}` : " confirmed"}${
+          payerId ? ` payerId=${payerId}` : ""
+        }`
       : cardLinkFailed
         ? `PayPal UI: couldn't link card (…${String(card.number || "").slice(-4)}) — check Revolut/bank for auth attempt; merchant return may still fail`
         : createAccountStuck
           ? `PayPal GUEST-ONLY refused — still on Create Account (cardFilled=${cardFilled2} payClicked=${payClicked || "none"})`
           : stillOnPaypalPayUi
             ? `PayPal guest incomplete — still on PayPal UI (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} nav=${navClicks})`
-            : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
+            : stuckOnPspAuth
+              ? `PayPal returned to GE auth (payerId=${payerId || "?"}) but capture/order not finished — Revolut may only show $0 verify`
+              : capture.failNote
+                ? capture.failNote
+                : merchantReturned
+                  ? `PayPal merchant return without order (payerId=${payerId || "?"}) url=${finalUrl.slice(0, 100)}`
+                  : `PayPal guest incomplete (cardFilled=${cardFilled2} payClicked=${payClicked || "none"} url=${finalUrl.slice(0, 80)})`;
 
     log(`paypal_guest done ok=${ok} ${note}`);
     return {
@@ -1314,17 +1493,19 @@ export async function approvePaypalCheckout(opts = {}) {
       merchantReturned,
       paypalSuccessPage,
       payerId,
+      pspAuthReturn: stuckOnPspAuth || isPspAuthReturn(returnedUrl),
       cardFilled: Boolean(cardFilled2),
       payClicked: payClicked || null,
       navClicks,
       orderNumber: orderGuess,
+      captureWire: capture.wire || [],
       finalUrl,
-      trail: trail.slice(-12),
+      trail: trail.slice(-16),
       forensics: forensicBase,
       ms: Date.now() - t0,
       via: "paypal-guest",
       note,
-      error: ok ? undefined : "paypal_guest_not_completed",
+      error: ok ? undefined : capture.failed ? "paypal_ge_capture_failed" : "paypal_guest_not_completed",
     };
   } catch (e) {
     try {

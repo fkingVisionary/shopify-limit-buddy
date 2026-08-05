@@ -225,10 +225,12 @@ fs.writeFileSync(outPath, JSON.stringify(summary, null, 2));
 console.log(`[${aest()} AEST] PAYPAL_GUEST_E2E done`, JSON.stringify(summary.result, null, 2));
 console.log(`summary → ${outPath}`);
 console.log(
-  "Bank/Revolut PayPal auth is ground truth. Bot only reports paypal_approved on merchant return / success page.",
+  "Ground truth: Revolut must show a real order-amount PayPal charge (not AU$0 Card verification). Bot ok only with orderNumber.",
 );
 
 clearTimeout(wallTimer);
-const approved = String(res.paymentStatus || "") === "paypal_approved";
+const ordered =
+  Boolean(res.orderNumber) || String(res.paymentStatus || "") === "paypal_order_complete";
+const returnedNoOrder = String(res.paymentStatus || "") === "paypal_returned_no_order";
 const minted = Boolean(res.paypalApproveUrl);
-process.exit(approved ? 0 : minted ? 3 : 1);
+process.exit(ordered ? 0 : returnedNoOrder ? 4 : minted ? 3 : 1);

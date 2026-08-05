@@ -1,5 +1,6 @@
 /**
- * Loop PayPal guest e2e across fresh Noontide stickies until paypal_approved.
+ * Loop PayPal guest e2e across fresh Noontide stickies until a full order
+ * (orderNumber / paypal_order_complete — not bare GE auth return).
  *   node executor/scripts/bandai-paypal-guest-loop.mjs
  */
 import { spawnSync } from "node:child_process";
@@ -37,12 +38,14 @@ for (let i = 0; i < max; i++) {
     /* ignore */
   }
   const ps = summary?.result?.paymentStatus;
+  const orderNumber = summary?.result?.orderNumber || null;
   const note = String(summary?.result?.note || "");
   const failed = summary?.result?.failedStep;
   console.log(
     "STATUS",
     JSON.stringify({
       ps,
+      orderNumber,
       failed,
       note: note.slice(0, 260),
       url: String(summary?.result?.finalUrl || "").slice(0, 120),
@@ -50,12 +53,12 @@ for (let i = 0; i < max; i++) {
     }),
   );
 
-  if (ps === "paypal_approved" || r.status === 0) {
-    console.log("SUCCESS");
+  if (ps === "paypal_order_complete" || orderNumber || r.status === 0) {
+    console.log("SUCCESS order", orderNumber || ps);
     process.exit(0);
   }
 
-  if (ps === "paypal_approve_failed") {
+  if (ps === "paypal_approve_failed" || ps === "paypal_returned_no_order") {
     const dir = path.join(root, "artifacts/paypal-guest");
     const files = fs
       .readdirSync(dir)

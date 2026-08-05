@@ -4,10 +4,11 @@
 **Goal:** Offer **PayPal guest** alongside card on Bandai Fast, because PayPal
 often clears better than card on high-traffic drops.
 
-Lab status **2026-08-05:** mint path proven; first “paypal_approved” was a **false
-positive** (Continue click, still on `checkoutnow`, no Revolut). Success is now
-fail-closed on merchant/GE return (+ `PayerID` when present). Desktop: Credit
-card / PayPal (guest) / PayPal (link only) + region modules.
+Lab status **2026-08-05:** mint + guest approve proven. Bare GE
+`PSPRedirectHandler?action=auth` + `PayerID` only produced Revolut **AU$0 Card
+verification** (…0286) — not a Bandai charge. Success is fail-closed on a
+**fully processed order** (order number / thank-you after GE capture). Desktop:
+Credit card / PayPal (guest) / PayPal (link only) + region modules.
 
 ---
 

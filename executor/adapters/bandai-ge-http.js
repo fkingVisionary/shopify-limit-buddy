@@ -2560,7 +2560,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
           card: guestCard,
           proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
           headless: opts.paypalHeadless === true,
-          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 180_000,
+          // Guest UI + GE capture after PSPRedirectHandler (order, not $0 verify).
+          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 300_000,
           forensicsDir: opts.paypalForensicsDir || undefined,
           log: (m) => {
             try {
@@ -2586,13 +2587,17 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
     const elapsedMs = Date.now() - t0;
     const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
-    // Fail-closed: merchant/GE return (EC PayerID) or explicit success — not Continue clicks.
+    // Fail-closed: fully processed order only. PayerID / action=auth ≠ charged
+    // (…0286 Revolut AU$0 Card verification 2026-08-05).
     const autoOk = Boolean(
       paypalApprove?.ok &&
-        (paypalApprove?.merchantReturned ||
-          paypalApprove?.paypalSuccessPage ||
-          paypalApprove?.payerId ||
-          paypalApprove?.orderNumber),
+        (paypalApprove?.orderNumber ||
+          paypalApprove?.paid === true),
+    );
+    const returnedNoOrder = Boolean(
+      paypalApprove?.merchantReturned ||
+        paypalApprove?.payerId ||
+        paypalApprove?.pspAuthReturn,
     );
     const minted = Boolean(paypalApproveUrl);
     return {
@@ -2604,14 +2609,16 @@ export async function runBandaiGeHttpPay(opts = {}) {
       paypalApproveUrl,
       paymentStatus: paypalAuto
         ? autoOk
-          ? "paypal_approved"
-          : minted
-            ? "paypal_approve_failed"
-            : "paypal_init_failed"
+          ? "paypal_order_complete"
+          : returnedNoOrder
+            ? "paypal_returned_no_order"
+            : minted
+              ? "paypal_approve_failed"
+              : "paypal_init_failed"
         : minted
           ? "paypal_approve_url"
           : "paypal_init_failed",
-      checkoutStage: autoOk ? "place_order" : minted ? "tokenize" : "details",
+      checkoutStage: autoOk ? "order" : minted ? "tokenize" : "details",
       cartToken: guid,
       orderNumber: paypalApprove?.orderNumber || null,
       dryRun: !autoOk,
@@ -2624,6 +2631,9 @@ export async function runBandaiGeHttpPay(opts = {}) {
             payClicked: paypalApprove.payClicked ?? null,
             merchantReturned: paypalApprove.merchantReturned ?? null,
             payerId: paypalApprove.payerId ?? null,
+            pspAuthReturn: paypalApprove.pspAuthReturn ?? null,
+            orderNumber: paypalApprove.orderNumber ?? null,
+            captureWire: paypalApprove.captureWire ?? null,
             forensics: paypalApprove.forensics ?? null,
             note: paypalApprove.note ?? null,
           }
