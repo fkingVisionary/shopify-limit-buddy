@@ -238,9 +238,29 @@ async function fillGuestContactAndAddress(page, billing, log) {
   return filled;
 }
 
+async function dismissPaypalCookies(page, log) {
+  const hit = await clickFirst(
+    page,
+    [
+      'button:has-text("Accept")',
+      'button:has-text("Accept Cookies")',
+      '#acceptAllButton',
+      'button[data-testid="accept-cookies"]',
+    ],
+    { force: true },
+  );
+  if (hit) {
+    log(`paypal_guest cookies (${hit})`);
+    await page.waitForTimeout(400);
+  }
+  return Boolean(hit);
+}
+
 async function openGuestCardPath(page, log) {
   // Live Bandai/GE PayPal login (2026-08-05): #startGuestOnboardingFlow
   // label = "Pay by Debit or Credit Card" (by, not with).
+  // Cookie banner + login "Next" used to steal clicks (nav=121, cardFilled=false).
+  await dismissPaypalCookies(page, log);
   const guestCtas = [
     "#startGuestOnboardingFlow",
     'button#startGuestOnboardingFlow',
@@ -255,7 +275,14 @@ async function openGuestCardPath(page, log) {
     '[data-testid="pay-with-card"]',
     "#card-option",
   ];
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
+    await dismissPaypalCookies(page, log);
+    const body = await page.locator("body").innerText().catch(() => "");
+    // Already past login wall.
+    if (/Pay with debit or credit card|Check out as a guest|Continue to Payment/i.test(body)) {
+      log("paypal_guest already on guest form");
+      return true;
+    }
     const hit =
       (await clickFirst(page, guestCtas)) ||
       (await clickFirst(page, guestCtas, { force: true }));
@@ -263,11 +290,11 @@ async function openGuestCardPath(page, log) {
       log(`paypal_guest clicked guest CTA (${hit})`);
       await page
         .waitForSelector(
-          'input#cardNumber, input[name="cardNumber"], input[autocomplete="cc-number"], #credit-card-number, iframe[name*="card"], iframe[title*="card" i]',
-          { timeout: 12_000 },
+          'input#cardNumber, input[name="cardNumber"], input[autocomplete="cc-number"], #credit-card-number, iframe[name*="card"], iframe[title*="card" i], input#email, button:has-text("Continue to Payment")',
+          { timeout: 15_000 },
         )
         .catch(() => null);
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(1000);
       return true;
     }
     await page.waitForTimeout(700);
@@ -360,31 +387,49 @@ export async function approvePaypalCheckout(opts = {}) {
 
     log(`paypal_guest open ${approveUrl.slice(0, 120)}`);
     await page.goto(approveUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    await page.waitForTimeout(1200);
+    await dismissPaypalCookies(page, log);
     await dumpForensics(page, forensicsDir, "open");
 
-    const guestOpened = await openGuestCardPath(page, log);
+    // Guest CTA FIRST — never click login "Next" on the wall (that caused nav=121).
+    let guestOpened = await openGuestCardPath(page, log);
     log(`paypal_guest guestPath=${guestOpened}`);
+    if (!guestOpened) {
+      await dumpForensics(page, forensicsDir, "guest-cta-miss");
+      // One more hard attempt after Accept.
+      await dismissPaypalCookies(page, log);
+      guestOpened = await openGuestCardPath(page, log);
+      log(`paypal_guest guestPath_retry=${guestOpened}`);
+    }
 
-    const emailFilled = await fillFirst(
-      page,
-      [
-        'input#email',
-        'input[name="login_email"]',
-        'input[type="email"]',
-        'input[autocomplete="email"]',
-        'input[name="email"]',
-        'input#guestEmail',
-      ],
-      billing.email,
+    const onLoginWall = /Log in to PayPal|Pay by Debit or Credit Card/i.test(
+      await page.locator("body").innerText().catch(() => ""),
     );
-    // Next after email — not a pay confirmation.
-    await clickFirst(page, [
-      'button#btnNext',
-      'button:has-text("Next")',
-      'button[type="submit"]:has-text("Next")',
-      '#btnNext',
-    ]);
-    await page.waitForTimeout(800);
+    let emailFilled = false;
+    if (!onLoginWall || guestOpened) {
+      emailFilled = await fillFirst(
+        page,
+        [
+          'input#email',
+          'input[name="login_email"]',
+          'input[type="email"]',
+          'input[autocomplete="email"]',
+          'input[name="email"]',
+          'input#guestEmail',
+        ],
+        billing.email,
+      );
+    }
+    // Only click Next on guest /pay/ email step — never on the login wall.
+    const bodyAfterGuest = await page.locator("body").innerText().catch(() => "");
+    if (/Continue to Payment|Check out as a guest/i.test(bodyAfterGuest)) {
+      await clickFirst(page, [
+        'button:has-text("Continue to Payment")',
+        'button#btnNext',
+        'button:has-text("Next")',
+      ]);
+      await page.waitForTimeout(800);
+    }
     await openGuestCardPath(page, log);
 
     const cardFilled = await fillFirst(
@@ -459,13 +504,10 @@ export async function approvePaypalCheckout(opts = {}) {
     );
     await dumpForensics(page, forensicsDir, "filled");
 
-    // Guest /pay/ step 1: email → Continue to Payment → card fields (2026-08-05 forensics).
+    // Guest /pay/ advances only — never login-wall Next (nav spam 2026-08-05).
     const advanceCtas = [
       'button:has-text("Continue to Payment")',
       'button:has-text("Continue to Review")',
-      'button:has-text("Continue")',
-      'button#btnNext',
-      'button:has-text("Next")',
     ];
     // Real charge CTAs only — never "Create Account and Continue" (toggle must be OFF).
     const payCtas = [
@@ -579,8 +621,20 @@ export async function approvePaypalCheckout(opts = {}) {
     while (Date.now() < deadline) {
       if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
 
+      const bodyNow = await page.locator("body").innerText().catch(() => "");
+      // Still on login wall → only guest CTA / cookies, never Next/Continue spam.
+      if (/Log in to PayPal/i.test(bodyNow) && /Pay by Debit or Credit Card/i.test(bodyNow)) {
+        await dismissPaypalCookies(page, log);
+        await openGuestCardPath(page, log);
+        await page.waitForTimeout(800);
+        continue;
+      }
+
       // Keep guest mode if PayPal re-checks the create-account switch.
-      if (/signup|guest_user|checkoutweb/i.test(page.url()) || /Create Account/i.test(await page.locator("body").innerText().catch(() => ""))) {
+      if (
+        /signup|guest_user|checkoutweb/i.test(page.url()) ||
+        /Create Account/i.test(bodyNow)
+      ) {
         await fillGuestContactAndAddress(page, billing, log);
         await disableCreateAccountToggle(page, log);
       }
@@ -593,21 +647,18 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Advance CTAs are OK on guest email / review steps — not success by themselves.
-      // Never treat Create Account as an advance.
-      const bodyNow = await page.locator("body").innerText().catch(() => "");
-      if (!/Create Account and Continue/i.test(bodyNow)) {
+      if (navClicks < 6 && !/Create Account and Continue/i.test(bodyNow)) {
         const navHit = await clickFirst(page, advanceCtas);
         if (navHit) {
           navClicks += 1;
           log(`paypal_guest nav CTA (${navHit}) #${navClicks}`);
-          if (!cardFilled2) {
-            await fillFirst(
-              page,
-              ['input#cardNumber', 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'],
-              card.number,
-            );
-          }
+          await fillFirst(
+            page,
+            ['input#cardNumber', 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'],
+            card.number,
+          );
+          await fillGuestContactAndAddress(page, billing, log);
+          await disableCreateAccountToggle(page, log);
           await page.waitForTimeout(900);
           continue;
         }
