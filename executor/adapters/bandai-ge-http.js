@@ -2560,7 +2560,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           card: guestCard,
           proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
           headless: opts.paypalHeadless === true,
-          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 120_000,
+          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 180_000,
           forensicsDir: opts.paypalForensicsDir || undefined,
           log: (m) => {
             try {

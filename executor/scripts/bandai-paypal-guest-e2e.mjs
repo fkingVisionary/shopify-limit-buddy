@@ -16,7 +16,7 @@ const artifactsDir = path.join(root, "artifacts");
 fs.mkdirSync(artifactsDir, { recursive: true });
 
 // Hard wall so SoftBlock rotate / Playwright cannot hang the agent indefinitely.
-const WALL_MS = Math.max(60_000, Number(process.env.BANDAI_E2E_WALL_MS || 8 * 60_000));
+const WALL_MS = Math.max(60_000, Number(process.env.BANDAI_E2E_WALL_MS || 12 * 60_000));
 const wallTimer = setTimeout(() => {
   console.error(`[e2e] WALL_TIMEOUT after ${WALL_MS}ms — exiting`);
   process.exit(124);

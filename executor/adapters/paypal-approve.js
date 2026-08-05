@@ -268,8 +268,23 @@ async function disableCreateAccountToggle(page, log) {
   return !still;
 }
 
+/** Force AU country — PayPal defaulted to UK/GB on Noontide (2026-08-05). */
+async function selectAustraliaCountry(page, log) {
+  const country = page.locator('select#country, select[name="country"], select[data-testid*="country" i]').first();
+  if (!(await country.count().catch(() => 0))) return false;
+  const before = await country.inputValue().catch(() => "");
+  await country
+    .selectOption({ label: "Australia" })
+    .catch(async () => country.selectOption({ value: "AU" }).catch(() => {}));
+  await page.waitForTimeout(800);
+  const after = await country.inputValue().catch(() => "");
+  log(`paypal_guest country ${before || "?"}→${after || "?"}`);
+  return /AU|Australia/i.test(after) || after !== before;
+}
+
 /** Fill contact + AU billing — IDs from checkoutweb/signup forensics. */
 async function fillGuestContactAndAddress(page, billing, log) {
+  await selectAustraliaCountry(page, log);
   const phone = auPhoneLocal(billing.phone);
   const filled = {
     first: await fillFirst(
@@ -324,6 +339,34 @@ async function fillGuestContactAndAddress(page, billing, log) {
     `paypal_guest address fill first=${filled.first} last=${filled.last} phone=${filled.phone} line1=${filled.line1} city=${filled.city} state=${filled.state} zip=${filled.zip}`,
   );
   return filled;
+}
+
+async function fillGuestCardFields(page, card, log) {
+  const cardFilled = await fillFirst(
+    page,
+    [
+      'input#cardNumber',
+      'input[name="cardNumber"]',
+      'input[name="cardnumber"]',
+      'input[autocomplete="cc-number"]',
+      'input[data-testid="cardNumber"]',
+    ],
+    card.number,
+  );
+  const expFilled =
+    (await fillFirst(
+      page,
+      ['input#cardExpiry', 'input[name="cardExpiry"]', 'input[autocomplete="cc-exp"]'],
+      `${card.expMonth} / ${card.expYear}`,
+    )) ||
+    (await fillFirst(page, ['input#expiryDate', 'input[name="expiryDate"]'], `${card.expMonth}${card.expYear}`));
+  const cvvFilled = await fillFirst(
+    page,
+    ['input#cardCvv', 'input#cvv', 'input[name="cardCvv"]', 'input[name="cvv"]', 'input[autocomplete="cc-csc"]'],
+    card.cvv,
+  );
+  log(`paypal_guest card fill card=${cardFilled} exp=${Boolean(expFilled)} cvv=${cvvFilled}`);
+  return { cardFilled, expFilled: Boolean(expFilled), cvvFilled };
 }
 
 async function dismissPaypalCookies(page, log) {
@@ -436,7 +479,7 @@ async function dumpForensics(page, dir, tag) {
 export async function approvePaypalCheckout(opts = {}) {
   const approveUrl = String(opts.approveUrl || "").trim();
   const log = typeof opts.log === "function" ? opts.log : () => {};
-  const timeoutMs = Math.min(180_000, Math.max(30_000, Number(opts.timeoutMs) || 120_000));
+  const timeoutMs = Math.min(240_000, Math.max(30_000, Number(opts.timeoutMs) || 180_000));
   const headless =
     opts.headless === true ||
     process.env.PAYPAL_APPROVE_HEADLESS === "1" ||
@@ -522,72 +565,16 @@ export async function approvePaypalCheckout(opts = {}) {
         await page.waitForTimeout(1500);
       }
     }
-    await openGuestCardPath(page, log);
+    // Wait for Weasley card form AFTER Continue to Payment (not before).
+    await page
+      .waitForSelector(
+        'input#cardNumber, input[autocomplete="cc-number"], text=Pay with debit or credit card',
+        { timeout: 30_000 },
+      )
+      .catch(() => null);
+    await page.waitForTimeout(1000);
 
-    const cardFilled = await fillFirst(
-      page,
-      [
-        'input#cardNumber',
-        'input[name="cardNumber"]',
-        'input[name="cardnumber"]',
-        'input[autocomplete="cc-number"]',
-        'input[data-testid="cardNumber"]',
-        'input[aria-label*="card number" i]',
-      ],
-      card.number,
-    );
-    const expCombined = `${card.expMonth}${card.expYear.length === 2 ? card.expYear : card.expYear.slice(-2)}`;
-    let expFilled =
-      (await fillFirst(
-        page,
-        [
-          'input#cardExpiry',
-          'input[name="cardExpiry"]',
-          'input[name="expiry"]',
-          'input[autocomplete="cc-exp"]',
-          'input[aria-label*="expir" i]',
-        ],
-        `${card.expMonth} / ${card.expYear}`,
-      )) ||
-      (await fillFirst(page, ['input#expiryDate', 'input[name="expiryDate"]'], expCombined));
-    if (!expFilled) {
-      expFilled =
-        (await fillFirst(
-          page,
-          ['input[name="expMonth"]', 'input#expMonth', 'select#expMonth'],
-          card.expMonth,
-        )) &&
-        (await fillFirst(
-          page,
-          ['input[name="expYear"]', 'input#expYear', 'select#expYear'],
-          card.expYear.length === 2 ? `20${card.expYear}` : card.expYear,
-        ));
-    }
-    const cvvFilled = await fillFirst(
-      page,
-      [
-        'input#cardCvv',
-        'input#cvv',
-        'input[name="cardCvv"]',
-        'input[name="cvv"]',
-        'input[autocomplete="cc-csc"]',
-        'input[aria-label*="CSC" i]',
-        'input[aria-label*="security" i]',
-      ],
-      card.cvv,
-    );
-    await fillFirst(
-      page,
-      [
-        'input#cardHolderName',
-        'input[name="cardHolderName"]',
-        'input[autocomplete="cc-name"]',
-        'input[name="name"]',
-      ],
-      card.holder,
-    );
-
-    // Weasley guest form: #firstName/#phone/#billingLine1 — not billingFirstName.
+    let { cardFilled, expFilled, cvvFilled } = await fillGuestCardFields(page, card, log);
     await fillGuestContactAndAddress(page, billing, log);
     await disableCreateAccountToggle(page, log);
 
@@ -658,49 +645,10 @@ export async function approvePaypalCheckout(opts = {}) {
     }
     await dumpForensics(page, forensicsDir, "after-continue-payment");
 
-    // Re-attempt card fill after Continue to Payment (fields often appear then).
-    const cardFilled2 =
-      cardFilled ||
-      (await fillFirst(
-        page,
-        [
-          'input#cardNumber',
-          'input[name="cardNumber"]',
-          'input[name="cardnumber"]',
-          'input[autocomplete="cc-number"]',
-          'input[data-testid="cardNumber"]',
-          'input[aria-label*="card number" i]',
-        ],
-        card.number,
-      ));
-    const cvvFilled2 =
-      cvvFilled ||
-      (await fillFirst(
-        page,
-        [
-          'input#cardCvv',
-          'input#cvv',
-          'input[name="cardCvv"]',
-          'input[name="cvv"]',
-          'input[autocomplete="cc-csc"]',
-          'input[aria-label*="CSC" i]',
-          'input[aria-label*="security" i]',
-        ],
-        card.cvv,
-      ));
-    if (!expFilled) {
-      await fillFirst(
-        page,
-        [
-          'input#cardExpiry',
-          'input[name="cardExpiry"]',
-          'input[autocomplete="cc-exp"]',
-          'input[aria-label*="expir" i]',
-        ],
-        `${card.expMonth} / ${card.expYear}`,
-      );
-    }
-    // Signup/guest_user redirect re-mounts the full Weasley form — refill + toggle off.
+    // Signup/guest_user re-mount — country AU + card + address + toggle OFF.
+    const refill = await fillGuestCardFields(page, card, log);
+    const cardFilled2 = cardFilled || refill.cardFilled;
+    const cvvFilled2 = cvvFilled || refill.cvvFilled;
     await fillGuestContactAndAddress(page, billing, log);
     await disableCreateAccountToggle(page, log);
     log(`paypal_guest after-advance card=${cardFilled2} cvv=${cvvFilled2}`);
