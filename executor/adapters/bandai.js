@@ -517,10 +517,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     String(process.env.BANDAI_FAST_ATC || "1") !== "0";
   // common.js needs ~1.2–1.8s after goto before p8komysnbc-* mint works.
   // 900ms broke ATC mint in lab; floor at 1200 for fast path.
+  // Cap raised — SoftBlock labs needed >3s settle on fresh Noontide (2026-08-05).
   const f5SettleMs = Math.max(
     1_200,
     Math.min(
-      3_000,
+      8_000,
       Number(task.bandaiF5SettleMs || process.env.BANDAI_F5_SETTLE_MS) ||
         (fastAtc ? 1_400 : 1_800),
     ),
@@ -839,6 +840,26 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     try {
       if (!bridge?.page || bridge.page.isClosed?.()) {
         return { ok: false, status: null, note: "bridge login skipped: no page" };
+      }
+      // Warm F5 sensor cookies in-page before login fetch (mint-only used to
+      // leave bridge fetch SoftBlocked while undici also 501'd).
+      try {
+        const mint = await bridge.mint("POST", "/login", {
+          body: loginBody,
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+        });
+        const c = await bridge.cookies();
+        if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+        if (!mint.ok) {
+          return { ok: false, status: null, note: `bridge sensor mint failed: ${mint.note}` };
+        }
+      } catch (e) {
+        return {
+          ok: false,
+          status: null,
+          note: `bridge sensor mint throw: ${e?.message || e}`,
+        };
       }
       const csrf = session.state.csrfToken || (await bridge.csrfToken());
       const result = await bridge.page.evaluate(
