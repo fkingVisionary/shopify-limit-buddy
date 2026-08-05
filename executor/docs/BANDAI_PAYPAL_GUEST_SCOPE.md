@@ -4,10 +4,33 @@
 **Goal:** Offer **PayPal guest** alongside card on Bandai Fast, because PayPal
 often clears better than card on high-traffic drops.
 
-Lab status **2026-08-05:** wire IDs locked from Checkout/v2 HAR; **Fast HTTP**
-minted a live `paypal.com/checkoutnow?token=…` approve URL. Desktop now exposes
-**Credit card / PayPal (auto approve) / PayPal (link only)** plus per-region
-Bandai modules (`au|us|nz|sg|hk|tw|fr`).
+Lab status **2026-08-05:** mint path proven; first “paypal_approved” was a **false
+positive** (Continue click, still on `checkoutnow`, no Revolut). Success is now
+fail-closed on merchant/GE return (+ `PayerID` when present). Desktop: Credit
+card / PayPal (guest) / PayPal (link only) + region modules.
+
+---
+
+## Why PayPal feels “more solved” than card (and where it isn’t)
+
+Classic Express Checkout (and modern Orders approve) is **standard across
+merchants**:
+
+1. Merchant/PSP creates a token → `https://www.paypal.com/checkoutnow?token=…`
+2. Buyer approves on **PayPal-hosted** UI (login wallet **or** guest debit/credit)
+3. PayPal redirects back with `token` + **`PayerID`** (EC) / order approved
+4. Merchant/PSP captures (`DoExpressCheckoutPayment` / Orders `…/capture`)
+
+For Bandai, Global-E owns steps 1 + 4 (`InitPayPalExpressProcess` → capture).
+We only need a **real** step-2/3 (leave PayPal → GE/Bandai return). That is the
+same shape as Toymate’s approve URL — not a per-merchant card issuer POST.
+
+**Hard part for guest:** PayPal card fields are often **PCI iframes**. Filling
+main-DOM inputs and clicking Continue does **not** charge (false Revolut miss
+~10:20 AEST). Wallet login + Pay Now is usually easier than guest card iframes.
+
+Card Fast still needs GE-specific CreditCardForm / issuer endpoints; PayPal
+does not.
 
 ---
 
@@ -43,7 +66,7 @@ Artifacts: `artifacts/bandai-paypal-wire.json`, `artifacts/bandai-paypal-guest.h
 |---|---|
 | Bandai Fast HTTP | `paymentMethod=paypal_guest\|paypal_manual` → save pm=4/gw=6 → InitPayPalExpress → approve URL; guest fills billing profile card on PayPal |
 | Bandai Full browser HAR | Reached GE; tile click flaky / SoftBlock; IDs from HTML |
-| Desktop task UI | Bandai payment dropdown + profile PayPal email/password; region modules |
+| Desktop task UI | Bandai payment dropdown; billing profile email/card for guest; region modules |
 | Toymate | `paypal_manual` → BigCommerce approve URL |
 
 ---

@@ -141,6 +141,7 @@ const summary = {
     orderNumber: res.orderNumber || null,
     finalUrl: res.finalUrl || null,
     failedStep: res.failedStep || null,
+    paypalGuest: res.paypalGuest || null,
     note: String(res.note || "").slice(0, 500),
     steps: ppSteps.map((s) => ({
       step: s.step,
@@ -155,9 +156,9 @@ fs.writeFileSync(outPath, JSON.stringify(summary, null, 2));
 console.log(`[${aest()} AEST] PAYPAL_GUEST_E2E done`, JSON.stringify(summary.result, null, 2));
 console.log(`summary → ${outPath}`);
 console.log(
-  "Check Revolut for a PayPal authorisation if paymentStatus=paypal_approved (bank ping is ground truth).",
+  "Bank/Revolut PayPal auth is ground truth. Bot only reports paypal_approved on merchant return / success page.",
 );
 
-const approved = String(res.paymentStatus || "") === "paypal_approved" || Boolean(res.ok && res.orderNumber);
+const approved = String(res.paymentStatus || "") === "paypal_approved";
 const minted = Boolean(res.paypalApproveUrl);
 process.exit(approved ? 0 : minted ? 3 : 1);

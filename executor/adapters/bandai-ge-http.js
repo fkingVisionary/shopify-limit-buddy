@@ -2557,7 +2557,8 @@ export async function runBandaiGeHttpPay(opts = {}) {
           card: guestCard,
           proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
           headless: opts.paypalHeadless === true,
-          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 90_000,
+          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 120_000,
+          forensicsDir: opts.paypalForensicsDir || undefined,
           log: (m) => {
             try {
               opts.onProgress?.("ge_paypal_approve", { note: m });
@@ -2570,14 +2571,25 @@ export async function runBandaiGeHttpPay(opts = {}) {
           ok: Boolean(paypalApprove?.ok),
           status: null,
           ms: paypalApprove?.ms ?? Date.now() - tAp,
-          note: paypalApprove?.note || paypalApprove?.error || "guest approve done",
+          note: (
+            paypalApprove?.note ||
+            paypalApprove?.error ||
+            "guest approve done"
+          ).slice(0, 280),
         });
       }
     }
 
     const elapsedMs = Date.now() - t0;
     const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
-    const autoOk = Boolean(paypalApprove?.ok);
+    // Fail-closed: merchant/GE return (EC PayerID) or explicit success — not Continue clicks.
+    const autoOk = Boolean(
+      paypalApprove?.ok &&
+        (paypalApprove?.merchantReturned ||
+          paypalApprove?.paypalSuccessPage ||
+          paypalApprove?.payerId ||
+          paypalApprove?.orderNumber),
+    );
     const minted = Boolean(paypalApproveUrl);
     return {
       ok: paypalAuto ? autoOk : minted,
@@ -2595,17 +2607,27 @@ export async function runBandaiGeHttpPay(opts = {}) {
         : minted
           ? "paypal_approve_url"
           : "paypal_init_failed",
-      checkoutStage: autoOk || minted ? "tokenize" : "details",
+      checkoutStage: autoOk ? "place_order" : minted ? "tokenize" : "details",
       cartToken: guid,
       orderNumber: paypalApprove?.orderNumber || null,
       dryRun: !autoOk,
-      chargeReqCount: 0,
+      chargeReqCount: autoOk ? 1 : 0,
       via: paypalAuto ? "http-ge-paypal-guest" : "http-ge-paypal",
       finalUrl: paypalApprove?.finalUrl || paypalApproveUrl || null,
+      paypalGuest: paypalApprove
+        ? {
+            cardFilled: paypalApprove.cardFilled ?? null,
+            payClicked: paypalApprove.payClicked ?? null,
+            merchantReturned: paypalApprove.merchantReturned ?? null,
+            payerId: paypalApprove.payerId ?? null,
+            forensics: paypalApprove.forensics ?? null,
+            note: paypalApprove.note ?? null,
+          }
+        : null,
       elapsedMs,
       note: (
         paypalAuto
-          ? `${ppNote}; guest=${autoOk ? "ok" : paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
+          ? `${ppNote}; guest=${autoOk ? "ok" : paypalApprove?.note || paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
           : `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
       ).slice(0, 320),
     };
