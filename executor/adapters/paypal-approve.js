@@ -120,11 +120,12 @@ async function setSelectValue(page, selectors, { value, label }, log, tag) {
   for (const sel of selectors) {
     const loc = page.locator(sel).first();
     if (!(await loc.count().catch(() => 0))) continue;
+    // Short timeout — default page timeout (3m) hung the guest loop on wrong page.
     if (label) {
-      await loc.selectOption({ label }).catch(() => {});
+      await loc.selectOption({ label }, { timeout: 2_500 }).catch(() => {});
     }
     if (value) {
-      await loc.selectOption({ value }).catch(() => {});
+      await loc.selectOption({ value }, { timeout: 2_500 }).catch(() => {});
     }
     const ok = await page
       .evaluate(
@@ -523,6 +524,25 @@ async function selectAustraliaCountry(page, log) {
 
 /** Fill contact + AU billing — IDs from checkoutweb/signup forensics. */
 async function fillGuestContactAndAddress(page, billing, log) {
+  const hasForm = await page
+    .locator(
+      'select[data-testid="countrySelector"], select#country, input#billingLine1, input#firstName',
+    )
+    .first()
+    .count()
+    .catch(() => 0);
+  if (!hasForm) {
+    log("paypal_guest address skip — Weasley fields not mounted");
+    return {
+      first: false,
+      last: false,
+      phone: false,
+      line1: false,
+      city: false,
+      state: false,
+      zip: false,
+    };
+  }
   await selectAustraliaCountry(page, log);
   const phone = auPhoneLocal(billing.phone);
   const filled = {
@@ -676,24 +696,31 @@ async function dismissPaypalCookies(page, log) {
 }
 
 async function leftLoginWall(page) {
-  const body = await page.locator("body").innerText().catch(() => "");
-  // Login wall still shows Next + Pay by Debit — guest email / Weasley do not.
-  if (/Log in to PayPal/i.test(body) && /Pay by Debit or Credit Card/i.test(body)) {
-    return false;
-  }
+  // Require real guest controls — body-text matches alone false-positived (hung on selects).
   const guestEmail = await page
     .locator("#onboardingFlowEmail, input[placeholder='Enter email address']")
     .first()
     .count()
     .catch(() => 0);
   if (guestEmail) return true;
-  if (/Check out as a guest|Continue to Payment|Pay with debit or credit card/i.test(body)) return true;
   const cardReady = await page
     .locator('input#cardNumber, input[autocomplete="cc-number"]')
     .first()
     .count()
     .catch(() => 0);
-  return Boolean(cardReady);
+  if (cardReady) return true;
+  const continuePay = await page
+    .locator('button:has-text("Continue to Payment")')
+    .first()
+    .count()
+    .catch(() => 0);
+  if (continuePay) return true;
+  const weasleyCountry = await page
+    .locator('select[data-testid="countrySelector"], select#country')
+    .first()
+    .count()
+    .catch(() => 0);
+  return Boolean(weasleyCountry);
 }
 
 async function openGuestCardPath(page, log) {
@@ -751,10 +778,10 @@ async function openGuestCardPath(page, log) {
         (await clickFirst(page, guestCtas, { force: true }));
       if (hit) log(`paypal_guest clicked guest CTA (${hit})`);
     }
-    // Wait for REAL guest UI — never login #email (that caused false guestPath=true).
+    // Wait for REAL guest UI controls — never login #email / body text alone.
     await page
       .waitForSelector(
-        "#onboardingFlowEmail, input[placeholder='Enter email address'], button:has-text('Continue to Payment'), input#cardNumber, input[autocomplete='cc-number'], text=Check out as a guest, text=Pay with debit or credit card",
+        "#onboardingFlowEmail, input[placeholder='Enter email address'], button:has-text('Continue to Payment'), input#cardNumber, input[autocomplete='cc-number'], select[data-testid='countrySelector']",
         { timeout: 12_000 },
       )
       .catch(() => null);
