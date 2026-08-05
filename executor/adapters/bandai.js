@@ -2362,6 +2362,29 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         if (cookies && ctx.jar?.load) {
           ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
         }
+        try {
+          const missPath = path.join(
+            process.cwd(),
+            "artifacts",
+            "bandai-getcarttoken-gem-miss.json",
+          );
+          fs.mkdirSync(path.dirname(missPath), { recursive: true });
+          fs.writeFileSync(
+            missPath,
+            JSON.stringify(
+              {
+                at: new Date().toISOString(),
+                harvestedCartToken,
+                gemHits: gemHits.slice(-4),
+                merchantCartToken,
+              },
+              null,
+              2,
+            ),
+          );
+        } catch {
+          /* ignore */
+        }
         steps.push({
           step: "ge_orderdetails_warm",
           ok: true,
