@@ -118,46 +118,68 @@ async function fillFirst(page, selectors, value) {
   return false;
 }
 
-/** Guest email field often sits under cookie banner — force click/type/verify. */
+/** Guest email — DOM setValue (cookie banner blocks Playwright fills). */
 async function fillGuestEmail(page, email, log) {
   await dismissPaypalCookies(page, log);
-  const sels = [
-    'input#onboardingFlowEmail',
-    'input[placeholder="Enter email address"]',
-    'input[placeholder*="Enter email" i]',
-  ];
-  for (const sel of sels) {
-    const loc = page.locator(sel).first();
-    if (!(await loc.count().catch(() => 0))) continue;
-    await loc.scrollIntoViewIfNeeded().catch(() => {});
-    await loc.click({ force: true, timeout: 5_000 }).catch(() => {});
-    await loc.fill("", { force: true }).catch(() => {});
-    await loc.fill(String(email), { force: true, timeout: 8_000 }).catch(async () => {
-      await loc.pressSequentially(String(email), { delay: 25 }).catch(() => {});
-    });
+  // Nuke cookie banner nodes if Accept didn't stick.
+  await page
+    .evaluate(() => {
+      for (const sel of [
+        "#cookie-banner-container",
+        '[id*="cookie"]',
+        '[class*="cookie"]',
+        '[data-testid*="cookie"]',
+      ]) {
+        document.querySelectorAll(sel).forEach((n) => {
+          try {
+            n.remove();
+          } catch {
+            /* ignore */
+          }
+        });
+      }
+      document.querySelectorAll("button").forEach((b) => {
+        if (/^Accept$/i.test(String(b.textContent || "").trim())) b.click();
+      });
+    })
+    .catch(() => {});
+
+  const ok = await page.evaluate((addr) => {
+    const candidates = [
+      document.querySelector("#onboardingFlowEmail"),
+      document.querySelector('input[placeholder="Enter email address"]'),
+      ...Array.from(document.querySelectorAll('input[type="email"]')).filter(
+        (el) => el.id !== "email" && el.offsetParent !== null,
+      ),
+    ].filter(Boolean);
+    const el = candidates[0];
+    if (!el) return { ok: false, reason: "no_input" };
+    el.focus();
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+    if (setter) setter.call(el, String(addr || ""));
+    else el.value = String(addr || "");
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return { ok: /@/.test(el.value || ""), value: String(el.value || "").slice(0, 40), id: el.id || "" };
+  }, String(email || ""));
+
+  if (ok?.ok) {
+    log(`paypal_guest email DOM-filled id=${ok.id} val=${String(ok.value || "").slice(0, 6)}…`);
+    return true;
+  }
+  // Playwright force as backup.
+  const loc = page.locator("#onboardingFlowEmail").first();
+  if (await loc.count().catch(() => 0)) {
+    await loc.fill(String(email), { force: true }).catch(() => {});
     const v = await loc.inputValue().catch(() => "");
-    if (v && /@/.test(v)) {
-      log(`paypal_guest email filled via=${sel} val=${v.slice(0, 6)}…`);
+    if (/@/.test(v)) {
+      log("paypal_guest email filled via=playwright-force");
       return true;
     }
   }
-  // Visible email fallback.
-  const emails = page.locator('input[type="email"]');
-  const n = await emails.count().catch(() => 0);
-  for (let i = 0; i < n; i++) {
-    const el = emails.nth(i);
-    if (!(await el.isVisible().catch(() => false))) continue;
-    const id = (await el.getAttribute("id").catch(() => "")) || "";
-    if (id === "email") continue; // login-wall hidden twin
-    await el.click({ force: true }).catch(() => {});
-    await el.fill(String(email), { force: true }).catch(() => {});
-    const v = await el.inputValue().catch(() => "");
-    if (v && /@/.test(v)) {
-      log(`paypal_guest email filled via=visible[${i}] id=${id}`);
-      return true;
-    }
-  }
-  log("paypal_guest email fill FAILED");
+  log(`paypal_guest email fill FAILED ${JSON.stringify(ok)}`);
   return false;
 }
 
