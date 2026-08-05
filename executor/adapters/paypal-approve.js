@@ -88,6 +88,74 @@ function looksChargedBody(text) {
   );
 }
 
+/** PayPal Weasley cardNumber is minlength/maxlength 19 → spaced PAN. */
+function formatPanSpaces(number) {
+  const d = String(number || "").replace(/\D/g, "");
+  return d.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+}
+
+/** Expiry pattern on Weasley: \\d{2}\\s\\/\\s\\d{2} → "MM / YY". */
+function formatExpiryMmYy(mm, yy) {
+  const m = String(mm || "").padStart(2, "0").slice(-2);
+  let y = String(yy || "").trim();
+  if (y.length === 4) y = y.slice(-2);
+  return `${m} / ${y}`;
+}
+
+/** Force AU locale on checkoutnow — Noontide often lands en_GB (UK states + Create Account). */
+function forceAuApproveUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    u.searchParams.set("locale.x", "en_AU");
+    u.searchParams.set("country.x", "AU");
+    // Some EC urls embed locale in path /GB/ — leave path; query wins for guest UI.
+    return u.toString();
+  } catch {
+    return String(raw || "");
+  }
+}
+
+/** React-controlled <select> — Playwright selectOption alone often leaves UK state list. */
+async function setSelectValue(page, selectors, { value, label }, log, tag) {
+  for (const sel of selectors) {
+    const loc = page.locator(sel).first();
+    if (!(await loc.count().catch(() => 0))) continue;
+    if (label) {
+      await loc.selectOption({ label }).catch(() => {});
+    }
+    if (value) {
+      await loc.selectOption({ value }).catch(() => {});
+    }
+    const ok = await page
+      .evaluate(
+        ({ sel: s, value: v, label: lab }) => {
+          const el = document.querySelector(s);
+          if (!el) return { ok: false, reason: "missing" };
+          let next = v || "";
+          if (!next && lab) {
+            const opt = Array.from(el.options || []).find((o) =>
+              String(o.textContent || "").trim().toLowerCase() === String(lab).trim().toLowerCase(),
+            );
+            if (opt) next = opt.value;
+          }
+          if (!next) return { ok: false, reason: "no_value", cur: el.value };
+          const proto = window.HTMLSelectElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+          if (setter) setter.call(el, next);
+          else el.value = next;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return { ok: el.value === next, cur: el.value };
+        },
+        { sel, value: value || "", label: label || "" },
+      )
+      .catch(() => ({ ok: false }));
+    log(`paypal_guest select ${tag || sel} → ${ok?.cur || "?"} ok=${Boolean(ok?.ok)}`);
+    if (ok?.ok) return true;
+  }
+  return false;
+}
+
 async function fillInContext(ctx, selectors, value) {
   for (const sel of selectors) {
     const loc = ctx.locator(sel).first();
@@ -273,9 +341,14 @@ async function disableCreateAccountToggle(page, log) {
       }
     }
 
-    // 2) Click the visible "Save information & create..." control / nearby switch UI.
+    // 2) Click the visible "Save information & create..." control / nearby switch UI / label.
     await page
       .locator('text=/Save information.*create your PayPal account/i')
+      .first()
+      .click({ force: true })
+      .catch(() => {});
+    await page
+      .locator('label[for^="Switch_"], label.css-ltr-8vwtr6-state')
       .first()
       .click({ force: true })
       .catch(() => {});
@@ -369,16 +442,35 @@ async function clickGuestPayOnly(page, payCtas, log) {
 
 /** Force AU country — PayPal defaulted to UK/GB on Noontide (2026-08-05). */
 async function selectAustraliaCountry(page, log) {
-  const country = page.locator('select#country, select[name="country"], select[data-testid*="country" i]').first();
-  if (!(await country.count().catch(() => 0))) return false;
-  const before = await country.inputValue().catch(() => "");
-  await country
-    .selectOption({ label: "Australia" })
-    .catch(async () => country.selectOption({ value: "AU" }).catch(() => {}));
-  await page.waitForTimeout(800);
-  const after = await country.inputValue().catch(() => "");
-  log(`paypal_guest country ${before || "?"}→${after || "?"}`);
-  return /AU|Australia/i.test(after) || after !== before;
+  const before = await page
+    .locator('select#country, select[data-testid="countrySelector"]')
+    .first()
+    .inputValue()
+    .catch(() => "");
+  const ok = await setSelectValue(
+    page,
+    ['select[data-testid="countrySelector"]', "select#country", 'select[name="country"]'],
+    { value: "AU", label: "Australia" },
+    log,
+    "country",
+  );
+  await page.waitForTimeout(1200);
+  const after = await page
+    .locator('select#country, select[data-testid="countrySelector"]')
+    .first()
+    .inputValue()
+    .catch(() => "");
+  // State list must remount to AU (QLD/NSW…) — UK list has "Aberdeen City".
+  const stateHtml = await page
+    .locator("select#billingState")
+    .innerHTML()
+    .catch(() => "");
+  const auStates = /Queensland|New South Wales|QLD|NSW/i.test(stateHtml);
+  const ukStates = /Aberdeen City|Greater London/i.test(stateHtml);
+  log(
+    `paypal_guest country ${before || "?"}→${after || "?"} setOk=${ok} auStates=${auStates} ukStates=${ukStates}`,
+  );
+  return /AU/i.test(after) || (ok && auStates && !ukStates);
 }
 
 /** Fill contact + AU billing — IDs from checkoutweb/signup forensics. */
@@ -419,19 +511,24 @@ async function fillGuestContactAndAddress(page, billing, log) {
     state: false,
   };
 
-  const stateSel = page.locator('select#billingState, select[name="billingState"]').first();
-  if (await stateSel.count().catch(() => 0)) {
-    const prov = String(billing.province || "QLD").trim().toUpperCase();
-    const label = AU_STATE_LABELS[prov] || billing.province;
-    await stateSel
-      .selectOption({ label })
-      .catch(async () =>
-        stateSel
-          .selectOption({ value: prov })
-          .catch(async () => stateSel.selectOption({ label: prov }).catch(() => {})),
-      );
-    const v = await stateSel.inputValue().catch(() => "");
-    filled.state = Boolean(v);
+  const prov = String(billing.province || "QLD").trim().toUpperCase();
+  const label = AU_STATE_LABELS[prov] || billing.province;
+  filled.state = await setSelectValue(
+    page,
+    ['select#billingState', 'select[name="billingState"]'],
+    { value: prov, label },
+    log,
+    "state",
+  );
+  if (!filled.state) {
+    // Some AU builds use full label as option value.
+    filled.state = await setSelectValue(
+      page,
+      ['select#billingState', 'select[name="billingState"]'],
+      { value: label, label },
+      log,
+      "state-label",
+    );
   }
 
   log(
@@ -441,40 +538,84 @@ async function fillGuestContactAndAddress(page, billing, log) {
 }
 
 async function fillGuestCardFields(page, card, log) {
-  const cardFilled = await fillFirst(
-    page,
-    [
-      'input#cardNumber',
-      'input[name="cardNumber"]',
-      'input[name="cardnumber"]',
-      'input[autocomplete="cc-number"]',
-      'input[data-testid="cardNumber"]',
-    ],
-    card.number,
-  );
+  const panSpaced = formatPanSpaces(card.number);
+  const expiry = formatExpiryMmYy(card.expMonth, card.expYear);
+  // Prefer keyboard into focused fields — React floating labels ignore many .fill() paths.
+  const cardLoc = page
+    .locator('input#cardNumber, input[name="cardnumber"], input[autocomplete="cc-number"]')
+    .first();
+  let cardFilled = false;
+  if (await cardLoc.count().catch(() => 0)) {
+    await cardLoc.click({ force: true }).catch(() => {});
+    await page.keyboard.press("Control+A").catch(() => {});
+    await page.keyboard.press("Backspace").catch(() => {});
+    await page.keyboard.type(panSpaced, { delay: 25 }).catch(() => {});
+    const v = await cardLoc.inputValue().catch(() => "");
+    cardFilled = String(v).replace(/\D/g, "").length >= 15;
+    if (!cardFilled) {
+      cardFilled = await fillFirst(
+        page,
+        ['input#cardNumber', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]'],
+        panSpaced,
+      );
+    }
+  } else {
+    cardFilled = await fillFirst(
+      page,
+      ['input#cardNumber', 'input[name="cardnumber"]', 'input[autocomplete="cc-number"]'],
+      panSpaced,
+    );
+  }
   const expFilled =
     (await fillFirst(
       page,
-      ['input#cardExpiry', 'input[name="cardExpiry"]', 'input[autocomplete="cc-exp"]'],
-      `${card.expMonth} / ${card.expYear}`,
+      ['input#cardExpiry', 'input[name="exp-date"]', 'input[autocomplete="cc-exp"]'],
+      expiry,
     )) ||
     (await fillFirst(page, ['input#expiryDate', 'input[name="expiryDate"]'], `${card.expMonth}${card.expYear}`));
+  // Verify expiry matches spaced pattern; retype if needed.
+  const expLoc = page.locator('input#cardExpiry, input[autocomplete="cc-exp"]').first();
+  if (await expLoc.count().catch(() => 0)) {
+    const ev = await expLoc.inputValue().catch(() => "");
+    if (!/^\d{2}\s\/\s\d{2}$/.test(ev)) {
+      await expLoc.click({ force: true }).catch(() => {});
+      await page.keyboard.press("Control+A").catch(() => {});
+      await page.keyboard.type(expiry, { delay: 30 }).catch(() => {});
+    }
+  }
   const cvvFilled = await fillFirst(
     page,
     ['input#cardCvv', 'input#cvv', 'input[name="cardCvv"]', 'input[name="cvv"]', 'input[autocomplete="cc-csc"]'],
     card.cvv,
   );
-  log(`paypal_guest card fill card=${cardFilled} exp=${Boolean(expFilled)} cvv=${cvvFilled}`);
-  return { cardFilled, expFilled: Boolean(expFilled), cvvFilled };
+  const panLen = await cardLoc
+    .inputValue()
+    .then((v) => String(v || "").replace(/\D/g, "").length)
+    .catch(() => 0);
+  log(
+    `paypal_guest card fill card=${cardFilled} panDigits=${panLen} exp=${Boolean(expFilled)} cvv=${cvvFilled} panFmt=spaced`,
+  );
+  return { cardFilled: cardFilled || panLen >= 15, expFilled: Boolean(expFilled), cvvFilled };
 }
 
 async function dismissPaypalCookies(page, log) {
+  // Prefer #acceptAllButton (cookie banner overlays guest CTA on GB wall).
+  const accept = page.locator("#acceptAllButton, button.acceptButton").first();
+  if (await accept.count().catch(() => 0)) {
+    await accept.click({ force: true, timeout: 5_000 }).catch(() => {});
+    await page
+      .locator("#acceptAllButton")
+      .waitFor({ state: "hidden", timeout: 5_000 })
+      .catch(() => {});
+    log("paypal_guest cookies (#acceptAllButton)");
+    await page.waitForTimeout(300);
+    return true;
+  }
   const hit = await clickFirst(
     page,
     [
-      'button:has-text("Accept")',
       'button:has-text("Accept Cookies")',
-      '#acceptAllButton',
+      'button:has-text("Accept")',
       'button[data-testid="accept-cookies"]',
     ],
     { force: true },
@@ -486,10 +627,31 @@ async function dismissPaypalCookies(page, log) {
   return Boolean(hit);
 }
 
+async function leftLoginWall(page) {
+  const body = await page.locator("body").innerText().catch(() => "");
+  // Login wall still shows Next + Pay by Debit — guest email / Weasley do not.
+  if (/Log in to PayPal/i.test(body) && /Pay by Debit or Credit Card/i.test(body)) {
+    return false;
+  }
+  const guestEmail = await page
+    .locator("#onboardingFlowEmail, input[placeholder='Enter email address']")
+    .first()
+    .count()
+    .catch(() => 0);
+  if (guestEmail) return true;
+  if (/Check out as a guest|Continue to Payment|Pay with debit or credit card/i.test(body)) return true;
+  const cardReady = await page
+    .locator('input#cardNumber, input[autocomplete="cc-number"]')
+    .first()
+    .count()
+    .catch(() => 0);
+  return Boolean(cardReady);
+}
+
 async function openGuestCardPath(page, log) {
   // Live Bandai/GE PayPal login (2026-08-05): #startGuestOnboardingFlow
   // label = "Pay by Debit or Credit Card" (by, not with).
-  // Cookie banner + login "Next" used to steal clicks (nav=121, cardFilled=false).
+  // Cookie banner + login "Next" used to steal clicks. Do NOT treat login #email as success.
   await dismissPaypalCookies(page, log);
   const guestCtas = [
     "#startGuestOnboardingFlow",
@@ -505,41 +667,48 @@ async function openGuestCardPath(page, log) {
     '[data-testid="pay-with-card"]',
     "#card-option",
   ];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 10; i++) {
     await dismissPaypalCookies(page, log);
-    // Only treat as ready when the guest email INPUT exists (body text races).
-    const emailReady = await page
-      .locator("#onboardingFlowEmail, input[placeholder='Enter email address']")
-      .first()
-      .count()
-      .catch(() => 0);
-    if (emailReady) {
-      log("paypal_guest already on guest form (email input present)");
+    if (await leftLoginWall(page)) {
+      log("paypal_guest already past login wall");
       return true;
     }
-    const cardReady = await page
-      .locator('input#cardNumber, input[autocomplete="cc-number"]')
-      .first()
-      .count()
-      .catch(() => 0);
-    if (cardReady) {
-      log("paypal_guest already on card form");
+    // DOM click first — banner overlays often eat Playwright locator clicks.
+    const domClicked = await page
+      .evaluate(() => {
+        const btn =
+          document.querySelector("#startGuestOnboardingFlow") ||
+          Array.from(document.querySelectorAll("button,a")).find((b) =>
+            /Pay by Debit or Credit Card|Pay with Debit or Credit Card/i.test(
+              String(b.textContent || ""),
+            ),
+          );
+        if (!btn) return false;
+        btn.click();
+        return true;
+      })
+      .catch(() => false);
+    if (domClicked) {
+      log("paypal_guest clicked guest CTA (dom #startGuestOnboardingFlow)");
+    } else {
+      const hit =
+        (await clickFirst(page, guestCtas)) ||
+        (await clickFirst(page, guestCtas, { force: true }));
+      if (hit) log(`paypal_guest clicked guest CTA (${hit})`);
+    }
+    // Wait for REAL guest UI — never login #email (that caused false guestPath=true).
+    await page
+      .waitForSelector(
+        "#onboardingFlowEmail, input[placeholder='Enter email address'], button:has-text('Continue to Payment'), input#cardNumber, input[autocomplete='cc-number'], text=Check out as a guest, text=Pay with debit or credit card",
+        { timeout: 12_000 },
+      )
+      .catch(() => null);
+    await page.waitForTimeout(800);
+    if (await leftLoginWall(page)) {
+      log("paypal_guest left login wall");
       return true;
     }
-    const hit =
-      (await clickFirst(page, guestCtas)) ||
-      (await clickFirst(page, guestCtas, { force: true }));
-    if (hit) {
-      log(`paypal_guest clicked guest CTA (${hit})`);
-      await page
-        .waitForSelector(
-          'input#cardNumber, input[name="cardNumber"], input[autocomplete="cc-number"], #credit-card-number, iframe[name*="card"], iframe[title*="card" i], input#email, button:has-text("Continue to Payment")',
-          { timeout: 15_000 },
-        )
-        .catch(() => null);
-      await page.waitForTimeout(1000);
-      return true;
-    }
+    log(`paypal_guest still on login wall attempt=${i}`);
     await page.waitForTimeout(700);
   }
   return false;
@@ -628,8 +797,9 @@ export async function approvePaypalCheckout(opts = {}) {
       if (frame === page.mainFrame()) trail.push(frame.url());
     });
 
-    log(`paypal_guest open ${approveUrl.slice(0, 120)}`);
-    await page.goto(approveUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
+    const openUrl = forceAuApproveUrl(approveUrl);
+    log(`paypal_guest open ${openUrl.slice(0, 140)}`);
+    await page.goto(openUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     await page.waitForTimeout(1200);
     await dismissPaypalCookies(page, log);
     await dumpForensics(page, forensicsDir, "open");
