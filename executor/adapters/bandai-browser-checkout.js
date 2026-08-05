@@ -8,7 +8,12 @@ import path from "node:path";
 import { chromium } from "playwright";
 
 import { installChromePayStealth, probeChromePayStealth } from "../chrome-pay-stealth.js";
-import { issuerResponseForensics, pspPostForensics } from "../pay-forensics.js";
+import {
+  classifyPostPayUrl,
+  issuerResponseForensics,
+  postPayForensics,
+  pspPostForensics,
+} from "../pay-forensics.js";
 import { parseBandaiProxy } from "./bandai-f5.js";
 import { bandaiBaseFor, normalizeBandaiArea } from "./bandai-session.js";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
@@ -209,6 +214,7 @@ function looksLike3ds(url, text = "") {
  * @param {number} [opts.qty=1]
  * @param {boolean} [opts.placeOrder=false]
  * @param {object} [opts.card] — { number, expMonth, expYear, cvv, holder }
+ * @param {string} [opts.paymentMethod] — "card" (default) | "paypal_guest" (lab/HAR)
  * @param {number} [opts.wait3dsMs=45000] — max observe after Pay (exits earlier on wire/decline/3DS)
  */
 export async function browserBandaiCheckout(opts = {}) {
@@ -217,6 +223,7 @@ export async function browserBandaiCheckout(opts = {}) {
   const productCode = String(opts.productCode || "").trim();
   const qty = Math.max(1, Math.min(5, Number(opts.qty) || 1));
   const placeOrder = opts.placeOrder === true;
+  const wantPaypal = /^paypal/i.test(String(opts.paymentMethod || ""));
   // Cap hard — long 3DS polls made labs look like 5min charges while Pay already fired.
   const wait3dsMs = Math.min(90_000, Math.max(8_000, Number(opts.wait3dsMs) || 45_000));
   const area = normalizeBandaiArea(opts.area || opts.shippingAreaCode) || "au";
@@ -265,7 +272,10 @@ export async function browserBandaiCheckout(opts = {}) {
     browser = await chromium.launch({
       headless: opts.headless !== false,
       proxy: proxy || undefined,
-      args: ["--disable-blink-features=AutomationControlled"],
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        ...(wantPaypal ? ["--disable-popup-blocking"] : []),
+      ],
     });
     if (recordHarPath) {
       try {
@@ -313,6 +323,14 @@ export async function browserBandaiCheckout(opts = {}) {
       desktopAttempt: opts.desktopAttempt || null,
       executorTaskId: opts.executorTaskId || null,
     };
+    let postPayWire = {
+      threeDsMethod: 0,
+      acsChallenge: 0,
+      altCharge: 0,
+      risk: 0,
+      geOther: 0,
+      paymentRedirect: 0,
+    };
     page.on("request", (req) => {
       const u = req.url();
       const method = req.method();
@@ -335,9 +353,39 @@ export async function browserBandaiCheckout(opts = {}) {
           ...forensicsIds,
         });
       }
+      // After first issuer: log 3DS method / ACS / alt-charge / risk (incl. GET).
+      if (chargeReqCount >= 1) {
+        const postKind = classifyPostPayUrl(u);
+        if (
+          postKind === "three_ds_method" ||
+          postKind === "acs_challenge" ||
+          postKind === "alt_charge" ||
+          postKind === "risk" ||
+          postKind === "payment_redirect" ||
+          (postKind === "ge_other" && method !== "GET" && method !== "OPTIONS" && method !== "HEAD")
+        ) {
+          if (postKind === "three_ds_method") postPayWire.threeDsMethod += 1;
+          else if (postKind === "acs_challenge") postPayWire.acsChallenge += 1;
+          else if (postKind === "alt_charge") postPayWire.altCharge += 1;
+          else if (postKind === "risk") postPayWire.risk += 1;
+          else if (postKind === "payment_redirect") postPayWire.paymentRedirect += 1;
+          else postPayWire.geOther += 1;
+          postPayForensics({
+            via: "browser-full",
+            store: "bandai",
+            method,
+            url: u,
+            chargeN: chargeReqCount,
+            kind: postKind,
+            ...forensicsIds,
+          });
+        }
+      }
       if (
         method !== "GET" &&
-        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)
+        /global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment|forter|iovation/i.test(
+          u,
+        )
       ) {
         geNet.push({
           t: Date.now(),
@@ -346,6 +394,7 @@ export async function browserBandaiCheckout(opts = {}) {
           url: u.slice(0, 200),
           issuer: isBandaiGeIssuerPaymentUrl(u),
           chargeN: isBandaiGeIssuerPaymentUrl(u) ? chargeReqCount : undefined,
+          postKind: chargeReqCount >= 1 ? classifyPostPayUrl(u) : undefined,
         });
       }
     });
@@ -882,7 +931,191 @@ export async function browserBandaiCheckout(opts = {}) {
     let orderNumber = null;
     let payClickCount = 0;
     let sawAuthWire = false;
+    let paypalApproveUrl = null;
     try {
+      if (wantPaypal) {
+        // Lab/HAR: select PayPal on GE Checkout/v2 — do not fill card / HandleCreditCard.
+        await page.waitForTimeout(1500);
+        let paypalClicked = false;
+        for (let attempt = 0; attempt < 10 && !paypalClicked; attempt++) {
+          for (const frame of page.frames()) {
+            if (!isBandaiGeCheckoutPayFrame(frame.url()) && !/global-e\.com/i.test(frame.url())) {
+              continue;
+            }
+            // Bandai mid 1925: PayPal is a sprite .payMet with title/data-id=4
+            // (not a text label). Wire: data-gw=6 data-mode=fullredirect.
+            const pp = frame
+              .locator(
+                '[title="PayPal"], [data-title="PayPal"], [aria-label*="PayPal" i], .payMet[data-id="4"], span.payMet[title="PayPal"], label:has-text("PayPal"), button:has-text("PayPal")',
+              )
+              .first();
+            if (!(await pp.count().catch(() => 0))) continue;
+            // Sprite may be opacity/zero-size but still clickable via force.
+            await pp.scrollIntoViewIfNeeded().catch(() => {});
+            await pp.click({ timeout: 5000, force: true }).catch(() => {});
+            paypalClicked = true;
+            geNote = `paypal_method_clicked pm=4 gw=6 frame=${frame.url().slice(0, 80)}`;
+            paymentStatus = "paypal_selected";
+            break;
+          }
+          if (!paypalClicked) await page.waitForTimeout(700);
+        }
+        if (!paypalClicked) {
+          geNote = "paypal_method_not_found";
+          paymentStatus = "paypal_missing";
+        } else {
+          // Tick terms. PayPal mid-1925 is data-mode=fullredirect + newwindow —
+          // the tile click or Pay CTA should hit InitPayPalExpress / paypal.com.
+          for (const frame of page.frames()) {
+            if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+            const checks = frame.locator('input[type="checkbox"]');
+            const nCheck = await checks.count().catch(() => 0);
+            for (let ci = 0; ci < nCheck; ci++) {
+              const c = checks.nth(ci);
+              if (!(await c.isChecked().catch(() => true))) {
+                await c.check({ force: true }).catch(() => {});
+              }
+            }
+          }
+          const paypalReqUrls = [];
+          const onPaypalReq = (req) => {
+            const u = req.url();
+            if (/paypal\.com|InitPayPal|PayPalExpress|Payments\/.*PayPal/i.test(u)) {
+              paypalReqUrls.push(u);
+              if (!paypalApproveUrl && /paypal\.com/i.test(u)) paypalApproveUrl = u;
+            }
+          };
+          page.on("request", onPaypalReq);
+          const onPopup = (p) => {
+            p.on("request", onPaypalReq);
+            p.waitForURL(/paypal\.com/i, { timeout: 40_000 })
+              .then(() => {
+                if (!paypalApproveUrl) paypalApproveUrl = p.url();
+              })
+              .catch(() => {});
+          };
+          context.on("page", onPopup);
+
+          // Re-click PayPal tile (fullredirect often launches from the method itself).
+          for (const frame of page.frames()) {
+            if (!isBandaiGeCheckoutPayFrame(frame.url()) && !/Checkout\/v2/i.test(frame.url())) {
+              continue;
+            }
+            await frame
+              .evaluate(() => {
+                const el =
+                  document.querySelector('[title="PayPal"], [data-title="PayPal"], .payMet[data-id="4"]');
+                if (el) el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+              })
+              .catch(() => {});
+          }
+          await page.waitForTimeout(1500);
+
+          for (let attempt = 0; attempt < 10 && !paypalApproveUrl; attempt++) {
+            for (const frame of page.frames()) {
+              if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+              const payBtn = frame
+                .locator(
+                  '#btnPay:visible, button#btnPay, button:has-text("Pay"):visible, button:has-text("PayPal"):visible, button:has-text("Continue"):visible, a:has-text("PayPal"):visible',
+                )
+                .first();
+              if (!(await payBtn.count().catch(() => 0))) continue;
+              if (await payBtn.isDisabled().catch(() => false)) {
+                geNote += `; pay_disabled@${attempt}`;
+                continue;
+              }
+              const popupPromise = page
+                .waitForEvent("popup", { timeout: 20_000 })
+                .catch(() => null);
+              await payBtn.click({ timeout: 8_000, noWaitAfter: true, force: true }).catch(() => {});
+              payClickCount += 1;
+              paymentStatus = "paypal_pay_clicked";
+              geNote += `; pay#${payClickCount}`;
+              const popup = await popupPromise;
+              if (popup) {
+                await popup.waitForLoadState("domcontentloaded").catch(() => {});
+                if (/paypal\.com/i.test(popup.url())) paypalApproveUrl = popup.url();
+              }
+              break;
+            }
+            if (paypalApproveUrl || paypalReqUrls.length) break;
+            await page.waitForTimeout(800);
+          }
+
+          const deadline = Date.now() + Math.min(50_000, wait3dsMs);
+          while (Date.now() < deadline && !paypalApproveUrl) {
+            for (const p of context.pages()) {
+              const u = p.url();
+              if (/paypal\.com/i.test(u)) {
+                paypalApproveUrl = u;
+                break;
+              }
+            }
+            if (!paypalApproveUrl && paypalReqUrls.length) {
+              const hit = paypalReqUrls.find((u) => /paypal\.com/i.test(u));
+              if (hit) paypalApproveUrl = hit;
+              else geNote += `; ppReq=${paypalReqUrls[0].slice(0, 100)}`;
+            }
+            if (paypalApproveUrl) break;
+            await page.waitForTimeout(500);
+          }
+          if (paypalReqUrls.length) {
+            geNote += `; ppReqs=${paypalReqUrls.length}`;
+          }
+          try {
+            page.off("request", onPaypalReq);
+            context.off("page", onPopup);
+          } catch {
+            /* ignore */
+          }
+          if (paypalApproveUrl) {
+            paymentStatus = "paypal_approve_url";
+            filled = true; // reuse success path flags lightly
+            geNote += `; approve=${paypalApproveUrl.slice(0, 120)}`;
+          } else if (payClickCount) {
+            paymentStatus = "paypal_awaiting_redirect";
+            geNote += "; no_paypal_url_yet";
+          }
+        }
+        push("ge_pay", {
+          ok: Boolean(paypalApproveUrl || payClickCount),
+          status: null,
+          ms: Date.now() - sGe,
+          note: geNote.slice(0, 280),
+        });
+        let pageUrl = `${base}/orderdetails`;
+        try {
+          pageUrl = page.url();
+        } catch {
+          /* ignore */
+        }
+        const cookies = {};
+        for (const c of await context.cookies("https://p-bandai.com")) cookies[c.name] = c.value;
+        await closeAll();
+        return {
+          ok: Boolean(paypalApproveUrl || payClickCount),
+          steps,
+          checkoutStage: paypalApproveUrl ? "tokenize" : "details",
+          paymentStatus,
+          paymentMethod: "paypal_guest",
+          paypalApproveUrl,
+          dryRun: true,
+          areaItemNo,
+          cartSn,
+          cartId,
+          cartItemSn,
+          checkoutSn,
+          title,
+          finalUrl: paypalApproveUrl || pageUrl,
+          cookies,
+          chargeReqCount,
+          recordHarPath: recordHarPath || null,
+          note: `PayPal guest HAR path; ${geNote}`.slice(0, 320),
+          elapsedMs: Date.now() - t0,
+          via: "browser-paypal",
+        };
+      }
+
       // Prefer waiting for the secure card form frame (flaky timing on GE boot).
       await page
         .waitForFunction(
@@ -1087,7 +1320,12 @@ export async function browserBandaiCheckout(opts = {}) {
           sawAuthWire = authReqs().length > 0;
           const wireSeenAt = { t: sawAuthWire ? Date.now() : 0 };
           // After first auth POST, only watch briefly for ACS/decline UI.
-          const postWireObserveMs = Math.min(12_000, wait3dsMs);
+          // Dual HAR / 3DS-method lead: keep the page alive longer so Method URL /
+          // ACS / alt-charge traffic can show up after HandleCredit.
+          const postWireObserveMs = Math.min(
+            recordHarPath || process.env.BANDAI_DUAL_HAR === "1" ? 28_000 : 12_000,
+            wait3dsMs,
+          );
 
           while (Date.now() < hardDeadline && !reached3ds && !orderNumber) {
             if (!sawAuthWire) {
@@ -1257,6 +1495,7 @@ export async function browserBandaiCheckout(opts = {}) {
       chromePayStealth: Boolean(stealthInstall?.ok),
       stealthProbe,
       recordHarPath: recordHarPath || null,
+      postPayWire,
       note: reached3ds
         ? `3DS challenge seen — reject/approve in issuer app (${threeDsUrl || "frame"})`
         : orderNumber
@@ -1265,7 +1504,7 @@ export async function browserBandaiCheckout(opts = {}) {
             ? "Pay clicked but no GE payment request left the browser — form likely invalid / GEM not ready"
             : payClickCount > 1
               ? `MULTI pay click (${payClickCount}) — investigate double charge`
-              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}${recordHarPath ? `; har=${path.basename(recordHarPath)}` : ""}`,
+              : `GE UI handoff; paymentStatus=${paymentStatus}; chargeReq=${chargeReqCount}; tx=${transactionId || "-"}; stealth=${Boolean(stealthInstall?.ok)}; postPay=method:${postPayWire.threeDsMethod}/acs:${postPayWire.acsChallenge}/alt:${postPayWire.altCharge}/risk:${postPayWire.risk}${recordHarPath ? `; har=${path.basename(recordHarPath)}` : ""}`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,

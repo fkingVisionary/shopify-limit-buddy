@@ -239,7 +239,13 @@
 
           <label>Store</label>
           <select id="taskStore">
-            <option value="bandai" selected>Premium Bandai AU</option>
+            <option value="bandai-au" selected>Premium Bandai AU</option>
+            <option value="bandai-us">Premium Bandai US</option>
+            <option value="bandai-nz">Premium Bandai NZ</option>
+            <option value="bandai-sg">Premium Bandai SG</option>
+            <option value="bandai-hk">Premium Bandai HK</option>
+            <option value="bandai-tw">Premium Bandai TW</option>
+            <option value="bandai-fr">Premium Bandai FR</option>
             <option value="toymate">Toymate AU</option>
             <option value="pokemoncentre">Pokémon Centre AU</option>
           </select>
@@ -311,6 +317,18 @@
               </p>
             </div>
             <div id="taskBandaiCheckoutModeWrap" hidden>
+              <div id="taskBandaiPayWrap">
+                <label>Payment</label>
+                <select id="taskBandaiPay">
+                  <option value="credit_card">Credit card</option>
+                  <option value="paypal_guest">PayPal (guest)</option>
+                  <option value="paypal_manual">PayPal (link only)</option>
+                </select>
+                <p class="field-hint">
+                  PayPal guest uses the task billing profile (email, address, card) on PayPal’s guest card form.
+                  Link only stops at the approve URL.
+                </p>
+              </div>
               <label>Checkout speed</label>
               <select id="taskBandaiCheckoutMode">
                 <option value="fast">Fast (default)</option>
@@ -930,7 +948,7 @@
           <input type="hidden" id="accId" />
             <label>Store</label>
             <select id="accStore">
-              <option value="bandai">Premium Bandai AU</option>
+              <option value="bandai">Premium Bandai</option>
               <option value="toymate">Toymate AU</option>
             </select>
             <label>Account group</label>
@@ -1119,13 +1137,25 @@
           <p class="hint">Defaults for Quick Task and Smart Actions Create Tasks.</p>
           <label>Store</label>
           <select id="qtPresetStore">
-            <option value="bandai">Premium Bandai AU</option>
+            <option value="bandai-au">Premium Bandai AU</option>
+            <option value="bandai-us">Premium Bandai US</option>
+            <option value="bandai-nz">Premium Bandai NZ</option>
+            <option value="bandai-sg">Premium Bandai SG</option>
+            <option value="bandai-hk">Premium Bandai HK</option>
+            <option value="bandai-tw">Premium Bandai TW</option>
+            <option value="bandai-fr">Premium Bandai FR</option>
           </select>
           <label>Bandai mode</label>
           <select id="qtPresetMode">
             <option value="checkout">Autocheckout</option>
             <option value="atc">ATC only (hold cart)</option>
             <option value="monitor">Monitor (global + checkout on hit)</option>
+          </select>
+          <label>Payment</label>
+          <select id="qtPresetPay">
+            <option value="credit_card">Credit card</option>
+            <option value="paypal_guest">PayPal (guest)</option>
+            <option value="paypal_manual">PayPal (link only)</option>
           </select>
           <label>Profile</label>
           <select id="qtPresetProfile"></select>

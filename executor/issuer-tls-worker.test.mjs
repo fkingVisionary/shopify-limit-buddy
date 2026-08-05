@@ -35,7 +35,7 @@ test("issuer tls-worker: GE HandleCreditCard POST is on by default", () => {
   }
 });
 
-test("payHost tls-worker: non-GE prepay uses PAY_PAYHOST_TLS_WORKER", () => {
+test("payHost tls-worker: prepay OFF by default; ON with PAY_PAYHOST_TLS_WORKER=1", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
   const prevPay = process.env.PAY_PAYHOST_TLS_WORKER;
   const prevGe = process.env.PAY_GE_TLS_WORKER;
@@ -43,7 +43,14 @@ test("payHost tls-worker: non-GE prepay uses PAY_PAYHOST_TLS_WORKER", () => {
   delete process.env.PAY_PAYHOST_TLS_WORKER;
   process.env.PAY_GE_TLS_WORKER = "0";
   try {
-    // With GE-all off, GE prepay POST still follows PAY_PAYHOST_TLS_WORKER.
+    assert.equal(
+      shouldUseIssuerTlsWorker(
+        "https://webservices.global-e.com/checkoutv2/handleaction/1/guid/8urc",
+        "POST",
+      ),
+      false,
+    );
+    process.env.PAY_PAYHOST_TLS_WORKER = "1";
     assert.equal(
       shouldUseIssuerTlsWorker(
         "https://webservices.global-e.com/checkoutv2/handleaction/1/guid/8urc",
@@ -125,11 +132,11 @@ test("issuer tls-worker: PAY_ISSUER_TLS_WORKER=0 opts out (non-GE)", () => {
   }
 });
 
-test("GE tls-worker: GetCartToken GET off by default (CCForm uses issuer tls)", () => {
+test("GE tls-worker: GetCartToken GET and CCForm GET off by default", () => {
   const prevGe = process.env.PAY_GE_TLS_WORKER;
   const prevCc = process.env.PAY_ISSUER_CCFORM_TLS;
   delete process.env.PAY_GE_TLS_WORKER;
-  process.env.PAY_ISSUER_CCFORM_TLS = "0";
+  delete process.env.PAY_ISSUER_CCFORM_TLS;
   try {
     assert.equal(
       shouldUseIssuerTlsWorker(
@@ -181,7 +188,7 @@ test("GE tls-worker: PAY_GE_TLS_WORKER=1 opts all GE hops incl GET", () => {
   }
 });
 
-test("CreditCardForm GET uses issuer tls-worker by default", () => {
+test("CreditCardForm GET uses issuer tls-worker only when PAY_ISSUER_CCFORM_TLS=1", () => {
   const prev = process.env.PAY_ISSUER_TLS_WORKER;
   const prevCc = process.env.PAY_ISSUER_CCFORM_TLS;
   const prevGe = process.env.PAY_GE_TLS_WORKER;
@@ -194,15 +201,15 @@ test("CreditCardForm GET uses issuer tls-worker by default", () => {
         "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
         "GET",
       ),
-      true,
+      false,
     );
-    process.env.PAY_ISSUER_CCFORM_TLS = "0";
+    process.env.PAY_ISSUER_CCFORM_TLS = "1";
     assert.equal(
       shouldUseIssuerTlsWorker(
         "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
         "GET",
       ),
-      false,
+      true,
     );
   } finally {
     if (prev === undefined) delete process.env.PAY_ISSUER_TLS_WORKER;
@@ -214,14 +221,14 @@ test("CreditCardForm GET uses issuer tls-worker by default", () => {
   }
 });
 
-test("cold issuer tls: separate cache keys by default; shared when =0", () => {
+test("cold issuer tls: shared cache by default; split when PAY_ISSUER_COLD_TLS=1", () => {
   const prev = process.env.PAY_ISSUER_COLD_TLS;
   delete process.env.PAY_ISSUER_COLD_TLS;
   try {
-    assert.equal(payTlsWorkerCacheKey("prepay"), "_prepayRemoteTls");
-    assert.equal(payTlsWorkerCacheKey("issuer"), "_issuerRemoteTls");
-    process.env.PAY_ISSUER_COLD_TLS = "0";
     assert.equal(payTlsWorkerCacheKey("prepay"), "_issuerRemoteTls");
+    assert.equal(payTlsWorkerCacheKey("issuer"), "_issuerRemoteTls");
+    process.env.PAY_ISSUER_COLD_TLS = "1";
+    assert.equal(payTlsWorkerCacheKey("prepay"), "_prepayRemoteTls");
     assert.equal(payTlsWorkerCacheKey("issuer"), "_issuerRemoteTls");
   } finally {
     if (prev === undefined) delete process.env.PAY_ISSUER_COLD_TLS;
@@ -229,7 +236,7 @@ test("cold issuer tls: separate cache keys by default; shared when =0", () => {
   }
 });
 
-test("CreditCardForm GET gets Sec-Fetch navigate/iframe by default", () => {
+test("CreditCardForm GET Sec-Fetch navigate/iframe only when PAY_ISSUER_GET_FETCH=1", () => {
   const prevNav = process.env.PAY_ISSUER_CHROME_NAV;
   const prevGet = process.env.PAY_ISSUER_GET_FETCH;
   const prevDest = process.env.PAY_ISSUER_GET_DEST;
@@ -237,6 +244,16 @@ test("CreditCardForm GET gets Sec-Fetch navigate/iframe by default", () => {
   delete process.env.PAY_ISSUER_GET_FETCH;
   delete process.env.PAY_ISSUER_GET_DEST;
   try {
+    assert.deepEqual(
+      chromePayFetchHeaders(
+        "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+        { origin: "https://webservices.global-e.com" },
+        { method: "GET" },
+      ),
+      {},
+    );
+
+    process.env.PAY_ISSUER_GET_FETCH = "1";
     const h = chromePayFetchHeaders(
       "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
       { origin: "https://webservices.global-e.com" },
@@ -247,17 +264,6 @@ test("CreditCardForm GET gets Sec-Fetch navigate/iframe by default", () => {
     // secure-bandai + webservices share eTLD+1 → same-site
     assert.equal(h["sec-fetch-site"], "same-site");
 
-    process.env.PAY_ISSUER_GET_FETCH = "0";
-    assert.deepEqual(
-      chromePayFetchHeaders(
-        "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
-        { origin: "https://webservices.global-e.com" },
-        { method: "GET" },
-      ),
-      {},
-    );
-
-    delete process.env.PAY_ISSUER_GET_FETCH;
     process.env.PAY_ISSUER_GET_DEST = "document";
     const doc = chromePayFetchHeaders(
       "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",

@@ -517,10 +517,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     String(process.env.BANDAI_FAST_ATC || "1") !== "0";
   // common.js needs ~1.2–1.8s after goto before p8komysnbc-* mint works.
   // 900ms broke ATC mint in lab; floor at 1200 for fast path.
+  // Cap raised — SoftBlock labs needed >3s settle on fresh Noontide (2026-08-05).
   const f5SettleMs = Math.max(
     1_200,
     Math.min(
-      3_000,
+      8_000,
       Number(task.bandaiF5SettleMs || process.env.BANDAI_F5_SETTLE_MS) ||
         (fastAtc ? 1_400 : 1_800),
     ),
@@ -839,6 +840,26 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     try {
       if (!bridge?.page || bridge.page.isClosed?.()) {
         return { ok: false, status: null, note: "bridge login skipped: no page" };
+      }
+      // Warm F5 sensor cookies in-page before login fetch (mint-only used to
+      // leave bridge fetch SoftBlocked while undici also 501'd).
+      try {
+        const mint = await bridge.mint("POST", "/login", {
+          body: loginBody,
+          contentType: "application/x-www-form-urlencoded;charset=UTF-8",
+          csrf: session.state.csrfToken || (await bridge.csrfToken()),
+        });
+        const c = await bridge.cookies();
+        if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
+        if (!mint.ok) {
+          return { ok: false, status: null, note: `bridge sensor mint failed: ${mint.note}` };
+        }
+      } catch (e) {
+        return {
+          ok: false,
+          status: null,
+          note: `bridge sensor mint throw: ${e?.message || e}`,
+        };
       }
       const csrf = session.state.csrfToken || (await bridge.csrfToken());
       const result = await bridge.page.evaluate(
@@ -2299,6 +2320,88 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         /* ignore */
       }
     }
+    // SoftBlock lab 2026-08-05: undici/page GetCartToken Success:false even on
+    // fresh Noontide. Warm orderdetails and harvest CartToken from GEM's own
+    // GetCartToken wire (CookieConsent / full query) when present.
+    let harvestedCartToken = null;
+    if (bridge?.page) {
+      try {
+        const page = bridge.page;
+        const gemHits = [];
+        const onGem = async (res) => {
+          try {
+            const u = res.url();
+            if (!/GetCartToken/i.test(u)) return;
+            const text = await res.text().catch(() => "");
+            gemHits.push({
+              status: res.status(),
+              url: u.slice(0, 220),
+              text: String(text || "").slice(0, 500),
+            });
+          } catch {
+            /* ignore */
+          }
+        };
+        page.on("response", onGem);
+        await bridge.goto(`${session.base}/orderdetails`, {
+          settleMs: Math.min(Math.max(f5SettleMs, 3_000), 8_000),
+        });
+        // GEM often fires GetCartToken after first paint.
+        await page.waitForTimeout(4_000).catch(() => {});
+        page.off("response", onGem);
+        for (const h of gemHits) {
+          const m = String(h.text || "").match(
+            /"Success"\s*:\s*true[^]*?"CartToken"\s*:\s*"([0-9a-f-]{36})"/i,
+          ) || String(h.text || "").match(/"CartToken"\s*:\s*"([0-9a-f-]{36})"/i);
+          if (m?.[1] && /Success"\s*:\s*true/i.test(h.text)) {
+            harvestedCartToken = m[1];
+            break;
+          }
+        }
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) {
+          ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+        }
+        try {
+          const missPath = path.join(
+            process.cwd(),
+            "artifacts",
+            "bandai-getcarttoken-gem-miss.json",
+          );
+          fs.mkdirSync(path.dirname(missPath), { recursive: true });
+          fs.writeFileSync(
+            missPath,
+            JSON.stringify(
+              {
+                at: new Date().toISOString(),
+                harvestedCartToken,
+                gemHits: gemHits.slice(-4),
+                merchantCartToken,
+              },
+              null,
+              2,
+            ),
+          );
+        } catch {
+          /* ignore */
+        }
+        steps.push({
+          step: "ge_orderdetails_warm",
+          ok: true,
+          ms: 0,
+          note: harvestedCartToken
+            ? `warmed orderdetails; harvested CartToken ${harvestedCartToken} gemHits=${gemHits.length}`
+            : `warmed orderdetails; no GEM CartToken gemHits=${gemHits.length} last=${String(gemHits.at?.(-1)?.text || "").slice(0, 80)}`,
+        });
+      } catch (e) {
+        steps.push({
+          step: "ge_orderdetails_warm",
+          ok: false,
+          ms: 0,
+          note: `orderdetails warm: ${String(e?.message || e).slice(0, 140)}`,
+        });
+      }
+    }
     // Fast anti-fraud default: riskHydrate = fresh snare/Forter on a THROWAWAY
     // CartToken (never Playwright-open the pay guid — liveHtml dualed Revolut).
     // Stale noPage blackbox scored PossibleFraudDetected=True; opt-in only.
@@ -2344,6 +2447,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       executorTaskId: task.taskId || null,
       merchantCartToken,
       checkoutSn: chk.checkoutSn,
+      prefetchedCartToken: harvestedCartToken || null,
       card: opts.card,
       // Desktop/imported vaults: GE form often lacks BillingFirstName — fill from profile.
       profile: shipProfile || profileFromTask(task),
@@ -2353,6 +2457,14 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       referer: `${session.base}/orderdetails`,
       stopBeforeIssuer: task.bandaiGeStopBeforeIssuer === true,
       forceIssuer: task.bandaiGeForceIssuer === true,
+      paymentMethod: task.paymentMethod || null,
+      paymentMethodId: task.paymentMethodId || null,
+      gatewayId: task.gatewayId || null,
+      // PayPal guest uses billing profile email/card (passed as profile + card).
+      paypalHeadless: task.paypalHeadless === true,
+      skipCreditCardForm:
+        task.bandaiGeSkipCreditCardForm === true ||
+        /^paypal/i.test(String(task.paymentMethod || "")),
       keepPageAfterIovation: task.bandaiGeKeepPage === true,
       // Fast = undici issuer (hard no Playwright pay). Page issuer is Safe/opt-in only.
       preferPageIssuer: task.bandaiGePreferPageIssuer === true,
@@ -2401,7 +2513,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       failedStep: geOut.failedStep || null,
       error: geOut.ok ? null : geOut.error || geOut.note || null,
       checkoutStage: geOut.checkoutStage || "tokenize",
-      dryRun: false,
+      dryRun: geOut.dryRun ?? false,
       areaItemNo: pdp.areaItemNo,
       cartSn,
       cartId,
@@ -2410,6 +2522,9 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       cartToken: geOut.cartToken || null,
       title: pdp.title,
       paymentStatus: geOut.paymentStatus,
+      paymentMethod: geOut.paymentMethod || task.paymentMethod || null,
+      paypalApproveUrl: geOut.paypalApproveUrl || null,
+      paypalGuest: geOut.paypalGuest || null,
       blockers: geOut.blockers || [],
       chargeReqCount: geOut.chargeReqCount ?? null,
       undiciAttempts: geOut.undiciAttempts ?? null,
@@ -2417,7 +2532,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       paymentAttempted: Boolean(
         geOut.paymentAttempted ||
           geOut.responseLost ||
-          Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1,
+          Number(geOut.chargeReqCount ?? geOut.undiciAttempts ?? 0) >= 1 ||
+          Boolean(geOut.paypalApproveUrl),
       ),
       browserIssuerBlocked: geOut.browserIssuerBlocked ?? null,
       framesNeutralized: geOut.framesNeutralized ?? null,
@@ -2425,7 +2541,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       sawAuthWire: geOut.sawAuthWire ?? null,
       transactionId: geOut.transactionId ?? null,
       timing: geOut.timing || null,
-      finalUrl: `${session.base}/orderdetails`,
+      finalUrl: geOut.finalUrl || geOut.paypalApproveUrl || `${session.base}/orderdetails`,
       cookies: ctx.jar?.dump?.() ?? {},
       note: geOut.note || null,
       via: geOut.via || "http-ge",
@@ -2768,6 +2884,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       proxy: parseBandaiProxy(task.proxy).url || task.proxy || null,
       placeOrder,
       card,
+      paymentMethod: task.paymentMethod || null,
+      headless: task.headless !== false && process.env.BANDAI_HEADED !== "1",
       shippingAreaCode: task.shippingAreaCode || session.area,
       globaleMerchantCartTokenSuffix: task.globaleMerchantCartTokenSuffix || null,
       timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
@@ -2804,6 +2922,8 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       checkoutSn: out.checkoutSn,
       title: out.title,
       paymentStatus: out.paymentStatus,
+      paymentMethod: out.paymentMethod ?? task.paymentMethod ?? null,
+      paypalApproveUrl: out.paypalApproveUrl ?? null,
       declineTarget: out.declineTarget,
       reached3ds: out.reached3ds ?? null,
       payClickCount: out.payClickCount ?? null,
@@ -2814,10 +2934,11 @@ async function runCheckout(task, ctx, session, tStep, steps) {
       chromePayStealth: out.chromePayStealth ?? null,
       stealthProbe: out.stealthProbe ?? null,
       recordHarPath: out.recordHarPath ?? null,
+      postPayWire: out.postPayWire ?? null,
       finalUrl: out.finalUrl || `${session.base}/cart`,
       cookies: out.cookies || ctx.jar?.dump?.() || {},
       note: out.note,
-      via: "browser",
+      via: out.via || "browser",
       globaleMid: GLOBALE_MID,
       orderNumber: out.orderNumber ?? null,
     };

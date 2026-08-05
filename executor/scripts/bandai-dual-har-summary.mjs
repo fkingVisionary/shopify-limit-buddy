@@ -24,6 +24,9 @@ const RISK_HOST_RE =
 const GE_RE = /global-e\.com|globale/i;
 const ISSUER_RE = /HandleCreditCard/i;
 const REDIRECT_RE = /CCPaymentRedirect/i;
+const THREE_DS_METHOD_RE = /methodurl|three.?ds.?method|3dsmethod/i;
+const ACS_RE = /creq|pareq|\/acs|cardinalcommerce/i;
+const ALT_CHARGE_RE = /Authorize|ProcessPayment|CompleteOrder|SubmitPayment/i;
 
 function headerMap(headers) {
   const out = {};
@@ -52,6 +55,10 @@ function summarize(harPath, label) {
   const redirects = [];
   const riskHosts = new Map();
   const geMutates = [];
+  const threeDsMethod = [];
+  const acsChallenge = [];
+  const altCharge = [];
+  let firstIssuerStarted = null;
 
   for (const e of entries) {
     const req = e?.request || {};
@@ -59,7 +66,10 @@ function summarize(harPath, label) {
     const url = String(req.url || "");
     const method = String(req.method || "GET").toUpperCase();
     const host = hostOf(url);
+    const started =
+      e?.startedDateTime != null ? Date.parse(e.startedDateTime) : null;
     if (ISSUER_RE.test(url) && method !== "GET" && method !== "OPTIONS" && method !== "HEAD") {
+      if (firstIssuerStarted == null && started) firstIssuerStarted = started;
       const h = headerMap(req.headers);
       issuers.push({
         method,
@@ -88,6 +98,32 @@ function summarize(harPath, label) {
         status: res.status ?? null,
         url: loc.slice(0, 180),
         transactionIdHint: m?.[1] || null,
+      });
+    }
+    if (THREE_DS_METHOD_RE.test(url)) {
+      threeDsMethod.push({
+        method,
+        status: res.status ?? null,
+        host,
+        url: url.slice(0, 180),
+        msAfterIssuer:
+          firstIssuerStarted && started != null ? started - firstIssuerStarted : null,
+      });
+    }
+    if (ACS_RE.test(url)) {
+      acsChallenge.push({
+        method,
+        status: res.status ?? null,
+        host,
+        url: url.slice(0, 160),
+      });
+    }
+    if (ALT_CHARGE_RE.test(url) && method !== "GET" && method !== "OPTIONS") {
+      altCharge.push({
+        method,
+        status: res.status ?? null,
+        host,
+        url: url.slice(0, 160),
       });
     }
     if (host && RISK_HOST_RE.test(host + url)) {
@@ -122,12 +158,24 @@ function summarize(harPath, label) {
     handleCreditPosts: issuers.length,
     issuers,
     redirects: redirects.slice(0, 8),
+    threeDsMethodCount: threeDsMethod.length,
+    threeDsMethod: threeDsMethod.slice(0, 12),
+    acsChallengeCount: acsChallenge.length,
+    acsChallenge: acsChallenge.slice(0, 8),
+    altChargeCount: altCharge.length,
+    altCharge: altCharge.slice(0, 8),
     riskHosts: [...riskHosts.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 20)
       .map(([host, n]) => ({ host, n })),
     geMutateCount: geMutates.length,
     geMutatesTail: geMutates.slice(-12),
+    lead3ds:
+      threeDsMethod.length === 0 && issuers.length >= 1
+        ? "NO_3DS_METHOD_AFTER_ISSUER — strongest silent-skip candidate"
+        : threeDsMethod.length > 0
+          ? "3DS_METHOD_SEEN"
+          : null,
   };
 }
 
@@ -181,7 +229,7 @@ const out = {
   manual,
   diff: manual && !manual.error && !bot.error ? diff(bot, manual) : null,
   note:
-    "Dual shape: HandleCreditPosts should be 1 on both. If bot=1 and Revolut=2, look at riskHostsOnlyBot + issuerHeaderDelta.",
+    "Dual shape: HandleCreditPosts=1 on both is expected. 3DS lead: compare threeDsMethodCount / altChargeCount after issuer. Owner locked: Revolut lines same amount, ~same merchant, seconds apart; GE tx id always 1.",
 };
 
 console.log(JSON.stringify(out, null, 2));

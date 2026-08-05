@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-08-05",
+  "merchantId": 1925,
+  "paymentMethodId": "4",
+  "gatewayId": "6",
+  "mode": "fullredirect",
+  "tile": ".payMet[title=PayPal] / .payMet[data-id=4]",
+  "initUrl": "https://webservices.global-e.com/Payments/InitPayPalExpressProcess?cartToken={guid}",
+  "approveUrlShape": "https://www.paypal.com/checkoutnow?token=…",
+  "fastHttpProbe": "ok via=http-ge-paypal paymentStatus=paypal_approve_url (lab)",
+  "notes": "Card Fast still default. Dual-on-decline is rail behaviour — do not gate PayPal on Revolut line count."
+}

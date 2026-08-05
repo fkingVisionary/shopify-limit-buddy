@@ -376,12 +376,68 @@ function syncBandaiAccountAssignUi() {
   if (assign === "manual") fillVaultAccountSelect("bandai", "taskBandaiAccountId");
 }
 
+const BANDAI_REGIONS = ["au", "us", "nz", "sg", "hk", "tw", "fr"];
+
+function isBandaiStore(store) {
+  const s = String(store || "").toLowerCase();
+  return s === "bandai" || /^bandai-[a-z]{2}$/.test(s);
+}
+
+function parseBandaiStoreSelection(storeValue, areaHint) {
+  const raw = String(storeValue || "").trim();
+  const m = raw.match(/^bandai-([a-z]{2})$/i);
+  if (m || raw.toLowerCase() === "bandai") {
+    const hint = String(areaHint || "")
+      .trim()
+      .toLowerCase();
+    const area = BANDAI_REGIONS.includes((m?.[1] || "").toLowerCase())
+      ? m[1].toLowerCase()
+      : BANDAI_REGIONS.includes(hint)
+        ? hint
+        : "au";
+    return { store: "bandai", bandaiArea: area };
+  }
+  return { store: raw || "bandai", bandaiArea: undefined };
+}
+
+function bandaiStoreSelectValue(task) {
+  if (!isBandaiStore(task?.store)) return task?.store || "bandai-au";
+  const fromUrl = (String(task?.pdpUrl || "").match(/p-bandai\.com\/([a-z]{2})(?:\/|$)/i) ||
+    [])[1];
+  const area = BANDAI_REGIONS.includes(String(task?.bandaiArea || "").toLowerCase())
+    ? String(task.bandaiArea).toLowerCase()
+    : BANDAI_REGIONS.includes(String(fromUrl || "").toLowerCase())
+      ? String(fromUrl).toLowerCase()
+      : "au";
+  return `bandai-${area}`;
+}
+
+function rewriteBandaiPdpArea(url, area) {
+  const a = BANDAI_REGIONS.includes(String(area || "").toLowerCase())
+    ? String(area).toLowerCase()
+    : "au";
+  const s = String(url || "").trim();
+  if (!s) return s;
+  if (/p-bandai\.com\/[a-z]{2}\//i.test(s)) {
+    return s.replace(/p-bandai\.com\/[a-z]{2}\//i, `p-bandai.com/${a}/`);
+  }
+  return s;
+}
+
 function syncTaskFormForStore() {
-  const store = $("taskStore")?.value || "bandai";
+  const storeRaw = $("taskStore")?.value || "bandai-au";
+  const parsedStore = parseBandaiStoreSelection(storeRaw);
+  const store = parsedStore.store;
+  const bandaiArea = parsedStore.bandaiArea || "au";
   const toy = store === "toymate";
-  const bandai = store === "bandai";
+  const bandai = isBandaiStore(storeRaw) || store === "bandai";
   const disney = store === "disney";
   const pc = store === "pokemoncentre";
+  // Keep PDP URL region in sync with selected Bandai module.
+  if (bandai && $("taskPdp") && !$("taskPdp").disabled) {
+    const next = rewriteBandaiPdpArea($("taskPdp").value, bandaiArea);
+    if (next !== $("taskPdp").value) $("taskPdp").value = next;
+  }
   const opts = $("taskToymateOpts");
   if (opts) opts.hidden = !toy;
   const bOpts = $("taskBandaiOpts");
@@ -434,7 +490,7 @@ function syncTaskFormForStore() {
           ? "Uses IMAP mailbox + profile address"
           : mode === "monitor"
             ? "one piece  OR  N2903432003"
-            : "https://p-bandai.com/au|us|nz|sg|hk|tw|fr/item/…";
+            : `https://p-bandai.com/${bandaiArea}/item/…`;
     } else if (toy) {
       input.placeholder =
         mode === "account_gen"
@@ -472,6 +528,11 @@ function syncTaskFormForStore() {
     const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
     // Checkout + ATC both need watchdog / watch SKU; monitor-on-hit too.
     bPayPath.hidden = !bandai || (mode !== "checkout" && mode !== "atc" && !monCheckout);
+  }
+  const bPayWrap = $("taskBandaiPayWrap");
+  if (bPayWrap) {
+    const monCheckout = mode === "monitor" && $("taskBandaiCheckoutOnHit")?.checked !== false;
+    bPayWrap.hidden = !bandai || (mode !== "checkout" && !monCheckout);
   }
   const bMon = $("taskBandaiMonitorWrap");
   if (bMon) bMon.hidden = !bandai || mode !== "monitor";
@@ -582,7 +643,7 @@ function taskStoreLabel(t) {
       mode === "account_gen" ? "Account gen" : mode === "monitor" ? "Monitor" : "Autocheckout";
     return `Toymate · ${modeLabel}`;
   }
-  if (t.store === "bandai") {
+  if (t.store === "bandai" || isBandaiStore(t.store)) {
     const mode = String(t.bandaiMode || "checkout");
     const modeLabel =
       mode === "atc"
@@ -594,15 +655,17 @@ function taskStoreLabel(t) {
             : mode === "login_check"
               ? "Login check"
               : "Autocheckout";
+    const region = String(t.bandaiArea || "au").toUpperCase();
     const speed =
       mode === "checkout" || mode === "atc" ? ` · ${t.bandaiCheckoutMode || "fast"}` : "";
+    const pay = /^paypal/i.test(String(t.paymentMethod || "")) ? " · PayPal" : "";
     const wd =
       (mode === "checkout" || mode === "atc") &&
       t.bandaiWatchdog !== false &&
       (t.bandaiWatchSku || t.pdpUrl || t.bandaiWatchKeywords)
         ? " · watchdog"
         : "";
-    return `Bandai · ${modeLabel}${speed}${wd}`;
+    return `Bandai ${region} · ${modeLabel}${speed}${pay}${wd}`;
   }
   if (t.store === "pokemoncentre") {
     const mode = String(t.pcMode || "monitor");
@@ -1866,8 +1929,21 @@ function renderSettings() {
   if ($("setDiscordWebhook")) $("setDiscordWebhook").value = successHook;
   fillQuickTaskPresetSelects();
   const qt = s.quickTaskPreset || {};
-  if ($("qtPresetStore")) $("qtPresetStore").value = qt.store || "bandai";
+  if ($("qtPresetStore")) {
+    $("qtPresetStore").value = bandaiStoreSelectValue({
+      store: qt.store || "bandai",
+      bandaiArea: qt.bandaiArea,
+    });
+  }
   if ($("qtPresetMode")) $("qtPresetMode").value = qt.bandaiMode || "checkout";
+  if ($("qtPresetPay")) {
+    const pm = String(qt.paymentMethod || "credit_card").toLowerCase();
+    $("qtPresetPay").value = /^paypal_manual|paypal_link/i.test(pm)
+      ? "paypal_manual"
+      : /^paypal/i.test(pm)
+        ? "paypal_guest"
+        : "credit_card";
+  }
   if ($("qtPresetProfile") && qt.profileId) $("qtPresetProfile").value = qt.profileId;
   if ($("qtPresetProxy")) $("qtPresetProxy").value = qt.proxyGroupId || "";
   if ($("qtPresetQty") && document.activeElement !== $("qtPresetQty")) {
@@ -1904,10 +1980,13 @@ function fillQuickTaskPresetSelects() {
 }
 
 function readQuickTaskPresetFromForm() {
+  const parsed = parseBandaiStoreSelection($("qtPresetStore")?.value || "bandai-au");
   return {
-    store: $("qtPresetStore")?.value || "bandai",
+    store: parsed.store || "bandai",
+    bandaiArea: parsed.bandaiArea || "au",
     bandaiMode: $("qtPresetMode")?.value || "checkout",
     bandaiCheckoutMode: "fast",
+    paymentMethod: $("qtPresetPay")?.value || "credit_card",
     profileId: $("qtPresetProfile")?.value || null,
     proxyGroupId: $("qtPresetProxy")?.value || null,
     qty: Number($("qtPresetQty")?.value) || 1,
@@ -2306,9 +2385,17 @@ function fillTaskForm(task) {
       emptyLabel: "No group",
     });
   }
-  $("taskStore").value = task.store || "bandai";
+  $("taskStore").value = bandaiStoreSelectValue(task);
   if ($("taskToymateMode")) $("taskToymateMode").value = task.toymateMode || "checkout";
   if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
+  if ($("taskBandaiPay")) {
+    const pm = String(task.paymentMethod || "credit_card").toLowerCase();
+    $("taskBandaiPay").value = /^paypal_manual|paypal_link/i.test(pm)
+      ? "paypal_manual"
+      : /^paypal/i.test(pm)
+        ? "paypal_guest"
+        : "credit_card";
+  }
   if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
   if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
   if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
@@ -2703,76 +2790,84 @@ document.body.addEventListener("click", async (e) => {
 });
 
 function readTaskForm() {
-  const store = $("taskStore").value;
+  const storeRaw = $("taskStore").value;
+  const parsed = parseBandaiStoreSelection(storeRaw);
+  const store = parsed.store;
+  const bandai = store === "bandai";
   const accountAssign =
     store === "toymate"
       ? $("taskAccountAssign")?.value || "auto"
-      : store === "bandai"
+      : bandai
         ? $("taskBandaiAccountAssign")?.value || "auto"
         : undefined;
+  let pdpUrl = $("taskPdp").value;
+  if (bandai) pdpUrl = rewriteBandaiPdpArea(pdpUrl, parsed.bandaiArea);
   return {
     id: $("taskId").value || undefined,
     label: $("taskLabel").value,
     taskGroup: $("taskGroup")?.value?.trim() || "",
     store,
-    pdpUrl: $("taskPdp").value,
+    bandaiArea: bandai ? parsed.bandaiArea || "au" : undefined,
+    pdpUrl,
     qty: Number($("taskQty").value),
     quantity: Number($("taskQuantity").value),
     profileId: $("taskProfile").value || null,
     proxyGroupId: $("taskProxy").value || null,
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
-    bandaiMode: store === "bandai" ? $("taskBandaiMode")?.value || "checkout" : undefined,
+    bandaiMode: bandai ? $("taskBandaiMode")?.value || "checkout" : undefined,
     disneyMode: store === "disney" ? $("taskDisneyMode")?.value || "pay" : undefined,
-    bandaiCheckoutMode:
-      store === "bandai" ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
+    bandaiCheckoutMode: bandai ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
     bandaiMonitorMode:
-      store === "bandai" && $("taskBandaiMode")?.value === "monitor"
+      bandai && $("taskBandaiMode")?.value === "monitor"
         ? $("taskBandaiMonitorMode")?.value || "local"
         : undefined,
     bandaiWatchSku:
-      store === "bandai"
+      bandai
         ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
           ? $("taskBandaiCheckoutWatchSku")?.value?.trim() || ""
           : $("taskBandaiWatchSku")?.value?.trim() || ""
         : undefined,
     bandaiWatchKeywords:
-      store === "bandai"
+      bandai
         ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
           ? $("taskBandaiCheckoutWatchKeywords")?.value?.trim() || ""
           : $("taskBandaiWatchKeywords")?.value?.trim() || ""
         : undefined,
-    bandaiMonitorIntervalMs:
-      store === "bandai"
-        ? Number($("taskBandaiMonitorIntervalMs")?.value) || 10000
-        : undefined,
-    bandaiMonitorDelayMs:
-      store === "bandai" ? Number($("taskBandaiMonitorDelayMs")?.value) || 0 : undefined,
+    bandaiMonitorIntervalMs: bandai
+      ? Number($("taskBandaiMonitorIntervalMs")?.value) || 10000
+      : undefined,
+    bandaiMonitorDelayMs: bandai
+      ? Number($("taskBandaiMonitorDelayMs")?.value) || 0
+      : undefined,
     bandaiCheckoutOnHit:
-      store === "bandai" && ($("taskBandaiMode")?.value || "") === "monitor"
+      bandai && ($("taskBandaiMode")?.value || "") === "monitor"
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
         : undefined,
     bandaiWatchdog:
-      store === "bandai" &&
-      ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
+      bandai && ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
         ? $("taskBandaiWatchdog")?.checked !== false
         : undefined,
-    bandaiAreaItemNo:
-      store === "bandai" ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
+    bandaiAreaItemNo: bandai ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
-    paymentMethod: store === "toymate" ? $("taskToymatePay")?.value || "credit_card" : undefined,
+    paymentMethod:
+      store === "toymate"
+        ? $("taskToymatePay")?.value || "credit_card"
+        : bandai
+          ? $("taskBandaiPay")?.value || "credit_card"
+          : undefined,
     accountPassword:
       store === "toymate"
         ? $("taskAccountPassword")?.value || ""
-        : store === "bandai"
+        : bandai
           ? $("taskBandaiAccountPassword")?.value || ""
           : undefined,
     accountAssign,
     accountId:
       store === "toymate" && accountAssign === "manual"
         ? $("taskAccountId")?.value || null
-        : store === "bandai" && accountAssign === "manual"
+        : bandai && accountAssign === "manual"
           ? $("taskBandaiAccountId")?.value || null
           : null,
   };

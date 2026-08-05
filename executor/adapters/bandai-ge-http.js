@@ -23,6 +23,7 @@ import {
 import fs from "node:fs";
 import { isBandaiGeIssuerPaymentUrl } from "./bandai-ge-pay.js";
 import { payForensics, redirectFanoutFields } from "../pay-forensics.js";
+import { approvePaypalCheckout } from "./paypal-approve.js";
 
 function issuerBodyFlags(body) {
   const s = String(body || "");
@@ -47,6 +48,40 @@ export const BANDAI_GE_GEM = "https://gem-bandai.global-e.com";
 // Match shared http.js platform UA (win32 → Windows). Hardcoded Mac UA on
 // Windows desktop was a presentation tell vs Toymate / http.js defaults.
 const DEFAULT_UA = HTTP_UA;
+
+/** Dual-hunt /tmp dumps — product Fast keeps these OFF (BANDAI_GE_WIRE_TAP=1). */
+function geWireTapEnabled() {
+  return String(process.env.BANDAI_GE_WIRE_TAP || "").trim() === "1";
+}
+
+function geWireWrite(filePath, data) {
+  if (!geWireTapEnabled()) return;
+  try {
+    fs.writeFileSync(
+      filePath,
+      typeof data === "string" ? data : JSON.stringify(data, null, 2),
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function geWireAppendJsonArray(filePath, row) {
+  if (!geWireTapEnabled()) return;
+  try {
+    let arr = [];
+    try {
+      arr = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    } catch {
+      /* ignore */
+    }
+    if (!Array.isArray(arr)) arr = [];
+    arr.push(row);
+    fs.writeFileSync(filePath, JSON.stringify(arr, null, 2));
+  } catch {
+    /* ignore */
+  }
+}
 
 /** UUID-ish GUID from Checkout/v2 / handleaction / orderdetails HTML. */
 export function extractGeCheckoutGuid(htmlOrUrl) {
@@ -81,19 +116,6 @@ export function parseJsonp(text) {
   } catch {
     return null;
   }
-}
-
-/**
- * Synthetic MerchantCartToken for throwaway iovation mint only.
- * Appending `_iov_` is rejected by GE (`Success:false`); keep
- * `{32hex}_Checkout_{ts}` shape from the real checkout MCT.
- */
-export function synthesizeIovationMerchantCartToken(merchantCartToken) {
-  const s = String(merchantCartToken || "");
-  const m = s.match(/^([0-9a-f]{32})_Checkout_/i);
-  if (m) return `${m[1]}_Checkout_${Date.now()}`;
-  const hex = (s.replace(/[^0-9a-f]/gi, "") + "0".repeat(32)).slice(0, 32);
-  return `${hex}_Checkout_${Date.now()}`;
 }
 
 /** Build GetCartToken query (GEM SerializeQueryParameter — omit null/empty). */
@@ -212,6 +234,54 @@ export async function getBandaiGeCartToken(opts = {}) {
     bodySnippet: String(res.text || "").replace(/\s+/g, " ").slice(0, 280),
     success: json?.Success,
     message: json?.Message || null,
+    via: "undici",
+  };
+}
+
+/**
+ * GetCartToken via Playwright request (not page.fetch — Bandai/GEM patches
+ * window.fetch and blocks gepi cross-origin with Failed to fetch).
+ */
+export async function getBandaiGeCartTokenViaPage(page, opts = {}) {
+  if (!page) return { ok: false, status: 0, ms: 0, via: "page", error: "no_page" };
+  const url = buildGetCartTokenUrl(opts);
+  const t0 = Date.now();
+  const referer = opts.referer || "https://p-bandai.com/au/orderdetails";
+  let status = 0;
+  let text = "";
+  let err = null;
+  try {
+    const req = page.context()?.request || page.request;
+    const res = await req.get(url, {
+      headers: {
+        accept: "application/javascript, application/json, */*",
+        referer,
+        origin: "https://p-bandai.com",
+      },
+      timeout: 30_000,
+    });
+    status = res.status();
+    text = await res.text();
+  } catch (e) {
+    err = String(e?.message || e).slice(0, 180);
+  }
+  const json = parseJsonp(text);
+  const cartToken =
+    json?.CartToken || json?.cartToken || extractGeCheckoutGuid(text) || null;
+  const isCaptcha = Boolean(json?.IsCaptcha || json?.isCaptcha);
+  return {
+    ok: Boolean(status >= 200 && status < 300 && json?.Success !== false && cartToken),
+    status,
+    ms: Date.now() - t0,
+    url: url.slice(0, 260),
+    urlFull: url,
+    json,
+    cartToken,
+    isCaptcha,
+    bodySnippet: String(text || err || "").replace(/\s+/g, " ").slice(0, 280),
+    success: json?.Success,
+    message: json?.Message || err || null,
+    via: "page-request",
   };
 }
 
@@ -767,21 +837,9 @@ async function installBrowserIssuerBlock(page) {
   }
   let blocked = 0;
   const seen = [];
-  const logPath = "/tmp/bandai-ge-browser-wire.json";
   const logBrowser = (row) => {
     seen.push(row);
-    try {
-      let arr = [];
-      try {
-        arr = JSON.parse(fs.readFileSync(logPath, "utf8"));
-      } catch {
-        /* ignore */
-      }
-      arr.push(row);
-      fs.writeFileSync(logPath, JSON.stringify(arr, null, 2));
-    } catch {
-      /* ignore */
-    }
+    geWireAppendJsonArray("/tmp/bandai-ge-browser-wire.json", row);
   };
   // Catch ALL GE mutating browser traffic (not only HandleCreditCard*).
   const match = (url) => /global-e\.com/i.test(url.href || String(url));
@@ -1229,11 +1287,7 @@ export async function postBandaiGeIssuerViaPage(opts = {}) {
  * ReloadBehaviour-only JWTs are NOT bank hits (Revolut silent) — fail closed.
  */
 function writeIssuerLast(row) {
-  try {
-    fs.writeFileSync("/tmp/bandai-ge-issuer-last.json", JSON.stringify(row, null, 2));
-  } catch {
-    /* ignore */
-  }
+  geWireWrite("/tmp/bandai-ge-issuer-last.json", row);
 }
 
 function networkErrorMeta(e) {
@@ -1621,59 +1675,98 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
   };
   let tokenOut = { ok: false, status: 0, ms: 0 };
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
-      ok: false,
-      status: 0,
+  // Prefer CartToken harvested from GEM on /orderdetails (lab SoftBlock bypass).
+  if (
+    opts.prefetchedCartToken &&
+    /^[0-9a-f-]{36}$/i.test(String(opts.prefetchedCartToken))
+  ) {
+    tokenOut = {
+      ok: true,
+      status: 200,
       ms: 0,
-      bodySnippet: String(e?.message || e).slice(0, 160),
-    }));
-    if (tokenOut.ok && tokenOut.cartToken) break;
-    const soft =
-      !tokenOut.status ||
-      tokenOut.status === 0 ||
-      /EOF|failed to do request|TLS|timed?\s*out/i.test(
-        String(tokenOut.bodySnippet || tokenOut.message || ""),
-      );
-    if (!soft || attempt >= 3) break;
-    await new Promise((r) => setTimeout(r, 400 * attempt));
+      cartToken: String(opts.prefetchedCartToken),
+      success: true,
+      isCaptcha: false,
+      via: "gem-harvest",
+      bodySnippet: "prefetched from orderdetails GEM GetCartToken",
+    };
+  } else {
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
+        ok: false,
+        status: 0,
+        ms: 0,
+        bodySnippet: String(e?.message || e).slice(0, 160),
+      }));
+      if (tokenOut.ok && tokenOut.cartToken) break;
+      const softTransport =
+        !tokenOut.status ||
+        tokenOut.status === 0 ||
+        /EOF|failed to do request|TLS|timed?\s*out/i.test(
+          String(tokenOut.bodySnippet || tokenOut.message || ""),
+        );
+      // SoftBlock-shaped: HTTP 200 + Success:false + null CartToken (lab 2026-08-05).
+      const softFalse =
+        Number(tokenOut.status) === 200 &&
+        tokenOut.success === false &&
+        !tokenOut.cartToken &&
+        !tokenOut.isCaptcha;
+      if ((!softTransport && !softFalse) || attempt >= 4) break;
+      await new Promise((r) => setTimeout(r, softFalse ? 1200 * attempt : 400 * attempt));
+    }
+    // Undici SoftBlock Success:false → mint via F5 Chrome (same sticky / cookies).
+    if (
+      (!tokenOut.ok || !tokenOut.cartToken) &&
+      opts.page &&
+      Number(tokenOut.status) === 200 &&
+      tokenOut.success === false
+    ) {
+      const pageTok = await getBandaiGeCartTokenViaPage(opts.page, cartTokenArgs).catch((e) => ({
+        ok: false,
+        status: 0,
+        ms: 0,
+        via: "page",
+        bodySnippet: String(e?.message || e).slice(0, 160),
+      }));
+      push("ge_get_cart_token_page", {
+        ok: Boolean(pageTok?.ok),
+        status: pageTok?.status,
+        ms: pageTok?.ms,
+        note: pageTok?.ok
+          ? `CartToken ${pageTok.cartToken} via=page`
+          : `page GetCartToken fail success=${pageTok?.success} ${pageTok?.bodySnippet || pageTok?.message || ""}`.slice(
+              0,
+              220,
+            ),
+      });
+      if (pageTok?.ok && pageTok.cartToken) tokenOut = pageTok;
+    }
   }
   push("ge_get_cart_token", {
     ok: tokenOut.ok,
     status: tokenOut.status,
     ms: tokenOut.ms,
     note: tokenOut.ok
-      ? `CartToken ${tokenOut.cartToken}${tokenOut.isCaptcha ? " IsCaptcha" : ""}`
+      ? `CartToken ${tokenOut.cartToken}${tokenOut.isCaptcha ? " IsCaptcha" : ""} via=${tokenOut.via || "undici"}`
       : `GetCartToken fail success=${tokenOut.success} captcha=${tokenOut.isCaptcha} ${tokenOut.bodySnippet || tokenOut.message || ""}`.slice(
           0,
           220,
         ),
   });
 
-  try {
-    fs.writeFileSync(
-      BOOT_CAPTURE,
-      JSON.stringify(
-        {
-          at: new Date().toISOString(),
-          getCartToken: {
-            url: tokenOut.urlFull,
-            status: tokenOut.status,
-            success: tokenOut.success,
-            cartToken: tokenOut.cartToken,
-            isCaptcha: tokenOut.isCaptcha,
-            bodySnippet: tokenOut.bodySnippet,
-            json: tokenOut.json,
-          },
-          merchantCartToken,
-        },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
-  }
+  geWireWrite(BOOT_CAPTURE, {
+    at: new Date().toISOString(),
+    getCartToken: {
+      url: tokenOut.urlFull,
+      status: tokenOut.status,
+      success: tokenOut.success,
+      cartToken: tokenOut.cartToken,
+      isCaptcha: tokenOut.isCaptcha,
+      bodySnippet: tokenOut.bodySnippet,
+      json: tokenOut.json,
+    },
+    merchantCartToken,
+  });
 
   if (!tokenOut.ok || !tokenOut.cartToken) {
     return {
@@ -1801,18 +1894,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           phase: "iovation-throwaway",
         };
         browserReqLog.push(row);
-        try {
-          let arr = [];
-          try {
-            arr = JSON.parse(fs.readFileSync("/tmp/bandai-ge-browser-wire.json", "utf8"));
-          } catch {
-            /* ignore */
-          }
-          arr.push(row);
-          fs.writeFileSync("/tmp/bandai-ge-browser-wire.json", JSON.stringify(arr, null, 2));
-        } catch {
-          /* ignore */
-        }
+        geWireAppendJsonArray("/tmp/bandai-ge-browser-wire.json", row);
       };
       pctx.on("request", onReq);
     } catch {
@@ -2085,10 +2167,22 @@ export async function runBandaiGeHttpPay(opts = {}) {
   //
   // CRITICAL: CreditCardForm URL path is GATEWAY id (secureFrameURL+"/"+currentGatewayID),
   // NOT paymentMethodId. Card UI is usually pm=1 with gateway=2.
+  // PayPal (HAR 2026-08-05): title=PayPal data-id=4 data-gw=6 fullredirect.
+  const payMethodRaw = String(opts.paymentMethod || "").toLowerCase();
+  const wantPaypal = /^paypal/i.test(payMethodRaw);
+  // Guest (default for PayPal) auto-completes with billing profile card.
+  // manual / link_only stops at the approve URL.
+  const paypalAuto =
+    wantPaypal && !/manual|link_only|url_only/i.test(payMethodRaw);
   let paymentMethodId = String(
-    opts.paymentMethodId || form.selectedPaymentMethodId || "1",
+    opts.paymentMethodId ||
+      (wantPaypal ? "4" : null) ||
+      form.selectedPaymentMethodId ||
+      "1",
   );
-  let gatewayId = String(opts.gatewayId || form.gatewayId || "2");
+  let gatewayId = String(
+    opts.gatewayId || (wantPaypal ? "6" : null) || form.gatewayId || "2",
+  );
 
   // GEM SaveForm before Pay (urlencoded MainForm + X-merchantId).
   const saveBody = buildCheckoutSaveBody(form, {
@@ -2183,8 +2277,10 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   // Pure skip of CreditCardForm fails closed — JWT only appears there after
   // save (2026-08-03 skip-ccform lab). Opt-in only: BANDAI_GE_SKIP_CC_FORM=1.
-  // Default: fetch CCForm on the cold issuer tls-worker (PAY_ISSUER_CCFORM_TLS).
+  // Default: undici CreditCardForm GET (PAY_ISSUER_CCFORM_TLS opt-in for tls-worker).
+  // PayPal guest never uses CreditCardForm / HandleCreditCard.
   const skipCcForm =
+    wantPaypal ||
     opts.skipCreditCardForm === true ||
     process.env.BANDAI_GE_SKIP_CC_FORM === "1";
 
@@ -2388,82 +2484,77 @@ export async function runBandaiGeHttpPay(opts = {}) {
       ? `CreditCardForm SKIPPED; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${machineId ? "iovation" : "none"} via=skip pm=${paymentMethodId} gw=${gatewayId}`
       : `CreditCardForm ${cc.status}; jwt=${Boolean(urlStructureToken)} machineId=${Boolean(machineId)} midSrc=${formMachineId ? "form" : machineId ? "iovation" : "none"} via=${cc.frameUrl ? "iframe" : cc.viaHttp ? "http" : issuerPage ? "page" : "http"} pm=${paymentMethodId} gw=${gatewayId} domPm=${cc.domPm || "-"} bytes=${(cc.text || "").length}`,
   });
-  try {
-    const html = String(cc.text || "");
-    if (html.length > 200) {
-      fs.writeFileSync("/tmp/bandai-cc-form.html", html);
-      const action = (html.match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1] || "";
-      const modeAttr = (html.match(/<form[^>]*\smode=["']([^"']+)["']/i) || [])[1] || "";
-      const names = [...html.matchAll(/name=["']([^"']+)["']/gi)].map((m) => m[1]);
-      fs.writeFileSync(
-        "/tmp/bandai-cc-form-meta.json",
-        JSON.stringify(
-          {
-            at: new Date().toISOString(),
-            ccUrl,
-            action,
-            modeAttr,
-            gatewayId,
-            paymentMethodId,
-            fieldNames: [...new Set(names)].slice(0, 80),
-            hasPreEnroll: /preEnroll/i.test(html),
-            hasDdc: /ddc|DeviceData|collection/i.test(html),
-            formSnippet: html.replace(/\s+/g, " ").slice(0, 1200),
-          },
-          null,
-          2,
-        ),
-      );
+  if (geWireTapEnabled()) {
+    try {
+      const html = String(cc.text || "");
+      if (html.length > 200) {
+        geWireWrite("/tmp/bandai-cc-form.html", html);
+        const action = (html.match(/<form[^>]*action=["']([^"']+)["']/i) || [])[1] || "";
+        const modeAttr = (html.match(/<form[^>]*\smode=["']([^"']+)["']/i) || [])[1] || "";
+        const names = [...html.matchAll(/name=["']([^"']+)["']/gi)].map((m) => m[1]);
+        geWireWrite("/tmp/bandai-cc-form-meta.json", {
+          at: new Date().toISOString(),
+          ccUrl,
+          action,
+          modeAttr,
+          gatewayId,
+          paymentMethodId,
+          fieldNames: [...new Set(names)].slice(0, 80),
+          hasPreEnroll: /preEnroll/i.test(html),
+          hasDdc: /ddc|DeviceData|collection/i.test(html),
+          formSnippet: html.replace(/\s+/g, " ").slice(0, 1200),
+        });
+      }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
 
-  try {
-    const prev = fs.existsSync(BOOT_CAPTURE)
-      ? JSON.parse(fs.readFileSync(BOOT_CAPTURE, "utf8"))
-      : {};
-    fs.writeFileSync(
-      BOOT_CAPTURE,
-      JSON.stringify(
-        {
-          ...prev,
-          cartToken: guid,
-          checkoutV2: { status: v2.status, bytes: (v2.text || "").length },
-          creditCardForm: { status: cc.status, bytes: (cc.text || "").length },
-          urlStructureToken: urlStructureToken ? `${urlStructureToken.slice(0, 40)}…` : null,
-          machineIdPresent: Boolean(machineId),
-          machineIdBytes: machineId ? String(machineId).length : 0,
-          paymentMethodId,
-          gatewayId,
-          shippingMethodId: shippingMethodId || null,
-          hydrateShippingOk,
-          form: {
-            hasAddress: form.hasAddress,
-            countryId: form.countryId,
-            stateId: form.shipping?.StateId || null,
-            zip: form.shipping?.Zip || null,
-            shippingType: form.shippingType,
-          },
+  if (geWireTapEnabled()) {
+    try {
+      const prev = fs.existsSync(BOOT_CAPTURE)
+        ? JSON.parse(fs.readFileSync(BOOT_CAPTURE, "utf8"))
+        : {};
+      geWireWrite(BOOT_CAPTURE, {
+        ...prev,
+        cartToken: guid,
+        checkoutV2: { status: v2.status, bytes: (v2.text || "").length },
+        creditCardForm: { status: cc.status, bytes: (cc.text || "").length },
+        urlStructureToken: urlStructureToken
+          ? `${urlStructureToken.slice(0, 40)}…`
+          : null,
+        machineIdPresent: Boolean(machineId),
+        machineIdBytes: machineId ? String(machineId).length : 0,
+        paymentMethodId,
+        gatewayId,
+        shippingMethodId: shippingMethodId || null,
+        hydrateShippingOk,
+        form: {
+          hasAddress: form.hasAddress,
+          countryId: form.countryId,
+          stateId: form.shipping?.StateId || null,
+          zip: form.shipping?.Zip || null,
+          shippingType: form.shippingType,
         },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   const blockers = [];
-  if (!urlStructureToken) blockers.push("urlStructureToken");
-  if (!machineId) blockers.push("machineId");
+  if (!wantPaypal && !urlStructureToken) blockers.push("urlStructureToken");
+  // PayPal InitPayPalExpress only needs cartToken — do not gate on ioBlackBox/Forter.
+  if (!wantPaypal && !machineId) blockers.push("machineId");
   // Fail closed when riskHydrate ran but Forter never landed (thin mint → RELOAD_ONLY).
+  // PayPal guest/mint does not need Forter — InitPayPalExpress worked without it (2026-08-05).
   const allowThinRisk =
+    wantPaypal ||
     opts.allowThinRisk === true ||
     opts.bandaiGeAllowThinRisk === true ||
     process.env.BANDAI_GE_ALLOW_THIN_RISK === "1";
   if (riskHydrate && !forterToken && !allowThinRisk) blockers.push("forterToken");
-  if (!card?.number || !card?.cvv) blockers.push("card");
+  if (!wantPaypal && (!card?.number || !card?.cvv)) blockers.push("card");
   if (!hydrateShippingOk) blockers.push("hydrate_shipping");
   if (!form.hasAddress) blockers.push("checkout_address");
   if (!form.shipping?.StateId && !form.billing?.StateId) blockers.push("billing_state");
@@ -2481,7 +2572,178 @@ export async function runBandaiGeHttpPay(opts = {}) {
     shippingMethodId: shippingMethodId || null,
     harvestedBridge: Boolean(opts.harvestedBridge),
     preferPageIssuer: opts.preferPageIssuer === true,
+    paymentMethod: wantPaypal ? "paypal_guest" : "card",
   });
+
+  if (wantPaypal && !blockers.length) {
+    // webservices InitPayPalExpress works (2026-08-05); secure-bandai path 404s.
+    const ppCandidates = [
+      `${BANDAI_GE_WEBSERVICES}/Payments/InitPayPalExpressProcess?cartToken=${encodeURIComponent(guid)}`,
+      `${BANDAI_GE_SECURE}/Payments/InitPayPalExpressProcess?cartToken=${encodeURIComponent(guid)}`,
+    ];
+    let paypalApproveUrl = null;
+    let ppNote = "";
+    for (const ppUrl of ppCandidates) {
+      const tPp = Date.now();
+      const res = await request(
+        ppUrl,
+        {
+          method: "GET",
+          headers: {
+            accept: "text/html,application/xhtml+xml,*/*",
+            referer: v2Url,
+            "upgrade-insecure-requests": "1",
+          },
+          redirect: "manual",
+        },
+        ctx,
+      ).catch((e) => ({ status: 0, error: e }));
+      const loc =
+        typeof res?.headers?.get === "function"
+          ? res.headers.get("location") || res.headers.get("Location")
+          : null;
+      const text =
+        typeof res?.text === "function" ? await res.text().catch(() => "") : "";
+      const found =
+        (loc && /paypal\.com/i.test(loc) && loc) ||
+        (text.match(/https?:\/\/[^\s"'<>]*paypal\.com[^\s"'<>]*/i) || [])[0] ||
+        null;
+      push("ge_paypal_init", {
+        ok: Boolean(found),
+        status: res?.status ?? 0,
+        ms: Date.now() - tPp,
+        note: found
+          ? `approve ${String(found).slice(0, 140)}`
+          : `no_approve status=${res?.status} loc=${String(loc || "").slice(0, 100)} via=${ppUrl.slice(0, 80)}`,
+      });
+      if (found) {
+        paypalApproveUrl = found;
+        ppNote = `InitPayPalExpress ok pm=4 gw=6`;
+        break;
+      }
+      ppNote = `InitPayPalExpress miss status=${res?.status}`;
+    }
+    await browserIssuerBlock.unroute();
+
+    let paypalApprove = null;
+    if (paypalApproveUrl && paypalAuto) {
+      const billingProfile = opts.profile || {};
+      const billingEmail =
+        opts.customerEmail ||
+        billingProfile.email ||
+        opts.paypal?.email ||
+        opts.paypalEmail ||
+        null;
+      const guestCard = opts.card || null;
+      if (!billingEmail) {
+        push("ge_paypal_approve", {
+          ok: false,
+          status: null,
+          ms: 0,
+          note: "PayPal guest needs billing profile email",
+        });
+      } else if (!guestCard?.number || !guestCard?.cvv) {
+        push("ge_paypal_approve", {
+          ok: false,
+          status: null,
+          ms: 0,
+          note: "PayPal guest needs billing profile card",
+        });
+      } else {
+        const tAp = Date.now();
+        paypalApprove = await approvePaypalCheckout({
+          approveUrl: paypalApproveUrl,
+          email: billingEmail,
+          profile: billingProfile,
+          card: guestCard,
+          proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
+          headless: opts.paypalHeadless === true,
+          // Guest UI + GE capture after PSPRedirectHandler (order, not $0 verify).
+          timeoutMs: Number(opts.paypalApproveTimeoutMs) || 300_000,
+          forensicsDir: opts.paypalForensicsDir || undefined,
+          log: (m) => {
+            try {
+              console.log(String(m));
+              opts.onProgress?.("ge_paypal_approve", { note: m });
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+        push("ge_paypal_approve", {
+          ok: Boolean(paypalApprove?.ok),
+          status: null,
+          ms: paypalApprove?.ms ?? Date.now() - tAp,
+          note: (
+            paypalApprove?.note ||
+            paypalApprove?.error ||
+            "guest approve done"
+          ).slice(0, 280),
+        });
+      }
+    }
+
+    const elapsedMs = Date.now() - t0;
+    const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+    // Fail-closed: fully processed order only. PayerID / action=auth ≠ charged
+    // (…0286 Revolut AU$0 Card verification 2026-08-05).
+    const autoOk = Boolean(
+      paypalApprove?.ok &&
+        (paypalApprove?.orderNumber ||
+          paypalApprove?.paid === true),
+    );
+    const returnedNoOrder = Boolean(
+      paypalApprove?.merchantReturned ||
+        paypalApprove?.payerId ||
+        paypalApprove?.pspAuthReturn,
+    );
+    const minted = Boolean(paypalApproveUrl);
+    return {
+      ok: paypalAuto ? autoOk : minted,
+      steps,
+      timeline,
+      timing,
+      paymentMethod: paypalAuto ? "paypal_guest" : "paypal_manual",
+      paypalApproveUrl,
+      paymentStatus: paypalAuto
+        ? autoOk
+          ? "paypal_order_complete"
+          : returnedNoOrder
+            ? "paypal_returned_no_order"
+            : minted
+              ? "paypal_approve_failed"
+              : "paypal_init_failed"
+        : minted
+          ? "paypal_approve_url"
+          : "paypal_init_failed",
+      checkoutStage: autoOk ? "order" : minted ? "tokenize" : "details",
+      cartToken: guid,
+      orderNumber: paypalApprove?.orderNumber || null,
+      dryRun: !autoOk,
+      chargeReqCount: autoOk ? 1 : 0,
+      via: paypalAuto ? "http-ge-paypal-guest" : "http-ge-paypal",
+      finalUrl: paypalApprove?.finalUrl || paypalApproveUrl || null,
+      paypalGuest: paypalApprove
+        ? {
+            cardFilled: paypalApprove.cardFilled ?? null,
+            payClicked: paypalApprove.payClicked ?? null,
+            merchantReturned: paypalApprove.merchantReturned ?? null,
+            payerId: paypalApprove.payerId ?? null,
+            pspAuthReturn: paypalApprove.pspAuthReturn ?? null,
+            orderNumber: paypalApprove.orderNumber ?? null,
+            captureWire: paypalApprove.captureWire ?? null,
+            forensics: paypalApprove.forensics ?? null,
+            note: paypalApprove.note ?? null,
+          }
+        : null,
+      elapsedMs,
+      note: (
+        paypalAuto
+          ? `${ppNote}; guest=${autoOk ? "ok" : paypalApprove?.note || paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
+          : `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
+      ).slice(0, 320),
+    };
+  }
 
   if (stopBeforeIssuer || (blockers.length && !forceIssuer)) {
     const elapsedMs = Date.now() - t0;
@@ -2597,52 +2859,49 @@ export async function runBandaiGeHttpPay(opts = {}) {
   const chargeReqCount = Math.max(issuerPostCount, undiciAttempts);
   const responseLost = Boolean(issuer?.responseLost);
 
-  try {
-    const prev = fs.existsSync("/tmp/bandai-ge-issuer-last.json")
-      ? JSON.parse(fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8"))
-      : {};
-    fs.writeFileSync(
-      "/tmp/bandai-ge-issuer-last.json",
-      JSON.stringify(
-        {
-          ...prev,
-          at: new Date().toISOString(),
-          phase: prev.phase === "error" || responseLost ? "error" : "response",
-          issuerUrl,
-          status: issuer?.status,
-          ok: issuer?.ok,
-          reloadOnly: issuer?.reloadOnly,
-          bankSignal: issuer?.bankSignal,
-          redirectUrl: issuer?.redirectUrlFull || issuer?.redirectUrl,
-          redirectPayload: issuer?.redirectPayload,
-          redirectSnippet: issuer?.redirectSnippet,
-          bodySnippet: issuer?.bodySnippet,
-          bodyText: issuer?.bodyText || prev.bodyText || null,
-          error: issuer?.error,
-          errorCode: issuer?.errorCode || prev.errorCode || null,
-          errorMessage: issuer?.errorMessage || prev.errorMessage || null,
-          timedOut: issuer?.timedOut ?? prev.timedOut ?? null,
-          responseLost,
-          via: issuer?.via,
-          gatewayId,
-          paymentMethodId,
-          shippingMethodId,
-          hydrateShippingOk,
-          issuerPostCount,
-          undiciAttempts,
-          browserIssuerBlocked: browserBlocked,
-          framesNeutralized,
-          isSameCartToken: (() => {
-            const m = mapCcPaymentRedirect(issuer?.redirectPayload || issuer?.redirectUrlFull || "");
-            return m.IsTheSameCartToken ?? null;
-          })(),
-        },
-        null,
-        2,
-      ),
-    );
-  } catch {
-    /* ignore */
+  if (geWireTapEnabled()) {
+    try {
+      const prev = fs.existsSync("/tmp/bandai-ge-issuer-last.json")
+        ? JSON.parse(fs.readFileSync("/tmp/bandai-ge-issuer-last.json", "utf8"))
+        : {};
+      geWireWrite("/tmp/bandai-ge-issuer-last.json", {
+        ...prev,
+        at: new Date().toISOString(),
+        phase: prev.phase === "error" || responseLost ? "error" : "response",
+        issuerUrl,
+        status: issuer?.status,
+        ok: issuer?.ok,
+        reloadOnly: issuer?.reloadOnly,
+        bankSignal: issuer?.bankSignal,
+        redirectUrl: issuer?.redirectUrlFull || issuer?.redirectUrl,
+        redirectPayload: issuer?.redirectPayload,
+        redirectSnippet: issuer?.redirectSnippet,
+        bodySnippet: issuer?.bodySnippet,
+        bodyText: issuer?.bodyText || prev.bodyText || null,
+        error: issuer?.error,
+        errorCode: issuer?.errorCode || prev.errorCode || null,
+        errorMessage: issuer?.errorMessage || prev.errorMessage || null,
+        timedOut: issuer?.timedOut ?? prev.timedOut ?? null,
+        responseLost,
+        via: issuer?.via,
+        gatewayId,
+        paymentMethodId,
+        shippingMethodId,
+        hydrateShippingOk,
+        issuerPostCount,
+        undiciAttempts,
+        browserIssuerBlocked: browserBlocked,
+        framesNeutralized,
+        isSameCartToken: (() => {
+          const m = mapCcPaymentRedirect(
+            issuer?.redirectPayload || issuer?.redirectUrlFull || "",
+          );
+          return m.IsTheSameCartToken ?? null;
+        })(),
+      });
+    } catch {
+      /* ignore */
+    }
   }
 
   const declineOnRedirect = Boolean(issuer?.declineOnRedirect);
@@ -2800,7 +3059,6 @@ export async function runBandaiGeHttpPay(opts = {}) {
 export default {
   extractGeCheckoutGuid,
   parseJsonp,
-  synthesizeIovationMerchantCartToken,
   buildGetCartTokenParams,
   buildGetCartTokenUrl,
   getBandaiGeCartToken,

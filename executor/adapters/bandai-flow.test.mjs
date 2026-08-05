@@ -449,23 +449,24 @@ const {
   chromeClientHints,
   UA,
 } = await import("../http.js");
-// Toymate BigPay ×1 used cors/empty — GE HandleCreditCard matches that by default.
+// Product Fast: GE form issuer defaults to navigate/document.
+// BigPay-shaped cors is dual-hunt opt-in (PAY_ISSUER_FORM_AS_CORS=1).
 const geNav = chromeIssuerNavigateHeaders(
   "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
   { origin: "https://secure-bandai.global-e.com" },
 );
-assert.equal(geNav["sec-fetch-mode"], "cors");
+assert.equal(geNav["sec-fetch-mode"], "navigate");
 assert.equal(geNav["sec-fetch-site"], "same-origin");
-assert.equal(geNav["sec-fetch-dest"], "empty");
+assert.equal(geNav["sec-fetch-dest"], "document");
 const prevFormCors = process.env.PAY_ISSUER_FORM_AS_CORS;
-process.env.PAY_ISSUER_FORM_AS_CORS = "0";
+process.env.PAY_ISSUER_FORM_AS_CORS = "1";
 try {
-  const geNavLegacy = chromeIssuerNavigateHeaders(
+  const geNavCors = chromeIssuerNavigateHeaders(
     "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
     { origin: "https://secure-bandai.global-e.com" },
   );
-  assert.equal(geNavLegacy["sec-fetch-mode"], "navigate");
-  assert.equal(geNavLegacy["sec-fetch-dest"], "document");
+  assert.equal(geNavCors["sec-fetch-mode"], "cors");
+  assert.equal(geNavCors["sec-fetch-dest"], "empty");
 } finally {
   if (prevFormCors === undefined) delete process.env.PAY_ISSUER_FORM_AS_CORS;
   else process.env.PAY_ISSUER_FORM_AS_CORS = prevFormCors;
@@ -493,14 +494,29 @@ const ha = chromePayFetchHeaders(
 );
 assert.equal(ha["sec-fetch-mode"], "cors");
 assert.equal(ha["sec-fetch-dest"], "empty");
-// CreditCardForm GET → iframe navigate (not cors/empty from form-as-cors)
-const ccGet = chromePayFetchHeaders(
-  "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
-  { origin: "https://webservices.global-e.com" },
-  { method: "GET" },
+// CreditCardForm GET Sec-Fetch is dual-hunt opt-in (PAY_ISSUER_GET_FETCH=1).
+assert.deepEqual(
+  chromePayFetchHeaders(
+    "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+    { origin: "https://webservices.global-e.com" },
+    { method: "GET" },
+  ),
+  {},
 );
-assert.equal(ccGet["sec-fetch-mode"], "navigate");
-assert.equal(ccGet["sec-fetch-dest"], "iframe");
+const prevGetFetch = process.env.PAY_ISSUER_GET_FETCH;
+process.env.PAY_ISSUER_GET_FETCH = "1";
+try {
+  const ccGet = chromePayFetchHeaders(
+    "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+    { origin: "https://webservices.global-e.com" },
+    { method: "GET" },
+  );
+  assert.equal(ccGet["sec-fetch-mode"], "navigate");
+  assert.equal(ccGet["sec-fetch-dest"], "iframe");
+} finally {
+  if (prevGetFetch === undefined) delete process.env.PAY_ISSUER_GET_FETCH;
+  else process.env.PAY_ISSUER_GET_FETCH = prevGetFetch;
+}
 const ch = chromeClientHints(UA, {});
 assert.equal(ch["sec-ch-ua-mobile"], "?0");
 assert.match(String(ch["sec-ch-ua-platform"] || ""), /Windows|macOS|Linux/);
