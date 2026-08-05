@@ -497,12 +497,13 @@ async function dismissAddressMatchSheet(page, log) {
   if (!/We've found a match for your address|Use the address you entered|Use this address/i.test(body)) {
     return false;
   }
-  // Prefer the address we entered (profile) when offered.
+  // Prefer PayPal's suggested match (often required) then Continue once.
   await page
-    .locator('text=/Use the address you entered/i')
+    .locator('text=/^Use this address$/i')
     .first()
     .click({ force: true, timeout: 3_000 })
     .catch(() => {});
+  await page.waitForTimeout(300);
   const cont =
     (await clickFirst(
       page,
@@ -1183,37 +1184,37 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // After pay click, spinner + address sheet are progress — not failure.
+      // After first guest submit: ONLY dismiss address sheet + wait. Re-clicking
+      // Continue as a Guest caused checkoutweb/genericError U_ERROR (2026-08-05).
       if (payClicked) {
-        const sheet = await dismissAddressMatchSheet(page, log);
-        if (sheet) continue;
-        if (/perform security check|please wait while we|exit-loader|spinner/i.test(bodyNow)) {
-          await page.waitForTimeout(1500);
-          if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
-          continue;
+        if (/We've found a match for your address/i.test(bodyNow)) {
+          await dismissAddressMatchSheet(page, log);
         }
+        if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
+        if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${bodyNow}`)) {
+          log(`paypal_guest PayPal error page ${page.url().slice(0, 120)}`);
+          break;
+        }
+        await page.waitForTimeout(1500);
+        continue;
       }
 
       const payHit = await clickGuestPayOnly(page, payCtas, log);
       if (payHit) {
         payClicked = payHit;
-        log(`paypal_guest waiting after pay CTA (${payHit})`);
-        // Address sheet often appears within a few seconds of submit.
-        for (let w = 0; w < 20; w++) {
+        log(`paypal_guest waiting after pay CTA (${payHit}) — no re-click`);
+        for (let w = 0; w < 40; w++) {
           if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
           const b = await page.locator("body").innerText().catch(() => "");
           if (/We've found a match for your address/i.test(b)) {
             await dismissAddressMatchSheet(page, log);
           }
+          if (/genericError|something seems to have gone wrong/i.test(`${page.url()} ${b}`)) {
+            log("paypal_guest hit PayPal genericError after submit");
+            break;
+          }
           await page.waitForTimeout(1500);
         }
-        await Promise.race([
-          page.waitForURL(
-            (u) => isMerchantReturn(String(u)) || isPaypalSuccessUrl(String(u)),
-            { timeout: 60_000 },
-          ).catch(() => null),
-          page.waitForTimeout(60_000),
-        ]);
         continue;
       }
 
