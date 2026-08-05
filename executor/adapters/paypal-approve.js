@@ -489,48 +489,64 @@ async function clickGuestPayOnly(page, payCtas, log) {
 }
 
 /**
- * Address validation sheet after Continue as a Guest (lab 2026-08-05):
- * "We've found a match for your address" → Continue.
+ * Address validation sheet after Continue as a Guest.
+ * Lab 2026-08-05: clicking sheet "Continue" → checkoutweb/genericError U_ERROR.
+ * Instead: close sheet, apply suggested suburb/postcode, then guest-submit again.
  */
 async function dismissAddressMatchSheet(page, log) {
   const body = await page.locator("body").innerText().catch(() => "");
   if (!/We've found a match for your address|Use the address you entered|Use this address/i.test(body)) {
     return false;
   }
-  // Prefer PayPal's suggested match (often required) then Continue once.
+  const suggested = await page
+    .evaluate(() => {
+      const t = String(document.body?.innerText || "");
+      // Block after "Use this address": line1, then "Suburb STATE POSTCODE"
+      const m = t.match(
+        /Use this address\s*\r?\n\s*([^\r\n]+)\s*\r?\n\s*([^\r\n]*?)\s+([A-Z]{2,3})\s+(\d{4})/i,
+      );
+      if (!m) return null;
+      return { line1: m[1].trim(), city: m[2].trim(), state: m[3].trim(), zip: m[4].trim() };
+    })
+    .catch(() => null);
+
+  // Close sheet — do NOT click sheet Continue (U_ERROR).
+  await page.keyboard.press("Escape").catch(() => {});
   await page
-    .locator('text=/^Use this address$/i')
+    .locator(
+      'button[aria-label="Close"], button[aria-label="close sheet"], [data-testid*="close" i], button:has-text("close sheet")',
+    )
     .first()
-    .click({ force: true, timeout: 3_000 })
+    .click({ force: true, timeout: 2_000 })
     .catch(() => {});
-  await page.waitForTimeout(300);
-  const cont =
-    (await clickFirst(
-      page,
-      [
-        'button:has-text("Continue"):not(:has-text("Continue as a Guest"))',
-        '[data-testid="address-suggestion-continue"]',
-        'button:has-text("Continue")',
-      ],
-      { force: true },
-    )) ||
-    (await page
-      .evaluate(() => {
-        const sheet = Array.from(document.querySelectorAll("button")).find((b) =>
-          /^Continue$/i.test(String(b.textContent || "").trim()),
-        );
-        if (!sheet) return null;
-        sheet.click();
-        return "Continue";
-      })
-      .catch(() => null));
-  if (cont) {
-    log(`paypal_guest address-match sheet (${cont})`);
-    await page.waitForTimeout(1500);
-    return true;
+  await page.waitForTimeout(600);
+
+  if (suggested?.city) {
+    await fillFirst(page, ['input#billingCity', 'input[name="billingCity"]'], suggested.city);
+    if (suggested.zip) {
+      await fillFirst(
+        page,
+        ['input#billingPostalCode', 'input[name="billingPostalCode"]'],
+        suggested.zip,
+      );
+    }
+    if (suggested.state) {
+      await setSelectValue(
+        page,
+        ['select#billingState', 'select[name="billingState"]'],
+        { value: suggested.state, label: AU_STATE_LABELS[suggested.state] || suggested.state },
+        log,
+        "state-suggested",
+      );
+    }
+    log(
+      `paypal_guest address-match closed → city=${suggested.city} zip=${suggested.zip || "?"} (no sheet Continue)`,
+    );
+  } else {
+    log("paypal_guest address-match closed (no parseable suggestion)");
   }
-  log("paypal_guest address-match sheet visible but Continue miss");
-  return false;
+  await page.waitForTimeout(500);
+  return true;
 }
 
 /** Wait out PayPal/DataDome "security check" overlay before guest pay. */
