@@ -488,6 +488,50 @@ async function clickGuestPayOnly(page, payCtas, log) {
   return null;
 }
 
+/**
+ * Address validation sheet after Continue as a Guest (lab 2026-08-05):
+ * "We've found a match for your address" → Continue.
+ */
+async function dismissAddressMatchSheet(page, log) {
+  const body = await page.locator("body").innerText().catch(() => "");
+  if (!/We've found a match for your address|Use the address you entered|Use this address/i.test(body)) {
+    return false;
+  }
+  // Prefer the address we entered (profile) when offered.
+  await page
+    .locator('text=/Use the address you entered/i')
+    .first()
+    .click({ force: true, timeout: 3_000 })
+    .catch(() => {});
+  const cont =
+    (await clickFirst(
+      page,
+      [
+        'button:has-text("Continue"):not(:has-text("Continue as a Guest"))',
+        '[data-testid="address-suggestion-continue"]',
+        'button:has-text("Continue")',
+      ],
+      { force: true },
+    )) ||
+    (await page
+      .evaluate(() => {
+        const sheet = Array.from(document.querySelectorAll("button")).find((b) =>
+          /^Continue$/i.test(String(b.textContent || "").trim()),
+        );
+        if (!sheet) return null;
+        sheet.click();
+        return "Continue";
+      })
+      .catch(() => null));
+  if (cont) {
+    log(`paypal_guest address-match sheet (${cont})`);
+    await page.waitForTimeout(1500);
+    return true;
+  }
+  log("paypal_guest address-match sheet visible but Continue miss");
+  return false;
+}
+
 /** Wait out PayPal/DataDome "security check" overlay before guest pay. */
 async function waitPaypalSecurityCheck(page, log, ms = 25_000) {
   const deadline = Date.now() + ms;
@@ -925,7 +969,9 @@ export async function approvePaypalCheckout(opts = {}) {
     });
 
     const openUrl = forceAuApproveUrl(approveUrl);
-    log(`paypal_guest open ${openUrl.slice(0, 140)} chrome=${Boolean(launchOpts.channel)}`);
+    log(
+      `paypal_guest open ${openUrl.slice(0, 140)} chrome=${Boolean(launchOpts.channel)} direct=${approveDirect}`,
+    );
     await page.goto(openUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
     // Wait out DataDome interstitial (blank body / tiny html) before guest CTA.
     for (let d = 0; d < 20; d++) {
@@ -1124,23 +1170,49 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
+      // Address suggestion sheet blocks EC return after guest submit.
+      if (/We've found a match for your address|Use the address you entered/i.test(bodyNow)) {
+        await dismissAddressMatchSheet(page, log);
+        await page.waitForTimeout(1000);
+        continue;
+      }
+
       // Don't hammer pay while DataDome security check is up.
       if (/perform security check|please wait while we/i.test(bodyNow)) {
         await waitPaypalSecurityCheck(page, log, 12_000);
         continue;
       }
 
+      // After pay click, spinner + address sheet are progress — not failure.
+      if (payClicked) {
+        const sheet = await dismissAddressMatchSheet(page, log);
+        if (sheet) continue;
+        if (/perform security check|please wait while we|exit-loader|spinner/i.test(bodyNow)) {
+          await page.waitForTimeout(1500);
+          if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
+          continue;
+        }
+      }
+
       const payHit = await clickGuestPayOnly(page, payCtas, log);
       if (payHit) {
         payClicked = payHit;
         log(`paypal_guest waiting after pay CTA (${payHit})`);
-        // Give EC return / bank auth time — do not remount form.
+        // Address sheet often appears within a few seconds of submit.
+        for (let w = 0; w < 20; w++) {
+          if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
+          const b = await page.locator("body").innerText().catch(() => "");
+          if (/We've found a match for your address/i.test(b)) {
+            await dismissAddressMatchSheet(page, log);
+          }
+          await page.waitForTimeout(1500);
+        }
         await Promise.race([
           page.waitForURL(
             (u) => isMerchantReturn(String(u)) || isPaypalSuccessUrl(String(u)),
-            { timeout: 45_000 },
+            { timeout: 60_000 },
           ).catch(() => null),
-          page.waitForTimeout(45_000),
+          page.waitForTimeout(60_000),
         ]);
         continue;
       }
