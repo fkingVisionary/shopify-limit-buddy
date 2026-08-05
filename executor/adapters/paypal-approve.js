@@ -118,26 +118,46 @@ async function fillFirst(page, selectors, value) {
   return false;
 }
 
-/** Guest email — DOM setValue (cookie banner blocks Playwright fills). */
+/** Guest email — wait for input (body text races ahead of mount). */
 async function fillGuestEmail(page, email, log) {
   await dismissPaypalCookies(page, log);
-  // Nuke cookie banner nodes if Accept didn't stick.
+  // Wait up to 15s for guest email field — openGuest used to return early on text.
+  const waited = await page
+    .waitForSelector("#onboardingFlowEmail, input[placeholder='Enter email address']", {
+      state: "attached",
+      timeout: 15_000,
+    })
+    .then(() => true)
+    .catch(() => false);
+  if (!waited) {
+    // Try frames (some PayPal builds iframe the guest form).
+    for (const frame of page.frames()) {
+      if (frame === page.mainFrame()) continue;
+      const handle = await frame
+        .waitForSelector("#onboardingFlowEmail, input[placeholder='Enter email address']", {
+          state: "attached",
+          timeout: 2_000,
+        })
+        .catch(() => null);
+      if (handle) {
+        log(`paypal_guest email in frame ${String(frame.url() || "").slice(0, 60)}`);
+        await handle.click({ force: true }).catch(() => {});
+        await handle.fill(String(email), { force: true }).catch(() => {});
+        const v = await handle.inputValue().catch(() => "");
+        if (/@/.test(v)) {
+          log("paypal_guest email filled via=frame");
+          return true;
+        }
+      }
+    }
+    log("paypal_guest email fill FAILED — input never mounted");
+    return false;
+  }
+  await page.waitForTimeout(400);
+
+  // Click Accept only (do not strip random cookie nodes — can break the form).
   await page
     .evaluate(() => {
-      for (const sel of [
-        "#cookie-banner-container",
-        '[id*="cookie"]',
-        '[class*="cookie"]',
-        '[data-testid*="cookie"]',
-      ]) {
-        document.querySelectorAll(sel).forEach((n) => {
-          try {
-            n.remove();
-          } catch {
-            /* ignore */
-          }
-        });
-      }
       document.querySelectorAll("button").forEach((b) => {
         if (/^Accept$/i.test(String(b.textContent || "").trim())) b.click();
       });
@@ -345,10 +365,23 @@ async function openGuestCardPath(page, log) {
   ];
   for (let i = 0; i < 8; i++) {
     await dismissPaypalCookies(page, log);
-    const body = await page.locator("body").innerText().catch(() => "");
-    // Already past login wall.
-    if (/Pay with debit or credit card|Check out as a guest|Continue to Payment/i.test(body)) {
-      log("paypal_guest already on guest form");
+    // Only treat as ready when the guest email INPUT exists (body text races).
+    const emailReady = await page
+      .locator("#onboardingFlowEmail, input[placeholder='Enter email address']")
+      .first()
+      .count()
+      .catch(() => 0);
+    if (emailReady) {
+      log("paypal_guest already on guest form (email input present)");
+      return true;
+    }
+    const cardReady = await page
+      .locator('input#cardNumber, input[autocomplete="cc-number"]')
+      .first()
+      .count()
+      .catch(() => 0);
+    if (cardReady) {
+      log("paypal_guest already on card form");
       return true;
     }
     const hit =
