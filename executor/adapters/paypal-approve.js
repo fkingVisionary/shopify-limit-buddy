@@ -118,6 +118,49 @@ async function fillFirst(page, selectors, value) {
   return false;
 }
 
+/** Guest email field often sits under cookie banner — force click/type/verify. */
+async function fillGuestEmail(page, email, log) {
+  await dismissPaypalCookies(page, log);
+  const sels = [
+    'input#onboardingFlowEmail',
+    'input[placeholder="Enter email address"]',
+    'input[placeholder*="Enter email" i]',
+  ];
+  for (const sel of sels) {
+    const loc = page.locator(sel).first();
+    if (!(await loc.count().catch(() => 0))) continue;
+    await loc.scrollIntoViewIfNeeded().catch(() => {});
+    await loc.click({ force: true, timeout: 5_000 }).catch(() => {});
+    await loc.fill("", { force: true }).catch(() => {});
+    await loc.fill(String(email), { force: true, timeout: 8_000 }).catch(async () => {
+      await loc.pressSequentially(String(email), { delay: 25 }).catch(() => {});
+    });
+    const v = await loc.inputValue().catch(() => "");
+    if (v && /@/.test(v)) {
+      log(`paypal_guest email filled via=${sel} val=${v.slice(0, 6)}…`);
+      return true;
+    }
+  }
+  // Visible email fallback.
+  const emails = page.locator('input[type="email"]');
+  const n = await emails.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const el = emails.nth(i);
+    if (!(await el.isVisible().catch(() => false))) continue;
+    const id = (await el.getAttribute("id").catch(() => "")) || "";
+    if (id === "email") continue; // login-wall hidden twin
+    await el.click({ force: true }).catch(() => {});
+    await el.fill(String(email), { force: true }).catch(() => {});
+    const v = await el.inputValue().catch(() => "");
+    if (v && /@/.test(v)) {
+      log(`paypal_guest email filled via=visible[${i}] id=${id}`);
+      return true;
+    }
+  }
+  log("paypal_guest email fill FAILED");
+  return false;
+}
+
 async function clickFirst(page, selectors, { timeout = 8_000, force = false } = {}) {
   for (const sel of selectors) {
     const loc = page.locator(sel).first();
@@ -405,39 +448,21 @@ export async function approvePaypalCheckout(opts = {}) {
     const onLoginWall = /Log in to PayPal|Pay by Debit or Credit Card/i.test(
       await page.locator("body").innerText().catch(() => ""),
     );
-    // Guest email is #onboardingFlowEmail — #email is the hidden login-wall field.
-    const guestEmailSels = [
-      'input#onboardingFlowEmail',
-      'input[placeholder="Enter email address"]',
-      'input[placeholder*="Enter email" i]',
-      'input#guestEmail',
-      'input[autocomplete="email"]',
-      'input[type="email"]:visible',
-    ];
     let emailFilled = false;
     if (!onLoginWall || guestOpened) {
-      emailFilled = await fillFirst(page, guestEmailSels, billing.email);
-      if (!emailFilled) {
-        // Last resort: visible email only (avoid hidden #email on login wall).
-        const vis = page.locator('input[type="email"]').locator("visible=true").first();
-        if (await vis.count().catch(() => 0)) {
-          await vis.fill(billing.email).catch(() => {});
-          emailFilled = true;
-        }
-      }
+      emailFilled = await fillGuestEmail(page, billing.email, log);
     }
     // Only click Continue to Payment on guest email step — never login Next.
     const bodyAfterGuest = await page.locator("body").innerText().catch(() => "");
     if (/Continue to Payment|Check out as a guest/i.test(bodyAfterGuest)) {
-      if (!emailFilled) {
-        emailFilled = await fillFirst(page, guestEmailSels, billing.email);
+      if (!emailFilled) emailFilled = await fillGuestEmail(page, billing.email, log);
+      if (emailFilled) {
+        await clickFirst(page, [
+          'button:has-text("Continue to Payment")',
+          'button.actionContinue:has-text("Continue")',
+        ]);
+        await page.waitForTimeout(1500);
       }
-      await clickFirst(page, [
-        'button:has-text("Continue to Payment")',
-        'button.actionContinue:has-text("Continue")',
-        'button.scTrack\\:next',
-      ]);
-      await page.waitForTimeout(1200);
     }
     await openGuestCardPath(page, log);
 
@@ -538,23 +563,21 @@ export async function approvePaypalCheckout(opts = {}) {
 
     // Always try guest email + Continue to Payment once on /pay/ (card fields are next).
     for (let gate = 0; gate < 3; gate++) {
-      if (!/\/pay\//i.test(page.url()) && !/guest/i.test(await page.locator("body").innerText().catch(() => ""))) {
+      const gateBody = await page.locator("body").innerText().catch(() => "");
+      if (
+        !/\/pay\//i.test(page.url()) &&
+        !/Check out as a guest|Continue to Payment|guest/i.test(gateBody)
+      ) {
         break;
       }
-      await fillFirst(
-        page,
-        [
-          'input#email',
-          'input[type="email"]',
-          'input[name="email"]',
-          'input[autocomplete="email"]',
-          'input[placeholder*="email" i]',
-        ],
-        billing.email,
-      );
+      const filledGate = await fillGuestEmail(page, billing.email, log);
+      if (!filledGate) break;
       const adv = await clickFirst(
         page,
-        ['button:has-text("Continue to Payment")', 'button:has-text("Continue")'],
+        [
+          'button:has-text("Continue to Payment")',
+          'button.actionContinue:has-text("Continue")',
+        ],
         { force: true },
       );
       if (adv) {
