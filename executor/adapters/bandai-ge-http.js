@@ -2564,6 +2564,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
           forensicsDir: opts.paypalForensicsDir || undefined,
           log: (m) => {
             try {
+              console.log(String(m));
               opts.onProgress?.("ge_paypal_approve", { note: m });
             } catch {
               /* ignore */
