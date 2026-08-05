@@ -23,17 +23,33 @@ const wallTimer = setTimeout(() => {
 }, WALL_MS);
 wallTimer.unref?.();
 
-function desktopDbPath() {
-  return (
-    process.env.DESKTOP_DB_PATH ||
-    path.join(
-      process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
-      "vanta-desktop",
-      "j1ms-desktop",
-      "db.json",
-    )
+function desktopDir() {
+  return path.join(
+    process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming"),
+    "vanta-desktop",
+    "j1ms-desktop",
   );
 }
+
+function desktopDbPath() {
+  return process.env.DESKTOP_DB_PATH || path.join(desktopDir(), "db.json");
+}
+
+/** Pull CapSolver (and friends) from desktop settings when env is bare. */
+function loadDesktopSecrets() {
+  try {
+    const s = JSON.parse(fs.readFileSync(path.join(desktopDir(), "settings.json"), "utf8"));
+    if (!process.env.CAPSOLVER_API_KEY && s.capsolverApiKey) {
+      process.env.CAPSOLVER_API_KEY = String(s.capsolverApiKey);
+    }
+    if (!process.env.HYPER_API_KEY && s.hyperApiKey) {
+      process.env.HYPER_API_KEY = String(s.hyperApiKey);
+    }
+  } catch {
+    /* optional */
+  }
+}
+loadDesktopSecrets();
 
 /** Only remint sticky session when BANDAI_ROTATE_PROXY_SESSION=1 (fresh lists already have unique sessions). */
 function rotateProxy(raw) {

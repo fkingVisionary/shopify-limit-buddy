@@ -134,6 +134,110 @@ async function clickFirst(page, selectors, { timeout = 8_000, force = false } = 
   return null;
 }
 
+/** AU guest phone field already shows +61 — strip country / leading 0. */
+function auPhoneLocal(phone) {
+  let p = String(phone || "").replace(/\D/g, "");
+  if (p.startsWith("61") && p.length >= 11) p = p.slice(2);
+  if (p.startsWith("0") && p.length >= 9) p = p.slice(1);
+  return p;
+}
+
+const AU_STATE_LABELS = {
+  QLD: "Queensland",
+  NSW: "New South Wales",
+  VIC: "Victoria",
+  SA: "South Australia",
+  WA: "Western Australia",
+  TAS: "Tasmania",
+  ACT: "Australian Capital Territory",
+  NT: "Northern Territory",
+};
+
+/**
+ * Live Weasley guest form (2026-08-05): create-account toggle defaults ON and
+ * turns Pay into "Create Account and Continue". Guest path = toggle OFF.
+ */
+async function disableCreateAccountToggle(page, log) {
+  const sw = page
+    .locator('[data-testid="onboard-options-switch"], input[role="switch"][value="signup"]')
+    .first();
+  if (!(await sw.count().catch(() => 0))) return false;
+  const checked = await sw.isChecked().catch(() => false);
+  if (!checked) {
+    log("paypal_guest create-account toggle already off");
+    return true;
+  }
+  await sw.click({ force: true }).catch(async () => {
+    await page
+      .locator('text=Save information & create your PayPal account')
+      .first()
+      .click({ force: true })
+      .catch(() => {});
+  });
+  await page.waitForTimeout(500);
+  const still = await sw.isChecked().catch(() => true);
+  log(`paypal_guest create-account toggle off=${!still}`);
+  return !still;
+}
+
+/** Fill contact + AU billing — IDs from checkoutweb/signup forensics. */
+async function fillGuestContactAndAddress(page, billing, log) {
+  const phone = auPhoneLocal(billing.phone);
+  const filled = {
+    first: await fillFirst(
+      page,
+      ['input#firstName', '[data-testid="firstNameInput"]', 'input[name="fname"]'],
+      billing.firstName,
+    ),
+    last: await fillFirst(
+      page,
+      ['input#lastName', '[data-testid="lastNameInput"]', 'input[name="lname"]'],
+      billing.lastName,
+    ),
+    phone: await fillFirst(
+      page,
+      ['input#phone', '[data-testid="phone"]'],
+      phone || billing.phone,
+    ),
+    line1: await fillFirst(
+      page,
+      ['input#billingLine1', 'input[name="billingLine1"]'],
+      billing.address1,
+    ),
+    city: await fillFirst(
+      page,
+      ['input#billingCity', 'input[name="billingCity"]'],
+      billing.city,
+    ),
+    zip: await fillFirst(
+      page,
+      ['input#billingPostalCode', 'input[name="billingPostalCode"]'],
+      billing.zip,
+    ),
+    state: false,
+  };
+
+  const stateSel = page.locator('select#billingState, select[name="billingState"]').first();
+  if (await stateSel.count().catch(() => 0)) {
+    const prov = String(billing.province || "QLD").trim().toUpperCase();
+    const label = AU_STATE_LABELS[prov] || billing.province;
+    await stateSel
+      .selectOption({ label })
+      .catch(async () =>
+        stateSel
+          .selectOption({ value: prov })
+          .catch(async () => stateSel.selectOption({ label: prov }).catch(() => {})),
+      );
+    const v = await stateSel.inputValue().catch(() => "");
+    filled.state = Boolean(v);
+  }
+
+  log(
+    `paypal_guest address fill first=${filled.first} last=${filled.last} phone=${filled.phone} line1=${filled.line1} city=${filled.city} state=${filled.state} zip=${filled.zip}`,
+  );
+  return filled;
+}
+
 async function openGuestCardPath(page, log) {
   // Live Bandai/GE PayPal login (2026-08-05): #startGuestOnboardingFlow
   // label = "Pay by Debit or Credit Card" (by, not with).
@@ -346,65 +450,9 @@ export async function approvePaypalCheckout(opts = {}) {
       card.holder,
     );
 
-    await fillFirst(
-      page,
-      ['input#billingFirstName', 'input[name="billingFirstName"]', 'input[name="firstName"]'],
-      billing.firstName,
-    );
-    await fillFirst(
-      page,
-      ['input#billingLastName', 'input[name="billingLastName"]', 'input[name="lastName"]'],
-      billing.lastName,
-    );
-    await fillFirst(
-      page,
-      [
-        'input#billingAddressLine1',
-        'input[name="billingAddressLine1"]',
-        'input[name="line1"]',
-        'input[autocomplete="address-line1"]',
-        'input#billingLine1',
-      ],
-      billing.address1,
-    );
-    await fillFirst(
-      page,
-      [
-        'input#billingCity',
-        'input[name="billingCity"]',
-        'input[name="city"]',
-        'input[autocomplete="address-level2"]',
-      ],
-      billing.city,
-    );
-    await fillFirst(
-      page,
-      [
-        'input#billingState',
-        'input[name="billingState"]',
-        'select#billingState',
-        'select[name="billingState"]',
-        'input[name="state"]',
-        'select[name="state"]',
-      ],
-      billing.province,
-    );
-    await fillFirst(
-      page,
-      [
-        'input#billingPostalCode',
-        'input[name="billingPostalCode"]',
-        'input[name="postalCode"]',
-        'input[autocomplete="postal-code"]',
-        'input#billingZip',
-      ],
-      billing.zip,
-    );
-    await fillFirst(
-      page,
-      ['input#billingPhone', 'input[name="billingPhone"]', 'input[type="tel"]', 'input[name="phone"]'],
-      billing.phone,
-    );
+    // Weasley guest form: #firstName/#phone/#billingLine1 — not billingFirstName.
+    await fillGuestContactAndAddress(page, billing, log);
+    await disableCreateAccountToggle(page, log);
 
     log(
       `paypal_guest filled email=${emailFilled} card=${cardFilled} exp=${Boolean(expFilled)} cvv=${cvvFilled}`,
@@ -419,9 +467,14 @@ export async function approvePaypalCheckout(opts = {}) {
       'button#btnNext',
       'button:has-text("Next")',
     ];
-    // Real charge CTAs only.
+    // Real charge CTAs only — never "Create Account and Continue" (toggle must be OFF).
     const payCtas = [
-      'button[data-testid="submit-button"]',
+      'button[data-testid="submit-button"]:has-text("Pay Now")',
+      'button[data-testid="submit-button"]:has-text("Pay now")',
+      'button[data-testid="submit-button"]:has-text("Agree & Pay")',
+      'button[data-testid="submit-button"]:has-text("Agree and Pay")',
+      'button[data-testid="submit-button"]:has-text("Continue to Review")',
+      'button[data-testid="submit-button"]:has-text("Pay")',
       'button#payment-submit-btn',
       'button:has-text("Pay Now")',
       'button:has-text("Pay now")',
@@ -514,6 +567,9 @@ export async function approvePaypalCheckout(opts = {}) {
         `${card.expMonth} / ${card.expYear}`,
       );
     }
+    // Signup/guest_user redirect re-mounts the full Weasley form — refill + toggle off.
+    await fillGuestContactAndAddress(page, billing, log);
+    await disableCreateAccountToggle(page, log);
     log(`paypal_guest after-advance card=${cardFilled2} cvv=${cvvFilled2}`);
     await dumpForensics(page, forensicsDir, "after-advance");
 
@@ -523,29 +579,38 @@ export async function approvePaypalCheckout(opts = {}) {
     while (Date.now() < deadline) {
       if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
 
+      // Keep guest mode if PayPal re-checks the create-account switch.
+      if (/signup|guest_user|checkoutweb/i.test(page.url()) || /Create Account/i.test(await page.locator("body").innerText().catch(() => ""))) {
+        await fillGuestContactAndAddress(page, billing, log);
+        await disableCreateAccountToggle(page, log);
+      }
+
       const payHit = await clickFirst(page, payCtas);
       if (payHit) {
         payClicked = payHit;
         log(`paypal_guest pay CTA (${payHit})`);
-        await page.waitForTimeout(1200);
+        await page.waitForTimeout(1500);
         continue;
       }
 
       // Advance CTAs are OK on guest email / review steps — not success by themselves.
-      const navHit = await clickFirst(page, advanceCtas);
-      if (navHit) {
-        navClicks += 1;
-        log(`paypal_guest nav CTA (${navHit}) #${navClicks}`);
-        // After each advance, try card fields again (lazy-mounted iframes).
-        if (!cardFilled2) {
-          await fillFirst(
-            page,
-            ['input#cardNumber', 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'],
-            card.number,
-          );
+      // Never treat Create Account as an advance.
+      const bodyNow = await page.locator("body").innerText().catch(() => "");
+      if (!/Create Account and Continue/i.test(bodyNow)) {
+        const navHit = await clickFirst(page, advanceCtas);
+        if (navHit) {
+          navClicks += 1;
+          log(`paypal_guest nav CTA (${navHit}) #${navClicks}`);
+          if (!cardFilled2) {
+            await fillFirst(
+              page,
+              ['input#cardNumber', 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'],
+              card.number,
+            );
+          }
+          await page.waitForTimeout(900);
+          continue;
         }
-        await page.waitForTimeout(900);
-        continue;
       }
 
       await page.waitForTimeout(700);
