@@ -683,6 +683,10 @@ async function fillGuestCardFields(page, card, log) {
     .inputValue()
     .then((v) => String(v || "").replace(/\D/g, "").length)
     .catch(() => 0);
+  // Blur so Weasley validation enables Continue as a Guest (was stuck disabled=true).
+  await page.locator("input#cardCvv, input#cardNumber").last().blur().catch(() => {});
+  await page.keyboard.press("Tab").catch(() => {});
+  await page.waitForTimeout(400);
   log(
     `paypal_guest card fill card=${cardFilled} panDigits=${panLen} exp=${Boolean(expFilled)} cvv=${cvvFilled} panFmt=spaced`,
   );
@@ -882,14 +886,24 @@ export async function approvePaypalCheckout(opts = {}) {
   let context;
   const t0 = Date.now();
   try {
-    browser = await chromium.launch({
+    // Prefer real Chrome channel — stock Chromium often lands DataDome blank shell.
+    const launchOpts = {
       headless,
       proxy: proxyForPlaywright(opts.proxy),
       args: [
         "--disable-blink-features=AutomationControlled",
         "--disable-popup-blocking",
       ],
-    });
+    };
+    if (process.platform === "win32" || process.env.PAYPAL_USE_CHROME === "1") {
+      launchOpts.channel = "chrome";
+    }
+    try {
+      browser = await chromium.launch(launchOpts);
+    } catch {
+      delete launchOpts.channel;
+      browser = await chromium.launch(launchOpts);
+    }
     context = await browser.newContext({
       userAgent:
         process.platform === "win32"
@@ -905,9 +919,16 @@ export async function approvePaypalCheckout(opts = {}) {
     });
 
     const openUrl = forceAuApproveUrl(approveUrl);
-    log(`paypal_guest open ${openUrl.slice(0, 140)}`);
+    log(`paypal_guest open ${openUrl.slice(0, 140)} chrome=${Boolean(launchOpts.channel)}`);
     await page.goto(openUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    await page.waitForTimeout(1200);
+    // Wait out DataDome interstitial (blank body / tiny html) before guest CTA.
+    for (let d = 0; d < 20; d++) {
+      const ready = await page.locator("#startGuestOnboardingFlow, #email, #acceptAllButton").count().catch(() => 0);
+      const bodyLen = (await page.locator("body").innerText().catch(() => "")).trim().length;
+      if (ready > 0 && bodyLen > 40) break;
+      log(`paypal_guest waiting DataDome/UI ready bodyLen=${bodyLen} attempt=${d}`);
+      await page.waitForTimeout(1000);
+    }
     await dismissPaypalCookies(page, log);
     await dumpForensics(page, forensicsDir, "open");
 
