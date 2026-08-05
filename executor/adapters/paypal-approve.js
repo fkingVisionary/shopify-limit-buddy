@@ -647,19 +647,21 @@ async function clickGuestPayOnly(page, payCtas, log) {
 /**
  * Address validation sheet after Continue as a Guest.
  * Lab 2026-08-05: clicking sheet "Continue" → checkoutweb/genericError U_ERROR.
- * Default: close sheet and keep the **entered** profile address (better AVS /
- * Revolut billing match). Opt-in suggested suburb via PAYPAL_ADDRESS_USE_SUGGESTED=1.
+ * Apply PayPal's suggested suburb (proved path to GE auth + PayerID for …0286).
+ * Keeping entered suburb alone re-opens the sheet and never charges.
+ * Opt-out: PAYPAL_ADDRESS_KEEP_ENTERED=1.
  */
 async function dismissAddressMatchSheet(page, log) {
   const body = await page.locator("body").innerText().catch(() => "");
   if (!/We've found a match for your address|Use the address you entered|Use this address/i.test(body)) {
     return false;
   }
-  const useSuggested =
-    process.env.PAYPAL_ADDRESS_USE_SUGGESTED === "1" ||
-    process.env.PAYPAL_ADDRESS_USE_SUGGESTED === "true";
-  const suggested = useSuggested
-    ? await page
+  const keepEntered =
+    process.env.PAYPAL_ADDRESS_KEEP_ENTERED === "1" ||
+    process.env.PAYPAL_ADDRESS_KEEP_ENTERED === "true";
+  const suggested = keepEntered
+    ? null
+    : await page
         .evaluate(() => {
           const t = String(document.body?.innerText || "");
           // Block after "Use this address": line1, then "Suburb STATE POSTCODE"
@@ -669,8 +671,7 @@ async function dismissAddressMatchSheet(page, log) {
           if (!m) return null;
           return { line1: m[1].trim(), city: m[2].trim(), state: m[3].trim(), zip: m[4].trim() };
         })
-        .catch(() => null)
-    : null;
+        .catch(() => null);
 
   // Close sheet — do NOT click sheet Continue (U_ERROR).
   await page.keyboard.press("Escape").catch(() => {});
@@ -702,13 +703,13 @@ async function dismissAddressMatchSheet(page, log) {
       );
     }
     log(
-      `paypal_guest address-match closed → suggested city=${suggested.city} zip=${suggested.zip || "?"} (no sheet Continue)`,
+      `paypal_guest address-match closed → city=${suggested.city} zip=${suggested.zip || "?"} (no sheet Continue)`,
     );
   } else {
     log(
-      useSuggested
-        ? "paypal_guest address-match closed (no parseable suggestion)"
-        : "paypal_guest address-match closed — keeping entered profile address",
+      keepEntered
+        ? "paypal_guest address-match closed — keeping entered profile address"
+        : "paypal_guest address-match closed (no parseable suggestion)",
     );
   }
   await page.waitForTimeout(500);
@@ -1378,10 +1379,10 @@ export async function approvePaypalCheckout(opts = {}) {
         break;
       }
 
-      // At most 2 guest submits: (1) triggers address sheet, (2) after sheet = charge.
+      // Up to 3 guest submits: sheet → suggested address → charge (4th is spam).
       const maySubmit =
         guestSubmits === 0 ||
-        (guestSubmits === 1 && addressSheetDone && /Continue as a Guest/i.test(bodyNow));
+        (guestSubmits < 3 && addressSheetDone && /Continue as a Guest/i.test(bodyNow));
       if (maySubmit) {
         const payHit = await clickGuestPayOnly(page, payCtas, log);
         if (payHit) {
@@ -1420,7 +1421,7 @@ export async function approvePaypalCheckout(opts = {}) {
         addressSheetDone = true;
       }
       if (
-        guestSubmits === 1 &&
+        guestSubmits < 3 &&
         addressSheetDone &&
         /Continue as a Guest/i.test(b) &&
         !/genericError/i.test(page.url())
