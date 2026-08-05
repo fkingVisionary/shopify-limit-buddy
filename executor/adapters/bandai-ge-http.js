@@ -1627,7 +1627,7 @@ export async function runBandaiGeHttpPay(opts = {}) {
     referer: opts.referer || `https://p-bandai.com/${area}/orderdetails`,
   };
   let tokenOut = { ok: false, status: 0, ms: 0 };
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     tokenOut = await getBandaiGeCartToken(cartTokenArgs).catch((e) => ({
       ok: false,
       status: 0,
@@ -1635,14 +1635,20 @@ export async function runBandaiGeHttpPay(opts = {}) {
       bodySnippet: String(e?.message || e).slice(0, 160),
     }));
     if (tokenOut.ok && tokenOut.cartToken) break;
-    const soft =
+    const softTransport =
       !tokenOut.status ||
       tokenOut.status === 0 ||
       /EOF|failed to do request|TLS|timed?\s*out/i.test(
         String(tokenOut.bodySnippet || tokenOut.message || ""),
       );
-    if (!soft || attempt >= 3) break;
-    await new Promise((r) => setTimeout(r, 400 * attempt));
+    // SoftBlock-shaped: HTTP 200 + Success:false + null CartToken (lab 2026-08-05).
+    const softFalse =
+      Number(tokenOut.status) === 200 &&
+      tokenOut.success === false &&
+      !tokenOut.cartToken &&
+      !tokenOut.isCaptcha;
+    if ((!softTransport && !softFalse) || attempt >= 4) break;
+    await new Promise((r) => setTimeout(r, softFalse ? 1200 * attempt : 400 * attempt));
   }
   push("ge_get_cart_token", {
     ok: tokenOut.ok,

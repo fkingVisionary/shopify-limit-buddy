@@ -2320,6 +2320,32 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         /* ignore */
       }
     }
+    // SoftBlock lab 2026-08-05: cart_checkout 200 then GetCartToken Success:false
+    // (null Message). Warm orderdetails in F5 so GE cookies land before gepi mint.
+    if (bridge?.page) {
+      try {
+        await bridge.goto(`${session.base}/orderdetails`, {
+          settleMs: Math.min(Math.max(f5SettleMs, 2_000), 5_000),
+        });
+        const cookies = await bridge.cookies();
+        if (cookies && ctx.jar?.load) {
+          ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+        }
+        steps.push({
+          step: "ge_orderdetails_warm",
+          ok: true,
+          ms: 0,
+          note: "warmed /orderdetails before GetCartToken",
+        });
+      } catch (e) {
+        steps.push({
+          step: "ge_orderdetails_warm",
+          ok: false,
+          ms: 0,
+          note: `orderdetails warm: ${String(e?.message || e).slice(0, 140)}`,
+        });
+      }
+    }
     // Fast anti-fraud default: riskHydrate = fresh snare/Forter on a THROWAWAY
     // CartToken (never Playwright-open the pay guid — liveHtml dualed Revolut).
     // Stale noPage blackbox scored PossibleFraudDetected=True; opt-in only.

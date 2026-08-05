@@ -190,7 +190,7 @@ const res = await runCheckout({
 });
 
 const ppSteps = (res.steps || []).filter((s) =>
-  /paypal|ge_paypal|ge_payment|ge_save|ge_token|addToCart|login|f5/i.test(String(s.step || "")),
+  /paypal|ge_|addToCart|cart_checkout|login|f5|shipping/i.test(String(s.step || "")),
 );
 
 const summary = {
