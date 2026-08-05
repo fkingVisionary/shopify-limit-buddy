@@ -246,26 +246,65 @@ const AU_STATE_LABELS = {
  * turns Pay into "Create Account and Continue". Guest path = toggle OFF.
  */
 async function disableCreateAccountToggle(page, log) {
-  const sw = page
-    .locator('[data-testid="onboard-options-switch"], input[role="switch"][value="signup"]')
-    .first();
-  if (!(await sw.count().catch(() => 0))) return false;
-  const checked = await sw.isChecked().catch(() => false);
-  if (!checked) {
-    log("paypal_guest create-account toggle already off");
-    return true;
+  // DOM click — Playwright isChecked/click was leaving the switch ON (2026-08-05).
+  const result = await page
+    .evaluate(() => {
+      const sw =
+        document.querySelector('[data-testid="onboard-options-switch"]') ||
+        document.querySelector('input[role="switch"][value="signup"]') ||
+        document.querySelector('input[role="switch"]');
+      if (!sw) return { found: false, off: false };
+      const isOn = () =>
+        sw.checked === true ||
+        String(sw.getAttribute("aria-checked") || "") === "true" ||
+        sw.hasAttribute("checked");
+      if (!isOn()) return { found: true, off: true, via: "already" };
+      sw.focus();
+      sw.click();
+      if (isOn()) {
+        sw.checked = false;
+        sw.removeAttribute("checked");
+        sw.setAttribute("aria-checked", "false");
+        sw.dispatchEvent(new Event("input", { bubbles: true }));
+        sw.dispatchEvent(new Event("change", { bubbles: true }));
+        sw.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }
+      // Also click the visible label/text if still on.
+      if (isOn()) {
+        const label =
+          document.querySelector(`label[for="${sw.id}"]`) ||
+          [...document.querySelectorAll("label,span,div")].find((n) =>
+            /Save information.*create your PayPal account/i.test(n.textContent || ""),
+          );
+        label?.click?.();
+      }
+      return { found: true, off: !isOn(), via: "dom" };
+    })
+    .catch((e) => ({ found: false, off: false, err: String(e?.message || e) }));
+
+  if (!result?.found) {
+    // Fallback: Playwright force click on switch / label.
+    const sw = page.locator('[data-testid="onboard-options-switch"]').first();
+    if (await sw.count().catch(() => 0)) {
+      await sw.click({ force: true }).catch(() => {});
+      await page.waitForTimeout(400);
+      const checked = await sw.isChecked().catch(() => true);
+      log(`paypal_guest create-account toggle off=${!checked} via=pw`);
+      return !checked;
+    }
+    log("paypal_guest create-account toggle not found");
+    return false;
   }
-  await sw.click({ force: true }).catch(async () => {
-    await page
-      .locator('text=Save information & create your PayPal account')
-      .first()
-      .click({ force: true })
-      .catch(() => {});
-  });
-  await page.waitForTimeout(500);
-  const still = await sw.isChecked().catch(() => true);
-  log(`paypal_guest create-account toggle off=${!still}`);
-  return !still;
+  await page.waitForTimeout(600);
+  // Success signal: Create Account CTA gone / Pay CTA present.
+  const body = await page.locator("body").innerText().catch(() => "");
+  const payVisible = /Pay Now|Agree & Pay|Agree and Pay|Pay now/i.test(body);
+  const createGone = !/Create Account and Continue/i.test(body);
+  const off = Boolean(result.off) || (payVisible && createGone);
+  log(
+    `paypal_guest create-account toggle off=${off} via=${result.via || "?"} payVisible=${payVisible}`,
+  );
+  return off;
 }
 
 /** Force AU country — PayPal defaulted to UK/GB on Noontide (2026-08-05). */
@@ -656,6 +695,7 @@ export async function approvePaypalCheckout(opts = {}) {
 
     let payClicked = null;
     let navClicks = 0;
+    let weasleyPasses = 0;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (isMerchantReturn(page.url()) || isPaypalSuccessUrl(page.url())) break;
@@ -669,25 +709,11 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Keep guest mode if PayPal re-checks the create-account switch.
-      if (
-        /signup|guest_user|checkoutweb/i.test(page.url()) ||
-        /Create Account/i.test(bodyNow)
-      ) {
-        await fillGuestContactAndAddress(page, billing, log);
-        await disableCreateAccountToggle(page, log);
-      }
-
-      const payHit = await clickFirst(page, payCtas);
-      if (payHit) {
-        payClicked = payHit;
-        log(`paypal_guest pay CTA (${payHit})`);
-        await page.waitForTimeout(1500);
-        continue;
-      }
-
       // Guest email gate — never click Continue to Payment on empty email.
-      if (/Check out as a guest|Continue to Payment/i.test(bodyNow) && !/card number|Pay with debit/i.test(bodyNow)) {
+      if (
+        /Check out as a guest|Continue to Payment/i.test(bodyNow) &&
+        !/card number|Pay with debit/i.test(bodyNow)
+      ) {
         const em = await fillGuestEmail(page, billing.email, log);
         if (em) {
           const cont = await clickFirst(page, continuePaymentCtas, { force: true });
@@ -700,18 +726,40 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      if (navClicks < 6 && !/Create Account and Continue/i.test(bodyNow)) {
+      // Weasley card form — fill once per few loops, force toggle OFF, then Pay.
+      if (/Pay with debit or credit card|Create Account and Continue/i.test(bodyNow)) {
+        if (weasleyPasses < 5) {
+          weasleyPasses += 1;
+          // Country first (remounts fields), then card + address, then toggle OFF.
+          await selectAustraliaCountry(page, log);
+          await page.waitForTimeout(1000);
+          await fillGuestCardFields(page, card, log);
+          await fillGuestContactAndAddress(page, billing, log);
+          const toggled = await disableCreateAccountToggle(page, log);
+          // Re-fill card after country remount / toggle animation.
+          await fillGuestCardFields(page, card, log);
+          log(`paypal_guest weasley pass=${weasleyPasses} toggled=${toggled}`);
+          await dumpForensics(page, forensicsDir, `weasley-${weasleyPasses}`);
+        } else {
+          await disableCreateAccountToggle(page, log);
+          await fillGuestCardFields(page, card, log);
+        }
+      }
+
+      const payHit = await clickFirst(page, payCtas);
+      if (payHit) {
+        payClicked = payHit;
+        log(`paypal_guest pay CTA (${payHit})`);
+        await page.waitForTimeout(2000);
+        continue;
+      }
+
+      // Last resort: if Create Account CTA is the only submit, don't click it.
+      if (navClicks < 4 && !/Create Account and Continue/i.test(bodyNow)) {
         const navHit = await clickFirst(page, advanceCtas);
         if (navHit) {
           navClicks += 1;
           log(`paypal_guest nav CTA (${navHit}) #${navClicks}`);
-          await fillFirst(
-            page,
-            ['input#cardNumber', 'input[name="cardNumber"]', 'input[autocomplete="cc-number"]'],
-            card.number,
-          );
-          await fillGuestContactAndAddress(page, billing, log);
-          await disableCreateAccountToggle(page, log);
           await page.waitForTimeout(900);
           continue;
         }
