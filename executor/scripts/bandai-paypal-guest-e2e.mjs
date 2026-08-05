@@ -15,6 +15,14 @@ const root = path.resolve(__dirname, "../..");
 const artifactsDir = path.join(root, "artifacts");
 fs.mkdirSync(artifactsDir, { recursive: true });
 
+// Hard wall so SoftBlock rotate / Playwright cannot hang the agent indefinitely.
+const WALL_MS = Math.max(60_000, Number(process.env.BANDAI_E2E_WALL_MS || 8 * 60_000));
+const wallTimer = setTimeout(() => {
+  console.error(`[e2e] WALL_TIMEOUT after ${WALL_MS}ms — exiting`);
+  process.exit(124);
+}, WALL_MS);
+wallTimer.unref?.();
+
 function desktopDbPath() {
   return (
     process.env.DESKTOP_DB_PATH ||
@@ -27,9 +35,15 @@ function desktopDbPath() {
   );
 }
 
+/** Only remint sticky session when BANDAI_ROTATE_PROXY_SESSION=1 (fresh lists already have unique sessions). */
 function rotateProxy(raw) {
+  if (process.env.BANDAI_ROTATE_PROXY_SESSION !== "1") return String(raw || "");
   const sid = Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
   return String(raw || "").replace(/-session-[^-]+-/, `-session-${sid}-`);
+}
+
+function sessionTag(raw) {
+  return (String(raw || "").match(/-session-([^-]+)/i) || [])[1] || "?";
 }
 
 const db = JSON.parse(fs.readFileSync(desktopDbPath(), "utf8"));
@@ -56,11 +70,23 @@ const account =
   ) ||
   (db.accounts || [])[0];
 
+function entriesOf(g) {
+  return (g?.proxies || g?.entries || [])
+    .map((x) => (typeof x === "string" ? x : x?.url || x?.raw || ""))
+    .filter(Boolean);
+}
+// Royal is dead — Noontide sticky AU only (override via BANDAI_PROXY_GROUP).
+const preferGroupId =
+  process.env.BANDAI_PROXY_GROUP ||
+  "px_noontide_resi_dual";
 const group =
-  (db.proxyGroups || []).find((g) => g.id === task?.proxyGroupId) || (db.proxyGroups || [])[0];
-const proxies = (group?.proxies || group?.entries || [])
-  .map((x) => (typeof x === "string" ? x : x?.url || x?.raw || ""))
-  .filter(Boolean);
+  (db.proxyGroups || []).find((g) => g.id === preferGroupId) ||
+  (db.proxyGroups || []).find((g) => /noontide/i.test(String(g.name || ""))) ||
+  (db.proxyGroups || []).find((g) => g.id === task?.proxyGroupId) ||
+  (db.proxyGroups || [])[0];
+const proxies = entriesOf(group);
+// Use provided sticky sessions as-is. SoftBlock rotate picks another pool entry.
+const proxyPool = [...proxies];
 if (!proxies.length) {
   console.error("No proxies on task proxy group");
   process.exit(2);
@@ -71,12 +97,17 @@ if (!account?.email || !account?.password) {
 }
 
 const sku = process.env.BANDAI_SKU || String(task?.bandaiWatchSku || "N2847904001").toUpperCase();
-const proxy = rotateProxy(proxies[Math.floor(Math.random() * proxies.length)]);
+// Round-robin via env attempt index so loops don't burn one sticky.
+const pickIdx =
+  Number(process.env.BANDAI_PROXY_PICK) >= 0
+    ? Number(process.env.BANDAI_PROXY_PICK) % proxies.length
+    : Math.floor(Math.random() * proxies.length);
+const proxy = rotateProxy(proxies[pickIdx]);
 const aest = () => new Date().toLocaleString("en-AU", { timeZone: "Australia/Sydney" });
 const outPath = path.join(artifactsDir, "bandai-paypal-guest-e2e.json");
 
 console.log(
-  `[${aest()} AEST] PAYPAL_GUEST_E2E start sku=${sku} card=…${pan.slice(-4)} email=${profile?.email} account=${account.email} pm=paypal_guest`,
+  `[${aest()} AEST] PAYPAL_GUEST_E2E start sku=${sku} card=…${pan.slice(-4)} email=${profile?.email} account=${account.email} pm=paypal_guest proxyGroup=${group?.name || group?.id} pool=${proxyPool.length} sticky=${sessionTag(proxy)}`,
 );
 
 const t0 = Date.now();
@@ -86,12 +117,14 @@ const res = await runCheckout({
   pdpUrl: `https://p-bandai.com/au/item/${sku}`,
   qty: 1,
   proxy,
+  proxyPool,
   dryRun: false,
   placeOrder: true,
   forceUndici: true,
   bandaiMode: "checkout",
   bandaiCheckoutMode: "fast",
   bandaiFastAtc: true,
+  bandaiLoginProxyRotate: true,
   paymentMethod: "paypal_guest",
   paymentMethodId: "4",
   gatewayId: "6",
@@ -159,6 +192,7 @@ console.log(
   "Bank/Revolut PayPal auth is ground truth. Bot only reports paypal_approved on merchant return / success page.",
 );
 
+clearTimeout(wallTimer);
 const approved = String(res.paymentStatus || "") === "paypal_approved";
 const minted = Boolean(res.paypalApproveUrl);
 process.exit(approved ? 0 : minted ? 3 : 1);

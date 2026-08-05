@@ -432,23 +432,45 @@ export async function approvePaypalCheckout(opts = {}) {
       'input[type="submit"][value*="Pay" i]',
     ];
 
-    // Advance past guest email gate before hunting card iframes.
-    if (emailFilled || /\/pay\//i.test(page.url())) {
-      const adv = await clickFirst(page, [
-        'button:has-text("Continue to Payment")',
-        'button:has-text("Continue")',
-      ]);
+    // Always try guest email + Continue to Payment once on /pay/ (card fields are next).
+    for (let gate = 0; gate < 3; gate++) {
+      if (!/\/pay\//i.test(page.url()) && !/guest/i.test(await page.locator("body").innerText().catch(() => ""))) {
+        break;
+      }
+      await fillFirst(
+        page,
+        [
+          'input#email',
+          'input[type="email"]',
+          'input[name="email"]',
+          'input[autocomplete="email"]',
+          'input[placeholder*="email" i]',
+        ],
+        billing.email,
+      );
+      const adv = await clickFirst(
+        page,
+        ['button:has-text("Continue to Payment")', 'button:has-text("Continue")'],
+        { force: true },
+      );
       if (adv) {
-        log(`paypal_guest advance after email (${adv})`);
+        log(`paypal_guest advance after email (${adv}) gate=${gate}`);
         await page
           .waitForSelector(
-            'input#cardNumber, input[name="cardNumber"], input[autocomplete="cc-number"], iframe[title*="card" i], iframe[name*="card" i]',
+            'input#cardNumber, input[name="cardNumber"], input[autocomplete="cc-number"], iframe[title*="card" i], iframe[name*="card" i], iframe[src*="card"]',
             { timeout: 15_000 },
           )
           .catch(() => null);
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(1200);
+        // Stop gating once card-ish UI appears or URL leaves guest email step.
+        const body = await page.locator("body").innerText().catch(() => "");
+        if (/card number|expiry|security code|cvv|csc/i.test(body)) break;
+        if (!/Continue to Payment/i.test(body)) break;
+      } else {
+        break;
       }
     }
+    await dumpForensics(page, forensicsDir, "after-continue-payment");
 
     // Re-attempt card fill after Continue to Payment (fields often appear then).
     const cardFilled2 =

@@ -2446,9 +2446,12 @@ export async function runBandaiGeHttpPay(opts = {}) {
 
   const blockers = [];
   if (!wantPaypal && !urlStructureToken) blockers.push("urlStructureToken");
-  if (!machineId) blockers.push("machineId");
+  // PayPal InitPayPalExpress only needs cartToken — do not gate on ioBlackBox/Forter.
+  if (!wantPaypal && !machineId) blockers.push("machineId");
   // Fail closed when riskHydrate ran but Forter never landed (thin mint → RELOAD_ONLY).
+  // PayPal guest/mint does not need Forter — InitPayPalExpress worked without it (2026-08-05).
   const allowThinRisk =
+    wantPaypal ||
     opts.allowThinRisk === true ||
     opts.bandaiGeAllowThinRisk === true ||
     process.env.BANDAI_GE_ALLOW_THIN_RISK === "1";
