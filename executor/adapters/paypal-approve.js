@@ -405,30 +405,39 @@ export async function approvePaypalCheckout(opts = {}) {
     const onLoginWall = /Log in to PayPal|Pay by Debit or Credit Card/i.test(
       await page.locator("body").innerText().catch(() => ""),
     );
+    // Guest email is #onboardingFlowEmail — #email is the hidden login-wall field.
+    const guestEmailSels = [
+      'input#onboardingFlowEmail',
+      'input[placeholder="Enter email address"]',
+      'input[placeholder*="Enter email" i]',
+      'input#guestEmail',
+      'input[autocomplete="email"]',
+      'input[type="email"]:visible',
+    ];
     let emailFilled = false;
     if (!onLoginWall || guestOpened) {
-      emailFilled = await fillFirst(
-        page,
-        [
-          'input#email',
-          'input[name="login_email"]',
-          'input[type="email"]',
-          'input[autocomplete="email"]',
-          'input[name="email"]',
-          'input#guestEmail',
-        ],
-        billing.email,
-      );
+      emailFilled = await fillFirst(page, guestEmailSels, billing.email);
+      if (!emailFilled) {
+        // Last resort: visible email only (avoid hidden #email on login wall).
+        const vis = page.locator('input[type="email"]').locator("visible=true").first();
+        if (await vis.count().catch(() => 0)) {
+          await vis.fill(billing.email).catch(() => {});
+          emailFilled = true;
+        }
+      }
     }
-    // Only click Next on guest /pay/ email step — never on the login wall.
+    // Only click Continue to Payment on guest email step — never login Next.
     const bodyAfterGuest = await page.locator("body").innerText().catch(() => "");
     if (/Continue to Payment|Check out as a guest/i.test(bodyAfterGuest)) {
+      if (!emailFilled) {
+        emailFilled = await fillFirst(page, guestEmailSels, billing.email);
+      }
       await clickFirst(page, [
         'button:has-text("Continue to Payment")',
-        'button#btnNext',
-        'button:has-text("Next")',
+        'button.actionContinue:has-text("Continue")',
+        'button.scTrack\\:next',
       ]);
-      await page.waitForTimeout(800);
+      await page.waitForTimeout(1200);
     }
     await openGuestCardPath(page, log);
 
