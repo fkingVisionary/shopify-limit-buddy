@@ -169,13 +169,16 @@ async function fillGuestEmail(page, email, log) {
     log(`paypal_guest email DOM-filled id=${ok.id} val=${String(ok.value || "").slice(0, 6)}…`);
     return true;
   }
-  // Playwright force as backup.
-  const loc = page.locator("#onboardingFlowEmail").first();
+  // Keyboard type — PayPal React often ignores .value setter / fill().
+  const loc = page.locator("#onboardingFlowEmail, input[placeholder='Enter email address']").first();
   if (await loc.count().catch(() => 0)) {
-    await loc.fill(String(email), { force: true }).catch(() => {});
+    await loc.click({ force: true, timeout: 5_000 }).catch(() => {});
+    await page.keyboard.press("Control+A").catch(() => {});
+    await page.keyboard.press("Backspace").catch(() => {});
+    await page.keyboard.type(String(email), { delay: 35 }).catch(() => {});
     const v = await loc.inputValue().catch(() => "");
     if (/@/.test(v)) {
-      log("paypal_guest email filled via=playwright-force");
+      log(`paypal_guest email filled via=keyboard val=${v.slice(0, 6)}…`);
       return true;
     }
   }
@@ -560,10 +563,11 @@ export async function approvePaypalCheckout(opts = {}) {
     );
     await dumpForensics(page, forensicsDir, "filled");
 
-    // Guest /pay/ advances only — never login-wall Next (nav spam 2026-08-05).
-    const advanceCtas = [
+    // Review advance only. "Continue to Payment" is gated on verified email fill.
+    const advanceCtas = ['button:has-text("Continue to Review")'];
+    const continuePaymentCtas = [
       'button:has-text("Continue to Payment")',
-      'button:has-text("Continue to Review")',
+      'button.actionContinue:has-text("Continue to Payment")',
     ];
     // Real charge CTAs only — never "Create Account and Continue" (toggle must be OFF).
     const payCtas = [
@@ -698,6 +702,20 @@ export async function approvePaypalCheckout(opts = {}) {
         payClicked = payHit;
         log(`paypal_guest pay CTA (${payHit})`);
         await page.waitForTimeout(1500);
+        continue;
+      }
+
+      // Guest email gate — never click Continue to Payment on empty email.
+      if (/Check out as a guest|Continue to Payment/i.test(bodyNow) && !/card number|Pay with debit/i.test(bodyNow)) {
+        const em = await fillGuestEmail(page, billing.email, log);
+        if (em) {
+          const cont = await clickFirst(page, continuePaymentCtas, { force: true });
+          log(`paypal_guest continue-payment after email (${cont || "miss"})`);
+          await page.waitForTimeout(1500);
+        } else {
+          log("paypal_guest skip Continue to Payment — email empty");
+          await page.waitForTimeout(800);
+        }
         continue;
       }
 
