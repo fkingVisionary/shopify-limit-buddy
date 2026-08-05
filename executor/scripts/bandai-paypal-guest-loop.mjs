@@ -13,23 +13,22 @@ const max = Number(process.env.BANDAI_PP_LOOP_MAX) || 10;
 
 for (let i = 0; i < max; i++) {
   console.log(`\n======== ATTEMPT ${i + 1}/${max} pick=${i} ========`);
+  const offset = Math.max(0, Number(process.env.BANDAI_PROXY_PICK_OFFSET) || 0);
+  const pick = offset + i;
   const r = spawnSync(process.execPath, ["executor/scripts/bandai-paypal-guest-e2e.mjs"], {
     cwd: root,
     encoding: "utf8",
     timeout: 600_000,
+    // Inherit so SoftBlock/rotate progress is visible (pipe+Tee was buffering forever).
+    stdio: ["ignore", "inherit", "inherit"],
     env: {
       ...process.env,
       BANDAI_PROXY_GROUP: process.env.BANDAI_PROXY_GROUP || "px_noontide_resi_dual",
-      BANDAI_PROXY_PICK: String(i),
+      BANDAI_PROXY_PICK: String(pick),
+      BANDAI_E2E_WALL_MS: process.env.BANDAI_E2E_WALL_MS || String(8 * 60_000),
     },
   });
-  const lines = String(r.stdout || "")
-    .split(/\n/)
-    .filter((l) => !l.includes("[pay-forensics]") && !l.includes("kmartMilestone"));
-  console.log(lines.filter((l) => /PAYPAL_GUEST|sticky=|summary →/.test(l)).join("\n"));
-  console.log(lines.slice(-35).join("\n"));
-  if (r.stderr) console.error(String(r.stderr).slice(0, 1500));
-  console.log("exit", r.status);
+  console.log("exit", r.status, "pick", pick);
 
   let summary = null;
   try {
