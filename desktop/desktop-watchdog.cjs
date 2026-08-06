@@ -10,6 +10,8 @@ const { taskForMonitorCheckout } = require("./bandai-monitor-checkout.cjs");
 const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 
 const BUSY_STATUSES = new Set(["queued", "running"]);
+/** Hard payment decline — restock/Watchdog must not revive until manual or Smart Action start. */
+const HARD_STOP_STATUSES = new Set(["declined"]);
 
 /**
  * Global kill-switch (Settings). Default on.
@@ -24,6 +26,20 @@ function isWatchdogEnabled(settings = {}) {
 function taskWatchdogArmed(task = {}) {
   if (task.bandaiWatchdog === false || task.watchdog === false) return false;
   return true;
+}
+
+/**
+ * True when a hard payment decline parked this lane.
+ * Cleared automatically when the task is started manually / via Smart Action
+ * (lastStatus moves off `declined`).
+ */
+function taskHardStoppedByDecline(task = {}) {
+  const status = String(task.lastStatus || "").toLowerCase();
+  if (HARD_STOP_STATUSES.has(status)) return true;
+  if (String(task.consumerCode || task.lastConsumerCode || "").toLowerCase() === "declined") {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -44,6 +60,8 @@ function listWatchdogCheckoutTasks(tasks = [], hit = {}, settings = {}) {
     if (mode !== "checkout" && mode !== "atc") return false;
     if (!taskWatchdogArmed(t)) return false;
     if (BUSY_STATUSES.has(String(t.lastStatus || "").toLowerCase())) return false;
+    // Declined = hard stop until human / Smart Action starts the task again.
+    if (taskHardStoppedByDecline(t)) return false;
     const watch = parseWatch(t);
     if (!watch.productIds.length && !watch.keywords.length) return false;
     return eventMatchesWatch(hit, watch);
@@ -149,6 +167,7 @@ function planWatchdogStarts({
 module.exports = {
   isWatchdogEnabled,
   taskWatchdogArmed,
+  taskHardStoppedByDecline,
   listWatchdogCheckoutTasks,
   checkoutTaskFromWatchdogHit,
   createWatchdogCooldown,

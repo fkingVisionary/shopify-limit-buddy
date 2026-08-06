@@ -110,6 +110,32 @@ test("listWatchdogCheckoutTasks skips muted SKUs", () => {
   );
 });
 
+test("listWatchdogCheckoutTasks skips hard payment decline", () => {
+  const tasks = [
+    {
+      id: "c1",
+      store: "bandai",
+      bandaiMode: "checkout",
+      enabled: true,
+      lastStatus: "declined",
+      lastLabel: "Payment declined",
+      pdpUrl: "https://p-bandai.com/au/item/N2890904001",
+    },
+    {
+      id: "c2",
+      store: "bandai",
+      bandaiMode: "checkout",
+      enabled: true,
+      lastStatus: "idle",
+      pdpUrl: "https://p-bandai.com/au/item/N2890904001",
+    },
+  ];
+  assert.deepEqual(
+    listWatchdogCheckoutTasks(tasks, hit, {}).map((t) => t.id),
+    ["c2"],
+  );
+});
+
 test("planWatchdogStarts stamps PDP + NAI and respects cooldown", () => {
   const cooldown = createWatchdogCooldown({ cooldownMs: 60_000 });
   const tasks = [

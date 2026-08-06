@@ -6,6 +6,7 @@
 const { matchAllFilters } = require("./smart-actions-keywords.cjs");
 const {
   normalizeQuickTaskPreset,
+  resolveQuickTaskProfiles,
   buildQuickTaskDraft,
   targetFromMonitorHit,
   parseBandaiProductInput,
@@ -254,11 +255,15 @@ function normalizeSmartAction(raw = {}, idFn) {
   const id = raw.id || (idFn ? idFn("sa") : `sa_${now}`);
   const actions = Array.isArray(raw.actions) ? raw.actions.map(normalizeAction) : [];
   const filters = Array.isArray(raw.filters) ? raw.filters.map(normalizeFilter) : [];
+  const runOnce = raw.runOnce === true;
+  // Legacy: run-once used to latch firedOnce while staying enabled. Migrate to Off
+  // so the pack can be armed again with the toggle.
+  const legacyFired = runOnce && raw.firedOnce === true;
   return {
     id,
     name: String(raw.name || "Untitled action").slice(0, 120),
-    enabled: raw.enabled !== false,
-    runOnce: raw.runOnce === true,
+    enabled: legacyFired ? false : raw.enabled !== false,
+    runOnce,
     runIntervalMs: Math.max(0, Number(raw.runIntervalMs) || 0),
     notifications: raw.notifications !== false,
     trigger: normalizeTrigger(raw.trigger),
@@ -269,7 +274,7 @@ function normalizeSmartAction(raw = {}, idFn) {
     lastResult: raw.lastResult || null,
     lastRunAt: raw.lastRunAt || null,
     lastLog: Array.isArray(raw.lastLog) ? raw.lastLog.slice(-80) : [],
-    firedOnce: raw.firedOnce === true,
+    firedOnce: legacyFired ? false : raw.firedOnce === true,
     lastScheduleKey: raw.lastScheduleKey || null,
     // Preset catalog provenance (template × SKU matrix)
     catalogKey: raw.catalogKey ? String(raw.catalogKey) : null,
@@ -412,7 +417,8 @@ function createSmartActionsEngine(deps = {}) {
       ...(outcome === OUTCOMES.COMPLETED
         ? {
             lastRunAt: Date.now(),
-            ...(sa.runOnce ? { firedOnce: true } : {}),
+            // Run-once: flip Off after a successful run so it can be armed again.
+            ...(sa.runOnce ? { firedOnce: false, enabled: false } : {}),
           }
         : outcome === OUTCOMES.FAILED
           ? { lastRunAt: Date.now() }
@@ -420,17 +426,22 @@ function createSmartActionsEngine(deps = {}) {
     };
     const patched = patchAction(sa.id, patch);
     const cur = patched || sa;
+    const doneMsg =
+      outcome === OUTCOMES.COMPLETED && sa.runOnce
+        ? `${message || outcome} — turned off (run once)`
+        : message || outcome;
     appendLog(cur, {
       step: "result",
       level: outcome === OUTCOMES.FAILED ? "err" : outcome === OUTCOMES.FILTERED ? "warn" : "ok",
-      message: message || outcome,
+      message: doneMsg,
     });
     deps.emit?.({
       type: "smartAction",
       phase: "done",
       actionId: sa.id,
       outcome,
-      message: message || outcome,
+      message: doneMsg,
+      enabled: cur.enabled !== false,
     });
     return { ok: outcome === OUTCOMES.COMPLETED, outcome, actionId: sa.id };
   }
@@ -1036,38 +1047,39 @@ function createSmartActionsEngine(deps = {}) {
 
     const baseProxy = config.proxyGroupId || (usePreset ? preset.proxyGroupId : null);
     const profileSlots = [];
+    const allProfiles = deps.getProfiles?.() || [];
+    let resolved = [];
     if (profileGroup) {
-      const key = profileGroup.toLowerCase();
-      const rows = (deps.getProfiles?.() || []).filter(
-        (p) => String(p.profileGroup || "").trim().toLowerCase() === key,
+      resolved = resolveQuickTaskProfiles(
+        { profileSource: "group", profileGroup },
+        allProfiles,
       );
-      if (!rows.length) {
+      if (!resolved.length) {
         throw new Error(`Create Tasks: no profiles in group “${profileGroup}”`);
       }
-      for (const p of rows) {
-        for (let n = 1; n <= perProfile; n++) {
-          profileSlots.push({
-            profileId: p.id,
-            proxyGroupId: baseProxy || p.proxyGroupId || null,
-            labelSuffix:
-              rows.length * perProfile > 1
-                ? ` · ${p.name || p.email || "profile"}${perProfile > 1 ? ` #${n}` : ""}`
-                : "",
-          });
-        }
-      }
-    } else {
-      const profileId = config.profileId || (usePreset ? preset.profileId : null);
-      if (!profileId) {
-        throw new Error(
-          "Create Tasks: assign a Quick Task profile in Settings (or set a profile group on the pack)",
-        );
-      }
-      for (let n = 0; n < perProfile; n++) {
+    } else if (config.profileId) {
+      resolved = resolveQuickTaskProfiles(
+        { profileSource: "single", profileId: config.profileId },
+        allProfiles,
+      );
+    } else if (usePreset) {
+      resolved = resolveQuickTaskProfiles(preset, allProfiles);
+    }
+    if (!resolved.length) {
+      throw new Error(
+        "Create Tasks: assign profile(s) in Settings → Quick Task preset (or set a profile group on the pack)",
+      );
+    }
+    for (const p of resolved) {
+      const profileRow = allProfiles.find((row) => row.id === p.profileId);
+      for (let n = 1; n <= perProfile; n++) {
         profileSlots.push({
-          profileId,
-          proxyGroupId: baseProxy,
-          labelSuffix: perProfile > 1 ? ` #${n + 1}` : "",
+          profileId: p.profileId,
+          proxyGroupId: baseProxy || profileRow?.proxyGroupId || null,
+          labelSuffix:
+            resolved.length * perProfile > 1
+              ? ` · ${p.name || "profile"}${perProfile > 1 ? ` #${n}` : ""}`
+              : "",
         });
       }
     }
@@ -1075,36 +1087,57 @@ function createSmartActionsEngine(deps = {}) {
       throw new Error(`Create Tasks: too many tasks (${profileSlots.length}) — max 100`);
     }
 
+    // quantity = how many task rows per profile slot (not parallel jobs on one row).
+    const copies = Math.max(
+      1,
+      Math.min(
+        50,
+        Number(config.quantity != null ? config.quantity : usePreset ? preset.quantity : 1) || 1,
+      ),
+    );
+    if (profileSlots.length * copies > 100) {
+      throw new Error(
+        `Create Tasks: too many tasks (${profileSlots.length * copies}) — max 100`,
+      );
+    }
+
     const ids = [];
     for (const slot of profileSlots) {
-      const mergedPreset = {
-        ...preset,
-        store,
-        bandaiMode: mode,
-        bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
-        qty: config.qty != null ? Number(config.qty) : preset.qty,
-        quantity: config.quantity != null ? Number(config.quantity) : preset.quantity,
-        placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
-        profileId: slot.profileId,
-        proxyGroupId: slot.proxyGroupId,
-        accountAssign: config.accountAssign || preset.accountAssign,
-        accountId: config.accountId || preset.accountId,
-        startAfterCreate: false,
-      };
-      const built = buildQuickTaskDraft(mergedPreset, target, {
-        label: `${label}${slot.labelSuffix}`.slice(0, 120),
-      });
-      if (!built.ok) throw new Error(built.error);
-      if (taskGroup) {
-        built.task.taskGroup = taskGroup;
-        runCtx.taskGroup = taskGroup;
+      for (let c = 1; c <= copies; c++) {
+        const mergedPreset = {
+          ...preset,
+          store,
+          bandaiMode: mode,
+          bandaiCheckoutMode: config.bandaiCheckoutMode || preset.bandaiCheckoutMode,
+          qty: config.qty != null ? Number(config.qty) : preset.qty,
+          quantity: 1,
+          placeOrder: config.placeOrder != null ? config.placeOrder !== false : preset.placeOrder,
+          profileId: slot.profileId,
+          proxyGroupId: slot.proxyGroupId,
+          accountAssign: config.accountAssign || preset.accountAssign,
+          accountId: config.accountId || preset.accountId,
+          startAfterCreate: false,
+        };
+        const suffix =
+          copies > 1
+            ? `${slot.labelSuffix || ""} #${c}`
+            : slot.labelSuffix || "";
+        const built = buildQuickTaskDraft(mergedPreset, target, {
+          label: `${label}${suffix}`.slice(0, 120),
+        });
+        if (!built.ok) throw new Error(built.error);
+        built.task.quantity = 1;
+        if (taskGroup) {
+          built.task.taskGroup = taskGroup;
+          runCtx.taskGroup = taskGroup;
+        }
+        const saved = deps.upsertTask?.(built.task);
+        const id = saved?.id || built.task.id;
+        if (!id) throw new Error("upsertTask did not return id");
+        ids.push(id);
+        runCtx.createdTaskIds.push(id);
+        runCtx.touchedTaskIds.push(id);
       }
-      const saved = deps.upsertTask?.(built.task);
-      const id = saved?.id || built.task.id;
-      if (!id) throw new Error("upsertTask did not return id");
-      ids.push(id);
-      runCtx.createdTaskIds.push(id);
-      runCtx.touchedTaskIds.push(id);
     }
     return ids;
   }
@@ -1175,14 +1208,56 @@ function createSmartActionsEngine(deps = {}) {
     return results;
   }
 
-  async function handleMonitorHit(hit) {
+  function monitorHitContext(hit) {
     const store =
       String(hit?.store || hit?.meta?.store || "bandai")
         .trim()
         .toLowerCase() || "bandai";
     const area = String(hit?.area || hit?.meta?.area || "au").trim().toLowerCase() || "au";
-    const ctx = contextFromMonitorHit(hit, { store, area });
-    return handleEvent(TRIGGERS.PRODUCT_MONITOR, ctx);
+    return contextFromMonitorHit(hit, { store, area });
+  }
+
+  /** True when an SA step will create/start checkout (not watch-only). */
+  function actionLaunchesCheckout(step) {
+    const type = String(step?.type || "");
+    if (
+      type === ACTION_TYPES.START_TASKS ||
+      type === ACTION_TYPES.STAGGER_START_TASKS ||
+      type === ACTION_TYPES.STAGGER_START_TASK_GROUP
+    ) {
+      return true;
+    }
+    if (type !== ACTION_TYPES.CREATE_TASKS) return false;
+    const mode = String(step?.config?.bandaiMode || "checkout").toLowerCase();
+    return mode === "checkout" || mode === "atc";
+  }
+
+  /**
+   * Sync: would an enabled Product Monitor Smart Action own this restock
+   * (create/start checkout)? Used to suppress Watchdog double-starts.
+   */
+  function claimsMonitorHit(hit) {
+    if (!hit?.productId && !hit?.sku) return false;
+    const ctx = monitorHitContext(hit);
+    const filterCtx = {
+      ...ctx,
+      storeGroups: typeof deps.getStoreGroups === "function" ? deps.getStoreGroups() : [],
+    };
+    for (const sa of deps.getActions?.() || []) {
+      if (!sa || sa.enabled === false) continue;
+      if (normalizeTrigger(sa.trigger).type !== TRIGGERS.PRODUCT_MONITOR) continue;
+      const debounce = shouldSkipDebounce(sa);
+      if (debounce.skip) continue;
+      if (running.has(sa.id)) return true;
+      if (!matchAllFilters(sa.filters, filterCtx).ok) continue;
+      const steps = Array.isArray(sa.actions) ? sa.actions : [];
+      if (steps.some(actionLaunchesCheckout)) return true;
+    }
+    return false;
+  }
+
+  async function handleMonitorHit(hit) {
+    return handleEvent(TRIGGERS.PRODUCT_MONITOR, monitorHitContext(hit));
   }
 
   async function handleQuickTaskContext(ctx) {
@@ -1266,7 +1341,8 @@ function createSmartActionsEngine(deps = {}) {
     const on = enabled !== false;
     // Turning off bumps generation so in-flight wait/+30m pipelines abort.
     if (!on) bumpRunGen(id);
-    return patchAction(id, { enabled: on });
+    // Turning back on clears run-once latch so the pack can fire again.
+    return patchAction(id, { enabled: on, ...(on ? { firedOnce: false } : {}) });
   }
 
   function getLogs(id) {
@@ -1292,6 +1368,7 @@ function createSmartActionsEngine(deps = {}) {
     getLogs,
     snapshot,
     handleMonitorHit,
+    claimsMonitorHit,
     handleQuickTaskContext,
     tickSchedule,
     evaluateOne,

@@ -25,6 +25,9 @@ let port = null;
 let hyperKeyInUse = null;
 let paydockKeyInUse = null;
 let capsolverKeyInUse = null;
+let maxConcurrentInUse = null;
+
+const SIDECAR_MAX_CONCURRENT = 200;
 
 function loadDotEnv(filePath) {
   const out = {};
@@ -118,11 +121,13 @@ async function startSidecar({
   const nextCap =
     String(capsolverApiKey || "").trim() ||
     String(process.env.CAPSOLVER_API_KEY || "").trim();
+  const nextMax = Math.max(1, Math.min(SIDECAR_MAX_CONCURRENT, Number(maxConcurrent) || 5));
   if (child && !child.killed) {
     const hyperChanged = hyperApiKey && hyperApiKey !== hyperKeyInUse;
     const paydockChanged = nextPaydock && nextPaydock !== paydockKeyInUse;
     const capChanged = nextCap !== (capsolverKeyInUse || "");
-    if (hyperChanged || paydockChanged || capChanged) {
+    const maxChanged = maxConcurrentInUse != null && nextMax !== maxConcurrentInUse;
+    if (hyperChanged || paydockChanged || capChanged || maxChanged) {
       await stopSidecar();
     } else {
       return { ok: true, ...status() };
@@ -132,6 +137,7 @@ async function startSidecar({
   port = await freePort();
   token = crypto.randomBytes(24).toString("hex");
   hyperKeyInUse = hyperApiKey || null;
+  maxConcurrentInUse = nextMax;
 
   // Load repo-root .env into sidecar without overriding explicit settings.
   const envFromFile = loadDotEnv(path.join(__dirname, "..", ".env"));
@@ -142,7 +148,7 @@ async function startSidecar({
     PORT: String(port),
     HOST: "127.0.0.1",
     EXECUTOR_TOKEN: token,
-    MAX_CONCURRENT: String(Math.max(1, Math.min(50, Number(maxConcurrent) || 5))),
+    MAX_CONCURRENT: String(nextMax),
     PROXY_URL_RESI: "",
     // Desktop defaults to per-task forceTls; keep env from forcing undici here.
   };
@@ -200,6 +206,7 @@ async function stopSidecar() {
     token = null;
     hyperKeyInUse = null;
     capsolverKeyInUse = null;
+    maxConcurrentInUse = null;
     return;
   }
   const c = child;
@@ -219,6 +226,7 @@ async function stopSidecar() {
   token = null;
   hyperKeyInUse = null;
   capsolverKeyInUse = null;
+  maxConcurrentInUse = null;
 }
 
 function status() {
@@ -231,8 +239,13 @@ function status() {
   };
 }
 
-function requestJson(method, urlPath, body, timeoutMs = 250_000) {
+function requestJson(method, urlPath, body, timeoutMs = 250_000, { signal } = {}) {
   if (!port || !token) return Promise.reject(new Error("executor sidecar not running — click Start engine"));
+  if (signal?.aborted) {
+    const err = new Error("aborted");
+    err.code = "ABORT_ERR";
+    return Promise.reject(err);
+  }
   const payload = body == null ? null : JSON.stringify(body);
   return new Promise((resolve, reject) => {
     const req = http.request(
@@ -263,7 +276,30 @@ function requestJson(method, urlPath, body, timeoutMs = 250_000) {
         });
       },
     );
-    req.on("error", reject);
+    const onAbort = () => {
+      try {
+        req.destroy();
+      } catch {
+        /* ignore */
+      }
+      const err = new Error("aborted");
+      err.code = "ABORT_ERR";
+      reject(err);
+    };
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+      req.on("close", () => signal.removeEventListener("abort", onAbort));
+    }
+    req.on("error", (e) => {
+      if (signal?.aborted || e?.code === "ABORT_ERR" || /aborted/i.test(String(e?.message || ""))) {
+        const err = new Error("aborted");
+        err.code = "ABORT_ERR";
+        reject(err);
+        return;
+      }
+      reject(e);
+    });
     req.on("timeout", () => {
       req.destroy();
       reject(new Error("local executor request timed out"));
@@ -273,8 +309,26 @@ function requestJson(method, urlPath, body, timeoutMs = 250_000) {
   });
 }
 
-async function runTask(task) {
-  const { status: httpStatus, json } = await requestJson("POST", "/run", task);
+async function runTask(task, { signal } = {}) {
+  // CapSolver CF + spam reCAPTCHA + BigPay can exceed the default 250s wall.
+  // Bandai Safe (Playwright GE after cart hold) needs more headroom than Fast
+  // HTTP GE — SoftBlock remint + GEM boot + Pay observe easily exceeds 400s.
+  const mode = String(task?.bandaiCheckoutMode || task?.checkoutMode || "").toLowerCase();
+  const safePay =
+    task?.store === "bandai" &&
+    (mode === "safe" ||
+      mode === "full" ||
+      task?.bandaiBrowserCheckout === true ||
+      task?.bandaiBrowserFull === true ||
+      task?.placeOrderGe === true);
+  const defaultTimeout = safePay ? 900_000 : 400_000;
+  const runTimeoutMs = Math.max(
+    60_000,
+    Number(process.env.DESKTOP_EXECUTOR_RUN_TIMEOUT_MS || defaultTimeout) || defaultTimeout,
+  );
+  const { status: httpStatus, json } = await requestJson("POST", "/run", task, runTimeoutMs, {
+    signal,
+  });
   if (httpStatus === 429) {
     return { ok: false, error: json?.error || "local executor at capacity", atCapacity: true };
   }
@@ -335,11 +389,27 @@ async function progress(taskId) {
   return json;
 }
 
+/**
+ * Ask the sidecar to abort an in-flight /run (stops before issuer when possible).
+ * @param {string} taskId executor taskId (e.g. run_xxx-bandai#1)
+ */
+async function cancelRun(taskId) {
+  const id = String(taskId || "").trim();
+  if (!id) return { ok: false, error: "missing taskId" };
+  try {
+    const { json } = await requestJson("POST", "/cancel", { taskId: id }, 10_000);
+    return json || { ok: false, error: "no response" };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
 module.exports = {
   startSidecar,
   stopSidecar,
   status,
   runTask,
+  cancelRun,
   harvestToymate,
   harvestBandai,
   harvestDisney,

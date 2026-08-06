@@ -442,4 +442,96 @@ assert.equal(resolveBandaiCheckoutPayPath({ bandaiCheckoutMode: "safe" }).placeO
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserCheckout: true }).mode, "safe");
 assert.equal(resolveBandaiCheckoutPayPath({ bandaiBrowserFull: true }).mode, "full");
 
+// Shared pay-host Chrome headers (dual-Revolut angle A presentation)
+const {
+  chromeIssuerNavigateHeaders,
+  chromePayFetchHeaders,
+  chromeClientHints,
+  UA,
+} = await import("../http.js");
+// Product Fast: GE form issuer defaults to navigate/document.
+// BigPay-shaped cors is dual-hunt opt-in (PAY_ISSUER_FORM_AS_CORS=1).
+const geNav = chromeIssuerNavigateHeaders(
+  "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
+  { origin: "https://secure-bandai.global-e.com" },
+);
+assert.equal(geNav["sec-fetch-mode"], "navigate");
+assert.equal(geNav["sec-fetch-site"], "same-origin");
+assert.equal(geNav["sec-fetch-dest"], "document");
+const prevFormCors = process.env.PAY_ISSUER_FORM_AS_CORS;
+process.env.PAY_ISSUER_FORM_AS_CORS = "1";
+try {
+  const geNavCors = chromeIssuerNavigateHeaders(
+    "https://secure-bandai.global-e.com/1/Payments/HandleCreditCardRequestV2/8urc/guid",
+    { origin: "https://secure-bandai.global-e.com" },
+  );
+  assert.equal(geNavCors["sec-fetch-mode"], "cors");
+  assert.equal(geNavCors["sec-fetch-dest"], "empty");
+} finally {
+  if (prevFormCors === undefined) delete process.env.PAY_ISSUER_FORM_AS_CORS;
+  else process.env.PAY_ISSUER_FORM_AS_CORS = prevFormCors;
+}
+const already = chromeIssuerNavigateHeaders(
+  "https://payments.bigcommerce.com/stores/x/payments",
+  { "sec-fetch-mode": "cors", origin: "https://www.toymate.com.au" },
+);
+assert.deepEqual(already, {});
+const bigpay = chromeIssuerNavigateHeaders(
+  "https://payments.bigcommerce.com/stores/x/payments",
+  { origin: "https://www.toymate.com.au", "content-type": "application/json" },
+);
+assert.equal(bigpay["sec-fetch-mode"], "cors");
+assert.equal(bigpay["sec-fetch-dest"], "empty");
+assert.equal(bigpay["sec-fetch-site"], "cross-site");
+// GE prepay XHR must get cors (was previously unaudited / no Sec-Fetch)
+const ha = chromePayFetchHeaders(
+  "https://webservices.global-e.com/checkoutv2/handleaction/1/guid/8urc",
+  {
+    origin: "https://webservices.global-e.com",
+    "content-type": "application/json",
+    "x-requested-with": "XMLHttpRequest",
+  },
+);
+assert.equal(ha["sec-fetch-mode"], "cors");
+assert.equal(ha["sec-fetch-dest"], "empty");
+// CreditCardForm GET Sec-Fetch is dual-hunt opt-in (PAY_ISSUER_GET_FETCH=1).
+assert.deepEqual(
+  chromePayFetchHeaders(
+    "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+    { origin: "https://webservices.global-e.com" },
+    { method: "GET" },
+  ),
+  {},
+);
+const prevGetFetch = process.env.PAY_ISSUER_GET_FETCH;
+process.env.PAY_ISSUER_GET_FETCH = "1";
+try {
+  const ccGet = chromePayFetchHeaders(
+    "https://secure-bandai.global-e.com/payments/CreditCardForm/guid/2",
+    { origin: "https://webservices.global-e.com" },
+    { method: "GET" },
+  );
+  assert.equal(ccGet["sec-fetch-mode"], "navigate");
+  assert.equal(ccGet["sec-fetch-dest"], "iframe");
+} finally {
+  if (prevGetFetch === undefined) delete process.env.PAY_ISSUER_GET_FETCH;
+  else process.env.PAY_ISSUER_GET_FETCH = prevGetFetch;
+}
+const ch = chromeClientHints(UA, {});
+assert.equal(ch["sec-ch-ua-mobile"], "?0");
+assert.match(String(ch["sec-ch-ua-platform"] || ""), /Windows|macOS|Linux/);
+
+// Dual-Revolut angles A/B helpers (shared; not Bandai ceremony)
+const { classifyPayWireStage, redirectFanoutFields } = await import("../pay-forensics.js");
+assert.equal(
+  classifyPayWireStage("webservices.global-e.com", "/checkoutv2/handleaction/1/x/8urc"),
+  "prepay",
+);
+assert.equal(
+  redirectFanoutFields("https://webservices.global-e.com/payments/CCPaymentRedirect?Data=x", {
+    TransactionId: "1",
+  }).transactionId,
+  "1",
+);
+
 console.log("bandai-flow.test.mjs ok");

@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("desktop", {
   runTasks: (ids, opts) => ipcRenderer.invoke("desktop:run-tasks", ids, opts || {}),
   runTaskGroup: (opts) => ipcRenderer.invoke("desktop:run-task-group", opts || {}),
   stopTaskGroup: (opts) => ipcRenderer.invoke("desktop:stop-task-group", opts || {}),
+  stopTasks: (ids) => ipcRenderer.invoke("desktop:stop-tasks", ids || []),
   patchTaskGroup: (opts) => ipcRenderer.invoke("desktop:patch-task-group", opts || {}),
   setCheckoutLimits: (opts) => ipcRenderer.invoke("desktop:set-checkout-limits", opts || {}),
   resetCheckoutLimits: (opts) => ipcRenderer.invoke("desktop:reset-checkout-limits", opts || {}),
@@ -104,6 +105,10 @@ contextBridge.exposeInMainWorld("desktop", {
     ipcRenderer.invoke("desktop:smart-action-catalog-remove-actions", opts || {}),
   smartActionCatalogDeleteRow: (rowId) =>
     ipcRenderer.invoke("desktop:smart-action-catalog-delete-row", rowId),
+  resolveProductArt: (sku, opts) =>
+    ipcRenderer.invoke("desktop:resolve-product-art", sku, opts || {}),
+  openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
+  openPaypalApprove: (taskId) => ipcRenderer.invoke("desktop:open-paypal-approve", taskId),
   windowMinimize: () => ipcRenderer.invoke("desktop:window-minimize"),
   windowMaximize: () => ipcRenderer.invoke("desktop:window-maximize"),
   windowClose: () => ipcRenderer.invoke("desktop:window-close"),

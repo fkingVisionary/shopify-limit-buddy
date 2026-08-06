@@ -99,21 +99,55 @@ export function parseBandaiProxy(rawProxy) {
  * @param {string} [opts.area="au"]
  * @param {string} [opts.userAgent]
  * @param {boolean} [opts.headless=true]
+ * @param {string} [opts.channel] — e.g. "chrome" for real Chrome (not HeadlessChromium)
+ * @param {AbortSignal} [opts.abortSignal] — desktop Stop closes Chromium mid-goto
  */
 export async function createBandaiF5Bridge(opts = {}) {
-  const userAgent = opts.userAgent || DEFAULT_UA;
   const area = normalizeBandaiArea(opts.area) || "au";
   const BANDAI_BASE = bandaiBaseFor(area);
   const { playwright: pwProxy } = parseBandaiProxy(opts.proxy);
-  const headless = opts.headless !== false;
+  if (opts.abortSignal?.aborted) {
+    const err = new Error("run_cancelled");
+    err.code = "RUN_CANCELLED";
+    err.cancelled = true;
+    throw err;
+  }
+  const channel =
+    opts.channel ||
+    process.env.BANDAI_F5_CHANNEL ||
+    (process.env.BANDAI_GE_TEST_HEADED_CHROME === "1" ? "chrome" : "") ||
+    "";
+  const headedEnv =
+    process.env.BANDAI_F5_HEADED === "1" ||
+    process.env.BANDAI_GE_TEST_HEADED_CHROME === "1";
+  const headless = headedEnv ? false : opts.headless !== false;
+  // Real Chrome on Windows should not claim Mac UA (HeadlessChromium default).
+  const winChromeUa =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  const userAgent =
+    opts.userAgent ||
+    (channel === "chrome" || !headless ? winChromeUa : DEFAULT_UA);
   const locale =
     area === "fr" ? "fr-FR" : area === "us" ? "en-US" : area === "nz" ? "en-NZ" : "en-AU";
 
-  const browser = await chromium.launch({
+  const launchOpts = {
     headless,
     proxy: pwProxy || undefined,
     args: ["--disable-blink-features=AutomationControlled"],
-  });
+  };
+  if (channel) launchOpts.channel = channel;
+  let browser;
+  try {
+    browser = await chromium.launch(launchOpts);
+  } catch (e) {
+    // channel:chrome missing → fall back to bundled Chromium once.
+    if (channel && /channel|chrome/i.test(String(e?.message || e))) {
+      delete launchOpts.channel;
+      browser = await chromium.launch(launchOpts);
+    } else {
+      throw e;
+    }
+  }
   const recordHarPath =
     opts.recordHarPath ||
     process.env.BANDAI_F5_HAR_PATH ||
@@ -136,22 +170,66 @@ export async function createBandaiF5Bridge(opts = {}) {
         }
       : {}),
   });
+  // Shared stealth (not GE pay ceremony): hide webdriver before login/risk mint.
+  // Dual-Revolut angle A — bot-stamped Forter/GE sessions can fan out two bank lines.
+  try {
+    const { installChromePayStealth } = await import("../chrome-pay-stealth.js");
+    await installChromePayStealth(context);
+  } catch {
+    /* stealth is best-effort */
+  }
   const page = await context.newPage();
-  page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
+  // Drop path: dead proxies must fail fast so the outer loop can rotate.
+  // Default 10s — stock is gone long before a 45–90s hang helps.
+  const navTimeoutMs = Math.max(
+    3_000,
+    Math.min(30_000, Number(opts.timeoutMs) || 10_000),
+  );
+  page.setDefaultTimeout(navTimeoutMs);
 
   let closed = false;
+  const abortSignal = opts.abortSignal || null;
+  const onAbortClose = () => {
+    void close().catch(() => {});
+  };
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", onAbortClose, { once: true });
+  }
+
+  function throwIfBridgeAborted() {
+    if (!abortSignal?.aborted) return;
+    const err = new Error("run_cancelled");
+    err.code = "RUN_CANCELLED";
+    err.cancelled = true;
+    throw err;
+  }
 
   async function goto(pathOrUrl, gotoOpts = {}) {
+    throwIfBridgeAborted();
     const url = /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
       : pathOrUrl.startsWith(`/${area}/`) || pathOrUrl.startsWith("/_ui/") || pathOrUrl.startsWith("/api/") || pathOrUrl.startsWith("/login")
         ? `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`
         : `${BANDAI_BASE}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    const gotoTimeout =
+      gotoOpts.timeoutMs != null
+        ? Math.max(3_000, Number(gotoOpts.timeoutMs) || navTimeoutMs)
+        : navTimeoutMs;
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: gotoTimeout,
+      });
+    } catch (e) {
+      throwIfBridgeAborted();
+      throw e;
+    }
+    throwIfBridgeAborted();
     // Allow common.js?async to hook XHR/fetch. Cart/GE nav can use a shorter settle.
     const settle =
       gotoOpts.settleMs != null ? Number(gotoOpts.settleMs) : 1800;
     if (settle > 0) await page.waitForTimeout(settle);
+    throwIfBridgeAborted();
     return { url: page.url() };
   }
 
@@ -272,6 +350,11 @@ export async function createBandaiF5Bridge(opts = {}) {
   async function close() {
     if (closed) return;
     closed = true;
+    try {
+      abortSignal?.removeEventListener?.("abort", onAbortClose);
+    } catch {
+      /* ignore */
+    }
     try {
       await context.close();
     } catch {

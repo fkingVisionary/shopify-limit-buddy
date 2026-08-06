@@ -1,16 +1,33 @@
 /**
  * Bandai held-cart / pay-window helpers.
  *
- * After ATC the site holds a cart ~30 min for pay. Declines / pay fails should
- * surface a cart-verified "retry pay" path — not a local timer alone.
+ * After ATC the site holds a cart ~30 min for pay. Soft pay fails can keep a
+ * cart-verified "retry pay" path. Hard issuer declines clear the cart on
+ * Bandai's side — do not treat those as held-cart retries.
  */
 
 export const BANDAI_PAY_WINDOW_MS = 30 * 60_000;
+
+/** Hard issuer decline / fraud — cart is gone; never "retry pay". */
+export function isHardPaymentDecline(res = {}) {
+  if (!res || res.ok === true) return false;
+  const ps = String(res.paymentStatus || "");
+  const stage = String(res.checkoutStage || "");
+  const blob = [ps, stage, res.error, res.note, res.debugError].filter(Boolean).join("\n");
+  if (/^declined$/i.test(stage)) return true;
+  if (/declined_or_auth_failed|auth_failed|fraud_refused|ge_fraud/i.test(ps)) return true;
+  if (/do.?not.?honor|chargeAuthReject|hard.?declin/i.test(blob)) return true;
+  // Bare "declined" paymentStatus (not soft "failed to process")
+  if (/^declined$/i.test(ps)) return true;
+  return false;
+}
 
 /** True when a failed run still has cart identifiers worth a pay retry. */
 export function isHeldPayRetryEligible(res = {}) {
   if (!res || res.ok === true) return false;
   if (res.heldCartGone === true) return false;
+  // Decline empties the Bandai cart — stale cartSn must not become Retry pay.
+  if (isHardPaymentDecline(res)) return false;
   const cartSn = res.cartSn ?? res.heldCart?.cartSn;
   const cartItemSn = res.cartItemSn ?? res.heldCart?.cartItemSn;
   if (!cartSn || !cartItemSn) return false;
@@ -19,13 +36,11 @@ export function isHeldPayRetryEligible(res = {}) {
   const stage = String(res.checkoutStage || "");
   const failed = String(res.failedStep || "");
 
-  if (/declined|auth_failed|fraud_refused|ge_fraud/i.test(ps)) return true;
-  if (/^declined$/i.test(stage)) return true;
-  if (/tokenize|threeds|ge_|issuer|http_ge/i.test(ps)) return true;
+  if (/tokenize|threeds|ge_|issuer|http_ge|pay_submitted|reload/i.test(ps)) return true;
   if (/tokenize|threeds|cart_checkout|checkout_address/i.test(stage)) return true;
   if (/ge_|issuer|cart_checkout|checkout_address/i.test(failed)) return true;
   if (Array.isArray(res.blockers) && res.blockers.length > 0) return true;
-  // Explicit adapter flag after cart_hold + pay attempt
+  // Explicit adapter flag after cart_hold + soft pay fail
   if (res.heldPayRetry === true) return true;
   return false;
 }
@@ -73,7 +88,7 @@ export function withHeldCartMeta(out = {}, now = Date.now()) {
     next.heldPayRetry = false;
     return next;
   }
-  if (next.heldCartGone === true) {
+  if (next.heldCartGone === true || isHardPaymentDecline(next)) {
     next.heldPayRetry = false;
     next.heldCart = null;
     return next;
@@ -111,6 +126,7 @@ export function retryPayHint(task = {}, now = Date.now()) {
 
 export default {
   BANDAI_PAY_WINDOW_MS,
+  isHardPaymentDecline,
   isHeldPayRetryEligible,
   payWindowRemainingMs,
   payWindowExpired,

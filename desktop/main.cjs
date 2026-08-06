@@ -80,6 +80,7 @@ const {
 const {
   createWatchdogCooldown,
   planWatchdogStarts,
+  taskHardStoppedByDecline,
 } = require("./desktop-watchdog.cjs");
 const { isMonitorSkuMuted } = require("./monitor-mute.cjs");
 const { appendMonitorEvent, readMonitorEvents } = require("./monitor-event-log.cjs");
@@ -112,7 +113,10 @@ const {
   findStoreGroup,
 } = require("./store-groups.cjs");
 const productCacheLib = require("./bandai-product-cache.cjs");
-const { enrichRowsWithBandaiImages } = require("./bandai-product-image.cjs");
+const {
+  enrichRowsWithBandaiImages,
+  fetchBandaiProductImage,
+} = require("./bandai-product-image.cjs");
 
 function catalogTemplatePublic(t) {
   const desc = describeTemplate(t);
@@ -152,12 +156,18 @@ function galleryCategoryForTemplate(t) {
 }
 const {
   normalizeQuickTaskPreset,
+  resolveQuickTaskProfiles,
   parseBandaiProductInput,
   targetFromMonitorHit,
   buildQuickTaskDraft,
   contextFromMonitorHit,
   contextFromQuickTask,
 } = require("./quick-task.cjs");
+const {
+  parseBandaiStoreSelection,
+  normalizeBandaiAreaCode,
+  isBandaiStoreId,
+} = require("./bandai-regions.cjs");
 const {
   PROTOCOL: QT_PROTOCOL,
   BRIDGE_PORT: QT_BRIDGE_PORT,
@@ -246,15 +256,17 @@ const smartActions = createSmartActionsEngine({
     persistDb();
   },
   stopTasks: (ids) => {
-    // Soft-disable — runner has no cancel-by-id; mark disabled so they won't re-arm.
-    const set = new Set(ids || []);
-    for (const t of state.db.tasks || []) {
-      if (set.has(t.id)) {
-        t.enabled = false;
+    const res = runner.stopTasks(ids || []);
+    for (const tid of ids || []) {
+      const t = (state.db.tasks || []).find((x) => x.id === tid);
+      if (t && (t.lastStatus === "queued" || t.lastStatus === "running")) {
+        t.lastStatus = "stopped";
+        t.lastLabel = "Stopped";
         t.updatedAt = Date.now();
       }
     }
     persistDb();
+    return res;
   },
   patchTasks: (ids, patch) => {
     const set = new Set(ids || []);
@@ -440,7 +452,34 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
       reason: hit?.reason || "restock",
       title: hit?.title || hit?.productName || "",
     });
+    // Auto-seed Action Store when a restock SKU isn't catalogued yet.
+    try {
+      const seeded = seedCatalogFromMonitorHits(hit);
+      if (seeded.added || seeded.updated) {
+        // Stamp matching tasks with scraped title for Cybers-style product column.
+        const sku = String(hit?.productId || hit?.sku || "").trim().toUpperCase();
+        const title = String(hit?.title || hit?.productName || "").trim();
+        if (sku && title) {
+          for (const t of state.db.tasks || []) {
+            const tSku = String(t.bandaiWatchSku || t.sku || "")
+              .trim()
+              .toUpperCase();
+            const fromUrl = String(t.pdpUrl || "").match(/\/item\/([A-Za-z0-9_-]+)/i)?.[1];
+            if ((tSku === sku || String(fromUrl || "").toUpperCase() === sku) && !t.title) {
+              t.title = title.slice(0, 160);
+            }
+          }
+        }
+        send({ type: "snapshot", data: snapshot() });
+      }
+    } catch {
+      /* best-effort */
+    }
     // Smart Actions Product Monitor trigger (orchestration only).
+    // If an armed SA owns this restock (create/start checkout), skip Watchdog
+    // so we don't also revive an older Autocheckout lane for the same SKU.
+    const saClaimsHit =
+      typeof smartActions.claimsMonitorHit === "function" && smartActions.claimsMonitorHit(hit);
     void smartActions.handleMonitorHit(hit).then((results) => {
       const fired = (Array.isArray(results) ? results : []).filter(
         (r) => r && !r.skipped && r.outcome,
@@ -459,28 +498,51 @@ const bandaiGlobalMonitor = createBandaiGlobalMonitorClient({
       send({ type: "snapshot", data: snapshot() });
     });
     // Watchdog: idle Autocheckout tasks matching this SKU/keywords → start now.
-    try {
-      const wd = handleDesktopWatchdog(hit);
-      if (wd?.started) {
-        appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
-          kind: "watchdog",
-          productId: hit?.productId || hit?.sku || "",
-          started: wd.started,
-          matched: wd.matched,
-        });
-      }
-    } catch (e) {
+    if (saClaimsHit) {
+      appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+        kind: "watchdog_skipped",
+        productId: hit?.productId || hit?.sku || "",
+        reason: "smart_action_owns_restock",
+      });
       send({
         type: "job",
         phase: "log",
-        level: "err",
-        message: `Watchdog error: ${e?.message || e}`,
+        level: "muted",
+        message: `Watchdog skipped — Smart Action owns ${hit?.productId || hit?.sku || "restock"}`,
       });
+    } else {
+      try {
+        const wd = handleDesktopWatchdog(hit);
+        if (wd?.started) {
+          appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
+            kind: "watchdog",
+            productId: hit?.productId || hit?.sku || "",
+            started: wd.started,
+            matched: wd.matched,
+          });
+        }
+      } catch (e) {
+        send({
+          type: "job",
+          phase: "log",
+          level: "err",
+          message: `Watchdog error: ${e?.message || e}`,
+        });
+      }
     }
   },
 });
 bandaiGlobalMonitor.on("feedSync", (feed) => {
-  send({ type: "monitorFeed", feed: Array.isArray(feed) ? feed : [] });
+  const rows = Array.isArray(feed) ? feed : [];
+  send({ type: "monitorFeed", feed: rows });
+  try {
+    const seeded = seedCatalogFromMonitorHits(rows, { maxNew: 40 });
+    if (seeded.added || seeded.updated) {
+      send({ type: "snapshot", data: snapshot() });
+    }
+  } catch {
+    /* best-effort */
+  }
 });
 bandaiGlobalMonitor.on("mutedHit", (hit) => {
   appendMonitorEvent(path.join(app.getPath("userData"), "j1ms-desktop"), {
@@ -555,6 +617,187 @@ function rememberLocalProduct(entry) {
   if (!changed) return;
   state.db.bandaiProductCache = cache;
   persistDb();
+}
+
+/**
+ * Auto-seed / refresh Smart Action Store rows from monitor hits.
+ * New SKUs are added with packs off (opt-in). Existing rows get title/image/NAI fills.
+ * @returns {{ added: number, updated: number }}
+ */
+function seedCatalogFromMonitorHits(hits, opts = {}) {
+  const list = (Array.isArray(hits) ? hits : [hits]).filter(Boolean);
+  const maxNew = Math.max(0, Number(opts.maxNew) || 80);
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog);
+  const byKey = new Map(
+    (catalog.rows || []).map((r) => [`${r.store}::${String(r.sku || "").toUpperCase()}`, r]),
+  );
+  let added = 0;
+  let updated = 0;
+  for (const hit of list) {
+    const sku = String(hit.productId || hit.sku || "").trim();
+    if (!sku || !/^[A-Za-z0-9_-]{4,}$/.test(sku)) continue;
+    const storeName = String(hit.store || "bandai").trim().toLowerCase() || "bandai";
+    const key = `${storeName}::${sku.toUpperCase()}`;
+    const title = String(hit.title || hit.productName || hit.meta?.title || "").trim();
+    const imageUrl = String(
+      hit.imageUrl || hit.meta?.imageUrl || hit.image || hit.thumbnailUrl || "",
+    ).trim();
+    const areaItemNo = String(hit.areaItemNo || hit.meta?.areaItemNo || "").trim();
+    const area = String(hit.area || hit.meta?.area || "au").toLowerCase().slice(0, 2);
+    const prev = byKey.get(key);
+    if (prev) {
+      let changed = false;
+      if (title && (!prev.title || prev.title === prev.sku)) {
+        prev.title = title.slice(0, 120);
+        changed = true;
+      }
+      if (imageUrl && !prev.imageUrl) {
+        prev.imageUrl = imageUrl.slice(0, 500);
+        changed = true;
+      }
+      if (areaItemNo && /^NAI|^AAI/i.test(areaItemNo) && !prev.areaItemNo) {
+        prev.areaItemNo = areaItemNo;
+        if (!Array.isArray(prev.areaItemNos)) prev.areaItemNos = [];
+        if (!prev.areaItemNos.includes(areaItemNo)) prev.areaItemNos.push(areaItemNo);
+        changed = true;
+      }
+      if (changed) updated += 1;
+      continue;
+    }
+    if (added >= maxNew) continue;
+    const row = normalizeCatalogRow(
+      {
+        store: storeName,
+        sku,
+        title: title || sku,
+        taskGroup: title || sku,
+        imageUrl,
+        areaItemNo,
+        area,
+        enabledTemplateIds: [],
+      },
+      (p) => store.id(p),
+    );
+    catalog.rows.push(row);
+    byKey.set(key, row);
+    added += 1;
+    if (storeName === "bandai") {
+      rememberLocalProduct({
+        sku,
+        areaItemNo,
+        title: title || sku,
+        imageUrl,
+        area,
+        source: "monitor_seed",
+      });
+    }
+  }
+  if (added || updated) {
+    state.db.smartActionCatalog = catalog;
+    persistDb();
+  }
+  return { added, updated };
+}
+
+function extractSkuFromText(...parts) {
+  for (const part of parts) {
+    const s = String(part || "").trim();
+    if (!s) continue;
+    if (/^(N|A)\d{6,}[A-Za-z0-9]*$/i.test(s)) return s.toUpperCase();
+    const fromUrl = s.match(/\/item\/((?:N|A)\d{6,}[A-Za-z0-9]*)/i);
+    if (fromUrl?.[1]) return fromUrl[1].toUpperCase();
+    const fromText = s.match(/\b((?:N|A)\d{6,}[A-Za-z0-9]*)\b/i);
+    if (fromText?.[1]) return fromText[1].toUpperCase();
+  }
+  return "";
+}
+
+/** Fill missing sku/title/image on results for Home analytics. */
+function enrichResultsForUi(results) {
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog).rows || [];
+  const bySku = new Map(catalog.map((r) => [String(r.sku || "").toUpperCase(), r]));
+  return (Array.isArray(results) ? results : []).map((r) => {
+    if (!r || typeof r !== "object") return r;
+    const task = r.taskId ? (state.db.tasks || []).find((t) => t.id === r.taskId) : null;
+    const sku =
+      extractSkuFromText(
+        r.sku,
+        r.productCode,
+        task?.bandaiWatchSku,
+        task?.sku,
+        task?.pdpUrl,
+        r.pdpUrl,
+        task?.label,
+        task?.title,
+        r.title,
+        r.taskLabel,
+        r.label,
+      ) || null;
+    const cat = sku ? bySku.get(sku) : null;
+    const cached = sku ? lookupSharedProduct(sku, task?.bandaiArea || "au") : null;
+    const imageUrl =
+      String(r.imageUrl || cat?.imageUrl || cached?.imageUrl || task?.imageUrl || "").trim() || null;
+    const title =
+      String(
+        (r.title && !/^task\s*#/i.test(String(r.title)) && r.title !== sku ? r.title : "") ||
+          cat?.title ||
+          cached?.title ||
+          task?.title ||
+          "",
+      ).trim() || r.title || null;
+    if (
+      (!sku || r.sku === sku) &&
+      (!imageUrl || r.imageUrl === imageUrl) &&
+      (!title || r.title === title)
+    ) {
+      return r;
+    }
+    return {
+      ...r,
+      sku: r.sku || sku,
+      title: title || r.title || null,
+      imageUrl: imageUrl || r.imageUrl || null,
+      store: r.store || task?.store || cat?.store || null,
+    };
+  });
+}
+
+async function resolveProductArt(skuRaw, opts = {}) {
+  const sku = extractSkuFromText(skuRaw);
+  if (!sku) return { ok: false, error: "missing sku" };
+  const area = String(opts.area || "au").toLowerCase().slice(0, 2);
+  const catalog = normalizeCatalogState(state.db.smartActionCatalog).rows || [];
+  const cat = catalog.find((r) => String(r.sku || "").toUpperCase() === sku);
+  const cached = lookupSharedProduct(sku, area);
+  let imageUrl = String(cat?.imageUrl || cached?.imageUrl || "").trim();
+  let title = String(cat?.title || cached?.title || "").trim();
+  if (!imageUrl) {
+    imageUrl = await fetchBandaiProductImage(sku, { area }).catch(() => "");
+  }
+  if (imageUrl || title) {
+    seedCatalogFromMonitorHits({
+      store: "bandai",
+      sku,
+      title: title || sku,
+      imageUrl,
+      area,
+    });
+    if (imageUrl) {
+      rememberLocalProduct({
+        sku,
+        title: title || sku,
+        imageUrl,
+        area,
+        source: "resolve_art",
+      });
+    }
+  }
+  return {
+    ok: Boolean(imageUrl),
+    sku,
+    title: title || null,
+    imageUrl: imageUrl || null,
+  };
 }
 
 async function pushProductToMonitor(entry) {
@@ -666,15 +909,19 @@ async function notifyUserCheckoutDiscord(result) {
   const profile = (state.db.profiles || []).find((p) => p.id === task?.profileId);
   if (url) {
     try {
+      const area = String(task?.bandaiArea || "au").toLowerCase();
+      const sku = task?.bandaiWatchSku || result.sku || result.productCode || null;
+      const cached = sku ? lookupSharedProduct(sku, area) : null;
       const payload = checkoutResultDiscordPayload(result, {
         store: storeId,
-        label: task?.label || result.taskId,
+        label: result.title || cached?.title || task?.label || result.taskId,
         kind,
         profileName: profile?.name || profile?.label || null,
         mode: task?.bandaiCheckoutMode || task?.bandaiMode || task?.toymateMode,
         qty: task?.qty,
         pdpUrl: task?.pdpUrl,
-        sku: task?.bandaiWatchSku,
+        sku,
+        imageUrl: result.imageUrl || cached?.imageUrl || null,
         proxy: result.proxyHost || null,
         embedFields: normalizeEmbedFields(state.settings.discordEmbedFields),
         source: result.source || "Desktop",
@@ -974,7 +1221,8 @@ function snapshot() {
     profileGroupColors: state.db.profileGroupColors || {},
     accountGroupColors: state.db.accountGroupColors || {},
     checkoutLimits: checkoutLimits.publicSnapshot(state.db),
-    results: state.db.results.slice(-50),
+    // Newest-first (unshift on finish) — take the head, not the tail.
+    results: enrichResultsForUi(state.db.results.slice(0, 80)),
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
@@ -1049,6 +1297,32 @@ function createWindow() {
   });
 }
 
+ipcMain.handle("desktop:open-external", async (_e, raw) => {
+  const url = String(raw || "").trim();
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: "invalid_url" };
+  try {
+    await shell.openExternal(url);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
+ipcMain.handle("desktop:open-paypal-approve", async (_e, taskId) => {
+  const t = (state.db.tasks || []).find((x) => x.id === taskId);
+  if (!t) return { ok: false, error: "task_not_found" };
+  const url = String(t.paypalApproveUrl || "").trim();
+  if (!url || !/paypal\.com/i.test(url)) {
+    return { ok: false, error: "no_paypal_approve_url" };
+  }
+  try {
+    await shell.openExternal(url);
+    return { ok: true, url };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
+
 ipcMain.handle("desktop:window-minimize", () => {
   win?.minimize();
 });
@@ -1092,8 +1366,59 @@ runner.setEmitter((evt) => {
   send(evt);
 });
 runner.setFinishedHandler((result) => {
+  const taskRow = result.taskId
+    ? state.db.tasks.find((x) => x.id === result.taskId) || null
+    : null;
+  const sku =
+    String(
+      result.sku ||
+        result.productCode ||
+        taskRow?.bandaiWatchSku ||
+        taskRow?.productId ||
+        "",
+    ).trim() || null;
+  const area = String(taskRow?.bandaiArea || result.bandaiArea || "au").toLowerCase();
+  const cached = sku ? lookupSharedProduct(sku, area) : null;
+  const catalogRows = normalizeCatalogState(state.db.smartActionCatalog).rows || [];
+  const areaPid = String(
+    result.areaItemNo || taskRow?.bandaiAreaItemNo || "",
+  ).trim();
+  const catalogHit =
+    catalogRows.find(
+      (r) =>
+        (sku && String(r.sku || "").toUpperCase() === sku.toUpperCase()) ||
+        (areaPid && String(r.areaItemNo || "").toUpperCase() === areaPid.toUpperCase()) ||
+        (sku &&
+          Array.isArray(r.areaItemNos) &&
+          r.areaItemNos.some((x) => String(x).toUpperCase() === sku.toUpperCase())) ||
+        (areaPid &&
+          Array.isArray(r.areaItemNos) &&
+          r.areaItemNos.some((x) => String(x).toUpperCase() === areaPid.toUpperCase())),
+    ) || null;
+  const title =
+    String(
+      result.title ||
+        result.taskLabel ||
+        catalogHit?.title ||
+        cached?.title ||
+        taskRow?.title ||
+        taskRow?.label ||
+        "",
+    ).trim() || null;
+  let imageUrl =
+    String(
+      result.imageUrl ||
+        catalogHit?.imageUrl ||
+        cached?.imageUrl ||
+        taskRow?.imageUrl ||
+        "",
+    ).trim() || null;
+  if (imageUrl && !/^https?:\/\//i.test(imageUrl)) imageUrl = null;
+  // Prefer catalog SKU when task only had a Backend PID.
+  const persistSku = sku || (catalogHit?.sku ? String(catalogHit.sku) : null);
+
   // Keep step tail for Results UI (same info the web dashboard surfaces).
-  state.db.results.unshift({
+  const saved = {
     ok: result.ok,
     taskId: result.taskId,
     runId: result.runId,
@@ -1103,18 +1428,63 @@ runner.setFinishedHandler((result) => {
     consumerCode: result.consumerCode || null,
     stockStatus: result.stockStatus || null,
     checkoutStage: result.checkoutStage || null,
+    paymentStatus: result.paymentStatus || null,
+    atcOnly: result.atcOnly === true || result.consumerCode === "cart_held",
+    heldCart: (() => {
+      const src = result.heldCart?.cartSn
+        ? result.heldCart
+        : result.cartSn
+          ? { cartSn: result.cartSn, cartItemSn: result.cartItemSn || null }
+          : null;
+      if (!src?.cartSn) return null;
+      const holdAt = Number(src.cartHoldAt || result.cartHoldAt);
+      return {
+        cartSn: src.cartSn,
+        cartItemSn: src.cartItemSn || result.cartItemSn || null,
+        cartHoldAt: Number.isFinite(holdAt) && holdAt > 0 ? holdAt : Date.now(),
+        payWindowMs: Number(src.payWindowMs || result.payWindowMs) || 30 * 60_000,
+      };
+    })(),
     failedStep: result.failedStep || null,
     elapsedMs: result.elapsedMs ?? null,
     lastSteps: result.lastSteps || null,
+    store: result.store || taskRow?.store || catalogHit?.store || null,
+    title,
+    sku: persistSku,
+    qty: Math.max(1, Number(result.qty || taskRow?.qty) || 1),
+    price: result.price ?? null,
+    imageUrl,
     at: result.at || Date.now(),
-  });
+  };
+  state.db.results.unshift(saved);
   state.db.results = state.db.results.slice(0, 200);
+
+  // Backfill Bandai product art when catalog/cache missed it.
+  const fetchSku = persistSku || sku;
+  if (!imageUrl && fetchSku && String(saved.store || taskRow?.store || "").toLowerCase() === "bandai") {
+    const runId = saved.runId;
+    void fetchBandaiProductImage(fetchSku, { area })
+      .then((url) => {
+        if (!url) return;
+        const row = (state.db.results || []).find((r) => r.runId === runId);
+        if (!row || row.imageUrl) return;
+        row.imageUrl = url;
+        if (!row.title && title) row.title = title;
+        rememberLocalProduct({
+          sku: fetchSku,
+          area,
+          title: row.title || title || "",
+          imageUrl: url,
+          source: "result",
+        });
+        persistDb();
+        send({ type: "snapshot", data: snapshot() });
+      })
+      .catch(() => {});
+  }
 
   // Local troubleshooting log (redacted) — survives UI scroll / restart.
   try {
-    const taskRow = result.taskId
-      ? state.db.tasks.find((x) => x.id === result.taskId) || null
-      : null;
     appendCheckoutRun(path.join(app.getPath("userData"), "j1ms-desktop"), result, taskRow);
   } catch {
     /* best-effort */
@@ -1179,6 +1549,13 @@ runner.setFinishedHandler((result) => {
         t.lastLabel = result.consumerLabel || (result.ok ? "Order confirmed" : result.error) || null;
         t.lastError = result.ok ? null : result.consumerLabel || result.error || null;
         t.lastOrderNumber = result.orderNumber || null;
+        t.lastConsumerCode = result.consumerCode || null;
+        // Hard decline parks the lane — Watchdog / restock will not restart until
+        // Start (manual) or Smart Action enqueue moves lastStatus off `declined`.
+        // Persist scraped product title for the Tasks product column.
+        if (result.title && String(result.title).trim()) {
+          t.title = String(result.title).trim().slice(0, 160);
+        }
         // Persist auto-resolved Backend PID so later lanes skip public resolve.
         if (
           result.areaItemNo &&
@@ -1193,12 +1570,35 @@ runner.setFinishedHandler((result) => {
             const entry = {
               sku,
               areaItemNo: t.bandaiAreaItemNo,
-              title: t.title || "",
+              title: t.title || result.title || "",
               area: t.bandaiArea || "au",
               source: "checkout",
             };
             rememberLocalProduct(entry);
             void pushProductToMonitor(entry);
+            seedCatalogFromMonitorHits({
+              store: "bandai",
+              sku,
+              title: entry.title,
+              areaItemNo: entry.areaItemNo,
+              area: entry.area,
+              imageUrl: result.imageUrl || "",
+            });
+          }
+        } else if (t.store === "bandai" && (result.title || result.sku || result.productCode)) {
+          const sku =
+            String(result.sku || result.productCode || t.bandaiWatchSku || "").trim() ||
+            String(t.pdpUrl || "").match(/\/item\/([A-Za-z0-9_-]+)/i)?.[1] ||
+            "";
+          if (sku) {
+            seedCatalogFromMonitorHits({
+              store: "bandai",
+              sku,
+              title: result.title || t.title || "",
+              areaItemNo: result.areaItemNo || t.bandaiAreaItemNo || "",
+              area: t.bandaiArea || "au",
+              imageUrl: result.imageUrl || "",
+            });
           }
         }
         // Compact lane after-action for Tasks list.
@@ -1206,31 +1606,75 @@ runner.setFinishedHandler((result) => {
           t.lastDropSummary = formatLaneAfterAction(result);
         }
         // Bandai: persist held cart for Retry pay (live cart is still source of truth).
+        // Hard decline / fraud clears the Bandai cart — never keep stale cartSn.
         if (result.ok && result.orderNumber) {
           t.heldCart = null;
-        } else if (result.heldCartGone || result.consumerCode === "held_cart_gone") {
+          t.paypalApproveUrl = null;
+          t.paypalApproveAt = null;
+        } else if (
+          result.heldCartGone ||
+          result.consumerCode === "held_cart_gone" ||
+          result.consumerCode === "declined" ||
+          /^declined$/i.test(String(result.checkoutStage || "")) ||
+          /declined_or_auth_failed|fraud_refused/i.test(String(result.paymentStatus || ""))
+        ) {
           t.heldCart = null;
-        } else if (result.heldCart && result.heldCart.cartSn && result.heldCart.cartItemSn) {
+          t.paypalApproveUrl = null;
+          t.paypalApproveAt = null;
+        } else if (
+          (result.heldCart && result.heldCart.cartSn) ||
+          ((result.heldPayRetry ||
+            result.atcOnly ||
+            result.consumerCode === "cart_held" ||
+            result.consumerCode === "paypal_link") &&
+            result.cartSn)
+        ) {
+          const src = result.heldCart?.cartSn ? result.heldCart : null;
+          // Never restart the hold clock on remint / Retry pay — same cart window.
+          const prevHold = Number(t.heldCart?.cartHoldAt);
+          const fromRes = Number(src?.cartHoldAt || result.cartHoldAt);
+          const holdAt =
+            Number.isFinite(prevHold) && prevHold > 0
+              ? prevHold
+              : Number.isFinite(fromRes) && fromRes > 0
+                ? fromRes
+                : Date.now();
           t.heldCart = {
-            ...result.heldCart,
+            cartSn: src?.cartSn || result.cartSn,
+            cartId: src?.cartId || result.cartId || null,
+            cartItemSn: src?.cartItemSn || result.cartItemSn || null,
+            areaItemNo:
+              src?.areaItemNo || result.areaItemNo || t.bandaiAreaItemNo || null,
+            productCode: src?.productCode || result.productCode || null,
+            title: src?.title || result.title || t.title || null,
+            cartHoldAt: holdAt,
+            payWindowMs:
+              Number(t.heldCart?.payWindowMs || src?.payWindowMs || result.payWindowMs) ||
+              30 * 60_000,
+            paymentStatus: result.paymentStatus || null,
             accountId: result.account?.id || t.heldCart?.accountId || t.accountId || null,
           };
-        } else if (
-          result.heldPayRetry &&
-          result.cartSn &&
-          result.cartItemSn
-        ) {
-          t.heldCart = {
-            cartSn: result.cartSn,
-            cartId: result.cartId || null,
-            cartItemSn: result.cartItemSn,
-            areaItemNo: result.areaItemNo || t.bandaiAreaItemNo || null,
-            productCode: result.productCode || null,
-            cartHoldAt: result.cartHoldAt || Date.now(),
-            payWindowMs: 30 * 60_000,
-            paymentStatus: result.paymentStatus || null,
-            accountId: result.account?.id || t.accountId || null,
-          };
+        }
+        // PayPal HTTP mint — keep approve URL on the task; auto-open once.
+        if (result.paypalApproveUrl && /paypal\.com/i.test(String(result.paypalApproveUrl))) {
+          const url = String(result.paypalApproveUrl).trim();
+          const already = t.paypalApproveUrl === url;
+          t.paypalApproveUrl = url;
+          t.paypalApproveAt = Date.now();
+          if (!already && (result.ok || result.consumerCode === "paypal_link")) {
+            try {
+              shell.openExternal(url);
+              send({
+                type: "job",
+                phase: "log",
+                taskId: t.id,
+                level: "info",
+                message: "Opened PayPal approve link in browser",
+              });
+            } catch {
+              /* ignore */
+            }
+          }
         }
       }
       t.lastCheckoutStage = result.checkoutStage || null;
@@ -1307,6 +1751,9 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
   if (patch && Object.prototype.hasOwnProperty.call(patch, "monitorMutedSkus")) {
     delete next.monitorMutedSkus;
   }
+  if (patch && Object.prototype.hasOwnProperty.call(patch, "maxConcurrent")) {
+    next.maxConcurrent = Math.max(1, Math.min(200, Number(patch.maxConcurrent) || 5));
+  }
   state.settings = next;
   runner.configure({
     maxConcurrent: state.settings.maxConcurrent,
@@ -1314,6 +1761,16 @@ ipcMain.handle("desktop:save-settings", async (_e, patch) => {
     ...runnerHarvestHooks(),
   });
   persistSettings();
+  // Sidecar MAX_CONCURRENT only applies on spawn — restart when the cap changes.
+  if (sidecar.status().running) {
+    const hyper = String(state.settings.hyperApiKey || "").trim();
+    await sidecar.startSidecar({
+      hyperApiKey: hyper || undefined,
+      paydockPublicKey: state.settings.paydockPublicKey,
+      capsolverApiKey: state.settings.capsolverApiKey,
+      maxConcurrent: state.settings.maxConcurrent,
+    });
+  }
   return snapshot();
 });
 
@@ -1791,7 +2248,15 @@ ipcMain.handle("desktop:test-proxy-entries", async (_e, entriesText, opts = {}) 
 // Tasks
 function upsertTaskRow(task) {
   const now = Date.now();
-  const storeId = task.store || "kmart";
+  // UI may send bandai-us / bandai-fr — normalize to store=bandai + bandaiArea.
+  const parsedStore = isBandaiStoreId(task.store)
+    ? parseBandaiStoreSelection(task.store, task.bandaiArea)
+    : null;
+  const storeId = parsedStore?.store || task.store || "kmart";
+  const bandaiArea =
+    storeId === "bandai"
+      ? normalizeBandaiAreaCode(parsedStore?.bandaiArea || task.bandaiArea) || "au"
+      : undefined;
   const row = {
     id: task.id || store.id("task"),
     store: storeId,
@@ -1804,7 +2269,8 @@ function upsertTaskRow(task) {
     taskGroup: String(task.taskGroup || "").trim().slice(0, 80),
     pdpUrl: String(task.pdpUrl || "").trim(),
     qty: Math.max(1, Math.min(20, Number(task.qty) || 1)),
-    quantity: Math.max(1, Math.min(50, Number(task.quantity) || 1)), // how many parallel jobs
+    // One job per task row. "Tasks to create" expands into multiple rows at save time.
+    quantity: Math.max(1, Math.min(50, Number(task.quantity) || 1)),
     profileId: task.profileId || null,
     proxyGroupId: task.proxyGroupId || null,
     placeOrder: task.placeOrder !== false,
@@ -1812,6 +2278,7 @@ function upsertTaskRow(task) {
     // Toymate-only fields (ignored by Kmart / Bandai payload builders).
     toymateMode: storeId === "toymate" ? String(task.toymateMode || "checkout") : undefined,
     // Bandai-only fields (ignored by Kmart / Toymate payload builders).
+    bandaiArea,
     bandaiMode: (() => {
       if (storeId !== "bandai") return undefined;
       const raw = String(task.bandaiMode || "checkout").toLowerCase();
@@ -1822,8 +2289,13 @@ function upsertTaskRow(task) {
     })(),
     bandaiCheckoutMode:
       storeId === "bandai"
-        ? ["fast", "fast_undici", "safe"].includes(String(task.bandaiCheckoutMode || "").toLowerCase())
-          ? String(task.bandaiCheckoutMode).toLowerCase()
+        ? ["fast", "fast_undici", "safe", "full", "autocheckout_test", "test", "fast_test"].includes(
+            String(task.bandaiCheckoutMode || "").toLowerCase(),
+          )
+          ? String(task.bandaiCheckoutMode).toLowerCase() === "test" ||
+            String(task.bandaiCheckoutMode).toLowerCase() === "fast_test"
+            ? "autocheckout_test"
+            : String(task.bandaiCheckoutMode).toLowerCase()
           : "fast"
         : undefined,
     bandaiMonitorMode:
@@ -1890,7 +2362,15 @@ function upsertTaskRow(task) {
       storeId === "pokemoncentre" || storeId === "pokemon" || storeId === "pokemoncenter"
         ? String(task.pcLocale || "en-au")
         : undefined,
-    paymentMethod: storeId === "toymate" ? String(task.paymentMethod || "credit_card") : undefined,
+    paymentMethod: (() => {
+      if (storeId === "toymate") return String(task.paymentMethod || "credit_card");
+      if (storeId === "bandai") {
+        const raw = String(task.paymentMethod || "credit_card").toLowerCase();
+        if (raw === "paypal_guest" || raw === "paypal_manual") return raw;
+        return "credit_card";
+      }
+      return undefined;
+    })(),
     accountPassword:
       (storeId === "toymate" || storeId === "bandai") && typeof task.accountPassword === "string"
         ? task.accountPassword
@@ -1917,6 +2397,12 @@ function upsertTaskRow(task) {
     enabled: task.enabled !== false,
     updatedAt: now,
   };
+  // Sticky proxy line assigned at create (unique across a batch). Omit when unset so edits keep it.
+  if (typeof task.assignedProxy === "string" && task.assignedProxy.trim()) {
+    row.assignedProxy = task.assignedProxy.trim();
+  } else if (task.assignedProxy === null) {
+    row.assignedProxy = null;
+  }
   const i = state.db.tasks.findIndex((t) => t.id === row.id);
   if (i >= 0) {
     const prev = state.db.tasks[i];
@@ -1941,12 +2427,6 @@ function upsertTaskRow(task) {
 
 ipcMain.handle("desktop:upsert-task", (_e, task) => {
   upsertTaskRow(task);
-  return snapshot();
-});
-
-ipcMain.handle("desktop:delete-task", (_e, taskId) => {
-  state.db.tasks = state.db.tasks.filter((t) => t.id !== taskId);
-  persistDb();
   return snapshot();
 });
 
@@ -2203,20 +2683,44 @@ ipcMain.handle("desktop:run-task-group", (_e, opts = {}) => {
   return { ...res, taskGroup: group, matched: ids.length, snapshot: snapshot() };
 });
 
+ipcMain.handle("desktop:stop-tasks", (_e, taskIds) => {
+  const ids = (Array.isArray(taskIds) ? taskIds : []).map((x) => String(x || "")).filter(Boolean);
+  if (!ids.length) return { ok: false, error: "No tasks", snapshot: snapshot() };
+  const res = runner.stopTasks(ids);
+  for (const tid of ids) {
+    const t = (state.db.tasks || []).find((x) => x.id === tid);
+    if (!t) continue;
+    t.lastLabel = "Stopped";
+    t.lastStatus = "stopped";
+    t.updatedAt = Date.now();
+  }
+  persistDb();
+  return { ...res, snapshot: snapshot() };
+});
+
 ipcMain.handle("desktop:stop-task-group", (_e, opts = {}) => {
   const group = String(opts.taskGroup || "").trim();
   if (!group) return { ok: false, error: "Pick a task group" };
   const ids = tasksInGroup(group).map((t) => t.id);
   if (!ids.length) return { ok: false, error: `No tasks in group “${group}”` };
-  const set = new Set(ids);
-  for (const t of state.db.tasks || []) {
-    if (set.has(t.id)) {
-      t.enabled = false;
-      t.updatedAt = Date.now();
-    }
+  const res = runner.stopTasks(ids);
+  for (const tid of ids) {
+    const t = (state.db.tasks || []).find((x) => x.id === tid);
+    if (!t) continue;
+    t.lastLabel = "Stopped";
+    t.lastStatus = "stopped";
+    t.updatedAt = Date.now();
   }
   persistDb();
-  return { ok: true, taskGroup: group, stopped: ids.length, snapshot: snapshot() };
+  return { ok: true, taskGroup: group, stopped: ids.length, ...res, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:delete-task", (_e, taskId) => {
+  const id = String(taskId || "");
+  if (id) runner.stopTasks([id]);
+  state.db.tasks = state.db.tasks.filter((t) => t.id !== id);
+  persistDb();
+  return snapshot();
 });
 
 ipcMain.handle("desktop:patch-task-group", (_e, opts = {}) => {
@@ -2409,6 +2913,20 @@ function enqueueGlobalMonitorCheckout(checkoutTask) {
   if (!sidecar.status().running) {
     return { ok: false, error: "engine not running" };
   }
+  // Restock/Watchdog path — never revive a hard-declined lane (manual / SA still use enqueueTaskIds).
+  const dbTask = checkoutTask?.id
+    ? (state.db.tasks || []).find((t) => t.id === checkoutTask.id)
+    : null;
+  if (dbTask && taskHardStoppedByDecline(dbTask)) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "muted",
+      taskId: dbTask.id,
+      message: `Restock skipped — payment declined (start manually or via Smart Action)`,
+    });
+    return { ok: false, error: "declined_hard_stop", skipped: "declined" };
+  }
   const mode = String(checkoutTask?.bandaiMode || "checkout").toLowerCase();
   const task = {
     ...checkoutTask,
@@ -2541,12 +3059,24 @@ function enqueueTaskIds(taskIds, opts = {}) {
     }
     const group = state.db.proxyGroups.find((g) => g.id === task.proxyGroupId);
     const entries = group?.entries?.length ? group.entries : [null];
-    const n = payFromCart ? 1 : Math.max(1, Math.min(50, Number(task.quantity) || 1));
+    // One lane per task row (create N tasks in the form instead of quantity-spawn).
+    const n = 1;
     let assignError = null;
     for (let i = 0; i < n; i++) {
-      let proxyIndex = i % entries.length;
-      const proxyRaw = entries[proxyIndex];
+      const assigned =
+        typeof task.assignedProxy === "string" && task.assignedProxy.trim()
+          ? task.assignedProxy.trim()
+          : null;
+      let proxyIndex = assigned
+        ? Math.max(
+            0,
+            entries.findIndex((e) => String(e || "").trim() === assigned),
+          )
+        : i % entries.length;
+      if (proxyIndex < 0) proxyIndex = 0;
+      const proxyRaw = assigned || entries[proxyIndex] || null;
       const taskCopy = { ...task };
+      if (assigned) taskCopy.proxyOverride = assigned;
       if (payFromCart && task.store === "bandai") {
         taskCopy.bandaiPayFromCart = true;
         taskCopy.bandaiMode = "checkout";
@@ -2916,10 +3446,12 @@ async function runQuickTaskPayload(payload = {}) {
   const preset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
   let target;
   if (payload.hit && payload.hit.productId) {
-    target = targetFromMonitorHit(payload.hit, { area: payload.area || "au" });
+    target = targetFromMonitorHit(payload.hit, {
+      area: payload.area || preset.bandaiArea || "au",
+    });
   } else {
     target = parseBandaiProductInput(payload.input || payload.sku || payload.url || "", {
-      area: payload.area || "au",
+      area: payload.area || preset.bandaiArea || "au",
     });
   }
   if (!target.ok) {
@@ -2930,22 +3462,60 @@ async function runQuickTaskPayload(payload = {}) {
     target.areaItemNo = payload.hit.areaItemNo;
   }
 
-  const built = buildQuickTaskDraft(preset, target, {
-    // Only pass an explicit custom label — otherwise defaultTaskLabel builds SKU · title.
-    label: payload.label || "",
-  });
+  const profileSlots = resolveQuickTaskProfiles(preset, state.db.profiles || []);
+  if (!profileSlots.length) {
+    const hint =
+      preset.profileSource === "group"
+        ? "Pick a profile group (with profiles) in Settings → Quick Task preset"
+        : preset.profileSource === "multi"
+          ? "Select one or more profiles in Settings → Quick Task preset"
+          : "Set a default profile in Settings → Quick Task preset";
+    return { ok: false, error: hint, snapshot: snapshot() };
+  }
+
+  const built = buildQuickTaskDraft(
+    { ...preset, profileId: profileSlots[0].profileId },
+    target,
+    {
+      // Only pass an explicit custom label — otherwise defaultTaskLabel builds SKU · title.
+      label: payload.label || "",
+    },
+  );
   if (!built.ok) {
     return { ok: false, error: built.error, snapshot: snapshot() };
   }
-  if (!built.task.profileId) {
+
+  const createCount = Math.max(1, Math.min(50, Number(built.task.quantity) || 1));
+  const total = profileSlots.length * createCount;
+  if (total > 200) {
     return {
       ok: false,
-      error: "Set a default profile in Settings → Quick Task preset",
+      error: `Too many tasks (${total}) — max 200 at once`,
       snapshot: snapshot(),
     };
   }
-
-  const row = upsertTaskRow(built.task);
+  const rows = [];
+  for (const slot of profileSlots) {
+    for (let n = 1; n <= createCount; n++) {
+      const labelBase = built.task.label || "Task";
+      const label =
+        total > 1
+          ? String(
+              `${labelBase} · ${slot.name}${createCount > 1 ? ` #${n}` : ""}`,
+            ).slice(0, 120)
+          : built.task.label;
+      rows.push(
+        upsertTaskRow({
+          ...built.task,
+          id: undefined,
+          quantity: 1,
+          profileId: slot.profileId,
+          label,
+        }),
+      );
+    }
+  }
+  const row = rows[0];
   const start =
     payload.start != null ? payload.start !== false : built.startAfterCreate !== false;
   let enqueue = null;
@@ -2955,15 +3525,20 @@ async function runQuickTaskPayload(payload = {}) {
         ok: false,
         error: "Start the engine first (app must stay open)",
         task: row,
+        created: rows.length,
         snapshot: snapshot(),
       };
     }
-    enqueue = enqueueTaskIds([row.id], {});
+    enqueue = enqueueTaskIds(
+      rows.map((r) => r.id),
+      {},
+    );
     if (!enqueue.ok) {
       return {
         ok: false,
         error: enqueue.error || "Could not start task",
         task: row,
+        created: rows.length,
         snapshot: snapshot(),
       };
     }
@@ -2976,11 +3551,12 @@ async function runQuickTaskPayload(payload = {}) {
   void smartActions.handleQuickTaskContext(ctx);
 
   const src = payload.source ? ` (${payload.source})` : "";
+  const createdN = rows.length;
   send({
     type: "job",
     phase: "log",
     level: "ok",
-    message: `Quick Task ${start ? "started" : "created"}${src} — ${row.label || row.id}`,
+    message: `Quick Task ${start ? "started" : "created"}${src} — ${createdN} task(s) · ${row.label || row.id}`,
   });
   send({ type: "snapshot", data: snapshot() });
   try {
@@ -2992,6 +3568,7 @@ async function runQuickTaskPayload(payload = {}) {
   return {
     ok: true,
     task: row,
+    created: createdN,
     started: Boolean(start && enqueue?.ok),
     enqueued: enqueue?.enqueued || 0,
     snapshot: snapshot(),
@@ -3116,6 +3693,14 @@ ipcMain.handle("desktop:smart-action-logs", (_e, actionId) => ({
   ok: true,
   logs: smartActions.getLogs(String(actionId || "")),
 }));
+
+ipcMain.handle("desktop:resolve-product-art", async (_e, sku, opts = {}) => {
+  try {
+    return await resolveProductArt(sku, opts || {});
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+});
 
 ipcMain.handle("desktop:smart-action-catalog-get", () => ({
   ok: true,
@@ -3251,7 +3836,21 @@ async function pullPresetCatalogFromMonitor() {
     rows: draftRows,
     filled: 0,
   }));
-  cur.rows = imageEnrich.rows || draftRows;
+  const remoteRows = imageEnrich.rows || draftRows;
+  // Keep local-only rows (monitor auto-seed / manual seed) that admin catalog lacks.
+  const remoteKeys = new Set(
+    remoteRows.map(
+      (r) =>
+        `${String(r.store || "bandai").toLowerCase()}::${String(r.sku || "").toLowerCase()}`,
+    ),
+  );
+  const localOnly = (cur.rows || []).filter((r) => {
+    const sku = String(r.sku || "").trim();
+    if (!sku) return false;
+    const key = `${String(r.store || "bandai").toLowerCase()}::${sku.toLowerCase()}`;
+    return !remoteKeys.has(key);
+  });
+  cur.rows = [...remoteRows, ...localOnly];
   // Seed local cache from catalog rows that already carry NAI / image.
   for (const r of cur.rows) {
     if (r.store === "bandai" && r.sku) {
@@ -3736,13 +4335,24 @@ async function e2eAutorun() {
       apiKey: state.settings.apiKey,
     });
     if (!lic.ok) return { ok: false, error: lic.message || "license failed" };
-    let hyper = String(state.settings.hyperApiKey || "").trim();
-    const capsolver = String(state.settings.capsolverApiKey || "").trim();
+    let hyper = String(
+      process.env.HYPER_API_KEY || state.settings.hyperApiKey || "",
+    ).trim();
+    const capsolver = String(
+      process.env.CAPSOLVER_API_KEY || state.settings.capsolverApiKey || "",
+    ).trim();
     // Bandai F5 checkout does not need Hyper/CapSolver — match bootEngine.
     if (!hyper && !capsolver) {
       console.log(
-        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney need keys",
+        "[e2e] starting without Hyper/CapSolver — Bandai OK; Kmart/Toymate/Disney/PKC need keys",
       );
+    } else {
+      if (hyper) {
+        console.log("[e2e] Hyper key present (env or settings) — PKC/Kmart antibot enabled");
+      }
+      if (capsolver) {
+        console.log("[e2e] CapSolver key present (env or settings) — Toymate CF/spam enabled");
+      }
     }
     return sidecar.startSidecar({
       hyperApiKey: hyper || undefined,
@@ -3854,11 +4464,16 @@ async function e2eAutorun() {
       checkoutStage: result.checkoutStage || null,
       failedStep: result.failedStep || null,
       paymentStatus: result.paymentStatus || null,
+      atcOnly: result.atcOnly === true,
+      heldCart: result.heldCart?.cartSn
+        ? { cartSn: result.heldCart.cartSn, cartItemSn: result.heldCart.cartItemSn || null }
+        : null,
       transactionId: result.transactionId || null,
       via: result.via || null,
       note: result.note || null,
       elapsedMs: result.elapsedMs ?? null,
       lastSteps: result.lastSteps || null,
+      store: result.store || null,
       at: result.at || Date.now(),
     });
     state.db.results = state.db.results.slice(0, 200);
@@ -3888,6 +4503,19 @@ async function e2eAutorun() {
       via: result.via || null,
       note: result.note || null,
       isSameCartToken: result.isSameCartToken ?? null,
+      // GE JWT: explicit false = clean path; true = ge_fraud_refused.
+      possibleFraudDetected:
+        result.possibleFraudDetected === true
+          ? true
+          : result.possibleFraudDetected === false
+            ? false
+            : result.possibleFraudDetected ?? null,
+      // Double-charge latch diagnostics (per-run only)
+      chargeReqCount: result.chargeReqCount ?? null,
+      undiciAttempts: result.undiciAttempts ?? null,
+      bigpayAuthPosts: result.bigpayAuthPosts ?? null,
+      responseLost: Boolean(result.responseLost),
+      paymentAttempted: Boolean(result.paymentAttempted),
       error: result.error,
       consumerLabel: result.consumerLabel || null,
       elapsedMs: result.elapsedMs,
@@ -3907,6 +4535,12 @@ async function e2eAutorun() {
         stage: result.checkoutStage,
         paymentStatus: result.paymentStatus,
         tx: result.transactionId,
+        possibleFraudDetected:
+          result.possibleFraudDetected === true
+            ? true
+            : result.possibleFraudDetected === false
+              ? false
+              : null,
         remaining,
       }),
     );

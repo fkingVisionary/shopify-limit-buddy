@@ -725,6 +725,14 @@ async function runAtcCheckout(task, ctx, session, tStep, steps, mode = "checkout
     ge,
     pay,
     paymentStatus: pay?.paymentStatus || null,
+    chargeReqCount: pay?.chargeReqCount ?? null,
+    undiciAttempts: pay?.undiciAttempts ?? null,
+    responseLost: Boolean(pay?.responseLost),
+    paymentAttempted: Boolean(
+      pay?.paymentAttempted ||
+        pay?.responseLost ||
+        Number(pay?.chargeReqCount ?? pay?.undiciAttempts ?? 0) >= 1,
+    ),
     decline: declineOk,
     transactionId: pay?.transactionId || null,
     cartToken: pay?.cartToken || ge?.checkoutGuid || null,

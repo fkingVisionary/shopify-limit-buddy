@@ -15,9 +15,21 @@
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { ensureTlsNativeLib } from "./ensure-tls-native.js";
 import { makeRemoteTlsDispatcher as makeRemoteTlsDispatcherInner } from "./tls-bridge.js";
+import {
+  payForensics,
+  classifyPayWireStage,
+  PAY_WIRE_HOST_RE,
+  ISSUER_PATH_RE,
+  ACS_OR_REDIRECT_RE,
+} from "./pay-forensics.js";
 
-const UA =
+// Platform-matched Chrome 131 — Mac UA on Windows desktop was a shared tell
+// on undici pre-pay / BigPay hops (dual-Revolut angle A presentation).
+const UA_WIN =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const UA_MAC =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+const UA = process.platform === "win32" ? UA_WIN : UA_MAC;
 
 /** Child-process chrome_131 dispatcher (crash-isolated). Accepts raw proxy strings. */
 export async function makeRemoteTlsDispatcher(rawProxy = null, opts = {}) {
@@ -224,6 +236,15 @@ class Dispatcher {
     return this._tlsSession;
   }
   async close() {
+    for (const key of ["_issuerRemoteTls", "_prepayRemoteTls"]) {
+      if (!this[key]) continue;
+      try {
+        await this[key].close?.();
+      } catch {
+        /* ignore */
+      }
+      this[key] = null;
+    }
     if (this._tlsSession) {
       try {
         await this._tlsSession.close();
@@ -409,9 +430,340 @@ function wrapFetchResponse(res, requestedUrl) {
   };
 }
 
+function lowerHeaderMap(existingHeaders = {}) {
+  const existing = {};
+  for (const [k, v] of Object.entries(existingHeaders || {})) {
+    existing[String(k).toLowerCase()] = v;
+  }
+  return existing;
+}
+
+function secFetchSite(host, origin) {
+  let site = "cross-site";
+  const hostName = String(host || "").replace(/:\d+$/, "");
+  if (!origin) return site;
+  try {
+    const o = new URL(origin);
+    if (o.host === host || o.hostname === hostName) return "same-origin";
+    const base = (h) => String(h || "").split(".").slice(-2).join(".");
+    if (base(o.hostname) && base(o.hostname) === base(hostName)) return "same-site";
+  } catch {
+    /* keep cross-site */
+  }
+  return site;
+}
+
+/**
+ * Chrome Client Hints aligned to the spoofed UA (dual-Revolut angle A).
+ * Opt out: PAY_CHROME_CH=0. Callers that already set sec-ch-ua win.
+ */
+export function chromeClientHints(userAgent = UA, existingHeaders = {}) {
+  if (process.env.PAY_CHROME_CH === "0") return {};
+  const existing = lowerHeaderMap(existingHeaders);
+  if (existing["sec-ch-ua"] != null) return {};
+  const ua = String(userAgent || existing["user-agent"] || UA);
+  const platform = /Windows NT/i.test(ua)
+    ? "Windows"
+    : /Macintosh/i.test(ua)
+      ? "macOS"
+      : "Linux";
+  return {
+    "sec-ch-ua": `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`,
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": `"${platform}"`,
+  };
+}
+
+/**
+ * Chrome Sec-Fetch for pay-host hops when the caller omitted them.
+ * Opt out all: PAY_ISSUER_CHROME_NAV=0. Callers that already set sec-fetch-mode win.
+ *
+ * method POST/PUT → cors/empty (BigPay + GE form-as-cors) or navigate/document.
+ * method GET/HEAD on CreditCardForm → navigate/iframe (GEM iframe load).
+ *   Opt out: PAY_ISSUER_GET_FETCH=0. Dest override: PAY_ISSUER_GET_DEST=document.
+ */
+export function chromePayFetchHeaders(url, existingHeaders = {}, { method = "POST" } = {}) {
+  if (process.env.PAY_ISSUER_CHROME_NAV === "0") return {};
+  const existing = lowerHeaderMap(existingHeaders);
+  if (existing["sec-fetch-mode"] != null) return {};
+  let host = "";
+  let path = "";
+  try {
+    const u = new URL(String(url || ""));
+    host = u.host;
+    path = u.pathname;
+  } catch {
+    return {};
+  }
+  const issuerLike =
+    ISSUER_PATH_RE.test(path) || /payments\.bigcommerce\.com/i.test(host);
+  const payHost = PAY_WIRE_HOST_RE.test(host);
+  if (!issuerLike && !payHost) return {};
+
+  const site = secFetchSite(host, existing.origin || "");
+  const m = String(method || "POST").toUpperCase();
+
+  // CreditCardForm GET Sec-Fetch — dual-hunt opt-in only (product Fast: off).
+  if (/^(GET|HEAD)$/i.test(m) && /CreditCardForm/i.test(path)) {
+    if (process.env.PAY_ISSUER_GET_FETCH !== "1") return {};
+    const dest =
+      process.env.PAY_ISSUER_GET_DEST === "document" ? "document" : "iframe";
+    return {
+      "sec-fetch-site": site,
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": dest,
+    };
+  }
+  if (/^(GET|HEAD)$/i.test(m)) return {};
+
+  const ct = String(existing["content-type"] || "");
+  const xhrHint = /XMLHttpRequest/i.test(String(existing["x-requested-with"] || ""));
+  // JSON/API / XHR pay hops are cors/empty. GE form issuer defaults to
+  // navigate/document; dual-hunt BigPay-shaped cors is opt-in only.
+  const issuerFormAsCors =
+    issuerLike && process.env.PAY_ISSUER_FORM_AS_CORS === "1";
+  const isJsonOrXhr =
+    /application\/json/i.test(ct) ||
+    /payments\.bigcommerce\.com/i.test(host) ||
+    xhrHint ||
+    /checkoutv2\/(handleaction|save)/i.test(path) ||
+    issuerFormAsCors;
+
+  if (isJsonOrXhr) {
+    return {
+      "sec-fetch-site": site,
+      "sec-fetch-mode": "cors",
+      "sec-fetch-dest": "empty",
+    };
+  }
+
+  const out = {
+    "sec-fetch-site": site,
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+  };
+  if (existing["upgrade-insecure-requests"] == null) {
+    out["upgrade-insecure-requests"] = "1";
+  }
+  if (existing["cache-control"] == null) {
+    out["cache-control"] = "max-age=0";
+  }
+  return out;
+}
+
+/** @deprecated use chromePayFetchHeaders — kept for existing imports/tests */
+export function chromeIssuerNavigateHeaders(url, existingHeaders = {}) {
+  return chromePayFetchHeaders(url, existingHeaders, { method: "POST" });
+}
+
+function parsePayUrl(url) {
+  try {
+    const u = new URL(String(url || ""));
+    return { host: u.host, path: u.pathname };
+  } catch {
+    return { host: null, path: null };
+  }
+}
+
+function shouldAuditPayWire(host, pathName) {
+  const payHost = Boolean(host && PAY_WIRE_HOST_RE.test(host));
+  const issuerLike =
+    Boolean(pathName && ISSUER_PATH_RE.test(pathName)) ||
+    /payments\.bigcommerce\.com/i.test(String(host || ""));
+  const forceAll = process.env.PAY_WIRE_AUDIT === "1";
+  // Angle B: always audit pay-host mutates (handleaction/save/BigPay), not only issuer paths.
+  return issuerLike || payHost || forceAll;
+}
+
+function auditPayWire(url, method, opts) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host) return;
+  const issuerLike =
+    ISSUER_PATH_RE.test(pathName || "") || /payments\.bigcommerce\.com/i.test(host);
+  const payHost = PAY_WIRE_HOST_RE.test(host);
+  if (!shouldAuditPayWire(host, pathName)) return;
+  try {
+    payForensics("http_mutate", {
+      method,
+      host,
+      path: String(pathName || "").slice(0, 180),
+      bodyBytes: opts?.body != null ? String(opts.body).length : 0,
+      payHost,
+      issuerLike,
+      stage: classifyPayWireStage(host, pathName),
+      retryOpt:
+        opts?.retry === true ? true : opts?.retry === false ? false : null,
+      allowMutationRetry: opts?.allowMutationRetry === true,
+    });
+  } catch {
+    /* forensics must never break checkout */
+  }
+}
+
+/** Angle A/B: response side of pay-host mutates (status + Location, no body). */
+function auditPayWireResponse(url, method, opts, resMeta = {}) {
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method)) return;
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host || !shouldAuditPayWire(host, pathName)) return;
+  let locationHost = null;
+  let locationPath = null;
+  const loc = resMeta.location != null ? String(resMeta.location) : "";
+  if (loc) {
+    try {
+      const abs = /^https?:\/\//i.test(loc) ? loc : new URL(loc, url).href;
+      const u = new URL(abs);
+      locationHost = u.host;
+      locationPath = u.pathname.slice(0, 180);
+    } catch {
+      locationPath = loc.slice(0, 180);
+    }
+  }
+  try {
+    payForensics("http_mutate_response", {
+      method,
+      host,
+      path: String(pathName || "").slice(0, 180),
+      status: resMeta.status != null ? Number(resMeta.status) : null,
+      locationHost,
+      locationPath,
+      locationLooksAcs: Boolean(loc && ACS_OR_REDIRECT_RE.test(loc)),
+      undiciAttempts:
+        resMeta.undiciAttempts != null ? Number(resMeta.undiciAttempts) : null,
+      payTransport: resMeta.payTransport || null,
+      payHost: PAY_WIRE_HOST_RE.test(host),
+      issuerLike:
+        ISSUER_PATH_RE.test(pathName || "") ||
+        /payments\.bigcommerce\.com/i.test(host),
+      stage: classifyPayWireStage(host, pathName),
+    });
+  } catch {
+    /* forensics must never break checkout */
+  }
+}
+
+function readResponseLocation(res) {
+  try {
+    if (typeof res?.headers?.get === "function") {
+      return res.headers.get("location") || res.headers.get("Location") || "";
+    }
+    const h = res?.headers;
+    if (h && typeof h === "object") {
+      return h.location || h.Location || "";
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+function finalizePayResponse(url, method, opts, res) {
+  try {
+    auditPayWireResponse(url, method, opts, {
+      status: res?.status,
+      location: readResponseLocation(res),
+      undiciAttempts: res?.undiciAttempts,
+      payTransport: res?.payTransport || null,
+    });
+  } catch {
+    /* ignore */
+  }
+  return res;
+}
+
+/**
+ * Dual-Revolut: pay hops on chrome_131 tls-worker (Kmart-like bank TLS).
+ *
+ * Product Fast defaults (post dual-hunt trim 2026-08-05):
+ *   PAY_ISSUER_TLS_WORKER=ON  — issuer POST chrome_131 (Toymate ×1 proof; opt out =0)
+ *   PAY_PAYHOST_TLS_WORKER    — OFF (opt in =1) — dual-hunt prepay tls
+ *   PAY_ISSUER_CCFORM_TLS     — OFF (opt in =1)
+ *   PAY_ISSUER_COLD_TLS       — OFF (opt in =1) — split prepay/issuer workers
+ *   PAY_ISSUER_FORM_AS_CORS   — OFF (opt in =1)
+ *   PAY_ISSUER_GET_FETCH      — OFF (opt in =1)
+ *   PAY_GE_TLS_WORKER         — OFF (opt in =1)
+ * Merchant cart ATC stays undici (stage=other).
+ */
+export function shouldUseIssuerTlsWorker(url, method) {
+  const { host, path: pathName } = parsePayUrl(url);
+  if (!host) return false;
+  // Opt-in only — GE-all-tls scored ×2 and flaked GetCartToken.
+  if (/global-e\.com/i.test(host) && process.env.PAY_GE_TLS_WORKER === "1") {
+    return true;
+  }
+  const stage = classifyPayWireStage(host, pathName);
+  // CreditCardForm GET on issuer tls — dual-hunt opt-in only.
+  if (
+    stage === "issuer" &&
+    /CreditCardForm/i.test(pathName) &&
+    /^(GET|HEAD)$/i.test(method || "") &&
+    process.env.PAY_ISSUER_CCFORM_TLS === "1" &&
+    process.env.PAY_ISSUER_TLS_WORKER !== "0"
+  ) {
+    return true;
+  }
+  if (!/^(POST|PUT|PATCH|DELETE)$/i.test(method || "")) return false;
+  if (stage === "issuer") {
+    return process.env.PAY_ISSUER_TLS_WORKER !== "0";
+  }
+  if (stage === "prepay") {
+    return process.env.PAY_PAYHOST_TLS_WORKER === "1";
+  }
+  return false;
+}
+
+/** Cache slot for stage-scoped chrome_131 workers (cold issuer A/B). */
+export function payTlsWorkerCacheKey(stage) {
+  const cold = process.env.PAY_ISSUER_COLD_TLS === "1";
+  if (!cold) return "_issuerRemoteTls";
+  if (stage === "prepay") return "_prepayRemoteTls";
+  return "_issuerRemoteTls";
+}
+
+async function ensureIssuerRemoteTls(dispatcher, stage = "issuer") {
+  if (!dispatcher || dispatcher.remoteTls) return dispatcher?.remoteTls ? dispatcher : null;
+  const cacheKey = payTlsWorkerCacheKey(stage);
+  const failKey = `${cacheKey}Failed`;
+  if (dispatcher[cacheKey]?.remoteTls) return dispatcher[cacheKey];
+  if (dispatcher[failKey]) return null;
+  try {
+    const remote = await makeRemoteTlsDispatcher(dispatcher.proxy || null);
+    if (!remote?.remoteTls) {
+      dispatcher[failKey] = true;
+      payForensics("issuer_tls_worker_init_failed", {
+        error: "remoteTls_missing",
+        proxy: Boolean(dispatcher.proxy),
+        stage,
+        cold: process.env.PAY_ISSUER_COLD_TLS === "1",
+      });
+      return null;
+    }
+    dispatcher[cacheKey] = remote;
+    payForensics("issuer_tls_worker_ready", {
+      proxy: Boolean(dispatcher.proxy),
+      sticky: Boolean(dispatcher.sticky),
+      stage,
+      cold: process.env.PAY_ISSUER_COLD_TLS === "1",
+      cacheKey,
+    });
+    return remote;
+  } catch (e) {
+    dispatcher[failKey] = true;
+    payForensics("issuer_tls_worker_init_failed", {
+      error: String(e?.message || e).slice(0, 160),
+      proxy: Boolean(dispatcher.proxy),
+      stage,
+      cold: process.env.PAY_ISSUER_COLD_TLS === "1",
+    });
+    return null;
+  }
+}
+
 export async function request(url, opts, ctx) {
   const { dispatcher, jar, extraHeaders } = ctx;
   const method = (opts?.method ?? "GET").toUpperCase();
+  auditPayWire(url, method, opts);
   // Optional GE mutate wire log (Bandai double-auth forensics).
   if (process.env.BANDAI_GE_WIRE_TAP === "1") {
     try {
@@ -442,40 +794,88 @@ export async function request(url, opts, ctx) {
 
   // Build headers. We let the caller override anything; defaults are minimal
   // because adapters (kmart.js especially) build full Chrome navigation
-  // headers themselves.
+  // headers themselves. Pay-host mutates get Chrome CH + Sec-Fetch when omitted
+  // (dual-Revolut angle A — presentation shared by Bandai prepay + Toymate BigPay).
+  const mergedCallerHeaders = {
+    ...(extraHeaders ?? {}),
+    ...(opts?.headers ?? {}),
+  };
+  const callerUa =
+    mergedCallerHeaders["user-agent"] ||
+    mergedCallerHeaders["User-Agent"] ||
+    UA;
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
     ...(jar.header() ? { cookie: jar.header() } : {}),
-    ...(extraHeaders ?? {}),
-    ...(opts?.headers ?? {}),
+    ...chromeClientHints(callerUa, mergedCallerHeaders),
+    ...chromePayFetchHeaders(url, mergedCallerHeaders, { method }),
+    ...mergedCallerHeaders,
   };
 
   // Crash-isolated chrome_131 (Hyper TLS-first). Prefer over in-process useTls
   // — native faults stay in the worker and cannot empty-502 Fastify.
-  if (dispatcher?.remoteTls) {
-    const res = await dispatcher.remoteTls.request(url, {
-      method,
-      headers,
-      body: opts?.body,
-    });
-    jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
-    return res;
+  // Dual-Revolut: issuer/pay POSTs prefer tls-worker even when the task dispatcher
+  // is undici (Kmart bank was Chromium TLS; post-Kmart modules charged via undici).
+  let issuerRemote = null;
+  if (!dispatcher?.remoteTls && shouldUseIssuerTlsWorker(url, method)) {
+    const { host: payHost, path: payPath } = parsePayUrl(url);
+    const payStage = classifyPayWireStage(payHost, payPath);
+    issuerRemote = await ensureIssuerRemoteTls(
+      dispatcher,
+      payStage === "prepay" ? "prepay" : "issuer",
+    );
+  }
+  const remoteTls = dispatcher?.remoteTls || issuerRemote?.remoteTls || null;
+  if (remoteTls) {
+    try {
+      const res = await remoteTls.request(url, {
+        method,
+        headers,
+        body: opts?.body,
+      });
+      jar.ingest({ getSetCookie: () => res.headers.getSetCookie() });
+      if (res && typeof res === "object") res.payTransport = "tls-worker";
+      return finalizePayResponse(url, method, opts, res);
+    } catch (e) {
+      // Issuer tls-worker flake → one undici fallback (still single attempt).
+      if (!issuerRemote) throw e;
+      payForensics("issuer_tls_worker_fallback_undici", {
+        error: String(e?.message || e).slice(0, 160),
+        host: parsePayUrl(url).host,
+      });
+    }
   }
 
   if (!dispatcher.useTls) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
-    // only — NEVER retry POST/PUT/PATCH/DELETE. A RST after GE/PSP already
-    // accepted HandleCreditCardRequestV2 produced paired Revolut auths
-    // (posts=1 in app code, two bank lines) on 2026-07-22 labs.
-    const safeRetry =
-      opts?.retry === true ||
-      (opts?.retry !== false &&
-        (method === "GET" || method === "HEAD" || method === "OPTIONS"));
+    // only — NEVER retry POST/PUT/PATCH/DELETE (unless allowMutationRetry).
+    // A RST replay after GE/PSP already accepted the pay POST produced paired
+    // Revolut auths (app posts=1, two bank lines) on 2026-07-22 labs.
+    // `retry:true` alone must NOT re-arm mutation retries.
+    const isSafeMethod =
+      method === "GET" || method === "HEAD" || method === "OPTIONS";
+    const safeRetry = isSafeMethod
+      ? opts?.retry !== false
+      : opts?.allowMutationRetry === true;
     const attempts = safeRetry ? 3 : 1;
     let lastError;
     let undiciAttempts = 0;
+    // Opt-in: fresh ProxyAgent for issuer POST (PAY_ISSUER_FRESH_UNDICI=1).
+    // Default off so the tls-worker A/B is not confounded by agent recycle.
+    // Use with PAY_ISSUER_TLS_WORKER=0 to test pooled-undici vs fresh-undici alone.
+    const wantFreshUndici = process.env.PAY_ISSUER_FRESH_UNDICI === "1";
+    if (
+      wantFreshUndici &&
+      classifyPayWireStage(parsePayUrl(url).host, parsePayUrl(url).path) === "issuer"
+    ) {
+      try {
+        await dispatcher.resetUndici?.();
+      } catch {
+        /* ignore */
+      }
+    }
     const timeoutMs = Number(opts?.timeoutMs);
     const headersTimeout =
       Number(opts?.headersTimeout) > 0
@@ -511,7 +911,8 @@ export async function request(url, opts, ctx) {
         jar.ingest({ getSetCookie: () => wrapFetchResponse(res, url).headers.getSetCookie() });
         const wrapped = wrapFetchResponse(res, url);
         wrapped.undiciAttempts = undiciAttempts;
-        return wrapped;
+        wrapped.payTransport = issuerRemote ? "undici-fallback" : "undici";
+        return finalizePayResponse(url, method, opts, wrapped);
       } catch (e) {
         lastError = e;
         if (attempt >= attempts - 1 || !isRetryableNetworkError(e)) {
@@ -574,7 +975,9 @@ export async function request(url, opts, ctx) {
 
   // Capture cookies from this response into the jar.
   jar.ingest(res.headers);
-  return wrapResponse(res, url);
+  const wrappedTls = wrapResponse(res, url);
+  if (wrappedTls && typeof wrappedTls === "object") wrappedTls.payTransport = "tls";
+  return finalizePayResponse(url, method, opts, wrappedTls);
 }
 
-export { UA };
+export { UA, UA_WIN, UA_MAC };

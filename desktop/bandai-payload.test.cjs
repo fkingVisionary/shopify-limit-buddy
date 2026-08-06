@@ -3,7 +3,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
 
-test("Fast placeOrder enables HTTP GE + riskHydrate + page issuer", () => {
+test("Fast placeOrder enables HTTP GE + riskHydrate + undici issuer (no Playwright pay)", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "fast" },
     { mode: "checkout", placeOrder: true },
@@ -13,11 +13,20 @@ test("Fast placeOrder enables HTTP GE + riskHydrate + page issuer", () => {
   assert.equal(r.bandaiBrowserCheckout, false);
   assert.equal(r.bandaiGeRiskHydrate, true);
   assert.equal(r.bandaiGeNoPage, false);
+  assert.equal(r.bandaiGePreferPageIssuer, false);
+  assert.equal(r.bandaiGeUndiciIssuer, true);
+});
+
+test("explicit page issuer opt-in only", () => {
+  const r = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "fast", bandaiGePreferPageIssuer: true },
+    { mode: "checkout", placeOrder: true },
+  );
   assert.equal(r.bandaiGePreferPageIssuer, true);
   assert.equal(r.bandaiGeUndiciIssuer, false);
 });
 
-test("fast_undici A/B opts out of page issuer", () => {
+test("fast_undici A/B keeps undici issuer", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "fast_undici" },
     { mode: "checkout", placeOrder: true },
@@ -41,6 +50,18 @@ test("Safe placeOrder uses Playwright GE, not HTTP issuer", () => {
   assert.equal(r.bandaiGeNoPage, undefined);
 });
 
+test("autocheckout_test is opt-in research fork only", () => {
+  const r = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "autocheckout_test" },
+    { mode: "checkout", placeOrder: true },
+  );
+  assert.equal(r.bandaiCheckoutMode, "autocheckout_test");
+  assert.equal(r.bandaiGeHttpPay, true);
+  assert.equal(r.bandaiGeHttpPayTest, true);
+  assert.equal(r.bandaiGeUndiciIssuer, true);
+  assert.equal(r.bandaiBrowserCheckout, false);
+});
+
 test("dry-run checkout does not enable pay paths", () => {
   const r = resolveDesktopBandaiPayPath(
     { bandaiCheckoutMode: "fast" },
@@ -60,4 +81,5 @@ test("explicit bandaiGeNoPage opts out of riskHydrate", () => {
   assert.equal(r.bandaiGeRiskHydrate, false);
   assert.equal(r.bandaiGeHttpPay, true);
   assert.equal(r.bandaiGePreferPageIssuer, false);
+  assert.equal(r.bandaiGeUndiciIssuer, true);
 });

@@ -4,9 +4,12 @@
 // Rules (owner):
 // - Soft payment process fail → retry (same cart / pay-from-cart when held)
 // - 403 / SoftBlock / burnt exit → rotate proxy
-// - Hard decline / bad password / address → stop
-// - OOS → wait for restock (task stays alive)
+// - Traffic / congestion / ATC flake → keep retrying (outer maxLoops is the budget)
+// - Hard decline / bad password / address / EndOfSale / pay-already-submitted → stop
+// - Soft OOS (SoldOut) → wait for restock (task stays alive)
 // - Success / cart held (ATC-only) → stop
+// - Pay-already-submitted latch is per THIS result only (see payment-latch.cjs) —
+//   concurrent tasks on the same profile are unaffected.
 
 const {
   consumerOutcome,
@@ -18,6 +21,10 @@ const {
   isHeldCartGone,
   isCheckoutAddressFail,
 } = require("./consumer-status.cjs");
+const {
+  isPaymentAlreadySubmitted,
+  resultBlob: latchResultBlob,
+} = require("./payment-latch.cjs");
 
 /** @typedef {'stop'|'retry'|'rotate'|'wait_restock'} BandaiAction */
 
@@ -36,6 +43,21 @@ function isStaleCartProductChanged(res) {
 function isSoftPaymentProcessFail(res) {
   if (!res || res.ok) return false;
   if (isPaymentDeclined(res) && !isSoftDeclineBlob(res)) return false;
+  // Already touched PSP — retrying pay doubles the bank auth.
+  if (isPaymentAlreadySubmitted(res)) return false;
+  // Lab / intentional hydrate-only stop — never soft-retry into a real issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return false;
+  }
+  // ATC / login / F5 / adapter crashes are not pay soft-fails (even when wording overlaps).
+  const step = String(res.failedStep || "");
+  if (/^(addToCart|cart_atc|login|f5_bridge|pdp|home|sensor|adapter_error|run_error)/i.test(step)) {
+    return false;
+  }
   // Product-info / foreign-cart mismatches are not soft pay — retry ATC fresh.
   if (isStaleCartProductChanged(res)) return false;
   const blob = resultBlob(res);
@@ -72,6 +94,17 @@ function isBlocked403(res) {
   if (String(res.failedStep || "") === "login" && /SoftBlock|Access Denied|sensor mint|501|503/i.test(blob)) {
     return true;
   }
+  // Dead F5 bridge after SoftBlock rotate used to surface as adapter_error
+  // (page.evaluate destroyed) and burn the unknown_rotate budget — treat as block.
+  if (
+    /adapter_error|run_error/i.test(String(res.failedStep || "")) &&
+    /\blogin\b/i.test(blob) &&
+    /SoftBlock|Access Denied|sensor mint|\b501\b|\b503\b|Execution context was destroyed|ERR_CONNECTION/i.test(
+      blob,
+    )
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -90,23 +123,15 @@ function isRetryableAtcOuter(res) {
     return false;
   }
   const blob = resultBlob(res);
-  return /NETWORK CONGESTION|PAGE NOT AVAILABLE|SoftBlock|Access Denied|429|501|502|503|504|timeout|fetch failed|socket/i.test(
+  // EndOfSale / hard OOS handled elsewhere — anything else on ATC is retryable traffic.
+  if (/EndOfSale|CouldNotAddToCartByEndOfSale/i.test(blob)) return false;
+  return /NETWORK CONGESTION|PAGE NOT AVAILABLE|SoftBlock|Access Denied|busy|overload|try again|temporarily|429|500|501|502|503|504|timeout|timed out|ECONN|fetch failed|socket|CouldNotAddToCart/i.test(
     blob,
   );
 }
 
 function resultBlob(res) {
-  return [
-    res?.debugError,
-    res?.error,
-    res?.failedStep,
-    res?.checkoutStage,
-    res?.paymentStatus,
-    res?.note,
-    ...(res?.lastSteps || []).map((s) => `${s.step} ${s.status ?? ""} ${s.note || ""}`),
-  ]
-    .filter(Boolean)
-    .join("\n");
+  return latchResultBlob(res);
 }
 
 /**
@@ -140,6 +165,21 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
+  // Intentional hydrate-only lab stop — never retry/rotate into issuer.
+  if (
+    String(res.paymentStatus || "") === "http_ge_hydrated" ||
+    String(res.failedStep || "") === "ge_http_stop" ||
+    /stop_before_issuer/i.test(resultBlob(res))
+  ) {
+    return {
+      action: "stop",
+      liveLabel: "Hydrated — stopped before pay",
+      reason: "stop_before_issuer",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
+    };
+  }
+
   if (isBadCredentials(res)) {
     return {
       action: "stop",
@@ -147,6 +187,28 @@ function classifyBandaiRunResult(res, ctx = {}) {
       reason: "bad_credentials",
       delayMs: 0,
       consumerCode: "error",
+    };
+  }
+
+  // F5 bridge hang/timeout — rotate immediately (before soft-pay / ATC classifiers).
+  if (String(res.failedStep || "") === "f5_bridge") {
+    const rotateCount = Number(ctx.rotateCount) || 0;
+    const proxyCount = Math.max(1, Number(ctx.proxyCount) || 0);
+    if (rotateCount >= Math.max(proxyCount, 4)) {
+      return {
+        action: "stop",
+        liveLabel: "Login SoftBlock — proxies blocked",
+        reason: "login_softblock_exhausted",
+        delayMs: 0,
+        consumerCode: "error",
+      };
+    }
+    return {
+      action: "rotate",
+      liveLabel: "Rotating proxy",
+      reason: "f5_bridge",
+      delayMs: 2500,
+      consumerCode: "rotating",
     };
   }
 
@@ -172,6 +234,18 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
+  // Issuer POST already sent / response lost — stop. Never re-fire pay.
+  if (isPaymentAlreadySubmitted(res)) {
+    return {
+      action: "stop",
+      // Prefer explicit bank-check label over generic "Something went wrong".
+      liveLabel: "Payment submitted — check bank",
+      reason: "pay_already_submitted",
+      delayMs: 0,
+      consumerCode: outcome.code || "error",
+    };
+  }
+
   // Stale / wrong-SKU cart → drop hold and ATC again (new cart for new item).
   // Check before heldCartGone — "held cart empty for [this SKU]" often means a
   // foreign line is still on the account; waiting for restock stalls forever.
@@ -179,12 +253,14 @@ function classifyBandaiRunResult(res, ctx = {}) {
     const retryCount = Number(ctx.retryCount) || 0;
     const maxRetry = Number(ctx.maxRetry) || 12;
     if (retryCount >= maxRetry) {
+      // Keep lane alive — rotate and ATC fresh (outer maxLoops is the stop).
       return {
-        action: "stop",
-        liveLabel: outcome.label,
-        reason: "stale_cart_exhausted",
-        delayMs: 0,
-        consumerCode: outcome.code,
+        action: "rotate",
+        liveLabel: "Rotating proxy",
+        reason: "stale_cart_escalate",
+        clearHeldCart: true,
+        delayMs: 1500,
+        consumerCode: "rotating",
       };
     }
     return {
@@ -213,12 +289,13 @@ function classifyBandaiRunResult(res, ctx = {}) {
     const retryCount = Number(ctx.retryCount) || 0;
     const maxRetry = Number(ctx.maxRetry) || 12;
     if (retryCount >= maxRetry) {
+      // Soft traffic — rotate and keep trying; never stop the lane for process flake.
       return {
-        action: "stop",
-        liveLabel: outcome.label,
-        reason: "retry_exhausted",
-        delayMs: 0,
-        consumerCode: outcome.code,
+        action: "rotate",
+        liveLabel: "Rotating proxy",
+        reason: "soft_payment_escalate",
+        delayMs: 2000,
+        consumerCode: "rotating",
       };
     }
     return {
@@ -231,24 +308,38 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
-  // 403 / SoftBlock / Akamai → rotate
+  // 403 / SoftBlock / Akamai → rotate. Login SoftBlock after a full pool walk
+  // stops (more spray won't invent a clean exit — swap proxy group / wait).
   if (isBlocked403(res) || isProxyFail(res)) {
     const rotateCount = Number(ctx.rotateCount) || 0;
     const maxRotate = Number(ctx.maxRotate) || 24;
-    if (rotateCount >= maxRotate) {
+    const proxyCount = Math.max(1, Number(ctx.proxyCount) || 0);
+    const loginWall =
+      String(res.failedStep || "") === "login" ||
+      String(res.failedStep || "") === "f5_bridge";
+    if (loginWall && rotateCount >= Math.max(proxyCount, 4)) {
       return {
         action: "stop",
-        liveLabel: outcome.label,
-        reason: "rotate_exhausted",
+        liveLabel: "Login SoftBlock — proxies blocked",
+        reason: "login_softblock_exhausted",
         delayMs: 0,
-        consumerCode: outcome.code,
+        consumerCode: "error",
+      };
+    }
+    if (rotateCount >= maxRotate) {
+      return {
+        action: "retry",
+        liveLabel: "Retrying",
+        reason: "blocked_retry",
+        delayMs: 3000,
+        consumerCode: "retry",
       };
     }
     return {
       action: "rotate",
       liveLabel: "Rotating proxy",
       reason: isProxyFail(res) ? "proxy" : "blocked_403",
-      delayMs: 1200,
+      delayMs: loginWall ? 2500 : 1200,
       consumerCode: "rotating",
     };
   }
@@ -299,20 +390,28 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
-  // Login SoftBlock already covered by isBlocked403; other login flakes → rotate
-  if (String(res.failedStep || "") === "login") {
+  // Login / F5 bridge hang or SoftBlock → rotate immediately (stock window).
+  // failedStep=f5_bridge used to fall through and sit on "Logging in".
+  if (
+    String(res.failedStep || "") === "login" ||
+    String(res.failedStep || "") === "f5_bridge"
+  ) {
     return {
       action: "rotate",
       liveLabel: "Rotating proxy",
-      reason: "login_flake",
-      delayMs: 1500,
+      reason: String(res.failedStep || "") === "f5_bridge" ? "f5_bridge" : "login_flake",
+      delayMs: 400,
       consumerCode: "rotating",
     };
   }
 
-  // Generic transient → retry a few times then rotate
+  // Generic transient / drop traffic → retry a few times then rotate
   const blob = resultBlob(res);
-  if (/timeout|timed out|ECONN|fetch failed|socket|502|503|504|429/i.test(blob)) {
+  if (
+    /timeout|timed out|ECONN|fetch failed|socket|NETWORK CONGESTION|PAGE NOT AVAILABLE|busy|overload|429|500|501|502|503|504/i.test(
+      blob,
+    )
+  ) {
     const retryCount = Number(ctx.retryCount) || 0;
     if (retryCount >= 2) {
       return {
@@ -332,9 +431,11 @@ function classifyBandaiRunResult(res, ctx = {}) {
     };
   }
 
-  // Unknown failure — rotate once budget allows, else stop
+  // Unknown failure — keep lane alive (outer maxLoops is the budget).
+  // Critical stops (credentials / decline / EndOfSale / pay submitted) already returned.
   const rotateCount = Number(ctx.rotateCount) || 0;
-  if (rotateCount < Math.min(6, Number(ctx.maxRotate) || 24)) {
+  const maxRotate = Number(ctx.maxRotate) || 24;
+  if (rotateCount < maxRotate) {
     return {
       action: "rotate",
       liveLabel: "Rotating proxy",
@@ -345,11 +446,11 @@ function classifyBandaiRunResult(res, ctx = {}) {
   }
 
   return {
-    action: "stop",
-    liveLabel: outcome.label,
-    reason: "unknown_stop",
-    delayMs: 0,
-    consumerCode: outcome.code,
+    action: "retry",
+    liveLabel: "Retrying",
+    reason: "unknown_retry",
+    delayMs: 2500,
+    consumerCode: "retry",
   };
 }
 
@@ -360,6 +461,7 @@ function sleep(ms) {
 module.exports = {
   classifyBandaiRunResult,
   isSoftPaymentProcessFail,
+  isPaymentAlreadySubmitted,
   isStaleCartProductChanged,
   isBlocked403,
   isBadCredentials,

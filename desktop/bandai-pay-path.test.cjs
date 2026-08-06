@@ -1,0 +1,34 @@
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { resolveDesktopBandaiPayPath } = require("./bandai-pay-path.cjs");
+
+test("fast default — undici issuer, no Playwright pay", () => {
+  const p = resolveDesktopBandaiPayPath({ bandaiCheckoutMode: "fast" }, { placeOrder: true, mode: "checkout" });
+  assert.equal(p.bandaiCheckoutMode, "fast");
+  assert.equal(p.bandaiGeHttpPay, true);
+  assert.equal(p.bandaiGePreferPageIssuer, false);
+  assert.equal(p.bandaiGeUndiciIssuer, true);
+  assert.notEqual(p.bandaiGeHttpPayTest, true);
+});
+
+test("autocheckout_test uses experimental fork flag", () => {
+  const p = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "autocheckout_test" },
+    { placeOrder: true, mode: "checkout" },
+  );
+  assert.equal(p.bandaiCheckoutMode, "autocheckout_test");
+  assert.equal(p.bandaiGeHttpPay, true);
+  assert.equal(p.bandaiGeHttpPayTest, true);
+  assert.equal(p.bandaiGeUndiciIssuer, true);
+});
+
+test("full mode — all-Playwright journey, no HTTP GE pay", () => {
+  const p = resolveDesktopBandaiPayPath(
+    { bandaiCheckoutMode: "full" },
+    { placeOrder: true, mode: "checkout" },
+  );
+  assert.equal(p.bandaiCheckoutMode, "full");
+  assert.equal(p.bandaiBrowserFull, true);
+  assert.equal(p.bandaiGeHttpPay, false);
+  assert.equal(p.bandaiBrowserCheckout, false);
+});

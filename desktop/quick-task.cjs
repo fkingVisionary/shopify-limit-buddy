@@ -1,11 +1,21 @@
 // Quick Task helpers — build Bandai (v1) task rows from preset + SKU/URL/monitor hit.
 // Pure (no Electron / no network). Main process persists + enqueues.
 
+const {
+  parseBandaiStoreSelection,
+  normalizeBandaiAreaCode,
+} = require("./bandai-regions.cjs");
+
 const DEFAULT_PRESET = {
   store: "bandai",
+  bandaiArea: "au",
   bandaiMode: "checkout",
   bandaiCheckoutMode: "fast",
+  paymentMethod: "credit_card",
+  profileSource: "single",
   profileId: null,
+  profileGroup: null,
+  profileIds: [],
   proxyGroupId: null,
   qty: 1,
   quantity: 1,
@@ -15,12 +25,27 @@ const DEFAULT_PRESET = {
   startAfterCreate: true,
 };
 
+function normalizeProfileIdList(raw) {
+  const fromArr = Array.isArray(raw?.profileIds)
+    ? raw.profileIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  return [...new Set(fromArr)].slice(0, 200);
+}
+
 /**
  * Normalize settings.quickTaskPreset with defaults.
  * @param {object} [raw]
  */
 function normalizeQuickTaskPreset(raw = {}) {
-  const store = String(raw.store || DEFAULT_PRESET.store).toLowerCase() || "bandai";
+  const parsed = parseBandaiStoreSelection(
+    raw.store || DEFAULT_PRESET.store,
+    raw.bandaiArea || DEFAULT_PRESET.bandaiArea,
+  );
+  const store = parsed.store || "bandai";
+  const bandaiArea =
+    store === "bandai"
+      ? normalizeBandaiAreaCode(parsed.bandaiArea || raw.bandaiArea) || "au"
+      : undefined;
   const modeRaw = String(raw.bandaiMode || "").toLowerCase();
   // Raffle / Chance applyDraw removed — map legacy tasks to checkout.
   const bandaiMode = ["checkout", "atc", "monitor", "account_gen"].includes(
@@ -30,15 +55,33 @@ function normalizeQuickTaskPreset(raw = {}) {
       ? "checkout"
       : modeRaw
     : "checkout";
+  const payRaw = String(raw.paymentMethod || "credit_card").toLowerCase();
+  const paymentMethod =
+    payRaw === "paypal_guest" || payRaw === "paypal_manual" ? payRaw : "credit_card";
+  const profileIds = normalizeProfileIdList(raw);
+  const profileGroup = String(raw.profileGroup || "").trim().slice(0, 80) || null;
+  const profileId = raw.profileId || profileIds[0] || null;
+  let profileSource = String(raw.profileSource || "").toLowerCase();
+  if (!["single", "group", "multi"].includes(profileSource)) {
+    if (profileGroup) profileSource = "group";
+    else if (profileIds.length > 1) profileSource = "multi";
+    else profileSource = "single";
+  }
   return {
     store,
+    bandaiArea,
     bandaiMode,
-    bandaiCheckoutMode: ["fast", "fast_undici", "safe"].includes(
-      String(raw.bandaiCheckoutMode || "").toLowerCase(),
-    )
-      ? String(raw.bandaiCheckoutMode).toLowerCase()
-      : "fast",
-    profileId: raw.profileId || null,
+    bandaiCheckoutMode: (() => {
+      const m = String(raw.bandaiCheckoutMode || "").toLowerCase();
+      if (m === "test" || m === "fast_test") return "autocheckout_test";
+      if (["fast", "fast_undici", "safe", "autocheckout_test"].includes(m)) return m;
+      return "fast";
+    })(),
+    paymentMethod,
+    profileSource,
+    profileId: profileSource === "single" ? profileId : profileId || null,
+    profileGroup: profileSource === "group" ? profileGroup : null,
+    profileIds: profileSource === "multi" ? profileIds : [],
     proxyGroupId: raw.proxyGroupId || null,
     qty: Math.max(1, Math.min(20, Number(raw.qty) || 1)),
     quantity: Math.max(1, Math.min(50, Number(raw.quantity) || 1)),
@@ -49,6 +92,51 @@ function normalizeQuickTaskPreset(raw = {}) {
     accountId: raw.accountId || null,
     startAfterCreate: raw.startAfterCreate !== false,
   };
+}
+
+/**
+ * Resolve preset profile selection into concrete profile slots.
+ * @param {object} preset
+ * @param {Array<{ id: string, name?: string, email?: string, profileGroup?: string }>} profiles
+ * @returns {Array<{ profileId: string, name: string }>}
+ */
+function resolveQuickTaskProfiles(preset, profiles = []) {
+  const p = normalizeQuickTaskPreset(preset);
+  const list = Array.isArray(profiles) ? profiles : [];
+  const byId = new Map(list.map((row) => [row.id, row]));
+
+  if (p.profileSource === "group") {
+    const key = String(p.profileGroup || "")
+      .trim()
+      .toLowerCase();
+    if (!key) return [];
+    return list
+      .filter((row) => String(row.profileGroup || "").trim().toLowerCase() === key)
+      .map((row) => ({
+        profileId: row.id,
+        name: row.name || row.email || row.id,
+      }));
+  }
+
+  if (p.profileSource === "multi") {
+    const ids = p.profileIds.length ? p.profileIds : p.profileId ? [p.profileId] : [];
+    return ids
+      .map((id) => {
+        const row = byId.get(id);
+        if (!row) return null;
+        return { profileId: id, name: row.name || row.email || id };
+      })
+      .filter(Boolean);
+  }
+
+  if (!p.profileId) return [];
+  const row = byId.get(p.profileId);
+  return [
+    {
+      profileId: p.profileId,
+      name: row?.name || row?.email || p.profileId,
+    },
+  ];
 }
 
 /**
@@ -150,9 +238,11 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
   const productId = target.productId;
   const mode = p.bandaiMode;
   const { resolveTaskLabel } = require("./task-label.cjs");
+  const area = normalizeBandaiAreaCode(target.area || p.bandaiArea) || "au";
   const draft = {
     id: extra.id || undefined,
     store: p.store,
+    bandaiArea: p.store === "bandai" ? area : undefined,
     label: resolveTaskLabel({
       store: p.store,
       label: extra.label || "",
@@ -165,7 +255,7 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
       bandaiAreaItemNo: target.areaItemNo || "",
     }),
     pdpUrl: target.pdpUrl || (productId && !/^NAI/i.test(productId)
-      ? `https://p-bandai.com/${target.area || "au"}/item/${productId}`
+      ? `https://p-bandai.com/${area}/item/${productId}`
       : ""),
     qty: p.qty,
     quantity: p.quantity,
@@ -175,6 +265,7 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
     enabled: true,
     bandaiMode: mode,
     bandaiCheckoutMode: p.bandaiCheckoutMode,
+    paymentMethod: p.store === "bandai" ? p.paymentMethod : undefined,
     accountAssign: p.accountAssign,
     accountId: p.accountAssign === "manual" ? p.accountId : null,
   };
@@ -252,6 +343,7 @@ function contextFromQuickTask(target, opts = {}) {
 module.exports = {
   DEFAULT_PRESET,
   normalizeQuickTaskPreset,
+  resolveQuickTaskProfiles,
   parseBandaiProductInput,
   targetFromMonitorHit,
   buildQuickTaskDraft,

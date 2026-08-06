@@ -2,6 +2,13 @@
 // Used after HTTP + F5 bridge already logged in and ATCed — no second login/PDP.
 // Single Pay click on Checkout/v2 only.
 
+import {
+  classifyPostPayUrl,
+  issuerResponseForensics,
+  postPayForensics,
+  pspPostForensics,
+} from "../pay-forensics.js";
+
 /** Only the GEM Checkout/v2 shell — never the nested CreditCardForm. */
 export function isBandaiGeCheckoutPayFrame(url) {
   return /webservices\.global-e\.com\/Checkout\/v2|global-e\.com\/Checkout\/v2/i.test(
@@ -235,12 +242,18 @@ function extractDeclineSnippet(text) {
 }
 
 /**
- * Cart UI → PROCEED → fill CreditCardForm → single Checkout/v2 Pay.
+ * GE fill/Pay on an existing Playwright page.
+ * entry=cart (legacy): /cart → PROCEED → GEM.
+ * entry=checkoutV2 (Safe hybrid): open GetCartToken Checkout/v2 URL directly.
+ * entry=orderdetails: seed checkoutSn and wait for GEM on /orderdetails.
  * @param {object} opts
  * @param {import('playwright').Page} opts.page
  * @param {import('playwright').BrowserContext} opts.context
  * @param {string} opts.base — https://p-bandai.com/{area}
  * @param {object} opts.card
+ * @param {"cart"|"checkoutV2"|"orderdetails"} [opts.entry]
+ * @param {string} [opts.checkoutV2Url]
+ * @param {string} [opts.checkoutSn]
  * @param {number} [opts.wait3dsMs=45000]
  * @param {object} [opts.meta] — areaItemNo, cartSn, cartId, cartItemSn, title
  */
@@ -249,6 +262,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const context = opts.context;
   const base = String(opts.base || "").replace(/\/$/, "");
   const wait3dsMs = Math.min(90_000, Math.max(8_000, Number(opts.wait3dsMs) || 45_000));
+  const entryRaw = String(opts.entry || "").toLowerCase();
+  const checkoutV2Url = opts.checkoutV2Url ? String(opts.checkoutV2Url) : null;
+  const entry =
+    entryRaw === "checkoutv2" || (checkoutV2Url && entryRaw !== "cart" && entryRaw !== "orderdetails")
+      ? "checkoutV2"
+      : entryRaw === "orderdetails"
+        ? "orderdetails"
+        : "cart";
   const card = opts.card || {
     number: "4000000000000002",
     expMonth: "12",
@@ -285,6 +306,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
   if (!page || !context || !base) {
     return { ok: false, error: "page_context_base_required", steps, checkoutStage: "cart" };
   }
+  if (entry === "checkoutV2" && !checkoutV2Url) {
+    return {
+      ok: false,
+      error: "checkoutV2Url_required",
+      steps,
+      checkoutStage: "tokenize",
+    };
+  }
 
   const geNet = [];
   let chargeReqCount = 0;
@@ -292,6 +321,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let armChargeGuard = false;
   let issuerPaymentSent = false;
   let issuerBodyCapture = null;
+  let transactionId = null;
+  let issuerRedirectUrl = null;
+  const issuerReqStartedAt = new Map();
+  const forensicsIds = {
+    desktopTaskId: opts.desktopTaskId || null,
+    desktopRunId: opts.desktopRunId || null,
+    desktopAttempt: opts.desktopAttempt || null,
+    executorTaskId: opts.executorTaskId || null,
+  };
 
   // context.route — page.route can miss service-worker / cross-frame POSTs
   // (lab showed 1 client POST while Revolut still paired). Allow first issuer
@@ -315,6 +353,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
     } catch {
       /* ignore */
     }
+    const bodyBytes = postData ? String(postData).length : 0;
     geNet.push({
       t: Date.now(),
       kind: "req",
@@ -323,7 +362,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
       issuer: true,
       chargeN: chargeReqCount,
       armed: armChargeGuard,
-      bodyBytes: postData ? String(postData).length : 0,
+      bodyBytes,
     });
     // HAR forensics: let every issuer hit the network (BANDAI_GE_ALLOW_ALL_ISSUERS=1).
     if (chargeReqCount > 1 && process.env.BANDAI_GE_ALLOW_ALL_ISSUERS !== "1") {
@@ -331,7 +370,15 @@ export async function browserBandaiGeFromCart(opts = {}) {
       mark("issuer_req_fulfilled_local", {
         n: chargeReqCount,
         url: url.slice(0, 140),
-        bodyBytes: postData ? String(postData).length : 0,
+        bodyBytes,
+      });
+      pspPostForensics("suppressed", {
+        via: "safe-ge-pay",
+        store: "bandai",
+        url,
+        bodyBytes,
+        chargeN: chargeReqCount,
+        ...forensicsIds,
       });
       // Soft success — abort caused GE to hunt another charge path.
       await route.fulfill({
@@ -350,10 +397,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
       mark("issuer_req_allowed_for_har", {
         n: chargeReqCount,
         url: url.slice(0, 140),
-        bodyBytes: postData ? String(postData).length : 0,
+        bodyBytes,
       });
     }
     issuerPaymentSent = true;
+    issuerReqStartedAt.set(url, Date.now());
+    pspPostForensics("start", {
+      via: "safe-ge-pay",
+      store: "bandai",
+      url,
+      bodyBytes,
+      chargeN: chargeReqCount,
+      ...forensicsIds,
+    });
     if (postData && !issuerBodyCapture) {
       const rawBody = String(postData).slice(0, 50_000);
       // Redact PAN/CVD in on-disk capture (schema research still usable).
@@ -373,17 +429,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
       };
       try {
         const fs = await import("node:fs");
-        fs.writeFileSync(
-          "/tmp/bandai-ge-issuer-capture.json",
-          JSON.stringify(issuerBodyCapture, null, 2),
-        );
+        const os = await import("node:os");
+        const path = await import("node:path");
+        const out = path.join(os.tmpdir(), "bandai-ge-issuer-capture.json");
+        fs.writeFileSync(out, JSON.stringify(issuerBodyCapture, null, 2));
       } catch {
         /* ignore */
       }
     }
     mark("issuer_req_allowed", {
       url: url.slice(0, 140),
-      bodyBytes: postData ? String(postData).length : 0,
+      bodyBytes,
     });
     await route.continue();
   };
@@ -467,6 +523,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
     if (armChargeGuard) {
       const handleAction = isBandaiGeHandleAction(u);
       const actionId = handleAction ? bandaiGeHandleActionId(u) : null;
+      const postKind = classifyPostPayUrl(u);
       const row = {
         t: Date.now(),
         kind: "req",
@@ -477,8 +534,28 @@ export async function browserBandaiGeFromCart(opts = {}) {
         noise,
         handleAction,
         actionId,
+        postKind,
       };
-      if (!noise) mark("post_pay_req", { method, url: u.slice(0, 140) });
+      if (!noise) mark("post_pay_req", { method, url: u.slice(0, 140), postKind });
+      // 3DS-method / alt-charge / risk lead — log even if previously "noise" (forter).
+      if (
+        postKind === "three_ds_method" ||
+        postKind === "acs_challenge" ||
+        postKind === "alt_charge" ||
+        postKind === "risk" ||
+        postKind === "ge_handleaction" ||
+        (!noise && postKind !== "other")
+      ) {
+        postPayForensics({
+          via: "safe-ge-pay",
+          store: "bandai",
+          method,
+          url: u,
+          chargeN: chargeReqCount,
+          kind: postKind,
+          ...forensicsIds,
+        });
+      }
       geNet.push(row);
       return;
     }
@@ -500,8 +577,14 @@ export async function browserBandaiGeFromCart(opts = {}) {
   const onRes = (res) => {
     const u = res.url();
     const method = res.request().method();
-    if (method === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay|handleaction/i.test(u)) return;
-    if (!/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment/i.test(u)) {
+    if (method === "GET" && !/ProcessPayment|Authorize|3ds|acs|Pay|handleaction|CCPaymentRedirect/i.test(u)) {
+      return;
+    }
+    if (
+      !/global-e\.com|globale|CreditCard|payments\/|Checkout\/|3ds|acs|Authorize|ProcessPayment|HandleCreditCard/i.test(
+        u,
+      )
+    ) {
       return;
     }
     if (/WriteContextualLog|collectCheckout|prefetcher|\/static\//i.test(u) && !armChargeGuard) return;
@@ -525,12 +608,60 @@ export async function browserBandaiGeFromCart(opts = {}) {
         })
         .catch(() => {});
     }
+    // PSP fan-out: capture HandleCredit / CCPaymentRedirect → transactionId.
+    const isIssuerRes =
+      isBandaiGeIssuerPaymentUrl(u) ||
+      /CCPaymentRedirect/i.test(u) ||
+      (method !== "GET" && /HandleCreditCard/i.test(u));
+    if (isIssuerRes && method !== "OPTIONS" && method !== "HEAD") {
+      const started = issuerReqStartedAt.get(u) || Date.now();
+      Promise.resolve()
+        .then(async () => {
+          const headers = res.headers() || {};
+          const location = headers.location || headers.Location || "";
+          let bodyText = "";
+          try {
+            bodyText = await res.text();
+          } catch {
+            /* ignore */
+          }
+          const captured = issuerResponseForensics({
+            via: "safe-ge-pay",
+            store: "bandai",
+            status: res.status(),
+            location,
+            bodyText,
+            url: u,
+            ms: Date.now() - started,
+            chargeN: chargeReqCount,
+            scoreboard: "safe_playwright_issuer",
+            ...forensicsIds,
+          });
+          if (captured.transactionId && !transactionId) {
+            transactionId = captured.transactionId;
+          }
+          if (captured.redirectUrl && !issuerRedirectUrl) {
+            issuerRedirectUrl = captured.redirectUrl;
+          }
+          row.redirectUrl = captured.redirectUrl
+            ? String(captured.redirectUrl).slice(0, 180)
+            : null;
+          row.transactionId = captured.transactionId;
+          mark("issuer_res_fanout", {
+            status: res.status(),
+            transactionId: captured.transactionId,
+            redirectHost: captured.fanout?.redirectHost || null,
+            possibleFraudDetected: captured.fanout?.possibleFraudDetected ?? null,
+          });
+        })
+        .catch(() => {});
+    }
     geNet.push(row);
   };
   page.on("request", onReq);
   page.on("response", onRes);
 
-  let checkoutSn = null;
+  let checkoutSn = opts.checkoutSn || null;
   let paymentStatus = "unknown";
   let reached3ds = false;
   let threeDsUrl = null;
@@ -541,200 +672,349 @@ export async function browserBandaiGeFromCart(opts = {}) {
   let geNote = "";
 
   try {
-    mark("ge_from_cart_start");
     const sChk = Date.now();
-    await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(800);
-    await dismissCookieBanner(page);
+    const geFrameRe =
+      /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i;
+    let geIframeReady = false;
+    let frameUrls = [];
+    let gemVia = "timeout";
 
-    // Vue cart hydrates async — wait for CTA (or empty-cart copy) before failing.
-    const proceedSel =
-      'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
-    let proceedVisible = false;
-    for (let i = 0; i < 20; i++) {
+    if (entry === "checkoutV2") {
+      // Safe hybrid — HTTP already minted CartToken; open GEM shell directly.
+      mark("ge_from_checkout_v2_start", { url: checkoutV2Url.slice(0, 120) });
+      await page.goto(checkoutV2Url, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(600);
       await dismissCookieBanner(page);
-      const proceedProbe = page.locator(proceedSel).first();
-      if ((await proceedProbe.count().catch(() => 0)) && (await proceedProbe.isVisible().catch(() => false))) {
-        proceedVisible = true;
-        break;
-      }
-      // Nudge SPA — sometimes first paint is a skeleton.
-      if (i === 6 || i === 12) {
-        await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
-        await page.waitForTimeout(600);
-      }
-      await page.waitForTimeout(400);
-    }
-    mark("cart_ui_ready", { proceedVisible });
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
 
-    // Start GEM warm as soon as cart paints — overlaps checkbox / Proceed enable wait.
-    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
-    mark("gem_warm_started");
-
-    const areaBoxes = page.locator(
-      'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
-    );
-    const boxCount = await areaBoxes.count();
-    for (let i = 0; i < boxCount; i++) {
-      const box = areaBoxes.nth(i);
-      if (!(await box.isChecked().catch(() => true))) {
-        await box.check({ force: true }).catch(() => {});
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        frameUrls = page.frames().map((f) => f.url());
+        const mainOk = geFrameRe.test(page.url() || "");
+        if (mainOk || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = mainOk ? `main+poll${pollI}` : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
       }
-    }
-
-    const proceed = page.locator(proceedSel).first();
-    if (!proceedVisible) {
-      const bodyHint = (await page.locator("body").innerText().catch(() => ""))
-        .replace(/\s+/g, " ")
-        .slice(0, 160);
+      frameUrls = page.frames().map((f) => f.url());
+      if (!geIframeReady && (geFrameRe.test(page.url() || "") || frameUrls.some((u) => geFrameRe.test(u)))) {
+        geIframeReady = true;
+        gemVia = "late";
+      }
+      mark("after_checkout_v2", { checkoutSn, gemPoll: pollI, url: String(page.url() || "").slice(0, 100) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
+      }
       push("cart_checkout", {
-        ok: false,
+        ok: geIframeReady,
         ms: Date.now() - sChk,
-        note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
+        note: `hybrid entry=checkoutV2 geIframe=${geIframeReady} via=${gemVia} frames=${frameUrls.length} sn=${checkoutSn || "n/a"}`,
       });
-      return {
-        ok: false,
-        steps,
-        timeline,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT button missing",
-        checkoutStage: "cart",
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
-      };
-    }
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 never booted (hybrid)",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `checkoutV2 open failed; url=${page.url()} frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
+    } else if (entry === "orderdetails") {
+      mark("ge_from_orderdetails_start", { checkoutSn });
+      await page.goto(`${base}/orderdetails`, { waitUntil: "domcontentloaded", timeout: 45_000 });
+      await page.waitForTimeout(600);
+      await dismissCookieBanner(page);
+      if (checkoutSn) {
+        await page
+          .evaluate((sn) => {
+            try {
+              sessionStorage.setItem("bsp_checkout_sn", sn);
+            } catch {
+              /* ignore */
+            }
+          }, String(checkoutSn))
+          .catch(() => {});
+      }
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
 
-    let proceedReady = false;
-    for (let i = 0; i < 16; i++) {
-      for (let bi = 0; bi < boxCount; bi++) {
-        const box = areaBoxes.nth(bi);
+      let earlyFrameUrl = null;
+      const onFrame = (frame) => {
+        const u = frame.url() || "";
+        if (geFrameRe.test(u) && !earlyFrameUrl) {
+          earlyFrameUrl = u;
+          mark("ge_frame_event", { url: u.slice(0, 100) });
+        }
+      };
+      page.on("frameattached", onFrame);
+      page.on("framenavigated", onFrame);
+
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        checkoutSn =
+          checkoutSn ||
+          (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+        frameUrls = page.frames().map((f) => f.url());
+        if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
+      }
+      frameUrls = page.frames().map((f) => f.url());
+      if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
+        geIframeReady = true;
+        gemVia = earlyFrameUrl ? "event-late" : "poll-late";
+      }
+      page.off("frameattached", onFrame);
+      page.off("framenavigated", onFrame);
+      mark("after_orderdetails", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
+      }
+      push("cart_checkout", {
+        ok: geIframeReady,
+        ms: Date.now() - sChk,
+        note: `hybrid entry=orderdetails geIframe=${geIframeReady} via=${gemVia} sn=${checkoutSn || "n/a"}`,
+      });
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 iframe never booted (orderdetails)",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `orderdetails GEM missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
+    } else {
+      mark("ge_from_cart_start");
+      await page.goto(`${base}/cart`, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(800);
+      await dismissCookieBanner(page);
+
+      // Vue cart hydrates async — wait for CTA (or empty-cart copy) before failing.
+      const proceedSel =
+        'button:has-text("PROCEED TO CHECKOUT"), button:has-text("Proceed to Checkout"), button:has-text("Proceed to checkout")';
+      let proceedVisible = false;
+      for (let i = 0; i < 20; i++) {
+        await dismissCookieBanner(page);
+        const proceedProbe = page.locator(proceedSel).first();
+        if ((await proceedProbe.count().catch(() => 0)) && (await proceedProbe.isVisible().catch(() => false))) {
+          proceedVisible = true;
+          break;
+        }
+        // Nudge SPA — sometimes first paint is a skeleton.
+        if (i === 6 || i === 12) {
+          await page.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
+          await page.waitForTimeout(600);
+        }
+        await page.waitForTimeout(400);
+      }
+      mark("cart_ui_ready", { proceedVisible });
+
+      // Start GEM warm as soon as cart paints — overlaps checkbox / Proceed enable wait.
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+      mark("gem_warm_started");
+
+      const areaBoxes = page.locator(
+        'input[type="checkbox"]:not([name^="ot-"]):not([id^="ot-"])',
+      );
+      const boxCount = await areaBoxes.count();
+      for (let i = 0; i < boxCount; i++) {
+        const box = areaBoxes.nth(i);
         if (!(await box.isChecked().catch(() => true))) {
           await box.check({ force: true }).catch(() => {});
         }
       }
-      if (!(await proceed.isDisabled().catch(() => true))) {
-        proceedReady = true;
-        break;
+
+      const proceed = page.locator(proceedSel).first();
+      if (!proceedVisible) {
+        const bodyHint = (await page.locator("body").innerText().catch(() => ""))
+          .replace(/\s+/g, " ")
+          .slice(0, 160);
+        push("cart_checkout", {
+          ok: false,
+          ms: Date.now() - sChk,
+          note: `PROCEED TO CHECKOUT button missing — ${bodyHint}`,
+        });
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT button missing",
+          checkoutStage: "cart",
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+        };
       }
-      await page.waitForTimeout(300);
-    }
-    if (!proceedReady) {
-      push("cart_checkout", {
-        ok: false,
-        ms: Date.now() - sChk,
-        note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail)",
-      });
-      return {
-        ok: false,
-        steps,
-        failedStep: "cart_checkout",
-        error: "PROCEED TO CHECKOUT disabled",
-        checkoutStage: "cart",
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
+
+      let proceedReady = false;
+      for (let i = 0; i < 16; i++) {
+        for (let bi = 0; bi < boxCount; bi++) {
+          const box = areaBoxes.nth(bi);
+          if (!(await box.isChecked().catch(() => true))) {
+            await box.check({ force: true }).catch(() => {});
+          }
+        }
+        if (!(await proceed.isDisabled().catch(() => true))) {
+          proceedReady = true;
+          break;
+        }
+        await page.waitForTimeout(300);
+      }
+      if (!proceedReady) {
+        push("cart_checkout", {
+          ok: false,
+          ms: Date.now() - sChk,
+          note: "PROCEED TO CHECKOUT disabled (OOS / PreallocationFail)",
+        });
+        return {
+          ok: false,
+          steps,
+          failedStep: "cart_checkout",
+          error: "PROCEED TO CHECKOUT disabled",
+          checkoutStage: "cart",
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+        };
+      }
+
+      // Refresh warm right before Proceed (cache may have filled during checkbox wait).
+      await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+
+      mark("proceed_click");
+      let earlyFrameUrl = null;
+      const onFrame = (frame) => {
+        const u = frame.url() || "";
+        if (geFrameRe.test(u) && !earlyFrameUrl) {
+          earlyFrameUrl = u;
+          mark("ge_frame_event", { url: u.slice(0, 100) });
+        }
       };
-    }
+      page.on("frameattached", onFrame);
+      page.on("framenavigated", onFrame);
 
-    // Refresh warm right before Proceed (cache may have filled during checkbox wait).
-    await warmGemAssets(page, GLOBALE_MID_DEFAULT);
+      // Do NOT block on waitForURL — prior tip burned ~28s here while GEM hadn't
+      // attached yet; listeners died at 28s and poll had to catch up (~18s more).
+      const urlWait = page
+        .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 20_000 })
+        .catch(() => null);
+      await proceed.click({ timeout: 8_000, noWaitAfter: true }).catch(() => {});
+      void dismissCookieBanner(page);
 
-    mark("proceed_click");
-    const geFrameRe =
-      /Checkout\/v2|CreditCardForm|secure-bandai\.global-e|webservices\.global-e\.com\/Checkout/i;
-    let earlyFrameUrl = null;
-    const onFrame = (frame) => {
-      const u = frame.url() || "";
-      if (geFrameRe.test(u) && !earlyFrameUrl) {
-        earlyFrameUrl = u;
-        mark("ge_frame_event", { url: u.slice(0, 100) });
+      // Cold GEM can land just past 45s (lab: event @58948ms after 45s deadline).
+      const gemDeadline = Date.now() + 60_000;
+      let pollI = 0;
+      while (Date.now() < gemDeadline) {
+        checkoutSn =
+          checkoutSn ||
+          (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+        frameUrls = page.frames().map((f) => f.url());
+        if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+          geIframeReady = true;
+          gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
+          break;
+        }
+        if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
+        if (pollI === 5 || pollI === 12 || pollI === 20) {
+          await page
+            .locator(
+              'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
+            )
+            .first()
+            .click({ timeout: 800 })
+            .catch(() => {});
+        }
+        await page.waitForTimeout(150);
+        pollI += 1;
       }
-    };
-    page.on("frameattached", onFrame);
-    page.on("framenavigated", onFrame);
+      await urlWait;
+      await dismissCookieBanner(page);
 
-    // Do NOT block on waitForURL — prior tip burned ~28s here while GEM hadn't
-    // attached yet; listeners died at 28s and poll had to catch up (~18s more).
-    const urlWait = page
-      .waitForURL(/orderdetails|Global-e|global-e/i, { timeout: 20_000 })
-      .catch(() => null);
-    await proceed.click({ timeout: 8_000, noWaitAfter: true }).catch(() => {});
-    void dismissCookieBanner(page);
-
-    let geIframeReady = false;
-    let frameUrls = [];
-    let gemVia = "timeout";
-    // Cold GEM can land just past 45s (lab: event @58948ms after 45s deadline).
-    const gemDeadline = Date.now() + 60_000;
-    let pollI = 0;
-    while (Date.now() < gemDeadline) {
       checkoutSn =
         checkoutSn ||
         (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
+      // Re-check after wait — frameattached can win the race against loop exit.
       frameUrls = page.frames().map((f) => f.url());
-      if (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u))) {
+      if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
         geIframeReady = true;
-        gemVia = earlyFrameUrl ? (pollI === 0 ? "event" : `event+poll${pollI}`) : `poll${pollI}`;
-        break;
+        gemVia = earlyFrameUrl ? "event-late" : "poll-late";
       }
-      if (pollI === 0 || pollI % 10 === 0) await dismissCookieBanner(page);
-      if (pollI === 5 || pollI === 12 || pollI === 20) {
-        await page
-          .locator(
-            'label:has-text("Credit Card"), button:has-text("Credit Card"), text=Credit Card',
-          )
-          .first()
-          .click({ timeout: 800 })
-          .catch(() => {});
+      page.off("frameattached", onFrame);
+      page.off("framenavigated", onFrame);
+      mark("after_proceed", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
+      if (geIframeReady) {
+        mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
       }
-      await page.waitForTimeout(150);
-      pollI += 1;
-    }
-    await urlWait;
-    await dismissCookieBanner(page);
 
-    checkoutSn =
-      checkoutSn ||
-      (await page.evaluate(() => sessionStorage.getItem("bsp_checkout_sn")).catch(() => null));
-    // Re-check after wait — frameattached can win the race against loop exit.
-    frameUrls = page.frames().map((f) => f.url());
-    if (!geIframeReady && (earlyFrameUrl || frameUrls.some((u) => geFrameRe.test(u)))) {
-      geIframeReady = true;
-      gemVia = earlyFrameUrl ? "event-late" : "poll-late";
-    }
-    page.off("frameattached", onFrame);
-    page.off("framenavigated", onFrame);
-    mark("after_proceed", { checkoutSn, gemPoll: pollI, earlyFrame: Boolean(earlyFrameUrl) });
-    if (geIframeReady) {
-      mark("ge_iframe_ready", { frames: frameUrls.length, via: gemVia, pollI });
-    }
-
-    push("cart_checkout", {
-      ok: Boolean(checkoutSn) && geIframeReady,
-      ms: Date.now() - sChk,
-      note: checkoutSn
-        ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length} sample=${frameUrls
-            .filter((u) => /global/i.test(u))
-            .map((u) => u.slice(0, 60))
-            .join("|")}`
-        : `url=${page.url()} geIframe=${geIframeReady}`,
-    });
-    if (!geIframeReady) {
-      return {
-        ok: false,
-        steps,
-        timeline,
-        failedStep: "cart_checkout",
-        error: "Global-e Checkout/v2 iframe never booted",
-        checkoutStage: "tokenize",
-        checkoutSn,
-        paymentStatus: null,
-        ...meta,
-        via: "http+ge",
-        elapsedMs: Date.now() - t0,
-        note: `checkoutSn=${checkoutSn} but GEM iframe missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
-      };
+      push("cart_checkout", {
+        ok: Boolean(checkoutSn) && geIframeReady,
+        ms: Date.now() - sChk,
+        note: checkoutSn
+          ? `checkoutSn ${checkoutSn} geIframe=${geIframeReady} frames=${page.frames().length} sample=${frameUrls
+              .filter((u) => /global/i.test(u))
+              .map((u) => u.slice(0, 60))
+              .join("|")}`
+          : `url=${page.url()} geIframe=${geIframeReady}`,
+      });
+      if (!geIframeReady) {
+        return {
+          ok: false,
+          steps,
+          timeline,
+          failedStep: "cart_checkout",
+          error: "Global-e Checkout/v2 iframe never booted",
+          checkoutStage: "tokenize",
+          checkoutSn,
+          paymentStatus: null,
+          ...meta,
+          via: "http+ge",
+          elapsedMs: Date.now() - t0,
+          note: `checkoutSn=${checkoutSn} but GEM iframe missing; frames=${frameUrls.map((u) => u.slice(0, 80)).join(" || ")}`,
+        };
+      }
     }
 
     const sGe = Date.now();
@@ -743,10 +1023,12 @@ export async function browserBandaiGeFromCart(opts = {}) {
     page.setDefaultTimeout(8_000);
 
     // Card iframe trails Checkout/v2 — cold GEM often needs 15–25s + Credit Card click.
-    for (let i = 0; i < 100; i++) {
-      const hasCard = page
-        .frames()
-        .some((f) => /CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(f.url() || ""));
+    // IMPORTANT: do NOT treat secure-bandai …/payments/prefetcher as ready
+    // (Safe10 #4: geIframe=true, hasCard true via prefetcher, fill never found CCForm).
+    const isCreditCardFormFrame = (u) =>
+      /CreditCardForm/i.test(String(u || "")) && !/prefetcher/i.test(String(u || ""));
+    for (let i = 0; i < 150; i++) {
+      const hasCard = page.frames().some((f) => isCreditCardFormFrame(f.url()));
       if (hasCard) {
         mark("card_iframe_ready", { pollI: i });
         break;
@@ -756,7 +1038,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
           if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
           await frame
             .locator(
-              'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card")',
+              'label:has-text("Credit Card"), label:has-text("Card"), button:has-text("Credit Card"), [data-payment*="card" i], input[type="radio"][value*="card" i]',
             )
             .first()
             .click({ timeout: 600 })
@@ -792,17 +1074,33 @@ export async function browserBandaiGeFromCart(opts = {}) {
       .slice(-2);
     const pan = String(card.number).replace(/\s+/g, "");
 
-    for (let tick = 0; tick < 10 && !filled; tick++) {
-      if (tick) await page.waitForTimeout(200);
+    for (let tick = 0; tick < 20 && !filled; tick++) {
+      if (tick) {
+        // Keep nudging Credit Card if CCForm still missing.
+        if (!page.frames().some((f) => isCreditCardFormFrame(f.url()))) {
+          for (const frame of page.frames()) {
+            if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
+            await frame
+              .locator('label:has-text("Credit Card"), button:has-text("Credit Card")')
+              .first()
+              .click({ timeout: 500 })
+              .catch(() => {});
+          }
+        }
+        await page.waitForTimeout(300);
+      }
       for (const frame of page.frames()) {
         const url = frame.url();
-        if (!/CreditCardForm|secure-bandai\.global-e\.com\/payments/i.test(url)) continue;
-        if (/prefetcher/i.test(url)) continue;
+        if (!isCreditCardFormFrame(url)) continue;
 
         // Prefer Bandai GE field ids from form inspect.
         const num = frame.locator("#cardNum, input[name='PaymentData.cardNum'], input[autocomplete='cc-number']").first();
         if (!(await num.count().catch(() => 0))) continue;
-        if (!(await num.isVisible().catch(() => false))) continue;
+        // Visible OR attached — cold GEM sometimes paints fields opacity-0 briefly.
+        const visible = await num.isVisible().catch(() => false);
+        if (!visible) {
+          await num.waitFor({ state: "attached", timeout: 1500 }).catch(() => {});
+        }
 
         // Do NOT kill card-iframe submit/listeners — that made Checkout Pay a
         // no-op after 14:09 (UI click ok, zero issuer POSTs, Revolut silent).
@@ -849,10 +1147,17 @@ export async function browserBandaiGeFromCart(opts = {}) {
 
     if (!filled) {
       paymentStatus = "ge_iframe_not_filled";
+      const frameSample = page
+        .frames()
+        .map((f) => String(f.url() || "").slice(0, 80))
+        .filter((u) => /global-e|CreditCard|secure-bandai/i.test(u))
+        .slice(0, 8)
+        .join("|");
+      geNote += `; no_ccform frames=${frameSample || "none"}`;
       push("ge_payment", {
         ok: false,
         ms: Date.now() - sGe,
-        note: paymentStatus,
+        note: `${paymentStatus}; ${geNote}`.slice(0, 280),
       });
       return {
         ok: false,
@@ -863,61 +1168,131 @@ export async function browserBandaiGeFromCart(opts = {}) {
         checkoutStage: "tokenize",
         checkoutSn,
         paymentStatus,
+        note: geNote,
         ...meta,
         via: "http+ge",
         elapsedMs: Date.now() - t0,
       };
     }
 
+    // Let CreditCardForm postMessage card state into Checkout/v2 before Pay.
+    // Rushing Pay left payNet=0/0 (Safe labs 2026-08-03).
+    await page.waitForTimeout(1200);
+    mark("card_fill_settled", { ms: Date.now() - sGe });
+
     let paid = false;
     const netBefore = geNet.length;
+    // Checkout Pay CTA — GEM: "Pay AU$…", "PAY AND PLACE ORDER". Exclude wallets.
+    const isCheckoutPayLabel = (label) => {
+      const s = String(label || "").replace(/\s+/g, " ").trim();
+      if (!s) return false;
+      if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+      return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
+    };
     const tickTerms = async () => {
       for (const frame of page.frames()) {
         if (!isBandaiGeCheckoutPayFrame(frame.url())) continue;
-        // Named GE consent boxes first (payDiag: CheckoutData_TnCConsent unchecked).
+        // Safe7: CheckoutData_TnCConsent stayed false while TnCConsent0 was true.
+        // Playwright check() alone does not stick on the underscore field — use
+        // label click once, then Vue set+input/change WITHOUT el.click (click toggles).
         await frame
           .evaluate(() => {
-            const names = [
+            const want = [
               "CheckoutData_TnCConsent",
               "CheckoutData.TnCConsent0",
               "CheckoutData.TnCConsent",
               "TnCConsent",
             ];
-            for (const name of names) {
-              const el =
-                document.querySelector(`input[name="${name}"]`) ||
-                document.querySelector(`#${CSS.escape(name)}`);
-              if (el && !el.checked) {
-                el.checked = true;
-                el.dispatchEvent(new Event("input", { bubbles: true }));
-                el.dispatchEvent(new Event("change", { bubbles: true }));
-                el.click?.();
+            const resolve = (name) =>
+              document.querySelector(`input[name="${name}"]`) ||
+              document.querySelector(`#${name.replace(/\./g, "\\.")}`) ||
+              document.getElementById(name);
+            for (const name of want) {
+              const el = resolve(name);
+              if (!el || el.checked) continue;
+              const lab =
+                (el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`)) ||
+                el.closest("label");
+              if (lab) {
+                lab.click();
+                if (el.checked) continue;
+              }
+              // No native click on input — that toggled Safe6 OFF after a prior set.
+              el.checked = true;
+              el.dispatchEvent(new Event("input", { bubbles: true }));
+              el.dispatchEvent(new Event("change", { bubbles: true }));
+              try {
+                el.dispatchEvent(
+                  new InputEvent("input", { bubbles: true, inputType: "insertText" }),
+                );
+              } catch {
+                /* older engines */
               }
             }
           })
           .catch(() => {});
+        const named = [
+          'input[name="CheckoutData_TnCConsent"]',
+          'input[name="CheckoutData.TnCConsent0"]',
+          'input[name="CheckoutData.TnCConsent"]',
+          'input[name="TnCConsent"]',
+          "#CheckoutData_TnCConsent",
+        ];
+        for (const sel of named) {
+          const box = frame.locator(sel).first();
+          if (!(await box.count().catch(() => 0))) continue;
+          if (await box.isChecked().catch(() => true)) continue;
+          const id = await box.getAttribute("id").catch(() => null);
+          if (id) {
+            const lab = frame.locator(`label[for="${id}"]`).first();
+            if (await lab.count().catch(() => 0)) {
+              await lab.click({ timeout: 800 }).catch(() => {});
+            }
+          }
+          if (!(await box.isChecked().catch(() => true))) {
+            await box.check({ force: true }).catch(() => {});
+          }
+        }
         const labeled = frame.locator(
-          'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree")',
+          'label:has-text("Terms"), label:has-text("terms"), label:has-text("Privacy"), label:has-text("agree"), label:has-text("I agree")',
         );
         const nLab = await labeled.count().catch(() => 0);
         for (let i = 0; i < nLab; i++) {
-          await labeled.nth(i).click({ timeout: 800 }).catch(() => {});
-        }
-        const checks = frame.locator('input[type="checkbox"]');
-        const n = await checks.count().catch(() => 0);
-        for (let ci = 0; ci < n; ci++) {
-          const c = checks.nth(ci);
-          if (!(await c.isChecked().catch(() => true))) {
-            await c.check({ force: true }).catch(() => {});
+          const lab = labeled.nth(i);
+          const forId = await lab.getAttribute("for").catch(() => null);
+          let already = false;
+          if (forId) {
+            already = await frame.locator(`[id="${forId}"]`).isChecked().catch(() => false);
           }
+          if (!already) {
+            const inputInLabel = lab.locator('input[type="checkbox"]').first();
+            if (await inputInLabel.count().catch(() => 0)) {
+              already = await inputInLabel.isChecked().catch(() => false);
+            }
+          }
+          if (!already) await lab.click({ timeout: 800 }).catch(() => {});
         }
       }
     };
+    /** Required GE consent — ignore non-TnC marketing boxes. */
+    const termsOk = (diag) => {
+      const checks = (diag?.checks || []).filter((c) =>
+        /tnc|terms|privacy|consent/i.test(String(c.name || "")),
+      );
+      if (!checks.length) return true;
+      if (checks.every((c) => c.checked)) return true;
+      // Safe7: Pay enabled with only CheckoutData.TnCConsent0 — underscore
+      // CheckoutData_TnCConsent often stays false (ghost / sync field). Don't
+      // deadlock the gate on it once the dotted Consent0 is checked.
+      const consent0 = checks.find((c) => /TnCConsent0/i.test(String(c.name || "")));
+      if (consent0?.checked) return true;
+      return false;
+    };
 
-    // Poll Pay enable — max ~12s. Diagnose why disabled (terms / card / captcha).
+    // Poll Pay enable — max ~18s (terms must stick before Pay).
     mark("wait_pay_enabled");
     let payDiag = null;
-    const payDeadline = Date.now() + 12_000;
+    const payDeadline = Date.now() + 18_000;
     while (Date.now() < payDeadline && !paid) {
       await tickTerms();
       for (const frame of page.frames()) {
@@ -925,9 +1300,19 @@ export async function browserBandaiGeFromCart(opts = {}) {
         if (!isBandaiGeCheckoutPayFrame(url)) continue;
         const state = await frame
           .evaluate(() => {
-            const payLabel = (b) => (b.innerText || b.value || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
-            const isPay = (b) => /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
-            const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(isPay);
+            const payLabel = (b) =>
+              (b.innerText || b.value || b.getAttribute("aria-label") || "")
+                .replace(/\s+/g, " ")
+                .trim();
+            const isPay = (b) => {
+              const s = payLabel(b);
+              if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+              // GEM AU: "PAY AND PLACE ORDER" / "Pay AU$ 11.00"
+              return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
+            };
+            const pay = [...document.querySelectorAll("button, input[type=submit], a[role=button]")].find(
+              (b) => isPay(b) && !b.disabled && b.getAttribute("aria-disabled") !== "true",
+            );
             const checks = [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
               checked: !!c.checked,
               name: c.name || c.id || "",
@@ -936,68 +1321,145 @@ export async function browserBandaiGeFromCart(opts = {}) {
               .map((e) => (e.innerText || "").replace(/\s+/g, " ").trim())
               .filter(Boolean)
               .slice(0, 4);
+            const recapEl = document.querySelector(
+              "#recapchaToken, [name='PaymentData.recapchaToken'], [name='recapchaToken']",
+            );
             return {
               hasPay: Boolean(pay),
+              payLabel: pay ? payLabel(pay) : null,
               disabled: pay ? !!pay.disabled || pay.getAttribute("aria-disabled") === "true" : null,
               checks,
               errs,
               recaptcha: Boolean(
-                document.querySelector("#recapchaToken, [name='PaymentData.recapchaToken']")?.value ||
+                recapEl?.value ||
                   document.querySelector("iframe[src*='recaptcha'], iframe[src*='hcaptcha']"),
               ),
+              recaptchaBytes: recapEl?.value ? String(recapEl.value).length : 0,
             };
           })
           .catch(() => null);
         if (state) payDiag = state;
 
-        const payBtn = frame
-          .locator(
-            'button:has-text("Pay"):visible, button:has-text("Place Order"):visible, button:has-text("Pay now"):visible',
-          )
+        // Gate: never click Pay while TnC unchecked (Safe6 no-op root cause).
+        if (state && !termsOk(state)) {
+          mark("tnc_still_unchecked", {
+            checks: (state.checks || []).slice(0, 6),
+          });
+          continue;
+        }
+
+        // Prefer role+name with word boundary (matches "Pay AU$…" / "PAY AND PLACE ORDER").
+        let payBtn = frame
+          .getByRole("button", { name: /^(Pay(\s+and\s+place\s+order)?|Place Order|Pay now)\b/i })
           .first();
+        if (!(await payBtn.count().catch(() => 0))) {
+          payBtn = frame
+            .locator("button, input[type=submit], a[role=button]")
+            .filter({ hasText: /^(Pay(\s+and\s+place\s+order)?|Place Order|Pay now)\b/i })
+            .first();
+        }
         if (!(await payBtn.count().catch(() => 0))) continue;
         if (!(await payBtn.isVisible().catch(() => false))) continue;
         const disabled = await payBtn.isDisabled().catch(() => true);
         if (disabled) continue;
+        const btnLabel = ((await payBtn.innerText().catch(() => "")) || "").replace(/\s+/g, " ").trim();
+        if (btnLabel && !isCheckoutPayLabel(btnLabel)) {
+          geNote += `; skip_non_pay_cta=${btnLabel.slice(0, 40)}`;
+          continue;
+        }
 
         try {
           armChargeGuard = true;
           mark("charge_guard_armed");
           await tickTerms();
+          // Same gate as termsOk — do NOT require ghost CheckoutData_TnCConsent
+          // (Safe7: Consent0=true, underscore=false, Pay enabled; requiring
+          // every() here deadlocked the click after the Consent0 relax).
+          const consent = await frame
+            .evaluate(() =>
+              [...document.querySelectorAll('input[type="checkbox"]')].map((c) => ({
+                checked: !!c.checked,
+                name: c.name || c.id || "",
+              })),
+            )
+            .catch(() => []);
+          if (!termsOk({ checks: consent })) {
+            geNote += `; abort_pay_tnc=${JSON.stringify(consent).slice(0, 100)}`;
+            armChargeGuard = false;
+            continue;
+          }
           // Playwright locator click only — bare btn.click() skips GE's issuer
           // chain (labs: eval1 → no HandleCreditCard; locator → issuer on wire).
-          // ONE click; soft-disable Pay CTAs immediately after.
-          await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
-          await frame
-            .evaluate(() => {
-              const payLabel = (b) =>
-                (b.innerText || b.value || b.getAttribute("aria-label") || "")
-                  .replace(/\s+/g, " ")
-                  .trim();
-              const isPay = (b) =>
-                /^(pay|place order|pay now)\b/i.test(payLabel(b)) || /^pay$/i.test(payLabel(b));
-              for (const b of document.querySelectorAll(
-                "button, input[type=submit], a[role=button]",
-              )) {
-                if (!isPay(b)) continue;
-                b.dataset.j1mPaid = "1";
-                b.setAttribute("disabled", "true");
-                b.setAttribute("aria-disabled", "true");
-                b.style.pointerEvents = "none";
-              }
-            })
-            .catch(() => {});
+          // No force:true on first try (overlays / false-enabled CTAs → payNet=0).
+          // Soft-disable ONLY after issuer wire (or long arm): 1.5s disable raced
+          // GEM's deferred HandleCreditCard (Safe labs payNet=0/0 ×3). Dual guard
+          // remains context.route single-flight on issuer URLs.
+          let clickVia = "locator";
+          try {
+            await payBtn.scrollIntoViewIfNeeded().catch(() => {});
+            await payBtn.click({ timeout: 5_000, noWaitAfter: true });
+          } catch {
+            clickVia = "locator+force";
+            await payBtn.click({ timeout: 5_000, noWaitAfter: true, force: true });
+          }
           payClickCount += 1;
           paymentStatus = "pay_clicked";
-          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=locator`;
+          geNote += `; clicked pay#${payClickCount} on ${url.slice(0, 50)} via=${clickVia} label=${JSON.stringify(btnLabel || state?.payLabel || "Pay")}`;
+          if (payDiag) {
+            geNote += `; payDiag=dis=${payDiag.disabled} tnc=${JSON.stringify(
+              (payDiag.checks || []).slice(0, 4),
+            ).slice(0, 80)} recap=${payDiag.recaptchaBytes || 0}`;
+          }
           paid = true;
           mark("pay_clicked", {
             payClickCount,
             frame: url.slice(0, 80),
             enableMs: Date.now() - sGe,
-            via: "locator",
+            via: clickVia,
+            btnLabel: btnLabel || state?.payLabel || null,
             payDiag,
           });
+          const softDisablePay = async () => {
+            await frame
+              .evaluate(() => {
+                const payLabel = (b) =>
+                  (b.innerText || b.value || b.getAttribute("aria-label") || "")
+                    .replace(/\s+/g, " ")
+                    .trim();
+                const isPay = (b) => {
+                  const s = payLabel(b);
+                  if (/^(paypal|apple pay|google pay|pay with)\b/i.test(s)) return false;
+                  return /^(pay(\s+and\s+place\s+order)?|place order|pay now)\b/i.test(s);
+                };
+                for (const b of document.querySelectorAll(
+                  "button, input[type=submit], a[role=button]",
+                )) {
+                  if (!isPay(b)) continue;
+                  b.dataset.j1mPaid = "1";
+                  b.setAttribute("disabled", "true");
+                  b.setAttribute("aria-disabled", "true");
+                  b.style.pointerEvents = "none";
+                }
+              })
+              .catch(() => {});
+          };
+          // Issuer often lands 5–8s after Pay; disabling the CTA earlier made
+          // GEM abort with zero network (payNet=0/0). Wait for wire or 12s.
+          const armMs = 12_000;
+          const armUntil = Date.now() + armMs;
+          while (Date.now() < armUntil && !issuerPaymentSent) {
+            await page.waitForTimeout(150);
+          }
+          await softDisablePay();
+          mark("pay_soft_disabled", {
+            issuerPaymentSent,
+            chargeReqCount,
+            waitMs: Math.min(armMs, Date.now() - (armUntil - armMs)),
+            disabledBeforeWire: !issuerPaymentSent,
+          });
+          if (!issuerPaymentSent) {
+            geNote += "; soft_disable_before_issuer_wire";
+          }
         } catch (e) {
           geNote += `; pay_click_fail:${String(e?.message || e).slice(0, 40)}`;
         }
@@ -1201,6 +1663,8 @@ export async function browserBandaiGeFromCart(opts = {}) {
       sawAuthWire,
       chargeReqCount,
       blockedChargeReqCount,
+      transactionId,
+      issuerRedirectUrl,
       declineSnippet,
       geNetTail: geNet.slice(-20),
       cookies,
@@ -1212,7 +1676,7 @@ export async function browserBandaiGeFromCart(opts = {}) {
           ? `Order ${orderNumber}`
           : paymentStatus === "declined_or_auth_failed"
             ? `Payment declined${declineSnippet ? `: ${declineSnippet}` : ""}`
-            : `GE via http+bridge; ${paymentStatus}; elapsed=${Date.now() - t0}ms`,
+            : `GE via http+bridge; ${paymentStatus}; tx=${transactionId || "-"}; elapsed=${Date.now() - t0}ms`,
       failedStep: gePayOk ? null : "ge_payment",
       error: gePayOk ? null : paymentStatus,
       elapsedMs: Date.now() - t0,

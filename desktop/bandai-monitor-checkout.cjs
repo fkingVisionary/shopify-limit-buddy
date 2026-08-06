@@ -8,6 +8,13 @@ const { pickAreaItemNo, areaItemNoFromHit, isBackendAreaItemNo } = require("./ba
  */
 function shouldCheckoutOnMonitorHit(task = {}, placeOrder) {
   if (String(task.bandaiMode || "").toLowerCase() !== "monitor") return false;
+  // Prior hard decline on this row — monitor may still poll, but do not auto-checkout
+  // until the task is started fresh (manual / Smart Action clears lastStatus).
+  const status = String(task.lastStatus || "").toLowerCase();
+  if (status === "declined") return false;
+  if (String(task.lastConsumerCode || task.consumerCode || "").toLowerCase() === "declined") {
+    return false;
+  }
   if (task.bandaiCheckoutOnHit === false || task.checkoutOnHit === false) return false;
   if (task.bandaiCheckoutOnHit === true || task.checkoutOnHit === true) return true;
   // Default: follow Place order checkbox (desktop placeOrder !== false).

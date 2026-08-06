@@ -14,6 +14,13 @@ test("shouldCheckoutOnMonitorHit defaults to placeOrder for monitor tasks", () =
   assert.equal(shouldCheckoutOnMonitorHit({ bandaiMode: "monitor" }, false), false);
   assert.equal(shouldCheckoutOnMonitorHit({ bandaiMode: "checkout" }, true), false);
   assert.equal(
+    shouldCheckoutOnMonitorHit(
+      { bandaiMode: "monitor", lastStatus: "declined", bandaiCheckoutOnHit: true },
+      true,
+    ),
+    false,
+  );
+  assert.equal(
     shouldCheckoutOnMonitorHit({ bandaiMode: "monitor", bandaiCheckoutOnHit: false }, true),
     false,
   );

@@ -672,7 +672,7 @@ test("create_tasks fails without Quick Task profile", async () => {
   assert.equal(r[0]?.outcome, OUTCOMES.FAILED);
   assert.equal(created.length, 0);
   const logs = engine.getLogs("sa_noprof");
-  assert.ok(logs.some((l) => /assign a Quick Task profile/i.test(l.message)));
+  assert.ok(logs.some((l) => /assign profile/i.test(l.message)));
 });
 
 test("disable mid-wait aborts before create_tasks", async () => {
@@ -703,4 +703,111 @@ test("disable mid-wait aborts before create_tasks", async () => {
   assert.equal(created.length, 0);
   const logs = engine.getLogs("sa_abort");
   assert.ok(logs.some((l) => /cancel|Abort|disabled/i.test(l.message)));
+});
+
+test("run once completes then auto turns Off; toggle On arms again", async () => {
+  const { engine, created, actions } = makeEngine();
+  engine.upsert({
+    id: "sa_once",
+    name: "Run once pack",
+    enabled: true,
+    runOnce: true,
+    runIntervalMs: 0,
+    trigger: { type: "product_monitor" },
+    filters: [],
+    actions: [
+      { type: "create_tasks", config: { usePreset: true, labelTemplate: "{{title}}", count: 1 } },
+      { type: "start_tasks", config: { target: { scope: "created" } } },
+    ],
+  });
+
+  const first = await engine.handleMonitorHit({
+    productId: "N77",
+    title: "Once Item",
+    reason: "restock",
+  });
+  assert.equal(first[0].outcome, OUTCOMES.COMPLETED);
+  assert.equal(created.length, 1);
+  assert.equal(actions[0].enabled, false);
+  assert.equal(actions[0].firedOnce, false);
+  assert.ok(engine.getLogs("sa_once").some((l) => /turned off \(run once\)/i.test(l.message)));
+
+  const skipped = await engine.handleMonitorHit({
+    productId: "N77",
+    title: "Once Item",
+    reason: "restock",
+  });
+  assert.equal(skipped.length, 0);
+  assert.equal(created.length, 1);
+
+  engine.setEnabled("sa_once", true);
+  assert.equal(actions[0].enabled, true);
+
+  const second = await engine.handleMonitorHit({
+    productId: "N77",
+    title: "Once Item again",
+    reason: "restock",
+  });
+  assert.equal(second[0].outcome, OUTCOMES.COMPLETED);
+  assert.equal(created.length, 2);
+  assert.equal(actions[0].enabled, false);
+});
+
+test("legacy runOnce+firedOnce migrates to Off on normalize", () => {
+  const { engine, actions } = makeEngine();
+  engine.upsert({
+    id: "sa_legacy",
+    name: "Legacy",
+    enabled: true,
+    runOnce: true,
+    firedOnce: true,
+    trigger: { type: "product_monitor" },
+    actions: [{ type: "create_tasks", config: { usePreset: true, count: 1 } }],
+  });
+  assert.equal(actions[0].enabled, false);
+  assert.equal(actions[0].firedOnce, false);
+});
+
+test("claimsMonitorHit true for checkout SA; false for watch-only / disabled", () => {
+  const { engine } = makeEngine();
+  engine.upsert({
+    id: "sa_claim",
+    name: "Checkout claim",
+    enabled: true,
+    trigger: { type: "product_monitor" },
+    filters: [{ field: "sku", op: "equals", value: "N2904549002" }],
+    actions: [
+      { type: "create_tasks", config: { usePreset: true, count: 1, bandaiMode: "checkout" } },
+      { type: "start_tasks", config: { target: { scope: "created" } } },
+    ],
+  });
+  assert.equal(
+    engine.claimsMonitorHit({ productId: "N2904549002", store: "bandai", reason: "restock" }),
+    true,
+  );
+  assert.equal(
+    engine.claimsMonitorHit({ productId: "N999", store: "bandai", reason: "restock" }),
+    false,
+  );
+
+  engine.setEnabled("sa_claim", false);
+  assert.equal(
+    engine.claimsMonitorHit({ productId: "N2904549002", store: "bandai", reason: "restock" }),
+    false,
+  );
+
+  engine.upsert({
+    id: "sa_watch",
+    name: "Watch only",
+    enabled: true,
+    trigger: { type: "product_monitor" },
+    filters: [{ field: "sku", op: "equals", value: "N2904549002" }],
+    actions: [
+      { type: "create_tasks", config: { usePreset: true, count: 1, bandaiMode: "monitor" } },
+    ],
+  });
+  assert.equal(
+    engine.claimsMonitorHit({ productId: "N2904549002", store: "bandai", reason: "restock" }),
+    false,
+  );
 });

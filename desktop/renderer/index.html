@@ -104,6 +104,8 @@
             <div class="home-analytics-toolbar">
               <div class="seg-row">
                 <button type="button" class="seg active" data-home-metric="checkouts">Checkouts</button>
+                <button type="button" class="seg" data-home-metric="atcs">ATCs</button>
+                <button type="button" class="seg" data-home-metric="declines">Declines</button>
                 <button type="button" class="seg" data-home-metric="spend">Spend</button>
               </div>
               <div class="seg-row">
@@ -117,6 +119,22 @@
               <div class="home-metric-value" id="homeMetricValue">0</div>
               <div class="home-metric-label" id="homeMetricLabel">Checkouts</div>
             </div>
+            <div class="home-stat-banner" id="homeStatBanner" aria-label="Period summary">
+              <button type="button" class="home-stat" data-home-metric="checkouts">
+                <span class="home-stat-value" id="homeStatCheckouts">0</span>
+                <span class="home-stat-label">Checkouts</span>
+              </button>
+              <span class="home-stat-divider" aria-hidden="true"></span>
+              <button type="button" class="home-stat home-stat-atc" data-home-metric="atcs">
+                <span class="home-stat-value" id="homeStatAtcs">0</span>
+                <span class="home-stat-label">ATCs</span>
+              </button>
+              <span class="home-stat-divider" aria-hidden="true"></span>
+              <button type="button" class="home-stat home-stat-decline" data-home-metric="declines">
+                <span class="home-stat-value" id="homeStatDeclines">0</span>
+                <span class="home-stat-label">Declines</span>
+              </button>
+            </div>
             <div id="homeChart" class="home-chart" aria-hidden="false"></div>
             <div id="homeChartEmpty" class="home-chart-empty" hidden>
               <div class="home-chart-empty-icon" aria-hidden="true"></div>
@@ -125,7 +143,7 @@
             </div>
           </div>
           <aside class="home-checkout-feed">
-            <h3>Checkout Feed</h3>
+            <h3 id="homeFeedTitle">Checkout Feed</h3>
             <div id="checkoutFeed" class="feed-list"></div>
           </aside>
         </div>
@@ -159,13 +177,9 @@
             </div>
             <div class="toolbar-actions">
               <input type="search" id="taskSearch" class="table-search" placeholder="Search tasks…" autocomplete="off" />
-              <button type="button" class="secondary" id="btnExportTasks">Export</button>
-              <button type="button" class="secondary" id="btnImportTasks">Import</button>
-              <input type="file" id="taskImportFile" accept=".json,.csv,.txt,text/*,application/json" hidden />
               <button type="button" id="btnNewTask">New task</button>
             </div>
           </div>
-          <p id="harvestBankStrip" class="harvest-bank-strip" hidden aria-live="polite"></p>
           <!-- Go-live schedule/time removed — use Smart Actions or task creator. Hidden stubs keep IPC handlers safe. -->
           <div id="dropPrepCard" hidden>
             <span id="dropReadyBadge" class="badge">—</span>
@@ -206,11 +220,10 @@
           <table class="data-table" id="taskTable">
             <thead>
               <tr>
-                <th class="col-check">On</th>
-                <th>Task</th>
-                <th>Store</th>
+                <th>Site</th>
+                <th>Product</th>
                 <th>Profile</th>
-                <th>Proxy</th>
+                <th>Proxies</th>
                 <th>Qty</th>
                 <th>Status</th>
                 <th class="col-actions">Actions</th>
@@ -223,182 +236,226 @@
     </section>
 
     <dialog id="taskDialog" class="modal">
-      <div class="modal-card" style="width:min(560px,94vw)">
-        <div class="modal-head">
+      <div class="modal-card task-modal-card">
+        <div class="modal-head task-modal-head">
           <h3 id="taskFormTitle">New task</h3>
-          <button type="button" class="icon-btn" id="taskDialogClose" aria-label="Close">✕</button>
-        </div>
-        <form id="taskForm" class="modal-body">
-          <input type="hidden" id="taskId" />
-          <label>Label <span class="optional">(blank = SKU · title)</span></label>
-          <input id="taskLabel" placeholder="e.g. N2847890001 · RG Gundam" />
-          <label>Task group</label>
-          <select id="taskGroup">
-            <option value="">No group</option>
-          </select>
-
-          <label>Store</label>
-          <select id="taskStore">
-            <option value="bandai" selected>Premium Bandai AU</option>
-            <option value="toymate">Toymate AU</option>
-            <option value="pokemoncentre">Pokémon Centre AU</option>
-          </select>
-          <div id="taskDisneyOpts" hidden></div>
-          <div id="taskToymateOpts" hidden>
-            <label>Toymate mode</label>
-            <select id="taskToymateMode">
-              <option value="checkout">Autocheckout</option>
-              <option value="account_gen">Account gen</option>
-              <option value="monitor">Keyword monitor</option>
+          <div class="task-modal-head-right">
+            <select id="taskGroup" class="task-group-select" title="Task group" aria-label="Task group">
+              <option value="">No group</option>
             </select>
-            <div id="taskToymatePayWrap">
+            <button type="button" class="icon-btn" id="taskDialogClose" aria-label="Close">✕</button>
+          </div>
+        </div>
+        <form id="taskForm" class="modal-body task-form">
+          <input type="hidden" id="taskId" />
+
+          <div class="task-grid">
+            <div class="task-field task-span-2">
+              <label>Label <span class="optional">(blank = SKU · title)</span></label>
+              <input id="taskLabel" placeholder="e.g. N2847890001 · RG Gundam" />
+            </div>
+
+            <div class="task-field">
+              <label>Store</label>
+              <select id="taskStore">
+                <option value="bandai-au" selected>Premium Bandai AU</option>
+                <option value="bandai-us">Premium Bandai US</option>
+                <option value="bandai-nz">Premium Bandai NZ</option>
+                <option value="bandai-sg">Premium Bandai SG</option>
+                <option value="bandai-hk">Premium Bandai HK</option>
+                <option value="bandai-tw">Premium Bandai TW</option>
+                <option value="bandai-fr">Premium Bandai FR</option>
+                <option value="toymate">Toymate AU</option>
+                <option value="pokemoncentre">Pokémon Centre AU</option>
+              </select>
+            </div>
+
+            <div id="taskDisneyOpts" hidden></div>
+
+            <div id="taskBandaiModeField" class="task-field">
+              <label>Mode</label>
+              <select id="taskBandaiMode">
+                <option value="checkout">Autocheckout</option>
+                <option value="atc">ATC only</option>
+                <option value="account_gen">Account gen</option>
+                <option value="monitor">Monitor</option>
+              </select>
+            </div>
+
+            <div id="taskToymateOpts" class="task-field" hidden>
+              <label>Mode</label>
+              <select id="taskToymateMode">
+                <option value="checkout">Autocheckout</option>
+                <option value="account_gen">Account gen</option>
+                <option value="monitor">Keyword monitor</option>
+              </select>
+            </div>
+
+            <div id="taskPcOpts" class="task-field" hidden>
+              <label>Mode</label>
+              <select id="taskPcMode">
+                <option value="monitor">Monitor</option>
+                <option value="checkout">Checkout</option>
+                <option value="edge">Warm only</option>
+                <option value="har_probe">Probe</option>
+              </select>
+            </div>
+
+            <div class="task-field task-product-field">
+              <label id="taskPdpLabel">Product</label>
+              <input id="taskPdp" placeholder="URL, SKU, or keywords" autocomplete="off" />
+              <p id="taskPdpHint" class="field-hint">URL, product code, or keywords</p>
+            </div>
+
+            <div class="task-field">
+              <label>Checkout qty</label>
+              <input id="taskQty" type="number" min="1" max="20" value="1" />
+            </div>
+
+            <div id="taskBandaiCheckoutModeWrap" class="task-field" hidden>
+              <div id="taskBandaiPayWrap">
+                <label>Payment</label>
+                <select id="taskBandaiPay">
+                  <option value="credit_card">Credit card</option>
+                  <option value="paypal_guest">PayPal (HTTP mint)</option>
+                  <option value="paypal_manual">PayPal (link only)</option>
+                </select>
+                <p class="field-hint">
+                  PayPal is HTTP through Global-E (approve URL). No visible browser windows.
+                  Complete the link manually — PayPal.com guest autofill stays lab-only (DataDome).
+                </p>
+              </div>
+              <label>Checkout speed</label>
+              <select id="taskBandaiCheckoutMode">
+                <option value="fast">Fast</option>
+                <option value="fast_undici">Fast+</option>
+                <option value="autocheckout_test">Autocheckout test</option>
+                <option value="safe">Safe</option>
+              </select>
+            </div>
+
+            <div id="taskQuantityWrap" class="task-field">
+              <label id="taskQuantityLabel">Task quantity</label>
+              <input id="taskQuantity" type="number" min="1" max="50" value="1" />
+              <p class="field-hint" id="taskQuantityHint">Task rows to create</p>
+            </div>
+
+            <div id="taskBandaiOpts" class="task-span-2">
+              <p id="taskBandaiAtcHint" class="field-hint" hidden>
+                Stops after ATC — use Checkout now while the hold is valid (~30 min).
+              </p>
+
+              <div id="taskBandaiMonitorWrap" class="task-grid" hidden>
+                <div class="task-field">
+                  <label>Monitor source</label>
+                  <select id="taskBandaiMonitorMode">
+                    <option value="local">Task-local</option>
+                    <option value="global">Global feed</option>
+                  </select>
+                </div>
+                <div class="task-field task-checks" style="align-self:end;padding-bottom:8px">
+                  <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout on match</label>
+                </div>
+                <div id="taskBandaiMonitorLocalOpts" class="task-span-2 task-grid">
+                  <div class="task-field">
+                    <label>Poll interval (ms)</label>
+                    <input id="taskBandaiMonitorIntervalMs" type="number" min="2000" step="1000" value="10000" />
+                  </div>
+                  <div class="task-field">
+                    <label>Start delay (ms)</label>
+                    <input id="taskBandaiMonitorDelayMs" type="number" min="0" step="500" value="0" />
+                  </div>
+                </div>
+              </div>
+
+              <div id="taskBandaiAccountPassWrap" class="task-field" hidden>
+                <label>Account password <span class="optional">(optional)</span></label>
+                <input id="taskBandaiAccountPassword" type="text" autocomplete="off" placeholder="Bandai password rules" />
+              </div>
+              <div id="taskBandaiAssignWrap" class="task-grid" hidden>
+                <div class="task-field">
+                  <label>Checkout account</label>
+                  <select id="taskBandaiAccountAssign">
+                    <option value="auto">Auto — match profile email</option>
+                    <option value="manual">Manual — pick from vault</option>
+                  </select>
+                </div>
+                <div id="taskBandaiAccountManualWrap" class="task-field" hidden>
+                  <label>Vault account</label>
+                  <select id="taskBandaiAccountId"></select>
+                </div>
+              </div>
+            </div>
+
+            <div id="taskToymatePayWrap" class="task-field" hidden>
               <label>Payment</label>
               <select id="taskToymatePay">
                 <option value="credit_card">Credit card</option>
                 <option value="paypal_manual">PayPal (manual)</option>
               </select>
             </div>
-            <div id="taskAccountPassWrap" hidden>
+            <div id="taskAccountPassWrap" class="task-field" hidden>
               <label>Account password <span class="optional">(optional)</span></label>
-              <input id="taskAccountPassword" type="text" autocomplete="off" placeholder="e.g. Password1 — needs letter+number" />
+              <input id="taskAccountPassword" type="text" autocomplete="off" placeholder="e.g. Password1" />
             </div>
-            <div id="taskAccountAssignWrap" hidden>
-              <label>Checkout account</label>
-              <select id="taskAccountAssign">
-                <option value="auto">Auto — match profile email</option>
-                <option value="manual">Manual — pick from vault</option>
-                <option value="guest">Guest — no login</option>
-              </select>
-              <p id="taskAccountAutoHint" class="field-hint">Uses a generated account whose email matches this profile (e.g. you+tag@domain).</p>
-              <div id="taskAccountManualWrap" hidden>
+            <div id="taskAccountAssignWrap" class="task-span-2 task-grid" hidden>
+              <div class="task-field">
+                <label>Checkout account</label>
+                <select id="taskAccountAssign">
+                  <option value="auto">Auto — match profile email</option>
+                  <option value="manual">Manual — pick from vault</option>
+                  <option value="guest">Guest — no login</option>
+                </select>
+                <p id="taskAccountAutoHint" class="field-hint">Matches vault email to this profile.</p>
+              </div>
+              <div id="taskAccountManualWrap" class="task-field" hidden>
                 <label>Vault account</label>
                 <select id="taskAccountId"></select>
               </div>
             </div>
-          </div>
-          <div id="taskBandaiOpts" hidden>
-            <label>Bandai mode</label>
-            <select id="taskBandaiMode">
-              <option value="checkout">Bandai — Autocheckout</option>
-              <option value="atc">Bandai — ATC only (hold cart)</option>
-              <option value="account_gen">Bandai — Account gen</option>
-              <option value="monitor">Bandai — Monitor</option>
-            </select>
-            <p id="taskBandaiAtcHint" class="field-hint" hidden>
-              Stops after add-to-cart. Task shows a ~30 min pay-window countdown; use <strong>Checkout now</strong> on the task (or <strong>Checkout held</strong> in the group bar) while the hold is valid.
-            </p>
-            <div id="taskBandaiMonitorWrap" hidden>
-              <label>Monitor source</label>
-              <select id="taskBandaiMonitorMode">
-                <option value="local">Task-local — my proxies + interval</option>
-                <option value="global">Global — filter shared monitor events</option>
+
+            <div class="task-field">
+              <label>Profiles</label>
+              <select id="taskProfileSource">
+                <option value="single" selected>Single profile</option>
+                <option value="group">Profile group</option>
               </select>
-              <p class="field-hint">Global uses the shared product monitor. Local polls with this task’s proxy group and interval.</p>
-              <label>Watch SKU / product code <span class="optional">(optional)</span></label>
-              <input id="taskBandaiWatchSku" placeholder="N2903432003" autocomplete="off" />
-              <label>Watch keywords <span class="optional">(optional if SKU set)</span></label>
-              <input id="taskBandaiWatchKeywords" placeholder="ONE PIECE, GUNDAM" autocomplete="off" />
-              <div id="taskBandaiMonitorLocalOpts">
-                <label>Poll interval (ms)</label>
-                <input id="taskBandaiMonitorIntervalMs" type="number" min="2000" step="1000" value="10000" />
-                <label>Start delay (ms)</label>
-                <input id="taskBandaiMonitorDelayMs" type="number" min="0" step="500" value="0" />
-              </div>
-              <label class="check"><input id="taskBandaiCheckoutOnHit" type="checkbox" checked /> Checkout when stock matches</label>
-              <p class="field-hint">
-                When on, a matching restock starts checkout. Warm sessions from Harvest are used when ready.
-                Leave Place order off for a cart-only dry run.
-              </p>
             </div>
-            <div id="taskBandaiCheckoutModeWrap" hidden>
-              <label>Checkout speed</label>
-              <select id="taskBandaiCheckoutMode">
-                <option value="fast">Fast (default)</option>
-                <option value="fast_undici">Fast+</option>
-                <option value="safe">Safe (slower)</option>
+            <div class="task-field">
+              <label>Proxies</label>
+              <select id="taskProxy">
+                <option value="">Direct (no proxy)</option>
               </select>
-              <p class="field-hint">Fast is recommended for drops. Safe is slower and more conservative.</p>
-              <label>Product ID <span class="optional">(optional — advanced)</span></label>
-              <input id="taskBandaiAreaItemNo" placeholder="Optional override" autocomplete="off" />
-              <p class="field-hint">Leave blank unless you were given a specific product ID for the drop.</p>
-              <label class="check"><input id="taskBandaiWatchdog" type="checkbox" checked /> Auto-start on monitor restock</label>
-              <p class="field-hint">
-                Starts this Autocheckout / ATC task when the product monitor reports a matching restock.
-                Cooldown ~60s per task. Turn off for manual-only runs.
-              </p>
-              <label>Watch SKU / product code <span class="optional">(optional — PDP URL also matches)</span></label>
-              <input id="taskBandaiCheckoutWatchSku" placeholder="N2903432003" autocomplete="off" />
-              <label>Watch keywords <span class="optional">(optional)</span></label>
-              <input id="taskBandaiCheckoutWatchKeywords" placeholder="ONE PIECE, GUNDAM" autocomplete="off" />
+              <p class="field-hint" id="taskProxyHint">Unique proxy per created task</p>
             </div>
-            <div id="taskBandaiAccountPassWrap" hidden>
-              <label>Account password <span class="optional">(optional — agen)</span></label>
-              <input id="taskBandaiAccountPassword" type="text" autocomplete="off" placeholder="Must pass Bandai rules (upper+lower+digit+symbol)" />
+
+            <div id="taskProfileSingleWrap" class="task-field">
+              <label>Profile</label>
+              <select id="taskProfile"></select>
             </div>
-            <div id="taskBandaiAssignWrap" hidden>
-              <label>Checkout account</label>
-              <select id="taskBandaiAccountAssign">
-                <option value="auto">Auto — match profile email</option>
-                <option value="manual">Manual — pick from vault</option>
+            <div id="taskProfileGroupWrap" class="task-field" hidden>
+              <label>Profile group</label>
+              <select id="taskProfileGroup">
+                <option value="">Select group…</option>
               </select>
-              <p class="field-hint">Bandai checkout needs a logged-in account.</p>
-              <div id="taskBandaiAccountManualWrap" hidden>
-                <label>Vault account</label>
-                <select id="taskBandaiAccountId"></select>
-              </div>
+              <p class="field-hint" id="taskProfileGroupHint">Uses task quantity per profile.</p>
             </div>
           </div>
-          <div id="taskPcOpts" hidden>
-            <label>Pokémon Centre mode</label>
-            <select id="taskPcMode">
-              <option value="monitor">Monitor</option>
-              <option value="checkout">Checkout</option>
-              <option value="edge">Warm only</option>
-              <option value="har_probe">Probe</option>
-            </select>
-            <p class="field-hint">Use a sticky AU proxy group. Add Hyper and a captcha key in Settings when needed.</p>
-          </div>
-          <label id="taskPdpLabel">Product URL (PDP)</label>
-          <input id="taskPdp" placeholder="https://…" />
-          <div class="grid2">
-            <div>
-              <label>Qty per checkout</label>
-              <input id="taskQty" type="number" min="1" max="20" value="1" />
-            </div>
-            <div>
-              <label>Task quantity</label>
-              <input id="taskQuantity" type="number" min="1" max="50" value="1" />
-            </div>
-          </div>
-          <label>Profile source</label>
-          <select id="taskProfileSource">
-            <option value="single" selected>Single profile</option>
-            <option value="group">Profile group</option>
-          </select>
-          <div id="taskProfileSingleWrap">
-            <label>Profile</label>
-            <select id="taskProfile"></select>
-          </div>
-          <div id="taskProfileGroupWrap" hidden>
-            <label>Profile group</label>
-            <select id="taskProfileGroup">
-              <option value="">Select group…</option>
-            </select>
-            <label>Tasks per profile</label>
-            <input id="taskPerProfile" type="number" min="1" max="20" value="1" />
-            <p class="field-hint" id="taskProfileGroupHint">Creates that many tasks for every profile in the group.</p>
-          </div>
-          <label>Proxy group</label>
-          <select id="taskProxy">
-            <option value="">Direct (no proxy)</option>
-          </select>
-          <label class="check" id="taskPlaceOrderWrap"><input id="taskPlaceOrder" type="checkbox" checked /> Place order (live)</label>
-          <div class="row">
-            <button type="submit">Save task</button>
-            <button type="button" class="secondary" id="taskReset">Clear</button>
-            <button type="button" id="taskRunOne">Run this</button>
+
+          <div class="task-checks-row">
+            <label class="check" id="taskPlaceOrderWrap"><input id="taskPlaceOrder" type="checkbox" checked /> Place order</label>
+            <label class="check" id="taskBandaiWatchdogWrap" hidden>
+              <input id="taskBandaiWatchdog" type="checkbox" checked /> Auto-start on restock
+            </label>
           </div>
         </form>
+        <div class="modal-foot task-modal-foot">
+          <div class="modal-foot-right" style="margin-right:auto">
+            <button type="button" class="secondary" id="taskReset" form="taskForm">Clear</button>
+            <button type="button" class="secondary" id="taskRunOne" form="taskForm">Run</button>
+          </div>
+          <button type="submit" class="task-create-btn" form="taskForm" id="taskSubmitBtn">Create task</button>
+        </div>
       </div>
     </dialog>
 
@@ -408,7 +465,7 @@
       <div class="feed-head">
         <div>
           <h2>Monitor</h2>
-          <p class="hint">Recent stock updates</p>
+          <p class="hint">Stock updates with product art, PDP links, and eBay sold comps</p>
         </div>
         <div class="feed-head-actions">
           <span id="feedPower" class="power-pill" data-state="off" aria-live="polite">
@@ -418,7 +475,7 @@
           <button type="button" class="secondary" id="btnFeedClear">Clear</button>
         </div>
       </div>
-      <div id="feedList" class="list feed-list"></div>
+      <div id="feedList" class="feed-cards-list"></div>
     </section>
 
     <!-- SMART ACTIONS -->
@@ -926,7 +983,7 @@
           <input type="hidden" id="accId" />
             <label>Store</label>
             <select id="accStore">
-              <option value="bandai">Premium Bandai AU</option>
+              <option value="bandai">Premium Bandai</option>
               <option value="toymate">Toymate AU</option>
             </select>
             <label>Account group</label>
@@ -1106,7 +1163,8 @@
           <input id="setApiKey" placeholder="Your license key" autocomplete="off" />
           <input id="setControlPlane" type="hidden" />
           <label>Max concurrent checkouts</label>
-          <input id="setMax" type="number" min="1" max="50" value="5" />
+          <input id="setMax" type="number" min="1" max="200" value="5" />
+          <p class="hint">How many tasks run at once (1–200). Raise before a drop if you’ll start many lanes; restart Engine after changing.</p>
           <label class="check"><input id="setPlaceOrder" type="checkbox" checked /> Default place order on</label>
           <label class="check"><input id="setSuccessAlert" type="checkbox" checked /> Sound + taskbar flash + toast on checkout win</label>
           <label class="check"><input id="setDetailedLogs" type="checkbox" checked /> Detailed diagnostics in live log</label>
@@ -1115,7 +1173,13 @@
           <p class="hint">Defaults for Quick Task and Smart Actions Create Tasks.</p>
           <label>Store</label>
           <select id="qtPresetStore">
-            <option value="bandai">Premium Bandai AU</option>
+            <option value="bandai-au">Premium Bandai AU</option>
+            <option value="bandai-us">Premium Bandai US</option>
+            <option value="bandai-nz">Premium Bandai NZ</option>
+            <option value="bandai-sg">Premium Bandai SG</option>
+            <option value="bandai-hk">Premium Bandai HK</option>
+            <option value="bandai-tw">Premium Bandai TW</option>
+            <option value="bandai-fr">Premium Bandai FR</option>
           </select>
           <label>Bandai mode</label>
           <select id="qtPresetMode">
@@ -1123,18 +1187,45 @@
             <option value="atc">ATC only (hold cart)</option>
             <option value="monitor">Monitor (global + checkout on hit)</option>
           </select>
-          <label>Profile</label>
-          <select id="qtPresetProfile"></select>
+          <label>Payment</label>
+          <select id="qtPresetPay">
+            <option value="credit_card">Credit card</option>
+            <option value="paypal_guest">PayPal (HTTP mint)</option>
+            <option value="paypal_manual">PayPal (link only)</option>
+          </select>
+          <label>Profiles</label>
+          <select id="qtPresetProfileSource">
+            <option value="single" selected>Single profile</option>
+            <option value="group">Profile group</option>
+            <option value="multi">Multiple profiles</option>
+          </select>
+          <div id="qtPresetProfileSingleWrap">
+            <label>Profile</label>
+            <select id="qtPresetProfile"></select>
+          </div>
+          <div id="qtPresetProfileGroupWrap" hidden>
+            <label>Profile group</label>
+            <select id="qtPresetProfileGroup">
+              <option value="">Select group…</option>
+            </select>
+            <p class="hint" id="qtPresetProfileGroupHint">Creates tasks for each profile in the group.</p>
+          </div>
+          <div id="qtPresetProfileMultiWrap" hidden>
+            <label>Select profiles</label>
+            <div id="qtPresetProfileMulti" class="qt-profile-multi"></div>
+            <p class="hint" id="qtPresetProfileMultiHint">Creates tasks for each checked profile.</p>
+          </div>
           <label>Proxy group</label>
           <select id="qtPresetProxy"></select>
           <div class="grid2">
             <div>
-              <label>Qty per checkout</label>
+              <label>Checkout qty</label>
               <input id="qtPresetQty" type="number" min="1" max="20" value="1" />
             </div>
             <div>
-              <label>Parallel tasks</label>
+              <label id="qtPresetQuantityLabel">Tasks to create</label>
               <input id="qtPresetQuantity" type="number" min="1" max="50" value="1" />
+              <p class="hint" id="qtPresetQuantityHint">Creates this many task rows</p>
             </div>
           </div>
           <label class="check"><input id="qtPresetPlaceOrder" type="checkbox" checked /> Place order</label>
@@ -1263,8 +1354,6 @@
           <h2>Data</h2>
           <p class="hint">Import / export local vault data. Files stay on this machine.</p>
           <div class="row" style="flex-wrap:wrap;gap:8px;margin-bottom:12px">
-            <button type="button" class="secondary" id="btnExportTasksData" data-export-mirror="btnExportTasks">Export tasks</button>
-            <button type="button" class="secondary" id="btnImportTasksData" data-import-mirror="btnImportTasks">Import tasks</button>
             <button type="button" class="secondary" id="btnExportProfilesData" data-export-mirror="btnExportProfiles">Export profiles</button>
             <button type="button" class="secondary" id="btnImportProfilesData" data-import-mirror="btnImportProfiles">Import profiles</button>
             <button type="button" class="secondary" id="btnExportAccountsData" data-export-mirror="btnExportAccounts">Export accounts</button>
@@ -1278,6 +1367,23 @@
     </section>
 
   </main>
+
+  <dialog id="namePromptDialog" class="modal">
+    <div class="modal-card" style="width:min(400px,94vw)">
+      <div class="modal-head">
+        <h3 id="namePromptTitle">New group</h3>
+        <button type="button" class="icon-btn" id="namePromptClose" aria-label="Close">✕</button>
+      </div>
+      <form id="namePromptForm" class="modal-body" style="display:flex;flex-direction:column;gap:10px">
+        <label id="namePromptLabel" for="namePromptInput">Group name</label>
+        <input id="namePromptInput" autocomplete="off" required maxlength="80" placeholder="e.g. Drop A" />
+        <div class="row" style="justify-content:flex-end;gap:8px;margin-top:4px">
+          <button type="button" class="secondary" id="namePromptCancel">Cancel</button>
+          <button type="submit" id="namePromptOk">Create</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
 
   <div id="taskContextMenu" class="ctx-menu" hidden></div>
   <div id="storeGroupContextMenu" class="ctx-menu" hidden></div>

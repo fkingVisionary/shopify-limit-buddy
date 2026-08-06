@@ -440,6 +440,10 @@ async function runCheckout(task, ctx, session, tStep, steps) {
         stopBeforeIssuer: task.stopBeforeIssuer === true,
         forceIssuer: task.forceIssuer === true,
         debugDir: task.debugDir || task.pcCaptureDir || null,
+        desktopTaskId: task.desktopTaskId || null,
+        desktopRunId: task.desktopRunId || null,
+        desktopAttempt: task.desktopAttempt || null,
+        executorTaskId: task.taskId || null,
         onProgress: (n, note) => ctx.onProgress?.(n, note),
       });
     });
@@ -501,6 +505,13 @@ async function runCheckout(task, ctx, session, tStep, steps) {
     transactionId: geResult?.transactionId || null,
     transactionStatusType: geResult?.transactionStatusType || null,
     chargeReqCount: geResult?.chargeReqCount ?? null,
+    undiciAttempts: geResult?.undiciAttempts ?? null,
+    responseLost: Boolean(geResult?.responseLost),
+    paymentAttempted: Boolean(
+      geResult?.paymentAttempted ||
+        geResult?.responseLost ||
+        Number(geResult?.chargeReqCount ?? geResult?.undiciAttempts ?? 0) >= 1,
+    ),
     note: geResult?.note || atc.note || pdp.note,
     failedStep: ok
       ? null
