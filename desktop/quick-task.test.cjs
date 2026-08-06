@@ -6,6 +6,7 @@ const {
   targetFromMonitorHit,
   buildQuickTaskDraft,
   normalizeQuickTaskPreset,
+  resolveQuickTaskProfiles,
   contextFromMonitorHit,
 } = require("./quick-task.cjs");
 
@@ -65,4 +66,42 @@ test("contextFromMonitorHit shape", () => {
   assert.equal(ctx.store, "bandai");
   assert.equal(ctx.sku, "N1");
   assert.equal(ctx.source, "product_monitor");
+});
+
+test("resolveQuickTaskProfiles supports group and multi", () => {
+  const profiles = [
+    { id: "a", name: "A", profileGroup: "Main" },
+    { id: "b", name: "B", profileGroup: "Main" },
+    { id: "c", name: "C", profileGroup: "Other" },
+  ];
+  const group = resolveQuickTaskProfiles(
+    { profileSource: "group", profileGroup: "Main" },
+    profiles,
+  );
+  assert.deepEqual(
+    group.map((s) => s.profileId),
+    ["a", "b"],
+  );
+
+  const multi = resolveQuickTaskProfiles(
+    { profileSource: "multi", profileIds: ["c", "a", "missing"] },
+    profiles,
+  );
+  assert.deepEqual(
+    multi.map((s) => s.profileId),
+    ["c", "a"],
+  );
+
+  const single = resolveQuickTaskProfiles(
+    { profileSource: "single", profileId: "b" },
+    profiles,
+  );
+  assert.deepEqual(
+    single.map((s) => s.profileId),
+    ["b"],
+  );
+
+  const legacy = normalizeQuickTaskPreset({ profileId: "a" });
+  assert.equal(legacy.profileSource, "single");
+  assert.equal(legacy.profileId, "a");
 });

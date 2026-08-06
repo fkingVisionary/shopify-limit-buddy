@@ -35,6 +35,7 @@ import {
 } from "./adapters/disney-harvest-pool.js";
 import { harvestDisneySession } from "./adapters/disney-harvest-session.js";
 import { payForensics, payForensicsPath } from "./pay-forensics.js";
+import { beginRun, endRun, cancelRun } from "./run-control.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const TOKEN = (process.env.EXECUTOR_TOKEN ?? "").trim();
@@ -84,6 +85,7 @@ app.get("/", async () => ({
   health: "/health",
   diagnose: "POST /health/diagnose (Bearer auth)",
   run: "POST /run (Bearer auth)",
+  cancel: "POST /cancel (Bearer auth) — abort in-flight /run before issuer",
   progress: "GET /progress/:taskId (Bearer auth)",
   milestones: "GET /milestones (Bearer auth)",
   bandaiHarvest: "POST|GET /bandai/harvest (Bearer auth)",
@@ -215,6 +217,35 @@ app.get("/progress/:taskId", async (req, reply) => {
     return { ok: true, found: false, taskId, progress: null, stages: WORKFLOW_STAGES };
   }
   return { ok: true, found: true, taskId, progress, stages: WORKFLOW_STAGES };
+});
+
+// Abort an in-flight /run (desktop Stop). Must run server-side — destroying
+// the client HTTP socket alone leaves the sidecar free to hit issuer/pay.
+app.post("/cancel", async (req, reply) => {
+  if (!checkAuth(req, reply)) return { ok: false, error: "unauthorized" };
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const taskId = String(body.taskId || body.executorTaskId || "").trim().slice(0, 120);
+  if (!taskId) {
+    reply.code(400);
+    return { ok: false, error: "missing taskId" };
+  }
+  const res = cancelRun(taskId);
+  if (res.found) {
+    setTaskProgress(taskId, {
+      stage: "warm",
+      label: "Stopped",
+      detail: "cancelled",
+      running: false,
+      done: true,
+    });
+  }
+  req.log.info({ taskId, ...res }, "run cancel");
+  payForensics("run_cancel", {
+    executorTaskId: taskId,
+    found: res.found,
+    alreadyAborted: Boolean(res.alreadyAborted),
+  });
+  return { ok: true, taskId, ...res };
 });
 
 // Recent checkout wins (cart_get+ / 3DS / place_order). Survives client timeouts.
@@ -490,6 +521,7 @@ app.post("/run", async (req, reply) => {
   const canRotatePool = task.useProxy === true || Boolean(listRaw?.length);
 
   inflight++;
+  const runAc = beginRun(String(task.taskId));
   try {
     const triedHosts = new Set();
     const proxyAttempts = [];
@@ -502,6 +534,16 @@ app.post("/run", async (req, reply) => {
     let result = null;
 
     for (let attempt = 1; attempt <= maxProxyAttempts; attempt++) {
+      if (runAc.signal.aborted) {
+        result = {
+          ok: false,
+          error: "Stopped",
+          failedStep: "stopped",
+          paymentStatus: null,
+          cancelled: true,
+        };
+        break;
+      }
       if (!resolved?.proxy && attempt > 1) break;
 
       const host = proxyHostFromUrl(resolved?.proxy);
@@ -554,6 +596,7 @@ app.post("/run", async (req, reply) => {
         transport: typeof task.transport === "string" ? task.transport : undefined,
         forceTls: task.forceTls === true,
         forceUndici: task.forceUndici === true,
+        abortSignal: runAc.signal,
         // api.* tls-worker — opt-in only (default undici with WWW). true forces.
         ...(task.apiTls === true || task.apiTls === false ? { apiTls: task.apiTls } : {}),
         // Hyper sensor tls-worker — opt-in only (default undici one-client path).
@@ -637,6 +680,24 @@ app.post("/run", async (req, reply) => {
   } catch (e) {
     reply.code(500);
     req.log.error({ err: e }, "run failed");
+    if (e?.code === "RUN_CANCELLED" || e?.cancelled || /run_cancelled/i.test(String(e?.message || ""))) {
+      payForensics("run_end", {
+        executorTaskId: task?.taskId,
+        desktopTaskId: task?.desktopTaskId || null,
+        desktopRunId: task?.desktopRunId || null,
+        ok: false,
+        error: "Stopped",
+        cancelled: true,
+        cardLast4: card ? card.number.slice(-4) : null,
+      });
+      return {
+        ok: false,
+        error: "Stopped",
+        failedStep: "stopped",
+        cancelled: true,
+        paymentStatus: null,
+      };
+    }
     payForensics("run_end", {
       executorTaskId: task?.taskId,
       desktopTaskId: task?.desktopTaskId || null,
@@ -647,6 +708,7 @@ app.post("/run", async (req, reply) => {
     });
     return { ok: false, error: e?.message ?? String(e), failedStep: "run_error" };
   } finally {
+    endRun(String(task?.taskId || ""), runAc);
     inflight--;
   }
 });

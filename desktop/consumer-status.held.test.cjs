@@ -58,6 +58,16 @@ test("ATC-only success maps to cart_held", () => {
   assert.equal(out.label, OUTCOME.cart_held);
 });
 
+test("cart_hold + cartSn maps to cart_held without atcOnly flag", () => {
+  const out = consumerOutcome({
+    ok: true,
+    checkoutStage: "cart_hold",
+    cartSn: 99,
+    dryRun: true,
+  });
+  assert.equal(out.code, "cart_held");
+});
+
 test("soft tokenize fail with cart ids maps to held_pay_retry", () => {
   const out = consumerOutcome({
     ok: false,

@@ -47,6 +47,12 @@ let maxConcurrent = 5;
  * jobs from the same enqueue batch.
  */
 const activeTaskCounts = new Map();
+/** Task ids the user asked to stop — break Bandai loops + abort in-flight /run. */
+const abortTaskIds = new Set();
+/** @type {Map<string, AbortController>} */
+const abortControllers = new Map();
+/** desktop taskId → Set of live executor taskIds (for POST /cancel). */
+const activeExecutorTaskIds = new Map();
 
 function acquireTaskId(tid) {
   if (!tid) return;
@@ -58,6 +64,95 @@ function releaseTaskId(tid) {
   const n = (activeTaskCounts.get(tid) || 1) - 1;
   if (n <= 0) activeTaskCounts.delete(tid);
   else activeTaskCounts.set(tid, n);
+}
+
+function isTaskAborted(tid) {
+  return Boolean(tid && abortTaskIds.has(tid));
+}
+
+function abortControllerFor(tid) {
+  if (!tid) return null;
+  let ac = abortControllers.get(tid);
+  if (!ac || ac.signal.aborted) {
+    ac = new AbortController();
+    abortControllers.set(tid, ac);
+  }
+  return ac;
+}
+
+function clearAbortState(tid) {
+  if (!tid) return;
+  abortTaskIds.delete(tid);
+  abortControllers.delete(tid);
+  activeExecutorTaskIds.delete(tid);
+}
+
+function trackExecutorTaskId(desktopTaskId, executorTaskId) {
+  const tid = String(desktopTaskId || "");
+  const eid = String(executorTaskId || "");
+  if (!tid || !eid) return;
+  let set = activeExecutorTaskIds.get(tid);
+  if (!set) {
+    set = new Set();
+    activeExecutorTaskIds.set(tid, set);
+  }
+  set.add(eid);
+}
+
+function untrackExecutorTaskId(desktopTaskId, executorTaskId) {
+  const tid = String(desktopTaskId || "");
+  const eid = String(executorTaskId || "");
+  const set = activeExecutorTaskIds.get(tid);
+  if (!set) return;
+  if (eid) set.delete(eid);
+  if (!set.size) activeExecutorTaskIds.delete(tid);
+}
+
+/** Fire-and-forget sidecar cancel for every live executor id on these desktop tasks. */
+function cancelExecutorRunsForTasks(ids) {
+  const set = new Set((ids || []).map((x) => String(x || "")).filter(Boolean));
+  if (!set.size || typeof sidecar?.cancelRun !== "function") return;
+  for (const tid of set) {
+    const eids = activeExecutorTaskIds.get(tid);
+    if (!eids?.size) continue;
+    for (const eid of [...eids]) {
+      void sidecar.cancelRun(eid).then((res) => {
+        if (res?.found) {
+          console.warn(`[desktop:run] sidecar cancel ok taskId=${tid} executor=${eid}`);
+        }
+      });
+    }
+  }
+}
+
+function cancelledResult(job, reason = "stopped") {
+  return {
+    ok: false,
+    taskId: job?.task?.id,
+    runId: job?.runId,
+    error: "Stopped",
+    consumerLabel: "Stopped",
+    consumerCode: "stopped",
+    failedStep: "stopped",
+    stockStatus: "unknown",
+    debugError: reason,
+    at: Date.now(),
+    stopped: true,
+  };
+}
+
+/** Interruptible sleep — returns early when the task is aborted. */
+async function sleepUnlessAborted(tid, ms) {
+  const total = Math.max(0, Number(ms) || 0);
+  const step = 200;
+  let left = total;
+  while (left > 0) {
+    if (!running || isTaskAborted(tid)) return false;
+    const slice = Math.min(step, left);
+    await sleepMs(slice);
+    left -= slice;
+  }
+  return !isTaskAborted(tid);
 }
 /** When false, UI only gets consumer labels (failedStep/detail/polls stay on console). */
 let detailedLogs = true;
@@ -84,7 +179,7 @@ function setFinishedHandler(fn) {
 
 function configure(opts = {}) {
   const n = opts.maxConcurrent;
-  if (n != null) maxConcurrent = Math.max(1, Math.min(50, Number(n) || 5));
+  if (n != null) maxConcurrent = Math.max(1, Math.min(200, Number(n) || 5));
   if (Object.prototype.hasOwnProperty.call(opts, "detailedLogs")) {
     detailedLogs = opts.detailedLogs !== false;
   }
@@ -510,24 +605,19 @@ function buildBandaiPayload({
     }
   }
 
-  const paymentMethod = (() => {
-    const pm = String(task.paymentMethod || "credit_card").toLowerCase();
-    if (
-      pm === "paypal_guest" ||
-      pm === "paypal_auto" ||
-      pm === "paypal" ||
-      pm === "paypal_express"
-    )
-      return "paypal_guest";
-    if (pm === "paypal_manual" || pm === "paypal_link") return "paypal_manual";
-    return "credit_card";
-  })();
+  const payRaw = String(task.paymentMethod || "credit_card").toLowerCase();
+  const paymentMethod =
+    payRaw === "paypal_guest" || payRaw === "paypal_manual" ? payRaw : "credit_card";
   const wantPaypal = /^paypal/i.test(paymentMethod);
-  const paypalGuest = paymentMethod === "paypal_guest";
+  // Browser PayPal.com guest fill is lab-only (DataDome). Default = HTTP mint URL.
+  const paypalBrowserApprove =
+    task.paypalBrowserApprove === true ||
+    process.env.PAYPAL_BROWSER_APPROVE === "1" ||
+    process.env.PAYPAL_BROWSER_APPROVE === "true";
 
   let card = null;
-  // Card Fast + PayPal guest both need the task billing profile card.
-  if (mode === "checkout" && placeOrder && (!wantPaypal || paypalGuest)) {
+  // Card path needs PAN. PayPal HTTP mint does not. Browser guest fill does.
+  if (mode === "checkout" && placeOrder && (!wantPaypal || paypalBrowserApprove)) {
     const pan = String(profile?.card_number || "").replace(/\s+/g, "");
     const cvv = String(profile?.card_cvv || "").trim();
     const mm = String(profile?.card_exp_month || "").trim();
@@ -539,8 +629,8 @@ function buildBandaiPayload({
     if (!pan || !cvv || !mm || !yy) {
       return {
         ok: false,
-        error: paypalGuest
-          ? "PayPal guest needs complete card on the billing profile"
+        error: wantPaypal
+          ? "PayPal browser guest needs complete card on the billing profile"
           : "Place order needs complete card on the profile",
       };
     }
@@ -551,16 +641,6 @@ function buildBandaiPayload({
       cvv,
       holder,
     };
-  }
-
-  if (mode === "checkout" && placeOrder && paypalGuest) {
-    const billingEmail = String(profile?.email || "").trim();
-    if (!billingEmail) {
-      return {
-        ok: false,
-        error: "PayPal guest needs email on the billing profile",
-      };
-    }
   }
 
   return {
@@ -575,6 +655,9 @@ function buildBandaiPayload({
       dryRun: mode !== "checkout" ? true : !placeOrder,
       placeOrder: mode === "checkout" ? Boolean(placeOrder) : false,
       paymentMethod,
+      paypalBrowserApprove,
+      // Headless unless explicitly headed for lab watch.
+      paypalHeadless: task.paypalHeadless !== false,
       debugTrace: true,
       forceUndici: true,
       forceTls: false,
@@ -946,6 +1029,11 @@ function enqueue(jobs) {
       });
       continue;
     }
+    // Fresh Start clears a prior manual Stop latch for this row.
+    if (tid) {
+      abortTaskIds.delete(tid);
+      abortControllers.delete(tid);
+    }
     acquireTaskId(tid);
     const queued = {
       ...job,
@@ -975,9 +1063,82 @@ function start() {
 
 function stop() {
   running = false;
+  const queuedIds = queue.map((j) => j?.task?.id).filter(Boolean);
   queue = [];
-  activeTaskCounts.clear();
+  for (const tid of queuedIds) releaseTaskId(tid);
+  // Abort every live task so Bandai loops + in-flight /run exit.
+  const live = [...activeTaskCounts.keys()];
+  // Sidecar cancel FIRST — client socket abort alone does not stop issuer pay.
+  cancelExecutorRunsForTasks(live);
+  for (const tid of live) {
+    abortTaskIds.add(tid);
+    try {
+      abortControllers.get(tid)?.abort();
+    } catch {
+      /* ignore */
+    }
+  }
   emit({ type: "runner", ...state(), message: "stopped — queue cleared" });
+}
+
+/**
+ * Cancel specific task rows: drop queued jobs, abort in-flight /run, break Bandai loops.
+ * Does not disable the task — user can Start again.
+ * @param {string[]} ids
+ * @returns {{ ok: true, stopped: number }}
+ */
+function stopTasks(ids) {
+  const set = new Set((ids || []).map((x) => String(x || "")).filter(Boolean));
+  if (!set.size) return { ok: true, stopped: 0 };
+
+  // Tell the sidecar to abort before we tear down the client /run socket —
+  // otherwise GE pay can still complete after the UI shows Stopped.
+  cancelExecutorRunsForTasks([...set]);
+
+  for (const tid of set) {
+    abortTaskIds.add(tid);
+    try {
+      abortControllers.get(tid)?.abort();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const kept = [];
+  let dequeued = 0;
+  for (const job of queue) {
+    const tid = job?.task?.id;
+    if (tid && set.has(tid)) {
+      dequeued += 1;
+      releaseTaskId(tid);
+      emit({
+        type: "job",
+        phase: "done",
+        ...cancelledResult(job, "stopped_queued"),
+        lastStatus: "idle",
+        lastLabel: "Stopped",
+      });
+      continue;
+    }
+    kept.push(job);
+  }
+  queue = kept;
+
+  for (const tid of set) {
+    if (activeTaskCounts.has(tid)) {
+      emit({
+        type: "job",
+        phase: "status",
+        taskId: tid,
+        consumerLabel: "Stopping…",
+        lastLabel: "Stopping…",
+        lastStatus: "running",
+      });
+    }
+  }
+
+  emit({ type: "queue", ...state() });
+  return { ok: true, stopped: set.size, dequeued };
 }
 
 function pump() {
@@ -1130,11 +1291,22 @@ function finishResult(job, res, summary) {
       kmartMode: summary.kmartMode,
     }),
   );
+  const task = job.task || {};
+  const sku =
+    String(res?.productCode || task.bandaiWatchSku || task.productId || task.sku || "").trim() ||
+    null;
   return {
     ok: Boolean(res?.ok),
-    taskId: job.task?.id,
+    taskId: task.id,
     runId: job.runId,
     orderNumber: res?.orderNumber ?? null,
+    store: task.store || res?.store || null,
+    title: res?.title || task.title || task.label || null,
+    taskLabel: task.label || null,
+    sku,
+    qty: Math.max(1, Number(task.qty) || 1),
+    imageUrl: res?.imageUrl || task.imageUrl || null,
+    price: res?.price ?? res?.total ?? res?.amount ?? null,
     // Consumer-facing label (UI). Analytical detail stays in debugError / console.
     error: res?.ok ? null : outcome.label,
     consumerLabel:
@@ -1161,22 +1333,57 @@ function finishResult(job, res, summary) {
     attempt: "undici",
     // Bandai held-cart / pay-window (Retry pay)
     paymentStatus: res?.paymentStatus ?? null,
+    atcOnly: Boolean(res?.atcOnly),
     cartSn: res?.cartSn ?? null,
     cartId: res?.cartId ?? null,
     cartItemSn: res?.cartItemSn ?? null,
     areaItemNo: res?.areaItemNo ?? null,
     productCode: res?.productCode ?? null,
-    cartHoldAt: res?.cartHoldAt ?? res?.heldCart?.cartHoldAt ?? null,
+    cartHoldAt: (() => {
+      const n = Number(res?.cartHoldAt ?? res?.heldCart?.cartHoldAt);
+      return Number.isFinite(n) && n > 0 ? n : null;
+    })(),
+    payWindowMs: (() => {
+      const n = Number(res?.payWindowMs ?? res?.heldCart?.payWindowMs);
+      return Number.isFinite(n) && n > 0 ? n : 30 * 60_000;
+    })(),
     // Decline / already-submitted must never look like held retry pay.
     heldPayRetry:
       outcome.code === "declined" || outcome.code === "held_cart_gone"
         ? false
-        : Boolean(res?.heldPayRetry),
+        : Boolean(res?.heldPayRetry) || Boolean(res?.atcOnly),
     heldCartGone: Boolean(res?.heldCartGone),
-    heldCart:
-      outcome.code === "declined" || outcome.code === "held_cart_gone"
-        ? null
-        : res?.heldCart || null,
+    heldCart: (() => {
+      if (outcome.code === "declined" || outcome.code === "held_cart_gone") return null;
+      const src = res?.heldCart?.cartSn
+        ? res.heldCart
+        : res?.cartSn
+          ? {
+              cartSn: res.cartSn,
+              cartId: res.cartId || null,
+              cartItemSn: res.cartItemSn || null,
+              areaItemNo: res.areaItemNo || null,
+              productCode: res.productCode || null,
+              title: res.title || null,
+            }
+          : null;
+      if (!src?.cartSn) return null;
+      const holdAt = Number(src.cartHoldAt ?? res?.cartHoldAt);
+      return {
+        cartSn: src.cartSn,
+        cartId: src.cartId ?? res?.cartId ?? null,
+        cartItemSn: src.cartItemSn ?? res?.cartItemSn ?? null,
+        areaItemNo: src.areaItemNo ?? res?.areaItemNo ?? null,
+        productCode: src.productCode ?? res?.productCode ?? null,
+        title: src.title ?? res?.title ?? null,
+        // Always stamp a clock so the Tasks countdown can render.
+        cartHoldAt: Number.isFinite(holdAt) && holdAt > 0 ? holdAt : Date.now(),
+        payWindowMs: (() => {
+          const n = Number(src.payWindowMs ?? res?.payWindowMs);
+          return Number.isFinite(n) && n > 0 ? n : 30 * 60_000;
+        })(),
+      };
+    })(),
     chargeReqCount: res?.chargeReqCount ?? res?.bigpayAuthPosts ?? null,
     undiciAttempts: res?.undiciAttempts ?? null,
     bigpayAuthPosts: res?.bigpayAuthPosts ?? null,
@@ -1938,9 +2145,16 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
     emitLog(job.runId, job.task?.id, "info", "Guest checkout (no vault login)");
   }
 
+  const tid = job.task?.id;
+  if (isTaskAborted(tid)) {
+    return cancelledResult(job, "stopped_before_run");
+  }
+  const ac = abortControllerFor(tid);
+
   let lastStageKey = "";
   const progressTimer = setInterval(async () => {
     try {
+      if (isTaskAborted(tid)) return;
       const p = await sidecar.progress(payload.taskId);
       if (p?.found && p.progress) {
         const line = consumerProgressMessage(p.progress);
@@ -1965,8 +2179,12 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
     }
   }, 1500);
 
+  trackExecutorTaskId(tid, payload.taskId);
   try {
-    const res = await sidecar.runTask(payload);
+    const res = await sidecar.runTask(payload, { signal: ac?.signal });
+    if (isTaskAborted(tid) || res?.cancelled || res?.failedStep === "stopped") {
+      return cancelledResult(job, "stopped_after_run");
+    }
     const finished = finishResult(job, res, summary);
     if (extra.monitorHit) {
       finished.monitorHit = extra.monitorHit;
@@ -1974,7 +2192,13 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
       finished.harvestedBridge = Boolean(payload.harvestedBridgeId);
     }
     return finished;
+  } catch (e) {
+    if (isTaskAborted(tid) || e?.code === "ABORT_ERR" || /aborted/i.test(String(e?.message || ""))) {
+      return cancelledResult(job, "stopped_abort");
+    }
+    throw e;
   } finally {
+    untrackExecutorTaskId(tid, payload.taskId);
     clearInterval(progressTimer);
     if (pauseHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
       try {
@@ -2092,10 +2316,12 @@ async function runOneLegacyRotate(job, { sticky, entries, harvestLocked }) {
  * Bandai persistent lane: retry / rotate / wait-restock until stop, decline, or success.
  */
 async function runOneBandai(job, { sticky, entries }) {
+  const tid = job.task?.id;
   const mode = String(job.task?.bandaiMode || "checkout").toLowerCase();
+  // Drop traffic: keep hammering ATC/login/checkout until critical stop or this budget.
   const maxLoops = Math.max(
     8,
-    Math.min(80, Number(job.task?.bandaiMaxLoops || process.env.BANDAI_MAX_LOOPS) || 40),
+    Math.min(500, Number(job.task?.bandaiMaxLoops || process.env.BANDAI_MAX_LOOPS) || 200),
   );
   let rotateCount = 0;
   let retryCount = 0;
@@ -2103,6 +2329,13 @@ async function runOneBandai(job, { sticky, entries }) {
   let result = null;
 
   for (let loop = 1; loop <= maxLoops && running; loop++) {
+    if (isTaskAborted(tid)) {
+      result = cancelledResult(job, "stopped_loop");
+      break;
+    }
+    // New attempt gets a fresh AbortController (prior Stop aborted the old one).
+    if (tid) abortControllerFor(tid);
+
     if (mode === "monitor") {
       emitLiveStatus(job, "Waiting for restock");
     } else if (job.task?.bandaiPayFromCart) {
@@ -2118,6 +2351,11 @@ async function runOneBandai(job, { sticky, entries }) {
     rotateSession = false;
     logResultTail(job, result);
 
+    if (result?.stopped || isTaskAborted(tid)) {
+      result = cancelledResult(job, result?.debugError || "stopped");
+      break;
+    }
+
     // Clear one-shot pay-from-cart flag after the attempt (re-applied if policy says retry pay).
     if (job.task) job.task.bandaiPayFromCart = false;
 
@@ -2126,8 +2364,9 @@ async function runOneBandai(job, { sticky, entries }) {
       loop,
       rotateCount,
       retryCount,
-      maxRotate: Math.max(8, entries.length * 4 || 24),
-      maxRetry: 16,
+      proxyCount: entries.length || 1,
+      maxRotate: Math.max(16, entries.length * 6 || 48),
+      maxRetry: 40,
     });
 
     if (decision.action === "stop") {
@@ -2159,6 +2398,11 @@ async function runOneBandai(job, { sticky, entries }) {
 
     if (decision.action === "rotate") {
       rotateCount += 1;
+      if (decision.clearHeldCart && job.task) {
+        job.task.heldCart = null;
+        job.task.bandaiPayFromCart = false;
+        if (!job.task.bandaiWatchSku) job.task.bandaiAreaItemNo = null;
+      }
       rotateSession = advanceJobProxy(job, {
         sticky,
         entries,
@@ -2170,7 +2414,10 @@ async function runOneBandai(job, { sticky, entries }) {
       } else {
         rotateSession = sticky;
       }
-      await sleepMs(decision.delayMs);
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
       continue;
     }
 
@@ -2191,7 +2438,10 @@ async function runOneBandai(job, { sticky, entries }) {
       } else if (decision.retryPay) {
         applyHeldCartForPayRetry(job, result);
       }
-      await sleepMs(decision.delayMs);
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
       continue;
     }
 
@@ -2201,13 +2451,17 @@ async function runOneBandai(job, { sticky, entries }) {
       if (job.task) {
         delete job.task.bandaiPayFromCart;
       }
-      await sleepMs(decision.delayMs);
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
       continue;
     }
 
     break;
   }
 
+  if (tid) clearAbortState(tid);
   return result;
 }
 
@@ -2276,6 +2530,7 @@ async function runOne(job) {
     onFinished?.(result);
   } finally {
     releaseTaskId(tid);
+    if (tid) clearAbortState(tid);
   }
 }
 
@@ -2287,6 +2542,8 @@ module.exports = {
   enqueue,
   start,
   stop,
+  stopTasks,
+  isTaskAborted,
   buildPayload,
   normalizeProxy,
   isAkamaiWwwBlocked,

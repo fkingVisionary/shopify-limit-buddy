@@ -716,13 +716,15 @@ async function dismissAddressMatchSheet(page, log) {
   return true;
 }
 
-/** Wait out PayPal/DataDome "security check" overlay before guest pay. */
+/** Wait out PayPal/DataDome "security check" overlay before guest pay.
+ * @returns {Promise<boolean>} true if clear (or never shown), false if still stuck.
+ */
 async function waitPaypalSecurityCheck(page, log, ms = 25_000) {
   const deadline = Date.now() + ms;
   let saw = false;
   while (Date.now() < deadline) {
     const body = await page.locator("body").innerText().catch(() => "");
-    if (/perform security check|please wait while we/i.test(body)) {
+    if (/perform security check|please wait while we|captcha|verify you are human/i.test(body)) {
       if (!saw) {
         log("paypal_guest waiting security check…");
         saw = true;
@@ -734,7 +736,7 @@ async function waitPaypalSecurityCheck(page, log, ms = 25_000) {
       log("paypal_guest security check cleared");
       await page.waitForTimeout(400);
     }
-    return !saw;
+    return true;
   }
   if (saw) log("paypal_guest security check still visible after wait");
   return false;
@@ -1088,10 +1090,12 @@ export async function approvePaypalCheckout(opts = {}) {
   const log = typeof opts.log === "function" ? opts.log : () => {};
   // Guest UI + GE post-return capture needs headroom (bare auth return ≠ order).
   const timeoutMs = Math.min(360_000, Math.max(60_000, Number(opts.timeoutMs) || 240_000));
+  // Headless by default — never pop a window on the user's desktop.
+  // Opt into headed with headless:false or PAYPAL_APPROVE_HEADED=1.
   const headless =
-    opts.headless === true ||
-    process.env.PAYPAL_APPROVE_HEADLESS === "1" ||
-    process.env.PAYPAL_APPROVE_HEADLESS === "true";
+    opts.headless !== false &&
+    process.env.PAYPAL_APPROVE_HEADED !== "1" &&
+    process.env.PAYPAL_APPROVE_HEADED !== "true";
   const forensicsDir =
     opts.forensicsDir ||
     process.env.PAYPAL_GUEST_FORENSICS_DIR ||
@@ -1158,13 +1162,33 @@ export async function approvePaypalCheckout(opts = {}) {
       `paypal_guest open ${openUrl.slice(0, 140)} chrome=${Boolean(launchOpts.channel)} direct=${approveDirect}`,
     );
     await page.goto(openUrl, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    // Wait out DataDome interstitial (blank body / tiny html) before guest CTA.
-    for (let d = 0; d < 20; d++) {
-      const ready = await page.locator("#startGuestOnboardingFlow, #email, #acceptAllButton").count().catch(() => 0);
+    // Wait out DataDome interstitial briefly — do NOT spam clicks through captcha.
+    let uiReady = false;
+    for (let d = 0; d < 8; d++) {
+      const ready = await page
+        .locator("#startGuestOnboardingFlow, #email, #acceptAllButton")
+        .count()
+        .catch(() => 0);
       const bodyLen = (await page.locator("body").innerText().catch(() => "")).trim().length;
-      if (ready > 0 && bodyLen > 40) break;
+      if (ready > 0 && bodyLen > 40) {
+        uiReady = true;
+        break;
+      }
       log(`paypal_guest waiting DataDome/UI ready bodyLen=${bodyLen} attempt=${d}`);
       await page.waitForTimeout(1000);
+    }
+    if (!uiReady) {
+      await dumpForensics(page, forensicsDir, "datadome-blank");
+      await context.close().catch(() => {});
+      await browser.close().catch(() => {});
+      return {
+        ok: false,
+        error: "paypal_datadome_blocked",
+        note: "PayPal DataDome / blank UI — refuse click-spam; HTTP mint URL still valid",
+        ms: Date.now() - t0,
+        via: "paypal-guest",
+        trail: trail.slice(-12),
+      };
     }
     await dismissPaypalCookies(page, log);
     await dumpForensics(page, forensicsDir, "open");
@@ -1364,9 +1388,25 @@ export async function approvePaypalCheckout(opts = {}) {
         continue;
       }
 
-      // Don't hammer pay while DataDome security check is up.
-      if (/perform security check|please wait while we/i.test(bodyNow)) {
-        await waitPaypalSecurityCheck(page, log, 12_000);
+      // DataDome / security check — wait once, then fail-closed (no CTA spam).
+      if (/perform security check|please wait while we|captcha|verify you are human/i.test(bodyNow)) {
+        const cleared = await waitPaypalSecurityCheck(page, log, 15_000);
+        if (!cleared) {
+          log("paypal_guest DataDome/security check stuck — bail (no click spam)");
+          await dumpForensics(page, forensicsDir, "datadome-stuck");
+          await context.close().catch(() => {});
+          await browser.close().catch(() => {});
+          return {
+            ok: false,
+            error: "paypal_datadome_blocked",
+            note: "PayPal security check / captcha stuck — refuse spam clicks",
+            ms: Date.now() - t0,
+            via: "paypal-guest",
+            trail: trail.slice(-12),
+            cardFilled: Boolean(cardFilled2),
+            payClicked: payClicked || null,
+          };
+        }
         continue;
       }
 

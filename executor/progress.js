@@ -25,10 +25,14 @@ export function stageForStep(stepName) {
   if (!s) return null;
   if (/^(warm_|akamai_|sbsd_|home_|api_get_token|api_sensor|antibot_|proxy_)/i.test(s)) return "warm";
   // Bandai / F5 login path
-  if (/^(login|f5_bridge|member_refresh|login_)/i.test(s)) return "login";
+  if (/^(login|f5_bridge|member_refresh|login_|shipping_ensure)/i.test(s)) return "login";
   if (/^(pdp_|sku_|akamai_pixel|category_|product_get|product$)/i.test(s)) return "product";
-  // Checkout-ish cart_* before generic cart_ (cart_detail / cart_checkout = Checking out).
-  if (/^(cart_detail|cart_checkout|shipping_ensure)/i.test(s)) return "details";
+  // cart_checkout is the real "Checking out" gate. cart_detail / addToCart stay on cart
+  // so ATC-only (and checkout) show "Adding to cart" before checkout POST.
+  // shipping_ensure runs before ATC — never jump past cart to Checking out.
+  // Pay-from-cart: verify live line — never label as "Adding to cart".
+  if (/^held_cart_(verify|ok|ready)/i.test(s)) return "details";
+  if (/^cart_checkout/i.test(s)) return "details";
   if (/^(cart_|http_handoff|addToCart|cart_hold)/i.test(s)) return "cart";
   if (/^checkout_(set_address|set_billing|gate)/i.test(s)) return "details";
   if (

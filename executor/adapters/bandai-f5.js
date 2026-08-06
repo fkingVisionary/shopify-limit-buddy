@@ -100,11 +100,18 @@ export function parseBandaiProxy(rawProxy) {
  * @param {string} [opts.userAgent]
  * @param {boolean} [opts.headless=true]
  * @param {string} [opts.channel] — e.g. "chrome" for real Chrome (not HeadlessChromium)
+ * @param {AbortSignal} [opts.abortSignal] — desktop Stop closes Chromium mid-goto
  */
 export async function createBandaiF5Bridge(opts = {}) {
   const area = normalizeBandaiArea(opts.area) || "au";
   const BANDAI_BASE = bandaiBaseFor(area);
   const { playwright: pwProxy } = parseBandaiProxy(opts.proxy);
+  if (opts.abortSignal?.aborted) {
+    const err = new Error("run_cancelled");
+    err.code = "RUN_CANCELLED";
+    err.cancelled = true;
+    throw err;
+  }
   const channel =
     opts.channel ||
     process.env.BANDAI_F5_CHANNEL ||
@@ -172,21 +179,57 @@ export async function createBandaiF5Bridge(opts = {}) {
     /* stealth is best-effort */
   }
   const page = await context.newPage();
-  page.setDefaultTimeout(Number(opts.timeoutMs) || 90_000);
+  // Drop path: dead proxies must fail fast so the outer loop can rotate.
+  // Default 10s — stock is gone long before a 45–90s hang helps.
+  const navTimeoutMs = Math.max(
+    3_000,
+    Math.min(30_000, Number(opts.timeoutMs) || 10_000),
+  );
+  page.setDefaultTimeout(navTimeoutMs);
 
   let closed = false;
+  const abortSignal = opts.abortSignal || null;
+  const onAbortClose = () => {
+    void close().catch(() => {});
+  };
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", onAbortClose, { once: true });
+  }
+
+  function throwIfBridgeAborted() {
+    if (!abortSignal?.aborted) return;
+    const err = new Error("run_cancelled");
+    err.code = "RUN_CANCELLED";
+    err.cancelled = true;
+    throw err;
+  }
 
   async function goto(pathOrUrl, gotoOpts = {}) {
+    throwIfBridgeAborted();
     const url = /^https?:\/\//i.test(pathOrUrl)
       ? pathOrUrl
       : pathOrUrl.startsWith(`/${area}/`) || pathOrUrl.startsWith("/_ui/") || pathOrUrl.startsWith("/api/") || pathOrUrl.startsWith("/login")
         ? `${BANDAI_ORIGIN}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`
         : `${BANDAI_BASE}${pathOrUrl.startsWith("/") ? "" : "/"}${pathOrUrl}`;
-    await page.goto(url, { waitUntil: "domcontentloaded" });
+    const gotoTimeout =
+      gotoOpts.timeoutMs != null
+        ? Math.max(3_000, Number(gotoOpts.timeoutMs) || navTimeoutMs)
+        : navTimeoutMs;
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: gotoTimeout,
+      });
+    } catch (e) {
+      throwIfBridgeAborted();
+      throw e;
+    }
+    throwIfBridgeAborted();
     // Allow common.js?async to hook XHR/fetch. Cart/GE nav can use a shorter settle.
     const settle =
       gotoOpts.settleMs != null ? Number(gotoOpts.settleMs) : 1800;
     if (settle > 0) await page.waitForTimeout(settle);
+    throwIfBridgeAborted();
     return { url: page.url() };
   }
 
@@ -307,6 +350,11 @@ export async function createBandaiF5Bridge(opts = {}) {
   async function close() {
     if (closed) return;
     closed = true;
+    try {
+      abortSignal?.removeEventListener?.("abort", onAbortClose);
+    } catch {
+      /* ignore */
+    }
     try {
       await context.close();
     } catch {

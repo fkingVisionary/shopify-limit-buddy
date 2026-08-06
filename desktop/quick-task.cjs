@@ -12,7 +12,10 @@ const DEFAULT_PRESET = {
   bandaiMode: "checkout",
   bandaiCheckoutMode: "fast",
   paymentMethod: "credit_card",
+  profileSource: "single",
   profileId: null,
+  profileGroup: null,
+  profileIds: [],
   proxyGroupId: null,
   qty: 1,
   quantity: 1,
@@ -21,6 +24,13 @@ const DEFAULT_PRESET = {
   accountId: null,
   startAfterCreate: true,
 };
+
+function normalizeProfileIdList(raw) {
+  const fromArr = Array.isArray(raw?.profileIds)
+    ? raw.profileIds.map((id) => String(id || "").trim()).filter(Boolean)
+    : [];
+  return [...new Set(fromArr)].slice(0, 200);
+}
 
 /**
  * Normalize settings.quickTaskPreset with defaults.
@@ -45,16 +55,18 @@ function normalizeQuickTaskPreset(raw = {}) {
       ? "checkout"
       : modeRaw
     : "checkout";
-  const pmRaw = String(raw.paymentMethod || DEFAULT_PRESET.paymentMethod).toLowerCase();
+  const payRaw = String(raw.paymentMethod || "credit_card").toLowerCase();
   const paymentMethod =
-    pmRaw === "paypal_guest" ||
-    pmRaw === "paypal_auto" ||
-    pmRaw === "paypal" ||
-    pmRaw === "paypal_express"
-      ? "paypal_guest"
-      : pmRaw === "paypal_manual" || pmRaw === "paypal_link"
-        ? "paypal_manual"
-        : "credit_card";
+    payRaw === "paypal_guest" || payRaw === "paypal_manual" ? payRaw : "credit_card";
+  const profileIds = normalizeProfileIdList(raw);
+  const profileGroup = String(raw.profileGroup || "").trim().slice(0, 80) || null;
+  const profileId = raw.profileId || profileIds[0] || null;
+  let profileSource = String(raw.profileSource || "").toLowerCase();
+  if (!["single", "group", "multi"].includes(profileSource)) {
+    if (profileGroup) profileSource = "group";
+    else if (profileIds.length > 1) profileSource = "multi";
+    else profileSource = "single";
+  }
   return {
     store,
     bandaiArea,
@@ -66,7 +78,10 @@ function normalizeQuickTaskPreset(raw = {}) {
       return "fast";
     })(),
     paymentMethod,
-    profileId: raw.profileId || null,
+    profileSource,
+    profileId: profileSource === "single" ? profileId : profileId || null,
+    profileGroup: profileSource === "group" ? profileGroup : null,
+    profileIds: profileSource === "multi" ? profileIds : [],
     proxyGroupId: raw.proxyGroupId || null,
     qty: Math.max(1, Math.min(20, Number(raw.qty) || 1)),
     quantity: Math.max(1, Math.min(50, Number(raw.quantity) || 1)),
@@ -77,6 +92,51 @@ function normalizeQuickTaskPreset(raw = {}) {
     accountId: raw.accountId || null,
     startAfterCreate: raw.startAfterCreate !== false,
   };
+}
+
+/**
+ * Resolve preset profile selection into concrete profile slots.
+ * @param {object} preset
+ * @param {Array<{ id: string, name?: string, email?: string, profileGroup?: string }>} profiles
+ * @returns {Array<{ profileId: string, name: string }>}
+ */
+function resolveQuickTaskProfiles(preset, profiles = []) {
+  const p = normalizeQuickTaskPreset(preset);
+  const list = Array.isArray(profiles) ? profiles : [];
+  const byId = new Map(list.map((row) => [row.id, row]));
+
+  if (p.profileSource === "group") {
+    const key = String(p.profileGroup || "")
+      .trim()
+      .toLowerCase();
+    if (!key) return [];
+    return list
+      .filter((row) => String(row.profileGroup || "").trim().toLowerCase() === key)
+      .map((row) => ({
+        profileId: row.id,
+        name: row.name || row.email || row.id,
+      }));
+  }
+
+  if (p.profileSource === "multi") {
+    const ids = p.profileIds.length ? p.profileIds : p.profileId ? [p.profileId] : [];
+    return ids
+      .map((id) => {
+        const row = byId.get(id);
+        if (!row) return null;
+        return { profileId: id, name: row.name || row.email || id };
+      })
+      .filter(Boolean);
+  }
+
+  if (!p.profileId) return [];
+  const row = byId.get(p.profileId);
+  return [
+    {
+      profileId: p.profileId,
+      name: row?.name || row?.email || p.profileId,
+    },
+  ];
 }
 
 /**
@@ -283,6 +343,7 @@ function contextFromQuickTask(target, opts = {}) {
 module.exports = {
   DEFAULT_PRESET,
   normalizeQuickTaskPreset,
+  resolveQuickTaskProfiles,
   parseBandaiProductInput,
   targetFromMonitorHit,
   buildQuickTaskDraft,

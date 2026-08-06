@@ -21,11 +21,13 @@ const LIVE = {
 const OUTCOME = {
   confirmed: "Order confirmed",
   complete: "Complete",
+  paypal_link: "PayPal link ready",
   cart_held: "In cart",
   oos: "Out of stock",
   akamai: "Blocked by store protection",
   proxy: "Proxy error",
   declined: "Payment declined",
+  ge_fraud: "GE fraud refused (bank ping then void)",
   held_pay_retry: "Cart held — retry pay",
   held_cart_gone: "Cart hold expired",
   checkout_address: "Checkout needs address/name",
@@ -50,6 +52,8 @@ function isOutOfStock(res) {
   if (!res || res.ok) return false;
   const text = [stepText(res), res?.debugError, res?.note].filter(Boolean).join("\n");
   if (/Access Denied|AkamaiGHost|akamai_unsolved/i.test(text)) return false;
+  // Drop traffic pages are not OOS — keep hammering ATC.
+  if (/NETWORK CONGESTION|PAGE NOT AVAILABLE|RELOAD_ONLY/i.test(text)) return false;
   if (
     /out\s*of\s*stock|sold\s*out|SoldOut|EndOfSale|CouldNotAddToCartBy(SoldOut|OutOfStock|EndOfSale)|not\s*available|unavailable|INSUFFICIENT|no\s+stock|OOS\b/i.test(
       text,
@@ -196,12 +200,23 @@ function consumerOutcome(res) {
     if (res.orderNumber) {
       return { code: "confirmed", label: OUTCOME.confirmed, stockStatus: "ok" };
     }
+    // HTTP PayPal mint — approve URL ready (not a charged order).
+    if (
+      /paypal_approve_url/i.test(String(res.paymentStatus || "")) ||
+      (res.paypalApproveUrl &&
+        !res.orderNumber &&
+        /^paypal/i.test(String(res.paymentMethod || "")))
+    ) {
+      return { code: "paypal_link", label: OUTCOME.paypal_link, stockStatus: "ok" };
+    }
     // ATC-only / stop-at-cart: cart held for ~30 min pay window.
     if (
       res.atcOnly === true ||
       (res.heldPayRetry === true &&
         (res.heldCart?.cartSn || res.cartSn) &&
-        /^(cart|cart_hold)$/i.test(String(res.checkoutStage || "")))
+        /^(cart|cart_hold)$/i.test(String(res.checkoutStage || ""))) ||
+      (/^cart_hold$/i.test(String(res.checkoutStage || "")) &&
+        (res.heldCart?.cartSn || res.cartSn || res.dryRun === true))
     ) {
       return { code: "cart_held", label: OUTCOME.cart_held, stockStatus: "ok" };
     }
@@ -226,6 +241,10 @@ function consumerOutcome(res) {
       label: OUTCOME.checkout_address,
       stockStatus: "unknown",
     };
+  }
+  // GE risk refuse ≠ bank decline — bank may ping then void (PossibleFraudDetected=True).
+  if (/ge_fraud_refused|fraud_refused/i.test(String(res?.paymentStatus || ""))) {
+    return { code: "ge_fraud", label: OUTCOME.ge_fraud, stockStatus: "ok" };
   }
   // Hard decline wins — Bandai clears the cart; do not show "Cart held — retry pay".
   if (isPaymentDeclined(res)) {

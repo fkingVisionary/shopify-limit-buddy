@@ -556,28 +556,82 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     const headedChrome =
       process.env.BANDAI_GE_TEST_HEADED_CHROME === "1" ||
       task.bandaiGeTestHeadedChrome === true;
-    bridge = await createBandaiF5Bridge({
-      proxy: proxyLine || null,
-      area: session.area,
-      timeoutMs: Number(task.browserLoginTimeoutMs) || 90_000,
-      ...(headedChrome ? { channel: "chrome", headless: false } : {}),
+    if (task.abortSignal?.aborted) {
+      const err = new Error("run_cancelled");
+      err.code = "RUN_CANCELLED";
+      err.cancelled = true;
+      throw err;
+    }
+    // Wall-clock budget for launch+goto — stock dies while we wait on a dead exit.
+    const bridgeTimeoutMs = Math.max(
+      5_000,
+      Math.min(20_000, Number(task.browserLoginTimeoutMs) || 14_000),
+    );
+    // Harvest bank settles 1.2–3s; hard-capping at 800ms left csrf present but
+    // login SoftBlocked (Royal spray 2026-08-06). Match lab floor.
+    const settleMs = Math.max(1_400, Math.min(4_000, f5SettleMs));
+    let timedOut = false;
+    let timer = null;
+    const timeoutP = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        const err = new Error(`f5_bridge timed out after ${bridgeTimeoutMs}ms`);
+        err.code = "ETIMEDOUT";
+        reject(err);
+      }, bridgeTimeoutMs);
     });
-    await bridge.goto(`${session.base}/login`, { settleMs: f5SettleMs });
-    const csrf = await bridge.csrfToken();
-    const cookies = await bridge.cookies();
-    if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
-    if (csrf) session.state.csrfToken = csrf;
-    steps.push({
-      step: "f5_bridge",
-      ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
-      status: null,
-      ms: Date.now() - s0,
-      note: csrf
-        ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${f5SettleMs}ms fastAtc=${fastAtc}${headedChrome ? " chrome:headed" : ""}${noteSuffix}`
-        : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${f5SettleMs}ms${headedChrome ? " chrome:headed" : ""}${noteSuffix}`,
-    });
-    ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
-    return Boolean(csrf) || Object.keys(cookies || {}).length > 0;
+    const work = (async () => {
+      bridge = await createBandaiF5Bridge({
+        proxy: proxyLine || null,
+        area: session.area,
+        timeoutMs: bridgeTimeoutMs,
+        abortSignal: task.abortSignal || null,
+        ...(headedChrome ? { channel: "chrome", headless: false } : {}),
+      });
+      if (timedOut) {
+        try {
+          await bridge.close();
+        } catch {
+          /* ignore */
+        }
+        bridge = null;
+        return false;
+      }
+      await bridge.goto(`${session.base}/login`, {
+        settleMs,
+        timeoutMs: bridgeTimeoutMs,
+      });
+      const csrf = await bridge.csrfToken();
+      const cookies = await bridge.cookies();
+      if (cookies && ctx.jar?.load) ctx.jar.load(cookies);
+      if (csrf) session.state.csrfToken = csrf;
+      steps.push({
+        step: "f5_bridge",
+        ok: Boolean(csrf) || Object.keys(cookies || {}).length > 0,
+        status: null,
+        ms: Date.now() - s0,
+        note: csrf
+          ? `bridge ready area=${session.area} csrf=${String(csrf).slice(0, 8)}… settle=${settleMs}ms fastAtc=${fastAtc}${headedChrome ? " chrome:headed" : ""}${noteSuffix}`
+          : `bridge area=${session.area} cookies=${Object.keys(cookies || {}).join(",")} settle=${settleMs}ms${headedChrome ? " chrome:headed" : ""}${noteSuffix}`,
+      });
+      ctx.onProgress?.("f5_bridge", steps[steps.length - 1].note);
+      return Boolean(csrf) || Object.keys(cookies || {}).length > 0;
+    })();
+    try {
+      return await Promise.race([work, timeoutP]);
+    } catch (e) {
+      if (bridge) {
+        try {
+          await bridge.close();
+        } catch {
+          /* ignore */
+        }
+        bridge = null;
+      }
+      throw e;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   if (wantBridge) {
@@ -841,9 +895,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       if (!bridge?.page || bridge.page.isClosed?.()) {
         return { ok: false, status: null, note: "bridge login skipped: no page" };
       }
-      // Warm F5 sensor cookies in-page before login fetch (mint-only used to
-      // leave bridge fetch SoftBlocked while undici also 501'd).
-      try {
+
+      async function mintAndPostLogin() {
         const mint = await bridge.mint("POST", "/login", {
           body: loginBody,
           contentType: "application/x-www-form-urlencoded;charset=UTF-8",
@@ -852,69 +905,96 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         const c = await bridge.cookies();
         if (c && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...c });
         if (!mint.ok) {
-          return { ok: false, status: null, note: `bridge sensor mint failed: ${mint.note}` };
+          return {
+            ok: false,
+            status: null,
+            note: `bridge sensor mint failed: ${mint.note}`,
+          };
         }
-      } catch (e) {
+        const csrf = session.state.csrfToken || (await bridge.csrfToken());
+        const result = await bridge.page.evaluate(
+          async ({ body, csrf: tok, areaCode }) => {
+            const res = await fetch("/login", {
+              method: "POST",
+              headers: {
+                accept: "application/json, text/plain, */*",
+                "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "x-g1-area-code": areaCode,
+                "x-requested-with": "XMLHttpRequest",
+                ...(tok ? { "x-csrf-token": tok } : {}),
+              },
+              body,
+              credentials: "include",
+            });
+            const text = await res.text();
+            return {
+              status: res.status,
+              restrictedType: res.headers.get("x-restricted-type"),
+              csrf: res.headers.get("x-csrf-token"),
+              text: text.slice(0, 240),
+            };
+          },
+          { body: loginBody, csrf, areaCode: session.area },
+        );
+        try {
+          await bridge.page.waitForTimeout(600);
+        } catch {
+          /* ignore */
+        }
+        const cookies = await bridge.cookies().catch(() => null);
+        if (cookies && ctx.jar?.load) {
+          ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
+        }
+        if (result?.csrf) session.state.csrfToken = result.csrf;
+        const restricted = result?.restrictedType || null;
+        const blocking =
+          restricted &&
+          !/^NoRestriction$/i.test(restricted) &&
+          restricted !== "null" &&
+          restricted !== "";
+        const status = Number(result?.status) || null;
+        const ok = status >= 200 && status < 300 && !blocking;
         return {
-          ok: false,
-          status: null,
-          note: `bridge sensor mint throw: ${e?.message || e}`,
+          ok,
+          status,
+          restrictedType: restricted,
+          blocking: Boolean(blocking),
+          note: blocking
+            ? `bridge restricted:${restricted}`
+            : ok
+              ? "login ok via=bridge"
+              : `bridge login ${status}`,
         };
       }
-      const csrf = session.state.csrfToken || (await bridge.csrfToken());
-      const result = await bridge.page.evaluate(
-        async ({ body, csrf: tok, areaCode }) => {
-          const res = await fetch("/login", {
-            method: "POST",
-            headers: {
-              accept: "application/json, text/plain, */*",
-              "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
-              "x-g1-area-code": areaCode,
-              "x-requested-with": "XMLHttpRequest",
-              ...(tok ? { "x-csrf-token": tok } : {}),
-            },
-            body,
-            credentials: "include",
+
+      let out = await mintAndPostLogin();
+      // SoftBlock after short sensor cook: re-goto login with full settle + one remint.
+      if (
+        !out.ok &&
+        (out.status === 501 ||
+          /SoftBlock|Access Denied|Request rejected/i.test(String(out.note || "")))
+      ) {
+        try {
+          await bridge.goto(`${session.base}/login`, {
+            settleMs: Math.max(f5SettleMs, 2_000),
           });
-          const text = await res.text();
-          return {
-            status: res.status,
-            restrictedType: res.headers.get("x-restricted-type"),
-            csrf: res.headers.get("x-csrf-token"),
-            text: text.slice(0, 240),
-          };
-        },
-        { body: loginBody, csrf, areaCode: session.area },
-      );
-      try {
-        await bridge.page.waitForTimeout(800);
-      } catch {
-        /* ignore */
+          const csrfFresh = await bridge.csrfToken();
+          if (csrfFresh) session.state.csrfToken = csrfFresh;
+          const cFresh = await bridge.cookies();
+          if (cFresh && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...cFresh });
+        } catch {
+          /* still try remint below */
+        }
+        const retry = await mintAndPostLogin();
+        if (retry.ok) {
+          return { ...retry, note: `${retry.note} (after login remint)` };
+        }
+        out = {
+          ...retry,
+          note: `${retry.note || out.note} (remint also failed)`,
+        };
       }
-      const cookies = await bridge.cookies().catch(() => null);
-      if (cookies && ctx.jar?.load) {
-        ctx.jar.load({ ...(ctx.jar.dump?.() || {}), ...cookies });
-      }
-      if (result?.csrf) session.state.csrfToken = result.csrf;
-      const restricted = result?.restrictedType || null;
-      const blocking =
-        restricted &&
-        !/^NoRestriction$/i.test(restricted) &&
-        restricted !== "null" &&
-        restricted !== "";
-      const status = Number(result?.status) || null;
-      const ok = status >= 200 && status < 300 && !blocking;
-      return {
-        ok,
-        status,
-        restrictedType: restricted,
-        blocking: Boolean(blocking),
-        note: blocking
-          ? `bridge restricted:${restricted}`
-          : ok
-            ? "login ok via=bridge"
-            : `bridge login ${status}`,
-      };
+      return out;
     } catch (e) {
       return {
         ok: false,
@@ -1175,10 +1255,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     String(task.bandaiMode || "").toLowerCase() === "pay_cart";
 
   // ── Product ────────────────────────────────────────────────────────────
-  // Lab 2026-07-23: p8komysnbc-* mint for addToCart works on /login and /cart
-  // but NOT on /item/* (avail=false PDP). Fast path skips item nudge and keeps
-  // the bridge on login for ATC mint (~3–4s saved + mint reliability).
-  if (bridge && !fastAtc && !payFromCart) {
+  // Always nudge the item page before ATC (except pay-from-held-cart).
+  // fastAtc used to skip this (~3–4s) and mint from login/cart, but Royal SoftBlock
+  // labs (2026-08-06) SoftBlocked addToCart every time when f5_pdp_nudge was skipped
+  // after a good login_bridge — product-page context is required before ATC.
+  if (bridge && !payFromCart) {
     const pdpNavT0 = Date.now();
     await bridge.goto(`${session.base}/item/${encodeURIComponent(productCode)}`, {
       settleMs: f5SettleMs,
@@ -1194,15 +1275,13 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       ms: Date.now() - pdpNavT0,
       note: `goto item/${productCode} settle=${f5SettleMs}ms`,
     });
-  } else if (bridge && (fastAtc || payFromCart)) {
+  } else if (bridge && payFromCart) {
     steps.push({
       step: "f5_pdp_nudge",
       ok: true,
       status: null,
       ms: 0,
-      note: payFromCart
-        ? "skipped item goto (payFromCart — verify live cart)"
-        : "skipped item goto (fastAtc; mint ATC from login/cart context)",
+      note: "skipped item goto (payFromCart — verify live cart)",
     });
   }
 
@@ -1364,13 +1443,14 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
     if (atc.hit?.areaItemNo) pdp.areaItemNo = atc.hit.areaItemNo;
     cartHoldAt = Number(task.heldCart?.cartHoldAt) || Date.now();
     steps.push({
-      step: "cart_hold",
+      // Distinct from ATC cart_hold so UI shows "Checking out", not "Adding to cart".
+      step: "held_cart_ok",
       ok: true,
       status: 200,
       ms: 0,
       note: `payFromCart — live line held (pay window ~${Math.round(BANDAI_PAY_WINDOW_MS / 60_000)}min)`,
     });
-    ctx.onProgress?.("cart_hold", steps[steps.length - 1].note);
+    ctx.onProgress?.("held_cart_ok", steps[steps.length - 1].note);
   } else {
   // Pre-ATC cart peek costs a RTT; skip on fast path (drop race) — except
   // placeOrder, where a stuck PreOrder line SoftBlocks /checkout → GetCartToken.
@@ -1635,6 +1715,22 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         attempt < maxAttempts &&
         isRetryableAtcFailure({ status, err, textHint })
       ) {
+        // SoftBlock mid-loop: re-nudge item page so the next mint isn't from
+        // a drifted login/cart context.
+        if (bridge?.page && productCode) {
+          try {
+            await bridge.goto(
+              `${session.base}/item/${encodeURIComponent(productCode)}`,
+              { settleMs: Math.max(f5SettleMs, 1_800) },
+            );
+            const csrfRetry = await bridge.csrfToken();
+            if (csrfRetry) session.state.csrfToken = csrfRetry;
+            const cRetry = await bridge.cookies();
+            if (cRetry && ctx.jar?.load) ctx.jar.load({ ...ctx.jar.dump(), ...cRetry });
+          } catch {
+            /* ignore — next mint still attempted */
+          }
+        }
         await sleepMs(450 * attempt + Math.floor(Math.random() * 200));
         continue;
       }
@@ -1649,10 +1745,15 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
 
   // SoftBlock recovery: mint+abort → undici ATC can 501 after a good login when
   // the bridge session drifted. Complete ATC inside the F5 bridge (not pay).
+  // ATC-only also needs this — desktop sets placeOrder=false for bandaiMode=atc,
+  // so gating on placeOrder alone left ATC mode stuck on undici 501 forever.
+  const atcOnlyMode =
+    /^(atc|atc_only)$/i.test(String(task.bandaiMode || task.mode || "")) ||
+    task.bandaiStopAtCart === true;
   if (
     !atc.ok &&
     bridge?.page &&
-    placeOrder &&
+    (placeOrder || atcOnlyMode) &&
     isRetryableAtcFailure({ status: atc.status, err: atc.note, textHint: atc.note })
   ) {
     atc = await tStep("addToCart_bridge", async () => {
@@ -1663,12 +1764,25 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
           /* ignore */
         }
       }
+      // Remint ATC from the item page (not /cart). SoftBlock after login+cart
+      // skip is the Royal pattern — product context + fresh csrf before bridge ATC.
       try {
-        await bridge.goto(`${session.base}/cart`, { settleMs: Math.min(f5SettleMs, 2000) });
+        await bridge.goto(
+          `${session.base}/item/${encodeURIComponent(productCode)}`,
+          { settleMs: Math.max(f5SettleMs, 2_000) },
+        );
       } catch {
-        /* continue — login context may still mint */
+        try {
+          await bridge.goto(`${session.base}/cart`, {
+            settleMs: Math.min(f5SettleMs, 2000),
+          });
+        } catch {
+          /* continue — login context may still mint */
+        }
       }
-      const csrf = session.state.csrfToken || (await bridge.csrfToken());
+      const csrfFresh = await bridge.csrfToken().catch(() => null);
+      if (csrfFresh) session.state.csrfToken = csrfFresh;
+      const csrf = session.state.csrfToken || csrfFresh;
       let result;
       try {
         result = await bridge.page.evaluate(
@@ -1733,8 +1847,8 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         ok,
         status,
         note: ok
-          ? `ATC ok via=bridge line=${line?.cartItemSn || "?"}`
-          : `bridge ATC ${status}${err ? ` ${err}` : ""}`,
+          ? `ATC ok via=bridge item/${productCode} line=${line?.cartItemSn || "?"}`
+          : `bridge ATC ${status}${err ? ` ${err}` : ""} (from item/${productCode})`,
         json: line?.cartItemSn
           ? { items: [{ cartLineItemSn: line.cartItemSn, addedNewCart: true }] }
           : result?.json,
@@ -2433,6 +2547,17 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
         note: "autocheckout_test → bandai-ge-http-test.js (prod fast untouched)",
       });
     }
+    if (task.abortSignal?.aborted) {
+      return {
+        ok: false,
+        steps,
+        error: "Stopped",
+        failedStep: "stopped",
+        cancelled: true,
+        paymentStatus: null,
+        checkoutStage: "pre_cart",
+      };
+    }
     const geOut = await runGeHttpPay({
       ctx,
       page: geNoPage ? null : bridge?.page || null,
@@ -2440,6 +2565,7 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       machineId: geNoPage ? geMachineId : riskHydrate ? null : geMachineId,
       riskHydrate,
       forceFreshMint: riskHydrate,
+      abortSignal: task.abortSignal || null,
       // Forensics correlation only (desktop → /run → issuer POST).
       desktopTaskId: task.desktopTaskId || null,
       desktopRunId: task.desktopRunId || null,
@@ -2460,8 +2586,11 @@ async function runHttpCheckout(task, ctx, sessionIn, tStep, steps, opts = {}) {
       paymentMethod: task.paymentMethod || null,
       paymentMethodId: task.paymentMethodId || null,
       gatewayId: task.gatewayId || null,
-      // PayPal guest uses billing profile email/card (passed as profile + card).
-      paypalHeadless: task.paypalHeadless === true,
+      // PayPal: HTTP mint by default. Browser guest fill is lab opt-in (DataDome).
+      paypalBrowserApprove:
+        task.paypalBrowserApprove === true ||
+        process.env.PAYPAL_BROWSER_APPROVE === "1",
+      paypalHeadless: task.paypalHeadless !== false,
       skipCreditCardForm:
         task.bandaiGeSkipCreditCardForm === true ||
         /^paypal/i.test(String(task.paymentMethod || "")),

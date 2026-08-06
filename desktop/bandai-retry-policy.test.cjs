@@ -222,3 +222,55 @@ test("bad password → stop", () => {
   assert.equal(d.action, "stop");
   assert.equal(d.liveLabel, "Login failed");
 });
+
+test("ATC NETWORK CONGESTION → retry (keep trying while stock)", () => {
+  const d = classifyBandaiRunResult({
+    ok: false,
+    failedStep: "addToCart",
+    debugError: "NETWORK CONGESTION — PAGE NOT AVAILABLE",
+    lastSteps: [{ step: "addToCart", ok: false, note: "NETWORK CONGESTION" }],
+  });
+  assert.equal(d.action, "retry");
+  assert.equal(d.reason, "atc_soft");
+});
+
+test("soft pay retry_exhausted → rotate (not stop)", () => {
+  const d = classifyBandaiRunResult(
+    {
+      ok: false,
+      failedStep: "ge_payment",
+      debugError: "failed to process payment — try again",
+      cartSn: 1,
+      heldPayRetry: true,
+      heldCart: { cartSn: 1, cartItemSn: 2 },
+    },
+    { retryCount: 40, maxRetry: 40 },
+  );
+  assert.equal(d.action, "rotate");
+  assert.equal(d.reason, "soft_payment_escalate");
+});
+
+test("unknown failure after rotate budget → retry (not stop)", () => {
+  const d = classifyBandaiRunResult(
+    {
+      ok: false,
+      failedStep: "mystery",
+      debugError: "something odd happened",
+    },
+    { rotateCount: 48, maxRotate: 48 },
+  );
+  assert.equal(d.action, "retry");
+  assert.equal(d.reason, "unknown_retry");
+});
+
+test("f5_bridge hang/timeout → rotate immediately", () => {
+  const d = classifyBandaiRunResult({
+    ok: false,
+    failedStep: "f5_bridge",
+    error: "f5_bridge timed out after 10000ms",
+    debugError: "f5_bridge timed out after 10000ms",
+  });
+  assert.equal(d.action, "rotate");
+  assert.equal(d.reason, "f5_bridge");
+  assert.equal(d.liveLabel, "Rotating proxy");
+});

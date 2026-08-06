@@ -2625,8 +2625,15 @@ export async function runBandaiGeHttpPay(opts = {}) {
     }
     await browserIssuerBlock.unroute();
 
+    // Default = HTTP mint only (InitPayPalExpress). PayPal.com guest UI is
+    // DataDome-gated — Playwright auto-fill is lab opt-in only.
+    const browserApprove =
+      opts.paypalBrowserApprove === true ||
+      process.env.PAYPAL_BROWSER_APPROVE === "1" ||
+      process.env.PAYPAL_BROWSER_APPROVE === "true";
+
     let paypalApprove = null;
-    if (paypalApproveUrl && paypalAuto) {
+    if (paypalApproveUrl && paypalAuto && browserApprove) {
       const billingProfile = opts.profile || {};
       const billingEmail =
         opts.customerEmail ||
@@ -2640,25 +2647,29 @@ export async function runBandaiGeHttpPay(opts = {}) {
           ok: false,
           status: null,
           ms: 0,
-          note: "PayPal guest needs billing profile email",
+          note: "PayPal browser guest needs billing profile email",
         });
       } else if (!guestCard?.number || !guestCard?.cvv) {
         push("ge_paypal_approve", {
           ok: false,
           status: null,
           ms: 0,
-          note: "PayPal guest needs billing profile card",
+          note: "PayPal browser guest needs billing profile card",
         });
       } else {
         const tAp = Date.now();
+        // Headless by default — never pop Chromium on the user's desktop.
+        const headed =
+          opts.paypalHeadless === false ||
+          process.env.PAYPAL_APPROVE_HEADED === "1" ||
+          process.env.PAYPAL_APPROVE_HEADED === "true";
         paypalApprove = await approvePaypalCheckout({
           approveUrl: paypalApproveUrl,
           email: billingEmail,
           profile: billingProfile,
           card: guestCard,
           proxy: opts.ctx?.dispatcher?.proxy || opts.proxy || null,
-          headless: opts.paypalHeadless === true,
-          // Guest UI + GE capture after PSPRedirectHandler (order, not $0 verify).
+          headless: !headed,
           timeoutMs: Number(opts.paypalApproveTimeoutMs) || 300_000,
           forensicsDir: opts.paypalForensicsDir || undefined,
           log: (m) => {
@@ -2681,6 +2692,13 @@ export async function runBandaiGeHttpPay(opts = {}) {
           ).slice(0, 280),
         });
       }
+    } else if (paypalApproveUrl && paypalAuto && !browserApprove) {
+      push("ge_paypal_approve", {
+        ok: true,
+        status: null,
+        ms: 0,
+        note: "HTTP mint only — open approve URL (PAYPAL_BROWSER_APPROVE=1 for headless guest fill)",
+      });
     }
 
     const elapsedMs = Date.now() - t0;
@@ -2697,31 +2715,40 @@ export async function runBandaiGeHttpPay(opts = {}) {
         paypalApprove?.payerId ||
         paypalApprove?.pspAuthReturn,
     );
+    const datadomeBlocked = /paypal_datadome|security check|DataDome/i.test(
+      String(paypalApprove?.error || paypalApprove?.note || ""),
+    );
     const minted = Boolean(paypalApproveUrl);
+    // Default guest path = HTTP mint success (same as link-only). Browser
+    // complete only when opted in and order lands.
+    const httpMintOk = minted && (!browserApprove || !paypalAuto);
+    const ok = autoOk || httpMintOk;
     return {
-      ok: paypalAuto ? autoOk : minted,
+      ok,
       steps,
       timeline,
       timing,
       paymentMethod: paypalAuto ? "paypal_guest" : "paypal_manual",
       paypalApproveUrl,
-      paymentStatus: paypalAuto
-        ? autoOk
-          ? "paypal_order_complete"
+      paymentStatus: autoOk
+        ? "paypal_order_complete"
+        : datadomeBlocked
+          ? "paypal_datadome_blocked"
           : returnedNoOrder
             ? "paypal_returned_no_order"
             : minted
-              ? "paypal_approve_failed"
-              : "paypal_init_failed"
-        : minted
-          ? "paypal_approve_url"
-          : "paypal_init_failed",
+              ? browserApprove && paypalAuto && !autoOk
+                ? "paypal_approve_failed"
+                : "paypal_approve_url"
+              : "paypal_init_failed",
       checkoutStage: autoOk ? "order" : minted ? "tokenize" : "details",
       cartToken: guid,
       orderNumber: paypalApprove?.orderNumber || null,
       dryRun: !autoOk,
       chargeReqCount: autoOk ? 1 : 0,
-      via: paypalAuto ? "http-ge-paypal-guest" : "http-ge-paypal",
+      via: autoOk
+        ? "http-ge-paypal-guest"
+        : "http-ge-paypal",
       finalUrl: paypalApprove?.finalUrl || paypalApproveUrl || null,
       paypalGuest: paypalApprove
         ? {
@@ -2738,9 +2765,11 @@ export async function runBandaiGeHttpPay(opts = {}) {
         : null,
       elapsedMs,
       note: (
-        paypalAuto
-          ? `${ppNote}; guest=${autoOk ? "ok" : paypalApprove?.note || paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
-          : `${ppNote}; ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
+        autoOk
+          ? `${ppNote}; guest order ok; ${paypalApproveUrl || ""}`
+          : browserApprove && paypalAuto
+            ? `${ppNote}; browser=${paypalApprove?.note || paypalApprove?.error || "fail"}; ${paypalApproveUrl || ""}`
+            : `${ppNote}; HTTP mint ${paypalApproveUrl ? paypalApproveUrl.slice(0, 160) : "no approve url"}`
       ).slice(0, 320),
     };
   }
@@ -2780,6 +2809,37 @@ export async function runBandaiGeHttpPay(opts = {}) {
   }
 
   // checkoutv2/save already ran before CreditCardForm (GEM SaveForm order).
+
+  // Desktop Stop → POST /cancel must win before we touch the issuer.
+  if (opts.abortSignal?.aborted) {
+    const elapsedMs = Date.now() - t0;
+    const timing = buildBandaiGeTiming(timeline, steps, elapsedMs);
+    push("ge_issuer_http", {
+      ok: false,
+      status: null,
+      ms: 0,
+      note: "cancelled before issuer (desktop Stop)",
+    });
+    return {
+      ok: false,
+      steps,
+      timeline,
+      timing,
+      failedStep: "stopped",
+      error: "Stopped",
+      cancelled: true,
+      paymentStatus: null,
+      checkoutStage: "tokenize",
+      checkoutSn: opts.checkoutSn || null,
+      cartToken: guid,
+      chargeReqCount: 0,
+      undiciAttempts: 0,
+      paymentAttempted: false,
+      via: "http-ge",
+      elapsedMs,
+      note: "cancelled before HandleCreditCardRequestV2",
+    };
+  }
 
   const issuerUrl =
     opts.issuerUrl ||

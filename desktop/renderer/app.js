@@ -14,7 +14,7 @@ let accountGroupFilter = "all";
 let selectedProxyGroupId = null;
 /** @type {"today"|"week"|"month"|"year"} */
 let homePeriod = "today";
-/** @type {"checkouts"|"spend"} */
+/** @type {"checkouts"|"atcs"|"declines"|"spend"} */
 let homeMetric = "checkouts";
 /** @type {"speed"|"failed"|null} */
 let proxySortMode = null;
@@ -112,6 +112,48 @@ function closeDialog(id) {
   if (typeof dlg.close === "function" && dlg.open) dlg.close();
 }
 
+/** Electron has no window.prompt — use an in-app dialog instead. */
+let namePromptResolver = null;
+function askNamePrompt({
+  title = "New group",
+  label = "Group name",
+  placeholder = "e.g. Drop A",
+  confirmLabel = "Create",
+  initial = "",
+} = {}) {
+  return new Promise((resolve) => {
+    const dlg = $("namePromptDialog");
+    const input = $("namePromptInput");
+    if (!dlg || !input || typeof dlg.showModal !== "function") {
+      resolve(null);
+      return;
+    }
+    if (namePromptResolver) {
+      namePromptResolver(null);
+      namePromptResolver = null;
+    }
+    namePromptResolver = resolve;
+    if ($("namePromptTitle")) $("namePromptTitle").textContent = title;
+    if ($("namePromptLabel")) $("namePromptLabel").textContent = label;
+    if ($("namePromptOk")) $("namePromptOk").textContent = confirmLabel;
+    input.placeholder = placeholder;
+    input.value = initial || "";
+    if (!dlg.open) dlg.showModal();
+    queueMicrotask(() => {
+      input.focus();
+      input.select();
+    });
+  });
+}
+
+function settleNamePrompt(value) {
+  const dlg = $("namePromptDialog");
+  if (dlg?.open) dlg.close();
+  const resolve = namePromptResolver;
+  namePromptResolver = null;
+  if (resolve) resolve(value);
+}
+
 function tickClock() {
   const el = $("clock");
   if (!el) return;
@@ -201,7 +243,8 @@ document.body.addEventListener("click", (e) => {
   }
   const metricBtn = e.target instanceof HTMLElement ? e.target.closest("[data-home-metric]") : null;
   if (metricBtn) {
-    homeMetric = metricBtn.dataset.homeMetric === "spend" ? "spend" : "checkouts";
+    const m = String(metricBtn.dataset.homeMetric || "checkouts");
+    homeMetric = ["checkouts", "atcs", "declines", "spend"].includes(m) ? m : "checkouts";
     document.querySelectorAll("[data-home-metric]").forEach((x) => {
       x.classList.toggle("active", x.dataset.homeMetric === homeMetric);
     });
@@ -272,10 +315,10 @@ function refreshTaskProfileGroupHint() {
   const hint = $("taskProfileGroupHint");
   if (!hint) return;
   const group = $("taskProfileGroup")?.value || "";
-  const per = Math.max(1, Math.min(20, Number($("taskPerProfile")?.value) || 1));
+  const per = Math.max(1, Math.min(50, Number($("taskQuantity")?.value) || 1));
   const n = profilesInGroup(group).length;
   if (!group) {
-    hint.textContent = "Creates that many tasks for every profile in the group.";
+    hint.textContent = "Task quantity above = tasks per profile in this group.";
     return;
   }
   if (!n) {
@@ -284,6 +327,60 @@ function refreshTaskProfileGroupHint() {
   }
   const total = n * per;
   hint.textContent = `${n} profile${n === 1 ? "" : "s"} × ${per} = ${total} task${total === 1 ? "" : "s"}`;
+}
+
+function syncTaskQuantityLabels() {
+  const editing = Boolean($("taskId")?.value);
+  const source = editing ? "single" : $("taskProfileSource")?.value || "single";
+  const groupMode = source === "group";
+  const label = $("taskQuantityLabel");
+  const hint = $("taskQuantityHint");
+  if (label) {
+    label.textContent = groupMode ? "Task quantity per profile" : "Task quantity";
+  }
+  if (hint) {
+    hint.textContent = groupMode
+      ? "Tasks created for each profile in the group"
+      : "Creates this many task rows";
+  }
+  const qtyWrap = $("taskQuantityWrap");
+  if (qtyWrap) qtyWrap.hidden = editing;
+  refreshTaskProfileGroupHint();
+}
+
+/** Fisher–Yates shuffle copy. */
+function shuffleCopy(list) {
+  const arr = [...list];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/**
+ * Pick `count` unique proxies from a proxy group (shuffled).
+ * @returns {{ ok: true, proxies: string[] } | { ok: false, error: string }}
+ */
+function takeUniqueProxies(proxyGroupId, count) {
+  const n = Math.max(0, Number(count) || 0);
+  if (n <= 0) return { ok: true, proxies: [] };
+  const gid = String(proxyGroupId || "").trim();
+  if (!gid) {
+    return { ok: false, error: "Pick a proxy group — each task needs a unique proxy" };
+  }
+  const group = (state?.proxyGroups || []).find((g) => g.id === gid);
+  const entries = (group?.entries || []).map((e) => String(e || "").trim()).filter(Boolean);
+  if (!entries.length) {
+    return { ok: false, error: "Proxy group has no proxies" };
+  }
+  if (entries.length < n) {
+    return {
+      ok: false,
+      error: `Need ${n} unique proxies, group “${group?.name || gid}” only has ${entries.length}`,
+    };
+  }
+  return { ok: true, proxies: shuffleCopy(entries).slice(0, n) };
 }
 
 function syncTaskProfileSourceUi() {
@@ -299,8 +396,8 @@ function syncTaskProfileSourceUi() {
   if (group) group.hidden = source !== "group";
   if (source === "group") {
     fillTaskProfileGroupSelect();
-    refreshTaskProfileGroupHint();
   }
+  syncTaskQuantityLabels();
 }
 
 function fillSelects() {
@@ -412,6 +509,88 @@ function bandaiStoreSelectValue(task) {
   return `bandai-${area}`;
 }
 
+/**
+ * One product field → pdpUrl / watchSku / areaItemNo / keywords.
+ * Accepts URL, N…/A…/NAI… code, or free-text keywords.
+ */
+function parseBandaiProductField(raw, area = "au") {
+  const region = String(area || "au").toLowerCase();
+  const text = String(raw || "").trim();
+  if (!text) {
+    return {
+      pdpUrl: "",
+      bandaiWatchSku: "",
+      bandaiWatchKeywords: "",
+      bandaiAreaItemNo: "",
+    };
+  }
+
+  const urlMatch = text.match(
+    /https?:\/\/(?:www\.)?p-bandai\.com\/([a-z]{2})\/item\/([A-Za-z0-9_-]+)/i,
+  );
+  if (urlMatch) {
+    const productId = urlMatch[2];
+    const fromUrl = urlMatch[1].toLowerCase();
+    return {
+      pdpUrl: `https://p-bandai.com/${fromUrl}/item/${productId}`,
+      bandaiWatchSku: productId,
+      bandaiWatchKeywords: "",
+      bandaiAreaItemNo: /^NAI/i.test(productId) ? productId.toUpperCase() : "",
+    };
+  }
+
+  const itemPath = text.match(/\/item\/([A-Za-z0-9_-]+)/i);
+  if (itemPath) {
+    const productId = itemPath[1];
+    return {
+      pdpUrl: `https://p-bandai.com/${region}/item/${productId}`,
+      bandaiWatchSku: productId,
+      bandaiWatchKeywords: "",
+      bandaiAreaItemNo: /^NAI/i.test(productId) ? productId.toUpperCase() : "",
+    };
+  }
+
+  if (/^(N\d{7,}[A-Z0-9]*|A\d{7,}[A-Z0-9]*|NAI[A-Z0-9]+)$/i.test(text)) {
+    const productId = text.toUpperCase();
+    const isNai = /^NAI/i.test(productId);
+    return {
+      pdpUrl: isNai ? "" : `https://p-bandai.com/${region}/item/${productId}`,
+      bandaiWatchSku: productId,
+      bandaiWatchKeywords: "",
+      bandaiAreaItemNo: isNai ? productId : "",
+    };
+  }
+
+  if (/^[A-Za-z0-9_-]{4,40}$/.test(text) && !/\s/.test(text)) {
+    const productId = text.toUpperCase();
+    const isNai = /^NAI/i.test(productId);
+    return {
+      pdpUrl: isNai ? "" : `https://p-bandai.com/${region}/item/${productId}`,
+      bandaiWatchSku: productId,
+      bandaiWatchKeywords: "",
+      bandaiAreaItemNo: isNai ? productId : "",
+    };
+  }
+
+  // Keywords / free text
+  return {
+    pdpUrl: "",
+    bandaiWatchSku: "",
+    bandaiWatchKeywords: text,
+    bandaiAreaItemNo: "",
+  };
+}
+
+function bandaiProductFieldDisplay(task) {
+  const url = String(task?.pdpUrl || "").trim();
+  if (url) return url;
+  const sku = String(task?.bandaiWatchSku || "").trim();
+  if (sku) return sku;
+  const nai = String(task?.bandaiAreaItemNo || "").trim();
+  if (nai) return nai;
+  return String(task?.bandaiWatchKeywords || "").trim();
+}
+
 function rewriteBandaiPdpArea(url, area) {
   const a = BANDAI_REGIONS.includes(String(area || "").toLowerCase())
     ? String(area).toLowerCase()
@@ -440,6 +619,8 @@ function syncTaskFormForStore() {
   }
   const opts = $("taskToymateOpts");
   if (opts) opts.hidden = !toy;
+  const bModeField = $("taskBandaiModeField");
+  if (bModeField) bModeField.hidden = !bandai;
   const bOpts = $("taskBandaiOpts");
   if (bOpts) bOpts.hidden = !bandai;
   const dOpts = $("taskDisneyOpts");
@@ -457,14 +638,13 @@ function syncTaskFormForStore() {
           : "checkout";
   const label = $("taskPdpLabel");
   const input = $("taskPdp");
+  const pdpHint = $("taskPdpHint");
   if (label) {
     if (bandai) {
       label.textContent =
         mode === "account_gen"
           ? "Store (auto)"
-          : mode === "monitor"
-            ? "Keywords or product code"
-            : "Product URL / code";
+          : "Product";
     } else if (toy) {
       label.textContent =
         mode === "account_gen" ? "Store (auto)" : mode === "monitor" ? "Keywords" : "Product URL";
@@ -482,6 +662,14 @@ function syncTaskFormForStore() {
       label.textContent = "Product URL (PDP)";
     }
   }
+  if (pdpHint) {
+    pdpHint.hidden = !bandai || mode === "account_gen";
+    if (bandai && mode === "monitor") {
+      pdpHint.textContent = "URL, product code, or keywords — one field is enough.";
+    } else if (bandai) {
+      pdpHint.textContent = "Paste a Bandai URL or product code (N… / NAI…).";
+    }
+  }
   if (input) {
     input.disabled = (toy || bandai) && mode === "account_gen";
     if (bandai) {
@@ -489,8 +677,8 @@ function syncTaskFormForStore() {
         mode === "account_gen"
           ? "Uses IMAP mailbox + profile address"
           : mode === "monitor"
-            ? "one piece  OR  N2903432003"
-            : `https://p-bandai.com/${bandaiArea}/item/…`;
+            ? "URL, N2903432003, or keywords"
+            : `https://p-bandai.com/${bandaiArea}/item/…  or  N2903432003`;
     } else if (toy) {
       input.placeholder =
         mode === "account_gen"
@@ -507,6 +695,7 @@ function syncTaskFormForStore() {
       input.placeholder = "https://…";
     }
   }
+  syncTaskQuantityLabels();
   const payWrap = $("taskToymatePayWrap");
   if (payWrap) payWrap.hidden = !toy || mode !== "checkout";
   const passWrap = $("taskAccountPassWrap");
@@ -549,6 +738,14 @@ function syncTaskFormForStore() {
       (toy && mode !== "checkout") ||
       (bandai && mode !== "checkout" && !bandaiMonCheckout) ||
       (pc && mode !== "checkout");
+  }
+  const wdWrap = $("taskBandaiWatchdogWrap");
+  if (wdWrap) {
+    wdWrap.hidden = !bandai || (mode !== "checkout" && mode !== "atc");
+  }
+  const submitBtn = $("taskSubmitBtn");
+  if (submitBtn) {
+    submitBtn.textContent = $("taskId")?.value ? "Save task" : "Create task";
   }
   if (toy && mode === "checkout") syncAccountAssignUi();
   if (bandai && (mode === "checkout" || mode === "atc" || mode === "monitor"))
@@ -637,11 +834,17 @@ function refreshTaskGroupList() {
 }
 
 function taskStoreLabel(t) {
+  const parts = taskSiteParts(t);
+  return parts.sub ? `${parts.primary} · ${parts.sub}` : parts.primary;
+}
+
+/** Cybers-style site cell: store name + mode line. */
+function taskSiteParts(t) {
   if (t.store === "toymate") {
     const mode = String(t.toymateMode || "checkout");
     const modeLabel =
       mode === "account_gen" ? "Account gen" : mode === "monitor" ? "Monitor" : "Autocheckout";
-    return `Toymate · ${modeLabel}`;
+    return { primary: "Toymate", sub: modeLabel };
   }
   if (t.store === "bandai" || isBandaiStore(t.store)) {
     const mode = String(t.bandaiMode || "checkout");
@@ -656,43 +859,90 @@ function taskStoreLabel(t) {
               ? "Login check"
               : "Autocheckout";
     const region = String(t.bandaiArea || "au").toUpperCase();
-    const speed =
-      mode === "checkout" || mode === "atc" ? ` · ${t.bandaiCheckoutMode || "fast"}` : "";
-    const pay = /^paypal/i.test(String(t.paymentMethod || "")) ? " · PayPal" : "";
-    const wd =
+    const bits = [modeLabel];
+    if (mode === "checkout" || mode === "atc") bits.push(String(t.bandaiCheckoutMode || "fast"));
+    if (/^paypal/i.test(String(t.paymentMethod || ""))) bits.push("PayPal");
+    if (
       (mode === "checkout" || mode === "atc") &&
       t.bandaiWatchdog !== false &&
       (t.bandaiWatchSku || t.pdpUrl || t.bandaiWatchKeywords)
-        ? " · watchdog"
-        : "";
-    return `Bandai ${region} · ${modeLabel}${speed}${pay}${wd}`;
+    ) {
+      bits.push("watchdog");
+    }
+    return { primary: `Bandai ${region}`, sub: bits.join(" · ") };
   }
   if (t.store === "pokemoncentre") {
     const mode = String(t.pcMode || "monitor");
     const modeLabel = mode === "checkout" ? "Autocheckout" : mode.charAt(0).toUpperCase() + mode.slice(1);
-    return `Pokémon Centre · ${modeLabel}`;
+    return { primary: "Pokémon Centre", sub: modeLabel };
   }
-  return t.store || "Store";
+  return { primary: t.store || "Store", sub: "" };
+}
+
+function taskSkuOf(t) {
+  const raw = String(t?.bandaiWatchSku || t?.productId || t?.sku || "").trim();
+  if (raw && !/^https?:\/\//i.test(raw)) return raw;
+  const url = String(t?.pdpUrl || "").trim();
+  const m = url.match(/\/item\/([A-Za-z0-9_-]+)/i);
+  return m?.[1] || "";
+}
+
+/** Scraped / catalog title when known — empty until resolved. */
+function resolveTaskProductTitle(t) {
+  if (!t) return "";
+  const sku = taskSkuOf(t);
+  const fromTask = String(t.title || t.productName || "").trim();
+  if (fromTask && !/^https?:\/\//i.test(fromTask) && fromTask.toUpperCase() !== sku.toUpperCase()) {
+    return fromTask;
+  }
+  const cat =
+    (sku && typeof saLookupCatalogRow === "function" ? saLookupCatalogRow(sku) : null) ||
+    (t.bandaiAreaItemNo && typeof saLookupCatalogRow === "function"
+      ? saLookupCatalogRow(t.bandaiAreaItemNo)
+      : null);
+  if (cat?.title && String(cat.title).trim() && String(cat.title).toUpperCase() !== String(cat.sku || "").toUpperCase()) {
+    return String(cat.title).trim();
+  }
+  const label = String(t.label || "").trim();
+  if (label && !/^task\s*#?\d+$/i.test(label) && label.toUpperCase() !== sku.toUpperCase()) {
+    return label;
+  }
+  return "";
 }
 
 function taskProductSubline(t) {
-  const sku = String(t.bandaiWatchSku || t.productId || t.sku || "").trim();
-  if (sku && !/^https?:\/\//i.test(sku)) return sku;
+  const sku = taskSkuOf(t);
+  if (sku) return sku;
   const url = String(t.pdpUrl || "").trim();
   if (!url) return t.lastDropSummary || "";
-  const m = url.match(/\/item\/([A-Za-z0-9_-]+)/i);
-  if (m?.[1]) return m[1];
   return url.length > 64 ? `${url.slice(0, 64)}…` : url;
+}
+
+/** Primary product line: title when scraped/catalog, else full PDP URL / SKU. */
+function taskProductPrimary(t) {
+  const title = resolveTaskProductTitle(t);
+  if (title) return title;
+  const url = String(t?.pdpUrl || "").trim();
+  if (url) return url.length > 88 ? `${url.slice(0, 88)}…` : url;
+  return taskProductSubline(t) || "—";
+}
+
+function taskProductSecondary(t) {
+  const title = resolveTaskProductTitle(t);
+  const sku = taskSkuOf(t);
+  if (title && sku) return sku;
+  if (title) {
+    const url = String(t?.pdpUrl || "").trim();
+    if (url) return url.length > 48 ? `${url.slice(0, 48)}…` : url;
+  }
+  return "";
 }
 
 function formatCartHoldCountdown(ms) {
   const s = Math.max(0, Math.floor(Number(ms) / 1000));
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
+  const m = Math.floor(s / 60);
   const sec = s % 60;
-  if (h > 0) return `${h}h ${m}m ${String(sec).padStart(2, "0")}s`;
-  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
-  return `${sec}s`;
+  return `${m}:${String(sec).padStart(2, "0")}`;
 }
 
 function taskHasHeldCart(t) {
@@ -709,16 +959,20 @@ function heldCartsInGroup(groupName) {
 
 function heldCartCountdownHtml(t) {
   if (!taskHasHeldCart(t)) return "";
-  const start = Number(t.heldCart.cartHoldAt) || 0;
   const win = Number(t.heldCart.payWindowMs) || 30 * 60_000;
+  // Prefer stamped hold time; fall back so a missing clock still shows a timer.
+  let start = Number(t.heldCart.cartHoldAt) || 0;
   if (!start) {
-    return `<div class="task-sub cart-countdown">cart held — checkout now</div>`;
+    start = Number(t.updatedAt) || Date.now();
+    // Keep DOM attribute so the 1s ticker works even before the next persist.
+    t.heldCart.cartHoldAt = start;
   }
   const left = Math.max(0, start + win - Date.now());
   if (left <= 0) {
-    return `<div class="task-sub cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}">hold may be up — verify &amp; pay</div>`;
+    return `<div class="cart-countdown expired" data-hold-at="${start}" data-hold-win="${win}" role="timer"><span class="cart-countdown-label">Expires</span><span class="cart-countdown-time">0:00</span></div>`;
   }
-  return `<div class="task-sub cart-countdown" data-hold-at="${start}" data-hold-win="${win}">cart held · ${formatCartHoldCountdown(left)}</div>`;
+  const urgent = left <= 5 * 60_000;
+  return `<div class="cart-countdown${urgent ? " urgent" : ""}" data-hold-at="${start}" data-hold-win="${win}" role="timer" title="Cart hold expires in ${formatCartHoldCountdown(left)}"><span class="cart-countdown-label">Expires</span><span class="cart-countdown-time">${formatCartHoldCountdown(left)}</span></div>`;
 }
 
 function tickHeldCartCountdowns() {
@@ -727,22 +981,37 @@ function tickHeldCartCountdowns() {
     const win = Number(el.dataset.holdWin) || 30 * 60_000;
     if (!start) return;
     const left = Math.max(0, start + win - Date.now());
+    const timeEl = el.querySelector(".cart-countdown-time");
     if (left <= 0) {
-      el.textContent = "cart held? (window may be up)";
       el.classList.add("expired");
+      el.classList.remove("urgent");
+      if (timeEl) timeEl.textContent = "0:00";
+      else el.textContent = "0:00";
     } else {
-      el.textContent = `cart held · ${formatCartHoldCountdown(left)}`;
       el.classList.remove("expired");
+      el.classList.toggle("urgent", left <= 5 * 60_000);
+      const text = formatCartHoldCountdown(left);
+      if (timeEl) timeEl.textContent = text;
+      else el.textContent = text;
+      el.title = `Cart hold expires in ${text}`;
     }
   });
 }
 
 function taskStatusBadge(t) {
   const s = t.lastStatus;
-  if (s === "confirmed" || s === "complete" || s === "ok" || s === "login_ok") return "ok";
+  if (
+    s === "confirmed" ||
+    s === "complete" ||
+    s === "ok" ||
+    s === "login_ok" ||
+    s === "cart_held"
+  ) {
+    return "ok";
+  }
+  if (s === "stopped" || s === "idle") return "";
   if (
     s === "held_pay_retry" ||
-    s === "cart_held" ||
     s === "queued" ||
     s === "running" ||
     s === "rotating" ||
@@ -783,9 +1052,12 @@ function filteredTasks() {
     const px = (state.proxyGroups || []).find((g) => g.id === t.proxyGroupId);
     const hay = [
       t.label,
+      t.title,
       t.taskGroup,
       t.store,
       taskStoreLabel(t),
+      taskProductPrimary(t),
+      taskProductSecondary(t),
       taskProductSubline(t),
       t.pdpUrl,
       t.bandaiWatchSku,
@@ -836,7 +1108,6 @@ function renderTaskGroupRail() {
 }
 
 function renderTasks() {
-  renderHarvestBankStrip();
   renderDropPrep();
   refreshTaskGroupList();
   renderTaskGroupRail();
@@ -863,7 +1134,7 @@ function renderTasks() {
   const tasks = filteredTasks();
   if (!tasks.length) {
     const searching = Boolean(searchQuery("taskSearch"));
-    el.innerHTML = `<tr><td colspan="8" class="empty-cell">${
+    el.innerHTML = `<tr><td colspan="7" class="empty-cell">${
       searching ? "No tasks match this search." : "Press <kbd>N</kbd> for a new task."
     }</td></tr>`;
     return;
@@ -874,31 +1145,61 @@ function renderTasks() {
       const badge = taskStatusBadge(t);
       const prof = (state.profiles || []).find((p) => p.id === t.profileId);
       const px = (state.proxyGroups || []).find((g) => g.id === t.proxyGroupId);
-      const groupName = String(t.taskGroup || "").trim();
-      const groupChip = groupName
-        ? `<span class="group-chip" style="--g:${esc(colorForGroup(groupName))}">${esc(groupName)}</span>`
-        : "";
-      const checkoutHeldBtn = taskHasHeldCart(t)
-        ? `<button type="button" class="secondary" data-checkout-held="${t.id}" title="Pay from held cart (live verify)">Checkout now</button>`
-        : "";
-      const running = t.lastStatus === "queued" || t.lastStatus === "running";
-      return `<tr class="${t.enabled === false ? "is-disabled" : ""} ${running ? "is-running" : ""}" data-task-row="${t.id}">
-        <td class="col-check"><input type="checkbox" class="toggle" data-toggle-task="${t.id}" ${t.enabled !== false ? "checked" : ""} title="Enabled" /></td>
+      const site = taskSiteParts(t);
+      const productPrimary = taskProductPrimary(t);
+      const productSecondary = taskProductSecondary(t);
+      const hasHeld = taskHasHeldCart(t);
+      const hasPaypalLink =
+        Boolean(t.paypalApproveUrl) &&
+        /paypal\.com/i.test(String(t.paypalApproveUrl)) &&
+        /^paypal/i.test(String(t.paymentMethod || ""));
+      const running = [
+        "queued",
+        "running",
+        "rotating",
+        "retry",
+        "retry_pay",
+        "retry_atc",
+        "waiting_restock",
+      ].includes(String(t.lastStatus || ""));
+      const playIcon =
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>';
+      const stopIcon =
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>';
+      const trashIcon =
+        '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM7 9h2v9H7V9z"/></svg>';
+      // PayPal link ready → open approve URL (never remint / restart hold timer).
+      // Held ATC + card: Pay from cart. Else Start.
+      const primaryAction = running
+        ? `<button type="button" class="icon-action" data-stop-task="${t.id}" title="Stop">${stopIcon}</button>`
+        : hasPaypalLink
+          ? `<button type="button" class="btn-pay" data-open-paypal="${t.id}" title="Open PayPal approve link">PayPal</button>`
+          : hasHeld
+            ? `<button type="button" class="btn-pay" data-checkout-held="${t.id}" title="Pay from held cart (live verify)">Pay</button>`
+            : `<button type="button" class="icon-action icon-action-run" data-run-task="${t.id}" title="Start">${playIcon}</button>`;
+      return `<tr class="${running ? "is-running" : ""}${hasHeld ? " has-held-cart" : ""}" data-task-row="${t.id}">
         <td>
-          <div class="task-name">${esc(t.label || "Task")} ${groupChip}</div>
-          <div class="task-sub">${esc(taskProductSubline(t))}${t.lastDropSummary && !String(taskProductSubline(t)).includes(String(t.lastDropSummary)) ? ` · ${esc(t.lastDropSummary)}` : ""}</div>
+          <div class="task-name">${esc(site.primary)}</div>
+          ${site.sub ? `<div class="task-sub">${esc(site.sub)}</div>` : ""}
         </td>
-        <td>${esc(taskStoreLabel(t))}</td>
+        <td>
+          <div class="task-name task-product" title="${esc(productPrimary)}">${esc(productPrimary)}</div>
+          ${
+            productSecondary
+              ? `<div class="task-sub">${esc(productSecondary)}</div>`
+              : t.lastDropSummary
+                ? `<div class="task-sub">${esc(t.lastDropSummary)}</div>`
+                : ""
+          }
+        </td>
         <td>${esc(prof?.name || prof?.email || "—")}</td>
         <td>${esc(px?.name || "Direct")}</td>
-        <td>${esc(String(t.qty || 1))}×${esc(String(t.quantity || 1))}</td>
-        <td><span class="badge ${badge}">${esc(statusLabel)}</span>${heldCartCountdownHtml(t)}${t.lastOrderNumber ? `<div class="task-sub">${esc(t.lastOrderNumber)}</div>` : ""}</td>
+        <td>${esc(String(t.qty || 1))}</td>
+        <td><span class="badge ${badge}">${esc(statusLabel)}</span>${heldCartCountdownHtml(t)}${t.lastOrderNumber ? `<div class="task-sub">${esc(t.lastOrderNumber)}</div>` : ""}${hasPaypalLink ? `<div class="task-sub">Approve link saved</div>` : ""}</td>
         <td class="col-actions"><div class="row-actions">
           <button type="button" class="secondary" data-edit-task="${t.id}">Edit</button>
-          <button type="button" class="secondary" data-dup-task="${t.id}">Dup</button>
-          ${checkoutHeldBtn}
-          <button type="button" data-run-task="${t.id}">Run</button>
-          <button type="button" class="danger" data-del-task="${t.id}">Del</button>
+          ${primaryAction}
+          <button type="button" class="icon-action icon-action-danger" data-del-task="${t.id}" title="Delete">${trashIcon}</button>
         </div></td>
       </tr>`;
     })
@@ -929,19 +1230,186 @@ function resultSpend(r) {
   return Number.isFinite(n) ? Math.max(0, n) : 0;
 }
 
-function resultTitle(r) {
+function extractBandaiSku(...parts) {
+  for (const part of parts) {
+    const s = String(part || "").trim();
+    if (!s) continue;
+    if (/^(N|A)\d{6,}[A-Za-z0-9]*$/i.test(s)) return s.toUpperCase();
+    const fromUrl = s.match(/\/item\/((?:N|A)\d{6,}[A-Za-z0-9]*)/i);
+    if (fromUrl?.[1]) return fromUrl[1].toUpperCase();
+    const fromText = s.match(/\b((?:N|A)\d{6,}[A-Za-z0-9]*)\b/i);
+    if (fromText?.[1]) return fromText[1].toUpperCase();
+  }
+  return "";
+}
+
+function resultSku(r) {
+  const task = r?.taskId ? (state?.tasks || []).find((t) => t.id === r.taskId) : null;
   return (
-    r?.title ||
-    r?.productName ||
-    r?.label ||
-    r?.consumerLabel ||
-    r?.orderNumber ||
-    r?.taskId ||
-    "Checkout"
+    extractBandaiSku(
+      r?.sku,
+      r?.productCode,
+      task?.bandaiWatchSku,
+      task?.productId,
+      task?.sku,
+      task?.pdpUrl,
+      r?.pdpUrl,
+      task?.label,
+      task?.title,
+      r?.title,
+      r?.taskLabel,
+      r?.label,
+    ) || ""
   );
 }
 
-function homeChartBuckets(period, wins) {
+function resultTitle(r) {
+  const task = r?.taskId ? (state?.tasks || []).find((t) => t.id === r.taskId) : null;
+  const sku = resultSku(r);
+  const cat = sku ? saLookupCatalogRow(sku) : null;
+  const areaPid = String(task?.bandaiAreaItemNo || r?.areaItemNo || "").trim();
+  const catByPid = !cat && areaPid ? saLookupCatalogRow(areaPid) : null;
+  return (
+    r?.title ||
+    r?.productName ||
+    cat?.title ||
+    catByPid?.title ||
+    task?.title ||
+    (task?.label && !/^task\b/i.test(String(task.label)) ? task.label : "") ||
+    sku ||
+    r?.orderNumber ||
+    "Product"
+  );
+}
+
+function resultImageUrl(r) {
+  const task = r?.taskId ? (state?.tasks || []).find((t) => t.id === r.taskId) : null;
+  const direct = String(r?.imageUrl || task?.imageUrl || "").trim();
+  if (/^https?:\/\//i.test(direct)) return direct;
+  const sku = resultSku(r);
+  const areaPid = String(task?.bandaiAreaItemNo || r?.areaItemNo || "").trim();
+  for (const key of [sku, areaPid]) {
+    if (!key) continue;
+    const url = saResolveImageUrl({ sku: key, imageUrl: "" });
+    if (/^https?:\/\//i.test(url)) return url;
+  }
+  return "";
+}
+
+/** Lazy-fill missing feed images from catalog / Bandai API (main process). */
+async function hydrateFeedProductArt(root) {
+  if (!root || typeof window.desktop?.resolveProductArt !== "function") return;
+  const nodes = root.querySelectorAll("[data-resolve-sku]");
+  const seen = new Set();
+  for (const el of nodes) {
+    const sku = String(el.getAttribute("data-resolve-sku") || "").trim();
+    if (!sku || seen.has(sku.toUpperCase())) continue;
+    seen.add(sku.toUpperCase());
+    try {
+      const res = await window.desktop.resolveProductArt(sku);
+      if (!res?.ok || !res.imageUrl) continue;
+      root.querySelectorAll(`[data-resolve-sku="${CSS.escape(sku)}"]`).forEach((media) => {
+        if (media.querySelector("img")) return;
+        const img = document.createElement("img");
+        img.src = res.imageUrl;
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        img.addEventListener("error", () => {
+          media.classList.add("is-fallback");
+          img.remove();
+        });
+        media.insertBefore(img, media.firstChild);
+        const card = media.closest(".feed-card, .feed-hit");
+        const titleEl =
+          card?.querySelector(".feed-card-title") || card?.querySelector(".feed-hit-title");
+        if (
+          titleEl &&
+          res.title &&
+          (/^product$/i.test(titleEl.textContent || "") ||
+            titleEl.textContent === sku ||
+            /^task\s*#/i.test(titleEl.textContent || ""))
+        ) {
+          titleEl.textContent = res.title;
+          if (titleEl instanceof HTMLElement) titleEl.title = res.title;
+        }
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Payment confirmed / order placed. */
+function isAnalyticsCheckout(r) {
+  if (!r) return false;
+  if (r.orderNumber) return true;
+  const code = String(r.consumerCode || "").toLowerCase();
+  if (code === "confirmed") return true;
+  // Legacy: ok wins that aren't ATC holds.
+  return (
+    r.ok === true &&
+    !isAnalyticsAtc(r) &&
+    code !== "login_ok" &&
+    code !== "cart_held"
+  );
+}
+
+/** Successful ATC / cart held (ATC-only or stop-at-cart). */
+function isAnalyticsAtc(r) {
+  if (!r) return false;
+  if (r.orderNumber) return false;
+  const code = String(r.consumerCode || "").toLowerCase();
+  if (code === "cart_held") return true;
+  if (r.atcOnly === true && r.ok === true) return true;
+  // ok + cart_hold is ATC success even when older rows dropped atcOnly/heldCart.
+  if (r.ok === true && /^cart_hold$/i.test(String(r.checkoutStage || ""))) return true;
+  if (
+    r.ok === true &&
+    (r.heldCart?.cartSn || r.cartSn) &&
+    /^(cart|cart_hold)$/i.test(String(r.checkoutStage || ""))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/** Hard payment decline. */
+function isAnalyticsDecline(r) {
+  if (!r) return false;
+  const code = String(r.consumerCode || "").toLowerCase();
+  if (code === "declined") return true;
+  if (/^declined$/i.test(String(r.checkoutStage || ""))) return true;
+  if (
+    /declined_or_auth_failed|fraud_refused|auth_failed|ge_fraud|^declined$/i.test(
+      String(r.paymentStatus || ""),
+    )
+  ) {
+    return true;
+  }
+  const text = String(r.consumerLabel || r.error || r.lastLabel || "");
+  if (/failed to process|try again|temporarily|soft.?pay/i.test(text)) return false;
+  if (/payment declined|card (was )?declined|do.?not.?honor|chargeAuthReject|hard.?declin/i.test(text)) {
+    return true;
+  }
+  return /\bdeclined\b/i.test(text);
+}
+
+function rowsForHomeMetric(rows, metric) {
+  if (metric === "atcs") return rows.filter(isAnalyticsAtc);
+  if (metric === "declines") return rows.filter(isAnalyticsDecline);
+  if (metric === "spend" || metric === "checkouts") return rows.filter(isAnalyticsCheckout);
+  return rows.filter(isAnalyticsCheckout);
+}
+
+function homeMetricLabel(metric) {
+  if (metric === "atcs") return "ATCs";
+  if (metric === "declines") return "Declines";
+  if (metric === "spend") return "Spend";
+  return "Checkouts";
+}
+
+function homeChartBuckets(period, rows) {
   const now = new Date();
   /** @type {{ key: string, label: string, start: number, end: number }[]} */
   const buckets = [];
@@ -1002,13 +1470,17 @@ function homeChartBuckets(period, wins) {
     }
   }
   return buckets.map((b) => {
-    const rows = wins.filter((r) => {
+    const inBucket = rows.filter((r) => {
       const ts = Number(r.at || r.createdAt || r.ts || 0);
       return ts >= b.start && ts < b.end;
     });
-    const checkouts = rows.length;
-    const spend = rows.reduce((sum, r) => sum + resultSpend(r), 0);
-    return { ...b, checkouts, spend };
+    const checkouts = inBucket.filter(isAnalyticsCheckout).length;
+    const atcs = inBucket.filter(isAnalyticsAtc).length;
+    const declines = inBucket.filter(isAnalyticsDecline).length;
+    const spend = inBucket
+      .filter(isAnalyticsCheckout)
+      .reduce((sum, r) => sum + resultSpend(r), 0);
+    return { ...b, checkouts, atcs, declines, spend, count: inBucket.length };
   });
 }
 
@@ -1016,7 +1488,12 @@ function renderHomeChart(buckets, metric) {
   const chartEl = $("homeChart");
   const emptyEl = $("homeChartEmpty");
   if (!chartEl) return;
-  const values = buckets.map((b) => (metric === "spend" ? b.spend : b.checkouts));
+  const values = buckets.map((b) => {
+    if (metric === "spend") return b.spend;
+    if (metric === "atcs") return b.atcs;
+    if (metric === "declines") return b.declines;
+    return b.checkouts;
+  });
   const total = values.reduce((a, b) => a + b, 0);
   if (emptyEl) {
     emptyEl.hidden = total > 0;
@@ -1025,7 +1502,11 @@ function renderHomeChart(buckets, metric) {
       p.textContent =
         metric === "spend"
           ? "No spend recorded for this period yet."
-          : "You haven’t made any checkouts for this period.";
+          : metric === "atcs"
+            ? "No successful ATCs for this period yet."
+            : metric === "declines"
+              ? "No payment declines for this period."
+              : "You haven’t made any checkouts for this period.";
     }
   }
   if (total <= 0) {
@@ -1084,7 +1565,12 @@ function renderHome() {
     const ts = Number(r.at || r.createdAt || r.ts || 0);
     return !ts || ts >= since;
   });
-  const winRows = periodResults.filter((r) => r.ok);
+  const checkoutRows = periodResults.filter(isAnalyticsCheckout);
+  const atcRows = periodResults.filter(isAnalyticsAtc);
+  const declineRows = periodResults.filter(isAnalyticsDecline);
+  const metricRows = rowsForHomeMetric(periodResults, homeMetric);
+  // Feed / legacy alias — checkouts for spend; selected metric otherwise.
+  const winRows = homeMetric === "spend" ? checkoutRows : metricRows;
   const eng = state?.engine || {};
   const settings = state?.settings || {};
   const dismiss = homeDismissState();
@@ -1188,8 +1674,15 @@ function renderHome() {
   }
 
   if (showAnalytics) {
-    const spendTotal = winRows.reduce((sum, r) => sum + resultSpend(r), 0);
-    const metricValue = homeMetric === "spend" ? spendTotal : winRows.length;
+    const spendTotal = checkoutRows.reduce((sum, r) => sum + resultSpend(r), 0);
+    const metricValue =
+      homeMetric === "spend"
+        ? spendTotal
+        : homeMetric === "atcs"
+          ? atcRows.length
+          : homeMetric === "declines"
+            ? declineRows.length
+            : checkoutRows.length;
     if ($("homeMetricValue")) {
       $("homeMetricValue").textContent =
         homeMetric === "spend"
@@ -1197,15 +1690,18 @@ function renderHome() {
           : String(metricValue);
     }
     if ($("homeMetricLabel")) {
-      $("homeMetricLabel").textContent = homeMetric === "spend" ? "Spend" : "Checkouts";
+      $("homeMetricLabel").textContent = homeMetricLabel(homeMetric);
     }
+    if ($("homeStatCheckouts")) $("homeStatCheckouts").textContent = String(checkoutRows.length);
+    if ($("homeStatAtcs")) $("homeStatAtcs").textContent = String(atcRows.length);
+    if ($("homeStatDeclines")) $("homeStatDeclines").textContent = String(declineRows.length);
     document.querySelectorAll("[data-home-metric]").forEach((x) => {
       x.classList.toggle("active", x.dataset.homeMetric === homeMetric);
     });
     document.querySelectorAll("[data-home-period]").forEach((x) => {
       x.classList.toggle("active", x.dataset.homePeriod === homePeriod);
     });
-    renderHomeChart(homeChartBuckets(homePeriod, winRows), homeMetric);
+    renderHomeChart(homeChartBuckets(homePeriod, periodResults), homeMetric);
   }
 
   const act = $("homeActivity");
@@ -1219,13 +1715,31 @@ function renderHome() {
     act.scrollTop = act.scrollHeight;
   }
 
+  const feedTitle = $("homeFeedTitle");
+  if (feedTitle) {
+    feedTitle.textContent =
+      homeMetric === "atcs"
+        ? "ATC Feed"
+        : homeMetric === "declines"
+          ? "Decline Feed"
+          : homeMetric === "spend"
+            ? "Checkout Feed"
+            : "Checkout Feed";
+  }
   const feed = $("checkoutFeed");
   if (feed) {
     const cops = winRows.slice(0, 24);
+    const emptyMsg =
+      homeMetric === "atcs"
+        ? "No successful ATCs for this period."
+        : homeMetric === "declines"
+          ? "No payment declines for this period."
+          : "No checkouts for this period.";
     feed.innerHTML = cops.length
-      ? cops
+      ? `<div class="feed-cards">${cops
           .map((r) => {
             const title = resultTitle(r);
+            const sku = resultSku(r);
             const task = (state?.tasks || []).find((t) => t.id === r.taskId);
             const store =
               r.storeName ||
@@ -1233,41 +1747,53 @@ function renderHome() {
               r.store ||
               "Store";
             const price = resultSpend(r);
+            const kind = isAnalyticsDecline(r)
+              ? "declined"
+              : isAnalyticsAtc(r)
+                ? "atc"
+                : r.orderNumber
+                  ? "confirmed"
+                  : "checkout";
+            const kindLabel =
+              kind === "declined"
+                ? "Declined"
+                : kind === "atc"
+                  ? "ATC"
+                  : kind === "confirmed"
+                    ? "Confirmed"
+                    : "Checkout";
             const when = r.at
               ? new Date(r.at).toLocaleString([], {
                   hour: "2-digit",
                   minute: "2-digit",
-                  second: "2-digit",
-                  day: "2-digit",
-                  month: "2-digit",
-                  year: "2-digit",
                 })
               : "";
-            const img =
-              r.imageUrl ||
-              (typeof saResolveImageUrl === "function"
-                ? saResolveImageUrl({
-                    sku: r.sku || task?.bandaiWatchSku || task?.pdpUrl || "",
-                    imageUrl: "",
-                  })
-                : "") ||
-              "";
-            return `<div class="feed-item feed-item-rich">
-              <div class="feed-thumb" data-store="${esc(String(store))}">
-                ${img ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : `<span>${esc(String(store).slice(0, 2).toUpperCase())}</span>`}
+            const img = resultImageUrl(r);
+            const initials = esc(String(store).replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "·");
+            return `<article class="feed-card feed-card-${kind}">
+              <div class="feed-card-media"${sku && !img ? ` data-resolve-sku="${esc(sku)}"` : ""}>
+                ${
+                  img
+                    ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('.feed-card-media')?.classList.add('is-fallback');this.remove()" />`
+                    : ""
+                }
+                <div class="feed-card-fallback" aria-hidden="true">${initials}</div>
+                <span class="feed-card-badge">${esc(kindLabel)}</span>
               </div>
-              <div class="feed-body">
-                <strong>${esc(title)}</strong>
-                <div class="feed-meta">
-                  <span class="feed-pill">${esc(store)}</span>
-                  ${price ? `<span class="feed-pill">$${esc(String(price))}</span>` : ""}
+              <div class="feed-card-body">
+                <strong class="feed-card-title" title="${esc(title)}">${esc(title)}</strong>
+                <div class="feed-card-sub">
+                  <span>${esc(store)}</span>
+                  ${sku ? `<span class="feed-dot">·</span><span>${esc(sku)}</span>` : ""}
+                  ${price ? `<span class="feed-dot">·</span><span>$${esc(String(price))}</span>` : ""}
                 </div>
+                ${when ? `<time class="feed-card-when">${esc(when)}</time>` : ""}
               </div>
-              <div class="feed-when">${esc(when)}</div>
-            </div>`;
+            </article>`;
           })
-          .join("")
-      : `<div class="feed-empty">No checkouts for this period.</div>`;
+          .join("")}</div>`
+      : `<div class="feed-empty">${esc(emptyMsg)}</div>`;
+    if (cops.length) void hydrateFeedProductArt(feed);
   }
 }
 
@@ -1936,15 +2462,19 @@ function renderSettings() {
     });
   }
   if ($("qtPresetMode")) $("qtPresetMode").value = qt.bandaiMode || "checkout";
-  if ($("qtPresetPay")) {
-    const pm = String(qt.paymentMethod || "credit_card").toLowerCase();
-    $("qtPresetPay").value = /^paypal_manual|paypal_link/i.test(pm)
-      ? "paypal_manual"
-      : /^paypal/i.test(pm)
-        ? "paypal_guest"
-        : "credit_card";
-  }
+  if ($("qtPresetPay")) $("qtPresetPay").value = qt.paymentMethod || "credit_card";
+  const source = ["single", "group", "multi"].includes(qt.profileSource)
+    ? qt.profileSource
+    : qt.profileGroup
+      ? "group"
+      : Array.isArray(qt.profileIds) && qt.profileIds.length > 1
+        ? "multi"
+        : "single";
+  if ($("qtPresetProfileSource")) $("qtPresetProfileSource").value = source;
   if ($("qtPresetProfile") && qt.profileId) $("qtPresetProfile").value = qt.profileId;
+  if ($("qtPresetProfileGroup") && qt.profileGroup) {
+    $("qtPresetProfileGroup").value = qt.profileGroup;
+  }
   if ($("qtPresetProxy")) $("qtPresetProxy").value = qt.proxyGroupId || "";
   if ($("qtPresetQty") && document.activeElement !== $("qtPresetQty")) {
     $("qtPresetQty").value = qt.qty ?? 1;
@@ -1954,40 +2484,152 @@ function renderSettings() {
   }
   if ($("qtPresetPlaceOrder")) $("qtPresetPlaceOrder").checked = qt.placeOrder !== false;
   if ($("qtPresetStart")) $("qtPresetStart").checked = qt.startAfterCreate !== false;
+  syncQtPresetProfileSourceUi(Array.isArray(qt.profileIds) ? qt.profileIds : []);
   $("licenseMsg").textContent = s.licenseMessage
     ? `License: ${s.licenseStatus} — ${s.licenseMessage}`
     : `License: ${s.licenseStatus || "unknown"}`;
 }
 
+function fillQtPresetProfileGroupSelect(selected) {
+  const sel = $("qtPresetProfileGroup");
+  if (!sel || !state) return;
+  const want = selected != null ? String(selected || "") : String(sel.value || "");
+  fillNamedGroupSelect(sel, profileGroupNames([want]), {
+    selected: want,
+    emptyLabel: "Select group…",
+  });
+}
+
+function fillQtPresetProfileMulti(selectedIds = null) {
+  const box = $("qtPresetProfileMulti");
+  if (!box || !state) return;
+  const prev =
+    selectedIds != null
+      ? new Set((selectedIds || []).map(String))
+      : new Set(
+          [...box.querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value),
+        );
+  const profiles = state.profiles || [];
+  if (!profiles.length) {
+    box.innerHTML = `<p class="qt-profile-multi-empty">No profiles yet — add some under Profiles.</p>`;
+    return;
+  }
+  box.innerHTML = profiles
+    .map((p) => {
+      const g = String(p.profileGroup || "").trim();
+      const label = g
+        ? `${p.name || p.email || p.id} · ${g}`
+        : p.name || p.email || p.id;
+      const checked = prev.has(p.id) ? " checked" : "";
+      return `<label class="check"><input type="checkbox" value="${esc(p.id)}"${checked} /> ${esc(label)}</label>`;
+    })
+    .join("");
+}
+
+function refreshQtPresetProfileHints() {
+  const source = $("qtPresetProfileSource")?.value || "single";
+  const per = Math.max(1, Math.min(50, Number($("qtPresetQuantity")?.value) || 1));
+  const qtyLabel = $("qtPresetQuantityLabel");
+  const qtyHint = $("qtPresetQuantityHint");
+  const multi = source === "multi" || source === "group";
+  if (qtyLabel) {
+    qtyLabel.textContent = multi ? "Tasks per profile" : "Tasks to create";
+  }
+  if (qtyHint) {
+    qtyHint.textContent = multi
+      ? "Creates this many task rows for each selected profile"
+      : "Creates this many task rows";
+  }
+
+  const groupHint = $("qtPresetProfileGroupHint");
+  if (groupHint) {
+    const group = $("qtPresetProfileGroup")?.value || "";
+    const n = profilesInGroup(group).length;
+    if (!group) {
+      groupHint.textContent = "Creates tasks for each profile in the group.";
+    } else if (!n) {
+      groupHint.textContent = `No profiles in “${group}” yet — add profiles to that group first.`;
+    } else {
+      const total = n * per;
+      groupHint.textContent = `${n} profile${n === 1 ? "" : "s"} × ${per} = ${total} task${total === 1 ? "" : "s"}`;
+    }
+  }
+
+  const multiHint = $("qtPresetProfileMultiHint");
+  if (multiHint) {
+    const n = $("qtPresetProfileMulti")?.querySelectorAll('input[type="checkbox"]:checked')
+      .length || 0;
+    if (!n) {
+      multiHint.textContent = "Creates tasks for each checked profile.";
+    } else {
+      const total = n * per;
+      multiHint.textContent = `${n} profile${n === 1 ? "" : "s"} × ${per} = ${total} task${total === 1 ? "" : "s"}`;
+    }
+  }
+}
+
+function syncQtPresetProfileSourceUi(selectedMultiIds = null) {
+  const source = $("qtPresetProfileSource")?.value || "single";
+  const single = $("qtPresetProfileSingleWrap");
+  const group = $("qtPresetProfileGroupWrap");
+  const multi = $("qtPresetProfileMultiWrap");
+  if (single) single.hidden = source !== "single";
+  if (group) group.hidden = source !== "group";
+  if (multi) multi.hidden = source !== "multi";
+  if (source === "group") fillQtPresetProfileGroupSelect();
+  if (source === "multi") fillQtPresetProfileMulti(selectedMultiIds);
+  refreshQtPresetProfileHints();
+}
+
 function fillQuickTaskPresetSelects() {
   const prof = $("qtPresetProfile");
   const px = $("qtPresetProxy");
-  if (!prof || !px || !state) return;
-  const curP = prof.value;
-  const curX = px.value;
-  prof.innerHTML =
-    `<option value="">Select profile…</option>` +
-    (state.profiles || [])
-      .map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.email || p.id)}</option>`)
-      .join("");
-  px.innerHTML =
-    `<option value="">Direct (no proxy)</option>` +
-    (state.proxyGroups || [])
-      .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
-      .join("");
-  if (curP && [...prof.options].some((o) => o.value === curP)) prof.value = curP;
-  if (curX && [...px.options].some((o) => o.value === curX)) px.value = curX;
+  if (!state) return;
+  if (prof) {
+    const curP = prof.value;
+    prof.innerHTML =
+      `<option value="">Select profile…</option>` +
+      (state.profiles || [])
+        .map((p) => {
+          const g = String(p.profileGroup || "").trim();
+          const label = g
+            ? `${p.name || p.email || p.id} · ${g}`
+            : p.name || p.email || p.id;
+          return `<option value="${esc(p.id)}">${esc(label)}</option>`;
+        })
+        .join("");
+    if (curP && [...prof.options].some((o) => o.value === curP)) prof.value = curP;
+  }
+  if (px) {
+    const curX = px.value;
+    px.innerHTML =
+      `<option value="">Direct (no proxy)</option>` +
+      (state.proxyGroups || [])
+        .map((g) => `<option value="${esc(g.id)}">${esc(g.name)} (${g.entries?.length || 0})</option>`)
+        .join("");
+    if (curX && [...px.options].some((o) => o.value === curX)) px.value = curX;
+  }
+  fillQtPresetProfileGroupSelect();
+  fillQtPresetProfileMulti();
 }
 
 function readQuickTaskPresetFromForm() {
   const parsed = parseBandaiStoreSelection($("qtPresetStore")?.value || "bandai-au");
+  const profileSource = $("qtPresetProfileSource")?.value || "single";
+  const profileIds = [
+    ...($("qtPresetProfileMulti")?.querySelectorAll('input[type="checkbox"]:checked') || []),
+  ].map((el) => el.value);
   return {
     store: parsed.store || "bandai",
     bandaiArea: parsed.bandaiArea || "au",
     bandaiMode: $("qtPresetMode")?.value || "checkout",
     bandaiCheckoutMode: "fast",
     paymentMethod: $("qtPresetPay")?.value || "credit_card",
-    profileId: $("qtPresetProfile")?.value || null,
+    profileSource,
+    profileId: profileSource === "single" ? $("qtPresetProfile")?.value || null : null,
+    profileGroup:
+      profileSource === "group" ? $("qtPresetProfileGroup")?.value?.trim() || null : null,
+    profileIds: profileSource === "multi" ? profileIds : [],
     proxyGroupId: $("qtPresetProxy")?.value || null,
     qty: Number($("qtPresetQty")?.value) || 1,
     quantity: Number($("qtPresetQuantity")?.value) || 1,
@@ -2180,87 +2822,6 @@ function harvestOptsFromForm() {
   };
 }
 
-/** Harvest bank strip — kept in renderer (sandbox preload cannot require local modules). */
-function harvestSessionAgeSec(snap) {
-  const rows = Array.isArray(snap?.sessions) ? snap.sessions : [];
-  if (!rows.length) return null;
-  let min = Infinity;
-  for (const s of rows) {
-    const a = Number(s.ageSec);
-    if (Number.isFinite(a) && a < min) min = a;
-  }
-  return Number.isFinite(min) ? min : null;
-}
-
-function formatHarvestBankChip(label, snap) {
-  const ready = Number(snap?.ready) || 0;
-  const desired = Number(snap?.config?.desired);
-  const desiredLabel = Number.isFinite(desired) ? String(desired) : "–";
-  const age = harvestSessionAgeSec(snap);
-  const agePart = ready > 0 && age != null ? ` · ${age}s` : "";
-  let chipState = "off";
-  if (snap?.busy) chipState = "mint";
-  else if (snap?.running) chipState = "armed";
-  else if (ready > 0) chipState = "ready";
-  const stateLabel =
-    chipState === "mint"
-      ? "minting"
-      : chipState === "armed"
-        ? "armed"
-        : chipState === "ready"
-          ? "banked"
-          : "off";
-  return {
-    state: chipState,
-    text: `${label} ${ready}/${desiredLabel}${agePart} ${stateLabel}`,
-  };
-}
-
-function formatHarvestBankStrip(banks = {}) {
-  const chips = [
-    formatHarvestBankChip("Bandai", banks.bandai || banks.bandaiHarvest),
-    formatHarvestBankChip("Toymate", banks.toymate || banks.harvest),
-  ];
-  return {
-    chips,
-    text: chips.map((c) => c.text).join("  ·  "),
-  };
-}
-
-function tasksNeedHarvestStrip() {
-  const tasks = state?.tasks || [];
-  const hasStoreTask = tasks.some(
-    (t) => t && (t.store === "bandai" || t.store === "toymate") && t.enabled !== false,
-  );
-  const bh = state?.bandaiHarvest || {};
-  const th = state?.harvest || {};
-  const bankActive =
-    Boolean(bh.running) ||
-    Boolean(th.running) ||
-    Number(bh.ready || 0) > 0 ||
-    Number(th.ready || 0) > 0;
-  return hasStoreTask || bankActive;
-}
-
-function renderHarvestBankStrip() {
-  const el = $("harvestBankStrip");
-  if (!el) return;
-  if (!tasksNeedHarvestStrip()) {
-    el.hidden = true;
-    el.textContent = "";
-    return;
-  }
-  el.hidden = false;
-  const { chips, text } = formatHarvestBankStrip({
-    bandai: state?.bandaiHarvest,
-    toymate: state?.harvest,
-  });
-  el.innerHTML = (chips || [])
-    .map((c) => `<span class="chip-${esc(c.state)}">${esc(c.text)}</span>`)
-    .join(` <span class="chip-off">·</span> `);
-  if (!chips?.length) el.textContent = text || "";
-}
-
 function applyState(next) {
   state = next;
   fillSelects();
@@ -2274,7 +2835,6 @@ function applyState(next) {
   renderHarvest(next.harvest || null);
   renderBandaiHarvest();
   renderDisneyHarvest();
-  renderHarvestBankStrip();
   renderMonitorFeed();
   renderSmartActions();
   renderHome();
@@ -2388,30 +2948,15 @@ function fillTaskForm(task) {
   $("taskStore").value = bandaiStoreSelectValue(task);
   if ($("taskToymateMode")) $("taskToymateMode").value = task.toymateMode || "checkout";
   if ($("taskToymatePay")) $("taskToymatePay").value = task.paymentMethod || "credit_card";
-  if ($("taskBandaiPay")) {
-    const pm = String(task.paymentMethod || "credit_card").toLowerCase();
-    $("taskBandaiPay").value = /^paypal_manual|paypal_link/i.test(pm)
-      ? "paypal_manual"
-      : /^paypal/i.test(pm)
-        ? "paypal_guest"
-        : "credit_card";
-  }
+  if ($("taskBandaiPay")) $("taskBandaiPay").value = task.paymentMethod || "credit_card";
   if ($("taskAccountPassword")) $("taskAccountPassword").value = task.accountPassword || "";
   if ($("taskAccountAssign")) $("taskAccountAssign").value = task.accountAssign || "auto";
   if ($("taskBandaiMode")) $("taskBandaiMode").value = task.bandaiMode || "checkout";
   if ($("taskDisneyMode")) $("taskDisneyMode").value = task.disneyMode || "pay";
   if ($("taskBandaiCheckoutMode"))
     $("taskBandaiCheckoutMode").value = task.bandaiCheckoutMode || "fast";
-  if ($("taskBandaiAreaItemNo")) $("taskBandaiAreaItemNo").value = task.bandaiAreaItemNo || "";
   if ($("taskBandaiMonitorMode"))
     $("taskBandaiMonitorMode").value = task.bandaiMonitorMode || "local";
-  if ($("taskBandaiWatchSku")) $("taskBandaiWatchSku").value = task.bandaiWatchSku || "";
-  if ($("taskBandaiWatchKeywords"))
-    $("taskBandaiWatchKeywords").value = task.bandaiWatchKeywords || "";
-  if ($("taskBandaiCheckoutWatchSku"))
-    $("taskBandaiCheckoutWatchSku").value = task.bandaiWatchSku || "";
-  if ($("taskBandaiCheckoutWatchKeywords"))
-    $("taskBandaiCheckoutWatchKeywords").value = task.bandaiWatchKeywords || "";
   if ($("taskBandaiWatchdog")) $("taskBandaiWatchdog").checked = task.bandaiWatchdog !== false;
   if ($("taskBandaiMonitorIntervalMs"))
     $("taskBandaiMonitorIntervalMs").value = task.bandaiMonitorIntervalMs || 10000;
@@ -2425,9 +2970,10 @@ function fillTaskForm(task) {
   if ($("taskBandaiAccountAssign"))
     $("taskBandaiAccountAssign").value = task.accountAssign || "auto";
   // Legacy chance/campaignSn ignored — raffle mode removed.
-  $("taskPdp").value = task.pdpUrl || "";
+  $("taskPdp").value =
+    String(task.store || "") === "bandai" ? bandaiProductFieldDisplay(task) : task.pdpUrl || "";
   $("taskQty").value = task.qty || 1;
-  $("taskQuantity").value = task.quantity || 1;
+  $("taskQuantity").value = 1;
   if ($("taskProfileSource")) $("taskProfileSource").value = "single";
   $("taskProfile").value = task.profileId || "";
   $("taskProxy").value = task.proxyGroupId || "";
@@ -2478,10 +3024,15 @@ function showTaskContextMenu(taskId, x, y) {
         .filter(Boolean),
     ),
   ].sort((a, b) => a.localeCompare(b));
+  const held = taskHasHeldCart(task);
   menu.innerHTML = `
     <button type="button" class="ctx-item" data-ctx="edit">Edit</button>
     <button type="button" class="ctx-item" data-ctx="dup">Duplicate</button>
-    <button type="button" class="ctx-item" data-ctx="run">Start</button>
+    ${
+      held
+        ? `<button type="button" class="ctx-item" data-ctx="pay">Pay (held cart)</button>`
+        : `<button type="button" class="ctx-item" data-ctx="run">Start</button>`
+    }
     <button type="button" class="ctx-item" data-ctx="stop">Stop</button>
     <div class="ctx-sep"></div>
     <div class="ctx-label">Move to group</div>
@@ -2525,14 +3076,6 @@ document.body.addEventListener("click", async (e) => {
     selectedProxyGroupId = t.dataset.proxySelect;
     proxySortMode = null;
     renderProxies();
-    return;
-  }
-  if (t.dataset.toggleTask) {
-    const task = state.tasks.find((x) => x.id === t.dataset.toggleTask);
-    if (!task) return;
-    const on = t instanceof HTMLInputElement ? t.checked : task.enabled === false;
-    applyState(await window.desktop.upsertTask({ ...task, enabled: on }));
-    toast(on ? "Task enabled" : "Task disabled", "muted");
     return;
   }
   const delProxyBtn =
@@ -2620,31 +3163,72 @@ document.body.addEventListener("click", async (e) => {
       }
     }
   }
-  if (t.dataset.delTask) {
-    const task = (state.tasks || []).find((x) => x.id === t.dataset.delTask);
-    if (!confirmDelete(`task “${task?.label || "Task"}”`)) return;
-    applyState(await window.desktop.deleteTask(t.dataset.delTask));
+  const delTaskBtn = t.closest?.("[data-del-task]") || (t.dataset.delTask ? t : null);
+  if (delTaskBtn) {
+    const id = delTaskBtn.getAttribute("data-del-task");
+    applyState(await window.desktop.deleteTask(id));
+    toast("Task deleted", "muted");
+    return;
   }
-  if (t.dataset.dupTask) {
-    const res = await window.desktop.duplicateTask(t.dataset.dupTask);
+  const dupTaskBtn = t.closest?.("[data-dup-task]") || (t.dataset.dupTask ? t : null);
+  if (dupTaskBtn) {
+    const res = await window.desktop.duplicateTask(dupTaskBtn.getAttribute("data-dup-task"));
     if (!res.ok) appendLog(esc(res.error || "dup failed"), "err");
     else {
       appendLog(`Duplicated task → ${esc(res.task?.label || "")}`, "ok");
       if (res.snapshot) applyState(res.snapshot);
     }
+    return;
   }
-  if (t.dataset.runTask) {
-    const res = await window.desktop.runTasks([t.dataset.runTask]);
+  const runTaskBtn = t.closest?.("[data-run-task]") || (t.dataset.runTask ? t : null);
+  if (runTaskBtn) {
+    const res = await window.desktop.runTasks([runTaskBtn.getAttribute("data-run-task")]);
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Enqueued ${res.enqueued} job(s)`, "ok");
     if (res.snapshot) applyState(res.snapshot);
+    return;
   }
-  if (t.dataset.checkoutHeld || t.dataset.retryPay) {
-    const id = t.dataset.checkoutHeld || t.dataset.retryPay;
+  const stopTaskBtn = t.closest?.("[data-stop-task]") || (t.dataset.stopTask ? t : null);
+  if (stopTaskBtn) {
+    const res = await window.desktop.stopTasks([stopTaskBtn.getAttribute("data-stop-task")]);
+    if (!res.ok) appendLog(esc(res.error), "err");
+    else appendLog("Stopping task…", "muted");
+    if (res.snapshot) applyState(res.snapshot);
+    return;
+  }
+  const openPaypalBtn =
+    t.closest?.("[data-open-paypal]") || (t.dataset.openPaypal ? t : null);
+  if (openPaypalBtn) {
+    const id = openPaypalBtn.getAttribute("data-open-paypal");
+    const res = await window.desktop.openPaypalApprove(id);
+    if (!res.ok) appendLog(esc(res.error || "No PayPal link"), "err");
+    else appendLog("Opened PayPal approve link", "ok");
+    return;
+  }
+  const checkoutHeldBtn =
+    t.closest?.("[data-checkout-held],[data-retry-pay]") ||
+    (t.dataset.checkoutHeld || t.dataset.retryPay ? t : null);
+  if (checkoutHeldBtn) {
+    const id =
+      checkoutHeldBtn.getAttribute("data-checkout-held") ||
+      checkoutHeldBtn.getAttribute("data-retry-pay");
+    // If a PayPal approve URL is already on the task, open it — do not remint.
+    const taskRow = (state.tasks || []).find((x) => x.id === id);
+    if (
+      taskRow?.paypalApproveUrl &&
+      /paypal\.com/i.test(String(taskRow.paypalApproveUrl)) &&
+      /^paypal/i.test(String(taskRow.paymentMethod || ""))
+    ) {
+      const res = await window.desktop.openPaypalApprove(id);
+      if (!res.ok) appendLog(esc(res.error || "No PayPal link"), "err");
+      else appendLog("Opened PayPal approve link (no remint)", "ok");
+      return;
+    }
     const res = await window.desktop.runTasks([id], { payFromCart: true });
     if (!res.ok) appendLog(esc(res.error), "err");
     else appendLog(`Checkout now enqueued (${res.enqueued}) — live cart verify`, "ok");
     if (res.snapshot) applyState(res.snapshot);
+    return;
   }
   if (t.dataset.editProf) {
     const p = state.profiles.find((x) => x.id === t.dataset.editProf);
@@ -2744,11 +3328,18 @@ document.body.addEventListener("click", async (e) => {
       const res = await window.desktop.runTasks([task.id]);
       toast(res.ok ? `Started (${res.enqueued})` : res.error || "Start failed", res.ok ? "ok" : "err");
       if (res.snapshot) applyState(res.snapshot);
+    } else if (t.dataset.ctx === "pay") {
+      const res = await window.desktop.runTasks([task.id], { payFromCart: true });
+      toast(
+        res.ok ? `Pay enqueued (${res.enqueued})` : res.error || "Pay failed",
+        res.ok ? "ok" : "err",
+      );
+      if (res.snapshot) applyState(res.snapshot);
     } else if (t.dataset.ctx === "stop") {
-      applyState(await window.desktop.upsertTask({ ...task, enabled: false }));
-      toast("Task stopped (disabled)", "muted");
+      const res = await window.desktop.stopTasks([task.id]);
+      toast(res.ok ? "Stopping…" : res.error || "Stop failed", res.ok ? "muted" : "err");
+      if (res.snapshot) applyState(res.snapshot);
     } else if (t.dataset.ctx === "del") {
-      if (!confirmDelete(`task “${task.label || "Task"}”`)) return;
       applyState(await window.desktop.deleteTask(task.id));
       toast("Task deleted", "muted");
     }
@@ -2800,8 +3391,15 @@ function readTaskForm() {
       : bandai
         ? $("taskBandaiAccountAssign")?.value || "auto"
         : undefined;
-  let pdpUrl = $("taskPdp").value;
-  if (bandai) pdpUrl = rewriteBandaiPdpArea(pdpUrl, parsed.bandaiArea);
+  const bandaiMode = bandai ? $("taskBandaiMode")?.value || "checkout" : undefined;
+  const productRaw = $("taskPdp").value;
+  const product = bandai
+    ? parseBandaiProductField(productRaw, parsed.bandaiArea || "au")
+    : null;
+  let pdpUrl = bandai ? product.pdpUrl : productRaw;
+  if (bandai && pdpUrl) pdpUrl = rewriteBandaiPdpArea(pdpUrl, parsed.bandaiArea);
+  // Create-time only: how many task rows to make. Each saved row is one lane.
+  const createCount = Math.max(1, Math.min(50, Number($("taskQuantity")?.value) || 1));
   return {
     id: $("taskId").value || undefined,
     label: $("taskLabel").value,
@@ -2810,30 +3408,21 @@ function readTaskForm() {
     bandaiArea: bandai ? parsed.bandaiArea || "au" : undefined,
     pdpUrl,
     qty: Number($("taskQty").value),
-    quantity: Number($("taskQuantity").value),
+    quantity: 1,
+    _createCount: createCount,
     profileId: $("taskProfile").value || null,
     proxyGroupId: $("taskProxy").value || null,
     placeOrder: $("taskPlaceOrder").checked,
     toymateMode: store === "toymate" ? $("taskToymateMode")?.value || "checkout" : undefined,
-    bandaiMode: bandai ? $("taskBandaiMode")?.value || "checkout" : undefined,
+    bandaiMode,
     disneyMode: store === "disney" ? $("taskDisneyMode")?.value || "pay" : undefined,
     bandaiCheckoutMode: bandai ? $("taskBandaiCheckoutMode")?.value || "fast" : undefined,
     bandaiMonitorMode:
-      bandai && $("taskBandaiMode")?.value === "monitor"
+      bandai && bandaiMode === "monitor"
         ? $("taskBandaiMonitorMode")?.value || "local"
         : undefined,
-    bandaiWatchSku:
-      bandai
-        ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
-          ? $("taskBandaiCheckoutWatchSku")?.value?.trim() || ""
-          : $("taskBandaiWatchSku")?.value?.trim() || ""
-        : undefined,
-    bandaiWatchKeywords:
-      bandai
-        ? ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
-          ? $("taskBandaiCheckoutWatchKeywords")?.value?.trim() || ""
-          : $("taskBandaiWatchKeywords")?.value?.trim() || ""
-        : undefined,
+    bandaiWatchSku: bandai ? product.bandaiWatchSku || "" : undefined,
+    bandaiWatchKeywords: bandai ? product.bandaiWatchKeywords || "" : undefined,
     bandaiMonitorIntervalMs: bandai
       ? Number($("taskBandaiMonitorIntervalMs")?.value) || 10000
       : undefined,
@@ -2841,14 +3430,14 @@ function readTaskForm() {
       ? Number($("taskBandaiMonitorDelayMs")?.value) || 0
       : undefined,
     bandaiCheckoutOnHit:
-      bandai && ($("taskBandaiMode")?.value || "") === "monitor"
+      bandai && bandaiMode === "monitor"
         ? $("taskBandaiCheckoutOnHit")?.checked !== false
         : undefined,
     bandaiWatchdog:
-      bandai && ["checkout", "atc"].includes($("taskBandaiMode")?.value || "")
+      bandai && ["checkout", "atc"].includes(bandaiMode || "")
         ? $("taskBandaiWatchdog")?.checked !== false
         : undefined,
-    bandaiAreaItemNo: bandai ? $("taskBandaiAreaItemNo")?.value?.trim() || "" : undefined,
+    bandaiAreaItemNo: bandai ? product.bandaiAreaItemNo || "" : undefined,
     pcMode: store === "pokemoncentre" ? $("taskPcMode")?.value || "monitor" : undefined,
     pcLocale: store === "pokemoncentre" ? "en-au" : undefined,
     paymentMethod:
@@ -2901,11 +3490,13 @@ if ($("taskBandaiAccountAssign"))
 $("taskForm").onsubmit = async (e) => {
   e.preventDefault();
   const base = readTaskForm();
+  const { _createCount, ...taskBase } = base;
+  const createCount = Math.max(1, Math.min(50, Number(_createCount) || 1));
   const groupMode =
     !$("taskId")?.value && ($("taskProfileSource")?.value || "single") === "group";
   if (groupMode) {
     const groupName = $("taskProfileGroup")?.value?.trim() || "";
-    const per = Math.max(1, Math.min(20, Number($("taskPerProfile")?.value) || 1));
+    const per = createCount;
     const profiles = profilesInGroup(groupName);
     if (!groupName) {
       toast("Pick a profile group", "err");
@@ -2916,25 +3507,33 @@ $("taskForm").onsubmit = async (e) => {
       return;
     }
     const total = profiles.length * per;
-    if (total > 100) {
-      toast(`Too many tasks (${total}) — max 100 at once`, "err");
+    if (total > 200) {
+      toast(`Too many tasks (${total}) — max 200 at once`, "err");
+      return;
+    }
+    const proxyPick = takeUniqueProxies(taskBase.proxyGroupId, total);
+    if (!proxyPick.ok) {
+      toast(proxyPick.error, "err");
       return;
     }
     let snap = state;
     let created = 0;
+    let proxyIdx = 0;
     for (const p of profiles) {
       for (let n = 1; n <= per; n++) {
-        const labelBase = base.label || p.name || p.email || "Task";
+        const labelBase = taskBase.label || p.name || p.email || "Task";
         const label =
-          profiles.length * per > 1
+          total > 1
             ? `${labelBase} · ${p.name || p.email || "profile"}${per > 1 ? ` #${n}` : ""}`
             : labelBase;
         snap = await window.desktop.upsertTask({
-          ...base,
+          ...taskBase,
           id: undefined,
+          quantity: 1,
           label: String(label).slice(0, 120),
           profileId: p.id,
-          proxyGroupId: base.proxyGroupId || p.proxyGroupId || null,
+          proxyGroupId: taskBase.proxyGroupId || null,
+          assignedProxy: proxyPick.proxies[proxyIdx++] || null,
         });
         created += 1;
       }
@@ -2942,10 +3541,54 @@ $("taskForm").onsubmit = async (e) => {
     applyState(snap);
     $("taskReset").click();
     closeDialog("taskDialog");
-    toast(`Created ${created} task${created === 1 ? "" : "s"}`, "ok");
+    toast(`Created ${created} tasks (unique proxies)`, "ok");
     return;
   }
-  applyState(await window.desktop.upsertTask(base));
+  // New task + Task quantity > 1 → expand into separate rows (one lane each).
+  if (!$("taskId")?.value && createCount > 1) {
+    if (createCount > 200) {
+      toast(`Too many tasks (${createCount}) — max 200 at once`, "err");
+      return;
+    }
+    const proxyPick = takeUniqueProxies(taskBase.proxyGroupId, createCount);
+    if (!proxyPick.ok) {
+      toast(proxyPick.error, "err");
+      return;
+    }
+    let snap = state;
+    for (let n = 1; n <= createCount; n++) {
+      const labelBase = taskBase.label || "Task";
+      snap = await window.desktop.upsertTask({
+        ...taskBase,
+        id: undefined,
+        quantity: 1,
+        label: String(`${labelBase} #${n}`).slice(0, 120),
+        assignedProxy: proxyPick.proxies[n - 1] || null,
+      });
+    }
+    applyState(snap);
+    $("taskReset").click();
+    closeDialog("taskDialog");
+    toast(`Created ${createCount} tasks (unique proxies)`, "ok");
+    return;
+  }
+  // New single task: still pin a random unique proxy when a group is selected.
+  let assignedProxy = taskBase.assignedProxy;
+  if (!$("taskId")?.value && taskBase.proxyGroupId && !assignedProxy) {
+    const proxyPick = takeUniqueProxies(taskBase.proxyGroupId, 1);
+    if (!proxyPick.ok) {
+      toast(proxyPick.error, "err");
+      return;
+    }
+    assignedProxy = proxyPick.proxies[0] || null;
+  }
+  applyState(
+    await window.desktop.upsertTask({
+      ...taskBase,
+      quantity: 1,
+      assignedProxy: assignedProxy ?? undefined,
+    }),
+  );
   $("taskReset").click();
   closeDialog("taskDialog");
   toast("Task saved", "ok");
@@ -2957,14 +3600,13 @@ $("taskReset").onclick = () => {
   $("taskForm").reset();
   $("taskPlaceOrder").checked = true;
   if ($("taskProfileSource")) $("taskProfileSource").value = "single";
-  if ($("taskPerProfile")) $("taskPerProfile").value = "1";
   syncTaskFormForStore();
   syncTaskProfileSourceUi();
 };
 
 $("taskProfileSource")?.addEventListener("change", () => syncTaskProfileSourceUi());
 $("taskProfileGroup")?.addEventListener("change", () => refreshTaskProfileGroupHint());
-$("taskPerProfile")?.addEventListener("input", () => refreshTaskProfileGroupHint());
+$("taskQuantity")?.addEventListener("input", () => syncTaskQuantityLabels());
 
 $("taskRunOne").onclick = async () => {
   if (($("taskProfileSource")?.value || "single") === "group" && !$("taskId")?.value) {
@@ -3107,16 +3749,6 @@ wireBulkIo({
   noun: "proxy group(s)",
   countKey: () => (state.proxyGroups || []).length,
 });
-wireBulkIo({
-  exportBtn: "btnExportTasks",
-  importBtn: "btnImportTasks",
-  fileInput: "taskImportFile",
-  exportFn: (o) => window.desktop.exportTasks(o),
-  importFn: (t, o) => window.desktop.importTasks(t, o),
-  noun: "task(s)",
-  countKey: () => (state.tasks || []).length,
-});
-
 if ($("btnImportAccounts") && $("accImportFile")) {
   $("btnImportAccounts").onclick = () => $("accImportFile").click();
   $("accImportFile").onchange = async () => {
@@ -3594,6 +4226,11 @@ if ($("btnLimitReset")) {
   };
 }
 
+$("qtPresetProfileSource")?.addEventListener("change", () => syncQtPresetProfileSourceUi());
+$("qtPresetProfileGroup")?.addEventListener("change", () => refreshQtPresetProfileHints());
+$("qtPresetQuantity")?.addEventListener("input", () => refreshQtPresetProfileHints());
+$("qtPresetProfileMulti")?.addEventListener("change", () => refreshQtPresetProfileHints());
+
 $("btnSaveSettings").onclick = async () => {
   const patch = {
     apiKey: $("setApiKey").value.trim(),
@@ -3964,6 +4601,54 @@ if ($("bhArea")) {
 
 // ── Monitor Feed ───────────────────────────────────────────────────────────
 
+/** Mirrors desktop/deep-link.cjs buildEbaySoldUrl (Discord monitor buttons). */
+function buildEbaySoldUrl(hit = {}, opts = {}) {
+  const title = String(hit.title || hit.productName || "").trim();
+  const sku = String(hit.productId || hit.sku || "").trim();
+  let q = (title || sku || "bandai")
+    .replace(/\b(premium\s+bandai|p-bandai|bandai\s+spirits|tamashii)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  const site = String(opts.site || "ebay.com.au");
+  const params = new URLSearchParams({
+    _nkw: q || sku || "bandai",
+    LH_Sold: "1",
+    LH_Complete: "1",
+    rt: "nc",
+  });
+  return `https://www.${site}/sch/i.html?${params.toString()}`;
+}
+
+function monitorHitPdpUrl(hit = {}) {
+  const direct = String(hit.pdpUrl || hit.url || "").trim();
+  if (/^https?:\/\//i.test(direct)) return direct;
+  const sku = String(hit.productId || hit.sku || "").trim();
+  if (!sku) return "";
+  const area = String(hit.area || hit.meta?.area || "au").toLowerCase().slice(0, 2) || "au";
+  return `https://p-bandai.com/${area}/item/${sku}`;
+}
+
+function monitorHitImageUrl(hit = {}) {
+  let image = String(hit.imageUrl || hit.meta?.imageUrl || "").trim();
+  if (image && !/^https?:\/\//i.test(image)) {
+    image = `https://p-bandai.com/${image.replace(/^\//, "")}`;
+  }
+  if (/^https?:\/\//i.test(image)) return image;
+  const sku = String(hit.productId || hit.sku || "").trim();
+  if (sku && typeof saResolveImageUrl === "function") {
+    return saResolveImageUrl({ sku, imageUrl: "" }) || "";
+  }
+  return "";
+}
+
+function monitorReasonLabel(reason) {
+  const r = String(reason || "restock").replace(/_/g, " ").trim();
+  if (r === "new in stock") return "New in stock";
+  if (r === "restock") return "Restock";
+  return r.charAt(0).toUpperCase() + r.slice(1);
+}
+
 function renderMonitorFeed() {
   const mon = state?.bandaiGlobalMonitor || {};
   const power = $("feedPower");
@@ -3996,13 +4681,14 @@ function renderMonitorFeed() {
   if (!list) return;
   const rows = state?.monitorFeed || mon.feed || [];
   if (!rows.length) {
-    list.innerHTML = `<div class="empty muted">No stock updates yet — they’ll stay here once they land.</div>`;
+    list.innerHTML = `<div class="feed-empty">No stock updates yet — they’ll stay here once they land.</div>`;
     return;
   }
   list.innerHTML = rows
     .map((h, idx) => {
-      const title = h.title || h.productName || h.productId || "—";
-      const reason = (h.reason || "restock").replace(/_/g, " ");
+      const sku = String(h.productId || h.sku || "").trim();
+      const title = String(h.title || h.productName || sku || "Product").trim();
+      const reason = monitorReasonLabel(h.reason);
       const when = h.receivedAt
         ? new Date(h.receivedAt).toLocaleString([], {
             month: "short",
@@ -4014,21 +4700,54 @@ function renderMonitorFeed() {
           ? String(h.at).replace("T", " ").slice(0, 16)
           : "";
       const inStock = h.inStock !== false;
-      return `<div class="item feed-item" data-feed-idx="${idx}">
-        <div class="feed-item-main">
-          <div class="feed-item-top">
+      const area = String(h.area || h.meta?.area || "au").toUpperCase();
+      const price = h.price || h.meta?.price || "";
+      const nai = h.areaItemNo || h.meta?.areaItemNo || "";
+      const pdp = monitorHitPdpUrl(h);
+      const ebay = buildEbaySoldUrl({
+        productId: sku,
+        title,
+        sku,
+      });
+      const img = monitorHitImageUrl(h);
+      const initials = esc((sku || "PB").replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase() || "PB");
+      return `<article class="feed-hit" data-feed-idx="${idx}">
+        <div class="feed-hit-media"${sku && !img ? ` data-resolve-sku="${esc(sku)}"` : ""}>
+          ${
+            img
+              ? `<img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.closest('.feed-hit-media')?.classList.add('is-fallback');this.remove()" />`
+              : ""
+          }
+          <span class="feed-hit-fallback" aria-hidden="true">${initials}</span>
+        </div>
+        <div class="feed-hit-body">
+          <div class="feed-hit-top">
             <span class="badge ${inStock ? "hv" : "err"}">${esc(reason)}</span>
-            <strong>${esc(title)}</strong>
+            <span class="feed-hit-meta">${esc(area)}${when ? ` · ${esc(when)}` : ""}</span>
           </div>
-          <div class="meta">${esc(h.productId || "")}${when ? ` · ${esc(when)}` : ""}</div>
+          ${
+            pdp
+              ? `<a class="feed-hit-title" href="${esc(pdp)}" target="_blank" rel="noreferrer noopener" title="Open on Premium Bandai">${esc(title)}</a>`
+              : `<strong class="feed-hit-title">${esc(title)}</strong>`
+          }
+          <div class="feed-hit-meta">
+            ${sku ? `<code>${esc(sku)}</code>` : ""}
+            ${nai ? `<span>PID ${esc(String(nai))}</span>` : ""}
+            ${price ? `<span>${esc(String(price))}</span>` : ""}
+          </div>
+          <div class="feed-hit-links">
+            ${pdp ? `<a class="feed-link feed-link-pdp" href="${esc(pdp)}" target="_blank" rel="noreferrer noopener">PDP</a>` : ""}
+            <a class="feed-link feed-link-ebay" href="${esc(ebay)}" target="_blank" rel="noreferrer noopener">eBay sold</a>
+          </div>
           <div class="feed-row-actions">
             <button type="button" data-feed-qt="${idx}">Quick Task</button>
             <button type="button" class="secondary" data-feed-sa="${idx}">Smart Action</button>
           </div>
         </div>
-      </div>`;
+      </article>`;
     })
     .join("");
+  void hydrateFeedProductArt(list);
 }
 
 async function runQuickTask(payload) {
@@ -4108,13 +4827,35 @@ function saStoreMark(store) {
   return (s.slice(0, 2) || "·").toUpperCase();
 }
 
+function saLookupCatalogRow(skuOrPid) {
+  const key = String(skuOrPid || "").trim().toUpperCase();
+  if (!key) return null;
+  const rows = saCatalogState().rows || [];
+  for (const r of rows) {
+    if (String(r.sku || "").toUpperCase() === key) return r;
+    if (String(r.areaItemNo || "").toUpperCase() === key) return r;
+    if (
+      Array.isArray(r.areaItemNos) &&
+      r.areaItemNos.some((x) => String(x || "").toUpperCase() === key)
+    ) {
+      return r;
+    }
+  }
+  return null;
+}
+
 function saResolveImageUrl(row) {
   const direct = String(row?.imageUrl || "").trim();
-  if (direct) return direct;
-  const sku = String(row?.sku || "").trim();
+  if (/^https?:\/\//i.test(direct)) return direct;
+  const sku = String(row?.sku || row?.productCode || row?.areaItemNo || "").trim();
   if (!sku) return "";
+  const cat = saLookupCatalogRow(sku);
+  const fromCat = String(cat?.imageUrl || "").trim();
+  if (/^https?:\/\//i.test(fromCat)) return fromCat;
   const hit = (state?.monitorFeed || []).find(
-    (h) => String(h.sku || h.productId || "").toUpperCase() === sku.toUpperCase(),
+    (h) =>
+      String(h.sku || h.productId || "").toUpperCase() === sku.toUpperCase() ||
+      String(h.areaItemNo || "").toUpperCase() === sku.toUpperCase(),
   );
   return String(hit?.imageUrl || hit?.meta?.imageUrl || "").trim();
 }
@@ -5073,7 +5814,7 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "navigate" && evt.tab) {
     setTab(evt.tab);
     if (evt.focus === "quickTaskPreset") {
-      const el = $("qtPresetProfile") || $("qtPresetStore");
+      const el = $("qtPresetProfileSource") || $("qtPresetProfile") || $("qtPresetStore");
       try {
         el?.scrollIntoView?.({ behavior: "smooth", block: "center" });
         el?.focus?.();
@@ -5126,17 +5867,14 @@ window.desktop.onEvent((evt) => {
   if (evt.type === "harvest" && evt.data) {
     if (state) state.harvest = evt.data;
     renderHarvest(evt.data);
-    renderHarvestBankStrip();
   }
   if (evt.type === "bandaiHarvest" && evt.data) {
     if (state) state.bandaiHarvest = evt.data;
     renderBandaiHarvest();
-    renderHarvestBankStrip();
   }
   if (evt.type === "disneyHarvest" && evt.data) {
     if (state) state.disneyHarvest = evt.data;
     renderDisneyHarvest();
-    renderHarvestBankStrip();
   }
   if (evt.type === "dropSchedule") {
     if (state) state.dropSchedule = evt.data || { armed: false };
@@ -5226,8 +5964,8 @@ document.body.addEventListener("click", (e) => {
 });
 
 $("btnNewTask")?.addEventListener("click", () => openNewTaskModal());
-$("btnNewTaskGroup")?.addEventListener("click", () => {
-  const name = window.prompt("New task group name");
+$("btnNewTaskGroup")?.addEventListener("click", async () => {
+  const name = await askNamePrompt({ title: "New task group", placeholder: "e.g. Drop A" });
   if (!name?.trim()) return;
   taskGroupFilter = name.trim();
   if ($("massTaskGroup")) $("massTaskGroup").value = taskGroupFilter;
@@ -5242,12 +5980,18 @@ $("btnNewProfile")?.addEventListener("click", () => {
   setTab("profiles");
   openDialog("profileDialog");
 });
-$("btnNewProfileGroup")?.addEventListener("click", () => {
-  const name = window.prompt("New profile group name");
+$("btnNewProfileGroup")?.addEventListener("click", async () => {
+  const name = await askNamePrompt({ title: "New profile group", placeholder: "e.g. Main cards" });
   if (!name?.trim()) return;
   profileGroupFilter = name.trim();
   $("profReset")?.click();
   if ($("profileFormTitle")) $("profileFormTitle").textContent = "New profile";
+  if ($("profGroup")) {
+    fillNamedGroupSelect($("profGroup"), profileGroupNames([profileGroupFilter]), {
+      selected: profileGroupFilter,
+      emptyLabel: "No group",
+    });
+  }
   setTab("profiles");
   openDialog("profileDialog");
 });
@@ -5256,16 +6000,22 @@ $("btnNewAccount")?.addEventListener("click", () => {
   setTab("accounts");
   openDialog("accountDialog");
 });
-$("btnNewAccountGroup")?.addEventListener("click", () => {
-  const name = window.prompt("New account group name");
+$("btnNewAccountGroup")?.addEventListener("click", async () => {
+  const name = await askNamePrompt({ title: "New account group", placeholder: "e.g. Vault A" });
   if (!name?.trim()) return;
   accountGroupFilter = name.trim();
   resetAccountForm();
+  if ($("accGroup")) {
+    fillNamedGroupSelect($("accGroup"), accountGroupNames([accountGroupFilter]), {
+      selected: accountGroupFilter,
+      emptyLabel: "No group",
+    });
+  }
   setTab("accounts");
   openDialog("accountDialog");
 });
 $("btnNewProxyGroup")?.addEventListener("click", async () => {
-  const name = window.prompt("New proxy group name");
+  const name = await askNamePrompt({ title: "New proxy group", placeholder: "e.g. AU sticky" });
   if (!name?.trim()) return;
   const snap = await window.desktop.upsertProxyGroup({
     name: name.trim(),
@@ -5279,6 +6029,21 @@ $("btnNewProxyGroup")?.addEventListener("click", async () => {
   setTab("proxies");
   renderProxies();
   openProxyAddDialog();
+});
+$("namePromptForm")?.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const value = String($("namePromptInput")?.value || "").trim();
+  if (!value) {
+    $("namePromptInput")?.focus();
+    return;
+  }
+  settleNamePrompt(value);
+});
+$("namePromptCancel")?.addEventListener("click", () => settleNamePrompt(null));
+$("namePromptClose")?.addEventListener("click", () => settleNamePrompt(null));
+$("namePromptDialog")?.addEventListener("cancel", (e) => {
+  e.preventDefault();
+  settleNamePrompt(null);
 });
 $("accStoreFilter")?.addEventListener("change", () => renderAccounts());
 $("taskSearch")?.addEventListener("input", () => renderTasks());

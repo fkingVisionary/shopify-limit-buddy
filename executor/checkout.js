@@ -8,6 +8,7 @@
 import { makeDispatcher, makeRemoteTlsDispatcher, createJar, request } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
+import { throwIfAborted } from "./run-control.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
 import { noteLiveMilestone, recordRunMilestone } from "./run-milestones.js";
 
@@ -200,7 +201,9 @@ export async function runCheckout(task) {
       dryRun: task.placeOrder !== true,
     });
     try {
+      throwIfAborted(task.abortSignal);
       const out = await adapter.run(task, ctx);
+      throwIfAborted(task.abortSignal);
       markTaskDone(task.taskId, {
         ok: Boolean(out.ok),
         orderNumber: out.orderNumber ?? null,
@@ -295,6 +298,21 @@ export async function runCheckout(task) {
       });
       return result;
     } catch (e) {
+      if (e?.code === "RUN_CANCELLED" || e?.cancelled) {
+        markTaskDone(task.taskId, { ok: false, detail: "stopped" });
+        return {
+          ok: false,
+          taskId: task.taskId,
+          adapter: adapter.id,
+          error: "Stopped",
+          failedStep: "stopped",
+          cancelled: true,
+          paymentStatus: null,
+          elapsedMs: now() - t0,
+          transport: ctx.dispatcher?.transport ?? dispatcher.transport,
+          steps: ctx.steps,
+        };
+      }
       markTaskDone(task.taskId, { ok: false, detail: e?.message ?? String(e) });
       const activeTransport = ctx.dispatcher?.transport ?? dispatcher.transport;
       const partial = {
