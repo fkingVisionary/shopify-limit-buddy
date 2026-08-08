@@ -827,7 +827,11 @@
             if (r.pcSkus != null) $("pcSkus").value = r.pcSkus;
             if (r.pcIntervalMs != null) $("pcInterval").value = r.pcIntervalMs;
             toast("PKC AU watchlist live", "ok");
-            refreshAll().catch(() => {});
+            try {
+              await loadAll();
+            } catch {
+              /* save already applied */
+            }
           } catch (e) {
             toast(e.message, "bad");
           }
@@ -842,9 +846,19 @@
               `PKC poll ok · ${r.summary?.products ?? 0} products · ${r.events?.length ?? 0} events`,
               "ok",
             );
-            refreshAll().catch(() => {});
+            try {
+              await loadAll();
+            } catch {
+              /* ignore refresh flake */
+            }
           } catch (e) {
-            toast(e.message, "bad");
+            const hint = e.body?.hint ? ` — ${e.body.hint}` : "";
+            toast((e.message || "pkc_poll_failed") + hint, "bad");
+            try {
+              await loadAll();
+            } catch {
+              /* ignore */
+            }
           }
         };
       }
@@ -1136,8 +1150,14 @@
               `PKC poll · ${r.summary?.products ?? r.events?.length ?? "?"} products · ${r.events?.length ?? 0} events`,
               "ok",
             );
+            try {
+              await loadAll();
+            } catch {
+              /* ignore */
+            }
           } catch (e) {
-            toast(e.message, "bad");
+            const hint = e.body?.hint ? ` — ${e.body.hint}` : "";
+            toast((e.message || "pkc_poll_failed") + hint, "bad");
           }
         };
       }

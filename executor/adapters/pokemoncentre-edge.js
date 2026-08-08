@@ -163,6 +163,29 @@ async function fetchDeviceHtml(session, deviceLink, referer) {
 }
 
 /**
+ * Pull DataDome slider puzzle (.jpg) + piece (.frag.png) URLs from device HTML.
+ * Handles escaped JSON (`https:\/\/…`) and common CDN hosts.
+ */
+export function extractDdSliderImages(html) {
+  const raw = String(html || "");
+  const unescaped = raw.replace(/\\\//g, "/").replace(/\\u002f/gi, "/");
+  const puzzleRe =
+    /https:\/\/(?:dd\.prod\.)?captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.jpe?g/i;
+  const pieceRe =
+    /https:\/\/(?:dd\.prod\.)?captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.frag\.png/i;
+  const puzzle =
+    (unescaped.match(puzzleRe) || [])[0] ||
+    (unescaped.match(/https?:\/\/[^"'\\\s>]+\.jpe?g/i) || [])[0] ||
+    null;
+  const piece =
+    (unescaped.match(pieceRe) || [])[0] ||
+    (unescaped.match(/https?:\/\/[^"'\\\s>]+\.frag\.png/i) || [])[0] ||
+    null;
+  const needsHcaptcha = /hcaptcha\.com|h-captcha|data-sitekey/i.test(unescaped);
+  return { puzzleUrl: puzzle, pieceUrl: piece, needsHcaptcha, bytes: raw.length };
+}
+
+/**
  * Clear DataDome block page (interstitial or slider).
  *
  * Hyper DataDome getting-started:
@@ -295,18 +318,16 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
     return { ok: false, kind: "slider", note: "DataDome slider deviceLink missing", dd };
   }
   const deviceHtml = await fetchDeviceHtml(session, deviceLink, pageUrl);
-  const puzzleUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.jpg)/i) ||
-    deviceHtml.match(/(https?:\/\/[^"' ]+\.jpg)/i) ||
-    [])[1];
-  const pieceUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.frag\.png)/i) ||
-    deviceHtml.match(/(https?:\/\/[^"' ]+\.frag\.png)/i) ||
-    [])[1];
+  const imgs = extractDdSliderImages(deviceHtml);
+  const { puzzleUrl, pieceUrl } = imgs;
   if (!puzzleUrl || !pieceUrl) {
     return {
       ok: false,
       kind: "slider",
-      note: "DataDome slider puzzle/piece URLs not found — may need hCaptcha path",
-      needsHcaptcha: /hcaptcha|h-captcha/i.test(deviceHtml),
+      note: imgs.needsHcaptcha
+        ? "DataDome escalated to hCaptcha (no slider images) — rotate AU ISP sticky; CapSolver is for checkout Imperva, not this monitor warm"
+        : `DataDome slider puzzle/piece URLs not found (${imgs.bytes}b device HTML) — rotate sticky / check Hyper TLS`,
+      needsHcaptcha: imgs.needsHcaptcha,
       dd,
     };
   }
@@ -397,18 +418,16 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
   }
   const referer = pageUrl || `${session.state?.base || PC_ORIGIN}/`;
   const deviceHtml = await fetchDeviceHtml(session, url, referer);
-  const puzzleUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.jpg)/i) ||
-    deviceHtml.match(/(https?:\/\/[^"' ]+\.jpg)/i) ||
-    [])[1];
-  const pieceUrl = (deviceHtml.match(/(https:\/\/dd\.prod\.captcha-delivery\.com\/image\/.*?\.frag\.png)/i) ||
-    deviceHtml.match(/(https?:\/\/[^"' ]+\.frag\.png)/i) ||
-    [])[1];
+  const imgs = extractDdSliderImages(deviceHtml);
+  const { puzzleUrl, pieceUrl } = imgs;
   if (!puzzleUrl || !pieceUrl) {
     return {
       ok: false,
-      note: "captcha page missing puzzle/piece — may be hCaptcha escalation",
-      needsHcaptcha: /hcaptcha|h-captcha/i.test(deviceHtml),
-      bytes: deviceHtml.length,
+      note: imgs.needsHcaptcha
+        ? "captcha page escalated to hCaptcha — rotate sticky"
+        : `captcha page missing puzzle/piece (${imgs.bytes}b)`,
+      needsHcaptcha: imgs.needsHcaptcha,
+      bytes: imgs.bytes,
     };
   }
   const [puzzleB64, pieceB64] = await Promise.all([

@@ -1225,6 +1225,9 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
       polls: summary?.polls,
       products: summary?.products,
       events: events?.length || 0,
+      edgeNote: summary?.edgeNote || null,
+      proxyHost: summary?.proxyHost || null,
+      attempts: summary?.edgeAttempts || null,
     });
     return {
       ok: true,
@@ -1236,8 +1239,19 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
       })),
     };
   } catch (e) {
-    labLog("monitor", "err", `PKC force poll failed: ${e?.message || e}`);
-    return reply.code(503).send({ ok: false, error: e?.message || "pkc_poll_failed" });
+    const msg = e?.message || "pkc_poll_failed";
+    labLog("monitor", "err", `PKC force poll failed: ${msg}`);
+    const edgeBlocked = /datadome|slider|puzzle|hcaptcha|pc_edge|interstitial|public_token|bff_403/i.test(
+      msg,
+    );
+    return reply.code(503).send({
+      ok: false,
+      error: msg,
+      hint: edgeBlocked
+        ? "Edge/DataDome block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies on the host"
+        : undefined,
+      pokemoncentre: pcMonitor.status(),
+    });
   }
 });
 
