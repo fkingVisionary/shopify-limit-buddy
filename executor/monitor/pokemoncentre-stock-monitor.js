@@ -444,7 +444,25 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     } catch {
       /* best-effort */
     }
-    // Auth → tags → remint auth (tags can rotate datadome; search needs a fresh token).
+
+    // Soft-clear (category/sitemap) is enough for HTML discovery — skip DataDome tags.
+    // Tags after soft-clear were escalating BFF to captcha 403 and aborting the poll.
+    if (warm.softClear) {
+      let tok = null;
+      try {
+        tok = await getPublicToken(session, ctx, { locale, scope });
+      } catch {
+        tok = { ok: false, note: "public_token_failed" };
+      }
+      return {
+        ok: true,
+        softClear: true,
+        note: [warm.note, tok?.ok ? tok.note : "html-discovery (no BFF token)"].filter(Boolean).join(" · "),
+        token: tok?.ok ? tok : null,
+      };
+    }
+
+    // Full clear: auth → tags → remint auth (tags can rotate datadome).
     let tok = await getPublicToken(session, ctx, { locale, scope });
     if (!tok.ok) {
       return { ok: false, note: tok.note || "public_token_failed", isIpBanned: false };
@@ -677,9 +695,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             note: e?.message || String(e),
             status: e?.status || null,
           });
-          // Search 5xx must not abort the poll — category/sitemap discovery still works
-          // after edge warm (production was dying on bff_500 with products=0 forever).
-          if (e?.status === 401 || e?.status === 403) throw e;
+          // BFF search 403/5xx must not abort — HTML category/sitemap discovery can
+          // still fill the catalog (prod saw captcha 403 after edge soft-clear).
+          if (e?.status === 401 && !/captcha-delivery|datadome/i.test(String(e?.message || ""))) {
+            throw e;
+          }
         }
         await sleep(120 + Math.floor(Math.random() * 180));
       }
@@ -737,8 +757,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             ok: false,
             note: e?.message || String(e),
           });
-          // Don't kill whole poll for one SKU miss unless auth died
-          if (e?.status === 401 || e?.status === 403) throw e;
+          // Don't kill whole poll for one SKU miss (captcha 403 → discovery can still win).
+          if (e?.status === 401 && !/captcha-delivery|datadome/i.test(String(e?.message || ""))) {
+            throw e;
+          }
         }
         await sleep(80 + Math.floor(Math.random() * 120));
       }
@@ -761,7 +783,6 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             });
             const text = await session.readText(res);
             if (res.status === 403 || res.status === 401 || res.status >= 500) {
-              if (sticky) sticky.edgeOk = false;
               const err = new Error(`discovery_${res.status}`);
               err.status = res.status;
               throw err;
@@ -783,8 +804,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
               path,
               ok: false,
               note: e?.message || String(e),
+              status: e?.status || null,
             });
-            if (e?.status === 401 || e?.status === 403) throw e;
+            // Try next discovery path — don't kill the poll on one 403 page.
           }
           await sleep(150 + Math.floor(Math.random() * 200));
         }
@@ -886,9 +908,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
     const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
     const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
-    // Fewer stickies per poll — each tls warm is expensive; soft-clear + remint first.
+    // Walk more stickies when pool is large — many ISP exits hit DD t=bv.
     const defaultAttempts = wantPcTlsWorker()
-      ? 3
+      ? Math.min(8, Math.max(3, poolSize > 0 ? Math.ceil(poolSize * 0.1) : 3))
       : Math.min(15, Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4));
     const maxAttempts = Math.max(
       1,
