@@ -505,22 +505,14 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
 /**
  * Solve a DataDome captcha URL returned as JSON from a BFF 403
  * (`{ url: "https://geo.captcha-delivery.com/captcha/?..." }`).
- * If URL has `t=bv`, treat as Hyper hard-block (do not solve).
+ * Do NOT hard-ban on URL `t=bv` alone — Hyper §3.4: escalated captcha URLs can
+ * appear after TLS/header-order mismatch; confirm slider HTML / SDK isIpBanned.
  * @see https://docs.hypersolutions.co/datadome/getting-started.md#slider
  */
 export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUrl } = {}) {
   const url = String(captchaUrl || "");
   if (!url || !/captcha-delivery\.com\/captcha/i.test(url)) {
     return { ok: false, note: "not a captcha-delivery captcha URL" };
-  }
-  if (/[?&]t=bv\b/i.test(url)) {
-    return {
-      ok: false,
-      isIpBanned: true,
-      hardBlock: true,
-      note: "pc_edge_tbv: captcha URL t=bv — Hyper hard-block for this sticky; rotate (Bandai-ok ≠ PKC DataDome)",
-      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
-    };
   }
   if (!hyperConfigured()) {
     return { ok: false, note: "HYPER_API_KEY missing" };
@@ -533,6 +525,18 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
   }
   const referer = pageUrl || `${session.state?.base || PC_ORIGIN}/`;
   const deviceHtml = await fetchDeviceHtml(session, url, referer);
+  // Confirm hard-block from slider device HTML — not the query string alone.
+  const ddProbe = parseDataDomeObject(deviceHtml) || {};
+  const sliderProbe = parseSliderDeviceCheckUrl(deviceHtml, ctx.jar?.get?.("datadome") || "", pageUrl || "");
+  if (sliderProbe?.isIpBanned || ddProbe.t === "bv") {
+    return {
+      ok: false,
+      isIpBanned: true,
+      hardBlock: true,
+      note: "pc_edge_tbv: slider HTML t=bv / Hyper isIpBanned — hard block on this session",
+      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+    };
+  }
   const imgs = extractDdSliderImages(deviceHtml);
   const { puzzleUrl, pieceUrl } = imgs;
   if (!puzzleUrl || !pieceUrl) {

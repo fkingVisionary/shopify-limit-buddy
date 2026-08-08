@@ -653,33 +653,20 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         json?.url &&
         /captcha-delivery\.com\/captcha/i.test(String(json.url))
       ) {
+        // Soft fail — let search catch fall through to HTML discovery.
+        // Do not mark isIpBanned from URL t=bv (client-shape false positive).
         try {
-          // Only trust Hyper hard-block after fetching captcha HTML (slider t=bv).
           const solved = await solveDatadomeCaptchaUrl(session, sticky.ctx, json.url, {
             pageUrl: `${base}/`,
           });
-          if (solved?.isIpBanned) {
-            const err = new Error(solved.note || "pc_edge_tbv: bff captcha after client retry");
-            err.status = 403;
-            err.isIpBanned = true;
-            err.code = "PC_EDGE_TBV";
-            throw err;
-          }
           if (solved?.ok) {
             await remintBffAuth(session, sticky.ctx);
             ({ res, text, json } = await doOnce());
-          } else {
-            await clearDataDome(session, sticky.ctx, {
-              pageUrl: `${base}/`,
-              html: text,
-              headers: res.headers,
-            }).catch(() => null);
-            await remintBffAuth(session, sticky.ctx);
-            ({ res, text, json } = await doOnce());
           }
-        } catch (e) {
-          if (e?.isIpBanned || e?.code === "PC_EDGE_TBV") throw e;
-          /* fall through */
+          // If still captcha / hard HTML ban: throw soft bff_403 (no isIpBanned) so
+          // fetchCatalogOnce can still fill products from category/sitemap.
+        } catch {
+          /* soft */
         }
       }
     } else if (
