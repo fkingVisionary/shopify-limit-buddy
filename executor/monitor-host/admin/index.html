@@ -850,14 +850,45 @@
             // Always persist textarea first — phone UI often Force-polls without Save.
             toast("Saving watchlist…", "ok");
             await savePcWatchlist();
-            toast("PKC poll…", "ok");
-            const r = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
+            toast("PKC force poll (checkout TLS)…", "ok");
+            const start = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
+            let r = start;
+            // Async job — phone/Railway won't cut a long edge warm mid-request.
+            if (start?.accepted || start?.running) {
+              const jobId = start.jobId;
+              const t0 = Date.now();
+              for (;;) {
+                await new Promise((res) => setTimeout(res, 2000));
+                const st = await api("/monitor/pkc/poll/status");
+                if (jobId && st.jobId && st.jobId !== jobId && st.running) continue;
+                if (st.running) {
+                  const sec = Math.round((Date.now() - t0) / 1000);
+                  const tr = st.pokemoncentre?.transport || "";
+                  toast(
+                    `PKC edge warm… ${sec}s${tr ? " · " + tr : ""}`,
+                    "ok",
+                  );
+                  if (Date.now() - t0 > 280_000) {
+                    throw new Error("force_poll_client_wait_timeout — check Logs");
+                  }
+                  continue;
+                }
+                if (st.ok === false) {
+                  const err = new Error(st.error || "pkc_poll_failed");
+                  err.body = st;
+                  throw err;
+                }
+                r = st;
+                break;
+              }
+            }
             const n = r.discordEvents ?? r.events?.length ?? 0;
             const products = r.summary?.products ?? 0;
+            const tr = r.summary?.transport || "";
             toast(
               n
-                ? `PKC poll ok · ${products} products · ${n} Discord ping(s)`
-                : `PKC poll ok · ${products} products · no watchlist hits to ping`,
+                ? `PKC poll ok · ${products} products · ${n} Discord ping(s)${tr ? " · " + tr : ""}`
+                : `PKC poll ok · ${products} products · no watchlist hits${tr ? " · " + tr : ""}`,
               "ok",
             );
             try {
@@ -867,15 +898,20 @@
             }
           } catch (e) {
             // Keep toast short for phone — full hint is in Logs.
-            const msg = String(e.message || "pkc_poll_failed");
+            const msg = String(e.message || e.body?.error || "pkc_poll_failed");
+            const hint = e.body?.hint || "";
             const tbv = /t=bv|pc_edge_tbv|hard.?block/i.test(msg);
+            const timeout = /poll_timeout|client_wait_timeout/i.test(msg);
             const short = tbv
-              ? "DataDome t=bv — rotated stickies; Bandai-ok ≠ PKC. Check Logs."
-              : msg
-                  .replace(/\s*—\s*Edge\/BFF block[\s\S]*$/i, "")
-                  .replace(/\s*·\s*exhausted[\s\S]*$/i, " · pool exhausted")
-                  .slice(0, 140);
+              ? "DataDome t=bv — rotated stickies. Check Logs."
+              : timeout
+                ? "PKC poll timed out — check Logs (tls-worker?)."
+                : msg
+                    .replace(/\s*—\s*Edge\/BFF block[\s\S]*$/i, "")
+                    .replace(/\s*·\s*exhausted[\s\S]*$/i, " · pool exhausted")
+                    .slice(0, 140);
             toast(short || msg.slice(0, 140), "bad");
+            if (hint) console.warn("[pkc poll]", hint);
             try {
               await loadAll();
             } catch {
@@ -1167,7 +1203,26 @@
       if ($("btnPollPkcLab")) {
         $("btnPollPkcLab").onclick = async () => {
           try {
-            const r = await api("/monitor/pkc/poll", { method: "POST" });
+            const start = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
+            let r = start;
+            if (start?.accepted || start?.running) {
+              const t0 = Date.now();
+              for (;;) {
+                await new Promise((res) => setTimeout(res, 2000));
+                const st = await api("/monitor/pkc/poll/status");
+                if (st.running) {
+                  if (Date.now() - t0 > 280_000) throw new Error("force_poll_client_wait_timeout");
+                  continue;
+                }
+                if (st.ok === false) {
+                  const err = new Error(st.error || "pkc_poll_failed");
+                  err.body = st;
+                  throw err;
+                }
+                r = st;
+                break;
+              }
+            }
             const n = r.discordEvents ?? r.events?.length ?? 0;
             toast(
               `PKC poll · ${r.summary?.products ?? "?"} products · ${n} Discord ping(s)`,

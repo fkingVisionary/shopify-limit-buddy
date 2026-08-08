@@ -1217,12 +1217,53 @@ app.post("/monitor/restart", async (req, reply) => {
   }
 });
 
-app.post("/monitor/pkc/poll", async (req, reply) => {
-  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+/** In-flight / last Force poll — admin polls status so Railway/phone don't cut a long edge warm. */
+let pkcForcePollJob = null;
+
+function pkcForcePollHint(msg) {
+  const tbv = /t=bv|pc_edge_tbv|hard.?block|hard.?ip/i.test(msg);
+  const timeout = /poll_timeout/i.test(msg);
+  const hyper = /HYPER_API_KEY/i.test(msg);
+  if (hyper) return "Set HYPER_API_KEY on the monitor service (same key as checkout).";
+  if (tbv) {
+    return "DataDome t=bv is per-sticky. Monitor now uses checkout tls-worker; rotate continues on remaining ISP lines.";
+  }
+  if (timeout) {
+    return "Edge warm exceeded poll budget — check Logs for transport=tls-worker vs undici fallback; confirm HYPER_API_KEY + ISP list.";
+  }
+  if (
+    /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot (read|set) properties/i.test(
+      msg,
+    )
+  ) {
+    return "Edge/BFF block — monitor uses checkout tls-worker + sticky rotate; confirm HYPER_API_KEY + AU ISP proxies";
+  }
+  return undefined;
+}
+
+function serializePkcForcePollJob(job) {
+  if (!job) return { running: false, jobId: null };
+  return {
+    running: Boolean(job.running),
+    jobId: job.id,
+    startedAt: job.startedAt,
+    doneAt: job.doneAt || null,
+    ok: job.ok,
+    error: job.error || null,
+    hint: job.hint || null,
+    summary: job.summary || null,
+    discordEvents: job.discordEvents ?? null,
+    events: job.events || null,
+    pokemoncentre: pcMonitor.status(),
+  };
+}
+
+async function runPkcForcePollJob(job) {
   try {
     // announce:true → Discord current keyword/SKU hits (not silent baseline/diff-only).
     const { summary, events } = await pcMonitor.pollOnce({ announce: true });
     labLog("monitor", "info", "PKC force poll", {
+      jobId: job.id,
       polls: summary?.polls,
       products: summary?.products,
       events: events?.length || 0,
@@ -1230,37 +1271,100 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
       edgeNote: summary?.edgeNote || null,
       proxyHost: summary?.proxyHost || null,
       attempts: summary?.edgeAttempts || null,
+      transport: summary?.transport || null,
     });
-    return {
-      ok: true,
-      summary,
-      discordEvents: events?.length || 0,
-      events: (events || []).map((e) => ({
-        productId: e.productId,
-        inStock: e.inStock,
-        reason: e.reason,
-      })),
-    };
+    job.running = false;
+    job.ok = true;
+    job.doneAt = Date.now();
+    job.summary = summary;
+    job.discordEvents = events?.length || 0;
+    job.events = (events || []).map((e) => ({
+      productId: e.productId,
+      inStock: e.inStock,
+      reason: e.reason,
+    }));
   } catch (e) {
     const msg = e?.message || "pkc_poll_failed";
     labLog("monitor", "err", `PKC force poll failed: ${msg}`);
-    const tbv = /t=bv|pc_edge_tbv|hard.?block|hard.?ip/i.test(msg);
-    const edgeBlocked =
-      tbv ||
-      /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot (read|set) properties/i.test(
-        msg,
-      );
+    job.running = false;
+    job.ok = false;
+    job.doneAt = Date.now();
+    job.error = msg;
+    job.hint = pkcForcePollHint(msg);
+  }
+}
+
+app.get("/monitor/pkc/poll/status", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  return { ok: true, ...serializePkcForcePollJob(pkcForcePollJob) };
+});
+
+app.post("/monitor/pkc/poll", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  const body = req.body && typeof req.body === "object" ? req.body : {};
+  const sync =
+    req.query?.sync === "1" ||
+    req.query?.sync === "true" ||
+    body.sync === true ||
+    body.sync === 1;
+
+  if (pkcForcePollJob?.running) {
+    return {
+      ok: true,
+      accepted: true,
+      running: true,
+      ...serializePkcForcePollJob(pkcForcePollJob),
+    };
+  }
+
+  const job = {
+    id: `pkc-poll-${Date.now().toString(36)}`,
+    running: true,
+    startedAt: Date.now(),
+    doneAt: null,
+    ok: null,
+    error: null,
+    hint: null,
+    summary: null,
+    discordEvents: null,
+    events: null,
+  };
+  pkcForcePollJob = job;
+  labLog("monitor", "info", "PKC force poll started", {
+    jobId: job.id,
+    sync: Boolean(sync),
+    tlsWorker: process.env.PC_MONITOR_TLS_WORKER !== "0",
+  });
+
+  if (sync) {
+    await runPkcForcePollJob(job);
+    if (job.ok) {
+      return {
+        ok: true,
+        summary: job.summary,
+        discordEvents: job.discordEvents,
+        events: job.events,
+        jobId: job.id,
+      };
+    }
     return reply.code(503).send({
       ok: false,
-      error: msg,
-      hint: tbv
-        ? "DataDome t=bv is per-sticky (not “all 90 proxies burnt”). Bandai uses Akamai — same ISP list can fail PKC DD on undici. Force poll now walks many stickies; confirm HYPER_API_KEY."
-        : edgeBlocked
-          ? "Edge/BFF block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies"
-          : undefined,
+      error: job.error || "pkc_poll_failed",
+      hint: job.hint,
+      jobId: job.id,
       pokemoncentre: pcMonitor.status(),
     });
   }
+
+  void runPkcForcePollJob(job);
+  return {
+    ok: true,
+    accepted: true,
+    running: true,
+    jobId: job.id,
+    note: "Force poll running (checkout tls-worker edge) — GET /monitor/pkc/poll/status",
+    pokemoncentre: pcMonitor.status(),
+  };
 });
 
 app.get("/logs", async (req, reply) => {
