@@ -48,8 +48,10 @@ export function defaultConfigFromEnv() {
       String(process.env.PC_MONITOR_ENABLE ?? "1").trim(),
     ),
     pcLocale: String(process.env.PC_MONITOR_LOCALE || "en-au").trim() || "en-au",
-    // Empty by default — same model as Bandai: admin dashboard owns the watchlist.
-    pcKeywords: String(process.env.PC_MONITOR_KEYWORDS || ""),
+    // Bootstrap watchlist — admin can edit; boot also merges binder/playmat/deck.
+    pcKeywords: String(
+      process.env.PC_MONITOR_KEYWORDS || "TCG\nbinder\nplaymat\ndeck",
+    ),
     pcSkus: String(process.env.PC_MONITOR_SKUS || ""),
     pcIntervalMs: Number(process.env.PC_MONITOR_INTERVAL_MS) || 15000,
     updatedAt: null,

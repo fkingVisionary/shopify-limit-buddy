@@ -305,35 +305,77 @@ function hitPayload(ev) {
   };
 }
 
+/** Serialize Discord posts — cold-start soft-list dumps were racing and 429'ing. */
+const discordSendGapMs = Math.max(
+  350,
+  Number(process.env.DISCORD_WEBHOOK_GAP_MS) || 1_100,
+);
+let discordChain = Promise.resolve();
+
+function enqueueDiscordSend(fn) {
+  const run = discordChain.then(fn, fn);
+  discordChain = run.then(
+    () => sleep(discordSendGapMs),
+    () => sleep(discordSendGapMs),
+  );
+  return run;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 async function postDiscordTo(hook, body, logTag = "discord") {
   if (!hook) return { ok: false, skipped: true, error: "no_webhook" };
   const timeoutMs = Math.max(
     3_000,
     Number(process.env.DISCORD_WEBHOOK_TIMEOUT_MS) || 12_000,
   );
-  try {
-    const res = await fetch(hook, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const text = await res.text().catch(() => "");
-    if (!res.ok) {
-      labLog(logTag, "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
-      return { ok: false, status: res.status, error: text.slice(0, 200) };
+  return enqueueDiscordSend(async () => {
+    const maxAttempts = 4;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(hook, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        const text = await res.text().catch(() => "");
+        if (res.status === 429) {
+          const retryAfterSec = Number(res.headers.get("retry-after") || 2);
+          const waitMs = Math.min(
+            30_000,
+            Math.max(1_000, (Number.isFinite(retryAfterSec) ? retryAfterSec : 2) * 1000),
+          );
+          labLog(logTag, "warn", `webhook 429 — retry in ${waitMs}ms`, {
+            attempt,
+            detail: text.slice(0, 80),
+          });
+          if (attempt >= maxAttempts) {
+            return { ok: false, status: 429, error: text.slice(0, 200) };
+          }
+          await sleep(waitMs);
+          continue;
+        }
+        if (!res.ok) {
+          labLog(logTag, "err", `webhook ${res.status}`, { detail: text.slice(0, 120) });
+          return { ok: false, status: res.status, error: text.slice(0, 200) };
+        }
+        const title = body?.embeds?.[0]?.title || body?.username || "ping";
+        labLog(logTag, "info", `sent · ${title}`.slice(0, 200));
+        return { ok: true, status: res.status };
+      } catch (e) {
+        const msg =
+          e?.name === "TimeoutError" || e?.name === "AbortError"
+            ? `webhook_timeout_${timeoutMs}ms`
+            : e?.message || String(e);
+        labLog(logTag, "err", msg);
+        return { ok: false, error: msg };
+      }
     }
-    const title = body?.embeds?.[0]?.title || body?.username || "ping";
-    labLog(logTag, "info", `sent · ${title}`.slice(0, 200));
-    return { ok: true, status: res.status };
-  } catch (e) {
-    const msg =
-      e?.name === "TimeoutError" || e?.name === "AbortError"
-        ? `webhook_timeout_${timeoutMs}ms`
-        : e?.message || String(e);
-    labLog(logTag, "err", msg);
-    return { ok: false, error: msg };
-  }
+    return { ok: false, error: "discord_retry_exhausted" };
+  });
 }
 
 async function postDiscord(body) {
@@ -401,6 +443,31 @@ try {
     if (runtime.pcKeywords) pcMonitor.setKeywords(runtime.pcKeywords);
     if (runtime.pcSkus) pcMonitor.setSkus(runtime.pcSkus);
     if (runtime.pcIntervalMs) pcMonitor.setIntervalMs(runtime.pcIntervalMs);
+  }
+  // Ensure accessory keywords exist even when disk only had "TCG".
+  {
+    const extras = ["TCG", "binder", "playmat", "deck"];
+    const cur = String(runtime.pcKeywords || "")
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    let changed = false;
+    for (const k of extras) {
+      if (!cur.some((x) => x.toLowerCase() === k.toLowerCase())) {
+        cur.push(k);
+        changed = true;
+      }
+    }
+    if (changed || !runtime.pcKeywords) {
+      runtime.pcKeywords = cur.join("\n");
+      pcMonitor.setKeywords(runtime.pcKeywords);
+      try {
+        saveRuntimeConfig(runtime);
+        labLog("monitor", "info", "PKC keywords merged", { pcKeywords: runtime.pcKeywords });
+      } catch (e) {
+        console.warn("[runtime-config] pcKeywords merge save failed", e?.message || e);
+      }
+    }
   }
 } catch (e) {
   console.warn("[runtime-config]", e?.message || e);

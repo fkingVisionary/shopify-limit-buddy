@@ -19,10 +19,14 @@ import {
 import {
   getPublicToken,
   cortexApiHeaders,
+  parsePdpAvailability,
   PC_API_BASE,
   PC_CORTEX_SCOPE,
 } from "../adapters/pokemoncentre-cortex.js";
 import { hyperConfigured } from "../antibot.js";
+
+/** Default PKC search keywords (admin can still edit; boot merges these in). */
+export const PC_DEFAULT_KEYWORDS = ["TCG", "binder", "playmat", "deck"];
 
 /** @type {null | Promise<{ makeRemoteTlsDispatcher: Function, createJar: Function, request: Function, UA: string } | null>} */
 let httpTlsModulePromise = null;
@@ -46,6 +50,19 @@ async function loadHttpTls() {
 function wantPcTlsWorker() {
   // Default ON — matches checkout ATC proof. Set PC_MONITOR_TLS_WORKER=0 to force undici.
   return parseBool(process.env.PC_MONITOR_TLS_WORKER, true);
+}
+
+function announceSoftCap() {
+  return Math.max(1, Math.min(40, Number(process.env.PC_MONITOR_ANNOUNCE_LIMIT) || 8));
+}
+
+function looksBlockedHtml(html, status) {
+  if (status === 403 || status === 401) return true;
+  const h = String(html || "");
+  if (h.length < 2_000) return true;
+  return /Pardon Our Interruption|captcha-delivery|geo\.captcha-delivery|_Incapsula_Resource|datadome/i.test(
+    h,
+  );
 }
 
 function sleep(ms) {
@@ -85,6 +102,65 @@ function parseBool(raw, fallback) {
  * @param {{ locale?: string }} [opts]
  * @returns {{ sku: string, slug: string|null, locale: string, pdpUrl: string }[]}
  */
+/**
+ * Pull product cards with availability from category/PLP HTML (__NEXT_DATA__ / JSON blobs).
+ * Falls back to URL-only rows (unknown stock) via extractPcProductUrls.
+ */
+export function extractPcProductCardsFromHtml(htmlOrXml, { locale = "en-au", source = "category" } = {}) {
+  const text = String(htmlOrXml || "");
+  /** @type {Map<string, object>} */
+  const bySku = new Map();
+  const add = (raw) => {
+    const row = normalizePcCatalogCard(raw, { source });
+    if (!row) return;
+    const id = row.productId.toUpperCase();
+    const prev = bySku.get(id);
+    // Prefer rows that carry a real availability enum.
+    if (!prev || (row.availability && !prev.availability)) bySku.set(id, row);
+    else if (!prev) bySku.set(id, row);
+  };
+  // code…availability (common Next serialize order)
+  const reFwd =
+    /"code"\s*:\s*"((?:10-|P[A-Z0-9-])[^"]+)"[\s\S]{0,500}?"availability"\s*:\s*"([A-Z_]+)"/gi;
+  for (const m of text.matchAll(reFwd)) {
+    add({ code: m[1], availability: m[2] });
+  }
+  const reRev =
+    /"availability"\s*:\s*"([A-Z_]+)"[\s\S]{0,500}?"code"\s*:\s*"((?:10-|P[A-Z0-9-])[^"]+)"/gi;
+  for (const m of text.matchAll(reRev)) {
+    add({ code: m[2], availability: m[1] });
+  }
+  // Name near code when present
+  const reName =
+    /"code"\s*:\s*"((?:10-|P[A-Z0-9-])[^"]+)"[\s\S]{0,300}?"name"\s*:\s*"([^"]+)"/gi;
+  for (const m of text.matchAll(reName)) {
+    const id = String(m[1]).toUpperCase();
+    const prev = bySku.get(id);
+    if (prev && !prev.title) bySku.set(id, { ...prev, title: m[2] });
+    else if (!prev) add({ code: m[1], name: m[2] });
+  }
+  // URL fallback for SKUs with no JSON card
+  for (const u of extractPcProductUrls(text, { locale })) {
+    const id = u.sku.toUpperCase();
+    if (bySku.has(id)) {
+      const prev = bySku.get(id);
+      bySku.set(id, {
+        ...prev,
+        slug: prev.slug || u.slug,
+        pdpUrl: prev.pdpUrl || u.pdpUrl,
+      });
+      continue;
+    }
+    add({
+      code: u.sku,
+      slug: u.slug,
+      pdpUrl: u.pdpUrl,
+      name: u.slug ? u.slug.replace(/-/g, " ") : null,
+    });
+  }
+  return [...bySku.values()];
+}
+
 export function extractPcProductUrls(htmlOrXml, { locale = "en-au" } = {}) {
   const text = String(htmlOrXml || "");
   if (!text) return [];
@@ -348,7 +424,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     Math.max(5, Number(opts.searchRows || process.env.PC_MONITOR_SEARCH_ROWS) || 20),
   );
   // Watchlist is admin-dashboard owned (same as Bandai keywords). Env is bootstrap only.
-  let keywords = parseList(opts.keywords ?? process.env.PC_MONITOR_KEYWORDS ?? "");
+  let keywords = parseList(
+    opts.keywords ?? process.env.PC_MONITOR_KEYWORDS ?? PC_DEFAULT_KEYWORDS.join("\n"),
+  );
   let skus = parseList(opts.skus ?? process.env.PC_MONITOR_SKUS ?? "").map((s) => s.toUpperCase());
   // Sitemap + category URL discovery — catches random restock soft-publishes without a known SKU.
   let discoveryEnable = parseBool(
@@ -851,16 +929,33 @@ export function createPokemonCentreStockMonitor(opts = {}) {
               err.status = res.status;
               throw err;
             }
-            const found = extractPcProductUrls(text, { locale });
-            for (const f of found) {
-              discovered.push({ ...f, from: path });
+            const cards = extractPcProductCardsFromHtml(text, {
+              locale,
+              source: path.includes("sitemap") ? "sitemap" : "category",
+            });
+            for (const card of cards) {
+              discovered.push({
+                sku: card.productId,
+                slug: card.slug || null,
+                locale,
+                pdpUrl: card.pdpUrl || null,
+                title: card.title || null,
+                availability: card.availability || null,
+                inStock: card.inStock,
+                softListed: card.softListed,
+                imageUrl: card.imageUrl || null,
+                price: card.price || null,
+                from: path,
+                card,
+              });
             }
             sources.push({
               kind: "discovery",
               path,
               ok: true,
               status: res.status,
-              urls: found.length,
+              urls: cards.length,
+              inStock: cards.filter((c) => c.inStock).length,
             });
           } catch (e) {
             sources.push({
@@ -901,31 +996,44 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           if (signal?.aborted) break;
           const id = f.sku.toUpperCase();
           const prevRow = snapshot.get(id);
-          let row = normalizePcCatalogCard(
-            {
-              code: f.sku,
-              slug: f.slug || prevRow?.slug || null,
-              pdpUrl: f.pdpUrl || prevRow?.pdpUrl || null,
-              name:
-                prevRow?.title ||
-                (f.slug ? f.slug.replace(/-/g, " ") : null),
-              availability: prevRow?.availability || "NOT_AVAILABLE",
-              imageUrl: prevRow?.imageUrl || null,
-              price: prevRow?.price || null,
-            },
-            { source: f.from.includes("sitemap") ? "sitemap" : "category" },
-          );
+          const fromCard = f.card || null;
+          let row =
+            fromCard ||
+            normalizePcCatalogCard(
+              {
+                code: f.sku,
+                slug: f.slug || prevRow?.slug || null,
+                pdpUrl: f.pdpUrl || prevRow?.pdpUrl || null,
+                name:
+                  f.title ||
+                  prevRow?.title ||
+                  (f.slug ? f.slug.replace(/-/g, " ") : null),
+                // Do NOT default to NOT_AVAILABLE — that mislabeled live stock as soft_listed.
+                availability: f.availability || prevRow?.availability || null,
+                imageUrl: f.imageUrl || prevRow?.imageUrl || null,
+                price: f.price || prevRow?.price || null,
+              },
+              { source: f.from.includes("sitemap") ? "sitemap" : "category" },
+            );
           if (row && prevRow) {
+            const htmlKnowsStock =
+              Boolean(f.availability) ||
+              (fromCard && (fromCard.inStock === true || fromCard.availability));
             row = {
               ...prevRow,
               ...row,
               productId: row.productId || f.sku,
-              // Keep prior buyable signal if BFF search is down this poll.
-              inStock: prevRow.inStock === true ? prevRow.inStock : row.inStock,
-              softListed:
-                prevRow.inStock === true
+              inStock: htmlKnowsStock
+                ? Boolean(row.inStock)
+                : prevRow.inStock === true
+                  ? true
+                  : Boolean(row.inStock),
+              softListed: htmlKnowsStock
+                ? Boolean(row.softListed) && !row.inStock
+                : prevRow.inStock === true
                   ? false
                   : Boolean(row.softListed || prevRow.softListed),
+              availability: f.availability || row.availability || prevRow.availability || null,
             };
           }
           // Always keep HTML discovery rows — BFF status must not abort the catalog.
@@ -956,7 +1064,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
                 next.set(id, {
                   ...row,
                   ...statusRow,
-                  pdpUrl: f.pdpUrl,
+                  pdpUrl: f.pdpUrl || statusRow.pdpUrl,
                   slug: f.slug || statusRow.slug,
                   productId: statusRow.productId || f.sku,
                 });
@@ -970,13 +1078,92 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             await sleep(60 + Math.floor(Math.random() * 100));
           }
         }
+
+        // PDP HTML stock check — category URL-only rows defaulted soft and lied about live stock.
+        const pdpProbeLimit = Math.max(
+          0,
+          Math.min(
+            20,
+            Number(process.env.PC_MONITOR_PDP_PROBE_LIMIT) || Math.max(6, announceSoftCap()),
+          ),
+        );
+        let pdpProbed = 0;
+        if (pdpProbeLimit > 0) {
+          const kwRe = keywords.length
+            ? new RegExp(keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i")
+            : null;
+          const needsProbe = [...next.values()]
+            .filter((r) => {
+              const a = String(r.availability || "").toUpperCase();
+              const src = String(r.source || "");
+              if (!r.pdpUrl) return false;
+              if (/AVAILABLE|SOLD_OUT|COMING/i.test(a) && a !== "NOT_AVAILABLE") return false;
+              // Prefer unknown / URL-only soft rows from discovery.
+              return /category|sitemap|discovery/i.test(src) || !a || a === "NOT_AVAILABLE";
+            })
+            .sort((a, b) => {
+              const score = (r) => {
+                const blob = `${r.title || ""} ${r.slug || ""} ${r.productId || ""}`;
+                if (kwRe && kwRe.test(blob)) return 2;
+                if (!snapshot.has(String(r.productId || "").toUpperCase())) return 1;
+                return 0;
+              };
+              return score(b) - score(a);
+            })
+            .slice(0, pdpProbeLimit);
+          for (const r of needsProbe) {
+            if (signal?.aborted) break;
+            try {
+              const res = await session.get(r.pdpUrl, { headers: { referer: `${base}/` } });
+              const html = await session.readText(res);
+              if (res.status >= 400 || looksBlockedHtml(html, res.status)) continue;
+              const pdp = parsePdpAvailability(html);
+              const availEnum =
+                pdp?.product?.availability ||
+                (pdp?.available === true
+                  ? "AVAILABLE"
+                  : pdp?.available === false
+                    ? "NOT_AVAILABLE"
+                    : null);
+              if (!availEnum && !pdp?.title) continue;
+              const enriched = normalizePcCatalogCard(
+                {
+                  code: pdp?.code || r.productId,
+                  name: pdp?.title || r.title,
+                  availability: availEnum || r.availability,
+                  addToCartForm: pdp?.addToCartForm || pdp?.product?.addToCartForm,
+                  slug: r.slug,
+                  pdpUrl: r.pdpUrl,
+                  imageUrl: r.imageUrl,
+                  price: r.price || pdp?.product?.purchasePrice || pdp?.product?.listPrice,
+                },
+                { source: "pdp_probe" },
+              );
+              if (enriched) {
+                next.set(String(enriched.productId).toUpperCase(), {
+                  ...r,
+                  ...enriched,
+                  pdpUrl: r.pdpUrl,
+                  slug: r.slug || enriched.slug,
+                });
+                pdpProbed += 1;
+              }
+            } catch {
+              /* keep prior row */
+            }
+            await sleep(80 + Math.floor(Math.random() * 120));
+          }
+        }
+
         sources.push({
           kind: "discovery_seed",
           ok: true,
           novel: novel.length,
           refresh: refresh.length,
           probed,
+          pdpProbed,
           added: toSeed.filter((f) => next.has(f.sku.toUpperCase())).length,
+          inStock: [...next.values()].filter((r) => r.inStock).length,
         });
       }
 
@@ -1149,7 +1336,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     const prev = snapshot;
     const first = prev.size === 0;
-    const announceLimit = Number(process.env.PC_MONITOR_ANNOUNCE_LIMIT) || 15;
+    const announceLimit = announceSoftCap();
     let events;
     if (announce) {
       // Force poll: ping what the watchlist / discovery soft-list sees now.
@@ -1433,5 +1620,7 @@ export default {
   diffPcCatalog,
   buildPcAnnounceEvents,
   extractPcProductUrls,
+  extractPcProductCardsFromHtml,
+  PC_DEFAULT_KEYWORDS,
   cortexScopeForLocale,
 };
