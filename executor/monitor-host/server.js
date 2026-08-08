@@ -1244,16 +1244,20 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
   } catch (e) {
     const msg = e?.message || "pkc_poll_failed";
     labLog("monitor", "err", `PKC force poll failed: ${msg}`);
+    const tbv = /t=bv|pc_edge_tbv|hard.?block|hard.?ip/i.test(msg);
     const edgeBlocked =
+      tbv ||
       /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot (read|set) properties/i.test(
         msg,
       );
     return reply.code(503).send({
       ok: false,
       error: msg,
-      hint: edgeBlocked
-        ? "Edge/BFF block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies (bff_500 = Cortex/WAF after warm)"
-        : undefined,
+      hint: tbv
+        ? "DataDome t=bv is per-sticky (not “all 90 proxies burnt”). Bandai uses Akamai — same ISP list can fail PKC DD on undici. Force poll now walks many stickies; confirm HYPER_API_KEY."
+        : edgeBlocked
+          ? "Edge/BFF block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies"
+          : undefined,
       pokemoncentre: pcMonitor.status(),
     });
   }
