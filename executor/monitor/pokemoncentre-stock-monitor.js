@@ -27,8 +27,21 @@ import { hyperConfigured } from "../antibot.js";
 
 /** Default PKC search keywords (admin can still edit). */
 export const PC_DEFAULT_KEYWORDS = ["TCG"];
-/** Title/slug excludes — user asked for -binder -playmat -deck (not search terms). */
-export const PC_DEFAULT_NEGATIVE_KEYWORDS = ["binder", "playmat", "deck"];
+/** Title/slug excludes — not search terms (`-binder -playmat -deck -sleeves`). */
+export const PC_DEFAULT_NEGATIVE_KEYWORDS = ["binder", "playmat", "deck", "sleeves"];
+
+/** Soft Discord only when availability is explicit OOS/soft — or sitemap-only novel. */
+export function isConfirmedPcSoftListed(row) {
+  const a = String(row?.availability || "").toUpperCase();
+  if (/NOT_AVAILABLE|COMING[_ ]?SOON|UNAVAILABLE|SOLD_OUT|OUT_OF_STOCK/i.test(a)) {
+    return true;
+  }
+  const src = String(row?.source || "");
+  // Sitemap URL with no buyable enum = classic hours-ahead soft publish.
+  if (/^sitemap$/i.test(src) && !row?.inStock) return true;
+  if (row?.softListed && /^search:/i.test(src) && a) return true;
+  return false;
+}
 
 /**
  * Split watchlist into positive search terms and `-term` negatives.
@@ -263,12 +276,16 @@ export function normalizePcCatalogCard(p, { source } = {}) {
   } else if (typeof p.inStock === "boolean") inStock = p.inStock;
   else if (typeof p.available === "boolean") inStock = p.available;
   else if (p.addToCartForm || p.epItemId) inStock = true;
-  else if (/^category|^pdp_probe|^discovery_status/i.test(String(source || ""))) {
-    // Live category / PDP without an OOS enum — these are buyable listings (operator
-    // confirmed Discord soft 🔴 was wrong; PDP links were in stock). Soft only when
-    // BFF/JSON explicitly says NOT_AVAILABLE / COMING_SOON / SOLD_OUT above.
-    inStock = true;
-    softListed = false;
+  else if (/^pdp_probe$/i.test(String(source || ""))) {
+    // PDP probe without enum but ATC / available flags handled above. If we only have a
+    // URL shell, keep as soft-pending — Discord filters to confirmed soft only.
+    inStock = false;
+    softListed = true;
+  } else if (/^category|^discovery_status/i.test(String(source || ""))) {
+    // Category URL without availability — soft-pending until PDP/BFF confirms.
+    // Confirmed AVAILABLE → restock 🟢; NOT_AVAILABLE → soft Discord (upcoming drop).
+    inStock = false;
+    softListed = true;
   } else if (
     titleRaw ||
     p.pdpUrl ||
@@ -1135,15 +1152,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           }
         }
 
-        // PDP HTML stock check — category URL-only rows defaulted soft and lied about live stock.
+        // PDP probe classifies soft-pending vs live stock before Discord announce.
+        // AVAILABLE → 🟢 restock; NOT_AVAILABLE → soft "Potential Upcoming Restock".
         const pdpProbeLimit = Math.max(
           0,
           Math.min(
-            20,
-            Number(process.env.PC_MONITOR_PDP_PROBE_LIMIT) || Math.max(6, announceSoftCap()),
+            40,
+            Number(process.env.PC_MONITOR_PDP_PROBE_LIMIT) ||
+              Math.max(16, Math.min(32, next.size || 16)),
           ),
         );
         let pdpProbed = 0;
+        let pdpSoft = 0;
+        let pdpLive = 0;
         if (pdpProbeLimit > 0) {
           const kwRe = keywords.length
             ? new RegExp(keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i")
@@ -1151,18 +1172,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           const needsProbe = [...next.values()]
             .filter((r) => {
               const a = String(r.availability || "").toUpperCase();
-              const src = String(r.source || "");
               if (!r.pdpUrl) return false;
-              if (/AVAILABLE|SOLD_OUT|COMING/i.test(a) && a !== "NOT_AVAILABLE") return false;
-              // Prefer unknown / URL-only soft rows from discovery.
-              return /category|sitemap|discovery/i.test(src) || !a || a === "NOT_AVAILABLE";
+              // Already classified buyable — skip.
+              if (r.inStock === true && /^AVAILABLE/i.test(a)) return false;
+              // Need enum from PDP (soft-pending category/sitemap/search).
+              return !a || a === "NOT_AVAILABLE" || r.softListed || !r.inStock;
             })
             .sort((a, b) => {
               const score = (r) => {
                 const blob = `${r.title || ""} ${r.slug || ""} ${r.productId || ""}`;
+                if (!snapshot.has(String(r.productId || "").toUpperCase())) return 3;
                 if (kwRe && kwRe.test(blob)) return 2;
-                if (!snapshot.has(String(r.productId || "").toUpperCase())) return 1;
-                return 0;
+                if (/sitemap/i.test(String(r.source || ""))) return 2;
+                return 1;
               };
               return score(b) - score(a);
             })
@@ -1181,7 +1203,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
                   : pdp?.available === false
                     ? "NOT_AVAILABLE"
                     : null);
-              if (!availEnum && !pdp?.title) continue;
+              // Need a real stock signal — title-only PDP shell must not classify.
+              if (!availEnum && !pdp?.addToCartForm) continue;
               const enriched = normalizePcCatalogCard(
                 {
                   code: pdp?.code || r.productId,
@@ -1196,11 +1219,15 @@ export function createPokemonCentreStockMonitor(opts = {}) {
                 { source: "pdp_probe" },
               );
               if (enriched) {
+                // Probe with ATC / AVAILABLE wins over soft-pending category seed.
+                if (enriched.inStock) pdpLive += 1;
+                else if (isConfirmedPcSoftListed(enriched)) pdpSoft += 1;
                 next.set(String(enriched.productId).toUpperCase(), {
                   ...r,
                   ...enriched,
                   pdpUrl: r.pdpUrl,
                   slug: r.slug || enriched.slug,
+                  stockClassified: true,
                 });
                 pdpProbed += 1;
               }
@@ -1218,8 +1245,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           refresh: refresh.length,
           probed,
           pdpProbed,
+          pdpSoft,
+          pdpLive,
           added: toSeed.filter((f) => next.has(f.sku.toUpperCase())).length,
           inStock: [...next.values()].filter((r) => r.inStock).length,
+          softListed: [...next.values()].filter((r) => isConfirmedPcSoftListed(r)).length,
         });
       }
 
@@ -1407,16 +1437,26 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const announceLimit = announceSoftCap();
     let events;
     if (announce) {
-      // Force poll: ping what the watchlist / discovery soft-list sees now.
-      events = buildPcAnnounceEvents(keyed, { skus, limit: announceLimit });
+      // Force poll: buyable + confirmed soft (upcoming drops) only.
+      events = buildPcAnnounceEvents(keyed, { skus, limit: announceLimit }).filter((e) => {
+        if (e.inStock) return true;
+        return isConfirmedPcSoftListed(e.meta || e);
+      });
     } else if (first) {
-      // Cold start: still webhook hours-ahead soft_listed (capped) so Discord sees the
-      // catalog — silent baseline hid the first 32 soft rows in prod.
+      // Cold start: Discord live stock + confirmed soft upcoming drops (not bare category URLs).
       events = diffPcCatalog(prev, keyed)
-        .filter((e) => e.reason === "soft_listed" || e.inStock === true)
+        .filter((e) => {
+          if (e.inStock === true) return true;
+          if (e.reason === "soft_listed") return isConfirmedPcSoftListed(e.meta || e);
+          return false;
+        })
         .slice(0, Math.max(1, Math.min(40, announceLimit)));
     } else {
-      events = diffPcCatalog(prev, keyed);
+      // Live loop: restock/OOS always; soft only when confirmed (BFF/PDP/sitemap).
+      events = diffPcCatalog(prev, keyed).filter((e) => {
+        if (e.reason !== "soft_listed") return true;
+        return isConfirmedPcSoftListed(e.meta || e);
+      });
     }
     snapshot = keyed;
     polls += 1;
@@ -1429,7 +1469,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       polls,
       products: keyed.size,
       inStock: [...keyed.values()].filter((r) => r.inStock).length,
-      softListed: [...keyed.values()].filter((r) => r.softListed || (!r.inStock && r.availability)).length,
+      softListed: [...keyed.values()].filter((r) => isConfirmedPcSoftListed(r)).length,
+      softPending: [...keyed.values()].filter(
+        (r) => !r.inStock && r.softListed && !isConfirmedPcSoftListed(r),
+      ).length,
       events: events.length,
       firstSnapshot: first && !announce,
       announced: announce,
@@ -1618,7 +1661,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       discoveryPaths,
       products: snapshot.size,
       inStock: [...snapshot.values()].filter((r) => r.inStock).length,
-      softListed: [...snapshot.values()].filter((r) => !r.inStock).length,
+      softListed: [...snapshot.values()].filter((r) => isConfirmedPcSoftListed(r)).length,
+      softPending: [...snapshot.values()].filter(
+        (r) => !r.inStock && r.softListed && !isConfirmedPcSoftListed(r),
+      ).length,
       lastError,
       lastPollAt,
       startedAt,
@@ -1705,6 +1751,7 @@ export default {
   extractPcProductCardsFromHtml,
   parsePcKeywordLists,
   matchesPcNegativeKeyword,
+  isConfirmedPcSoftListed,
   PC_DEFAULT_KEYWORDS,
   PC_DEFAULT_NEGATIVE_KEYWORDS,
   cortexScopeForLocale,

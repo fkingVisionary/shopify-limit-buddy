@@ -447,7 +447,7 @@ try {
   // binder/playmat/deck are NEGATIVE excludes (-term), not search keywords.
   // Convert any accidental positives from #175 and persist `-binder` etc.
   {
-    const negDefaults = ["binder", "playmat", "deck"];
+    const negDefaults = ["binder", "playmat", "deck", "sleeves"];
     const toks = String(runtime.pcKeywords || "")
       .split(/[\n,]+/)
       .map((s) => s.trim())
