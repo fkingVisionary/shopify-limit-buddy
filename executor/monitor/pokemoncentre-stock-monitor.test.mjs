@@ -4,7 +4,9 @@ import {
   cortexScopeForLocale,
   diffPcCatalog,
   extractPcProductUrls,
+  extractPcProductCardsFromHtml,
   buildPcAnnounceEvents,
+  PC_DEFAULT_KEYWORDS,
 } from "./pokemoncentre-stock-monitor.js";
 import { parseTaskWatch, eventMatchesWatch } from "./event-filter.js";
 
@@ -160,5 +162,18 @@ const bare = extractPcProductUrls('<a href="/product/10-BARE-001/slug">x</a>', {
   locale: "en-au",
 });
 assert.ok(bare.some((u) => u.sku === "10-BARE-001" && u.locale === "en-au"));
+
+const cards = extractPcProductCardsFromHtml(
+  `
+  {"code":"10-LIVE-001","name":"Live Binder","availability":"AVAILABLE"}
+  <a href="/en-au/product/10-SOFT-002/soft-slug">x</a>
+  `,
+  { locale: "en-au", source: "category" },
+);
+assert.ok(cards.some((c) => c.productId === "10-LIVE-001" && c.inStock === true));
+assert.ok(cards.some((c) => c.productId === "10-SOFT-002" && c.softListed === true));
+assert.ok(PC_DEFAULT_KEYWORDS.includes("binder"));
+assert.ok(PC_DEFAULT_KEYWORDS.includes("playmat"));
+assert.ok(PC_DEFAULT_KEYWORDS.includes("deck"));
 
 console.log("pokemoncentre-stock-monitor.test.mjs ok");
