@@ -50,7 +50,7 @@ export function defaultConfigFromEnv() {
     pcLocale: String(process.env.PC_MONITOR_LOCALE || "en-au").trim() || "en-au",
     // Bootstrap watchlist — `-binder` etc are negative excludes (not search terms).
     pcKeywords: String(
-      process.env.PC_MONITOR_KEYWORDS || "TCG\n-binder\n-playmat\n-deck",
+      process.env.PC_MONITOR_KEYWORDS || "TCG\n-binder\n-playmat\n-deck\n-sleeves",
     ),
     pcSkus: String(process.env.PC_MONITOR_SKUS || ""),
     pcIntervalMs: Number(process.env.PC_MONITOR_INTERVAL_MS) || 15000,

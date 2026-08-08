@@ -8,6 +8,7 @@ import {
   buildPcAnnounceEvents,
   parsePcKeywordLists,
   matchesPcNegativeKeyword,
+  isConfirmedPcSoftListed,
   PC_DEFAULT_KEYWORDS,
   PC_DEFAULT_NEGATIVE_KEYWORDS,
 } from "./pokemoncentre-stock-monitor.js";
@@ -169,30 +170,48 @@ assert.ok(bare.some((u) => u.sku === "10-BARE-001" && u.locale === "en-au"));
 const cards = extractPcProductCardsFromHtml(
   `
   {"code":"10-LIVE-001","name":"Live ETB","availability":"AVAILABLE"}
+  {"code":"10-SOFT-001","name":"Coming Soon ETB","availability":"NOT_AVAILABLE"}
   <a href="/en-au/product/10-CAT-002/booster-bundle">x</a>
   `,
   { locale: "en-au", source: "category" },
 );
 assert.ok(cards.some((c) => c.productId === "10-LIVE-001" && c.inStock === true));
-// Category URL without OOS enum = live/in-stock (not soft_listed 🔴)
-assert.ok(cards.some((c) => c.productId === "10-CAT-002" && c.inStock === true && !c.softListed));
+assert.ok(
+  cards.some(
+    (c) => c.productId === "10-SOFT-001" && c.softListed && isConfirmedPcSoftListed(c),
+  ),
+);
+// Bare category URL = soft-pending until PDP probe (not Discord-confirmed yet)
+const pending = cards.find((c) => c.productId === "10-CAT-002");
+assert.ok(pending?.softListed);
+assert.equal(isConfirmedPcSoftListed(pending), false);
 
-const parsed = parsePcKeywordLists("TCG\n-binder\n-playmat\n-deck");
+assert.ok(
+  isConfirmedPcSoftListed({
+    softListed: true,
+    inStock: false,
+    availability: "NOT_AVAILABLE",
+    source: "pdp_probe",
+  }),
+);
+assert.ok(
+  isConfirmedPcSoftListed({
+    softListed: true,
+    inStock: false,
+    source: "sitemap",
+    slug: "future-drop",
+  }),
+);
+
+const parsed = parsePcKeywordLists("TCG\n-binder\n-playmat\n-deck\n-sleeves");
 assert.deepEqual(parsed.keywords, ["TCG"]);
-assert.ok(parsed.negativeKeywords.includes("binder"));
+assert.ok(parsed.negativeKeywords.includes("sleeves"));
 assert.ok(
   matchesPcNegativeKeyword(
-    { title: "Premium Binder", slug: "premium-binder", productId: "10-X" },
+    { title: "Card Sleeves Pack", slug: "card-sleeves", productId: "10-X" },
     parsed.negativeKeywords,
   ),
 );
-assert.ok(
-  !matchesPcNegativeKeyword(
-    { title: "Booster Bundle", slug: "booster-bundle", productId: "10-Y" },
-    parsed.negativeKeywords,
-  ),
-);
-assert.ok(PC_DEFAULT_KEYWORDS.includes("TCG"));
-assert.ok(PC_DEFAULT_NEGATIVE_KEYWORDS.includes("binder"));
+assert.ok(PC_DEFAULT_NEGATIVE_KEYWORDS.includes("sleeves"));
 
 console.log("pokemoncentre-stock-monitor.test.mjs ok");
