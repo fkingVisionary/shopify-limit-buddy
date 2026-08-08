@@ -10,7 +10,11 @@ import { EventEmitter } from "node:events";
 import { makeDispatcher, createJar, request as undiciRequest } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
-import { warmPokemonCentre, postDataDomeTags } from "../adapters/pokemoncentre-edge.js";
+import {
+  warmPokemonCentre,
+  postDataDomeTags,
+  clearIncapsulaReese,
+} from "../adapters/pokemoncentre-edge.js";
 import {
   getPublicToken,
   cortexApiHeaders,
@@ -366,6 +370,14 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   let lastTransport = null;
   let lastTransportNote = null;
   let tlsWorkerOk = null;
+  /** Serialize live loop + Force poll so they don't kill each other's sticky. */
+  let pollChain = Promise.resolve();
+
+  function withPollLock(fn) {
+    const run = pollChain.then(() => fn());
+    pollChain = run.catch(() => {});
+    return run;
+  }
 
   function stickyExpired() {
     if (!sticky) return true;
@@ -426,8 +438,14 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         datadome: warm.datadome || null,
       };
     }
-    // Same order as checkout: public token, then DataDome tags before BFF search.
-    const tok = await getPublicToken(session, ctx, { locale, scope });
+    // Checkout grind: remint Reese before BFF auth (Imperva often 403s without it).
+    try {
+      await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
+    } catch {
+      /* best-effort */
+    }
+    // Auth → tags → remint auth (tags can rotate datadome; search needs a fresh token).
+    let tok = await getPublicToken(session, ctx, { locale, scope });
     if (!tok.ok) {
       return { ok: false, note: tok.note || "public_token_failed", isIpBanned: false };
     }
@@ -438,9 +456,15 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     } catch (e) {
       tagsNote = e?.message || String(e);
     }
+    try {
+      const remint = await getPublicToken(session, ctx, { locale, scope });
+      if (remint.ok) tok = remint;
+    } catch {
+      /* keep first token */
+    }
     return {
       ok: true,
-      note: [warm.note || "edge+token ok", tagsNote].filter(Boolean).join(" · "),
+      note: [warm.note || "edge+token ok", tagsNote, tok.note].filter(Boolean).join(" · "),
       token: tok,
     };
   }
@@ -554,29 +578,53 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     });
   }
 
-  async function bffGet(session, path, signal) {
-    const url = path.startsWith("http") ? path : `${PC_API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
-    const token = session.state.cortexAuth?.accessToken;
-    const headers = cortexApiHeaders({
-      accessToken: token,
-      locale,
-      scope,
-      referer: `${base}/`,
-    });
-    const res = await session.get(url, { headers, api: true });
-    if (signal?.aborted) {
-      const err = new Error("poll_aborted");
-      err.code = "POLL_TIMEOUT";
-      throw err;
-    }
-    const text = await session.readText(res);
-    let json = null;
+  async function remintBffAuth(session, ctx) {
     try {
-      json = JSON.parse(text);
+      await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
     } catch {
-      json = null;
+      /* ignore */
     }
-    // Auth/WAF/upstream death — kill sticky so the next attempt re-warms edge.
+    return getPublicToken(session, ctx, { locale, scope });
+  }
+
+  async function bffGet(session, path, signal, { allowRemint = true } = {}) {
+    const url = path.startsWith("http") ? path : `${PC_API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+    const doOnce = async () => {
+      const token = session.state.cortexAuth?.accessToken;
+      const headers = cortexApiHeaders({
+        accessToken: token,
+        locale,
+        scope,
+        referer: `${base}/`,
+      });
+      const res = await session.get(url, { headers, api: true });
+      if (signal?.aborted) {
+        const err = new Error("poll_aborted");
+        err.code = "POLL_TIMEOUT";
+        throw err;
+      }
+      const text = await session.readText(res);
+      let json = null;
+      try {
+        json = JSON.parse(text);
+      } catch {
+        json = null;
+      }
+      return { res, text, json };
+    };
+
+    let { res, text, json } = await doOnce();
+    // One remint on auth/WAF/5xx — Cortex often 500s after DD cookie rotation.
+    if (
+      allowRemint &&
+      sticky?.ctx &&
+      (res.status === 401 || res.status === 403 || res.status >= 500)
+    ) {
+      const remint = await remintBffAuth(session, sticky.ctx);
+      if (remint?.ok) {
+        ({ res, text, json } = await doOnce());
+      }
+    }
     if (res.status === 403 || res.status === 401 || res.status >= 500) {
       if (sticky) sticky.edgeOk = false;
       const snippet = String(text || "")
@@ -627,8 +675,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             keyword: kw,
             ok: false,
             note: e?.message || String(e),
+            status: e?.status || null,
           });
-          throw e;
+          // Search 5xx must not abort the poll — category/sitemap discovery still works
+          // after edge warm (production was dying on bff_500 with products=0 forever).
+          if (e?.status === 401 || e?.status === 403) throw e;
         }
         await sleep(120 + Math.floor(Math.random() * 180));
       }
@@ -799,6 +850,18 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         });
       }
 
+      if (next.size === 0) {
+        const failNotes = sources
+          .filter((s) => s && s.ok === false && s.note)
+          .map((s) => s.note);
+        const err = new Error(
+          failNotes[0] || "pc_catalog_empty — search/discovery returned no products",
+        );
+        err.code = "PC_CATALOG_EMPTY";
+        err.status = sources.find((s) => s?.status)?.status || null;
+        throw err;
+      }
+
       return {
         catalog: next,
         sources,
@@ -849,12 +912,30 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           /pc_edge|pc_edge_tbv|t=bv|hard.?ip|hard.?block|rotate sticky|captcha URL|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot (read|set) properties/i.test(
             msg,
           );
-        await closeSticky();
+        // Soft BFF 5xx: remint auth on the same sticky once before rotating.
+        const softBff = /bff_5\d\d|pc_catalog_empty/i.test(msg) && !e?.isIpBanned;
+        if (softBff && attempt === 1 && sticky?.session && sticky?.ctx) {
+          try {
+            const remint = await remintBffAuth(sticky.session, sticky.ctx);
+            if (remint?.ok) {
+              sticky.edgeOk = true;
+            } else {
+              await closeSticky();
+            }
+          } catch {
+            await closeSticky();
+          }
+        } else {
+          await closeSticky();
+        }
         if (!retryable || attempt >= maxAttempts) {
           if (attempt >= maxAttempts && retryable) {
-            const wrap = new Error(
-              `${msg} · exhausted ${attempt}/${maxAttempts} stickies (DataDome t=bv ≠ Bandai burn — pool rotated)`,
-            );
+            const why = e?.isIpBanned || /t=bv|pc_edge_tbv/i.test(msg)
+              ? "DataDome hard-block on sticky — pool rotated (≠ Bandai burn)"
+              : /bff_5\d\d/i.test(msg)
+                ? "BFF 5xx after remint — rotated stickies"
+                : "edge/BFF retries exhausted — pool rotated";
+            const wrap = new Error(`${msg} · exhausted ${attempt}/${maxAttempts} stickies (${why})`);
             wrap.code = e?.code || "PC_EDGE_EXHAUSTED";
             wrap.isIpBanned = Boolean(e?.isIpBanned);
             throw wrap;
@@ -873,6 +954,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
    *   Live loop stays diff-only (first poll still baselines with no events).
    */
   async function pollOnce(opts = {}) {
+    return withPollLock(() => pollOnceLocked(opts));
+  }
+
+  async function pollOnceLocked(opts = {}) {
     const announce = opts.announce === true;
     const t0 = Date.now();
     // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
