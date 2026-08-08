@@ -89,22 +89,33 @@ export function extractPcProductUrls(htmlOrXml, { locale = "en-au" } = {}) {
   const text = String(htmlOrXml || "");
   if (!text) return [];
   const prefer = String(locale || "en-au").toLowerCase();
-  const re =
-    /(?:https?:\/\/(?:www\.)?pokemoncenter\.com)?\/(en-[a-z]{2})\/product\/([A-Za-z0-9._-]+)(?:\/([A-Za-z0-9._-]+))?/gi;
   /** @type {Map<string, { sku: string, slug: string|null, locale: string, pdpUrl: string }>} */
   const bySku = new Map();
-  for (const m of text.matchAll(re)) {
-    const loc = String(m[1] || prefer).toLowerCase();
-    // Prefer AU (or configured locale) URLs; still accept others if AU missing.
-    const sku = String(m[2] || "").trim();
-    if (!sku) continue;
-    const slug = m[3] ? String(m[3]).trim() : null;
-    const key = sku.toUpperCase();
-    const pdpUrl = `${PC_ORIGIN}/${loc}/product/${sku}${slug ? `/${slug}` : ""}`;
+  const add = (loc, sku, slug) => {
+    const s = String(sku || "").trim();
+    if (!s || /^[0-9]+$/.test(s)) return; // bare numeric path noise
+    const key = s.toUpperCase();
+    const L = String(loc || prefer).toLowerCase();
+    const sl = slug ? String(slug).trim() : null;
+    const pdpUrl = `${PC_ORIGIN}/${L}/product/${s}${sl ? `/${sl}` : ""}`;
     const prev = bySku.get(key);
-    if (!prev || (loc === prefer && prev.locale !== prefer)) {
-      bySku.set(key, { sku, slug, locale: loc, pdpUrl });
+    if (!prev || (L === prefer && prev.locale !== prefer)) {
+      bySku.set(key, { sku: s, slug: sl, locale: L, pdpUrl });
     }
+  };
+  // Locale-prefixed (sitemap + most PDPs)
+  const reLoc =
+    /(?:https?:\/\/(?:www\.)?pokemoncenter\.com)?\/(en-[a-z]{2})\/product\/([A-Za-z0-9._-]+)(?:\/([A-Za-z0-9._-]+))?/gi;
+  for (const m of text.matchAll(reLoc)) {
+    add(m[1], m[2], m[3]);
+  }
+  // Soft-clear / category shells often emit `/product/{sku}` without locale — same as
+  // warm soft-clear productHits regex. Without this, discovery stays empty after a
+  // successful soft-clear while BFF search is captcha'd.
+  const reBare =
+    /(?:https?:\/\/(?:www\.)?pokemoncenter\.com)?\/product\/([A-Za-z0-9._-]+)(?:\/([A-Za-z0-9._-]+))?/gi;
+  for (const m of text.matchAll(reBare)) {
+    add(prefer, m[1], m[2]);
   }
   return [...bySku.values()];
 }
@@ -865,6 +876,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         }
 
         let probed = 0;
+        let skipStatusProbe = sources.some(
+          (s) =>
+            s?.ok === false &&
+            /bff_403|captcha-delivery|datadome/i.test(String(s?.note || "")),
+        );
         for (const f of novel) {
           if (signal?.aborted) break;
           const id = f.sku.toUpperCase();
@@ -878,12 +894,15 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             },
             { source: f.from.includes("sitemap") ? "sitemap" : "category" },
           );
-          if (probed < discoveryProbeLimit) {
+          // Always keep HTML discovery rows — BFF status must not abort the catalog.
+          if (row) next.set(id, { ...row, productId: row.productId || f.sku });
+          if (!skipStatusProbe && probed < discoveryProbeLimit) {
             try {
               const { json } = await bffGet(
                 session,
                 `/product/status/${encodeURIComponent(f.sku)}`,
                 signal,
+                { allowRemint: false },
               );
               probed += 1;
               const payload = json?.product || json?.data || json;
@@ -897,13 +916,21 @@ export function createPokemonCentreStockMonitor(opts = {}) {
                 },
                 { source: "discovery_status" },
               );
-              if (statusRow) row = { ...row, ...statusRow, pdpUrl: f.pdpUrl, slug: f.slug || statusRow.slug };
+              if (statusRow) {
+                next.set(id, {
+                  ...row,
+                  ...statusRow,
+                  pdpUrl: f.pdpUrl,
+                  slug: f.slug || statusRow.slug,
+                  productId: statusRow.productId || f.sku,
+                });
+              }
             } catch (e) {
-              if (e?.status === 401 || e?.status === 403) throw e;
+              // Captcha/401 on enrich — keep HTML rows; stop further BFF probes.
+              if (e?.status === 401 || e?.status === 403) skipStatusProbe = true;
             }
             await sleep(60 + Math.floor(Math.random() * 100));
           }
-          if (row) next.set(id, { ...row, productId: row.productId || f.sku });
         }
         sources.push({
           kind: "discovery_novel",

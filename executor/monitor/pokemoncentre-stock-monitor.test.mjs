@@ -85,11 +85,13 @@ const urls = extractPcProductUrls(
   <url><loc>https://www.pokemoncenter.com/en-au/product/10-11111-001/elite-trainer-box</loc></url>
   <a href="/en-au/product/10-22222-002/booster-bundle">x</a>
   https://www.pokemoncenter.com/en-us/product/10-11111-001/us-slug
+  <a href="/product/10-33333-003/bare-path">soft-clear style</a>
   `,
   { locale: "en-au" },
 );
 assert.ok(urls.some((u) => u.sku === "10-11111-001" && u.locale === "en-au"));
 assert.ok(urls.some((u) => u.sku === "10-22222-002"));
+assert.ok(urls.some((u) => u.sku === "10-33333-003" && u.locale === "en-au"));
 const au = urls.find((u) => u.sku === "10-11111-001");
 assert.match(au.pdpUrl, /en-au\/product\/10-11111-001/);
 
