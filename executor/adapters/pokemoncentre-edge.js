@@ -765,42 +765,107 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
     if (!ddClear.ok) {
       return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };
     }
-    const home3 = await step("pc_home_after_dd", async () => {
-      const res = await session.get(homeUrl);
-      const html = await session.readText(res);
-      const blocked =
-        looksLikeIncapsulaChallenge(html, res.status) ||
-        looksLikeDataDomeBlock(html, res.status, res.headers);
-      return {
-        ok: !blocked && res.status === 200 && html.length > 5_000,
-        status: res.status,
-        note: blocked ? `still blocked (${html.length}b)` : `home clear (${html.length}b)`,
-        html,
-      };
-    });
-    // Remint Reese after DD cookie swap — BFF auth otherwise hits Imperva incidentId 403
-    // even when HTML home looks clear (observed 2026-07-22 grind2).
-    let reeseAfterDd = null;
-    if (home3.ok) {
-      reeseAfterDd = await step("incapsula_reese_after_dd", async () => {
+
+    // Hyper interstitial success may include a redirect URL — hit it before re-GET home.
+    if (ddClear.redirectUrl && /^https?:\/\//i.test(String(ddClear.redirectUrl))) {
+      await step("pc_dd_redirect", async () => {
         try {
-          return await clearIncapsulaReese(session, ctx, {
-            pageUrl: homeUrl,
-            html: home3.html,
+          const res = await session.get(ddClear.redirectUrl, {
+            headers: { referer: homeUrl },
           });
+          await session.readText(res);
+          return { ok: true, status: res.status, note: `dd redirect ${res.status}` };
         } catch (e) {
           return { ok: false, note: e?.message || String(e) };
         }
       });
     }
+
+    // DD cookie swap often re-triggers Incapsula — remint Reese *before* declaring clear,
+    // and once more if home is still an incap shell (was gated on home3.ok → never ran).
+    let reeseAfterDd = await step("incapsula_reese_after_dd", async () => {
+      try {
+        return await clearIncapsulaReese(session, ctx, {
+          pageUrl: homeUrl,
+          html: home2.html || "",
+        });
+      } catch (e) {
+        return { ok: false, note: e?.message || String(e) };
+      }
+    });
+
+    const fetchHomeProbe = async (label) => {
+      const res = await session.get(homeUrl);
+      const html = await session.readText(res);
+      const incap = looksLikeIncapsulaChallenge(html, res.status);
+      const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
+      const ok = !incap && !dd && res.status === 200 && html.length > 5_000;
+      let note;
+      if (ok) note = `home clear (${html.length}b)`;
+      else if (incap) note = `still incapsula (${html.length}b)`;
+      else if (dd) note = `still datadome (${html.length}b)`;
+      else note = `still blocked (${html.length}b) status=${res.status}`;
+      return { ok, status: res.status, note, html, incap, dd, headers: res.headers, label };
+    };
+
+    let home3 = await step("pc_home_after_dd", () => fetchHomeProbe("after_dd_reese"));
+
+    // Incapsula again → one more Reese remint + home GET.
+    if (!home3.ok && home3.incap) {
+      reeseAfterDd = await step("incapsula_reese_home3", async () => {
+        try {
+          return await clearIncapsulaReese(session, ctx, {
+            pageUrl: homeUrl,
+            html: home3.html || "",
+          });
+        } catch (e) {
+          return { ok: false, note: e?.message || String(e) };
+        }
+      });
+      home3 = await step("pc_home_after_reese2", () => fetchHomeProbe("after_reese2"));
+    }
+
+    // Soft DD again (not t=bv) → one more clear + Reese + home.
+    let ddClear2 = null;
+    if (!home3.ok && home3.dd) {
+      ddClear2 = await step("datadome_clear_home3", async () => {
+        try {
+          return await clearDataDome(session, ctx, {
+            pageUrl: homeUrl,
+            html: home3.html,
+            headers: home3.headers,
+          });
+        } catch (e) {
+          return { ok: false, note: e?.message || String(e) };
+        }
+      });
+      if (ddClear2.isIpBanned) {
+        return {
+          ok: false,
+          home: home3,
+          datadome: ddClear2,
+          isIpBanned: true,
+          note: ddClear2.note,
+        };
+      }
+      if (ddClear2.ok) {
+        try {
+          await clearIncapsulaReese(session, ctx, { pageUrl: homeUrl, html: "" });
+        } catch {
+          /* best-effort */
+        }
+        home3 = await step("pc_home_after_dd2", () => fetchHomeProbe("after_dd2"));
+      }
+    }
+
     const note = home3.ok
-      ? `home clear after DD${reeseAfterDd?.hasToken ? "+reese" : ""}`
-      : home3.note;
+      ? `home clear after DD${reeseAfterDd?.hasToken ? "+reese" : ""}${ddClear2?.ok ? "+dd2" : ""}`
+      : home3.note || "still blocked after DD";
     if (session?.state) session.state.edgeNote = note;
     return {
       ok: home3.ok,
       home: home3,
-      datadome: ddClear,
+      datadome: ddClear2 || ddClear,
       reeseAfterDd,
       note,
     };
