@@ -1224,15 +1224,19 @@ function pkcForcePollHint(msg) {
   const tbv = /t=bv|pc_edge_tbv|hard.?block|hard.?ip/i.test(msg);
   const timeout = /poll_timeout/i.test(msg);
   const hyper = /HYPER_API_KEY/i.test(msg);
+  const bff5 = /bff_5\d\d/i.test(msg);
   if (hyper) return "Set HYPER_API_KEY on the monitor service (same key as checkout).";
   if (tbv) {
-    return "DataDome t=bv is per-sticky. Monitor now uses checkout tls-worker; rotate continues on remaining ISP lines.";
+    return "DataDome t=bv is per-sticky. Monitor uses checkout tls-worker; rotate continues on remaining ISP lines.";
+  }
+  if (bff5) {
+    return "BFF 5xx after edge — monitor remints token and falls through to category/sitemap discovery; redeploy if still products=0.";
   }
   if (timeout) {
     return "Edge warm exceeded poll budget — check Logs for transport=tls-worker vs undici fallback; confirm HYPER_API_KEY + ISP list.";
   }
   if (
-    /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot (read|set) properties/i.test(
+    /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|discovery_|empty_fetch|cannot (read|set) properties/i.test(
       msg,
     )
   ) {
