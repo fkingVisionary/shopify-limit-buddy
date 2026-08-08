@@ -332,7 +332,26 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
     }
     if (json.view === "captcha") {
       const captchaUrl = json.url || null;
-      // Escalation: interstitial → captcha URL. Try slider solve on that URL before failing closed.
+      // Escalation: interstitial → captcha. t=bv on that URL = Hyper hard-block signal for
+      // *this sticky* — rotate. Often undici TLS fingerprint (Bandai Akamai can still work).
+      if (captchaUrl && /[?&]t=bv\b/i.test(captchaUrl)) {
+        return {
+          ok: false,
+          isIpBanned: true,
+          kind: "interstitial_escalated_hard_block",
+          view: json.view,
+          captchaUrl,
+          status: postRes.status,
+          note:
+            "pc_edge_tbv: interstitial→captcha t=bv — rotate sticky (DataDome; Bandai-ok ≠ PKC). Solving has no effect on t=bv.",
+          refs: [
+            "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+            "https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md",
+          ],
+          dd,
+        };
+      }
+      // Escalation without t=bv: try slider solve on captcha URL.
       if (captchaUrl && /captcha-delivery\.com\/captcha/i.test(captchaUrl)) {
         try {
           const escalated = await solveDatadomeCaptchaUrl(session, ctx, captchaUrl, {
@@ -357,9 +376,10 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
             status: postRes.status,
             needsHcaptcha: Boolean(escalated.needsHcaptcha),
             isIpBanned: Boolean(escalated.isIpBanned),
-            note:
-              escalated.note ||
-              "interstitial→captcha solve failed — rotate AU ISP sticky / check Hyper TLS",
+            note: escalated.isIpBanned
+              ? `pc_edge_tbv: ${escalated.note || "captcha t=bv — rotate sticky"}`
+              : escalated.note ||
+                "interstitial→captcha solve failed — rotate AU ISP sticky / check Hyper TLS",
             dd,
           };
         } catch (e) {
@@ -380,7 +400,7 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
         view: json.view,
         captchaUrl,
         status: postRes.status,
-        note: "interstitial returned view=captcha without captcha URL — check Hyper header-order/TLS",
+        note: "interstitial view=captcha (no URL) — Hyper TLS/header-order; rotate sticky",
         refs: [
           "https://docs.hypersolutions.co/datadome/getting-started.md#posting-payload-solving-challenge",
           "https://docs.hypersolutions.co/request-based-basics/header-order.md",
@@ -499,7 +519,7 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
       ok: false,
       isIpBanned: true,
       hardBlock: true,
-      note: "ATC/captcha URL t=bv — Hyper hard IP block; rotate sticky",
+      note: "pc_edge_tbv: captcha URL t=bv — Hyper hard-block for this sticky; rotate (Bandai-ok ≠ PKC DataDome)",
       ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
     };
   }
@@ -734,7 +754,13 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
       }
     });
     if (ddClear.isIpBanned) {
-      return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };
+      return {
+        ok: false,
+        home: home2,
+        datadome: ddClear,
+        isIpBanned: true,
+        note: ddClear.note,
+      };
     }
     if (!ddClear.ok) {
       return { ok: false, home: home2, datadome: ddClear, note: ddClear.note };

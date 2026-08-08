@@ -387,11 +387,21 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     if (!warm.ok) {
       const note = String(warm.note || "");
       if (/HYPER_API_KEY|hyper/i.test(note)) hyperRequired = true;
-      return { ok: false, note: warm.note || "edge_warm_failed" };
+      const isIpBanned = Boolean(
+        warm.datadome?.isIpBanned ||
+          warm.isIpBanned ||
+          /t=bv|hard.?ip|hard.?block|pc_edge_tbv/i.test(note),
+      );
+      return {
+        ok: false,
+        note: warm.note || "edge_warm_failed",
+        isIpBanned,
+        datadome: warm.datadome || null,
+      };
     }
     const tok = await getPublicToken(session, ctx, { locale, scope });
     if (!tok.ok) {
-      return { ok: false, note: tok.note || "public_token_failed" };
+      return { ok: false, note: tok.note || "public_token_failed", isIpBanned: false };
     }
     return { ok: true, note: warm.note || "edge+token ok", token: tok };
   }
@@ -426,10 +436,18 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         sticky = slot;
         const edge = await ensureEdge(session, ctx);
         if (!edge.ok) {
-          pool.markFail(slot.url);
+          // t=bv: cool this sticky longer so Force poll walks the rest of the Bandai pool.
+          const banned = Boolean(edge.isIpBanned);
+          pool.markFail(slot.url, banned ? 20 * 60_000 : undefined);
           if (sticky === slot) await closeSticky();
           else await closeDispatcher(slot);
-          throw new Error(edge.note || "pc_edge_failed");
+          const note = edge.note || "pc_edge_failed";
+          const err = new Error(
+            banned && !/pc_edge_tbv/i.test(note) ? `pc_edge_tbv: ${note}` : note,
+          );
+          err.isIpBanned = banned;
+          err.code = banned ? "PC_EDGE_TBV" : "PC_EDGE_FAIL";
+          throw err;
         }
         slot.edgeOk = true;
         slot.edgeNote = edge.note || null;
@@ -449,7 +467,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         pool.markOk(cur.url);
         return out;
       } catch (e) {
-        pool.markFail(cur.url);
+        const msg = String(e?.message || e);
+        const banned =
+          e?.isIpBanned === true ||
+          e?.code === "PC_EDGE_TBV" ||
+          /t=bv|pc_edge_tbv|hard.?block/i.test(msg);
+        pool.markFail(cur.url, banned ? 20 * 60_000 : undefined);
         if (sticky === cur) await closeSticky();
         else await closeDispatcher(cur);
         throw e;
@@ -715,8 +738,17 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       };
     };
 
-    // Edge/DataDome flakes are often sticky-specific — rotate and retry.
-    const maxAttempts = Math.max(1, Math.min(6, Number(process.env.PC_MONITOR_EDGE_RETRIES) || 3));
+    // Edge/DataDome flakes are sticky-specific — walk the ISP pool (Bandai-ok ≠ PKC DD).
+    const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
+    const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
+    const defaultAttempts = Math.min(
+      15,
+      Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4),
+    );
+    const maxAttempts = Math.max(
+      1,
+      Math.min(24, Number.isFinite(envAttempts) && envAttempts > 0 ? envAttempts : defaultAttempts),
+    );
     let lastErr = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       if (signal?.aborted) {
@@ -726,17 +758,29 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       }
       try {
         const out = await withProxyCtx(run);
-        return { ...out, edgeAttempts: attempt };
+        return { ...out, edgeAttempts: attempt, edgeAttemptBudget: maxAttempts };
       } catch (e) {
         lastErr = e;
         const msg = String(e?.message || e);
         const retryable =
-          /pc_edge|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot read properties/i.test(
+          e?.code === "PC_EDGE_TBV" ||
+          e?.isIpBanned === true ||
+          /pc_edge|pc_edge_tbv|t=bv|hard.?ip|hard.?block|rotate sticky|captcha URL|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot (read|set) properties/i.test(
             msg,
           );
         await closeSticky();
-        if (!retryable || attempt >= maxAttempts) throw e;
-        await sleep(350 + attempt * 250);
+        if (!retryable || attempt >= maxAttempts) {
+          if (attempt >= maxAttempts && retryable) {
+            const wrap = new Error(
+              `${msg} · exhausted ${attempt}/${maxAttempts} stickies (DataDome t=bv ≠ Bandai burn — pool rotated)`,
+            );
+            wrap.code = e?.code || "PC_EDGE_EXHAUSTED";
+            wrap.isIpBanned = Boolean(e?.isIpBanned);
+            throw wrap;
+          }
+          throw e;
+        }
+        await sleep(200 + attempt * 150);
       }
     }
     throw lastErr || new Error("pc_poll_failed");

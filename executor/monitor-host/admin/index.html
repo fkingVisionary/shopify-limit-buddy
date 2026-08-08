@@ -868,9 +868,13 @@
           } catch (e) {
             // Keep toast short for phone — full hint is in Logs.
             const msg = String(e.message || "pkc_poll_failed");
-            const short = msg
-              .replace(/\s*—\s*Edge\/BFF block[\s\S]*$/i, "")
-              .slice(0, 140);
+            const tbv = /t=bv|pc_edge_tbv|hard.?block/i.test(msg);
+            const short = tbv
+              ? "DataDome t=bv — rotated stickies; Bandai-ok ≠ PKC. Check Logs."
+              : msg
+                  .replace(/\s*—\s*Edge\/BFF block[\s\S]*$/i, "")
+                  .replace(/\s*·\s*exhausted[\s\S]*$/i, " · pool exhausted")
+                  .slice(0, 140);
             toast(short || msg.slice(0, 140), "bad");
             try {
               await loadAll();
