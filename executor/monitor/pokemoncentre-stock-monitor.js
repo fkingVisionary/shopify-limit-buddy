@@ -269,7 +269,15 @@ export function buildPcAnnounceEvents(keyed, { skus = [], limit = 15 } = {}) {
     const id = String(row?.productId || "").toUpperCase();
     if (skuSet.has(id)) return true;
     const src = String(row?.source || "");
-    return src.startsWith("search:") || src === "product_status";
+    // Include category/sitemap discovery — that's the hours-ahead soft-list path.
+    return (
+      src.startsWith("search:") ||
+      src === "product_status" ||
+      src === "discovery_status" ||
+      src === "category" ||
+      src === "sitemap" ||
+      /^discovery/i.test(src)
+    );
   };
   const picked = rows
     .filter((r) => score(r) > 0 && (watched(r) || score(r) >= 2))
@@ -572,9 +580,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         const msg = String(e?.message || e);
         // Cool only on explicit SDK hard-block — message matching was proxy-blaming false positives.
         const banned = e?.isIpBanned === true;
-        // Keep warm sticky for catalog-empty / BFF captcha — discovery retry needs cookies.
+        // Keep warm sticky for catalog-empty / BFF captcha / BFF 5xx — HTML discovery needs cookies.
         const keepSticky =
           e?.code === "PC_CATALOG_EMPTY" ||
+          /bff_5\d\d/i.test(msg) ||
           (/bff_403/i.test(msg) && /captcha-delivery|datadome/i.test(msg));
         if (!keepSticky) {
           pool.markFail(cur.url, banned ? 60_000 : undefined);
@@ -685,10 +694,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     }
 
     if (res.status === 403 || res.status === 401 || res.status >= 500) {
-      // Don't kill sticky on captcha 403 — discovery may still work with HTML cookies.
-      if (!(res.status === 403 && /captcha-delivery|datadome/i.test(String(text || "")))) {
-        if (sticky) sticky.edgeOk = false;
-      }
+      // Keep sticky on BFF captcha / 5xx — HTML category/sitemap discovery still works.
+      // Clearing edgeOk here was rotating the ISP pool on client BFF flake.
+      const keepEdge =
+        res.status >= 500 ||
+        (res.status === 403 && /captcha-delivery|datadome/i.test(String(text || "")));
+      if (!keepEdge && sticky) sticky.edgeOk = false;
       const snippet = String(text || "")
         .replace(/\s+/g, " ")
         .trim()
@@ -864,39 +875,64 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           await sleep(150 + Math.floor(Math.random() * 200));
         }
 
-        // Prefer new SKUs (not already in this poll's catalog / prior snapshot).
+        // Seed catalog from ALL discovered URLs when BFF search failed / is empty.
+        // Novel-only seeding left next.size=0 after the first poll (snapshot already had
+        // those SKUs) → false PC_CATALOG_EMPTY + sticky rotate storm on BFF 5xx.
         const novel = [];
+        const refresh = [];
         const seenDisc = new Set();
         for (const f of discovered) {
           const id = f.sku.toUpperCase();
           if (seenDisc.has(id)) continue;
           seenDisc.add(id);
-          if (next.has(id) || snapshot.has(id)) continue;
-          novel.push(f);
+          if (next.has(id)) continue; // already from BFF search this poll
+          if (snapshot.has(id)) refresh.push(f);
+          else novel.push(f);
         }
+        const toSeed = [...novel, ...refresh];
 
         let probed = 0;
         let skipStatusProbe = sources.some(
           (s) =>
             s?.ok === false &&
-            /bff_403|captcha-delivery|datadome/i.test(String(s?.note || "")),
+            /bff_40[13]|bff_5\d\d|captcha-delivery|datadome/i.test(String(s?.note || "")),
         );
-        for (const f of novel) {
+        for (const f of toSeed) {
           if (signal?.aborted) break;
           const id = f.sku.toUpperCase();
+          const prevRow = snapshot.get(id);
           let row = normalizePcCatalogCard(
             {
               code: f.sku,
-              slug: f.slug,
-              pdpUrl: f.pdpUrl,
-              name: f.slug ? f.slug.replace(/-/g, " ") : null,
-              availability: "NOT_AVAILABLE",
+              slug: f.slug || prevRow?.slug || null,
+              pdpUrl: f.pdpUrl || prevRow?.pdpUrl || null,
+              name:
+                prevRow?.title ||
+                (f.slug ? f.slug.replace(/-/g, " ") : null),
+              availability: prevRow?.availability || "NOT_AVAILABLE",
+              imageUrl: prevRow?.imageUrl || null,
+              price: prevRow?.price || null,
             },
             { source: f.from.includes("sitemap") ? "sitemap" : "category" },
           );
+          if (row && prevRow) {
+            row = {
+              ...prevRow,
+              ...row,
+              productId: row.productId || f.sku,
+              // Keep prior buyable signal if BFF search is down this poll.
+              inStock: prevRow.inStock === true ? prevRow.inStock : row.inStock,
+              softListed:
+                prevRow.inStock === true
+                  ? false
+                  : Boolean(row.softListed || prevRow.softListed),
+            };
+          }
           // Always keep HTML discovery rows — BFF status must not abort the catalog.
           if (row) next.set(id, { ...row, productId: row.productId || f.sku });
-          if (!skipStatusProbe && probed < discoveryProbeLimit) {
+          // Only BFF-enrich novel SKUs (refresh already known from snapshot).
+          const isNovel = !snapshot.has(id);
+          if (isNovel && !skipStatusProbe && probed < discoveryProbeLimit) {
             try {
               const { json } = await bffGet(
                 session,
@@ -926,18 +962,21 @@ export function createPokemonCentreStockMonitor(opts = {}) {
                 });
               }
             } catch (e) {
-              // Captcha/401 on enrich — keep HTML rows; stop further BFF probes.
-              if (e?.status === 401 || e?.status === 403) skipStatusProbe = true;
+              // Captcha/5xx on enrich — keep HTML rows; stop further BFF probes.
+              if (e?.status === 401 || e?.status === 403 || e?.status >= 500) {
+                skipStatusProbe = true;
+              }
             }
             await sleep(60 + Math.floor(Math.random() * 100));
           }
         }
         sources.push({
-          kind: "discovery_novel",
+          kind: "discovery_seed",
           ok: true,
           novel: novel.length,
+          refresh: refresh.length,
           probed,
-          added: novel.filter((f) => next.has(f.sku.toUpperCase())).length,
+          added: toSeed.filter((f) => next.has(f.sku.toUpperCase())).length,
         });
       }
 
@@ -1004,7 +1043,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           /pc_edge|pc_edge_tbv|t=bv|hard.?ip|hard.?block|rotate sticky|captcha URL|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot (read|set) properties/i.test(
             msg,
           );
-        // Soft BFF / empty catalog: remint on same sticky once before rotating.
+        // Soft BFF / empty catalog: remint on same sticky; keep edge for HTML discovery.
         const softBff =
           !e?.isIpBanned &&
           (/bff_5\d\d|pc_catalog_empty|bff_403.*captcha-delivery/i.test(msg) ||
@@ -1012,11 +1051,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         if (softBff && attempt <= 2 && sticky?.session && sticky?.ctx) {
           try {
             const remint = await remintBffAuth(sticky.session, sticky.ctx);
-            sticky.edgeOk = Boolean(remint?.ok) || sticky.edgeOk;
+            sticky.edgeOk = true; // discovery path still valid even if token remint fails
+            if (!remint?.ok) sticky.edgeNote = remint?.note || sticky.edgeNote;
           } catch {
-            await closeSticky();
+            sticky.edgeOk = true;
           }
-        } else if (!sticky?.edgeOk) {
+        } else if (!softBff && !sticky?.edgeOk) {
           await closeSticky();
         } else if (!softBff) {
           await closeSticky();
@@ -1109,13 +1149,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     const prev = snapshot;
     const first = prev.size === 0;
-    let events = first && !announce ? [] : diffPcCatalog(prev, keyed);
+    const announceLimit = Number(process.env.PC_MONITOR_ANNOUNCE_LIMIT) || 15;
+    let events;
     if (announce) {
-      // Force poll: ping what the watchlist sees now (diffs alone look "broken" on phone).
-      events = buildPcAnnounceEvents(keyed, {
-        skus,
-        limit: Number(process.env.PC_MONITOR_ANNOUNCE_LIMIT) || 15,
-      });
+      // Force poll: ping what the watchlist / discovery soft-list sees now.
+      events = buildPcAnnounceEvents(keyed, { skus, limit: announceLimit });
+    } else if (first) {
+      // Cold start: still webhook hours-ahead soft_listed (capped) so Discord sees the
+      // catalog — silent baseline hid the first 32 soft rows in prod.
+      events = diffPcCatalog(prev, keyed)
+        .filter((e) => e.reason === "soft_listed" || e.inStock === true)
+        .slice(0, Math.max(1, Math.min(40, announceLimit)));
+    } else {
+      events = diffPcCatalog(prev, keyed);
     }
     snapshot = keyed;
     polls += 1;
