@@ -138,11 +138,27 @@ const announce = buildPcAnnounceEvents(
       inStock: true,
       source: "product_status",
     },
+    {
+      productId: "10-DISC",
+      inStock: false,
+      softListed: true,
+      availability: "NOT_AVAILABLE",
+      source: "category",
+      title: "Discovery Soft",
+      pdpUrl: "https://www.pokemoncenter.com/en-au/product/10-DISC/x",
+    },
   ],
   { skus: ["10-SKU"], limit: 10 },
 );
 assert.ok(announce.some((e) => e.productId === "10-LIVE" && e.reason === "restock"));
 assert.ok(announce.some((e) => e.productId === "10-SOFT" && e.reason === "soft_listed"));
 assert.ok(announce.some((e) => e.productId === "10-SKU"));
+assert.ok(announce.some((e) => e.productId === "10-DISC" && e.reason === "soft_listed"));
+
+// Bare /product/{sku} extract (soft-clear style category HTML)
+const bare = extractPcProductUrls('<a href="/product/10-BARE-001/slug">x</a>', {
+  locale: "en-au",
+});
+assert.ok(bare.some((u) => u.sku === "10-BARE-001" && u.locale === "en-au"));
 
 console.log("pokemoncentre-stock-monitor.test.mjs ok");
