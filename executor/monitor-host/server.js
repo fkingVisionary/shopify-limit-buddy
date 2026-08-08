@@ -28,6 +28,7 @@ import {
   vantaPublicCheckoutDiscordBody,
   buildQuickTaskBridgeUrl,
   buildQuickTaskLocalUrl,
+  pcPdpUrl,
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
@@ -486,7 +487,7 @@ async function handleStockChanged(ev) {
   try {
     if (store === "pokemoncentre") {
       const locale = ev.locale || runtime.pcLocale || "en-au";
-      const r = await postDiscord(
+      const r = await postDiscordWithQtFallback(
         vantaPkcDiscordBody(
           {
             ...hitPayload(ev),
@@ -507,6 +508,7 @@ async function handleStockChanged(ev) {
         ),
       );
       if (!r.ok && !r.skipped) console.warn("[discord:pkc]", r.status, r.error);
+      else if (r.componentsStripped) console.warn("[discord:pkc] components stripped — QT description links kept");
       return;
     }
     const r = await postDiscordWithQtFallback(
@@ -774,7 +776,7 @@ function escapeHtml(s) {
 app.get("/qt", async (req, reply) => {
   const q = req.query && typeof req.query === "object" ? req.query : {};
   const params = new URLSearchParams();
-  for (const key of ["sku", "title", "nai", "area", "reason", "url"]) {
+  for (const key of ["sku", "title", "nai", "area", "reason", "url", "store", "locale", "start"]) {
     if (q[key] != null && String(q[key]).trim()) params.set(key, String(q[key]).trim());
   }
   const qs = params.toString();
@@ -1377,8 +1379,22 @@ app.post("/test-discord", async (req, reply) => {
             softListed: pkcKind === "soft",
           });
 
+    const qtHit = {
+      ...hitForDiscord,
+      store: "pokemoncentre",
+      pdpUrl: pcPdpUrl(hitForDiscord, pcLocale),
+    };
+    const quickTaskUrl =
+      pkcKind === "oos"
+        ? null
+        : buildQuickTaskBridgeUrl(qtHit, { store: "pokemoncentre", locale: pcLocale });
+    const quickTaskLocal =
+      pkcKind === "oos"
+        ? null
+        : buildQuickTaskLocalUrl(qtHit, { store: "pokemoncentre", locale: pcLocale });
+
     try {
-      const r = await postDiscord(payload);
+      const r = await postDiscordWithQtFallback(payload);
       if (!r.ok) {
         return reply.code(502).send({
           ok: false,
@@ -1405,6 +1421,13 @@ app.post("/test-discord", async (req, reply) => {
                 ? "pkc-soft"
                 : "pkc",
         synthetic: !row,
+        quickTaskUrl,
+        quickTaskLocal,
+        hasQuickTaskButton: Boolean(payload.components?.length && !r.componentsStripped),
+        hasQuickTaskLink: Boolean(
+          /Quick Task/i.test(String(payload.embeds?.[0]?.fields?.find((f) => f.name === "Links")?.value || "")),
+        ),
+        componentsStripped: Boolean(r.componentsStripped),
         product: {
           productId: hitForDiscord.productId,
           title: hitForDiscord.title,

@@ -463,9 +463,12 @@
         <section style="margin-top:18px">
           <h2>Discord labs · Pokémon Centre AU</h2>
           <p class="hint" style="margin:0 0 10px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Posts to the same restock webhook as live PKC hits. <strong>Preload</strong> uses the blue
-            <code>AVAILABLE_FOR_PRE_ORDER</code> embed. Works with a synthetic SKU when the PKC catalog
-            is empty (no live poll required). Needs <code>DISCORD_WEBHOOK_URL</code> / admin restock hook.
+            Posts to the same restock webhook as live PKC hits. Stock / preload / soft-list include the
+            Bandai-style <strong>⚡ Quick Task</strong>, <strong>Create only</strong>,
+            <strong>Setup presets</strong>, and <strong>eBay sold</strong> buttons
+            (<code>store=pokemoncentre</code> via <code>/qt</code>). <strong>Preload</strong> uses the
+            blue <code>AVAILABLE_FOR_PRE_ORDER</code> embed. Works with a synthetic SKU when the PKC
+            catalog is empty. Needs <code>DISCORD_WEBHOOK_URL</code> / admin restock hook.
           </p>
           <label for="testPcSku">PKC SKU</label>
           <input id="testPcSku" type="text" value="10-10186-109" placeholder="e.g. 10-10186-109" />
@@ -1068,16 +1071,24 @@
             r.synthetic ? "synthetic (catalog empty)" : "from PKC catalog",
             r.product?.title || sku,
           ];
+          if (kind === "pkc-oos" || kind === "oos") {
+            bits.push("no Quick Task (OOS)");
+          } else if (r.hasQuickTaskButton) {
+            bits.push("Quick Task button on embed");
+          } else if (r.hasQuickTaskLink) {
+            bits.push("Quick Task link in Links field");
+          }
+          if (r.quickTaskUrl) bits.push(r.quickTaskUrl);
           note.textContent = bits.join(" · ");
         }
         toast(
-          kind === "pkc-preload"
-            ? "PKC preload ping sent"
-            : kind === "pkc-soft"
-              ? "PKC soft-list ping sent"
-              : kind === "pkc-oos" || kind === "oos"
-                ? "PKC OOS ping sent"
-                : "PKC stock ping sent",
+          kind === "pkc-oos" || kind === "oos"
+            ? "PKC OOS ping sent"
+            : kind === "pkc-preload"
+              ? "PKC preload ping sent · Quick Task included"
+              : kind === "pkc-soft"
+                ? "PKC soft-list ping sent · Quick Task included"
+                : "PKC stock ping sent · Quick Task included",
           "ok",
         );
       }

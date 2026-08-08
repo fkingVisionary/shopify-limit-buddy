@@ -223,6 +223,11 @@ emits `soft_listed` (not OOS). Soft → buyable later emits `restock` / `preorde
 **Ops:** `/admin` Labs → **Test PKC soft-list**. Env: `PC_MONITOR_DISCOVERY=0` to disable
 sitemap/category; `PC_MONITOR_DISCOVERY_PATHS` to override paths.
 
+**Discord QT (same as Bandai):** live / soft-list / preload embeds include **⚡ Quick Task**,
+**Create only**, **Setup presets**, and **eBay sold**. Links bounce via public `/qt` with
+`store=pokemoncentre` + SKU + PDP `url` (+ `locale`) into the Desktop bridge. OOS stays
+link-only (no QT), matching Bandai.
+
 ---
 
 ## 7. Module plan (when unparked)

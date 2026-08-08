@@ -107,9 +107,18 @@ test("PKC Flux-style: soft = Potential Upcoming Restock; AU author; stock emoji"
   assert.equal(soft.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🔴");
   assert.equal(soft.embeds[0].fields.find((f) => f.name === "SKU")?.value, "189-85799");
   assert.match(soft.embeds[0].fields.find((f) => f.name === "Links")?.value || "", /StockX/);
+  assert.match(soft.embeds[0].fields.find((f) => f.name === "Links")?.value || "", /Quick Task/);
   assert.equal(soft.embeds[0].thumbnail?.url, img);
-  assert.match(soft.embeds[0].footer?.text || "", /SnkrDunk \| Ebay/);
-  assert.ok(soft.components[0].components.some((c) => /eBay/i.test(c.label)));
+  assert.match(soft.embeds[0].footer?.text || "", /Create only/);
+  const softLabels = soft.components[0].components.map((c) => c.label);
+  assert.ok(softLabels.some((l) => /Quick Task/i.test(l)));
+  assert.ok(softLabels.some((l) => /Create only/i.test(l)));
+  assert.ok(softLabels.some((l) => /Setup presets/i.test(l)));
+  assert.ok(softLabels.some((l) => /eBay sold/i.test(l)));
+  const softQt = soft.components[0].components.find((c) => /Quick Task/i.test(c.label));
+  assert.match(softQt.url, /store=pokemoncentre/);
+  assert.match(softQt.url, /sku=189-85799/);
+  assert.match(softQt.url, /locale=en-au/);
 
   const live = vantaPkcDiscordBody(
     {
@@ -124,6 +133,9 @@ test("PKC Flux-style: soft = Potential Upcoming Restock; AU author; stock emoji"
   assert.equal(live.embeds[0].fields.find((f) => f.name === "Type")?.value, "New Product");
   assert.equal(live.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🟢");
   assert.equal(live.embeds[0].fields.find((f) => f.name === "Cart Limit")?.value, "1");
+  const liveCreate = live.components[0].components.find((c) => /Create only/i.test(c.label));
+  assert.match(liveCreate.url, /start=0/);
+  assert.match(liveCreate.url, /store=pokemoncentre/);
 
   const preload = vantaPkcDiscordBody(
     {

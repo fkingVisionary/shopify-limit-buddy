@@ -67,6 +67,22 @@ function normalizeQuickTaskPreset(raw = {}) {
     else if (profileIds.length > 1) profileSource = "multi";
     else profileSource = "single";
   }
+  const pcModeRaw = String(raw.pcMode || "").toLowerCase();
+  const pcMode = ["checkout", "monitor", "edge", "har_probe"].includes(pcModeRaw)
+    ? pcModeRaw
+    : store === "pokemoncentre"
+      ? "checkout"
+      : undefined;
+  const pcLocaleRaw = String(raw.pcLocale || "")
+    .trim()
+    .toLowerCase();
+  const pcLocale =
+    store === "pokemoncentre"
+      ? /^(en-(au|nz|ca|gb|us))$/i.test(pcLocaleRaw)
+        ? pcLocaleRaw
+        : "en-au"
+      : undefined;
+
   return {
     store,
     bandaiArea,
@@ -91,6 +107,8 @@ function normalizeQuickTaskPreset(raw = {}) {
       : "auto",
     accountId: raw.accountId || null,
     startAfterCreate: raw.startAfterCreate !== false,
+    pcMode,
+    pcLocale,
   };
 }
 
@@ -137,6 +155,89 @@ function resolveQuickTaskProfiles(preset, profiles = []) {
       name: row?.name || row?.email || p.profileId,
     },
   ];
+}
+
+/**
+ * Parse a Pokémon Centre PDP URL or SKU into product target fields.
+ * @param {string} input
+ * @param {{ locale?: string }} [opts]
+ */
+function parsePokemonCentreProductInput(input, opts = {}) {
+  const localeHint = String(opts.locale || "en-au")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  const locale =
+    /^(en-(au|nz|ca|gb|us))$/i.test(localeHint) ? localeHint : "en-au";
+  const raw = String(input || "").trim();
+  if (!raw) return { ok: false, error: "Paste a Pokémon Centre SKU or PDP URL" };
+
+  const urlMatch = raw.match(
+    /pokemoncenter\.com\/(en-[a-z]{2})\/product\/([A-Za-z0-9._-]+)(?:\/([^?#\s]+))?/i,
+  );
+  if (urlMatch) {
+    const loc = urlMatch[1].toLowerCase();
+    const productId = urlMatch[2];
+    const slug = urlMatch[3] ? String(urlMatch[3]).replace(/\/+$/, "") : "";
+    const pdpUrl = slug
+      ? `https://www.pokemoncenter.com/${loc}/product/${productId}/${slug}`
+      : `https://www.pokemoncenter.com/${loc}/product/${productId}`;
+    return {
+      ok: true,
+      store: "pokemoncentre",
+      productId,
+      pdpUrl,
+      locale: loc,
+      slug: slug || null,
+    };
+  }
+
+  if (/^[A-Za-z0-9._-]{3,40}$/.test(raw) && !/\s/.test(raw)) {
+    const productId = raw;
+    return {
+      ok: true,
+      store: "pokemoncentre",
+      productId,
+      pdpUrl: `https://www.pokemoncenter.com/${locale}/product/${encodeURIComponent(productId)}`,
+      locale,
+      slug: null,
+    };
+  }
+
+  return { ok: false, error: "Could not parse Pokémon Centre SKU or URL" };
+}
+
+/**
+ * Build product target from a PKC monitor feed hit.
+ * @param {object} hit
+ * @param {{ locale?: string }} [opts]
+ */
+function targetFromPcMonitorHit(hit, opts = {}) {
+  const productId = String(hit?.productId || hit?.sku || "").trim();
+  if (!productId) return { ok: false, error: "Hit missing productId" };
+  const locale = String(opts.locale || hit?.locale || "en-au")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  const loc = /^(en-(au|nz|ca|gb|us))$/i.test(locale) ? locale : "en-au";
+  const direct = String(hit?.pdpUrl || hit?.url || "").trim();
+  const slug = String(hit?.slug || hit?.meta?.slug || "").trim().replace(/^\/+|\/+$/g, "");
+  const pdpUrl =
+    direct && /^https?:\/\//i.test(direct)
+      ? direct
+      : slug
+        ? `https://www.pokemoncenter.com/${loc}/product/${encodeURIComponent(productId)}/${slug}`
+        : `https://www.pokemoncenter.com/${loc}/product/${encodeURIComponent(productId)}`;
+  return {
+    ok: true,
+    store: "pokemoncentre",
+    productId,
+    pdpUrl,
+    locale: loc,
+    title: hit?.title || hit?.productName || hit?.meta?.title || null,
+    reason: hit?.reason || null,
+    slug: slug || null,
+  };
 }
 
 /**
@@ -236,8 +337,53 @@ function buildQuickTaskDraft(preset, target, extra = {}) {
     return { ok: false, error: target?.error || "missing product target" };
   }
   const productId = target.productId;
-  const mode = p.bandaiMode;
+  const store =
+    String(target.store || p.store || "bandai").toLowerCase() === "pokemoncentre" ||
+    String(p.store || "").toLowerCase() === "pokemoncentre"
+      ? "pokemoncentre"
+      : p.store;
   const { resolveTaskLabel } = require("./task-label.cjs");
+
+  if (store === "pokemoncentre") {
+    const locale = String(target.locale || p.pcLocale || "en-au")
+      .trim()
+      .toLowerCase();
+    const pcMode = ["checkout", "monitor", "edge", "har_probe"].includes(
+      String(p.pcMode || "").toLowerCase(),
+    )
+      ? String(p.pcMode).toLowerCase()
+      : "checkout";
+    const pdpUrl =
+      target.pdpUrl ||
+      (productId
+        ? `https://www.pokemoncenter.com/${locale || "en-au"}/product/${encodeURIComponent(productId)}`
+        : "");
+    const draft = {
+      id: extra.id || undefined,
+      store: "pokemoncentre",
+      label: resolveTaskLabel({
+        store: "pokemoncentre",
+        label: extra.label || "",
+        title: target.title || "",
+        productName: target.title || "",
+        productId,
+        pdpUrl,
+        pcMode,
+      }),
+      pdpUrl,
+      qty: p.qty,
+      quantity: p.quantity,
+      profileId: p.profileId,
+      proxyGroupId: p.proxyGroupId,
+      placeOrder: p.placeOrder,
+      enabled: true,
+      pcMode,
+      pcLocale: locale || "en-au",
+    };
+    return { ok: true, task: draft, startAfterCreate: p.startAfterCreate };
+  }
+
+  const mode = p.bandaiMode;
   const area = normalizeBandaiAreaCode(target.area || p.bandaiArea) || "au";
   const draft = {
     id: extra.id || undefined,
@@ -345,7 +491,9 @@ module.exports = {
   normalizeQuickTaskPreset,
   resolveQuickTaskProfiles,
   parseBandaiProductInput,
+  parsePokemonCentreProductInput,
   targetFromMonitorHit,
+  targetFromPcMonitorHit,
   buildQuickTaskDraft,
   contextFromMonitorHit,
   contextFromQuickTask,
