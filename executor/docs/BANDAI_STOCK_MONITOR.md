@@ -109,7 +109,10 @@ desktop hub**:
 - Locale default **`en-au`** (AU). Watchlist is **admin-dashboard only** (same model as Bandai keywords) — empty until you save PKC keywords/SKUs in `/admin`.
 - Env: `PC_MONITOR_ENABLE`, `HYPER_API_KEY` (required for Incapsula/DD), optional `PC_MONITOR_INTERVAL_MS`
 - Admin: Pokémon Centre AU section → keywords + SKUs + interval; force poll `POST /monitor/pkc/poll`
+- Labs Discord: **Test PKC stock / preload / OOS** → `POST /test-discord?store=pokemoncentre&kind=pkc|pkc-preload|pkc-oos`
+  (same webhook as live hits; synthetic SKU OK when catalog empty)
 - Lab: `node scripts/pokemoncentre-stock-monitor-lab.mjs`
+- Early-signal research (US lead, CMS, why monitors feel late): `docs/POKEMON_CENTRE_MODULE.md` §6a
 
 Catches preload when availability flips to `AVAILABLE` / `AVAILABLE_FOR_PRE_ORDER` or
 `addToCartForm` appears — before a public “drop” moment.

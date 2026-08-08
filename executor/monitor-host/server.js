@@ -23,6 +23,8 @@ import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
 import {
   vantaRestockDiscordBody,
   vantaOosDiscordBody,
+  vantaPkcDiscordBody,
+  vantaPkcOosDiscordBody,
   vantaPublicCheckoutDiscordBody,
   buildQuickTaskBridgeUrl,
   buildQuickTaskLocalUrl,
@@ -457,12 +459,17 @@ async function handleStockChanged(ev) {
   if (isOos) {
     if (runtime.notifyOos === false) return;
     try {
-      const r = await postDiscord(
-        vantaOosDiscordBody(hitPayload(ev), {
-          area: store === "pokemoncentre" ? String(ev.locale || "us") : AREA,
-          source: store === "pokemoncentre" ? "railway-pkc-monitor" : "railway-monitor",
-        }),
-      );
+      const oosPayload =
+        store === "pokemoncentre"
+          ? vantaPkcOosDiscordBody(
+              { ...hitPayload(ev), locale: ev.locale || runtime.pcLocale || "en-au" },
+              { locale: ev.locale || runtime.pcLocale || "en-au" },
+            )
+          : vantaOosDiscordBody(hitPayload(ev), {
+              area: AREA,
+              source: "railway-monitor",
+            });
+      const r = await postDiscord(oosPayload);
       if (!r.ok && !r.skipped) console.warn("[discord:oos]", r.status, r.error);
     } catch (e) {
       console.warn("[discord:oos]", e?.message || e);
@@ -473,29 +480,19 @@ async function handleStockChanged(ev) {
   if (!ev?.inStock) return;
   try {
     if (store === "pokemoncentre") {
-      // PKC — no Bandai Quick Task deep-link (wrong store). Plain restock ping.
-      const title = ev.title || ev.meta?.title || ev.productId;
-      const r = await postDiscord({
-        username: "Vanta",
-        embeds: [
+      const locale = ev.locale || runtime.pcLocale || "en-au";
+      const r = await postDiscord(
+        vantaPkcDiscordBody(
           {
-            title: reason === "preorder_live" ? "PKC preorder / preload" : "PKC stock",
-            description: [
-              `**${title}**`,
-              `SKU \`${ev.productId}\``,
-              ev.availability ? `Availability: ${ev.availability}` : null,
-              ev.price ? `Price: ${ev.price}` : null,
-              `Locale: ${ev.locale || runtime.pcLocale || "en-us"}`,
-              reason ? `Reason: ${reason}` : null,
-            ]
-              .filter(Boolean)
-              .join("\n"),
-            color: reason === "preorder_live" ? 0x2563eb : 0x000000,
-            thumbnail: ev.imageUrl ? { url: String(ev.imageUrl) } : undefined,
-            timestamp: new Date().toISOString(),
+            ...hitPayload(ev),
+            locale,
+            availability: ev.availability || ev.meta?.availability,
+            preorder: Boolean(ev.preorder || ev.meta?.preorder || reason === "preorder_live"),
+            reason,
           },
-        ],
-      });
+          { locale, preload: reason === "preorder_live" },
+        ),
+      );
       if (!r.ok && !r.skipped) console.warn("[discord:pkc]", r.status, r.error);
       return;
     }
@@ -1248,23 +1245,42 @@ app.delete("/logs", async (req, reply) => {
   return { ok: true, ...labLogStats() };
 });
 
-/** Operator test: POST /test-discord?sku=…&kind=restock|oos|checkout */
+/**
+ * Operator test: POST /test-discord?sku=…&kind=restock|oos|checkout|pkc|pkc-preload|pkc-oos
+ * Optional store=pokemoncentre (alias pkc) routes Bandai kinds onto PKC embeds.
+ */
 app.post("/test-discord", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const q = req.query || {};
   const body = req.body && typeof req.body === "object" ? req.body : {};
-  const sku = String(q.sku || body.sku || "N2890904001").trim();
-  const kind = String(q.kind || body.kind || "restock").toLowerCase();
+  const kindRaw = String(q.kind || body.kind || "restock").toLowerCase();
+  const storeRaw = String(q.store || body.store || "").toLowerCase();
+  const isPkc =
+    storeRaw === "pokemoncentre" ||
+    storeRaw === "pkc" ||
+    storeRaw === "pokemon-centre" ||
+    kindRaw === "pkc" ||
+    kindRaw.startsWith("pkc-") ||
+    kindRaw === "pkc_preload" ||
+    kindRaw === "pkc_oos";
+  const skuDefault = isPkc ? "10-10186-109" : "N2890904001";
+  const sku = String(q.sku || body.sku || skuDefault).trim();
+  const kind = kindRaw;
+  const pcLocale = String(
+    q.locale || body.locale || runtime.pcLocale || process.env.PC_MONITOR_LOCALE || "en-au",
+  ).toLowerCase();
 
   if (kind === "checkout") {
     if (!checkoutFeedHook()) {
       return reply.code(400).send({ ok: false, error: "checkout feed webhook not configured" });
     }
     const win = sanitizeCheckoutWin({
-      store: "bandai",
+      store: isPkc ? "pokemoncentre" : "bandai",
       title: body.title || `Test checkout · ${sku}`,
       sku,
-      pdpUrl: `https://p-bandai.com/au/item/${encodeURIComponent(sku)}`,
+      pdpUrl: isPkc
+        ? `https://www.pokemoncenter.com/${pcLocale}/product/${encodeURIComponent(sku)}`
+        : `https://p-bandai.com/au/item/${encodeURIComponent(sku)}`,
       mode: "Checkout",
       payment: "Card",
       test: true,
@@ -1272,12 +1288,94 @@ app.post("/test-discord", async (req, reply) => {
     const payload = vantaPublicCheckoutDiscordBody(win, { test: true });
     const r = await postCheckoutFeed(payload);
     return r.ok
-      ? { ok: true, kind: "checkout", posted: true }
+      ? { ok: true, kind: "checkout", store: isPkc ? "pokemoncentre" : "bandai", posted: true }
       : reply.code(502).send({ ok: false, error: r.error || "discord_failed" });
   }
 
   if (!discordHook()) {
     return reply.code(400).send({ ok: false, error: "restock webhook not configured" });
+  }
+
+  // ── Pokémon Centre lab pings (same webhook as live PKC stock_changed) ──
+  if (isPkc) {
+    const pkcKind =
+      kind === "pkc-oos" || kind === "pkc_oos" || kind === "oos"
+        ? "oos"
+        : kind === "pkc-preload" || kind === "pkc_preload" || kind === "preload"
+          ? "preload"
+          : "stock";
+
+    let row = typeof pcMonitor.getProduct === "function" ? pcMonitor.getProduct(sku) : null;
+    if (!row) {
+      const cat = typeof pcMonitor.getCatalog === "function" ? pcMonitor.getCatalog() : null;
+      if (cat?.size) {
+        row =
+          [...cat.values()].find(
+            (r) =>
+              String(r?.productId || "").toUpperCase() === sku.toUpperCase() ||
+              (r?.imageUrl && r?.title),
+          ) || [...cat.values()][0] || null;
+      }
+    }
+    // Synthetic fixture when catalog empty — still proves webhook + embed shape.
+    const hitForDiscord = {
+      productId: row?.productId || sku,
+      title: row?.title || body.title || `PKC lab · ${sku}`,
+      imageUrl: row?.imageUrl || body.imageUrl || null,
+      price: row?.price || body.price || null,
+      availability:
+        row?.availability ||
+        (pkcKind === "preload" ? "AVAILABLE_FOR_PRE_ORDER" : pkcKind === "oos" ? "NOT_AVAILABLE" : "AVAILABLE"),
+      preorder: pkcKind === "preload",
+      reason: pkcKind === "oos" ? "went_oos" : pkcKind === "preload" ? "preorder_live" : "restock",
+      inStock: pkcKind !== "oos",
+      locale: pcLocale,
+      slug: row?.slug || row?.meta?.slug || null,
+      pdpUrl: row?.pdpUrl || row?.meta?.pdpUrl || null,
+      at: new Date().toISOString(),
+    };
+    const payload =
+      pkcKind === "oos"
+        ? vantaPkcOosDiscordBody(hitForDiscord, { locale: pcLocale, test: true })
+        : vantaPkcDiscordBody(hitForDiscord, {
+            locale: pcLocale,
+            test: true,
+            preload: pkcKind === "preload",
+          });
+
+    try {
+      const r = await postDiscord(payload);
+      if (!r.ok) {
+        return reply.code(502).send({
+          ok: false,
+          error: "discord_reject",
+          status: r.status,
+          detail: r.error,
+        });
+      }
+      labLog("discord", "info", `PKC lab ${pkcKind} ping · ${hitForDiscord.productId}`, {
+        kind: pkcKind,
+        sku: hitForDiscord.productId,
+        synthetic: !row,
+      });
+      return {
+        ok: true,
+        discord: r.status,
+        store: "pokemoncentre",
+        kind: pkcKind === "oos" ? "pkc-oos" : pkcKind === "preload" ? "pkc-preload" : "pkc",
+        synthetic: !row,
+        product: {
+          productId: hitForDiscord.productId,
+          title: hitForDiscord.title,
+          price: hitForDiscord.price,
+          imageUrl: hitForDiscord.imageUrl,
+          availability: hitForDiscord.availability,
+          locale: pcLocale,
+        },
+      };
+    } catch (e) {
+      return reply.code(502).send({ ok: false, error: e?.message || String(e) });
+    }
   }
 
   if ((hub.monitor.status()?.products || 0) === 0) {
@@ -1341,6 +1439,7 @@ app.post("/test-discord", async (req, reply) => {
     return {
       ok: true,
       discord: r.status,
+      store: "bandai",
       kind: kind === "oos" ? "oos" : "restock",
       quickTaskUrl,
       quickTaskLocal,
