@@ -32,6 +32,12 @@ import {
   QUICKTASK_BRIDGE_PORT,
 } from "./vanta-discord.mjs";
 import { loadRuntimeConfig, saveRuntimeConfig, runtimePersistenceInfo } from "./runtime-config.mjs";
+import {
+  loadPcCatalogCache,
+  savePcCatalogCache,
+  catalogMapToEntries,
+  entriesToCatalogMap,
+} from "./pc-catalog-cache.mjs";
 import { parseMutedSkus, mutedSkusText, isSkuMuted } from "./muted-skus.mjs";
 import { computeMonitorStale, shouldWatchdogRestart } from "./monitor-watchdog.mjs";
 import {
@@ -413,17 +419,27 @@ const hub = createGlobalMonitorHub({
 
 /** Pokémon Centre poller — same SSE /hits feed as Bandai (store=pokemoncentre). */
 let pcMonitorEnabled = runtime.pcMonitorEnable !== false;
+let pcCatalogCache = loadPcCatalogCache();
 const pcMonitor = createPokemonCentreStockMonitor({
   locale: runtime.pcLocale || process.env.PC_MONITOR_LOCALE || "en-au",
   intervalMs: runtime.pcIntervalMs || Number(process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
   // Admin dashboard owns the watchlist (persisted runtime). No baked-in keywords/SKUs.
   keywords: runtime.pcKeywords || "",
   skus: runtime.pcSkus || "",
+  hyperLight: process.env.PC_MONITOR_HYPER_LIGHT !== "0",
+  skipBff: process.env.PC_MONITOR_SKIP_BFF !== "0",
+  initialCatalog: entriesToCatalogMap(pcCatalogCache.entries || {}),
   proxy: {
     ispRaw: runtime.ispProxies || undefined,
     dcRaw: runtime.dcProxies || undefined,
   },
 });
+if (pcCatalogCache._fromDisk && Object.keys(pcCatalogCache.entries || {}).length) {
+  labLog("monitor", "info", "PKC catalog restored from disk", {
+    products: Object.keys(pcCatalogCache.entries).length,
+    path: pcCatalogCache._path,
+  });
+}
 
 // Apply disk overrides that may differ from constructor env (keywords already passed).
 try {
@@ -623,8 +639,20 @@ pcMonitor.on("stock_changed", (ev) => {
 pcMonitor.on("poll", (s) => {
   if (s.polls <= 3 || s.polls % 8 === 0 || s.events > 0) {
     console.log(
-      `[pkc-poll] #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events} ms=${s.ms} locale=${s.locale} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
+      `[pkc-poll] #${s.polls} products=${s.products} inStock=${s.inStock} soft=${s.softListed} pending=${s.softPending ?? "?"} events=${s.events} ms=${s.ms} hyperSolves=${s.hyperSolves ?? "?"} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
     );
+  }
+  // Persist catalog so redeploys don't re-baseline / re-burn Hyper on the same SKUs.
+  try {
+    const catalog = pcMonitor.getCatalog?.();
+    if (catalog?.size) {
+      pcCatalogCache = savePcCatalogCache({
+        locale: s.locale || runtime.pcLocale || "en-au",
+        entries: catalogMapToEntries(catalog),
+      });
+    }
+  } catch (e) {
+    console.warn("[pc-catalog-cache]", e?.message || e);
   }
 });
 pcMonitor.on("error", (e) => {
