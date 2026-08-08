@@ -1,13 +1,14 @@
 // Pokémon Centre (PKC) stock monitor — same event contract as Bandai.
-// Sticky Hyper edge warm (Incapsula Reese84 + DataDome) → BFF search + product/status.
-// Emits stock_changed for preload / restock / OOS. Decoupled from checkout.
+// Sticky Hyper edge warm (Incapsula Reese84 + DataDome) → BFF search + product/status
+// + sitemap/category discovery.
+// Emits stock_changed for soft_listed (hours-ahead) / preload / restock / OOS.
+// Decoupled from checkout. AU-first — no US-lag lead (AU SKUs rarely match US).
 
 import { EventEmitter } from "node:events";
 // Use slim undici helpers (same as Bandai) for dispatcher/jar. Session/edge still
 // pull request() via adapters → http.js (baked into the Railway monitor image).
 import { makeDispatcher, createJar } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
-import { diffCatalog } from "./bandai-stock-monitor.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
 import { warmPokemonCentre } from "../adapters/pokemoncentre-edge.js";
 import {
@@ -41,9 +42,48 @@ function parseList(raw) {
     .filter(Boolean);
 }
 
+function parseBool(raw, fallback) {
+  if (raw == null || raw === "") return fallback;
+  const s = String(raw).trim().toLowerCase();
+  if (["0", "false", "off", "no"].includes(s)) return false;
+  if (["1", "true", "on", "yes"].includes(s)) return true;
+  return fallback;
+}
+
 /**
- * Normalize BFF search / product-status / PDP soft payload → catalog row.
- * inStock true for AVAILABLE + AVAILABLE_FOR_PRE_ORDER (preload catch).
+ * Pull `/en-au/product/{sku}/…` (and sibling locales) from sitemap XML or category HTML.
+ * @param {string} htmlOrXml
+ * @param {{ locale?: string }} [opts]
+ * @returns {{ sku: string, slug: string|null, locale: string, pdpUrl: string }[]}
+ */
+export function extractPcProductUrls(htmlOrXml, { locale = "en-au" } = {}) {
+  const text = String(htmlOrXml || "");
+  if (!text) return [];
+  const prefer = String(locale || "en-au").toLowerCase();
+  const re =
+    /(?:https?:\/\/(?:www\.)?pokemoncenter\.com)?\/(en-[a-z]{2})\/product\/([A-Za-z0-9._-]+)(?:\/([A-Za-z0-9._-]+))?/gi;
+  /** @type {Map<string, { sku: string, slug: string|null, locale: string, pdpUrl: string }>} */
+  const bySku = new Map();
+  for (const m of text.matchAll(re)) {
+    const loc = String(m[1] || prefer).toLowerCase();
+    // Prefer AU (or configured locale) URLs; still accept others if AU missing.
+    const sku = String(m[2] || "").trim();
+    if (!sku) continue;
+    const slug = m[3] ? String(m[3]).trim() : null;
+    const key = sku.toUpperCase();
+    const pdpUrl = `${PC_ORIGIN}/${loc}/product/${sku}${slug ? `/${slug}` : ""}`;
+    const prev = bySku.get(key);
+    if (!prev || (loc === prefer && prev.locale !== prefer)) {
+      bySku.set(key, { sku, slug, locale: loc, pdpUrl });
+    }
+  }
+  return [...bySku.values()];
+}
+
+/**
+ * Normalize BFF search / product-status / PDP / discovery payload → catalog row.
+ * Keeps NOT_AVAILABLE / coming-soon / bare search cards (hours-ahead soft list).
+ * inStock true for AVAILABLE + AVAILABLE_FOR_PRE_ORDER + addToCartForm.
  */
 export function normalizePcCatalogCard(p, { source } = {}) {
   if (!p || typeof p !== "object") return null;
@@ -52,20 +92,39 @@ export function normalizePcCatalogCard(p, { source } = {}) {
   ).trim();
   if (!productId) return null;
 
+  const titleRaw = p.name || p.title || p.productName || null;
   const availRaw = String(
     p.availability || p.stockStatus || p.status || p.inventoryStatus || "",
   ).toUpperCase();
   let inStock = null;
+  let softListed = false;
   if (/AVAILABLE_FOR_PRE_ORDER|PRE[_-]?ORDER/i.test(availRaw)) inStock = true;
   else if (/^AVAILABLE$|IN[_-]?STOCK|IN STOCK/i.test(availRaw)) inStock = true;
-  else if (/NOT_AVAILABLE|SOLD_OUT|OUT_OF_STOCK|UNAVAILABLE/i.test(availRaw)) inStock = false;
-  else if (typeof p.inStock === "boolean") inStock = p.inStock;
+  else if (/NOT_AVAILABLE|COMING[_ ]?SOON|UNAVAILABLE/i.test(availRaw)) {
+    inStock = false;
+    softListed = true;
+  } else if (/SOLD_OUT|OUT_OF_STOCK/i.test(availRaw)) {
+    inStock = false;
+    // Still keep in snapshot so a later flip → restock; first-seen emits soft_listed.
+    softListed = true;
+  } else if (typeof p.inStock === "boolean") inStock = p.inStock;
   else if (typeof p.available === "boolean") inStock = p.available;
   else if (p.addToCartForm || p.epItemId) inStock = true;
+  else if (
+    titleRaw ||
+    p.pdpUrl ||
+    p.url ||
+    p.slug ||
+    /^search:|^sitemap|^category|^discovery/i.test(String(source || ""))
+  ) {
+    // Card / URL exists without a buyable enum — hours-ahead listing signal.
+    inStock = false;
+    softListed = true;
+  }
 
   if (inStock == null) return null;
 
-  const title = p.name || p.title || p.productName || null;
+  const title = titleRaw;
   const imageUrl =
     p.imageUrl ||
     p.thumbnailUrl ||
@@ -78,10 +137,13 @@ export function normalizePcCatalogCard(p, { source } = {}) {
     const cur = p.purchasePrice?.currency || p.listPrice?.currency || p.currency || "USD";
     price = `${cur} ${Number(amt).toFixed(Number(amt) % 1 ? 2 : 0)}`;
   }
+  const slug = p.slug || p.seoSlug || null;
+  const pdpUrl = p.pdpUrl || p.url || null;
 
   return {
     productId,
     inStock: Boolean(inStock),
+    softListed: Boolean(softListed) && !inStock,
     availability: availRaw || null,
     preorder: /PRE[_-]?ORDER/i.test(availRaw),
     addToCartForm: p.addToCartForm || null,
@@ -89,9 +151,63 @@ export function normalizePcCatalogCard(p, { source } = {}) {
     title: title ? String(title) : null,
     imageUrl: imageUrl ? String(imageUrl) : null,
     price,
+    slug: slug ? String(slug) : null,
+    pdpUrl: pdpUrl ? String(pdpUrl) : null,
     store: "pokemoncentre",
     source: source || null,
   };
+}
+
+/**
+ * PKC catalog diff — includes hours-ahead soft_listed (new not-yet-buyable SKU).
+ * Do not use Bandai diffCatalog: it ignores new OOS/listed rows.
+ * @param {Map<string, object>} prev
+ * @param {Map<string, object>} next
+ */
+export function diffPcCatalog(prev, next) {
+  const events = [];
+  const now = Date.now();
+  for (const [id, row] of next) {
+    const before = prev?.get(id);
+    if (!before) {
+      if (row.inStock) {
+        events.push({
+          productId: id,
+          inStock: true,
+          timestamp: now,
+          reason: "new_in_stock",
+          meta: row,
+        });
+      } else {
+        events.push({
+          productId: id,
+          inStock: false,
+          timestamp: now,
+          reason: "soft_listed",
+          meta: row,
+        });
+      }
+      continue;
+    }
+    if (!before.inStock && row.inStock) {
+      events.push({
+        productId: id,
+        inStock: true,
+        timestamp: now,
+        reason: "restock",
+        meta: row,
+      });
+    } else if (before.inStock && !row.inStock) {
+      events.push({
+        productId: id,
+        inStock: false,
+        timestamp: now,
+        reason: "went_oos",
+        meta: row,
+      });
+    }
+  }
+  return events;
 }
 
 function extractSearchProducts(json) {
@@ -143,6 +259,23 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   // Watchlist is admin-dashboard owned (same as Bandai keywords). Env is bootstrap only.
   let keywords = parseList(opts.keywords ?? process.env.PC_MONITOR_KEYWORDS ?? "");
   let skus = parseList(opts.skus ?? process.env.PC_MONITOR_SKUS ?? "").map((s) => s.toUpperCase());
+  // Sitemap + category URL discovery — catches random restock soft-publishes without a known SKU.
+  let discoveryEnable = parseBool(
+    opts.discoveryEnable ?? process.env.PC_MONITOR_DISCOVERY,
+    true,
+  );
+  const discoveryPaths = parseList(
+    opts.discoveryPaths ??
+      process.env.PC_MONITOR_DISCOVERY_PATHS ??
+      `/${locale}/category/trading-card-game,/sitemap.xml`,
+  );
+  const discoveryProbeLimit = Math.max(
+    0,
+    Math.min(
+      40,
+      Number(opts.discoveryProbeLimit ?? process.env.PC_MONITOR_DISCOVERY_PROBE_LIMIT) || 12,
+    ),
+  );
 
   const pool = opts.proxyPool || createMonitorProxyPool(opts.proxy || {});
   /** @type {Map<string, object>} */
@@ -366,7 +499,13 @@ export function createPokemonCentreStockMonitor(opts = {}) {
             const prev = next.get(id);
             // Status is authoritative for watched SKUs
             next.set(id, { ...prev, ...final, productId: final.productId });
-            sources.push({ kind: "product_status", sku, ok: true, inStock: final.inStock });
+            sources.push({
+              kind: "product_status",
+              sku,
+              ok: true,
+              inStock: final.inStock,
+              softListed: Boolean(final.softListed),
+            });
           } else {
             sources.push({ kind: "product_status", sku, ok: true, note: "unparsed" });
           }
@@ -381,6 +520,113 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           if (e?.status === 401 || e?.status === 403) throw e;
         }
         await sleep(80 + Math.floor(Math.random() * 120));
+      }
+
+      // ── Sitemap / category discovery (hours-ahead URL soft-publish) ──
+      if (discoveryEnable && discoveryPaths.length) {
+        /** @type {Array<{ sku: string, slug: string|null, locale: string, pdpUrl: string, from: string }>} */
+        const discovered = [];
+        for (const pathTry of discoveryPaths) {
+          if (signal?.aborted) {
+            const err = new Error("poll_aborted");
+            err.code = "POLL_TIMEOUT";
+            throw err;
+          }
+          const path = pathTry.startsWith("/") ? pathTry : `/${pathTry}`;
+          const url = path.startsWith("http") ? path : `${PC_ORIGIN}${path}`;
+          try {
+            const res = await session.get(url, {
+              headers: { referer: `${base}/` },
+            });
+            const text = await session.readText(res);
+            if (res.status === 403 || res.status === 401) {
+              if (sticky) sticky.edgeOk = false;
+              const err = new Error(`discovery_${res.status}`);
+              err.status = res.status;
+              throw err;
+            }
+            const found = extractPcProductUrls(text, { locale });
+            for (const f of found) {
+              discovered.push({ ...f, from: path });
+            }
+            sources.push({
+              kind: "discovery",
+              path,
+              ok: true,
+              status: res.status,
+              urls: found.length,
+            });
+          } catch (e) {
+            sources.push({
+              kind: "discovery",
+              path,
+              ok: false,
+              note: e?.message || String(e),
+            });
+            if (e?.status === 401 || e?.status === 403) throw e;
+          }
+          await sleep(150 + Math.floor(Math.random() * 200));
+        }
+
+        // Prefer new SKUs (not already in this poll's catalog / prior snapshot).
+        const novel = [];
+        const seenDisc = new Set();
+        for (const f of discovered) {
+          const id = f.sku.toUpperCase();
+          if (seenDisc.has(id)) continue;
+          seenDisc.add(id);
+          if (next.has(id) || snapshot.has(id)) continue;
+          novel.push(f);
+        }
+
+        let probed = 0;
+        for (const f of novel) {
+          if (signal?.aborted) break;
+          const id = f.sku.toUpperCase();
+          let row = normalizePcCatalogCard(
+            {
+              code: f.sku,
+              slug: f.slug,
+              pdpUrl: f.pdpUrl,
+              name: f.slug ? f.slug.replace(/-/g, " ") : null,
+              availability: "NOT_AVAILABLE",
+            },
+            { source: f.from.includes("sitemap") ? "sitemap" : "category" },
+          );
+          if (probed < discoveryProbeLimit) {
+            try {
+              const { json } = await bffGet(
+                session,
+                `/product/status/${encodeURIComponent(f.sku)}`,
+                signal,
+              );
+              probed += 1;
+              const payload = json?.product || json?.data || json;
+              const statusRow = normalizePcCatalogCard(
+                {
+                  ...(payload && typeof payload === "object" ? payload : {}),
+                  code: f.sku,
+                  slug: f.slug,
+                  pdpUrl: f.pdpUrl,
+                  ...(typeof payload === "string" ? { availability: payload } : {}),
+                },
+                { source: "discovery_status" },
+              );
+              if (statusRow) row = { ...row, ...statusRow, pdpUrl: f.pdpUrl, slug: f.slug || statusRow.slug };
+            } catch (e) {
+              if (e?.status === 401 || e?.status === 403) throw e;
+            }
+            await sleep(60 + Math.floor(Math.random() * 100));
+          }
+          if (row) next.set(id, { ...row, productId: row.productId || f.sku });
+        }
+        sources.push({
+          kind: "discovery_novel",
+          ok: true,
+          novel: novel.length,
+          probed,
+          added: novel.filter((f) => next.has(f.sku.toUpperCase())).length,
+        });
       }
 
       return {
@@ -445,7 +691,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     const prev = snapshot;
     const first = prev.size === 0;
-    const events = first ? [] : diffCatalog(prev, keyed);
+    const events = first ? [] : diffPcCatalog(prev, keyed);
     snapshot = keyed;
     polls += 1;
     lastPollAt = Date.now();
@@ -457,6 +703,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       polls,
       products: keyed.size,
       inStock: [...keyed.values()].filter((r) => r.inStock).length,
+      softListed: [...keyed.values()].filter((r) => r.softListed || (!r.inStock && r.availability)).length,
       events: events.length,
       firstSnapshot: first,
       sources,
@@ -465,6 +712,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       intervalMs,
       locale,
       store: "pokemoncentre",
+      discoveryEnable,
       edgeNote,
     };
     bus.emit("poll", summary);
@@ -485,12 +733,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         price: m.price || null,
         availability: m.availability || null,
         preorder: Boolean(m.preorder),
+        softListed: Boolean(m.softListed) || reason === "soft_listed",
+        slug: m.slug || null,
+        pdpUrl: m.pdpUrl || null,
         meta: {
           title: m.title || null,
           imageUrl: m.imageUrl || null,
           price: m.price || null,
           availability: m.availability || null,
           preorder: Boolean(m.preorder),
+          softListed: Boolean(m.softListed) || reason === "soft_listed",
+          slug: m.slug || null,
+          pdpUrl: m.pdpUrl || null,
+          source: m.source || null,
           store: "pokemoncentre",
           locale,
         },
@@ -515,8 +770,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
   function start() {
     if (running) return;
-    if (!keywords.length && !skus.length) {
-      lastError = "pc_monitor_needs_keywords_or_skus";
+    // Keywords/SKUs optional when sitemap/category discovery is on (random restock catch).
+    if (!keywords.length && !skus.length && !discoveryEnable) {
+      lastError = "pc_monitor_needs_keywords_skus_or_discovery";
       bus.emit("error", { at: Date.now(), error: lastError, polls: 0 });
       return;
     }
@@ -564,6 +820,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       intervalMs,
       keywords,
       skus,
+      discoveryEnable,
+      discoveryPaths,
       locale,
       scope,
       store: "pokemoncentre",
@@ -624,8 +882,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       store: "pokemoncentre",
       keywords,
       skus,
+      discoveryEnable,
+      discoveryPaths,
       products: snapshot.size,
       inStock: [...snapshot.values()].filter((r) => r.inStock).length,
+      softListed: [...snapshot.values()].filter((r) => !r.inStock).length,
       lastError,
       lastPollAt,
       startedAt,
@@ -668,6 +929,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       skus = parseList(raw).map((s) => s.toUpperCase());
       return [...skus];
     },
+    setDiscoveryEnable(on) {
+      discoveryEnable = Boolean(on);
+      return discoveryEnable;
+    },
     setIntervalMs(ms) {
       intervalMs = Math.max(5_000, Number(ms) || intervalMs);
       return intervalMs;
@@ -685,5 +950,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 export default {
   createPokemonCentreStockMonitor,
   normalizePcCatalogCard,
+  diffPcCatalog,
+  extractPcProductUrls,
   cortexScopeForLocale,
 };

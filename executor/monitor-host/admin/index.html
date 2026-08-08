@@ -258,9 +258,11 @@
         <section>
           <h2>Pokémon Centre AU — watch keywords / SKUs</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Same model as Bandai: this admin list is the only PKC watch source (locale fixed to
-            <strong>en-au</strong>). Keywords hit BFF search; SKUs hit <code>product/status</code>
-            (preload / preorder / restock). Empty = PKC poller idle. Needs <code>HYPER_API_KEY</code> on Railway.
+            Locale fixed to <strong>en-au</strong>. Keywords → BFF search (keeps
+            <code>NOT_AVAILABLE</code> soft-lists). SKUs → <code>product/status</code>.
+            <strong>Sitemap + TCG category discovery</strong> runs by default so random restocks
+            can soft-list hours ahead without a known SKU. Amber Discord = soft listed; blue = preload;
+            black = buyable. Needs <code>HYPER_API_KEY</code> on Railway.
           </p>
           <label for="pcKeywords">Keywords (one per line)</label>
           <textarea id="pcKeywords" placeholder="elite trainer box&#10;pokemon center"></textarea>
@@ -441,13 +443,13 @@
 
       <div class="panel" id="panel-labs">
         <section>
-          <h2>Discord labs</h2>
+          <h2>Discord labs · Bandai</h2>
           <p class="hint" style="margin:0 0 10px;color:var(--muted);font-size:0.85rem;line-height:1.45">
             Test restock: <strong>⚡ Quick Task</strong>, <strong>Setup presets</strong>, and <strong>eBay sold</strong>
             (description links + buttons). QT / Setup bounce via <code>/qt</code> · <code>/qt-setup</code>.
             OOS pings include eBay sold only.
           </p>
-          <label for="testSku">SKU</label>
+          <label for="testSku">Bandai SKU</label>
           <input id="testSku" type="text" value="N2890904001" />
           <div class="row">
             <button id="btnTestRestock" type="button">Test restock</button>
@@ -455,7 +457,26 @@
             <button class="secondary" id="btnTestCheckoutFeed" type="button">Test checkout feed</button>
           </div>
           <div class="row">
-            <button class="secondary" id="btnPoll" type="button">Force monitor poll</button>
+            <button class="secondary" id="btnPoll" type="button">Force Bandai poll</button>
+          </div>
+        </section>
+        <section style="margin-top:18px">
+          <h2>Discord labs · Pokémon Centre AU</h2>
+          <p class="hint" style="margin:0 0 10px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Posts to the same restock webhook as live PKC hits. <strong>Preload</strong> uses the blue
+            <code>AVAILABLE_FOR_PRE_ORDER</code> embed. Works with a synthetic SKU when the PKC catalog
+            is empty (no live poll required). Needs <code>DISCORD_WEBHOOK_URL</code> / admin restock hook.
+          </p>
+          <label for="testPcSku">PKC SKU</label>
+          <input id="testPcSku" type="text" value="10-10186-109" placeholder="e.g. 10-10186-109" />
+          <div class="row">
+            <button id="btnTestPkcStock" type="button">Test PKC stock</button>
+            <button class="secondary" id="btnTestPkcPreload" type="button">Test PKC preload</button>
+            <button class="secondary" id="btnTestPkcSoft" type="button">Test PKC soft-list</button>
+            <button class="secondary danger" id="btnTestPkcOos" type="button">Test PKC OOS</button>
+          </div>
+          <div class="row">
+            <button class="secondary" id="btnPollPkcLab" type="button">Force PKC poll</button>
           </div>
           <p id="discordLabNote" class="hint" style="margin:10px 0 0;color:var(--muted);font-size:0.8rem;word-break:break-all"></p>
         </section>
@@ -1030,6 +1051,85 @@
           toast(`Poll #${r.summary?.polls ?? "?"} · ${r.summary?.products ?? "?"} products`, "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+
+      async function testPkcDiscord(kind) {
+        const sku = ($("testPcSku")?.value || "").trim() || "10-10186-109";
+        const r = await api(
+          "/test-discord?store=pokemoncentre&kind=" +
+            encodeURIComponent(kind) +
+            "&sku=" +
+            encodeURIComponent(sku),
+          { method: "POST" },
+        );
+        const note = $("discordLabNote");
+        if (note) {
+          const bits = [
+            `PKC ${r.kind || kind}`,
+            r.synthetic ? "synthetic (catalog empty)" : "from PKC catalog",
+            r.product?.title || sku,
+          ];
+          note.textContent = bits.join(" · ");
+        }
+        toast(
+          kind === "pkc-preload"
+            ? "PKC preload ping sent"
+            : kind === "pkc-soft"
+              ? "PKC soft-list ping sent"
+              : kind === "pkc-oos" || kind === "oos"
+                ? "PKC OOS ping sent"
+                : "PKC stock ping sent",
+          "ok",
+        );
+      }
+      if ($("btnTestPkcStock")) {
+        $("btnTestPkcStock").onclick = async () => {
+          try {
+            await testPkcDiscord("pkc");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnTestPkcPreload")) {
+        $("btnTestPkcPreload").onclick = async () => {
+          try {
+            await testPkcDiscord("pkc-preload");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnTestPkcSoft")) {
+        $("btnTestPkcSoft").onclick = async () => {
+          try {
+            await testPkcDiscord("pkc-soft");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnTestPkcOos")) {
+        $("btnTestPkcOos").onclick = async () => {
+          try {
+            await testPkcDiscord("pkc-oos");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnPollPkcLab")) {
+        $("btnPollPkcLab").onclick = async () => {
+          try {
+            const r = await api("/monitor/pkc/poll", { method: "POST" });
+            toast(
+              `PKC poll · ${r.summary?.products ?? r.events?.length ?? "?"} products · ${r.events?.length ?? 0} events`,
+              "ok",
+            );
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
 
       (async () => {
         if (token()) {

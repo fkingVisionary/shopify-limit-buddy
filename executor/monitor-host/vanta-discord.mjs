@@ -8,7 +8,10 @@
 
 const VANTA_COLOR = 0x000000; // black — restock / main brand
 const VANTA_OOS_COLOR = 0xdc2626; // red — out of stock
+const VANTA_PKC_PRELOAD_COLOR = 0x2563eb; // blue — preorder / preload
+const VANTA_PKC_SOFT_LIST_COLOR = 0xd97706; // amber — soft-listed hours ahead (not buyable yet)
 const VANTA_NAME = "Vanta";
+const PC_ORIGIN = "https://www.pokemoncenter.com";
 
 /** Must match desktop/deep-link.cjs BRIDGE_PORT — Discord → local Electron. */
 export const QUICKTASK_BRIDGE_PORT = 17865;
@@ -297,6 +300,184 @@ export function vantaOosDiscordBody(hit, opts = {}) {
 const VANTA_CHECKOUT_COLOR = 0x22c55e; // green — public checkout feed
 
 /**
+ * Pokémon Centre PDP URL from catalog hit (no Bandai QT / Setup links).
+ * @param {object} hit
+ * @param {string} [locale]
+ */
+export function pcPdpUrl(hit, locale = "en-au") {
+  const direct = hit?.pdpUrl || hit?.meta?.pdpUrl || hit?.url;
+  if (direct && /^https?:\/\//i.test(String(direct))) return String(direct);
+  const loc = String(locale || hit?.locale || "en-au")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  const sku = String(hit?.productId || hit?.sku || "").trim();
+  if (!sku) return `${PC_ORIGIN}/${loc || "en-au"}`;
+  const slug = String(hit?.slug || hit?.meta?.slug || "").trim().replace(/^\/+|\/+$/g, "");
+  const base = `${PC_ORIGIN}/${loc || "en-au"}/product/${encodeURIComponent(sku)}`;
+  return slug ? `${base}/${slug}` : base;
+}
+
+/**
+ * PKC restock / preload / soft-list ping — plain embed (no Bandai Quick Task).
+ * @param {object} hit
+ * @param {{ locale?: string, test?: boolean, preload?: boolean, softListed?: boolean }} [opts]
+ */
+export function vantaPkcDiscordBody(hit, opts = {}) {
+  const locale = String(opts.locale || hit?.locale || "en-au").toLowerCase();
+  const productId = String(hit?.productId || hit?.sku || "?").trim() || "?";
+  const title = pickTitle(hit) || productId;
+  const reason = String(hit?.reason || "restock").replace(/_/g, " ");
+  const image = (() => {
+    const direct = hit?.imageUrl || hit?.meta?.imageUrl || hit?.thumbnailUrl;
+    if (!direct) return null;
+    const s = String(direct);
+    return s.startsWith("http") ? s : `${PC_ORIGIN}${s.startsWith("/") ? "" : "/"}${s}`;
+  })();
+  const isTest = opts.test === true;
+  const isSoftListed =
+    opts.softListed === true ||
+    hit?.softListed === true ||
+    /soft[_ ]?list/i.test(String(hit?.reason || ""));
+  const isPreload =
+    !isSoftListed &&
+    (opts.preload === true ||
+      hit?.preorder === true ||
+      /preorder|preload/i.test(String(hit?.reason || "")) ||
+      /PRE[_-]?ORDER/i.test(String(hit?.availability || hit?.meta?.availability || "")));
+  const pdp = pcPdpUrl(hit, locale);
+  const avail = hit?.availability || hit?.meta?.availability || null;
+  const price = pickPrice(hit);
+  const source = hit?.source || hit?.meta?.source || null;
+
+  const reasonLabel = isSoftListed
+    ? "Soft listed (not buyable yet)"
+    : isPreload
+      ? "Preorder / preload"
+      : reason === "new in stock"
+        ? "New in stock"
+        : reason === "restock"
+          ? "Restock"
+          : reason;
+
+  const kindTag = isSoftListed ? "soft-list" : isPreload ? "preload" : "stock";
+  const color = isSoftListed
+    ? VANTA_PKC_SOFT_LIST_COLOR
+    : isPreload
+      ? VANTA_PKC_PRELOAD_COLOR
+      : VANTA_COLOR;
+
+  return {
+    username: VANTA_NAME,
+    embeds: [
+      {
+        author: {
+          name: isTest
+            ? `${VANTA_NAME} · test PKC ${kindTag}`
+            : `${VANTA_NAME} · PKC ${kindTag}`,
+        },
+        title: (
+          isSoftListed
+            ? `PKC soft listed · ${title}`
+            : isPreload
+              ? `PKC preorder / preload · ${title}`
+              : `PKC stock · ${title}`
+        ).slice(0, 250),
+        url: pdp,
+        description: [
+          `**${reasonLabel}** · Pokémon Centre ${locale.toUpperCase()}`,
+          isSoftListed
+            ? "_Hours-ahead signal — page/search/sitemap saw the SKU before ATC._"
+            : null,
+          "",
+          `[Open PDP](${pdp})`,
+        ]
+          .filter((line) => line != null)
+          .join("\n"),
+        color,
+        fields: [
+          { name: "SKU", value: `\`${productId}\``, inline: true },
+          { name: "Locale", value: locale, inline: true },
+          ...(avail ? [{ name: "Availability", value: String(avail), inline: true }] : []),
+          ...(price ? [{ name: "Price", value: String(price), inline: true }] : []),
+          ...(source ? [{ name: "Source", value: String(source), inline: true }] : []),
+          { name: "Store", value: "Pokémon Centre", inline: true },
+        ],
+        ...(image ? { thumbnail: { url: image } } : {}),
+        footer: {
+          text: isTest ? `Vanta PKC · test ${kindTag}` : `Vanta · PKC ${kindTag}`,
+        },
+        timestamp: hit?.at || hit?.timestamp
+          ? new Date(hit.at || hit.timestamp).toISOString()
+          : new Date().toISOString(),
+      },
+    ],
+    components: [
+      {
+        type: 1,
+        components: [{ type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) }],
+      },
+    ],
+  };
+}
+
+/**
+ * PKC went OOS — red accent (no Bandai QT).
+ * @param {object} hit
+ * @param {{ locale?: string, test?: boolean }} [opts]
+ */
+export function vantaPkcOosDiscordBody(hit, opts = {}) {
+  const locale = String(opts.locale || hit?.locale || "en-au").toLowerCase();
+  const productId = String(hit?.productId || hit?.sku || "?").trim() || "?";
+  const title = pickTitle(hit) || productId;
+  const image = (() => {
+    const direct = hit?.imageUrl || hit?.meta?.imageUrl || hit?.thumbnailUrl;
+    if (!direct) return null;
+    const s = String(direct);
+    return s.startsWith("http") ? s : `${PC_ORIGIN}${s.startsWith("/") ? "" : "/"}${s}`;
+  })();
+  const isTest = opts.test === true;
+  const pdp = pcPdpUrl(hit, locale);
+
+  return {
+    username: VANTA_NAME,
+    embeds: [
+      {
+        author: {
+          name: isTest ? `${VANTA_NAME} · test PKC OOS` : `${VANTA_NAME} · PKC OUT OF STOCK`,
+        },
+        title: `OOS · ${title}`.slice(0, 250),
+        url: pdp,
+        description: [
+          "**OUT OF STOCK** — no longer purchaseable on Pokémon Centre",
+          "",
+          `[Open PDP](${pdp})`,
+        ].join("\n"),
+        color: VANTA_OOS_COLOR,
+        fields: [
+          { name: "Status", value: "`OOS`", inline: true },
+          { name: "SKU", value: `\`${productId}\``, inline: true },
+          { name: "Locale", value: locale, inline: true },
+        ],
+        ...(image ? { thumbnail: { url: image } } : {}),
+        footer: {
+          text: isTest ? "Vanta PKC · test OOS" : "Vanta · PKC out of stock",
+        },
+        timestamp: hit?.at || hit?.timestamp
+          ? new Date(hit.at || hit.timestamp).toISOString()
+          : new Date().toISOString(),
+      },
+    ],
+    components: [
+      {
+        type: 1,
+        components: [{ type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) }],
+      },
+    ],
+  };
+}
+
+/**
  * Public checkout feed — no profile / email / order / proxy / address.
  * Posted by monitor-host after Desktop reports a win (server holds the webhook).
  */
@@ -362,6 +543,9 @@ function storeDisplay(sid) {
   if (s === "toymate") return "Toymate AU";
   if (s === "kmart") return "Kmart AU";
   if (s === "disney") return "Disney Store AU";
+  if (s === "pokemoncentre" || s === "pkc" || s === "pokemon-centre") {
+    return "Pokémon Centre AU";
+  }
   return String(sid || "Store");
 }
 
@@ -369,6 +553,8 @@ export {
   VANTA_NAME,
   VANTA_COLOR,
   VANTA_OOS_COLOR,
+  VANTA_PKC_PRELOAD_COLOR,
+  VANTA_PKC_SOFT_LIST_COLOR,
   VANTA_CHECKOUT_COLOR,
   pickTitle,
   pickImage,

@@ -202,6 +202,29 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 ---
 
+## 6a. Early signals — random AU restocks (hours ahead)
+
+These are **not** calendar drops. AU exclusives / random restocks often soft-publish
+on the storefront **hours** before traditional monitors fire (those only score buyable
+`AVAILABLE` / ATC). US lag is a weak AU indicator — we rarely share the same SKUs.
+
+| Layer | What fires | Lead | Status |
+|---|---|---|---|
+| **1. PDP soft-list** | New `/en-au/product/{sku}/…` as `NOT_AVAILABLE` / coming soon | **Hours** | **Live** → Discord amber `soft_listed` |
+| **2. Search card appears** | BFF search returns title/SKU while not buyable | **Hours** | **Live** — search keeps soft rows |
+| **4. Sitemap / category** | New product URLs in `/sitemap.xml` or TCG category HTML | **Hours** | **Live** — discovery on by default |
+| Preload buyable | `AVAILABLE_FOR_PRE_ORDER` / `addToCartForm` | Minutes–hours | Blue `preorder_live` |
+| Classic in-stock | `AVAILABLE` flip | Drop moment | Black `PKC stock` |
+| Queue | Waiting room live | At drop | Not a catalog lead |
+
+**Diff contract:** first poll baselines. Later, a **new** SKU with `inStock=false`
+emits `soft_listed` (not OOS). Soft → buyable later emits `restock` / `preorder_live`.
+
+**Ops:** `/admin` Labs → **Test PKC soft-list**. Env: `PC_MONITOR_DISCOVERY=0` to disable
+sitemap/category; `PC_MONITOR_DISCOVERY_PATHS` to override paths.
+
+---
+
 ## 7. Module plan (when unparked)
 
 | Phase | Work | Status / Bandai-informed notes |
