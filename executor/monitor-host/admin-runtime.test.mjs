@@ -2,7 +2,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createMonitorProxyPool } from "../monitor/monitor-proxy-pool.js";
 import { createBandaiStockMonitor } from "../monitor/bandai-stock-monitor.js";
-import { vantaOosDiscordBody, vantaRestockDiscordBody } from "./vanta-discord.mjs";
+import {
+  vantaOosDiscordBody,
+  vantaRestockDiscordBody,
+  vantaPkcDiscordBody,
+  vantaPkcOosDiscordBody,
+  pcPdpUrl,
+} from "./vanta-discord.mjs";
 import { saveRuntimeConfig, loadRuntimeConfig } from "./runtime-config.mjs";
 import fs from "node:fs";
 import os from "node:os";
@@ -81,6 +87,45 @@ test("admin lab test restock also includes Quick Task", () => {
   const btn = testPing.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.ok(btn);
   assert.match(btn.url, /sku=N2890904001/);
+});
+
+test("PKC discord preload is blue; stock is black; OOS is red", () => {
+  const pdp = pcPdpUrl({ productId: "10-10186-109", slug: "demo-etb" }, "en-au");
+  assert.equal(
+    pdp,
+    "https://www.pokemoncenter.com/en-au/product/10-10186-109/demo-etb",
+  );
+
+  const preload = vantaPkcDiscordBody(
+    {
+      productId: "10-10186-109",
+      title: "PC Exclusive ETB",
+      availability: "AVAILABLE_FOR_PRE_ORDER",
+      reason: "preorder_live",
+      preorder: true,
+    },
+    { locale: "en-au", test: true, preload: true },
+  );
+  assert.match(preload.embeds[0].author.name, /test PKC preload/i);
+  assert.match(preload.embeds[0].title, /preorder \/ preload/i);
+  assert.equal(preload.embeds[0].color, 0x2563eb);
+  assert.match(preload.embeds[0].url, /pokemoncenter\.com\/en-au\/product\/10-10186-109/);
+  assert.equal(/Quick Task/i.test(preload.embeds[0].description), false);
+
+  const stock = vantaPkcDiscordBody(
+    { productId: "10-10186-109", title: "PC Exclusive ETB", reason: "restock" },
+    { locale: "en-au", test: true },
+  );
+  assert.equal(stock.embeds[0].color, 0x000000);
+  assert.match(stock.embeds[0].title, /^PKC stock/);
+
+  const oos = vantaPkcOosDiscordBody(
+    { productId: "10-10186-109", title: "PC Exclusive ETB" },
+    { locale: "en-au", test: true },
+  );
+  assert.equal(oos.embeds[0].color, 0xdc2626);
+  assert.match(oos.embeds[0].title, /^OOS ·/);
+  assert.match(oos.embeds[0].description, /Pokémon Centre/i);
 });
 
 test("runtime config round-trip", () => {

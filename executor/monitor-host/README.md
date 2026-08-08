@@ -20,7 +20,7 @@ Desktop consumers need **no token**: `GET /events` (SSE), `GET /hits`,
 | **Monitor** | Start/stop polling, watch keywords/SKUs, **Action Store presets**, ISP/DC, interval, OOS toggle, hits |
 | **Bot** | Fly executor health, vault (accounts/profile/checkout proxies), launch Bandai / Kmart |
 | **Logs** | In-memory monitor / bot / Discord event stream (clears on redeploy) |
-| **Labs** | Discord restock/OOS test pings, force monitor poll |
+| **Labs** | Bandai Discord restock/OOS/checkout tests + **PKC stock / preload / OOS** webhook tests, force polls |
 
 **Watch keywords** = what the poller searches. **Action Store presets** = SKU library
 Desktop pulls via public `GET /preset-catalog` for Smart Action packs.
