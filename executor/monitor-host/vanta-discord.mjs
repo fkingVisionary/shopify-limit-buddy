@@ -249,7 +249,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
   const price = pickPrice(hit);
   const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
   const typeLabel = bandaiTypeLabel(reason);
-  const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
+  const { qtUrl, ebayUrl } = restockActionLinks(hit, area);
 
   const fields = monitorCompactFields({
     productId,
