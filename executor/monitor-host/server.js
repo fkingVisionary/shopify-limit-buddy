@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
-import { createPokemonCentreStockMonitor } from "../monitor/pokemoncentre-stock-monitor.js";
 import {
   vantaRestockDiscordBody,
   vantaOosDiscordBody,
@@ -55,6 +54,62 @@ import {
   redactRunPayload,
 } from "./bot-executor.mjs";
 import { labLog, getLabLogs, clearLabLogs, labLogStats } from "./lab-log.mjs";
+
+/**
+ * Pokémon Centre poller — dynamic import so a missing slim-image dep
+ * (http.js / antibot / hyper-sdk-js) cannot brick Bandai boot on Railway.
+ */
+function createDisabledPcMonitor(reason) {
+  const note = String(reason || "pkc_unavailable");
+  const ee = {
+    on() {
+      return ee;
+    },
+    start() {
+      return { ok: false, note };
+    },
+    async stop() {
+      return { ok: true, note };
+    },
+    async restart() {
+      return { ok: false, note };
+    },
+    async pollOnce() {
+      return { summary: { ok: false, note }, events: [] };
+    },
+    setKeywords() {
+      return [];
+    },
+    setSkus() {
+      return [];
+    },
+    setIntervalMs(ms) {
+      return Number(ms) || 15_000;
+    },
+    replaceProxies() {
+      return { ok: false, note };
+    },
+    status() {
+      return {
+        store: "pokemoncentre",
+        enabled: false,
+        running: false,
+        available: false,
+        note,
+      };
+    },
+  };
+  return ee;
+}
+
+let createPokemonCentreStockMonitor;
+try {
+  ({ createPokemonCentreStockMonitor } = await import("../monitor/pokemoncentre-stock-monitor.js"));
+} catch (e) {
+  const msg = e?.message || String(e);
+  console.error(`[pkc] module load failed — Bandai-only mode: ${msg}`);
+  createPokemonCentreStockMonitor = () => createDisabledPcMonitor(msg);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 8080;
