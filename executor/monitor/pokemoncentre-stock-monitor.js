@@ -641,7 +641,32 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         edgeNote: meta.edgeNote || null,
       };
     };
-    return withProxyCtx(run);
+
+    // Edge/DataDome flakes are often sticky-specific — rotate and retry.
+    const maxAttempts = Math.max(1, Math.min(6, Number(process.env.PC_MONITOR_EDGE_RETRIES) || 3));
+    let lastErr = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (signal?.aborted) {
+        const err = new Error("poll_aborted");
+        err.code = "POLL_TIMEOUT";
+        throw err;
+      }
+      try {
+        const out = await withProxyCtx(run);
+        return { ...out, edgeAttempts: attempt };
+      } catch (e) {
+        lastErr = e;
+        const msg = String(e?.message || e);
+        const retryable =
+          /pc_edge|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|discovery_40[13]/i.test(
+            msg,
+          );
+        await closeSticky();
+        if (!retryable || attempt >= maxAttempts) throw e;
+        await sleep(350 + attempt * 250);
+      }
+    }
+    throw lastErr || new Error("pc_poll_failed");
   }
 
   async function pollOnce() {
@@ -658,6 +683,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     let proxyTier;
     let proxyHost;
     let edgeNote;
+    let edgeAttempts;
     try {
       const raced = await fetchCatalogOnce(ac.signal);
       catalog = raced.catalog;
@@ -665,6 +691,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       proxyTier = raced.proxyTier;
       proxyHost = raced.proxyHost;
       edgeNote = raced.edgeNote;
+      edgeAttempts = raced.edgeAttempts;
     } catch (e) {
       if (sticky?.url) pool.markFail(sticky.url);
       await closeSticky();
@@ -714,6 +741,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       store: "pokemoncentre",
       discoveryEnable,
       edgeNote,
+      edgeAttempts,
     };
     bus.emit("poll", summary);
 
