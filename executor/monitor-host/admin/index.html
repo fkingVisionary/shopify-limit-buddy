@@ -853,7 +853,12 @@
             }
           } catch (e) {
             const hint = e.body?.hint ? ` — ${e.body.hint}` : "";
-            toast((e.message || "pkc_poll_failed") + hint, "bad");
+            const msg = String(e.message || "pkc_poll_failed");
+            // Phone toasts truncate — keep status code / short TypeError readable.
+            const short = /bff_\d+|discovery_\d+|datadome|hcaptcha|pc_edge|empty_fetch|cannot read/i.test(msg)
+              ? msg.slice(0, 160)
+              : msg.slice(0, 120);
+            toast(short + hint, "bad");
             try {
               await loadAll();
             } catch {

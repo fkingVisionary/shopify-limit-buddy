@@ -376,6 +376,9 @@ export function createJar() {
 // `.headers.getSetCookie()`. The body is already buffered as a string by
 // node-tls-client; we just memoize it.
 function wrapResponse(res, requestedUrl) {
+  if (!res) {
+    throw new Error(`empty_tls_response ${requestedUrl || ""}`.trim());
+  }
   const rawHeaders = res.headers ?? {};
   const headers = {
     get(name) {
@@ -406,6 +409,9 @@ function wrapResponse(res, requestedUrl) {
 }
 
 function wrapFetchResponse(res, requestedUrl) {
+  if (!res) {
+    throw new Error(`empty_fetch_response ${requestedUrl || ""}`.trim());
+  }
   return {
     status: res.status,
     ok: res.ok,
@@ -804,11 +810,12 @@ export async function request(url, opts, ctx) {
     mergedCallerHeaders["user-agent"] ||
     mergedCallerHeaders["User-Agent"] ||
     UA;
+  const cookieHeader = typeof jar?.header === "function" ? jar.header() : "";
   const headers = {
     "user-agent": UA,
     accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept-language": "en-AU,en;q=0.9",
-    ...(jar.header() ? { cookie: jar.header() } : {}),
+    ...(cookieHeader ? { cookie: cookieHeader } : {}),
     ...chromeClientHints(callerUa, mergedCallerHeaders),
     ...chromePayFetchHeaders(url, mergedCallerHeaders, { method }),
     ...mergedCallerHeaders,
@@ -848,7 +855,7 @@ export async function request(url, opts, ctx) {
     }
   }
 
-  if (!dispatcher.useTls) {
+  if (!dispatcher?.useTls) {
     // Proxied residential sessions often RST mid-SBSD / mid-nav. Retry GET/HEAD
     // only — NEVER retry POST/PUT/PATCH/DELETE (unless allowMutationRetry).
     // A RST replay after GE/PSP already accepted the pay POST produced paired

@@ -7,7 +7,7 @@
 import { EventEmitter } from "node:events";
 // Use slim undici helpers (same as Bandai) for dispatcher/jar. Session/edge still
 // pull request() via adapters → http.js (baked into the Railway monitor image).
-import { makeDispatcher, createJar } from "./http-undici.js";
+import { makeDispatcher, createJar, request as undiciRequest } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
 import { warmPokemonCentre } from "../adapters/pokemoncentre-edge.js";
@@ -351,8 +351,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         else if (!prevHost) rotates += 1;
         const jar = createJar();
         const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
-        const ctx = { jar, dispatcher };
-        const session = createPcSession(ctx, { locale });
+        // Slim undici only — Railway monitor image has no tls-client; avoid full http.js.
+        const ctx = { jar, dispatcher, request: undiciRequest };
+        const session = createPcSession(ctx, { locale, request: undiciRequest });
         sticky = {
           url: pick.url,
           tier: pick.tier,
@@ -366,21 +367,24 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         };
         const edge = await ensureEdge(session, ctx);
         if (!edge.ok) {
-          pool.markFail(sticky.url);
+          pool.markFail(sticky?.url);
           await closeSticky();
           throw new Error(edge.note || "pc_edge_failed");
         }
         sticky.edgeOk = true;
         sticky.edgeNote = edge.note;
-        pool.markOk(sticky.url);
+        pool.markOk(sticky?.url);
+      }
+      if (!sticky?.ctx || !sticky?.session) {
+        throw new Error("pc_sticky_missing");
       }
       sticky.used += 1;
       try {
         const out = await fn(sticky.ctx, sticky);
-        pool.markOk(sticky.url);
+        pool.markOk(sticky?.url);
         return out;
       } catch (e) {
-        pool.markFail(sticky.url);
+        pool.markFail(sticky?.url);
         await closeSticky();
         throw e;
       }
@@ -411,14 +415,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     } catch {
       json = null;
     }
-    // Edge die mid-sticky — force re-warm next poll
-    if (res.status === 403 || res.status === 401) {
+    // Auth/WAF/upstream death — kill sticky so the next attempt re-warms edge.
+    if (res.status === 403 || res.status === 401 || res.status >= 500) {
       if (sticky) sticky.edgeOk = false;
-      const err = new Error(`bff_${res.status}`);
+      const snippet = String(text || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 120);
+      const err = new Error(snippet ? `bff_${res.status}:${snippet}` : `bff_${res.status}`);
       err.status = res.status;
       throw err;
     }
     if (res.status >= 400) {
+      if (sticky) sticky.edgeOk = false;
       const err = new Error(`bff_${res.status}`);
       err.status = res.status;
       throw err;
@@ -539,7 +548,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
               headers: { referer: `${base}/` },
             });
             const text = await session.readText(res);
-            if (res.status === 403 || res.status === 401) {
+            if (res.status === 403 || res.status === 401 || res.status >= 500) {
               if (sticky) sticky.edgeOk = false;
               const err = new Error(`discovery_${res.status}`);
               err.status = res.status;
@@ -658,7 +667,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         lastErr = e;
         const msg = String(e?.message || e);
         const retryable =
-          /pc_edge|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|discovery_40[13]/i.test(
+          /pc_edge|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot read properties/i.test(
             msg,
           );
         await closeSticky();

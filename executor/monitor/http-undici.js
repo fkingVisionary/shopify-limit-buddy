@@ -178,17 +178,20 @@ export function createJar() {
 }
 
 function wrapFetchResponse(res, requestedUrl) {
+  if (!res) {
+    throw new Error(`empty_fetch_response ${requestedUrl || ""}`.trim());
+  }
   return {
     status: res.status,
     ok: res.ok,
     url: res.url || requestedUrl,
     headers: {
       get(name) {
-        return res.headers.get(name);
+        return res.headers?.get?.(name) ?? null;
       },
       getSetCookie() {
-        if (typeof res.headers.getSetCookie === "function") return res.headers.getSetCookie();
-        const v = res.headers.get("set-cookie");
+        if (typeof res.headers?.getSetCookie === "function") return res.headers.getSetCookie();
+        const v = res.headers?.get?.("set-cookie");
         return v ? [v] : [];
       },
       raw: res.headers,

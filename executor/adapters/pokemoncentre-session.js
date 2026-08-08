@@ -136,10 +136,21 @@ export async function readJson(res) {
   }
 }
 
-export function createPcSession(ctx, { locale, userAgent } = {}) {
+/**
+ * @param {object} ctx — { jar, dispatcher, request? }
+ * @param {{ locale?: string, userAgent?: string, request?: Function }} [opts]
+ *   Pass `request` (e.g. monitor `http-undici.request`) on Railway slim images so
+ *   PKC never hits full executor `http.js` / tls-client during stock polls.
+ */
+export function createPcSession(ctx, { locale, userAgent, request: requestFn } = {}) {
   const loc = normalizePcLocale(locale) || "en-au";
   const base = pcBaseFor(loc);
   const nav = pcNavHeaders({ locale: loc });
+  const doRequest = typeof requestFn === "function"
+    ? requestFn
+    : typeof ctx?.request === "function"
+      ? ctx.request
+      : request;
   const state = {
     locale: loc,
     base,
@@ -164,8 +175,8 @@ export function createPcSession(ctx, { locale, userAgent } = {}) {
           userAgent: state.userAgent,
           locale: loc,
         });
-    const res = await request(url, { method: "GET", headers: { ...h, ...(headers || {}) } }, ctx);
-    ctx.jar?.ingest?.(res.headers);
+    const res = await doRequest(url, { method: "GET", headers: { ...h, ...(headers || {}) } }, ctx);
+    ctx.jar?.ingest?.(res?.headers);
     return res;
   }
 
@@ -182,7 +193,7 @@ export function createPcSession(ctx, { locale, userAgent } = {}) {
           userAgent: state.userAgent,
           locale: loc,
         });
-    const res = await request(
+    const res = await doRequest(
       url,
       {
         method: "POST",
@@ -191,7 +202,7 @@ export function createPcSession(ctx, { locale, userAgent } = {}) {
       },
       ctx,
     );
-    ctx.jar?.ingest?.(res.headers);
+    ctx.jar?.ingest?.(res?.headers);
     return res;
   }
 
