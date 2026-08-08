@@ -12,8 +12,9 @@ import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
 import {
   warmPokemonCentre,
-  postDataDomeTags,
   clearIncapsulaReese,
+  clearDataDome,
+  solveDatadomeCaptchaUrl,
 } from "../adapters/pokemoncentre-edge.js";
 import {
   getPublicToken,
@@ -446,45 +447,24 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       /* best-effort */
     }
 
-    // Soft-clear (category/sitemap) is enough for HTML discovery — skip DataDome tags.
-    // Tags after soft-clear were escalating BFF to captcha 403 and aborting the poll.
-    if (warm.softClear) {
-      let tok = null;
-      try {
-        tok = await getPublicToken(session, ctx, { locale, scope });
-      } catch {
-        tok = { ok: false, note: "public_token_failed" };
-      }
-      return {
-        ok: true,
-        softClear: true,
-        note: [warm.note, tok?.ok ? tok.note : "html-discovery (no BFF token)"].filter(Boolean).join(" · "),
-        token: tok?.ok ? tok : null,
-      };
-    }
-
-    // Full clear: auth → tags → remint auth (tags can rotate datadome).
-    let tok = await getPublicToken(session, ctx, { locale, scope });
-    if (!tok.ok) {
-      return { ok: false, note: tok.note || "public_token_failed", isIpBanned: false };
-    }
-    let tagsNote = null;
+    // Monitor never posts DataDome tags — tags escalate BFF/HTML to captcha 403.
+    // Checkout still does tags before ATC; stock poll only needs Reese+DD cookie + token.
+    let tok = null;
     try {
-      const tags = await postDataDomeTags(session, ctx, { pageUrl: `${base}/` });
-      tagsNote = tags?.note || null;
-    } catch (e) {
-      tagsNote = e?.message || String(e);
-    }
-    try {
-      const remint = await getPublicToken(session, ctx, { locale, scope });
-      if (remint.ok) tok = remint;
+      tok = await getPublicToken(session, ctx, { locale, scope });
     } catch {
-      /* keep first token */
+      tok = { ok: false, note: "public_token_failed" };
+    }
+    if (!tok?.ok && !warm.softClear) {
+      return { ok: false, note: tok?.note || "public_token_failed", isIpBanned: false };
     }
     return {
       ok: true,
-      note: [warm.note || "edge+token ok", tagsNote, tok.note].filter(Boolean).join(" · "),
-      token: tok,
+      softClear: Boolean(warm.softClear),
+      note: [warm.note || "edge ok", tok?.ok ? tok.note : "html-discovery (no BFF token)"]
+        .filter(Boolean)
+        .join(" · "),
+      token: tok?.ok ? tok : null,
     };
   }
 
@@ -589,9 +569,15 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           e?.isIpBanned === true ||
           e?.code === "PC_EDGE_TBV" ||
           /t=bv|pc_edge_tbv|hard.?block/i.test(msg);
-        pool.markFail(cur.url, banned ? 20 * 60_000 : undefined);
-        if (sticky === cur) await closeSticky();
-        else await closeDispatcher(cur);
+        // Keep warm sticky for catalog-empty / BFF captcha — discovery retry needs cookies.
+        const keepSticky =
+          e?.code === "PC_CATALOG_EMPTY" ||
+          (/bff_403/i.test(msg) && /captcha-delivery|datadome/i.test(msg));
+        if (!keepSticky) {
+          pool.markFail(cur.url, banned ? 20 * 60_000 : undefined);
+          if (sticky === cur) await closeSticky();
+          else await closeDispatcher(cur);
+        }
         throw e;
       }
     });
@@ -633,8 +619,46 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     };
 
     let { res, text, json } = await doOnce();
-    // One remint on auth/WAF/5xx — Cortex often 500s after DD cookie rotation.
+
+    // BFF DataDome captcha JSON — solve once (same as ATC path), remint token, retry.
     if (
+      allowRemint &&
+      sticky?.ctx &&
+      res.status === 403 &&
+      json?.url &&
+      /captcha-delivery\.com\/captcha/i.test(String(json.url))
+    ) {
+      try {
+        if (/[?&]t=bv\b/i.test(String(json.url))) {
+          const err = new Error(`pc_edge_tbv: bff captcha t=bv`);
+          err.status = 403;
+          err.isIpBanned = true;
+          throw err;
+        }
+        const solved = await solveDatadomeCaptchaUrl(session, sticky.ctx, json.url, {
+          pageUrl: `${base}/`,
+        });
+        if (solved?.ok || solved?.isIpBanned) {
+          if (solved.isIpBanned) {
+            const err = new Error(solved.note || "pc_edge_tbv: bff captcha");
+            err.status = 403;
+            err.isIpBanned = true;
+            throw err;
+          }
+        } else {
+          await clearDataDome(session, sticky.ctx, {
+            pageUrl: `${base}/`,
+            html: text,
+            headers: res.headers,
+          }).catch(() => null);
+        }
+        await remintBffAuth(session, sticky.ctx);
+        ({ res, text, json } = await doOnce());
+      } catch (e) {
+        if (e?.isIpBanned || e?.code === "PC_EDGE_TBV") throw e;
+        /* fall through to status handling */
+      }
+    } else if (
       allowRemint &&
       sticky?.ctx &&
       (res.status === 401 || res.status === 403 || res.status >= 500)
@@ -644,8 +668,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         ({ res, text, json } = await doOnce());
       }
     }
+
     if (res.status === 403 || res.status === 401 || res.status >= 500) {
-      if (sticky) sticky.edgeOk = false;
+      // Don't kill sticky on captcha 403 — discovery may still work with HTML cookies.
+      if (!(res.status === 403 && /captcha-delivery|datadome/i.test(String(text || "")))) {
+        if (sticky) sticky.edgeOk = false;
+      }
       const snippet = String(text || "")
         .replace(/\s+/g, " ")
         .trim()
@@ -936,20 +964,21 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           /pc_edge|pc_edge_tbv|t=bv|hard.?ip|hard.?block|rotate sticky|captcha URL|pc_sticky|datadome|slider|puzzle|hcaptcha|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_40[13]|discovery_5\d\d|empty_fetch|cannot (read|set) properties/i.test(
             msg,
           );
-        // Soft BFF 5xx: remint auth on the same sticky once before rotating.
-        const softBff = /bff_5\d\d|pc_catalog_empty/i.test(msg) && !e?.isIpBanned;
-        if (softBff && attempt === 1 && sticky?.session && sticky?.ctx) {
+        // Soft BFF / empty catalog: remint on same sticky once before rotating.
+        const softBff =
+          !e?.isIpBanned &&
+          (/bff_5\d\d|pc_catalog_empty|bff_403.*captcha-delivery/i.test(msg) ||
+            e?.code === "PC_CATALOG_EMPTY");
+        if (softBff && attempt <= 2 && sticky?.session && sticky?.ctx) {
           try {
             const remint = await remintBffAuth(sticky.session, sticky.ctx);
-            if (remint?.ok) {
-              sticky.edgeOk = true;
-            } else {
-              await closeSticky();
-            }
+            sticky.edgeOk = Boolean(remint?.ok) || sticky.edgeOk;
           } catch {
             await closeSticky();
           }
-        } else {
+        } else if (!sticky?.edgeOk) {
+          await closeSticky();
+        } else if (!softBff) {
           await closeSticky();
         }
         if (!retryable || attempt >= maxAttempts) {
