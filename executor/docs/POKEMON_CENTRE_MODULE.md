@@ -208,7 +208,7 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 |---|---|---|
 | **P0** | AU ISP HAR: Incapsula clear → browse → PDP → ATC → **`/intl-checkout`** → Global-e through Pay (decline card OK) | **Owner desk** — capture incap/DD cookies, Cortex zoom, GEM mid + hosts, CreditCardForm, T&Cs, captcha/Forter/TMX, post-Pay |
 | **P1** | Wire **Incapsula** (Reese84/UTMVC) + **DataDome** in `antibot.js` | **Done (scaffold)** — `solveIncapsulaReese84` / `solveDataDome*` + `pokemoncentre-edge.js` warm |
-| **P2** | Monitor: residential poll / PDP availability parse | **Done (scaffold)** — desktop `pcMode=monitor` / `edge` |
+| **P2** | Monitor: residential poll / PDP availability parse | **Continuous poller on Bandai monitor-host** — `monitor/pokemoncentre-stock-monitor.js` (Hyper edge → BFF search + `product/status`, SSE `store=pokemoncentre`). One-shot desktop `pcMode=monitor` still available. |
 | **P3** | Cortex cart machine + account session (**HTTP-first**) | **Proven** — public token → ATC **201** → `GET /cart/data?type=full` → `cart-guid` (tls-worker + sticky AU, 2026-07-22) |
 | **P4** | Global-e AU checkout / pay | **HTTP Fast path** in `pokemoncentre-ge-http.js` (Bandai playbook). Product = HTTP only; browser = riskHydrate mint / HAR. Score JWT + bank. |
 | **P5** | hCaptcha harvest path (desktop) for drop windows | **Done (scaffold)** — CapSolver `HCaptchaTask` in `pokemoncentre-hcaptcha.js` |

@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { createGlobalMonitorHub } from "../monitor/global-monitor-hub.js";
+import { createPokemonCentreStockMonitor } from "../monitor/pokemoncentre-stock-monitor.js";
 import {
   vantaRestockDiscordBody,
   vantaOosDiscordBody,
@@ -195,16 +196,21 @@ function mutedSkuList() {
 function pushHit(ev) {
   const meta = ev?.meta || {};
   const muted = isSkuMuted(mutedSkuList(), ev?.productId || ev?.sku);
+  const store = String(ev?.store || meta.store || "bandai").toLowerCase();
   const row = {
     at: new Date().toISOString(),
     productId: ev.productId,
     inStock: ev.inStock,
     reason: ev.reason || null,
+    store,
+    locale: ev.locale || meta.locale || null,
     title: ev.title || meta.title || null,
     imageUrl: ev.imageUrl || meta.imageUrl || null,
     price: ev.price || meta.price || null,
     areaItemNo: ev.areaItemNo || meta.areaItemNo || null,
     productType: meta.productType || ev.productType || null,
+    availability: ev.availability || meta.availability || null,
+    preorder: ev.preorder || meta.preorder || undefined,
     muted: muted || undefined,
   };
   recentHits.unshift(row);
@@ -305,6 +311,20 @@ const hub = createGlobalMonitorHub({
   log: (line) => console.log(`[hub] ${line}`),
 });
 
+/** Pokémon Centre poller — same SSE /hits feed as Bandai (store=pokemoncentre). */
+let pcMonitorEnabled = runtime.pcMonitorEnable !== false;
+const pcMonitor = createPokemonCentreStockMonitor({
+  locale: runtime.pcLocale || process.env.PC_MONITOR_LOCALE || "en-au",
+  intervalMs: runtime.pcIntervalMs || Number(process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
+  // Admin dashboard owns the watchlist (persisted runtime). No baked-in keywords/SKUs.
+  keywords: runtime.pcKeywords || "",
+  skus: runtime.pcSkus || "",
+  proxy: {
+    ispRaw: runtime.ispProxies || undefined,
+    dcRaw: runtime.dcProxies || undefined,
+  },
+});
+
 // Apply disk overrides that may differ from constructor env (keywords already passed).
 try {
   if (runtime._fromDisk) {
@@ -315,33 +335,41 @@ try {
         ispRaw: runtime.ispProxies,
         dcRaw: runtime.dcProxies,
       });
+      pcMonitor.replaceProxies({
+        ispRaw: runtime.ispProxies,
+        dcRaw: runtime.dcProxies,
+      });
     }
+    if (runtime.pcKeywords) pcMonitor.setKeywords(runtime.pcKeywords);
+    if (runtime.pcSkus) pcMonitor.setSkus(runtime.pcSkus);
+    if (runtime.pcIntervalMs) pcMonitor.setIntervalMs(runtime.pcIntervalMs);
   }
 } catch (e) {
   console.warn("[runtime-config]", e?.message || e);
 }
 
 hub.monitor.on("started", (s) => {
-  labLog("monitor", "info", "Monitor started", {
+  labLog("monitor", "info", "Bandai monitor started", {
     intervalMs: s?.intervalMs,
     keywords: s?.keywords,
   });
 });
 hub.monitor.on("stopped", (s) => {
-  labLog("monitor", "warn", "Monitor stopped", { polls: s?.polls });
+  labLog("monitor", "warn", "Bandai monitor stopped", { polls: s?.polls });
 });
 
-hub.monitor.on("stock_changed", async (ev) => {
+async function handleStockChanged(ev) {
+  const store = String(ev?.store || ev?.meta?.store || "bandai").toLowerCase();
   console.log(
-    `[stock_changed] ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ev.meta?.title || ""}`,
+    `[stock_changed] store=${store} ${ev.productId} inStock=${ev.inStock} reason=${ev.reason} ${ev.title || ev.meta?.title || ""}`,
   );
   labLog(
     "monitor",
     ev?.inStock ? "info" : "warn",
-    `${ev.reason || "stock"} ${ev.productId}${ev.title || ev.meta?.title ? ` · ${ev.title || ev.meta?.title}` : ""}`,
-    { productId: ev.productId, inStock: ev.inStock, reason: ev.reason },
+    `${store} ${ev.reason || "stock"} ${ev.productId}${ev.title || ev.meta?.title ? ` · ${ev.title || ev.meta?.title}` : ""}`,
+    { productId: ev.productId, inStock: ev.inStock, reason: ev.reason, store },
   );
-  if (ev?.productId) {
+  if (ev?.productId && store === "bandai") {
     const nai = isBackendPid(ev.areaItemNo)
       ? ev.areaItemNo
       : isBackendPid(ev.meta?.areaItemNo)
@@ -364,6 +392,7 @@ hub.monitor.on("stock_changed", async (ev) => {
     labLog("monitor", "info", `Muted restock · ${ev.productId}`, {
       productId: ev.productId,
       reason: ev.reason,
+      store,
     });
     return;
   }
@@ -374,7 +403,10 @@ hub.monitor.on("stock_changed", async (ev) => {
     if (runtime.notifyOos === false) return;
     try {
       const r = await postDiscord(
-        vantaOosDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
+        vantaOosDiscordBody(hitPayload(ev), {
+          area: store === "pokemoncentre" ? String(ev.locale || "us") : AREA,
+          source: store === "pokemoncentre" ? "railway-pkc-monitor" : "railway-monitor",
+        }),
       );
       if (!r.ok && !r.skipped) console.warn("[discord:oos]", r.status, r.error);
     } catch (e) {
@@ -385,6 +417,33 @@ hub.monitor.on("stock_changed", async (ev) => {
 
   if (!ev?.inStock) return;
   try {
+    if (store === "pokemoncentre") {
+      // PKC — no Bandai Quick Task deep-link (wrong store). Plain restock ping.
+      const title = ev.title || ev.meta?.title || ev.productId;
+      const r = await postDiscord({
+        username: "Vanta",
+        embeds: [
+          {
+            title: reason === "preorder_live" ? "PKC preorder / preload" : "PKC stock",
+            description: [
+              `**${title}**`,
+              `SKU \`${ev.productId}\``,
+              ev.availability ? `Availability: ${ev.availability}` : null,
+              ev.price ? `Price: ${ev.price}` : null,
+              `Locale: ${ev.locale || runtime.pcLocale || "en-us"}`,
+              reason ? `Reason: ${reason}` : null,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+            color: reason === "preorder_live" ? 0x2563eb : 0x000000,
+            thumbnail: ev.imageUrl ? { url: String(ev.imageUrl) } : undefined,
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      });
+      if (!r.ok && !r.skipped) console.warn("[discord:pkc]", r.status, r.error);
+      return;
+    }
     const r = await postDiscordWithQtFallback(
       vantaRestockDiscordBody(hitPayload(ev), { area: AREA, source: "railway-monitor" }),
     );
@@ -393,6 +452,41 @@ hub.monitor.on("stock_changed", async (ev) => {
   } catch (e) {
     console.warn("[discord]", e?.message || e);
   }
+}
+
+hub.monitor.on("stock_changed", (ev) => {
+  void handleStockChanged({ ...ev, store: ev.store || "bandai" });
+});
+
+pcMonitor.on("started", (s) => {
+  labLog("monitor", "info", "PKC monitor started", {
+    intervalMs: s?.intervalMs,
+    keywords: s?.keywords,
+    skus: s?.skus,
+    locale: s?.locale,
+  });
+});
+pcMonitor.on("stopped", (s) => {
+  labLog("monitor", "warn", "PKC monitor stopped", { polls: s?.polls });
+});
+pcMonitor.on("stock_changed", (ev) => {
+  void handleStockChanged({ ...ev, store: "pokemoncentre" });
+});
+pcMonitor.on("poll", (s) => {
+  if (s.polls <= 3 || s.polls % 8 === 0 || s.events > 0) {
+    console.log(
+      `[pkc-poll] #${s.polls} products=${s.products} inStock=${s.inStock} events=${s.events} ms=${s.ms} locale=${s.locale} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
+    );
+  }
+});
+pcMonitor.on("error", (e) => {
+  if (e?.warn) {
+    console.warn("[pkc-monitor]", e.error);
+    labLog("monitor", "warn", `PKC: ${e.error}`);
+    return;
+  }
+  console.warn("[pkc-monitor:error]", e?.error || e);
+  labLog("monitor", "err", `PKC error: ${e?.error || e}`);
 });
 
 hub.monitor.on("poll", (s) => {
@@ -656,6 +750,7 @@ app.get("/health", async (_req, reply) => {
   if (monitorExpectRunning && !stale.healthy) {
     void runMonitorWatchdog("health");
   }
+  const pc = pcMonitor.status();
   const payload = {
     ok: stale.healthy,
     service: "bandai-monitor",
@@ -665,6 +760,10 @@ app.get("/health", async (_req, reply) => {
     keywords: m.keywords || [],
     mutedSkus: mutedSkuList(),
     monitor: m,
+    pokemoncentre: {
+      enabled: pcMonitorEnabled,
+      ...pc,
+    },
     healthy: stale.healthy,
     staleMs: stale.staleMs,
     staleLimitMs: stale.staleLimitMs,
@@ -685,6 +784,10 @@ app.get("/status", async (req, reply) => {
   return {
     ok: true,
     ...hub.status(),
+    pokemoncentre: {
+      enabled: pcMonitorEnabled,
+      ...pcMonitor.status(),
+    },
     recentHits: recentHits.slice(0, 20),
     sseClients: sseClients.size,
     runtime: {
@@ -693,6 +796,11 @@ app.get("/status", async (req, reply) => {
       statePath: runtime._path || null,
       fromDisk: Boolean(runtime._fromDisk),
       persistence: persistence(),
+      pcMonitorEnable: runtime.pcMonitorEnable !== false,
+      pcLocale: runtime.pcLocale || "en-au",
+      pcKeywords: runtime.pcKeywords || "",
+      pcSkus: runtime.pcSkus || "",
+      pcIntervalMs: runtime.pcIntervalMs || 15000,
     },
   };
 });
@@ -708,6 +816,7 @@ app.get("/hits", async (req, reply) => {
 app.get("/admin/config", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   const m = hub.monitor.status();
+  const pc = pcMonitor.status();
   const presetRaw = normalizePresetCatalogRaw(runtime.presetCatalog);
   return {
     ok: true,
@@ -726,6 +835,11 @@ app.get("/admin/config", async (req, reply) => {
     checkoutFeedWebhookSet: Boolean(checkoutFeedHook()),
     restockWebhookMasked: maskWebhook(discordHook() || ""),
     checkoutFeedWebhookMasked: maskWebhook(checkoutFeedHook() || ""),
+    pcMonitorEnable: pcMonitorEnabled,
+    pcLocale: pc.locale || runtime.pcLocale || "en-au",
+    pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : String(runtime.pcKeywords || ""),
+    pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : String(runtime.pcSkus || ""),
+    pcIntervalMs: pc.intervalMs ?? runtime.pcIntervalMs ?? 15000,
     updatedAt: runtime.updatedAt || null,
     pool: m.pool || null,
     persistence: persistence(),
@@ -888,9 +1002,44 @@ app.put("/admin/config", async (req, reply) => {
     }
     if (Object.keys(proxPatch).length) {
       hub.monitor.replaceProxies(proxPatch);
+      try {
+        pcMonitor.replaceProxies(proxPatch);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (body.pcKeywords != null) {
+      const list = pcMonitor.setKeywords(body.pcKeywords);
+      runtime.pcKeywords = list.join("\n");
+    }
+    if (body.pcSkus != null) {
+      const list = pcMonitor.setSkus(body.pcSkus);
+      runtime.pcSkus = list.join("\n");
+    }
+    if (body.pcIntervalMs != null) {
+      runtime.pcIntervalMs = pcMonitor.setIntervalMs(body.pcIntervalMs);
+    }
+    if (body.pcLocale != null) {
+      runtime.pcLocale = String(body.pcLocale || "en-au").trim() || "en-au";
+    }
+    if (body.pcMonitorEnable != null) {
+      runtime.pcMonitorEnable = Boolean(body.pcMonitorEnable);
+      pcMonitorEnabled = runtime.pcMonitorEnable !== false;
+    }
+    // Admin watchlist drives PKC start/stop (same lifecycle idea as Bandai keywords).
+    {
+      const st = pcMonitor.status();
+      const hasWatch = (st.keywords?.length || 0) + (st.skus?.length || 0) > 0;
+      if (pcMonitorEnabled && monitorExpectRunning && hasWatch && !st.running) {
+        pcMonitor.start();
+      }
+      if ((!pcMonitorEnabled || !hasWatch) && st.running) {
+        await pcMonitor.stop();
+      }
     }
     runtime = { ...runtime, ...saveRuntimeConfig(runtime, runtime._path) };
     const presetRaw = normalizePresetCatalogRaw(runtime.presetCatalog);
+    const pc = pcMonitor.status();
     return {
       ok: true,
       keywords: hub.monitor.status().keywords,
@@ -908,6 +1057,11 @@ app.put("/admin/config", async (req, reply) => {
       ispProxies: runtime.ispProxies || "",
       dcProxies: runtime.dcProxies || "",
       pool: hub.monitor.status().pool,
+      pcMonitorEnable: runtime.pcMonitorEnable !== false,
+      pcLocale: runtime.pcLocale || "en-au",
+      pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : "",
+      pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : "",
+      pcIntervalMs: pc.intervalMs,
       updatedAt: runtime.updatedAt,
       persistence: persistence(),
     };
@@ -944,24 +1098,25 @@ app.post("/monitor/start", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   monitorExpectRunning = true;
   const st = hub.monitor.status();
-  if (st.running) {
-    return { ok: true, already: true, monitor: st };
-  }
-  hub.monitor.start();
+  if (!st.running) hub.monitor.start();
+  if (pcMonitorEnabled && !pcMonitor.status().running) pcMonitor.start();
   labLog("system", "info", "Monitor start requested from admin");
-  return { ok: true, monitor: hub.monitor.status() };
+  return {
+    ok: true,
+    already: st.running,
+    monitor: hub.monitor.status(),
+    pokemoncentre: pcMonitor.status(),
+  };
 });
 
 app.post("/monitor/stop", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   monitorExpectRunning = false;
   const st = hub.monitor.status();
-  if (!st.running) {
-    return { ok: true, already: true, monitor: st };
-  }
-  await hub.monitor.stop();
+  if (st.running) await hub.monitor.stop();
+  if (pcMonitor.status().running) await pcMonitor.stop();
   labLog("system", "warn", "Monitor stop requested from admin", { polls: st.polls });
-  return { ok: true, monitor: hub.monitor.status() };
+  return { ok: true, monitor: hub.monitor.status(), pokemoncentre: pcMonitor.status() };
 });
 
 app.post("/monitor/restart", async (req, reply) => {
@@ -974,10 +1129,47 @@ app.post("/monitor/restart", async (req, reply) => {
       await hub.monitor.stop();
       hub.monitor.start();
     }
+    if (pcMonitorEnabled) {
+      if (typeof pcMonitor.restart === "function") await pcMonitor.restart("admin");
+      else {
+        await pcMonitor.stop();
+        pcMonitor.start();
+      }
+    }
     labLog("system", "warn", "Monitor restart requested from admin");
-    return { ok: true, restarted: true, reason: "admin", monitor: hub.monitor.status() };
+    return {
+      ok: true,
+      restarted: true,
+      reason: "admin",
+      monitor: hub.monitor.status(),
+      pokemoncentre: pcMonitor.status(),
+    };
   } catch (e) {
     return reply.code(500).send({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+app.post("/monitor/pkc/poll", async (req, reply) => {
+  if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
+  try {
+    const { summary, events } = await pcMonitor.pollOnce();
+    labLog("monitor", "info", "PKC force poll", {
+      polls: summary?.polls,
+      products: summary?.products,
+      events: events?.length || 0,
+    });
+    return {
+      ok: true,
+      summary,
+      events: (events || []).map((e) => ({
+        productId: e.productId,
+        inStock: e.inStock,
+        reason: e.reason,
+      })),
+    };
+  } catch (e) {
+    labLog("monitor", "err", `PKC force poll failed: ${e?.message || e}`);
+    return reply.code(503).send({ ok: false, error: e?.message || "pkc_poll_failed" });
   }
 });
 
@@ -1340,6 +1532,13 @@ console.log(
     area: AREA,
     intervalMs: runtime.intervalMs,
     keywords: runtime.keywords,
+    pkc: {
+      enabled: pcMonitorEnabled,
+      locale: runtime.pcLocale || "en-au",
+      keywords: runtime.pcKeywords,
+      skus: runtime.pcSkus,
+      intervalMs: runtime.pcIntervalMs || 15000,
+    },
     authRequired: Boolean(TOKEN),
     feedPublic: FEED_PUBLIC,
     admin: "/admin/",
@@ -1350,11 +1549,35 @@ console.log(
   }),
 );
 hub.start();
+if (pcMonitorEnabled) {
+  const pcSt = pcMonitor.status();
+  const hasWatch = (pcSt.keywords?.length || 0) + (pcSt.skus?.length || 0) > 0;
+  if (hasWatch) {
+    pcMonitor.start();
+  }
+  console.log(
+    JSON.stringify({
+      event: hasWatch ? "pkc_monitor_start" : "pkc_monitor_idle",
+      note: hasWatch
+        ? "polling admin watchlist"
+        : "waiting for admin PKC keywords/SKUs (same as Bandai watchlist model)",
+      locale: pcSt.locale,
+      keywords: pcSt.keywords,
+      skus: pcSt.skus,
+      hyperConfigured: pcSt.hyperConfigured,
+    }),
+  );
+}
 
 async function shutdown() {
   console.log("[shutdown] stopping monitor");
   try {
     await hub.stop();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await pcMonitor.stop();
   } catch {
     /* ignore */
   }

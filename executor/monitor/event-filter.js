@@ -24,18 +24,26 @@ export function parseTaskWatch(task = {}) {
     }
   }
 
-  // PDP URL → product code segment when it looks like /item/CODE
+  // PDP URL → product code segment when it looks like /item/CODE (Bandai)
+  // or /product/SKU/… (Pokémon Centre)
   const url = String(task.pdpUrl || task.input || "").trim();
   const m = url.match(/\/item\/([A-Za-z0-9_-]+)/i);
   if (m?.[1]) productIds.add(m[1].toUpperCase());
+  const pcm = url.match(/\/product\/([A-Za-z0-9_-]+)/i);
+  if (pcm?.[1]) productIds.add(pcm[1].toUpperCase());
 
-  // Bare product code in input (Bandai N… / A… style or NAI…)
+  // Bare product code in input (Bandai N… / A… style or NAI… or PKC SKU)
   if (url && !/^https?:\/\//i.test(url) && /^[A-Za-z0-9_-]+$/.test(url)) {
     productIds.add(url.toUpperCase());
   }
 
   const kwRaw = String(
-    task.keywords || task.watchKeywords || task.bandaiWatchKeywords || task.keyword || "",
+    task.keywords ||
+      task.watchKeywords ||
+      task.bandaiWatchKeywords ||
+      task.pcWatchKeywords ||
+      task.keyword ||
+      "",
   ).trim();
   if (kwRaw) {
     for (const part of kwRaw.split(/[,|]/)) {
@@ -53,6 +61,11 @@ export function parseTaskWatch(task = {}) {
  */
 export function eventMatchesWatch(ev, watch) {
   if (!ev || !watch) return false;
+  // Optional store filter on the watch (bandai | pokemoncentre)
+  const watchStore = String(watch.store || "").trim().toLowerCase();
+  const evStore = String(ev.store || ev.meta?.store || "bandai").trim().toLowerCase();
+  if (watchStore && watchStore !== evStore) return false;
+
   const productId = String(ev.productId || ev.productCode || "").trim();
   const title = String(ev.title || ev.productName || ev.name || "").trim();
   const hay = `${productId} ${title}`.toLowerCase();

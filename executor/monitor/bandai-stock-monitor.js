@@ -462,6 +462,7 @@ export function createBandaiStockMonitor(opts = {}) {
         inStock: ev.inStock,
         timestamp: ev.timestamp,
         reason: ev.reason,
+        store: "bandai",
         area,
         title: m.title || null,
         imageUrl: m.imageUrl || null,
@@ -474,6 +475,7 @@ export function createBandaiStockMonitor(opts = {}) {
           price: m.price || null,
           productType: m.productType || null,
           areaItemNo: m.areaItemNo || null,
+          store: "bandai",
         },
       });
     }

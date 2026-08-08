@@ -98,7 +98,21 @@ desktop hub**:
 | Live event feed UI | Tasks/Monitor strip: restock / new-IS cards as they fire (not buried in job logs) |
 | Task subscribe | Watch SKU/keywords filter only — does not add load to the poll |
 | Watchdog handoff | `stock_changed` → matching monitoring tasks → Autocheckout (+ harvest claim) via bridge |
-| Multi-store later | Same feed shape for Toymate/Pokémon/etc. once each adapter emits stock events |
+| Multi-store | **Pokémon Centre** poller shares this host’s SSE (`store=pokemoncentre`) |
+
+### Pokémon Centre (PKC) on the same host
+
+`monitor/pokemoncentre-stock-monitor.js` runs beside Bandai on `monitor-host`:
+
+- Sticky Hyper edge warm (Incapsula Reese84 + DataDome) → BFF `search` + `product/status/{sku}`
+- Same `stock_changed` SSE / `/hits` feed (`store`, `locale`, `preorder` / `preorder_live`)
+- Locale default **`en-au`** (AU). Watchlist is **admin-dashboard only** (same model as Bandai keywords) — empty until you save PKC keywords/SKUs in `/admin`.
+- Env: `PC_MONITOR_ENABLE`, `HYPER_API_KEY` (required for Incapsula/DD), optional `PC_MONITOR_INTERVAL_MS`
+- Admin: Pokémon Centre AU section → keywords + SKUs + interval; force poll `POST /monitor/pkc/poll`
+- Lab: `node scripts/pokemoncentre-stock-monitor-lab.mjs`
+
+Catches preload when availability flips to `AVAILABLE` / `AVAILABLE_FOR_PRE_ORDER` or
+`addToCartForm` appears — before a public “drop” moment.
 
 V1 already has the executor hub + task-local mode. Desktop still needs the **toggle +
 live feed + multi-task subscribe** product layer. Until then, task-local Monitor +
