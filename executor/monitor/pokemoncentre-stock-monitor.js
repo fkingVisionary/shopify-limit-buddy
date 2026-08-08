@@ -5,12 +5,12 @@
 // Decoupled from checkout. AU-first — no US-lag lead (AU SKUs rarely match US).
 
 import { EventEmitter } from "node:events";
-// Use slim undici helpers (same as Bandai) for dispatcher/jar. Session/edge still
-// pull request() via adapters → http.js (baked into the Railway monitor image).
+// Bandai monitor stays on slim undici. PKC checkout proves DataDome on chrome_131
+// tls-worker — default that transport here (undici often interstitial→captcha / timeout).
 import { makeDispatcher, createJar, request as undiciRequest } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
-import { warmPokemonCentre } from "../adapters/pokemoncentre-edge.js";
+import { warmPokemonCentre, postDataDomeTags } from "../adapters/pokemoncentre-edge.js";
 import {
   getPublicToken,
   cortexApiHeaders,
@@ -18,6 +18,30 @@ import {
   PC_CORTEX_SCOPE,
 } from "../adapters/pokemoncentre-cortex.js";
 import { hyperConfigured } from "../antibot.js";
+
+/** @type {null | Promise<{ makeRemoteTlsDispatcher: Function, createJar: Function, request: Function, UA: string } | null>} */
+let httpTlsModulePromise = null;
+async function loadHttpTls() {
+  if (!httpTlsModulePromise) {
+    httpTlsModulePromise = import("../http.js")
+      .then((m) => ({
+        makeRemoteTlsDispatcher: m.makeRemoteTlsDispatcher,
+        createJar: m.createJar,
+        request: m.request,
+        UA: m.UA,
+      }))
+      .catch((e) => {
+        httpTlsModulePromise = null;
+        throw e;
+      });
+  }
+  return httpTlsModulePromise;
+}
+
+function wantPcTlsWorker() {
+  // Default ON — matches checkout ATC proof. Set PC_MONITOR_TLS_WORKER=0 to force undici.
+  return parseBool(process.env.PC_MONITOR_TLS_WORKER, true);
+}
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -339,6 +363,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   let activePollAbort = null;
   let edgeWarms = 0;
   let hyperRequired = false;
+  let lastTransport = null;
+  let lastTransportNote = null;
+  let tlsWorkerOk = null;
 
   function stickyExpired() {
     if (!sticky) return true;
@@ -399,11 +426,61 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         datadome: warm.datadome || null,
       };
     }
+    // Same order as checkout: public token, then DataDome tags before BFF search.
     const tok = await getPublicToken(session, ctx, { locale, scope });
     if (!tok.ok) {
       return { ok: false, note: tok.note || "public_token_failed", isIpBanned: false };
     }
-    return { ok: true, note: warm.note || "edge+token ok", token: tok };
+    let tagsNote = null;
+    try {
+      const tags = await postDataDomeTags(session, ctx, { pageUrl: `${base}/` });
+      tagsNote = tags?.note || null;
+    } catch (e) {
+      tagsNote = e?.message || String(e);
+    }
+    return {
+      ok: true,
+      note: [warm.note || "edge+token ok", tagsNote].filter(Boolean).join(" · "),
+      token: tok,
+    };
+  }
+
+  async function openStickyTransport(proxyUrl) {
+    const preferTls = wantPcTlsWorker();
+    if (preferTls) {
+      try {
+        const http = await loadHttpTls();
+        const dispatcher = await http.makeRemoteTlsDispatcher(proxyUrl);
+        if (dispatcher?.proxyParseFailed) {
+          throw new Error("proxy_parse_failed");
+        }
+        const jar = http.createJar();
+        const ctx = { jar, dispatcher, request: http.request };
+        const session = createPcSession(ctx, {
+          locale,
+          userAgent: http.UA,
+          request: http.request,
+        });
+        tlsWorkerOk = true;
+        lastTransport = "tls-worker";
+        lastTransportNote = "tls-worker chrome_131 (checkout path)";
+        return { jar, dispatcher, ctx, session, transport: "tls-worker" };
+      } catch (e) {
+        tlsWorkerOk = false;
+        lastTransportNote = `tls-worker init failed → undici: ${e?.message || e}`.slice(0, 240);
+      }
+    }
+    const jar = createJar();
+    const dispatcher = makeDispatcher(proxyUrl, { forceUndici: true });
+    const ctx = { jar, dispatcher, request: undiciRequest };
+    const session = createPcSession(ctx, { locale, request: undiciRequest });
+    lastTransport = "undici";
+    if (!lastTransportNote || preferTls) {
+      lastTransportNote = preferTls
+        ? lastTransportNote || "undici fallback"
+        : "undici (PC_MONITOR_TLS_WORKER=0)";
+    }
+    return { jar, dispatcher, ctx, session, transport: "undici" };
   }
 
   async function withProxyCtx(fn) {
@@ -415,26 +492,23 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         if (!pick.ok) throw new Error(pick.error || "monitor_proxy_pool_exhausted");
         if (prevHost && pick.url !== prevHost) rotates += 1;
         else if (!prevHost) rotates += 1;
-        const jar = createJar();
-        const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
-        // Slim undici only — Railway monitor image has no tls-client; avoid full http.js.
-        const ctx = { jar, dispatcher, request: undiciRequest };
-        const session = createPcSession(ctx, { locale, request: undiciRequest });
+        const opened = await openStickyTransport(pick.url);
         // Local slot — never write edgeOk on a nulled `sticky` after stop() races.
         const slot = {
           url: pick.url,
           tier: pick.tier,
-          jar,
-          dispatcher,
-          ctx,
-          session,
+          jar: opened.jar,
+          dispatcher: opened.dispatcher,
+          ctx: opened.ctx,
+          session: opened.session,
+          transport: opened.transport,
           used: 0,
           openedAt: Date.now(),
           edgeOk: false,
           edgeNote: null,
         };
         sticky = slot;
-        const edge = await ensureEdge(session, ctx);
+        const edge = await ensureEdge(opened.session, opened.ctx);
         if (!edge.ok) {
           // t=bv: cool this sticky longer so Force poll walks the rest of the Bandai pool.
           const banned = Boolean(edge.isIpBanned);
@@ -735,16 +809,23 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           .pop()
           ?.split(":")[0],
         edgeNote: meta.edgeNote || null,
+        transport: meta.transport || lastTransport,
       };
     };
 
-    // Edge/DataDome flakes are sticky-specific — walk the ISP pool (Bandai-ok ≠ PKC DD).
+    if (!hyperConfigured()) {
+      hyperRequired = true;
+      const err = new Error("HYPER_API_KEY missing — PKC edge needs Hyper (same as checkout)");
+      err.code = "PC_HYPER_MISSING";
+      throw err;
+    }
+
+    // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
     const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
     const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
-    const defaultAttempts = Math.min(
-      15,
-      Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4),
-    );
+    const defaultAttempts = wantPcTlsWorker()
+      ? 4
+      : Math.min(15, Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4));
     const maxAttempts = Math.max(
       1,
       Math.min(24, Number.isFinite(envAttempts) && envAttempts > 0 ? envAttempts : defaultAttempts),
@@ -794,9 +875,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   async function pollOnce(opts = {}) {
     const announce = opts.announce === true;
     const t0 = Date.now();
+    // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
+    const envBudget = Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS);
+    const defaultBudget = announce ? 240_000 : 120_000;
     const pollBudgetMs = Math.max(
       45_000,
-      Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS) || 120_000,
+      Number.isFinite(envBudget) && envBudget > 0 ? envBudget : defaultBudget,
     );
     const ac = new AbortController();
     activePollAbort = ac;
@@ -807,6 +891,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     let proxyHost;
     let edgeNote;
     let edgeAttempts;
+    let transport;
     try {
       const raced = await fetchCatalogOnce(ac.signal);
       catalog = raced.catalog;
@@ -815,6 +900,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       proxyHost = raced.proxyHost;
       edgeNote = raced.edgeNote;
       edgeAttempts = raced.edgeAttempts;
+      transport = raced.transport || lastTransport;
     } catch (e) {
       if (sticky?.url) pool.markFail(sticky.url);
       await withProxyGate(() => closeSticky());
@@ -823,8 +909,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         e?.code === "POLL_TIMEOUT" ||
         e?.name === "AbortError"
       ) {
-        const err = new Error(`poll_timeout_${pollBudgetMs}ms`);
+        const err = new Error(
+          `poll_timeout_${pollBudgetMs}ms · transport=${lastTransport || "n/a"} · ${lastTransportNote || ""}`.trim(),
+        );
         err.code = "POLL_TIMEOUT";
+        err.transport = lastTransport;
         throw err;
       }
       throw e;
@@ -873,6 +962,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       discoveryEnable,
       edgeNote,
       edgeAttempts,
+      transport: transport || lastTransport,
+      transportNote: lastTransportNote,
     };
     bus.emit("poll", summary);
 
@@ -1054,6 +1145,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       edgeWarms,
       hyperRequired,
       hyperConfigured: hyperConfigured(),
+      transport: lastTransport,
+      transportNote: lastTransportNote,
+      tlsWorker: wantPcTlsWorker(),
+      tlsWorkerOk,
       staleMs: lastPollAt
         ? Date.now() - lastPollAt
         : startedAt
