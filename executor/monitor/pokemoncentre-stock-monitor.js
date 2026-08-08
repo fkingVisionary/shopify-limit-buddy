@@ -428,11 +428,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     if (!warm.ok) {
       const note = String(warm.note || "");
       if (/HYPER_API_KEY|hyper/i.test(note)) hyperRequired = true;
-      const isIpBanned = Boolean(
-        warm.datadome?.isIpBanned ||
-          warm.isIpBanned ||
-          /t=bv|hard.?ip|hard.?block|pc_edge_tbv/i.test(note),
-      );
+      // Only trust explicit Hyper/SDK flags — never infer burn from note text / URL t=bv.
+      const isIpBanned = Boolean(warm.datadome?.isIpBanned || warm.isIpBanned);
       return {
         ok: false,
         note: warm.note || "edge_warm_failed",
@@ -532,15 +529,13 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         sticky = slot;
         const edge = await ensureEdge(opened.session, opened.ctx);
         if (!edge.ok) {
-          // t=bv: cool this sticky longer so Force poll walks the rest of the Bandai pool.
+          // Short cool on edge fail — do not 20min-ban the ISP pool on client DD noise.
           const banned = Boolean(edge.isIpBanned);
-          pool.markFail(slot.url, banned ? 20 * 60_000 : undefined);
+          pool.markFail(slot.url, banned ? 60_000 : undefined);
           if (sticky === slot) await closeSticky();
           else await closeDispatcher(slot);
           const note = edge.note || "pc_edge_failed";
-          const err = new Error(
-            banned && !/pc_edge_tbv/i.test(note) ? `pc_edge_tbv: ${note}` : note,
-          );
+          const err = new Error(note);
           err.isIpBanned = banned;
           err.code = banned ? "PC_EDGE_TBV" : "PC_EDGE_FAIL";
           throw err;
@@ -564,16 +559,14 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         return out;
       } catch (e) {
         const msg = String(e?.message || e);
-        const banned =
-          e?.isIpBanned === true ||
-          e?.code === "PC_EDGE_TBV" ||
-          /t=bv|pc_edge_tbv|hard.?block/i.test(msg);
+        // Cool only on explicit SDK hard-block — message matching was proxy-blaming false positives.
+        const banned = e?.isIpBanned === true;
         // Keep warm sticky for catalog-empty / BFF captcha — discovery retry needs cookies.
         const keepSticky =
           e?.code === "PC_CATALOG_EMPTY" ||
           (/bff_403/i.test(msg) && /captcha-delivery|datadome/i.test(msg));
         if (!keepSticky) {
-          pool.markFail(cur.url, banned ? 20 * 60_000 : undefined);
+          pool.markFail(cur.url, banned ? 60_000 : undefined);
           if (sticky === cur) await closeSticky();
           else await closeDispatcher(cur);
         }
@@ -653,33 +646,20 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         json?.url &&
         /captcha-delivery\.com\/captcha/i.test(String(json.url))
       ) {
+        // Soft fail — let search catch fall through to HTML discovery.
+        // Do not mark isIpBanned from URL t=bv (client-shape false positive).
         try {
-          // Only trust Hyper hard-block after fetching captcha HTML (slider t=bv).
           const solved = await solveDatadomeCaptchaUrl(session, sticky.ctx, json.url, {
             pageUrl: `${base}/`,
           });
-          if (solved?.isIpBanned) {
-            const err = new Error(solved.note || "pc_edge_tbv: bff captcha after client retry");
-            err.status = 403;
-            err.isIpBanned = true;
-            err.code = "PC_EDGE_TBV";
-            throw err;
-          }
           if (solved?.ok) {
             await remintBffAuth(session, sticky.ctx);
             ({ res, text, json } = await doOnce());
-          } else {
-            await clearDataDome(session, sticky.ctx, {
-              pageUrl: `${base}/`,
-              html: text,
-              headers: res.headers,
-            }).catch(() => null);
-            await remintBffAuth(session, sticky.ctx);
-            ({ res, text, json } = await doOnce());
           }
-        } catch (e) {
-          if (e?.isIpBanned || e?.code === "PC_EDGE_TBV") throw e;
-          /* fall through */
+          // If still captcha / hard HTML ban: throw soft bff_403 (no isIpBanned) so
+          // fetchCatalogOnce can still fill products from category/sitemap.
+        } catch {
+          /* soft */
         }
       }
     } else if (
@@ -1016,11 +996,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         }
         if (!retryable || attempt >= maxAttempts) {
           if (attempt >= maxAttempts && retryable) {
-            const why = e?.isIpBanned || /t=bv|pc_edge_tbv/i.test(msg)
-              ? "DataDome hard-block on sticky — pool rotated (≠ Bandai burn)"
+            const why = e?.isIpBanned
+              ? "Hyper SDK hard-block on session"
               : /bff_5\d\d/i.test(msg)
-                ? "BFF 5xx after remint — rotated stickies"
-                : "edge/BFF retries exhausted — pool rotated";
+                ? "BFF 5xx after remint — client retry exhausted"
+                : "edge/BFF client retries exhausted (TLS/headers/cookies — not pool burn)";
             const wrap = new Error(`${msg} · exhausted ${attempt}/${maxAttempts} stickies (${why})`);
             wrap.code = e?.code || "PC_EDGE_EXHAUSTED";
             wrap.isIpBanned = Boolean(e?.isIpBanned);

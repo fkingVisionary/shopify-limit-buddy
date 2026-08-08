@@ -253,16 +253,17 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
     dd.rt === "i" || /ct\.captcha-delivery\.com\/i\.js/i.test(htmlStr);
   const isSlider = dd.rt === "c" || /ct\.captcha-delivery\.com\/c\.js/i.test(htmlStr);
 
-  // Hyper: t=bv is meaningful on slider block pages. Do not treat interstitial rt=i as ban.
+  // Hard-block only from Hyper SDK isIpBanned. Do not treat query/HTML `t=bv` alone as
+  // burnt proxy — that signal often follows TLS/header-order mismatch.
   const sliderProbe = isSlider
     ? parseSliderDeviceCheckUrl(html, datadomeCookie, pageUrl || "")
     : null;
-  if (isSlider && (sliderProbe?.isIpBanned || dd.t === "bv")) {
+  if (isSlider && sliderProbe?.isIpBanned) {
     return {
       ok: false,
       isIpBanned: true,
       kind: "slider_hard_block",
-      note: "DataDome slider t=bv — Hyper docs: hard IP block; rotate sticky session (solving has no effect)",
+      note: "DataDome slider — Hyper SDK isIpBanned on this session",
       ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
       dd,
     };
@@ -331,26 +332,9 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
     }
     if (json.view === "captcha") {
       const captchaUrl = json.url || null;
-      // Escalation: interstitial → captcha. t=bv on that URL = Hyper hard-block signal for
-      // *this sticky* — rotate. Often undici TLS fingerprint (Bandai Akamai can still work).
-      if (captchaUrl && /[?&]t=bv\b/i.test(captchaUrl)) {
-        return {
-          ok: false,
-          isIpBanned: true,
-          kind: "interstitial_escalated_hard_block",
-          view: json.view,
-          captchaUrl,
-          status: postRes.status,
-          note:
-            "pc_edge_tbv: interstitial→captcha t=bv — rotate sticky (DataDome; Bandai-ok ≠ PKC). Solving has no effect on t=bv.",
-          refs: [
-            "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
-            "https://docs.hypersolutions.co/request-based-basics/tls-fingerprinting.md",
-          ],
-          dd,
-        };
-      }
-      // Escalation without t=bv: try slider solve on captcha URL.
+      // Escalation: interstitial → captcha. URL `t=bv` alone is NOT proof of a burnt
+      // proxy — often TLS/header-order / client shape. Fetch slider HTML + try solve;
+      // only trust Hyper SDK isIpBanned for hard-block.
       if (captchaUrl && /captcha-delivery\.com\/captcha/i.test(captchaUrl)) {
         try {
           const escalated = await solveDatadomeCaptchaUrl(session, ctx, captchaUrl, {
@@ -374,11 +358,12 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
             captchaUrl,
             status: postRes.status,
             needsHcaptcha: Boolean(escalated.needsHcaptcha),
+            // Soft by default — do not cool the whole Bandai pool on URL/query noise.
             isIpBanned: Boolean(escalated.isIpBanned),
             note: escalated.isIpBanned
-              ? `pc_edge_tbv: ${escalated.note || "captcha t=bv — rotate sticky"}`
+              ? `pc_edge_tbv: ${escalated.note || "Hyper SDK hard-block on this session"}`
               : escalated.note ||
-                "interstitial→captcha solve failed — rotate AU ISP sticky / check Hyper TLS",
+                "interstitial→captcha solve failed — client/TLS shape (not proxy burn)",
             dd,
           };
         } catch (e) {
@@ -505,22 +490,14 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
 /**
  * Solve a DataDome captcha URL returned as JSON from a BFF 403
  * (`{ url: "https://geo.captcha-delivery.com/captcha/?..." }`).
- * If URL has `t=bv`, treat as Hyper hard-block (do not solve).
+ * Do NOT hard-ban on URL `t=bv` alone — Hyper §3.4: escalated captcha URLs can
+ * appear after TLS/header-order mismatch; confirm slider HTML / SDK isIpBanned.
  * @see https://docs.hypersolutions.co/datadome/getting-started.md#slider
  */
 export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUrl } = {}) {
   const url = String(captchaUrl || "");
   if (!url || !/captcha-delivery\.com\/captcha/i.test(url)) {
     return { ok: false, note: "not a captcha-delivery captcha URL" };
-  }
-  if (/[?&]t=bv\b/i.test(url)) {
-    return {
-      ok: false,
-      isIpBanned: true,
-      hardBlock: true,
-      note: "pc_edge_tbv: captcha URL t=bv — Hyper hard-block for this sticky; rotate (Bandai-ok ≠ PKC DataDome)",
-      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
-    };
   }
   if (!hyperConfigured()) {
     return { ok: false, note: "HYPER_API_KEY missing" };
@@ -533,15 +510,33 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
   }
   const referer = pageUrl || `${session.state?.base || PC_ORIGIN}/`;
   const deviceHtml = await fetchDeviceHtml(session, url, referer);
+  // Hard-block only from Hyper SDK parse — not URL/query `t=bv` echoed into HTML.
+  // Query t=bv often appears after bad client shape; puzzle may still be solvable.
+  const sliderProbe = parseSliderDeviceCheckUrl(
+    deviceHtml,
+    ctx.jar?.get?.("datadome") || "",
+    pageUrl || "",
+  );
+  if (sliderProbe?.isIpBanned) {
+    return {
+      ok: false,
+      isIpBanned: true,
+      hardBlock: true,
+      note: "pc_edge_tbv: Hyper SDK isIpBanned on slider device HTML",
+      ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+    };
+  }
   const imgs = extractDdSliderImages(deviceHtml);
   const { puzzleUrl, pieceUrl } = imgs;
   if (!puzzleUrl || !pieceUrl) {
     return {
       ok: false,
+      // Soft — discovery / remint may still work; do not cool ISP pool.
+      isIpBanned: false,
       note: imgs.needsHcaptcha
-        ? "captcha page escalated to hCaptcha — rotate sticky"
+        ? "captcha page escalated to hCaptcha — client challenge (not pool burn)"
         : imgs.looksLikeStorefront
-          ? "captcha URL returned storefront HTML — rotate sticky"
+          ? "captcha URL returned storefront HTML — client/cookie mismatch"
           : `captchaChallengePath missing (${imgs.bytes}b)`,
       needsHcaptcha: imgs.needsHcaptcha,
       bytes: imgs.bytes,
