@@ -89,13 +89,14 @@ test("admin lab test restock also includes Quick Task", () => {
   assert.match(btn.url, /sku=N2890904001/);
 });
 
-test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
+test("PKC discord matches Bandai layout + imagery; soft amber / preload blue / stock black / OOS red", () => {
   const pdp = pcPdpUrl({ productId: "10-10186-109", slug: "demo-etb" }, "en-au");
   assert.equal(
     pdp,
     "https://www.pokemoncenter.com/en-au/product/10-10186-109/demo-etb",
   );
 
+  const img = "https://www.pokemoncenter.com/images/demo-etb.jpg";
   const soft = vantaPkcDiscordBody(
     {
       productId: "10-10186-109",
@@ -104,13 +105,22 @@ test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
       reason: "soft_listed",
       softListed: true,
       source: "sitemap",
+      imageUrl: img,
     },
     { locale: "en-au", test: true, softListed: true },
   );
-  assert.match(soft.embeds[0].author.name, /test PKC soft-list/i);
-  assert.match(soft.embeds[0].title, /soft listed/i);
+  // Bandai-shaped: product title as embed title, reason in description, thumb+image
+  assert.match(soft.embeds[0].author.name, /test soft listed/i);
+  assert.equal(soft.embeds[0].title, "PC Exclusive ETB");
   assert.equal(soft.embeds[0].color, 0xd97706);
-  assert.match(soft.embeds[0].description, /Hours-ahead/i);
+  assert.match(soft.embeds[0].description, /\*\*Soft listed\*\* · Pokémon Centre AU/);
+  assert.match(soft.embeds[0].description, /eBay sold/);
+  assert.equal(soft.embeds[0].thumbnail?.url, img);
+  assert.equal(soft.embeds[0].image?.url, img);
+  assert.ok(soft.embeds[0].fields.some((f) => f.name === "SKU"));
+  assert.ok(soft.embeds[0].fields.some((f) => f.name === "PDP"));
+  assert.ok(soft.components[0].components.some((c) => /eBay sold/i.test(c.label)));
+  assert.equal(/Quick Task/i.test(soft.embeds[0].description), false);
 
   const preload = vantaPkcDiscordBody(
     {
@@ -119,29 +129,41 @@ test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
       availability: "AVAILABLE_FOR_PRE_ORDER",
       reason: "preorder_live",
       preorder: true,
+      imageUrl: img,
     },
     { locale: "en-au", test: true, preload: true },
   );
-  assert.match(preload.embeds[0].author.name, /test PKC preload/i);
-  assert.match(preload.embeds[0].title, /preorder \/ preload/i);
+  assert.match(preload.embeds[0].author.name, /test preorder/i);
+  assert.equal(preload.embeds[0].title, "PC Exclusive ETB");
   assert.equal(preload.embeds[0].color, 0x2563eb);
   assert.match(preload.embeds[0].url, /pokemoncenter\.com\/en-au\/product\/10-10186-109/);
-  assert.equal(/Quick Task/i.test(preload.embeds[0].description), false);
+  assert.equal(preload.embeds[0].image?.url, img);
 
   const stock = vantaPkcDiscordBody(
-    { productId: "10-10186-109", title: "PC Exclusive ETB", reason: "restock" },
+    {
+      productId: "10-10186-109",
+      title: "PC Exclusive ETB",
+      reason: "restock",
+      imageUrl: img,
+    },
     { locale: "en-au", test: true },
   );
   assert.equal(stock.embeds[0].color, 0x000000);
-  assert.match(stock.embeds[0].title, /^PKC stock/);
+  assert.equal(stock.embeds[0].title, "PC Exclusive ETB");
+  assert.match(stock.embeds[0].author.name, /test restock/i);
+  assert.match(stock.embeds[0].description, /\*\*Restock\*\* · Pokémon Centre AU/);
 
   const oos = vantaPkcOosDiscordBody(
-    { productId: "10-10186-109", title: "PC Exclusive ETB" },
+    { productId: "10-10186-109", title: "PC Exclusive ETB", imageUrl: img },
     { locale: "en-au", test: true },
   );
   assert.equal(oos.embeds[0].color, 0xdc2626);
   assert.match(oos.embeds[0].title, /^OOS ·/);
-  assert.match(oos.embeds[0].description, /Pokémon Centre/i);
+  assert.match(oos.embeds[0].author.name, /test OOS/i);
+  assert.match(oos.embeds[0].description, /Pokémon Centre AU/i);
+  assert.match(oos.embeds[0].description, /eBay sold/i);
+  assert.equal(oos.embeds[0].thumbnail?.url, img);
+  assert.ok(oos.components[0].components.some((c) => /eBay sold/i.test(c.label)));
 });
 
 test("runtime config round-trip", () => {
