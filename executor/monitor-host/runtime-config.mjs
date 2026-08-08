@@ -43,14 +43,13 @@ export function defaultConfigFromEnv() {
     restockWebhook: String(process.env.DISCORD_WEBHOOK_URL || ""),
     /** Public checkouts feed (no PII) — admin-editable; env DISCORD_CHECKOUT_FEED_WEBHOOK fallback. */
     checkoutFeedWebhook: String(process.env.DISCORD_CHECKOUT_FEED_WEBHOOK || ""),
-    /** PKC (Pokémon Centre) poller — shares SSE feed with Bandai. */
+    /** PKC (Pokémon Centre) poller — shares SSE feed with Bandai. Watches via admin only. */
     pcMonitorEnable: !/^(0|false|no|off)$/i.test(
       String(process.env.PC_MONITOR_ENABLE ?? "1").trim(),
     ),
-    pcLocale: String(process.env.PC_MONITOR_LOCALE || "en-us").trim() || "en-us",
-    pcKeywords: String(
-      process.env.PC_MONITOR_KEYWORDS || "elite trainer box,pokemon center",
-    ),
+    pcLocale: String(process.env.PC_MONITOR_LOCALE || "en-au").trim() || "en-au",
+    // Empty by default — same model as Bandai: admin dashboard owns the watchlist.
+    pcKeywords: String(process.env.PC_MONITOR_KEYWORDS || ""),
     pcSkus: String(process.env.PC_MONITOR_SKUS || ""),
     pcIntervalMs: Number(process.env.PC_MONITOR_INTERVAL_MS) || 15000,
     updatedAt: null,

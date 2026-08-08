@@ -314,10 +314,11 @@ const hub = createGlobalMonitorHub({
 /** Pokémon Centre poller — same SSE /hits feed as Bandai (store=pokemoncentre). */
 let pcMonitorEnabled = runtime.pcMonitorEnable !== false;
 const pcMonitor = createPokemonCentreStockMonitor({
-  locale: runtime.pcLocale || process.env.PC_MONITOR_LOCALE || "en-us",
+  locale: runtime.pcLocale || process.env.PC_MONITOR_LOCALE || "en-au",
   intervalMs: runtime.pcIntervalMs || Number(process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
-  keywords: runtime.pcKeywords || process.env.PC_MONITOR_KEYWORDS || "elite trainer box",
-  skus: runtime.pcSkus || process.env.PC_MONITOR_SKUS || "",
+  // Admin dashboard owns the watchlist (persisted runtime). No baked-in keywords/SKUs.
+  keywords: runtime.pcKeywords || "",
+  skus: runtime.pcSkus || "",
   proxy: {
     ispRaw: runtime.ispProxies || undefined,
     dcRaw: runtime.dcProxies || undefined,
@@ -796,7 +797,7 @@ app.get("/status", async (req, reply) => {
       fromDisk: Boolean(runtime._fromDisk),
       persistence: persistence(),
       pcMonitorEnable: runtime.pcMonitorEnable !== false,
-      pcLocale: runtime.pcLocale || "en-us",
+      pcLocale: runtime.pcLocale || "en-au",
       pcKeywords: runtime.pcKeywords || "",
       pcSkus: runtime.pcSkus || "",
       pcIntervalMs: runtime.pcIntervalMs || 15000,
@@ -835,7 +836,7 @@ app.get("/admin/config", async (req, reply) => {
     restockWebhookMasked: maskWebhook(discordHook() || ""),
     checkoutFeedWebhookMasked: maskWebhook(checkoutFeedHook() || ""),
     pcMonitorEnable: pcMonitorEnabled,
-    pcLocale: pc.locale || runtime.pcLocale || "en-us",
+    pcLocale: pc.locale || runtime.pcLocale || "en-au",
     pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : String(runtime.pcKeywords || ""),
     pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : String(runtime.pcSkus || ""),
     pcIntervalMs: pc.intervalMs ?? runtime.pcIntervalMs ?? 15000,
@@ -1008,12 +1009,8 @@ app.put("/admin/config", async (req, reply) => {
       }
     }
     if (body.pcKeywords != null) {
-      try {
-        const list = pcMonitor.setKeywords(body.pcKeywords);
-        runtime.pcKeywords = list.join("\n");
-      } catch (e) {
-        return reply.code(400).send({ ok: false, error: e?.message || "pcKeywords_invalid" });
-      }
+      const list = pcMonitor.setKeywords(body.pcKeywords);
+      runtime.pcKeywords = list.join("\n");
     }
     if (body.pcSkus != null) {
       const list = pcMonitor.setSkus(body.pcSkus);
@@ -1023,15 +1020,20 @@ app.put("/admin/config", async (req, reply) => {
       runtime.pcIntervalMs = pcMonitor.setIntervalMs(body.pcIntervalMs);
     }
     if (body.pcLocale != null) {
-      runtime.pcLocale = String(body.pcLocale || "en-us").trim() || "en-us";
+      runtime.pcLocale = String(body.pcLocale || "en-au").trim() || "en-au";
     }
     if (body.pcMonitorEnable != null) {
       runtime.pcMonitorEnable = Boolean(body.pcMonitorEnable);
       pcMonitorEnabled = runtime.pcMonitorEnable !== false;
-      if (pcMonitorEnabled && monitorExpectRunning && !pcMonitor.status().running) {
+    }
+    // Admin watchlist drives PKC start/stop (same lifecycle idea as Bandai keywords).
+    {
+      const st = pcMonitor.status();
+      const hasWatch = (st.keywords?.length || 0) + (st.skus?.length || 0) > 0;
+      if (pcMonitorEnabled && monitorExpectRunning && hasWatch && !st.running) {
         pcMonitor.start();
       }
-      if (!pcMonitorEnabled && pcMonitor.status().running) {
+      if ((!pcMonitorEnabled || !hasWatch) && st.running) {
         await pcMonitor.stop();
       }
     }
@@ -1056,7 +1058,7 @@ app.put("/admin/config", async (req, reply) => {
       dcProxies: runtime.dcProxies || "",
       pool: hub.monitor.status().pool,
       pcMonitorEnable: runtime.pcMonitorEnable !== false,
-      pcLocale: runtime.pcLocale || "en-us",
+      pcLocale: runtime.pcLocale || "en-au",
       pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : "",
       pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : "",
       pcIntervalMs: pc.intervalMs,
@@ -1532,7 +1534,7 @@ console.log(
     keywords: runtime.keywords,
     pkc: {
       enabled: pcMonitorEnabled,
-      locale: runtime.pcLocale || "en-us",
+      locale: runtime.pcLocale || "en-au",
       keywords: runtime.pcKeywords,
       skus: runtime.pcSkus,
       intervalMs: runtime.pcIntervalMs || 15000,
@@ -1548,14 +1550,21 @@ console.log(
 );
 hub.start();
 if (pcMonitorEnabled) {
-  pcMonitor.start();
+  const pcSt = pcMonitor.status();
+  const hasWatch = (pcSt.keywords?.length || 0) + (pcSt.skus?.length || 0) > 0;
+  if (hasWatch) {
+    pcMonitor.start();
+  }
   console.log(
     JSON.stringify({
-      event: "pkc_monitor_start",
-      locale: pcMonitor.status().locale,
-      keywords: pcMonitor.status().keywords,
-      skus: pcMonitor.status().skus,
-      hyperConfigured: pcMonitor.status().hyperConfigured,
+      event: hasWatch ? "pkc_monitor_start" : "pkc_monitor_idle",
+      note: hasWatch
+        ? "polling admin watchlist"
+        : "waiting for admin PKC keywords/SKUs (same as Bandai watchlist model)",
+      locale: pcSt.locale,
+      keywords: pcSt.keywords,
+      skus: pcSt.skus,
+      hyperConfigured: pcSt.hyperConfigured,
     }),
   );
 }

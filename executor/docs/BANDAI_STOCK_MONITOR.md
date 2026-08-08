@@ -106,10 +106,9 @@ desktop hub**:
 
 - Sticky Hyper edge warm (Incapsula Reese84 + DataDome) → BFF `search` + `product/status/{sku}`
 - Same `stock_changed` SSE / `/hits` feed (`store`, `locale`, `preorder` / `preorder_live`)
-- Env: `PC_MONITOR_ENABLE`, `PC_MONITOR_LOCALE` (default `en-us`), `PC_MONITOR_KEYWORDS`,
-  `PC_MONITOR_SKUS`, `PC_MONITOR_INTERVAL_MS`, `HYPER_API_KEY`, `PC_US_SCOPE` (default `pokemon`)
-- Admin: `pcKeywords` / `pcSkus` / `pcIntervalMs` on `PUT /admin/config`; force poll
-  `POST /monitor/pkc/poll`
+- Locale default **`en-au`** (AU). Watchlist is **admin-dashboard only** (same model as Bandai keywords) — empty until you save PKC keywords/SKUs in `/admin`.
+- Env: `PC_MONITOR_ENABLE`, `HYPER_API_KEY` (required for Incapsula/DD), optional `PC_MONITOR_INTERVAL_MS`
+- Admin: Pokémon Centre AU section → keywords + SKUs + interval; force poll `POST /monitor/pkc/poll`
 - Lab: `node scripts/pokemoncentre-stock-monitor-lab.mjs`
 
 Catches preload when availability flips to `AVAILABLE` / `AVAILABLE_FOR_PRE_ORDER` or

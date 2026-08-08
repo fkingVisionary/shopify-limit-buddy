@@ -3,7 +3,7 @@
  * Lab: one or few PKC monitor polls (Hyper edge + BFF search/status).
  *
  *   HYPER_API_KEY=… \
- *   PC_MONITOR_LOCALE=en-us \
+ *   PC_MONITOR_LOCALE=en-au \
  *   PC_MONITOR_KEYWORDS='elite trainer box' \
  *   PC_MONITOR_SKUS='10-10186-109' \
  *   BANDAI_MONITOR_ISP_FILE=executor/monitor/isp.proxies \
@@ -15,7 +15,7 @@ import { hyperConfigured } from "../antibot.js";
 const maxPolls = Math.max(1, Number(process.env.PC_MONITOR_MAX_POLLS) || 2);
 
 const mon = createPokemonCentreStockMonitor({
-  locale: process.env.PC_MONITOR_LOCALE || "en-us",
+  locale: process.env.PC_MONITOR_LOCALE || "en-au",
   intervalMs: Number(process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
   keywords: process.env.PC_MONITOR_KEYWORDS || "elite trainer box",
   skus: process.env.PC_MONITOR_SKUS || "",

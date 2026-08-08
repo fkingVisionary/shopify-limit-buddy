@@ -248,12 +248,35 @@
           <p class="hint" id="monHint">Stop pauses polling (useful while testing launches). Start resumes.</p>
         </section>
         <section>
-          <h2>Watch keywords / SKUs</h2>
+          <h2>Bandai — watch keywords / SKUs</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem">
-            What the poller searches. Separate from the Desktop Action Store list below.
+            What the Bandai poller searches. Separate from the Desktop Action Store list below.
           </p>
           <textarea id="keywords" placeholder="GUNDAM&#10;ONE PIECE&#10;N2890904001"></textarea>
-          <div class="row"><button id="btnSaveKw" type="button">Save keywords</button></div>
+          <div class="row"><button id="btnSaveKw" type="button">Save Bandai keywords</button></div>
+        </section>
+        <section>
+          <h2>Pokémon Centre AU — watch keywords / SKUs</h2>
+          <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
+            Same model as Bandai: this admin list is the only PKC watch source (locale fixed to
+            <strong>en-au</strong>). Keywords hit BFF search; SKUs hit <code>product/status</code>
+            (preload / preorder / restock). Empty = PKC poller idle. Needs <code>HYPER_API_KEY</code> on Railway.
+          </p>
+          <label for="pcKeywords">Keywords (one per line)</label>
+          <textarea id="pcKeywords" placeholder="elite trainer box&#10;pokemon center"></textarea>
+          <label for="pcSkus">SKUs (one per line)</label>
+          <textarea id="pcSkus" placeholder="10-10186-109"></textarea>
+          <label for="pcInterval">PKC poll interval (ms)</label>
+          <input id="pcInterval" type="number" min="5000" step="1000" />
+          <div class="toggle">
+            <span>PKC monitor enabled</span>
+            <input id="pcMonitorEnable" type="checkbox" checked />
+          </div>
+          <div class="row">
+            <button id="btnSavePc" type="button">Save PKC watchlist</button>
+            <button class="secondary" id="btnPcPoll" type="button">Force PKC poll</button>
+          </div>
+          <p class="hint" id="pcHint" style="margin:8px 0 0;color:var(--muted);font-size:0.8rem"></p>
         </section>
         <section>
           <h2>Muted SKUs <span style="font-weight:400;color:var(--muted)">(global)</span></h2>
@@ -515,6 +538,20 @@
           ? "Monitor is polling. Restart clears stuck proxies; Stop pauses searches."
           : "Monitor is stopped. Start resumes polling.";
         $("keywords").value = cfg.keywords || "";
+        if ($("pcKeywords")) $("pcKeywords").value = cfg.pcKeywords || "";
+        if ($("pcSkus")) $("pcSkus").value = cfg.pcSkus || "";
+        if ($("pcInterval")) $("pcInterval").value = cfg.pcIntervalMs || 15000;
+        if ($("pcMonitorEnable")) $("pcMonitorEnable").checked = cfg.pcMonitorEnable !== false;
+        if ($("pcHint")) {
+          const pk = String(cfg.pcKeywords || "").split(/\r?\n/).filter((l) => l.trim()).length;
+          const ps = String(cfg.pcSkus || "").split(/\r?\n/).filter((l) => l.trim()).length;
+          const pc = st.pokemoncentre || {};
+          $("pcHint").textContent = cfg.pcMonitorEnable === false
+            ? "PKC monitor disabled"
+            : pk || ps
+              ? `AU watchlist · ${pk} keyword(s) · ${ps} SKU(s)${pc.running ? " · polling" : pc.lastError ? ` · ${pc.lastError}` : " · idle until start"}`
+              : "No PKC watches yet — paste keywords/SKUs and Save (poller stays idle until then).";
+        }
         if ($("mutedSkus")) $("mutedSkus").value = cfg.mutedSkus || "";
         if ($("presetCatalog")) $("presetCatalog").value = cfg.presetCatalog || "";
         if ($("presetCatalogHint")) {
@@ -542,7 +579,7 @@
         applyPersistence(cfg.persistence);
         const hits = st.recentHits || [];
         $("hits").innerHTML = hits.length
-          ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>${h.muted ? ` <span class="meta">· muted</span>` : ""}
+          ? hits.map((h) => `<li><strong>${escapeHtml(h.title || h.productId || "?")}</strong>${h.muted ? ` <span class="meta">· muted</span>` : ""}${h.store && h.store !== "bandai" ? ` <span class="meta">· ${escapeHtml(h.store)}</span>` : ""}
               <div class="meta">${escapeHtml(h.productId||"")} · ${escapeHtml(h.reason||"")} · ${escapeHtml((h.at||"").replace("T"," ").slice(0,19))}</div></li>`).join("")
           : `<li><div class="meta">No monitor hits yet.</div></li>`;
       }
@@ -746,9 +783,47 @@
       $("btnSaveKw").onclick = async () => {
         try {
           await api("/admin/config", { method: "PUT", body: JSON.stringify({ keywords: $("keywords").value }) });
-          toast("Keywords live", "ok");
+          toast("Bandai keywords live", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      if ($("btnSavePc")) {
+        $("btnSavePc").onclick = async () => {
+          try {
+            const r = await api("/admin/config", {
+              method: "PUT",
+              body: JSON.stringify({
+                pcKeywords: $("pcKeywords").value,
+                pcSkus: $("pcSkus").value,
+                pcIntervalMs: Number($("pcInterval").value) || 15000,
+                pcLocale: "en-au",
+                pcMonitorEnable: $("pcMonitorEnable")?.checked !== false,
+              }),
+            });
+            if (r.pcKeywords != null) $("pcKeywords").value = r.pcKeywords;
+            if (r.pcSkus != null) $("pcSkus").value = r.pcSkus;
+            if (r.pcIntervalMs != null) $("pcInterval").value = r.pcIntervalMs;
+            toast("PKC AU watchlist live", "ok");
+            refreshAll().catch(() => {});
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnPcPoll")) {
+        $("btnPcPoll").onclick = async () => {
+          try {
+            toast("PKC poll…", "ok");
+            const r = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
+            toast(
+              `PKC poll ok · ${r.summary?.products ?? 0} products · ${r.events?.length ?? 0} events`,
+              "ok",
+            );
+            refreshAll().catch(() => {});
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
       if ($("btnSaveMuted")) {
         $("btnSaveMuted").onclick = async () => {
           try {

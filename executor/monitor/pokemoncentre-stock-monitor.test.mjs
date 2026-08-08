@@ -7,6 +7,7 @@ import { diffCatalog } from "./bandai-stock-monitor.js";
 import { parseTaskWatch, eventMatchesWatch } from "./event-filter.js";
 
 assert.equal(cortexScopeForLocale("en-au"), "pokemon-au");
+assert.equal(cortexScopeForLocale("au"), "pokemon-au");
 assert.equal(cortexScopeForLocale("us"), process.env.PC_US_SCOPE || "pokemon");
 
 const avail = normalizePcCatalogCard({

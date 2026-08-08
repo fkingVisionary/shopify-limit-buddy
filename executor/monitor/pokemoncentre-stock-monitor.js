@@ -119,7 +119,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   const bus = new EventEmitter();
   bus.setMaxListeners(50);
 
-  const locale = normalizePcLocale(opts.locale || process.env.PC_MONITOR_LOCALE || "en-us") || "en-us";
+  const locale = normalizePcLocale(opts.locale || process.env.PC_MONITOR_LOCALE || "en-au") || "en-au";
   const scope = opts.scope || cortexScopeForLocale(locale);
   const base = pcBaseFor(locale);
   let intervalMs = Math.max(
@@ -138,8 +138,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     40,
     Math.max(5, Number(opts.searchRows || process.env.PC_MONITOR_SEARCH_ROWS) || 20),
   );
-  let keywords = parseList(opts.keywords || process.env.PC_MONITOR_KEYWORDS || "elite trainer box");
-  let skus = parseList(opts.skus || process.env.PC_MONITOR_SKUS || "").map((s) => s.toUpperCase());
+  // Watchlist is admin-dashboard owned (same as Bandai keywords). Env is bootstrap only.
+  let keywords = parseList(opts.keywords ?? process.env.PC_MONITOR_KEYWORDS ?? "");
+  let skus = parseList(opts.skus ?? process.env.PC_MONITOR_SKUS ?? "").map((s) => s.toUpperCase());
 
   const pool = opts.proxyPool || createMonitorProxyPool(opts.proxy || {});
   /** @type {Map<string, object>} */
@@ -658,9 +659,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       return snapshot.get(id) || null;
     },
     setKeywords(raw) {
-      const next = parseList(raw);
-      if (!next.length && !skus.length) throw new Error("pc_keywords_or_skus_required");
-      keywords = next;
+      keywords = parseList(raw);
       return [...keywords];
     },
     setSkus(raw) {
