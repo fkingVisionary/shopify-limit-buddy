@@ -267,15 +267,6 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
       dd,
     };
   }
-  if (isSlider && light) {
-    return {
-      ok: false,
-      kind: "slider_light_skip",
-      note: "DataDome slider — rotate sticky (monitor light; skip slow Hyper slider)",
-      dd,
-    };
-  }
-
   let ip = "";
   try {
     ip = (await resolveEgressIp(ctx)) || "";
@@ -359,19 +350,8 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers, ligh
           dd,
         };
       }
-      // Escalation without t=bv: slider solve (slow). Monitor light mode rotates instead.
+      // Escalation without t=bv: try slider solve on captcha URL.
       if (captchaUrl && /captcha-delivery\.com\/captcha/i.test(captchaUrl)) {
-        if (light) {
-          return {
-            ok: false,
-            kind: "interstitial_escalated_light",
-            view: json.view,
-            captchaUrl,
-            status: postRes.status,
-            note: "interstitial→captcha — rotate sticky (monitor light; skip slider)",
-            dd,
-          };
-        }
         try {
           const escalated = await solveDatadomeCaptchaUrl(session, ctx, captchaUrl, {
             pageUrl,
