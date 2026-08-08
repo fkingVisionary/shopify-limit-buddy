@@ -1220,11 +1220,13 @@ app.post("/monitor/restart", async (req, reply) => {
 app.post("/monitor/pkc/poll", async (req, reply) => {
   if (!authOk(req)) return reply.code(401).send({ ok: false, error: "unauthorized" });
   try {
-    const { summary, events } = await pcMonitor.pollOnce();
+    // announce:true → Discord current keyword/SKU hits (not silent baseline/diff-only).
+    const { summary, events } = await pcMonitor.pollOnce({ announce: true });
     labLog("monitor", "info", "PKC force poll", {
       polls: summary?.polls,
       products: summary?.products,
       events: events?.length || 0,
+      announced: Boolean(summary?.announced),
       edgeNote: summary?.edgeNote || null,
       proxyHost: summary?.proxyHost || null,
       attempts: summary?.edgeAttempts || null,
@@ -1232,6 +1234,7 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
     return {
       ok: true,
       summary,
+      discordEvents: events?.length || 0,
       events: (events || []).map((e) => ({
         productId: e.productId,
         inStock: e.inStock,
@@ -1242,7 +1245,7 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
     const msg = e?.message || "pkc_poll_failed";
     labLog("monitor", "err", `PKC force poll failed: ${msg}`);
     const edgeBlocked =
-      /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot read properties/i.test(
+      /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|pc_sticky_superseded|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot (read|set) properties/i.test(
         msg,
       );
     return reply.code(503).send({

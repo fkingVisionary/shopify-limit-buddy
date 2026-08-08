@@ -263,6 +263,8 @@
             <strong>Sitemap + TCG category discovery</strong> runs by default so random restocks
             can soft-list hours ahead without a known SKU. Amber Discord = soft listed; blue = preload;
             black = buyable. Needs <code>HYPER_API_KEY</code> on Railway.
+            <strong>Force PKC poll</strong> searches your watchlist now and Discord-pings current
+            buyable / soft-list hits (up to 15). The live loop only pings on changes after baseline.
           </p>
           <label for="pcKeywords">Keywords (one per line)</label>
           <textarea id="pcKeywords" placeholder="elite trainer box&#10;pokemon center"></textarea>
@@ -842,8 +844,12 @@
           try {
             toast("PKC poll…", "ok");
             const r = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
+            const n = r.discordEvents ?? r.events?.length ?? 0;
+            const products = r.summary?.products ?? 0;
             toast(
-              `PKC poll ok · ${r.summary?.products ?? 0} products · ${r.events?.length ?? 0} events`,
+              n
+                ? `PKC poll ok · ${products} products · ${n} Discord ping(s)`
+                : `PKC poll ok · ${products} products · no watchlist hits to ping`,
               "ok",
             );
             try {
@@ -855,7 +861,7 @@
             const hint = e.body?.hint ? ` — ${e.body.hint}` : "";
             const msg = String(e.message || "pkc_poll_failed");
             // Phone toasts truncate — keep status code / short TypeError readable.
-            const short = /bff_\d+|discovery_\d+|datadome|hcaptcha|pc_edge|empty_fetch|cannot read/i.test(msg)
+            const short = /bff_\d+|discovery_\d+|datadome|hcaptcha|pc_edge|pc_sticky|empty_fetch|cannot (read|set)/i.test(msg)
               ? msg.slice(0, 160)
               : msg.slice(0, 120);
             toast(short + hint, "bad");
@@ -1151,8 +1157,9 @@
         $("btnPollPkcLab").onclick = async () => {
           try {
             const r = await api("/monitor/pkc/poll", { method: "POST" });
+            const n = r.discordEvents ?? r.events?.length ?? 0;
             toast(
-              `PKC poll · ${r.summary?.products ?? r.events?.length ?? "?"} products · ${r.events?.length ?? 0} events`,
+              `PKC poll · ${r.summary?.products ?? "?"} products · ${n} Discord ping(s)`,
               "ok",
             );
             try {
