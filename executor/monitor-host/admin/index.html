@@ -258,17 +258,16 @@
         <section>
           <h2>Pokémon Centre AU — watch keywords / SKUs</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Locale fixed to <strong>en-au</strong>. Keywords → BFF search (keeps
-            <code>NOT_AVAILABLE</code> soft-lists). SKUs → <code>product/status</code>.
-            <strong>Sitemap + TCG category discovery</strong> runs by default so random restocks
-            can soft-list hours ahead without a known SKU. Amber Discord = soft listed; blue = preload;
-            black = buyable. Needs <code>HYPER_API_KEY</code> on Railway.
-            <strong>Force PKC poll</strong> saves the boxes below, searches that watchlist, and
-            Discord-pings current buyable / soft-list hits (up to 15). The live loop only pings on
-            changes after baseline. Needs AU ISP proxies + <code>HYPER_API_KEY</code> for edge warm.
+            Locale fixed to <strong>en-au</strong>. Keywords → BFF search. Prefix with
+            <code>-</code> for negatives (e.g. <code>-binder</code> drops title/slug matches).
+            SKUs → <code>product/status</code>.
+            <strong>Sitemap + TCG category discovery</strong> runs by default.
+            Green Discord stock = buyable category/PDP hits; soft-list only when availability is
+            explicitly not available. Needs <code>HYPER_API_KEY</code> on Railway.
+            <strong>Force PKC poll</strong> saves the boxes below and Discord-pings current hits.
           </p>
-          <label for="pcKeywords">Keywords (one per line)</label>
-          <textarea id="pcKeywords" placeholder="TCG&#10;binder&#10;playmat&#10;deck"></textarea>
+          <label for="pcKeywords">Keywords (one per line; <code>-term</code> = exclude)</label>
+          <textarea id="pcKeywords" placeholder="TCG&#10;-binder&#10;-playmat&#10;-deck"></textarea>
           <label for="pcSkus">SKUs (one per line)</label>
           <textarea id="pcSkus" placeholder="10-10186-109"></textarea>
           <label for="pcInterval">PKC poll interval (ms)</label>

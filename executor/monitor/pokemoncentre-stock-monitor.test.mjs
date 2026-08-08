@@ -6,7 +6,10 @@ import {
   extractPcProductUrls,
   extractPcProductCardsFromHtml,
   buildPcAnnounceEvents,
+  parsePcKeywordLists,
+  matchesPcNegativeKeyword,
   PC_DEFAULT_KEYWORDS,
+  PC_DEFAULT_NEGATIVE_KEYWORDS,
 } from "./pokemoncentre-stock-monitor.js";
 import { parseTaskWatch, eventMatchesWatch } from "./event-filter.js";
 
@@ -165,15 +168,31 @@ assert.ok(bare.some((u) => u.sku === "10-BARE-001" && u.locale === "en-au"));
 
 const cards = extractPcProductCardsFromHtml(
   `
-  {"code":"10-LIVE-001","name":"Live Binder","availability":"AVAILABLE"}
-  <a href="/en-au/product/10-SOFT-002/soft-slug">x</a>
+  {"code":"10-LIVE-001","name":"Live ETB","availability":"AVAILABLE"}
+  <a href="/en-au/product/10-CAT-002/booster-bundle">x</a>
   `,
   { locale: "en-au", source: "category" },
 );
 assert.ok(cards.some((c) => c.productId === "10-LIVE-001" && c.inStock === true));
-assert.ok(cards.some((c) => c.productId === "10-SOFT-002" && c.softListed === true));
-assert.ok(PC_DEFAULT_KEYWORDS.includes("binder"));
-assert.ok(PC_DEFAULT_KEYWORDS.includes("playmat"));
-assert.ok(PC_DEFAULT_KEYWORDS.includes("deck"));
+// Category URL without OOS enum = live/in-stock (not soft_listed 🔴)
+assert.ok(cards.some((c) => c.productId === "10-CAT-002" && c.inStock === true && !c.softListed));
+
+const parsed = parsePcKeywordLists("TCG\n-binder\n-playmat\n-deck");
+assert.deepEqual(parsed.keywords, ["TCG"]);
+assert.ok(parsed.negativeKeywords.includes("binder"));
+assert.ok(
+  matchesPcNegativeKeyword(
+    { title: "Premium Binder", slug: "premium-binder", productId: "10-X" },
+    parsed.negativeKeywords,
+  ),
+);
+assert.ok(
+  !matchesPcNegativeKeyword(
+    { title: "Booster Bundle", slug: "booster-bundle", productId: "10-Y" },
+    parsed.negativeKeywords,
+  ),
+);
+assert.ok(PC_DEFAULT_KEYWORDS.includes("TCG"));
+assert.ok(PC_DEFAULT_NEGATIVE_KEYWORDS.includes("binder"));
 
 console.log("pokemoncentre-stock-monitor.test.mjs ok");
