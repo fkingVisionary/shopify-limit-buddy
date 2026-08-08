@@ -421,7 +421,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function ensureEdge(session, ctx) {
-    // light: skip slider solves + 2nd DD — walk more stickies inside the poll budget.
+    // light: skip 2nd DD pass only — still solve interstitial/slider (required on this pool).
     const warm = await warmPokemonCentre(session, ctx, { light: true });
     edgeWarms += 1;
     if (!warm.ok) {
