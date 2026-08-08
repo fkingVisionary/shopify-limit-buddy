@@ -886,8 +886,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
     const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
     const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
+    // Fewer stickies per poll — each tls warm is expensive; soft-clear + remint first.
     const defaultAttempts = wantPcTlsWorker()
-      ? 4
+      ? 3
       : Math.min(15, Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4));
     const maxAttempts = Math.max(
       1,
@@ -962,7 +963,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const t0 = Date.now();
     // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
     const envBudget = Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS);
-    const defaultBudget = announce ? 240_000 : 120_000;
+    // tls-worker + Reese/DD remint needs headroom; 120s was timing out mid-warm.
+    const defaultBudget = announce ? 300_000 : 180_000;
     const pollBudgetMs = Math.max(
       45_000,
       Number.isFinite(envBudget) && envBudget > 0 ? envBudget : defaultBudget,

@@ -825,6 +825,55 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
       home3 = await step("pc_home_after_reese2", () => fetchHomeProbe("after_reese2"));
     }
 
+    // Prefer soft-clear (category/sitemap) before a second Hyper DD solve — faster for monitor.
+    if (!home3.ok) {
+      const soft = await step("pc_soft_clear_probe", async () => {
+        const paths = [
+          `${session.state.base}/category/trading-card-game`,
+          `${PC_ORIGIN}/sitemap.xml`,
+        ];
+        for (const url of paths) {
+          try {
+            const res = await session.get(url, { headers: { referer: homeUrl } });
+            const html = await session.readText(res);
+            const incap = looksLikeIncapsulaChallenge(html, res.status);
+            const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
+            const productHits = (String(html || "").match(/\/product\/[A-Za-z0-9._-]+/g) || [])
+              .length;
+            const useful =
+              res.status === 200 &&
+              !incap &&
+              !dd &&
+              (productHits >= 3 || (html.length > 20_000 && /pokemon|product/i.test(html)));
+            if (useful) {
+              return {
+                ok: true,
+                status: res.status,
+                note: `soft-clear via ${url.includes("sitemap") ? "sitemap" : "category"} (${html.length}b, ${productHits} product urls)`,
+                html,
+                via: url,
+              };
+            }
+          } catch {
+            /* try next */
+          }
+        }
+        return { ok: false, note: "soft-clear probe failed" };
+      });
+      if (soft.ok) {
+        const note = `${soft.note} · home was ${home3.note}`;
+        if (session?.state) session.state.edgeNote = note;
+        return {
+          ok: true,
+          home: soft,
+          datadome: ddClear,
+          reeseAfterDd,
+          softClear: true,
+          note,
+        };
+      }
+    }
+
     // Soft DD again (not t=bv) → one more clear + Reese + home.
     let ddClear2 = null;
     if (!home3.ok && home3.dd) {
@@ -855,6 +904,41 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
           /* best-effort */
         }
         home3 = await step("pc_home_after_dd2", () => fetchHomeProbe("after_dd2"));
+        if (!home3.ok) {
+          const soft2 = await step("pc_soft_clear_after_dd2", async () => {
+            try {
+              const url = `${session.state.base}/category/trading-card-game`;
+              const res = await session.get(url, { headers: { referer: homeUrl } });
+              const html = await session.readText(res);
+              const incap = looksLikeIncapsulaChallenge(html, res.status);
+              const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
+              const productHits = (String(html || "").match(/\/product\/[A-Za-z0-9._-]+/g) || [])
+                .length;
+              if (res.status === 200 && !incap && !dd && productHits >= 3) {
+                return {
+                  ok: true,
+                  note: `soft-clear via category after dd2 (${html.length}b, ${productHits} urls)`,
+                  html,
+                };
+              }
+            } catch {
+              /* ignore */
+            }
+            return { ok: false };
+          });
+          if (soft2.ok) {
+            const note = soft2.note;
+            if (session?.state) session.state.edgeNote = note;
+            return {
+              ok: true,
+              home: soft2,
+              datadome: ddClear2,
+              reeseAfterDd,
+              softClear: true,
+              note,
+            };
+          }
+        }
       }
     }
 
