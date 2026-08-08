@@ -480,6 +480,23 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     opts.skipBff ?? process.env.PC_MONITOR_SKIP_BFF,
     hyperLight,
   );
+  // Cheap HTML polls continuously; Hyper/BFF soft-list pass on a long cadence.
+  const deepPollIntervalMs = Math.max(
+    0,
+    Number(opts.deepPollIntervalMs ?? process.env.PC_MONITOR_DEEP_POLL_MS) ||
+      (hyperLight ? 3_600_000 : 0),
+  );
+  const deepPollInitialDelayMs = Math.max(
+    0,
+    Number(opts.deepPollInitialDelayMs ?? process.env.PC_MONITOR_DEEP_POLL_INITIAL_MS) ||
+      120_000,
+  );
+  /** @type {boolean} — flipped per-poll for hourly Hyper/BFF soft-list. */
+  let forceBffThisPoll = false;
+  const bffOff = () => skipBff && !forceBffThisPoll;
+  let lastDeepPollAt = null;
+  let deepPolls = 0;
+  let nextDeepPollAt = null;
   const stickyPolls = Math.max(
     1,
     Number(opts.stickyPolls || process.env.PC_MONITOR_STICKY_POLLS) ||
@@ -631,14 +648,13 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         datadome: warm.datadome || null,
       };
     }
-    // Hyper-light: do NOT remint Reese after a good warm/soft-clear — that was burning
-    // ~1 credit per sticky open even when discovery already worked.
+    // Hyper-light: skip Reese remint on normal polls. Deep/hourly BFF polls remint for token.
     const alreadyClear =
       Boolean(warm.softClear) ||
       Boolean(warm.hyperLight) ||
       Boolean(session?.state?.reeseCleared) ||
       /home clear|soft-clear/i.test(String(warm.note || ""));
-    if (!alreadyClear && !hyperLight) {
+    if (forceBffThisPoll || (!alreadyClear && !hyperLight)) {
       try {
         await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
         bumpHyper(1);
@@ -647,9 +663,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       }
     }
 
-    // Skip BFF token in hyper-light — HTML sitemap/category is the monitor path.
+    // BFF token only when not in hyper-light skip mode (or this poll is a deep pass).
     let tok = null;
-    if (!skipBff) {
+    if (!bffOff()) {
       try {
         tok = await getPublicToken(session, ctx, { locale, scope });
       } catch {
@@ -663,13 +679,16 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       ok: true,
       softClear: Boolean(warm.softClear),
       hyperLight,
+      deep: forceBffThisPoll,
       note: [
         warm.note || "edge ok",
-        skipBff
-          ? "hyper-light html-discovery (BFF off)"
-          : tok?.ok
-            ? tok.note
-            : "html-discovery (no BFF token)",
+        forceBffThisPoll
+          ? "deep Hyper/BFF soft-list pass"
+          : bffOff()
+            ? "hyper-light html-discovery (BFF off)"
+            : tok?.ok
+              ? tok.note
+              : "html-discovery (no BFF token)",
       ]
         .filter(Boolean)
         .join(" · "),
@@ -789,7 +808,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function remintBffAuth(session, ctx) {
-    if (skipBff) return { ok: false, note: "bff_skipped_hyper_light" };
+    if (bffOff()) return { ok: false, note: "bff_skipped_hyper_light" };
     try {
       await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
       bumpHyper(1);
@@ -919,9 +938,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       const next = new Map();
       const sources = [];
 
-      const hasToken = !skipBff && Boolean(session.state.cortexAuth?.accessToken);
-      if (skipBff) {
+      const hasToken = !bffOff() && Boolean(session.state.cortexAuth?.accessToken);
+      if (bffOff()) {
         sources.push({ kind: "bff", ok: true, note: "skipped_hyper_light" });
+      } else if (forceBffThisPoll) {
+        sources.push({ kind: "bff", ok: true, note: "deep_poll_bff_on" });
       }
 
       for (const kw of keywords) {
@@ -1417,21 +1438,45 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
     /**
-   * @param {{ announce?: boolean }} [opts]
-   *   announce:true — admin Force poll: Discord current keyword/SKU hits (not only diffs).
-   *   Live loop stays diff-only (first poll still baselines with no events).
+   * @param {{ announce?: boolean, deep?: boolean }} [opts]
+   *   announce:true — admin Force poll: Discord current hits.
+   *   deep:true — hourly Hyper/BFF soft-list pass (backend NOT_AVAILABLE).
    */
   async function pollOnce(opts = {}) {
     return withPollLock(() => pollOnceLocked(opts));
   }
 
+  function deepPollDue() {
+    if (!(deepPollIntervalMs > 0) || !hyperConfigured()) return false;
+    if (!lastDeepPollAt) {
+      return Boolean(startedAt) && Date.now() - startedAt >= deepPollInitialDelayMs;
+    }
+    return Date.now() - lastDeepPollAt >= deepPollIntervalMs;
+  }
+
   async function pollOnceLocked(opts = {}) {
     const announce = opts.announce === true;
+    const deep = opts.deep === true || announce;
+    forceBffThisPoll = deep && skipBff && hyperConfigured();
+    try {
+      return await pollOnceLockedBody({ announce, deep });
+    } finally {
+      forceBffThisPoll = false;
+    }
+  }
+
+  async function pollOnceLockedBody({ announce, deep }) {
     const t0 = Date.now();
-    // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
+    // Deep/Force: fresh sticky so BFF gets Reese+token (hourly Hyper spend).
+    if (forceBffThisPoll) {
+      try {
+        await withProxyGate(() => closeSticky());
+      } catch {
+        /* ignore */
+      }
+    }
     const envBudget = Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS);
-    // Slider solves need headroom; Force poll stays generous.
-    const defaultBudget = announce ? 360_000 : 300_000;
+    const defaultBudget = announce || deep ? 360_000 : 300_000;
     const pollBudgetMs = Math.max(
       45_000,
       Number.isFinite(envBudget) && envBudget > 0 ? envBudget : defaultBudget,
@@ -1512,6 +1557,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     polls += 1;
     lastPollAt = Date.now();
     lastError = null;
+    if (deep) {
+      lastDeepPollAt = Date.now();
+      deepPolls += 1;
+      nextDeepPollAt =
+        deepPollIntervalMs > 0 ? lastDeepPollAt + deepPollIntervalMs : null;
+    }
 
     const summary = {
       at: Date.now(),
@@ -1526,6 +1577,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       events: events.length,
       firstSnapshot: first && !announce,
       announced: announce,
+      deep,
       sources,
       proxyTier,
       proxyHost,
@@ -1540,6 +1592,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       hyperLight,
       skipBff,
       hyperSolves,
+      deepPolls,
+      lastDeepPollAt,
+      nextDeepPollAt,
+      deepPollIntervalMs,
     };
     bus.emit("poll", summary);
 
@@ -1582,11 +1638,24 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
   async function loop() {
     while (running && !stopping) {
+      const deep = deepPollDue();
       try {
-        await pollOnce();
+        await pollOnce({ deep });
       } catch (e) {
         lastError = e?.message || String(e);
-        bus.emit("error", { at: Date.now(), error: lastError, polls, store: "pokemoncentre" });
+        // Still advance deep cadence on failure so we don't Hyper-retry every 15s.
+        if (deep) {
+          lastDeepPollAt = Date.now();
+          nextDeepPollAt =
+            deepPollIntervalMs > 0 ? lastDeepPollAt + deepPollIntervalMs : null;
+        }
+        bus.emit("error", {
+          at: Date.now(),
+          error: lastError,
+          polls,
+          deep,
+          store: "pokemoncentre",
+        });
         await sleep(Math.min(intervalMs, 8_000));
       }
       if (!running || stopping) break;
@@ -1619,6 +1688,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     running = true;
     stopping = false;
     startedAt = Date.now();
+    if (deepPollIntervalMs > 0) {
+      nextDeepPollAt = startedAt + deepPollInitialDelayMs;
+    }
     const myGen = ++loopGeneration;
     loopPromise = loop()
       .catch((e) => {
@@ -1712,6 +1784,16 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       hyperLight,
       skipBff,
       hyperSolves,
+      deepPollIntervalMs,
+      deepPollInitialDelayMs,
+      deepPolls,
+      lastDeepPollAt,
+      nextDeepPollAt:
+        nextDeepPollAt ||
+        (deepPollIntervalMs > 0 && startedAt
+          ? lastDeepPollAt || startedAt + deepPollInitialDelayMs
+          : null),
+      deepPollDue: deepPollDue(),
       skus,
       discoveryEnable,
       discoveryPaths,

@@ -639,7 +639,7 @@ pcMonitor.on("stock_changed", (ev) => {
 pcMonitor.on("poll", (s) => {
   if (s.polls <= 3 || s.polls % 8 === 0 || s.events > 0) {
     console.log(
-      `[pkc-poll] #${s.polls} products=${s.products} inStock=${s.inStock} soft=${s.softListed} pending=${s.softPending ?? "?"} events=${s.events} ms=${s.ms} hyperSolves=${s.hyperSolves ?? "?"} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
+      `[pkc-poll] #${s.polls}${s.deep ? " DEEP" : ""} products=${s.products} inStock=${s.inStock} soft=${s.softListed} pending=${s.softPending ?? "?"} events=${s.events} ms=${s.ms} hyperSolves=${s.hyperSolves ?? "?"} host=${s.proxyHost}${s.firstSnapshot ? " (baseline)" : ""}`,
     );
   }
   // Persist catalog so redeploys don't re-baseline / re-burn Hyper on the same SKUs.
