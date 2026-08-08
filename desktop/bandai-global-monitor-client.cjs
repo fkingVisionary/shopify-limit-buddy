@@ -69,25 +69,33 @@ function formatMonitorFeedStatusLine(opts = {}) {
 function parseWatch(task = {}) {
   const productIds = new Set();
   const keywords = [];
-  const sku = String(task.bandaiWatchSku || task.productId || task.input || "").trim();
+  const sku = String(
+    task.bandaiWatchSku || task.pcWatchSku || task.productId || task.sku || task.input || "",
+  ).trim();
   if (sku) {
     const m = sku.match(/\b(N\d{7,}[A-Z0-9]*|A\d{7,}[A-Z0-9]*|NAI[A-Z0-9]+)\b/i);
     if (m) productIds.add(m[1].toUpperCase());
-    else productIds.add(sku.toUpperCase());
+    else if (!/^https?:\/\//i.test(sku)) productIds.add(sku.toUpperCase());
   }
-  const pdp = String(task.pdpUrl || task.storeUrl || "");
+  const pdp = String(task.pdpUrl || task.storeUrl || task.input || "");
   const pm = pdp.match(/\/item\/([A-Za-z0-9]+)/i);
   if (pm) productIds.add(pm[1].toUpperCase());
-  const kwRaw = task.bandaiWatchKeywords || task.keywords || "";
+  const pcm = pdp.match(/\/product\/([A-Za-z0-9_-]+)/i);
+  if (pcm) productIds.add(pcm[1].toUpperCase());
+  const kwRaw = task.bandaiWatchKeywords || task.pcWatchKeywords || task.keywords || "";
   for (const part of String(kwRaw).split(/[,|\n]/)) {
     const t = part.trim();
     if (t) keywords.push(t.toLowerCase());
   }
-  return { productIds: [...productIds], keywords };
+  const store = String(task.store || task.storeId || "").trim().toLowerCase() || null;
+  return { productIds: [...productIds], keywords, store };
 }
 
 function eventMatchesWatch(ev, watch) {
   if (!ev?.inStock && ev?.inStock !== undefined) return false;
+  const watchStore = String(watch.store || "").toLowerCase();
+  const evStore = String(ev?.store || ev?.meta?.store || "bandai").toLowerCase();
+  if (watchStore && watchStore !== evStore) return false;
   const pid = String(ev?.productId || "").toUpperCase();
   if (watch.productIds?.length && pid && watch.productIds.includes(pid)) return true;
   const blob = `${ev?.title || ""} ${ev?.productId || ""}`.toLowerCase();

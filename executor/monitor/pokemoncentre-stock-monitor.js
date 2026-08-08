@@ -1,0 +1,688 @@
+// Pokémon Centre (PKC) stock monitor — same event contract as Bandai.
+// Sticky Hyper edge warm (Incapsula Reese84 + DataDome) → BFF search + product/status.
+// Emits stock_changed for preload / restock / OOS. Decoupled from checkout.
+
+import { EventEmitter } from "node:events";
+import { makeDispatcher, createJar } from "../http.js";
+import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
+import { diffCatalog } from "./bandai-stock-monitor.js";
+import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";
+import { warmPokemonCentre } from "../adapters/pokemoncentre-edge.js";
+import {
+  getPublicToken,
+  cortexApiHeaders,
+  PC_API_BASE,
+  PC_CORTEX_SCOPE,
+} from "../adapters/pokemoncentre-cortex.js";
+import { hyperConfigured } from "../antibot.js";
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Cortex scope by storefront locale (override via PC_*_SCOPE env). */
+export function cortexScopeForLocale(locale) {
+  const loc = normalizePcLocale(locale) || "en-au";
+  if (loc === "en-au") return process.env.PC_AU_SCOPE || "pokemon-au";
+  if (loc === "en-nz") return process.env.PC_NZ_SCOPE || "pokemon-nz";
+  if (loc === "en-ca") return process.env.PC_CA_SCOPE || "pokemon-ca";
+  if (loc === "en-gb") return process.env.PC_GB_SCOPE || "pokemon-uk";
+  if (loc === "en-us") return process.env.PC_US_SCOPE || "pokemon";
+  return PC_CORTEX_SCOPE;
+}
+
+function parseList(raw) {
+  if (Array.isArray(raw)) return raw.map((s) => String(s || "").trim()).filter(Boolean);
+  return String(raw || "")
+    .split(/[\n,|]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Normalize BFF search / product-status / PDP soft payload → catalog row.
+ * inStock true for AVAILABLE + AVAILABLE_FOR_PRE_ORDER (preload catch).
+ */
+export function normalizePcCatalogCard(p, { source } = {}) {
+  if (!p || typeof p !== "object") return null;
+  const productId = String(
+    p.code || p.productCode || p.sku || p.productId || p.id || "",
+  ).trim();
+  if (!productId) return null;
+
+  const availRaw = String(
+    p.availability || p.stockStatus || p.status || p.inventoryStatus || "",
+  ).toUpperCase();
+  let inStock = null;
+  if (/AVAILABLE_FOR_PRE_ORDER|PRE[_-]?ORDER/i.test(availRaw)) inStock = true;
+  else if (/^AVAILABLE$|IN[_-]?STOCK|IN STOCK/i.test(availRaw)) inStock = true;
+  else if (/NOT_AVAILABLE|SOLD_OUT|OUT_OF_STOCK|UNAVAILABLE/i.test(availRaw)) inStock = false;
+  else if (typeof p.inStock === "boolean") inStock = p.inStock;
+  else if (typeof p.available === "boolean") inStock = p.available;
+  else if (p.addToCartForm || p.epItemId) inStock = true;
+
+  if (inStock == null) return null;
+
+  const title = p.name || p.title || p.productName || null;
+  const imageUrl =
+    p.imageUrl ||
+    p.thumbnailUrl ||
+    p.image ||
+    (Array.isArray(p.images) ? p.images[0]?.url || p.images[0] : null) ||
+    null;
+  let price = null;
+  const amt = p.purchasePrice?.amount ?? p.listPrice?.amount ?? p.price?.amount ?? p.price;
+  if (amt != null && Number.isFinite(Number(amt))) {
+    const cur = p.purchasePrice?.currency || p.listPrice?.currency || p.currency || "USD";
+    price = `${cur} ${Number(amt).toFixed(Number(amt) % 1 ? 2 : 0)}`;
+  }
+
+  return {
+    productId,
+    inStock: Boolean(inStock),
+    availability: availRaw || null,
+    preorder: /PRE[_-]?ORDER/i.test(availRaw),
+    addToCartForm: p.addToCartForm || null,
+    epItemId: p.epItemId || null,
+    title: title ? String(title) : null,
+    imageUrl: imageUrl ? String(imageUrl) : null,
+    price,
+    store: "pokemoncentre",
+    source: source || null,
+  };
+}
+
+function extractSearchProducts(json) {
+  if (!json || typeof json !== "object") return [];
+  if (Array.isArray(json)) return json;
+  const candidates = [
+    json.docs,
+    json.results,
+    json.products,
+    json.items,
+    json.data?.docs,
+    json.data?.results,
+    json.data?.products,
+    json.response?.docs,
+    json.hits,
+  ];
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c;
+  }
+  return [];
+}
+
+/**
+ * @param {object} [opts]
+ */
+export function createPokemonCentreStockMonitor(opts = {}) {
+  const bus = new EventEmitter();
+  bus.setMaxListeners(50);
+
+  const locale = normalizePcLocale(opts.locale || process.env.PC_MONITOR_LOCALE || "en-us") || "en-us";
+  const scope = opts.scope || cortexScopeForLocale(locale);
+  const base = pcBaseFor(locale);
+  let intervalMs = Math.max(
+    5_000,
+    Number(opts.intervalMs || process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
+  );
+  const stickyPolls = Math.max(
+    1,
+    Number(opts.stickyPolls || process.env.PC_MONITOR_STICKY_POLLS) || 4,
+  );
+  const stickyMaxMs = Math.max(
+    30_000,
+    Number(opts.stickyMaxMs || process.env.PC_MONITOR_STICKY_MAX_MS) || 120_000,
+  );
+  const searchRows = Math.min(
+    40,
+    Math.max(5, Number(opts.searchRows || process.env.PC_MONITOR_SEARCH_ROWS) || 20),
+  );
+  let keywords = parseList(opts.keywords || process.env.PC_MONITOR_KEYWORDS || "elite trainer box");
+  let skus = parseList(opts.skus || process.env.PC_MONITOR_SKUS || "").map((s) => s.toUpperCase());
+
+  const pool = opts.proxyPool || createMonitorProxyPool(opts.proxy || {});
+  /** @type {Map<string, object>} */
+  let snapshot = new Map();
+  let running = false;
+  let stopping = false;
+  let loopPromise = null;
+  let polls = 0;
+  let lastError = null;
+  let lastPollAt = null;
+  let startedAt = null;
+  let restarts = 0;
+  let rotates = 0;
+  let loopGeneration = 0;
+  let sticky = null;
+  let proxyGate = Promise.resolve();
+  let autoRestartTimer = null;
+  let activePollAbort = null;
+  let edgeWarms = 0;
+  let hyperRequired = false;
+
+  function stickyExpired() {
+    if (!sticky) return true;
+    if (sticky.used >= stickyPolls) return true;
+    if (!sticky.edgeOk) return true;
+    const age = Date.now() - (sticky.openedAt || 0);
+    return age >= stickyMaxMs;
+  }
+
+  async function closeSticky() {
+    const s = sticky;
+    sticky = null;
+    if (!s?.dispatcher) return;
+    try {
+      await Promise.race([
+        s.dispatcher.close?.() || Promise.resolve(),
+        sleep(1_500),
+      ]);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function ensureEdge(session, ctx) {
+    const warm = await warmPokemonCentre(session, ctx);
+    edgeWarms += 1;
+    if (!warm.ok) {
+      const note = String(warm.note || "");
+      if (/HYPER_API_KEY|hyper/i.test(note)) hyperRequired = true;
+      return { ok: false, note: warm.note || "edge_warm_failed" };
+    }
+    const tok = await getPublicToken(session, ctx, { locale, scope });
+    if (!tok.ok) {
+      return { ok: false, note: tok.note || "public_token_failed" };
+    }
+    return { ok: true, note: warm.note || "edge+token ok", token: tok };
+  }
+
+  async function withProxyCtx(fn) {
+    const prev = proxyGate;
+    let release;
+    proxyGate = new Promise((r) => {
+      release = r;
+    });
+    await prev;
+    try {
+      if (stickyExpired()) {
+        const prevHost = sticky?.url || null;
+        await closeSticky();
+        const pick = pool.next();
+        if (!pick.ok) throw new Error(pick.error || "monitor_proxy_pool_exhausted");
+        if (prevHost && pick.url !== prevHost) rotates += 1;
+        else if (!prevHost) rotates += 1;
+        const jar = createJar();
+        const dispatcher = makeDispatcher(pick.url, { forceUndici: true });
+        const ctx = { jar, dispatcher };
+        const session = createPcSession(ctx, { locale });
+        sticky = {
+          url: pick.url,
+          tier: pick.tier,
+          jar,
+          dispatcher,
+          ctx,
+          session,
+          used: 0,
+          openedAt: Date.now(),
+          edgeOk: false,
+        };
+        const edge = await ensureEdge(session, ctx);
+        if (!edge.ok) {
+          pool.markFail(sticky.url);
+          await closeSticky();
+          throw new Error(edge.note || "pc_edge_failed");
+        }
+        sticky.edgeOk = true;
+        sticky.edgeNote = edge.note;
+        pool.markOk(sticky.url);
+      }
+      sticky.used += 1;
+      try {
+        const out = await fn(sticky.ctx, sticky);
+        pool.markOk(sticky.url);
+        return out;
+      } catch (e) {
+        pool.markFail(sticky.url);
+        await closeSticky();
+        throw e;
+      }
+    } finally {
+      release?.();
+    }
+  }
+
+  async function bffGet(session, path, signal) {
+    const url = path.startsWith("http") ? path : `${PC_API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
+    const token = session.state.cortexAuth?.accessToken;
+    const headers = cortexApiHeaders({
+      accessToken: token,
+      locale,
+      scope,
+      referer: `${base}/`,
+    });
+    const res = await session.get(url, { headers, api: true });
+    if (signal?.aborted) {
+      const err = new Error("poll_aborted");
+      err.code = "POLL_TIMEOUT";
+      throw err;
+    }
+    const text = await session.readText(res);
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    // Edge die mid-sticky — force re-warm next poll
+    if (res.status === 403 || res.status === 401) {
+      if (sticky) sticky.edgeOk = false;
+      const err = new Error(`bff_${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    if (res.status >= 400) {
+      const err = new Error(`bff_${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return { status: res.status, json, text };
+  }
+
+  async function fetchCatalogOnce(signal) {
+    const run = async (ctx, meta) => {
+      const session = meta.session;
+      /** @type {Map<string, object>} */
+      const next = new Map();
+      const sources = [];
+
+      for (const kw of keywords) {
+        if (signal?.aborted) {
+          const err = new Error("poll_aborted");
+          err.code = "POLL_TIMEOUT";
+          throw err;
+        }
+        const q = encodeURIComponent(kw);
+        try {
+          const { json } = await bffGet(session, `/search?q=${q}&rows=${searchRows}`, signal);
+          const products = extractSearchProducts(json);
+          let n = 0;
+          for (const p of products) {
+            const row = normalizePcCatalogCard(p, { source: `search:${kw}` });
+            if (!row) continue;
+            next.set(row.productId.toUpperCase(), { ...row, productId: row.productId });
+            n += 1;
+          }
+          sources.push({ kind: "search", keyword: kw, count: n, ok: true });
+        } catch (e) {
+          sources.push({
+            kind: "search",
+            keyword: kw,
+            ok: false,
+            note: e?.message || String(e),
+          });
+          throw e;
+        }
+        await sleep(120 + Math.floor(Math.random() * 180));
+      }
+
+      for (const sku of skus) {
+        if (signal?.aborted) {
+          const err = new Error("poll_aborted");
+          err.code = "POLL_TIMEOUT";
+          throw err;
+        }
+        try {
+          const { json } = await bffGet(
+            session,
+            `/product/status/${encodeURIComponent(sku)}`,
+            signal,
+          );
+          const payload = json?.product || json?.data || json;
+          const row = normalizePcCatalogCard(
+            { ...(payload && typeof payload === "object" ? payload : {}), code: sku, ...(typeof payload === "string" ? { availability: payload } : {}) },
+            { source: "product_status" },
+          );
+          // Some status payloads are bare enum strings
+          let final = row;
+          if (!final && typeof json?.availability === "string") {
+            final = normalizePcCatalogCard(
+              { code: sku, availability: json.availability, name: json.name || json.title },
+              { source: "product_status" },
+            );
+          }
+          if (!final && typeof json === "object") {
+            final = normalizePcCatalogCard(
+              { code: sku, availability: json.status || json.availability, name: json.name },
+              { source: "product_status" },
+            );
+          }
+          if (final) {
+            const id = final.productId.toUpperCase();
+            const prev = next.get(id);
+            // Status is authoritative for watched SKUs
+            next.set(id, { ...prev, ...final, productId: final.productId });
+            sources.push({ kind: "product_status", sku, ok: true, inStock: final.inStock });
+          } else {
+            sources.push({ kind: "product_status", sku, ok: true, note: "unparsed" });
+          }
+        } catch (e) {
+          sources.push({
+            kind: "product_status",
+            sku,
+            ok: false,
+            note: e?.message || String(e),
+          });
+          // Don't kill whole poll for one SKU miss unless auth died
+          if (e?.status === 401 || e?.status === 403) throw e;
+        }
+        await sleep(80 + Math.floor(Math.random() * 120));
+      }
+
+      return {
+        catalog: next,
+        sources,
+        proxyTier: meta.tier,
+        proxyHost: String(meta.url || "")
+          .replace(/^https?:\/\//, "")
+          .split("@")
+          .pop()
+          ?.split(":")[0],
+        edgeNote: meta.edgeNote || null,
+      };
+    };
+    return withProxyCtx(run);
+  }
+
+  async function pollOnce() {
+    const t0 = Date.now();
+    const pollBudgetMs = Math.max(
+      45_000,
+      Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS) || 120_000,
+    );
+    const ac = new AbortController();
+    activePollAbort = ac;
+    const timer = setTimeout(() => ac.abort(), pollBudgetMs);
+    let catalog;
+    let sources;
+    let proxyTier;
+    let proxyHost;
+    let edgeNote;
+    try {
+      const raced = await fetchCatalogOnce(ac.signal);
+      catalog = raced.catalog;
+      sources = raced.sources;
+      proxyTier = raced.proxyTier;
+      proxyHost = raced.proxyHost;
+      edgeNote = raced.edgeNote;
+    } catch (e) {
+      if (sticky?.url) pool.markFail(sticky.url);
+      await closeSticky();
+      if (
+        ac.signal.aborted ||
+        e?.code === "POLL_TIMEOUT" ||
+        e?.name === "AbortError"
+      ) {
+        const err = new Error(`poll_timeout_${pollBudgetMs}ms`);
+        err.code = "POLL_TIMEOUT";
+        throw err;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      if (activePollAbort === ac) activePollAbort = null;
+    }
+
+    // Key map by uppercase for stable diffs
+    const keyed = new Map();
+    for (const [id, row] of catalog) {
+      keyed.set(String(id).toUpperCase(), { ...row, productId: row.productId || id });
+    }
+
+    const prev = snapshot;
+    const first = prev.size === 0;
+    const events = first ? [] : diffCatalog(prev, keyed);
+    snapshot = keyed;
+    polls += 1;
+    lastPollAt = Date.now();
+    lastError = null;
+
+    const summary = {
+      at: Date.now(),
+      ms: Date.now() - t0,
+      polls,
+      products: keyed.size,
+      inStock: [...keyed.values()].filter((r) => r.inStock).length,
+      events: events.length,
+      firstSnapshot: first,
+      sources,
+      proxyTier,
+      proxyHost,
+      intervalMs,
+      locale,
+      store: "pokemoncentre",
+      edgeNote,
+    };
+    bus.emit("poll", summary);
+
+    for (const ev of events) {
+      const m = ev.meta || {};
+      const reason =
+        ev.reason === "new_in_stock" && m.preorder ? "preorder_live" : ev.reason;
+      bus.emit("stock_changed", {
+        productId: ev.productId,
+        inStock: ev.inStock,
+        timestamp: ev.timestamp,
+        reason,
+        store: "pokemoncentre",
+        locale,
+        title: m.title || null,
+        imageUrl: m.imageUrl || null,
+        price: m.price || null,
+        availability: m.availability || null,
+        preorder: Boolean(m.preorder),
+        meta: {
+          title: m.title || null,
+          imageUrl: m.imageUrl || null,
+          price: m.price || null,
+          availability: m.availability || null,
+          preorder: Boolean(m.preorder),
+          store: "pokemoncentre",
+          locale,
+        },
+      });
+    }
+    return { summary, events };
+  }
+
+  async function loop() {
+    while (running && !stopping) {
+      try {
+        await pollOnce();
+      } catch (e) {
+        lastError = e?.message || String(e);
+        bus.emit("error", { at: Date.now(), error: lastError, polls, store: "pokemoncentre" });
+        await sleep(Math.min(intervalMs, 8_000));
+      }
+      if (!running || stopping) break;
+      await sleep(intervalMs);
+    }
+  }
+
+  function start() {
+    if (running) return;
+    if (!keywords.length && !skus.length) {
+      lastError = "pc_monitor_needs_keywords_or_skus";
+      bus.emit("error", { at: Date.now(), error: lastError, polls: 0 });
+      return;
+    }
+    if (!hyperConfigured()) {
+      hyperRequired = true;
+      // Still start — clear home may work; Reese/DD needs Hyper when challenged.
+      bus.emit("error", {
+        at: Date.now(),
+        error: "HYPER_API_KEY missing — PKC edge solve unavailable until set",
+        polls: 0,
+        warn: true,
+      });
+    }
+    if (autoRestartTimer) {
+      clearTimeout(autoRestartTimer);
+      autoRestartTimer = null;
+    }
+    running = true;
+    stopping = false;
+    startedAt = Date.now();
+    const myGen = ++loopGeneration;
+    loopPromise = loop()
+      .catch((e) => {
+        lastError = e?.message || String(e);
+        bus.emit("error", { at: Date.now(), error: lastError, polls, fatal: true });
+      })
+      .finally(() => {
+        if (myGen !== loopGeneration) return;
+        const intentional = stopping;
+        running = false;
+        loopPromise = null;
+        if (!intentional) {
+          autoRestartTimer = setTimeout(() => {
+            autoRestartTimer = null;
+            if (!running && !stopping) {
+              restarts += 1;
+              bus.emit("watchdog", { at: Date.now(), reason: "loop_exited", restarts });
+              start();
+            }
+          }, 2_000);
+        }
+      });
+    bus.emit("started", {
+      at: Date.now(),
+      intervalMs,
+      keywords,
+      skus,
+      locale,
+      scope,
+      store: "pokemoncentre",
+      pool: pool.stats(),
+      origin: PC_ORIGIN,
+    });
+  }
+
+  async function stop() {
+    stopping = true;
+    running = false;
+    loopGeneration += 1;
+    if (autoRestartTimer) {
+      clearTimeout(autoRestartTimer);
+      autoRestartTimer = null;
+    }
+    try {
+      activePollAbort?.abort();
+    } catch {
+      /* ignore */
+    }
+    const pending = loopPromise;
+    loopPromise = null;
+    if (pending) await Promise.race([pending.catch(() => {}), sleep(5_000)]);
+    await closeSticky();
+    bus.emit("stopped", { at: Date.now(), polls, store: "pokemoncentre" });
+  }
+
+  async function restart(reason = "manual") {
+    restarts += 1;
+    bus.emit("watchdog", {
+      at: Date.now(),
+      reason: String(reason || "restart"),
+      restarts,
+      store: "pokemoncentre",
+    });
+    await stop();
+    try {
+      pool.clearCooldowns?.();
+    } catch {
+      /* ignore */
+    }
+    stopping = false;
+    start();
+    return status();
+  }
+
+  function status() {
+    return {
+      running,
+      polls,
+      intervalMs,
+      stickyPolls,
+      stickyMaxMs,
+      rotates,
+      locale,
+      scope,
+      store: "pokemoncentre",
+      keywords,
+      skus,
+      products: snapshot.size,
+      inStock: [...snapshot.values()].filter((r) => r.inStock).length,
+      lastError,
+      lastPollAt,
+      startedAt,
+      restarts,
+      edgeWarms,
+      hyperRequired,
+      hyperConfigured: hyperConfigured(),
+      staleMs: lastPollAt
+        ? Date.now() - lastPollAt
+        : startedAt
+          ? Date.now() - startedAt
+          : null,
+      pool: pool.stats(),
+    };
+  }
+
+  return {
+    on: (...a) => bus.on(...a),
+    off: (...a) => bus.off(...a),
+    once: (...a) => bus.once(...a),
+    emit: (...a) => bus.emit(...a),
+    start,
+    stop,
+    restart,
+    pollOnce,
+    status,
+    getCatalog() {
+      return new Map(snapshot);
+    },
+    getProduct(productId) {
+      const id = String(productId || "").trim().toUpperCase();
+      if (!id) return null;
+      return snapshot.get(id) || null;
+    },
+    setKeywords(raw) {
+      const next = parseList(raw);
+      if (!next.length && !skus.length) throw new Error("pc_keywords_or_skus_required");
+      keywords = next;
+      return [...keywords];
+    },
+    setSkus(raw) {
+      skus = parseList(raw).map((s) => s.toUpperCase());
+      return [...skus];
+    },
+    setIntervalMs(ms) {
+      intervalMs = Math.max(5_000, Number(ms) || intervalMs);
+      return intervalMs;
+    },
+    replaceProxies(patch = {}) {
+      if (typeof pool.replaceLists !== "function") throw new Error("proxy_pool_immutable");
+      return pool.replaceLists(patch);
+    },
+    _setSnapshotForTest(map) {
+      snapshot = map instanceof Map ? map : new Map(Object.entries(map || {}));
+    },
+  };
+}
+
+export default {
+  createPokemonCentreStockMonitor,
+  normalizePcCatalogCard,
+  cortexScopeForLocale,
+};
