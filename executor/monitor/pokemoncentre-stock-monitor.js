@@ -3,7 +3,9 @@
 // Emits stock_changed for preload / restock / OOS. Decoupled from checkout.
 
 import { EventEmitter } from "node:events";
-import { makeDispatcher, createJar } from "../http.js";
+// Use slim undici helpers (same as Bandai) for dispatcher/jar. Session/edge still
+// pull request() via adapters → http.js (baked into the Railway monitor image).
+import { makeDispatcher, createJar } from "./http-undici.js";
 import { createMonitorProxyPool } from "./monitor-proxy-pool.js";
 import { diffCatalog } from "./bandai-stock-monitor.js";
 import { createPcSession, normalizePcLocale, pcBaseFor, PC_ORIGIN } from "../adapters/pokemoncentre-session.js";

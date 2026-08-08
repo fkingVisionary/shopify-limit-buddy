@@ -37,6 +37,8 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 | Var | Purpose |
 |---|---|
 | `MONITOR_TOKEN` | Bearer for admin / bot / writes (not required for Desktop SSE) |
+| `HYPER_API_KEY` | Pokémon Centre AU edge (Incapsula Reese84 + DataDome); Bandai polls without it |
+| `PC_MONITOR_ENABLE` | `1` (default) = PKC poller on when admin watchlist is set |
 | `MONITOR_FEED_PUBLIC` | `1` (default) = public SSE + catalog/cache reads; `0` = require Bearer |
 | `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
 | `BANDAI_MONITOR_ISP_PROXIES` | Monitor poll ISP list (bootstrap / env OSPs) |
