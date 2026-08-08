@@ -61,19 +61,36 @@ function pickPrice(hit) {
   return null;
 }
 
+function normalizeQtStore(raw) {
+  const s = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (s === "pokemon" || s === "pokemoncenter" || s === "pkc") return "pokemoncentre";
+  return s;
+}
+
 /**
  * Query string shared by public /qt bounce and local desktop bridge.
+ * Bandai: sku / nai / area. PKC: store=pokemoncentre + sku + url (+ locale).
  */
 export function buildQuickTaskQuery(hit, opts = {}) {
-  const area = String(opts.area || "au").toLowerCase();
-  const productId = String(hit?.productId || hit?.sku || "").trim();
+  const store = normalizeQtStore(opts.store || hit?.store);
+  const area = String(opts.area || hit?.area || "au").toLowerCase();
+  const locale = String(opts.locale || hit?.locale || "")
+    .trim()
+    .toLowerCase();
+  const productId = String(hit?.productId || hit?.sku || opts.sku || "").trim();
   const params = new URLSearchParams();
+  if (store) params.set("store", store);
   if (productId) params.set("sku", productId);
   const title = pickTitle(hit);
   if (title) params.set("title", String(title).slice(0, 120));
   const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
   if (nai) params.set("nai", String(nai));
-  params.set("area", area);
+  if (!store || store === "bandai") params.set("area", area);
+  if (store === "pokemoncentre" && locale) params.set("locale", locale);
+  const pdp = String(hit?.pdpUrl || hit?.url || opts.url || "").trim();
+  if (pdp && /^https?:\/\//i.test(pdp)) params.set("url", pdp);
   if (hit?.reason) params.set("reason", String(hit.reason).slice(0, 40));
   if (opts.sku && String(opts.sku).trim()) {
     params.set("sku", String(opts.sku).trim());
@@ -85,9 +102,11 @@ export function buildQuickTaskQuery(hit, opts = {}) {
   if (`http://127.0.0.1:${QUICKTASK_BRIDGE_PORT}/quicktask?${qs}`.length > 480) {
     const slim = new URLSearchParams();
     const sku = params.get("sku");
+    if (store) slim.set("store", store);
     if (sku) slim.set("sku", sku);
     if (nai) slim.set("nai", String(nai));
-    slim.set("area", area);
+    if (!store || store === "bandai") slim.set("area", area);
+    if (store === "pokemoncentre" && locale) slim.set("locale", locale);
     if (params.get("start") === "0") slim.set("start", "0");
     qs = slim.toString();
   }
@@ -146,16 +165,23 @@ export function buildEbaySoldUrl(hit, opts = {}) {
   return `https://www.${site}/sch/i.html?${params.toString()}`;
 }
 
-function restockActionLinks(hit, area) {
-  const qtUrl = buildQuickTaskBridgeUrl(hit, { area });
-  const createUrl = buildQuickTaskBridgeUrl(hit, { area, start: false });
+function restockActionLinks(hit, opts = {}) {
+  const area = String(opts.area || "au").toLowerCase();
+  const store = normalizeQtStore(opts.store || hit?.store);
+  const locale = opts.locale || hit?.locale;
+  const qtOpts = { area, store: store || undefined, locale: locale || undefined };
+  const qtUrl = buildQuickTaskBridgeUrl(hit, qtOpts);
+  const createUrl = buildQuickTaskBridgeUrl(hit, { ...qtOpts, start: false });
   const setupUrl = buildQuickTaskSetupUrl();
   const ebayUrl = buildEbaySoldUrl(hit);
   return { qtUrl, createUrl, setupUrl, ebayUrl };
 }
 
-function quickTaskComponents(hit, area) {
-  const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
+function quickTaskComponents(hit, opts = {}) {
+  const area = typeof opts === "string" ? opts : opts.area;
+  const linkOpts = typeof opts === "string" ? { area: opts } : opts || {};
+  if (area && !linkOpts.area) linkOpts.area = area;
+  const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, linkOpts);
   // Discord: max 5 buttons/row. QT + Create only + Setup + eBay (PDP in fields).
   return [
     {
@@ -249,7 +275,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
   const price = pickPrice(hit);
   const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
   const typeLabel = bandaiTypeLabel(reason);
-  const { qtUrl, ebayUrl } = restockActionLinks(hit, area);
+  const { qtUrl, ebayUrl } = restockActionLinks(hit, { area, store: "bandai" });
 
   const fields = monitorCompactFields({
     productId,
@@ -282,7 +308,7 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
           : new Date().toISOString(),
       },
     ],
-    components: quickTaskComponents(hit, area),
+    components: quickTaskComponents(hit, { area, store: "bandai" }),
   };
 }
 
@@ -343,7 +369,7 @@ export function vantaOosDiscordBody(hit, opts = {}) {
 const VANTA_CHECKOUT_COLOR = 0x22c55e; // green — public checkout feed
 
 /**
- * Pokémon Centre PDP URL from catalog hit (no Bandai QT / Setup links).
+ * Pokémon Centre PDP URL from catalog hit.
  * @param {object} hit
  * @param {string} [locale]
  */
@@ -430,7 +456,18 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
       /PRE[_-]?ORDER/i.test(String(hit?.availability || hit?.meta?.availability || "")));
   const pdp = pcPdpUrl(hit, locale);
   const price = pickPrice(hit);
-  const ebayUrl = buildEbaySoldUrl(hit);
+  const qtHit = {
+    ...hit,
+    productId,
+    store: "pokemoncentre",
+    locale,
+    pdpUrl: pdp,
+    title,
+  };
+  const { qtUrl, ebayUrl } = restockActionLinks(qtHit, {
+    store: "pokemoncentre",
+    locale,
+  });
   const stockxUrl = buildStockxSearchUrl(hit);
   const snkrUrl = buildSnkrDunkSearchUrl(hit);
   const typeLabel = pkcTypeLabel({ isSoftListed, isPreload, reason });
@@ -457,7 +494,7 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
     inStock,
     cartLimit: cartLimit != null ? cartLimit : undefined,
     inviteOnly,
-    linksMarkdown: `[StockX](${stockxUrl})`,
+    linksMarkdown: `[StockX](${stockxUrl}) · [SnkrDunk](${snkrUrl}) · [eBay](${ebayUrl}) · [⚡ Quick Task](${qtUrl})`,
   });
 
   return {
@@ -473,24 +510,17 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
         fields,
         ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: `SnkrDunk | Ebay | Vanta${isTest ? " · test" : ""}`,
+          text: isTest
+            ? `Vanta · test · [Create only] · [Setup]`
+            : `Vanta · ${typeLabel} · eBay · Quick Task`,
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
           : new Date().toISOString(),
       },
     ],
-    components: [
-      {
-        type: 1,
-        components: [
-          { type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) },
-          { type: 2, style: 5, label: "StockX", url: stockxUrl.slice(0, 512) },
-          { type: 2, style: 5, label: "eBay", url: ebayUrl.slice(0, 512) },
-          { type: 2, style: 5, label: "SnkrDunk", url: snkrUrl.slice(0, 512) },
-        ],
-      },
-    ],
+    // Same QT stack as Bandai (PDP / StockX stay in Links field).
+    components: quickTaskComponents(qtHit, { store: "pokemoncentre", locale }),
   };
 }
 

@@ -3,7 +3,9 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
   parseBandaiProductInput,
+  parsePokemonCentreProductInput,
   targetFromMonitorHit,
+  targetFromPcMonitorHit,
   buildQuickTaskDraft,
   normalizeQuickTaskPreset,
   resolveQuickTaskProfiles,
@@ -104,4 +106,43 @@ test("resolveQuickTaskProfiles supports group and multi", () => {
   const legacy = normalizeQuickTaskPreset({ profileId: "a" });
   assert.equal(legacy.profileSource, "single");
   assert.equal(legacy.profileId, "a");
+});
+
+test("PKC parse + QT draft from monitor hit", () => {
+  const u = parsePokemonCentreProductInput(
+    "https://www.pokemoncenter.com/en-au/product/189-85799/twilight-etb",
+  );
+  assert.equal(u.ok, true);
+  assert.equal(u.productId, "189-85799");
+  assert.equal(u.locale, "en-au");
+  assert.match(u.pdpUrl, /twilight-etb/);
+
+  const sku = parsePokemonCentreProductInput("10-10186-109", { locale: "en-au" });
+  assert.equal(sku.ok, true);
+  assert.equal(sku.productId, "10-10186-109");
+
+  const target = targetFromPcMonitorHit(
+    {
+      productId: "189-85799",
+      title: "Twilight ETB",
+      slug: "twilight-etb",
+      locale: "en-au",
+    },
+    { locale: "en-au" },
+  );
+  const preset = normalizeQuickTaskPreset({
+    store: "pokemoncentre",
+    profileId: "prof_1",
+    proxyGroupId: "px_1",
+    pcMode: "checkout",
+    qty: 1,
+  });
+  assert.equal(preset.store, "pokemoncentre");
+  assert.equal(preset.pcMode, "checkout");
+  const built = buildQuickTaskDraft(preset, target);
+  assert.equal(built.ok, true);
+  assert.equal(built.task.store, "pokemoncentre");
+  assert.equal(built.task.pcMode, "checkout");
+  assert.equal(built.task.pcLocale, "en-au");
+  assert.match(built.task.pdpUrl, /189-85799/);
 });

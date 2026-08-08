@@ -158,7 +158,9 @@ const {
   normalizeQuickTaskPreset,
   resolveQuickTaskProfiles,
   parseBandaiProductInput,
+  parsePokemonCentreProductInput,
   targetFromMonitorHit,
+  targetFromPcMonitorHit,
   buildQuickTaskDraft,
   contextFromMonitorHit,
   contextFromQuickTask,
@@ -3443,9 +3445,35 @@ ipcMain.handle("desktop:checkout-run-log", (_e, opts = {}) => ({
  * and fires Smart Actions with trigger=quicktask.
  */
 async function runQuickTaskPayload(payload = {}) {
-  const preset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+  const basePreset = normalizeQuickTaskPreset(state.settings.quickTaskPreset || {});
+  const storeRaw = String(payload.store || payload.hit?.store || "")
+    .trim()
+    .toLowerCase();
+  const storeOverride =
+    storeRaw === "pokemon" || storeRaw === "pokemoncenter" || storeRaw === "pkc"
+      ? "pokemoncentre"
+      : storeRaw || "";
+  const isPc =
+    storeOverride === "pokemoncentre" ||
+    /pokemoncenter\.com/i.test(String(payload.input || payload.url || payload.hit?.pdpUrl || ""));
+  const preset = normalizeQuickTaskPreset({
+    ...basePreset,
+    ...(isPc ? { store: "pokemoncentre" } : storeOverride ? { store: storeOverride } : {}),
+  });
+
   let target;
-  if (payload.hit && payload.hit.productId) {
+  if (isPc || preset.store === "pokemoncentre") {
+    if (payload.hit && payload.hit.productId) {
+      target = targetFromPcMonitorHit(payload.hit, {
+        locale: payload.locale || payload.hit.locale || "en-au",
+      });
+    } else {
+      target = parsePokemonCentreProductInput(
+        payload.input || payload.url || payload.sku || "",
+        { locale: payload.locale || "en-au" },
+      );
+    }
+  } else if (payload.hit && payload.hit.productId) {
     target = targetFromMonitorHit(payload.hit, {
       area: payload.area || preset.bandaiArea || "au",
     });
@@ -3461,6 +3489,7 @@ async function runQuickTaskPayload(payload = {}) {
   if (payload.hit?.areaItemNo && !target.areaItemNo) {
     target.areaItemNo = payload.hit.areaItemNo;
   }
+  if (payload.hit?.pdpUrl && !target.pdpUrl) target.pdpUrl = payload.hit.pdpUrl;
 
   const profileSlots = resolveQuickTaskProfiles(preset, state.db.profiles || []);
   if (!profileSlots.length) {
@@ -3545,7 +3574,7 @@ async function runQuickTaskPayload(payload = {}) {
   }
 
   const ctx = contextFromQuickTask(target, {
-    store: preset.store,
+    store: built.task.store || preset.store,
     label: row.label,
   });
   void smartActions.handleQuickTaskContext(ctx);

@@ -86,3 +86,28 @@ test("setup deep link and ebay sold url", () => {
   assert.match(ebay, /METAL/);
   assert.equal(/premium\s+bandai/i.test(decodeURIComponent(ebay)), false);
 });
+
+test("PKC Quick Task deep link carries store + locale + url", () => {
+  const url = buildQuickTaskDeepLink({
+    productId: "189-85799",
+    title: "Twilight ETB",
+    store: "pokemoncentre",
+    locale: "en-au",
+    pdpUrl: "https://www.pokemoncenter.com/en-au/product/189-85799/twilight-etb",
+    reason: "soft_listed",
+  });
+  assert.match(url, /store=pokemoncentre/);
+  assert.match(url, /sku=189-85799/);
+  assert.match(url, /locale=en-au/);
+  assert.match(url, /url=https/);
+  assert.ok(url.length <= 512);
+
+  const parsed = parseQuickTaskDeepLink(
+    `http://127.0.0.1:${BRIDGE_PORT}/quicktask?store=pokemoncentre&sku=189-85799&locale=en-au&url=https%3A%2F%2Fwww.pokemoncenter.com%2Fen-au%2Fproduct%2F189-85799%2Ftwilight&start=0`,
+  );
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.payload.store, "pokemoncentre");
+  assert.equal(parsed.payload.locale, "en-au");
+  assert.equal(parsed.payload.start, false);
+  assert.match(parsed.payload.input, /pokemoncenter\.com/);
+});
