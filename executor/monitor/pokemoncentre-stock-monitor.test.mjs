@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import {
   normalizePcCatalogCard,
   cortexScopeForLocale,
+  diffPcCatalog,
+  extractPcProductUrls,
 } from "./pokemoncentre-stock-monitor.js";
-import { diffCatalog } from "./bandai-stock-monitor.js";
 import { parseTaskWatch, eventMatchesWatch } from "./event-filter.js";
 
 assert.equal(cortexScopeForLocale("en-au"), "pokemon-au");
@@ -32,6 +33,32 @@ const oos = normalizePcCatalogCard({
   availability: "SOLD_OUT",
 });
 assert.equal(oos.inStock, false);
+assert.equal(oos.softListed, true);
+
+// Hours-ahead: NOT_AVAILABLE / coming soon must stay in catalog (not dropped).
+const soft = normalizePcCatalogCard({
+  code: "10-soft-1",
+  name: "Soft ETB",
+  availability: "NOT_AVAILABLE",
+});
+assert.equal(soft.inStock, false);
+assert.equal(soft.softListed, true);
+
+const coming = normalizePcCatalogCard({
+  code: "10-soon-1",
+  name: "Coming soon box",
+  availability: "COMING_SOON",
+});
+assert.equal(coming.inStock, false);
+assert.equal(coming.softListed, true);
+
+// Search card with title but no availability enum → soft list.
+const searchCard = normalizePcCatalogCard(
+  { code: "10-search-1", name: "Mystery Bundle" },
+  { source: "search:elite trainer" },
+);
+assert.equal(searchCard.inStock, false);
+assert.equal(searchCard.softListed, true);
 
 const atcForm = normalizePcCatalogCard({
   code: "10-preload-1",
@@ -44,11 +71,26 @@ const prev = new Map([["10-A", { productId: "10-A", inStock: false }]]);
 const next = new Map([
   ["10-A", { productId: "10-A", inStock: true, preorder: true }],
   ["10-B", { productId: "10-B", inStock: true }],
+  ["10-C", { productId: "10-C", inStock: false, softListed: true, availability: "NOT_AVAILABLE" }],
 ]);
-const events = diffCatalog(prev, next);
-assert.equal(events.length, 2);
+const events = diffPcCatalog(prev, next);
+assert.equal(events.length, 3);
 assert.ok(events.some((e) => e.reason === "restock" && e.productId === "10-A"));
 assert.ok(events.some((e) => e.reason === "new_in_stock" && e.productId === "10-B"));
+assert.ok(events.some((e) => e.reason === "soft_listed" && e.productId === "10-C" && e.inStock === false));
+
+const urls = extractPcProductUrls(
+  `
+  <url><loc>https://www.pokemoncenter.com/en-au/product/10-11111-001/elite-trainer-box</loc></url>
+  <a href="/en-au/product/10-22222-002/booster-bundle">x</a>
+  https://www.pokemoncenter.com/en-us/product/10-11111-001/us-slug
+  `,
+  { locale: "en-au" },
+);
+assert.ok(urls.some((u) => u.sku === "10-11111-001" && u.locale === "en-au"));
+assert.ok(urls.some((u) => u.sku === "10-22222-002"));
+const au = urls.find((u) => u.sku === "10-11111-001");
+assert.match(au.pdpUrl, /en-au\/product\/10-11111-001/);
 
 const watch = parseTaskWatch({
   pdpUrl: "https://www.pokemoncenter.com/en-us/product/10-10186-109/etb",

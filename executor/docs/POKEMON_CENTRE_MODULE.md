@@ -202,44 +202,26 @@ Bandai AU (merchant mid **1925**, `gem-bandai.global-e.com`) reached **issuer wi
 
 ---
 
-## 6a. Early signals — how people knew a box was coming (AU)
+## 6a. Early signals — random AU restocks (hours ahead)
 
-AU Pokémon Centre is still **under-monitored** vs US/UK, but paid Discord monitors
-(PokeScan / PokeNotify-class) and local communities have been filling in. “Knew before
-traditional monitors” usually means one of these layers — not magic:
+These are **not** calendar drops. AU exclusives / random restocks often soft-publish
+on the storefront **hours** before traditional monitors fire (those only score buyable
+`AVAILABLE` / ATC). US lag is a weak AU indicator — we rarely share the same SKUs.
 
-| Layer | What fires | Earliest? | In this repo |
+| Layer | What fires | Lead | Status |
 |---|---|---|---|
-| **Human / calendar** | TPCI newsletter, press, retailer calendars, Discord leakers, US exclusive teasers | Often **days** before buyable | Ops only — paste SKUs into `/admin` PKC watchlist |
-| **US/UK lead** | Same TPCI host; US lists SKU / preorder first, AU lags | Hours–days | Locale helpers exist; **no multi-locale poller yet** |
-| **CMS / soft publish** | Bloomreach / `resourceapi` / new `/product/{sku}/…` URL before search indexes | Minutes–hours | robots hint only — **not wired** |
-| **Sitemap / category diff** | New product URLs under `/en-au/category/…` or sitemap | Minutes | Probe script only (`pokemoncentre-isp-capture`) |
-| **BFF preload** | `AVAILABLE_FOR_PRE_ORDER` or `addToCartForm` on search / `product/status` | Seconds–minutes before “drop” chatter | **Live on Railway** → Discord `PKC preorder / preload` |
-| **Classic in-stock** | `AVAILABLE` flip / ATC on PDP | Drop moment | Same poller (`PKC stock`) |
-| **Queue / hCaptcha** | Queue page or captcha escalation | Confirms drop is *live* | Scaffold only — not a catalog lead |
+| **1. PDP soft-list** | New `/en-au/product/{sku}/…` as `NOT_AVAILABLE` / coming soon | **Hours** | **Live** → Discord amber `soft_listed` |
+| **2. Search card appears** | BFF search returns title/SKU while not buyable | **Hours** | **Live** — search keeps soft rows |
+| **4. Sitemap / category** | New product URLs in `/sitemap.xml` or TCG category HTML | **Hours** | **Live** — discovery on by default |
+| Preload buyable | `AVAILABLE_FOR_PRE_ORDER` / `addToCartForm` | Minutes–hours | Blue `preorder_live` |
+| Classic in-stock | `AVAILABLE` flip | Drop moment | Black `PKC stock` |
+| Queue | Waiting room live | At drop | Not a catalog lead |
 
-**Why traditional monitors feel late on AU**
+**Diff contract:** first poll baselines. Later, a **new** SKU with `inStock=false`
+emits `soft_listed` (not OOS). Soft → buyable later emits `restock` / `preorder_live`.
 
-1. Many only treat **`AVAILABLE` / ATC** as a hit and ignore **`AVAILABLE_FOR_PRE_ORDER`**.
-2. AU watchlists are thin — if the SKU isn’t seeded, keyword search never sees it.
-3. Hyper (Incapsula + DataDome) cost means fewer people run sticky AU edge polls.
-4. Paid services sometimes get **human T−** (EAP / “drop imminent” tips) that never
-   touch the storefront API.
-
-**Ahead-of-curve plan for us (ranked)**
-
-1. **Use what we already ship** — admin SKU watchlist + keyword BFF; treat preload as a
-   first-class ping (already: `preorder_live`). Lab-test embeds via `/admin` → Labs →
-   **Test PKC preload**.
-2. **Seed SKUs early** from US listings / Discord / newsletters into AU `product/status`
-   watches *before* AU search has them.
-3. **Next build:** US→AU lead poller (same Hyper warm pattern, `en-us` scope → alert AU).
-4. **Next build:** sitemap / category URL diff for unknown SKU discovery.
-5. **Later:** Bloomreach soft-publish + coming-soon→buyable transitions (keep
-   `NOT_AVAILABLE` rows in snapshot instead of dropping unknown availability).
-
-**Operator check:** `/admin` Labs → Test PKC stock / preload / OOS posts to the same
-`DISCORD_WEBHOOK_URL` as live hits (`POST /test-discord?store=pokemoncentre&kind=pkc-preload`).
+**Ops:** `/admin` Labs → **Test PKC soft-list**. Env: `PC_MONITOR_DISCOVERY=0` to disable
+sitemap/category; `PC_MONITOR_DISCOVERY_PATHS` to override paths.
 
 ---
 

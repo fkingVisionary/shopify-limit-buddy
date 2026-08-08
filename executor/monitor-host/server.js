@@ -455,7 +455,11 @@ async function handleStockChanged(ev) {
   }
 
   const reason = String(ev?.reason || "");
-  const isOos = ev?.inStock === false || reason === "went_oos";
+  const isSoftListed =
+    reason === "soft_listed" ||
+    reason === "new_listing" ||
+    Boolean(ev?.softListed || ev?.meta?.softListed);
+  const isOos = !isSoftListed && (ev?.inStock === false || reason === "went_oos");
   if (isOos) {
     if (runtime.notifyOos === false) return;
     try {
@@ -477,7 +481,8 @@ async function handleStockChanged(ev) {
     return;
   }
 
-  if (!ev?.inStock) return;
+  // Soft-listed = hours-ahead (page/search/sitemap) — ping even when inStock=false.
+  if (!ev?.inStock && !isSoftListed) return;
   try {
     if (store === "pokemoncentre") {
       const locale = ev.locale || runtime.pcLocale || "en-au";
@@ -488,9 +493,17 @@ async function handleStockChanged(ev) {
             locale,
             availability: ev.availability || ev.meta?.availability,
             preorder: Boolean(ev.preorder || ev.meta?.preorder || reason === "preorder_live"),
+            softListed: isSoftListed,
+            slug: ev.slug || ev.meta?.slug,
+            pdpUrl: ev.pdpUrl || ev.meta?.pdpUrl,
+            source: ev.meta?.source || ev.source,
             reason,
           },
-          { locale, preload: reason === "preorder_live" },
+          {
+            locale,
+            preload: reason === "preorder_live",
+            softListed: isSoftListed,
+          },
         ),
       );
       if (!r.ok && !r.skipped) console.warn("[discord:pkc]", r.status, r.error);
@@ -1078,10 +1091,11 @@ app.put("/admin/config", async (req, reply) => {
       runtime.pcMonitorEnable = Boolean(body.pcMonitorEnable);
       pcMonitorEnabled = runtime.pcMonitorEnable !== false;
     }
-    // Admin watchlist drives PKC start/stop (same lifecycle idea as Bandai keywords).
+    // Keywords/SKUs or sitemap/category discovery can keep PKC running.
     {
       const st = pcMonitor.status();
-      const hasWatch = (st.keywords?.length || 0) + (st.skus?.length || 0) > 0;
+      const hasWatch =
+        (st.keywords?.length || 0) + (st.skus?.length || 0) > 0 || Boolean(st.discoveryEnable);
       if (pcMonitorEnabled && monitorExpectRunning && hasWatch && !st.running) {
         pcMonitor.start();
       }
@@ -1303,7 +1317,13 @@ app.post("/test-discord", async (req, reply) => {
         ? "oos"
         : kind === "pkc-preload" || kind === "pkc_preload" || kind === "preload"
           ? "preload"
-          : "stock";
+          : kind === "pkc-soft" ||
+              kind === "pkc_soft" ||
+              kind === "soft" ||
+              kind === "soft_listed" ||
+              kind === "soft-listed"
+            ? "soft"
+            : "stock";
 
     let row = typeof pcMonitor.getProduct === "function" ? pcMonitor.getProduct(sku) : null;
     if (!row) {
@@ -1325,13 +1345,26 @@ app.post("/test-discord", async (req, reply) => {
       price: row?.price || body.price || null,
       availability:
         row?.availability ||
-        (pkcKind === "preload" ? "AVAILABLE_FOR_PRE_ORDER" : pkcKind === "oos" ? "NOT_AVAILABLE" : "AVAILABLE"),
+        (pkcKind === "preload"
+          ? "AVAILABLE_FOR_PRE_ORDER"
+          : pkcKind === "soft" || pkcKind === "oos"
+            ? "NOT_AVAILABLE"
+            : "AVAILABLE"),
       preorder: pkcKind === "preload",
-      reason: pkcKind === "oos" ? "went_oos" : pkcKind === "preload" ? "preorder_live" : "restock",
-      inStock: pkcKind !== "oos",
+      softListed: pkcKind === "soft",
+      reason:
+        pkcKind === "oos"
+          ? "went_oos"
+          : pkcKind === "preload"
+            ? "preorder_live"
+            : pkcKind === "soft"
+              ? "soft_listed"
+              : "restock",
+      inStock: pkcKind !== "oos" && pkcKind !== "soft",
       locale: pcLocale,
       slug: row?.slug || row?.meta?.slug || null,
       pdpUrl: row?.pdpUrl || row?.meta?.pdpUrl || null,
+      source: row?.source || (pkcKind === "soft" ? "sitemap" : null),
       at: new Date().toISOString(),
     };
     const payload =
@@ -1341,6 +1374,7 @@ app.post("/test-discord", async (req, reply) => {
             locale: pcLocale,
             test: true,
             preload: pkcKind === "preload",
+            softListed: pkcKind === "soft",
           });
 
     try {
@@ -1362,7 +1396,14 @@ app.post("/test-discord", async (req, reply) => {
         ok: true,
         discord: r.status,
         store: "pokemoncentre",
-        kind: pkcKind === "oos" ? "pkc-oos" : pkcKind === "preload" ? "pkc-preload" : "pkc",
+        kind:
+          pkcKind === "oos"
+            ? "pkc-oos"
+            : pkcKind === "preload"
+              ? "pkc-preload"
+              : pkcKind === "soft"
+                ? "pkc-soft"
+                : "pkc",
         synthetic: !row,
         product: {
           productId: hitForDiscord.productId,
@@ -1705,7 +1746,8 @@ console.log(
 hub.start();
 if (pcMonitorEnabled) {
   const pcSt = pcMonitor.status();
-  const hasWatch = (pcSt.keywords?.length || 0) + (pcSt.skus?.length || 0) > 0;
+  const hasWatch =
+    (pcSt.keywords?.length || 0) + (pcSt.skus?.length || 0) > 0 || Boolean(pcSt.discoveryEnable);
   if (hasWatch) {
     pcMonitor.start();
   }
@@ -1713,11 +1755,14 @@ if (pcMonitorEnabled) {
     JSON.stringify({
       event: hasWatch ? "pkc_monitor_start" : "pkc_monitor_idle",
       note: hasWatch
-        ? "polling admin watchlist"
-        : "waiting for admin PKC keywords/SKUs (same as Bandai watchlist model)",
+        ? pcSt.discoveryEnable && !(pcSt.keywords?.length || pcSt.skus?.length)
+          ? "discovery-only (sitemap/category soft-list)"
+          : "polling watchlist + discovery"
+        : "waiting for admin PKC keywords/SKUs or discovery",
       locale: pcSt.locale,
       keywords: pcSt.keywords,
       skus: pcSt.skus,
+      discoveryEnable: pcSt.discoveryEnable,
       hyperConfigured: pcSt.hyperConfigured,
     }),
   );

@@ -109,13 +109,14 @@ desktop hub**:
 - Locale default **`en-au`** (AU). Watchlist is **admin-dashboard only** (same model as Bandai keywords) — empty until you save PKC keywords/SKUs in `/admin`.
 - Env: `PC_MONITOR_ENABLE`, `HYPER_API_KEY` (required for Incapsula/DD), optional `PC_MONITOR_INTERVAL_MS`
 - Admin: Pokémon Centre AU section → keywords + SKUs + interval; force poll `POST /monitor/pkc/poll`
-- Labs Discord: **Test PKC stock / preload / OOS** → `POST /test-discord?store=pokemoncentre&kind=pkc|pkc-preload|pkc-oos`
-  (same webhook as live hits; synthetic SKU OK when catalog empty)
+- Labs Discord: **Test PKC stock / preload / soft-list / OOS** →
+  `POST /test-discord?store=pokemoncentre&kind=pkc|pkc-preload|pkc-soft|pkc-oos`
+- Hours-ahead for **random restocks**: keep `NOT_AVAILABLE` search cards + sitemap/category
+  URL discovery → amber `soft_listed` (see `docs/POKEMON_CENTRE_MODULE.md` §6a)
 - Lab: `node scripts/pokemoncentre-stock-monitor-lab.mjs`
-- Early-signal research (US lead, CMS, why monitors feel late): `docs/POKEMON_CENTRE_MODULE.md` §6a
 
-Catches preload when availability flips to `AVAILABLE` / `AVAILABLE_FOR_PRE_ORDER` or
-`addToCartForm` appears — before a public “drop” moment.
+Catches soft-list (page/search/sitemap) hours before buyable, then preload
+(`AVAILABLE_FOR_PRE_ORDER` / `addToCartForm`) and classic `AVAILABLE` restocks.
 
 V1 already has the executor hub + task-local mode. Desktop still needs the **toggle +
 live feed + multi-task subscribe** product layer. Until then, task-local Monitor +

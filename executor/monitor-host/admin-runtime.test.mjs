@@ -89,12 +89,28 @@ test("admin lab test restock also includes Quick Task", () => {
   assert.match(btn.url, /sku=N2890904001/);
 });
 
-test("PKC discord preload is blue; stock is black; OOS is red", () => {
+test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
   const pdp = pcPdpUrl({ productId: "10-10186-109", slug: "demo-etb" }, "en-au");
   assert.equal(
     pdp,
     "https://www.pokemoncenter.com/en-au/product/10-10186-109/demo-etb",
   );
+
+  const soft = vantaPkcDiscordBody(
+    {
+      productId: "10-10186-109",
+      title: "PC Exclusive ETB",
+      availability: "NOT_AVAILABLE",
+      reason: "soft_listed",
+      softListed: true,
+      source: "sitemap",
+    },
+    { locale: "en-au", test: true, softListed: true },
+  );
+  assert.match(soft.embeds[0].author.name, /test PKC soft-list/i);
+  assert.match(soft.embeds[0].title, /soft listed/i);
+  assert.equal(soft.embeds[0].color, 0xd97706);
+  assert.match(soft.embeds[0].description, /Hours-ahead/i);
 
   const preload = vantaPkcDiscordBody(
     {

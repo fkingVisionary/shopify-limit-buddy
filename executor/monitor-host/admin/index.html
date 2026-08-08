@@ -258,9 +258,11 @@
         <section>
           <h2>Pokémon Centre AU — watch keywords / SKUs</h2>
           <p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:0.85rem;line-height:1.45">
-            Same model as Bandai: this admin list is the only PKC watch source (locale fixed to
-            <strong>en-au</strong>). Keywords hit BFF search; SKUs hit <code>product/status</code>
-            (preload / preorder / restock). Empty = PKC poller idle. Needs <code>HYPER_API_KEY</code> on Railway.
+            Locale fixed to <strong>en-au</strong>. Keywords → BFF search (keeps
+            <code>NOT_AVAILABLE</code> soft-lists). SKUs → <code>product/status</code>.
+            <strong>Sitemap + TCG category discovery</strong> runs by default so random restocks
+            can soft-list hours ahead without a known SKU. Amber Discord = soft listed; blue = preload;
+            black = buyable. Needs <code>HYPER_API_KEY</code> on Railway.
           </p>
           <label for="pcKeywords">Keywords (one per line)</label>
           <textarea id="pcKeywords" placeholder="elite trainer box&#10;pokemon center"></textarea>
@@ -470,6 +472,7 @@
           <div class="row">
             <button id="btnTestPkcStock" type="button">Test PKC stock</button>
             <button class="secondary" id="btnTestPkcPreload" type="button">Test PKC preload</button>
+            <button class="secondary" id="btnTestPkcSoft" type="button">Test PKC soft-list</button>
             <button class="secondary danger" id="btnTestPkcOos" type="button">Test PKC OOS</button>
           </div>
           <div class="row">
@@ -1070,9 +1073,11 @@
         toast(
           kind === "pkc-preload"
             ? "PKC preload ping sent"
-            : kind === "pkc-oos" || kind === "oos"
-              ? "PKC OOS ping sent"
-              : "PKC stock ping sent",
+            : kind === "pkc-soft"
+              ? "PKC soft-list ping sent"
+              : kind === "pkc-oos" || kind === "oos"
+                ? "PKC OOS ping sent"
+                : "PKC stock ping sent",
           "ok",
         );
       }
@@ -1089,6 +1094,15 @@
         $("btnTestPkcPreload").onclick = async () => {
           try {
             await testPkcDiscord("pkc-preload");
+          } catch (e) {
+            toast(e.message, "bad");
+          }
+        };
+      }
+      if ($("btnTestPkcSoft")) {
+        $("btnTestPkcSoft").onclick = async () => {
+          try {
+            await testPkcDiscord("pkc-soft");
           } catch (e) {
             toast(e.message, "bad");
           }

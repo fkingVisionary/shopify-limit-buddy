@@ -9,6 +9,7 @@
 const VANTA_COLOR = 0x000000; // black — restock / main brand
 const VANTA_OOS_COLOR = 0xdc2626; // red — out of stock
 const VANTA_PKC_PRELOAD_COLOR = 0x2563eb; // blue — preorder / preload
+const VANTA_PKC_SOFT_LIST_COLOR = 0xd97706; // amber — soft-listed hours ahead (not buyable yet)
 const VANTA_NAME = "Vanta";
 const PC_ORIGIN = "https://www.pokemoncenter.com";
 
@@ -318,9 +319,9 @@ export function pcPdpUrl(hit, locale = "en-au") {
 }
 
 /**
- * PKC restock / preload ping — plain embed (no Bandai Quick Task).
+ * PKC restock / preload / soft-list ping — plain embed (no Bandai Quick Task).
  * @param {object} hit
- * @param {{ locale?: string, test?: boolean, preload?: boolean }} [opts]
+ * @param {{ locale?: string, test?: boolean, preload?: boolean, softListed?: boolean }} [opts]
  */
 export function vantaPkcDiscordBody(hit, opts = {}) {
   const locale = String(opts.locale || hit?.locale || "en-au").toLowerCase();
@@ -334,22 +335,37 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
     return s.startsWith("http") ? s : `${PC_ORIGIN}${s.startsWith("/") ? "" : "/"}${s}`;
   })();
   const isTest = opts.test === true;
+  const isSoftListed =
+    opts.softListed === true ||
+    hit?.softListed === true ||
+    /soft[_ ]?list/i.test(String(hit?.reason || ""));
   const isPreload =
-    opts.preload === true ||
-    hit?.preorder === true ||
-    /preorder|preload/i.test(String(hit?.reason || "")) ||
-    /PRE[_-]?ORDER/i.test(String(hit?.availability || hit?.meta?.availability || ""));
+    !isSoftListed &&
+    (opts.preload === true ||
+      hit?.preorder === true ||
+      /preorder|preload/i.test(String(hit?.reason || "")) ||
+      /PRE[_-]?ORDER/i.test(String(hit?.availability || hit?.meta?.availability || "")));
   const pdp = pcPdpUrl(hit, locale);
   const avail = hit?.availability || hit?.meta?.availability || null;
   const price = pickPrice(hit);
+  const source = hit?.source || hit?.meta?.source || null;
 
-  const reasonLabel = isPreload
-    ? "Preorder / preload"
-    : reason === "new in stock"
-      ? "New in stock"
-      : reason === "restock"
-        ? "Restock"
-        : reason;
+  const reasonLabel = isSoftListed
+    ? "Soft listed (not buyable yet)"
+    : isPreload
+      ? "Preorder / preload"
+      : reason === "new in stock"
+        ? "New in stock"
+        : reason === "restock"
+          ? "Restock"
+          : reason;
+
+  const kindTag = isSoftListed ? "soft-list" : isPreload ? "preload" : "stock";
+  const color = isSoftListed
+    ? VANTA_PKC_SOFT_LIST_COLOR
+    : isPreload
+      ? VANTA_PKC_PRELOAD_COLOR
+      : VANTA_COLOR;
 
   return {
     username: VANTA_NAME,
@@ -357,32 +373,39 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
       {
         author: {
           name: isTest
-            ? `${VANTA_NAME} · test PKC ${isPreload ? "preload" : "stock"}`
-            : `${VANTA_NAME} · PKC ${isPreload ? "preload" : "stock"}`,
+            ? `${VANTA_NAME} · test PKC ${kindTag}`
+            : `${VANTA_NAME} · PKC ${kindTag}`,
         },
-        title: (isPreload ? `PKC preorder / preload · ${title}` : `PKC stock · ${title}`).slice(
-          0,
-          250,
-        ),
+        title: (
+          isSoftListed
+            ? `PKC soft listed · ${title}`
+            : isPreload
+              ? `PKC preorder / preload · ${title}`
+              : `PKC stock · ${title}`
+        ).slice(0, 250),
         url: pdp,
         description: [
           `**${reasonLabel}** · Pokémon Centre ${locale.toUpperCase()}`,
+          isSoftListed
+            ? "_Hours-ahead signal — page/search/sitemap saw the SKU before ATC._"
+            : null,
           "",
           `[Open PDP](${pdp})`,
-        ].join("\n"),
-        color: isPreload ? VANTA_PKC_PRELOAD_COLOR : VANTA_COLOR,
+        ]
+          .filter((line) => line != null)
+          .join("\n"),
+        color,
         fields: [
           { name: "SKU", value: `\`${productId}\``, inline: true },
           { name: "Locale", value: locale, inline: true },
           ...(avail ? [{ name: "Availability", value: String(avail), inline: true }] : []),
           ...(price ? [{ name: "Price", value: String(price), inline: true }] : []),
+          ...(source ? [{ name: "Source", value: String(source), inline: true }] : []),
           { name: "Store", value: "Pokémon Centre", inline: true },
         ],
         ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest
-            ? `Vanta PKC · test ${isPreload ? "preload" : "stock"}`
-            : `Vanta · PKC ${isPreload ? "preorder / preload" : "stock"}`,
+          text: isTest ? `Vanta PKC · test ${kindTag}` : `Vanta · PKC ${kindTag}`,
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -531,6 +554,7 @@ export {
   VANTA_COLOR,
   VANTA_OOS_COLOR,
   VANTA_PKC_PRELOAD_COLOR,
+  VANTA_PKC_SOFT_LIST_COLOR,
   VANTA_CHECKOUT_COLOR,
   pickTitle,
   pickImage,
