@@ -36,31 +36,26 @@ test("monitor setKeywords live", () => {
   assert.deepEqual(m.status().keywords, ["X", "Y"]);
 });
 
-test("oos discord is red; restock is black + Quick Task once", () => {
+test("oos discord is red; restock is Flux-style + Quick Task buttons", () => {
   const body = vantaOosDiscordBody({
     productId: "N1",
     title: "Demo Figure",
     reason: "went_oos",
   });
   assert.equal(body.username, "Vanta");
-  assert.match(body.embeds[0].title, /^OOS ·/);
-  assert.match(body.embeds[0].description, /OUT OF STOCK/i);
+  assert.equal(body.embeds[0].title, "Demo Figure");
   assert.equal(body.embeds[0].color, 0xdc2626);
-  assert.match(body.embeds[0].description, /eBay sold/i);
+  assert.equal(body.embeds[0].fields.find((f) => f.name === "Type")?.value, "Out of Stock");
+  assert.equal(body.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🔴");
   assert.ok(body.components?.[0]?.components?.some((c) => /eBay sold/i.test(c.label)));
 
   const restock = vantaRestockDiscordBody({ productId: "N1", title: "Demo Figure", areaItemNo: "NAI1" });
   assert.equal(restock.embeds[0].color, 0x000000);
-  // QT appears once in description (not also in a Desktop field)
-  const desc = restock.embeds[0].description;
-  assert.equal((desc.match(/Quick Task/g) || []).length, 1);
-  assert.match(desc, /Setup presets/);
-  assert.match(desc, /eBay sold/);
-  assert.match(desc, /ebay\.com\.au/);
-  assert.equal(
-    restock.embeds[0].fields.some((f) => f.name === "Desktop"),
-    false,
-  );
+  assert.equal(restock.embeds[0].author.name, "Premium Bandai AU");
+  assert.equal(restock.embeds[0].fields.find((f) => f.name === "Type")?.value, "Restock");
+  assert.equal(restock.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🟢");
+  assert.equal(restock.embeds[0].fields.find((f) => f.name === "Price")?.value, "N/A");
+  assert.match(restock.embeds[0].fields.find((f) => f.name === "Links")?.value || "", /Quick Task/);
   assert.ok(Array.isArray(restock.components));
   const labels = restock.components[0].components.map((c) => c.label);
   assert.ok(labels.some((l) => /Quick Task/i.test(l)));
@@ -79,38 +74,56 @@ test("admin lab test restock also includes Quick Task", () => {
     { productId: "N2890904001", title: "Lab Demo", areaItemNo: "NAI9" },
     { area: "au", test: true },
   );
-  assert.match(testPing.embeds[0].author.name, /test restock/i);
-  assert.equal(/needs .+ open/i.test(testPing.embeds[0].description), false);
-  assert.equal((testPing.embeds[0].description.match(/Quick Task/g) || []).length, 1);
-  assert.match(testPing.embeds[0].description, /\/qt\?/);
-  assert.match(testPing.embeds[0].description, /qt-setup/);
+  assert.match(testPing.embeds[0].author.name, /Premium Bandai AU · test/i);
   const btn = testPing.components[0].components.find((c) => /Quick Task/i.test(c.label));
   assert.ok(btn);
   assert.match(btn.url, /sku=N2890904001/);
 });
 
-test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
-  const pdp = pcPdpUrl({ productId: "10-10186-109", slug: "demo-etb" }, "en-au");
+test("PKC Flux-style: soft = Potential Upcoming Restock; AU author; stock emoji", () => {
+  const pdp = pcPdpUrl({ productId: "189-85799", slug: "twilight-etb" }, "en-au");
   assert.equal(
     pdp,
-    "https://www.pokemoncenter.com/en-au/product/10-10186-109/demo-etb",
+    "https://www.pokemoncenter.com/en-au/product/189-85799/twilight-etb",
   );
 
+  const img = "https://www.pokemoncenter.com/images/demo-etb.jpg";
   const soft = vantaPkcDiscordBody(
     {
-      productId: "10-10186-109",
-      title: "PC Exclusive ETB",
+      productId: "189-85799",
+      title: "Twilight Masquerade Pokémon Center Elite Trainer Box",
       availability: "NOT_AVAILABLE",
       reason: "soft_listed",
       softListed: true,
       source: "sitemap",
+      imageUrl: img,
     },
     { locale: "en-au", test: true, softListed: true },
   );
-  assert.match(soft.embeds[0].author.name, /test PKC soft-list/i);
-  assert.match(soft.embeds[0].title, /soft listed/i);
-  assert.equal(soft.embeds[0].color, 0xd97706);
-  assert.match(soft.embeds[0].description, /Hours-ahead/i);
+  assert.match(soft.embeds[0].author.name, /Pokemon Center AU/i);
+  assert.equal(soft.embeds[0].title, "Twilight Masquerade Pokémon Center Elite Trainer Box");
+  assert.equal(soft.embeds[0].fields.find((f) => f.name === "Type")?.value, "Potential Upcoming Restock");
+  assert.equal(soft.embeds[0].fields.find((f) => f.name === "Price")?.value, "N/A");
+  assert.equal(soft.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🔴");
+  assert.equal(soft.embeds[0].fields.find((f) => f.name === "SKU")?.value, "189-85799");
+  assert.match(soft.embeds[0].fields.find((f) => f.name === "Links")?.value || "", /StockX/);
+  assert.equal(soft.embeds[0].thumbnail?.url, img);
+  assert.match(soft.embeds[0].footer?.text || "", /SnkrDunk \| Ebay/);
+  assert.ok(soft.components[0].components.some((c) => /eBay/i.test(c.label)));
+
+  const live = vantaPkcDiscordBody(
+    {
+      productId: "189-85799",
+      title: "Twilight Masquerade Pokémon Center Elite Trainer Box",
+      reason: "new_in_stock",
+      imageUrl: img,
+      quantityLimit: 1,
+    },
+    { locale: "en-au", test: true },
+  );
+  assert.equal(live.embeds[0].fields.find((f) => f.name === "Type")?.value, "New Product");
+  assert.equal(live.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🟢");
+  assert.equal(live.embeds[0].fields.find((f) => f.name === "Cart Limit")?.value, "1");
 
   const preload = vantaPkcDiscordBody(
     {
@@ -119,29 +132,20 @@ test("PKC discord soft-list amber; preload blue; stock black; OOS red", () => {
       availability: "AVAILABLE_FOR_PRE_ORDER",
       reason: "preorder_live",
       preorder: true,
+      imageUrl: img,
     },
     { locale: "en-au", test: true, preload: true },
   );
-  assert.match(preload.embeds[0].author.name, /test PKC preload/i);
-  assert.match(preload.embeds[0].title, /preorder \/ preload/i);
-  assert.equal(preload.embeds[0].color, 0x2563eb);
-  assert.match(preload.embeds[0].url, /pokemoncenter\.com\/en-au\/product\/10-10186-109/);
-  assert.equal(/Quick Task/i.test(preload.embeds[0].description), false);
-
-  const stock = vantaPkcDiscordBody(
-    { productId: "10-10186-109", title: "PC Exclusive ETB", reason: "restock" },
-    { locale: "en-au", test: true },
-  );
-  assert.equal(stock.embeds[0].color, 0x000000);
-  assert.match(stock.embeds[0].title, /^PKC stock/);
+  assert.equal(preload.embeds[0].fields.find((f) => f.name === "Type")?.value, "Preorder");
+  assert.equal(preload.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🟢");
 
   const oos = vantaPkcOosDiscordBody(
-    { productId: "10-10186-109", title: "PC Exclusive ETB" },
+    { productId: "10-10186-109", title: "PC Exclusive ETB", imageUrl: img },
     { locale: "en-au", test: true },
   );
   assert.equal(oos.embeds[0].color, 0xdc2626);
-  assert.match(oos.embeds[0].title, /^OOS ·/);
-  assert.match(oos.embeds[0].description, /Pokémon Centre/i);
+  assert.equal(oos.embeds[0].fields.find((f) => f.name === "Type")?.value, "Out of Stock");
+  assert.equal(oos.embeds[0].fields.find((f) => f.name === "Stock")?.value, "🔴");
 });
 
 test("runtime config round-trip", () => {
