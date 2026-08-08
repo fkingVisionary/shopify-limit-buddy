@@ -133,6 +133,11 @@ const CHROME_HEADER_ORDER = [
   "referer",
   "accept-encoding",
   "accept-language",
+  // PKC / Cortex BFF — must sit before cookie (Hyper header-order).
+  "authorization",
+  "x-store-locale",
+  "x-store-scope",
+  "accept-version",
   "priority",
   "cookie",
 ];

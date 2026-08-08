@@ -138,14 +138,22 @@ export function cortexApiHeaders({
   includeDevice = false,
   acceptVersion = "1",
   userAgent,
+  /**
+   * HTTP method — pass "GET" to omit content-type (browser never sends CT on GET;
+   * DataDome scores it). Default keeps content-type for POST ATC / legacy callers.
+   */
+  method = null,
 } = {}) {
   const h = {
     accept: "application/json",
-    "content-type": "application/json",
     "X-Store-Locale": String(locale).toLowerCase(),
     "X-Store-Scope": scope,
     origin,
   };
+  const m = method != null ? String(method).toUpperCase() : "";
+  if (m !== "GET" && m !== "HEAD") {
+    h["content-type"] = "application/json";
+  }
   // Next BFF `apiVersion:"1"` — sent when storefront retries version mismatch.
   if (acceptVersion) h["Accept-Version"] = String(acceptVersion);
   if (includeDevice) {

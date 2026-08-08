@@ -490,19 +490,18 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         return { jar, dispatcher, ctx, session, transport: "tls-worker" };
       } catch (e) {
         tlsWorkerOk = false;
-        lastTransportNote = `tls-worker init failed → undici: ${e?.message || e}`.slice(0, 240);
+        lastTransportNote = `tls-worker init failed: ${e?.message || e}`.slice(0, 240);
+        // Do not fall back to undici for PKC — undici BFF is what escalates to captcha/t=bv.
+        throw new Error(`pc_tls_required: ${lastTransportNote}`);
       }
     }
+    // Explicit undici only when PC_MONITOR_TLS_WORKER=0 (lab).
     const jar = createJar();
     const dispatcher = makeDispatcher(proxyUrl, { forceUndici: true });
     const ctx = { jar, dispatcher, request: undiciRequest };
     const session = createPcSession(ctx, { locale, request: undiciRequest });
     lastTransport = "undici";
-    if (!lastTransportNote || preferTls) {
-      lastTransportNote = preferTls
-        ? lastTransportNote || "undici fallback"
-        : "undici (PC_MONITOR_TLS_WORKER=0)";
-    }
+    lastTransportNote = "undici (PC_MONITOR_TLS_WORKER=0)";
     return { jar, dispatcher, ctx, session, transport: "undici" };
   }
 
@@ -596,13 +595,27 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const url = path.startsWith("http") ? path : `${PC_API_BASE}${path.startsWith("/") ? "" : "/"}${path}`;
     const doOnce = async () => {
       const token = session.state.cortexAuth?.accessToken;
-      const headers = cortexApiHeaders({
-        accessToken: token,
-        locale,
-        scope,
-        referer: `${base}/`,
-      });
-      const res = await session.get(url, { headers, api: true });
+      // Match checkout probeCortex: cortex headers only — NOT api:true (that injects
+      // cache-control/pragma/upgrade-insecure-requests + content-type on GET = DD tell).
+      const headers = {
+        ...cortexApiHeaders({
+          accessToken: token,
+          locale,
+          scope,
+          referer: `${base}/`,
+          userAgent: session.state.userAgent,
+          method: "GET",
+        }),
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+        "accept-language": session.state.acceptLanguage || "en-AU,en;q=0.9",
+        "user-agent": session.state.userAgent,
+      };
+      delete headers["content-type"];
+      delete headers["Content-Type"];
+      // No api:true — same as working checkout BFF GETs.
+      const res = await session.get(url, { headers });
       if (signal?.aborted) {
         const err = new Error("poll_aborted");
         err.code = "POLL_TIMEOUT";
@@ -620,7 +633,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     let { res, text, json } = await doOnce();
 
-    // BFF DataDome captcha JSON — solve once (same as ATC path), remint token, retry.
+    // Captcha JSON on BFF is often client-shape (headers/TLS), not burnt IP.
+    // Remint Reese + token and retry once before treating URL t=bv as hard ban.
     if (
       allowRemint &&
       sticky?.ctx &&
@@ -629,34 +643,44 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       /captcha-delivery\.com\/captcha/i.test(String(json.url))
     ) {
       try {
-        if (/[?&]t=bv\b/i.test(String(json.url))) {
-          const err = new Error(`pc_edge_tbv: bff captcha t=bv`);
-          err.status = 403;
-          err.isIpBanned = true;
-          throw err;
-        }
-        const solved = await solveDatadomeCaptchaUrl(session, sticky.ctx, json.url, {
-          pageUrl: `${base}/`,
-        });
-        if (solved?.ok || solved?.isIpBanned) {
-          if (solved.isIpBanned) {
-            const err = new Error(solved.note || "pc_edge_tbv: bff captcha");
-            err.status = 403;
-            err.isIpBanned = true;
-            throw err;
-          }
-        } else {
-          await clearDataDome(session, sticky.ctx, {
-            pageUrl: `${base}/`,
-            html: text,
-            headers: res.headers,
-          }).catch(() => null);
-        }
         await remintBffAuth(session, sticky.ctx);
         ({ res, text, json } = await doOnce());
-      } catch (e) {
-        if (e?.isIpBanned || e?.code === "PC_EDGE_TBV") throw e;
-        /* fall through to status handling */
+      } catch {
+        /* fall through */
+      }
+      if (
+        res.status === 403 &&
+        json?.url &&
+        /captcha-delivery\.com\/captcha/i.test(String(json.url))
+      ) {
+        try {
+          // Only trust Hyper hard-block after fetching captcha HTML (slider t=bv).
+          const solved = await solveDatadomeCaptchaUrl(session, sticky.ctx, json.url, {
+            pageUrl: `${base}/`,
+          });
+          if (solved?.isIpBanned) {
+            const err = new Error(solved.note || "pc_edge_tbv: bff captcha after client retry");
+            err.status = 403;
+            err.isIpBanned = true;
+            err.code = "PC_EDGE_TBV";
+            throw err;
+          }
+          if (solved?.ok) {
+            await remintBffAuth(session, sticky.ctx);
+            ({ res, text, json } = await doOnce());
+          } else {
+            await clearDataDome(session, sticky.ctx, {
+              pageUrl: `${base}/`,
+              html: text,
+              headers: res.headers,
+            }).catch(() => null);
+            await remintBffAuth(session, sticky.ctx);
+            ({ res, text, json } = await doOnce());
+          }
+        } catch (e) {
+          if (e?.isIpBanned || e?.code === "PC_EDGE_TBV") throw e;
+          /* fall through */
+        }
       }
     } else if (
       allowRemint &&
@@ -698,11 +722,16 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       const next = new Map();
       const sources = [];
 
+      const hasToken = Boolean(session.state.cortexAuth?.accessToken);
       for (const kw of keywords) {
         if (signal?.aborted) {
           const err = new Error("poll_aborted");
           err.code = "POLL_TIMEOUT";
           throw err;
+        }
+        if (!hasToken) {
+          sources.push({ kind: "search", keyword: kw, ok: false, note: "skipped_no_token" });
+          continue;
         }
         const q = encodeURIComponent(kw);
         try {
@@ -738,6 +767,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           const err = new Error("poll_aborted");
           err.code = "POLL_TIMEOUT";
           throw err;
+        }
+        if (!hasToken) {
+          sources.push({ kind: "product_status", sku, ok: false, note: "skipped_no_token" });
+          continue;
         }
         try {
           const { json } = await bffGet(
