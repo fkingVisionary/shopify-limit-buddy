@@ -4,6 +4,7 @@ import {
   cortexScopeForLocale,
   diffPcCatalog,
   extractPcProductUrls,
+  buildPcAnnounceEvents,
 } from "./pokemoncentre-stock-monitor.js";
 import { parseTaskWatch, eventMatchesWatch } from "./event-filter.js";
 
@@ -113,5 +114,33 @@ assert.equal(
   ),
   false,
 );
+
+const announce = buildPcAnnounceEvents(
+  [
+    {
+      productId: "10-LIVE",
+      inStock: true,
+      source: "search:etb",
+      title: "Live ETB",
+    },
+    {
+      productId: "10-SOFT",
+      inStock: false,
+      softListed: true,
+      availability: "NOT_AVAILABLE",
+      source: "search:etb",
+      title: "Soft ETB",
+    },
+    {
+      productId: "10-SKU",
+      inStock: true,
+      source: "product_status",
+    },
+  ],
+  { skus: ["10-SKU"], limit: 10 },
+);
+assert.ok(announce.some((e) => e.productId === "10-LIVE" && e.reason === "restock"));
+assert.ok(announce.some((e) => e.productId === "10-SOFT" && e.reason === "soft_listed"));
+assert.ok(announce.some((e) => e.productId === "10-SKU"));
 
 console.log("pokemoncentre-stock-monitor.test.mjs ok");

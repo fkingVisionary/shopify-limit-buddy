@@ -577,8 +577,8 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
   });
 
   if (home.ok) {
-    session.state.edgeNote = "home clear (no challenge)";
-    return { ok: true, home, note: session.state.edgeNote };
+    if (session?.state) session.state.edgeNote = "home clear (no challenge)";
+    return { ok: true, home, note: "home clear (no challenge)" };
   }
 
   if (home.incap) {
@@ -616,10 +616,11 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
   });
 
   if (home2.ok) {
-    session.state.edgeNote = session.state.reeseCleared
+    const note = session?.state?.reeseCleared
       ? "home clear after reese"
       : "home clear on retry";
-    return { ok: true, home: home2, note: session.state.edgeNote };
+    if (session?.state) session.state.edgeNote = note;
+    return { ok: true, home: home2, note };
   }
 
   if (home2.dd || home.dd) {
@@ -668,20 +669,22 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
         }
       });
     }
-    session.state.edgeNote = home3.ok
+    const note = home3.ok
       ? `home clear after DD${reeseAfterDd?.hasToken ? "+reese" : ""}`
       : home3.note;
+    if (session?.state) session.state.edgeNote = note;
     return {
       ok: home3.ok,
       home: home3,
       datadome: ddClear,
       reeseAfterDd,
-      note: session.state.edgeNote,
+      note,
     };
   }
 
-  session.state.edgeNote = home2.note || home.note;
-  return { ok: false, home: home2, note: session.state.edgeNote };
+  const failNote = home2.note || home.note;
+  if (session?.state) session.state.edgeNote = failNote;
+  return { ok: false, home: home2, note: failNote };
 }
 
 /**

@@ -210,6 +210,49 @@ export function diffPcCatalog(prev, next) {
   return events;
 }
 
+/**
+ * Build Discord-worthy events from a catalog snapshot (admin Force poll).
+ * Prefers buyable / preload, then soft-listed watch hits. Caps spam.
+ * @param {Map<string, object>|object[]} keyed
+ * @param {{ skus?: string[], limit?: number }} [opts]
+ */
+export function buildPcAnnounceEvents(keyed, { skus = [], limit = 15 } = {}) {
+  const skuSet = new Set((skus || []).map((s) => String(s).toUpperCase()));
+  const rows = keyed instanceof Map ? [...keyed.values()] : Array.isArray(keyed) ? keyed : [];
+  const score = (row) => {
+    if (row?.inStock && row?.preorder) return 3;
+    if (row?.inStock) return 2;
+    if (row?.softListed || (!row?.inStock && row?.availability)) return 1;
+    return 0;
+  };
+  const watched = (row) => {
+    const id = String(row?.productId || "").toUpperCase();
+    if (skuSet.has(id)) return true;
+    const src = String(row?.source || "");
+    return src.startsWith("search:") || src === "product_status";
+  };
+  const picked = rows
+    .filter((r) => score(r) > 0 && (watched(r) || score(r) >= 2))
+    .sort(
+      (a, b) =>
+        score(b) - score(a) || String(a.productId || "").localeCompare(String(b.productId || "")),
+    )
+    .slice(0, Math.max(1, Math.min(40, Number(limit) || 15)));
+
+  const now = Date.now();
+  return picked.map((row) => {
+    const soft = Boolean(row.softListed) || (!row.inStock && Boolean(row.availability));
+    const reason = soft ? "soft_listed" : row.preorder ? "preorder_live" : "restock";
+    return {
+      productId: row.productId,
+      inStock: Boolean(row.inStock),
+      timestamp: now,
+      reason,
+      meta: { ...row, softListed: soft || reason === "soft_listed" },
+    };
+  });
+}
+
 function extractSearchProducts(json) {
   if (!json || typeof json !== "object") return [];
   if (Array.isArray(json)) return json;
@@ -305,17 +348,36 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     return age >= stickyMaxMs;
   }
 
-  async function closeSticky() {
-    const s = sticky;
-    sticky = null;
-    if (!s?.dispatcher) return;
+  async function closeDispatcher(slot) {
+    if (!slot?.dispatcher) return;
     try {
       await Promise.race([
-        s.dispatcher.close?.() || Promise.resolve(),
+        slot.dispatcher.close?.() || Promise.resolve(),
         sleep(1_500),
       ]);
     } catch {
       /* ignore */
+    }
+  }
+
+  async function closeSticky() {
+    const s = sticky;
+    sticky = null;
+    await closeDispatcher(s);
+  }
+
+  /** Acquire proxyGate so stop/restart cannot null sticky mid-ensureEdge. */
+  async function withProxyGate(fn) {
+    const prev = proxyGate;
+    let release;
+    proxyGate = new Promise((r) => {
+      release = r;
+    });
+    await prev;
+    try {
+      return await fn();
+    } finally {
+      release?.();
     }
   }
 
@@ -335,13 +397,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function withProxyCtx(fn) {
-    const prev = proxyGate;
-    let release;
-    proxyGate = new Promise((r) => {
-      release = r;
-    });
-    await prev;
-    try {
+    return withProxyGate(async () => {
       if (stickyExpired()) {
         const prevHost = sticky?.url || null;
         await closeSticky();
@@ -354,7 +410,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         // Slim undici only — Railway monitor image has no tls-client; avoid full http.js.
         const ctx = { jar, dispatcher, request: undiciRequest };
         const session = createPcSession(ctx, { locale, request: undiciRequest });
-        sticky = {
+        // Local slot — never write edgeOk on a nulled `sticky` after stop() races.
+        const slot = {
           url: pick.url,
           tier: pick.tier,
           jar,
@@ -364,33 +421,40 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           used: 0,
           openedAt: Date.now(),
           edgeOk: false,
+          edgeNote: null,
         };
+        sticky = slot;
         const edge = await ensureEdge(session, ctx);
         if (!edge.ok) {
-          pool.markFail(sticky?.url);
-          await closeSticky();
+          pool.markFail(slot.url);
+          if (sticky === slot) await closeSticky();
+          else await closeDispatcher(slot);
           throw new Error(edge.note || "pc_edge_failed");
         }
-        sticky.edgeOk = true;
-        sticky.edgeNote = edge.note;
-        pool.markOk(sticky?.url);
+        slot.edgeOk = true;
+        slot.edgeNote = edge.note || null;
+        if (sticky !== slot) {
+          await closeDispatcher(slot);
+          throw new Error("pc_sticky_superseded");
+        }
+        pool.markOk(slot.url);
       }
-      if (!sticky?.ctx || !sticky?.session) {
+      const cur = sticky;
+      if (!cur?.ctx || !cur?.session) {
         throw new Error("pc_sticky_missing");
       }
-      sticky.used += 1;
+      cur.used += 1;
       try {
-        const out = await fn(sticky.ctx, sticky);
-        pool.markOk(sticky?.url);
+        const out = await fn(cur.ctx, cur);
+        pool.markOk(cur.url);
         return out;
       } catch (e) {
-        pool.markFail(sticky?.url);
-        await closeSticky();
+        pool.markFail(cur.url);
+        if (sticky === cur) await closeSticky();
+        else await closeDispatcher(cur);
         throw e;
       }
-    } finally {
-      release?.();
-    }
+    });
   }
 
   async function bffGet(session, path, signal) {
@@ -678,7 +742,13 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     throw lastErr || new Error("pc_poll_failed");
   }
 
-  async function pollOnce() {
+    /**
+   * @param {{ announce?: boolean }} [opts]
+   *   announce:true — admin Force poll: Discord current keyword/SKU hits (not only diffs).
+   *   Live loop stays diff-only (first poll still baselines with no events).
+   */
+  async function pollOnce(opts = {}) {
+    const announce = opts.announce === true;
     const t0 = Date.now();
     const pollBudgetMs = Math.max(
       45_000,
@@ -703,7 +773,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       edgeAttempts = raced.edgeAttempts;
     } catch (e) {
       if (sticky?.url) pool.markFail(sticky.url);
-      await closeSticky();
+      await withProxyGate(() => closeSticky());
       if (
         ac.signal.aborted ||
         e?.code === "POLL_TIMEOUT" ||
@@ -727,7 +797,14 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     const prev = snapshot;
     const first = prev.size === 0;
-    const events = first ? [] : diffPcCatalog(prev, keyed);
+    let events = first && !announce ? [] : diffPcCatalog(prev, keyed);
+    if (announce) {
+      // Force poll: ping what the watchlist sees now (diffs alone look "broken" on phone).
+      events = buildPcAnnounceEvents(keyed, {
+        skus,
+        limit: Number(process.env.PC_MONITOR_ANNOUNCE_LIMIT) || 15,
+      });
+    }
     snapshot = keyed;
     polls += 1;
     lastPollAt = Date.now();
@@ -741,7 +818,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       inStock: [...keyed.values()].filter((r) => r.inStock).length,
       softListed: [...keyed.values()].filter((r) => r.softListed || (!r.inStock && r.availability)).length,
       events: events.length,
-      firstSnapshot: first,
+      firstSnapshot: first && !announce,
+      announced: announce,
       sources,
       proxyTier,
       proxyHost,
@@ -883,7 +961,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const pending = loopPromise;
     loopPromise = null;
     if (pending) await Promise.race([pending.catch(() => {}), sleep(5_000)]);
-    await closeSticky();
+    // Wait for in-flight ensureEdge / BFF before nulling sticky (avoids edgeOk TypeError).
+    await withProxyGate(() => closeSticky());
     bus.emit("stopped", { at: Date.now(), polls, store: "pokemoncentre" });
   }
 
@@ -988,6 +1067,7 @@ export default {
   createPokemonCentreStockMonitor,
   normalizePcCatalogCard,
   diffPcCatalog,
+  buildPcAnnounceEvents,
   extractPcProductUrls,
   cortexScopeForLocale,
 };
