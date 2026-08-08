@@ -444,29 +444,43 @@ try {
     if (runtime.pcSkus) pcMonitor.setSkus(runtime.pcSkus);
     if (runtime.pcIntervalMs) pcMonitor.setIntervalMs(runtime.pcIntervalMs);
   }
-  // Ensure accessory keywords exist even when disk only had "TCG".
+  // binder/playmat/deck are NEGATIVE excludes (-term), not search keywords.
+  // Convert any accidental positives from #175 and persist `-binder` etc.
   {
-    const extras = ["TCG", "binder", "playmat", "deck"];
-    const cur = String(runtime.pcKeywords || "")
+    const negDefaults = ["binder", "playmat", "deck"];
+    const toks = String(runtime.pcKeywords || "")
       .split(/[\n,]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    let changed = false;
-    for (const k of extras) {
-      if (!cur.some((x) => x.toLowerCase() === k.toLowerCase())) {
-        cur.push(k);
-        changed = true;
-      }
+    const pos = [];
+    const neg = new Set();
+    for (const t of toks) {
+      const isNeg = t.startsWith("-");
+      const body = (isNeg ? t.slice(1) : t).trim();
+      if (!body) continue;
+      const low = body.toLowerCase();
+      if (negDefaults.includes(low) || isNeg) neg.add(low === body.toLowerCase() ? body : body);
+      else pos.push(body);
     }
-    if (changed || !runtime.pcKeywords) {
-      runtime.pcKeywords = cur.join("\n");
+    for (const n of negDefaults) neg.add(n);
+    if (!pos.length) pos.push("TCG");
+    // Drop accessory terms if they were saved as positives.
+    const posClean = pos.filter((p) => !negDefaults.includes(p.toLowerCase()));
+    if (!posClean.length) posClean.push("TCG");
+    const next = [...posClean, ...[...neg].map((n) => `-${n}`)].join("\n");
+    if (next !== String(runtime.pcKeywords || "").trim()) {
+      runtime.pcKeywords = next;
       pcMonitor.setKeywords(runtime.pcKeywords);
       try {
         saveRuntimeConfig(runtime);
-        labLog("monitor", "info", "PKC keywords merged", { pcKeywords: runtime.pcKeywords });
+        labLog("monitor", "info", "PKC keywords normalized (negatives)", {
+          pcKeywords: runtime.pcKeywords,
+        });
       } catch (e) {
-        console.warn("[runtime-config] pcKeywords merge save failed", e?.message || e);
+        console.warn("[runtime-config] pcKeywords normalize save failed", e?.message || e);
       }
+    } else {
+      pcMonitor.setKeywords(runtime.pcKeywords);
     }
   }
 } catch (e) {
@@ -971,7 +985,14 @@ app.get("/admin/config", async (req, reply) => {
     checkoutFeedWebhookMasked: maskWebhook(checkoutFeedHook() || ""),
     pcMonitorEnable: pcMonitorEnabled,
     pcLocale: pc.locale || runtime.pcLocale || "en-au",
-    pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : String(runtime.pcKeywords || ""),
+    pcKeywords: (() => {
+      const pos = Array.isArray(pc.keywords) ? pc.keywords : [];
+      const neg = Array.isArray(pc.negativeKeywords) ? pc.negativeKeywords : [];
+      if (pos.length || neg.length) {
+        return [...pos, ...neg.map((n) => `-${n}`)].join("\n");
+      }
+      return String(runtime.pcKeywords || "");
+    })(),
     pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : String(runtime.pcSkus || ""),
     pcIntervalMs: pc.intervalMs ?? runtime.pcIntervalMs ?? 15000,
     updatedAt: runtime.updatedAt || null,
@@ -1143,8 +1164,10 @@ app.put("/admin/config", async (req, reply) => {
       }
     }
     if (body.pcKeywords != null) {
-      const list = pcMonitor.setKeywords(body.pcKeywords);
-      runtime.pcKeywords = list.join("\n");
+      const applied = pcMonitor.setKeywords(body.pcKeywords);
+      const pos = applied?.keywords || [];
+      const neg = applied?.negativeKeywords || [];
+      runtime.pcKeywords = [...pos, ...neg.map((n) => `-${n}`)].join("\n");
     }
     if (body.pcSkus != null) {
       const list = pcMonitor.setSkus(body.pcSkus);
@@ -1194,7 +1217,11 @@ app.put("/admin/config", async (req, reply) => {
       pool: hub.monitor.status().pool,
       pcMonitorEnable: runtime.pcMonitorEnable !== false,
       pcLocale: runtime.pcLocale || "en-au",
-      pcKeywords: Array.isArray(pc.keywords) ? pc.keywords.join("\n") : "",
+      pcKeywords: (() => {
+        const pos = Array.isArray(pc.keywords) ? pc.keywords : [];
+        const neg = Array.isArray(pc.negativeKeywords) ? pc.negativeKeywords : [];
+        return [...pos, ...neg.map((n) => `-${n}`)].join("\n");
+      })(),
       pcSkus: Array.isArray(pc.skus) ? pc.skus.join("\n") : "",
       pcIntervalMs: pc.intervalMs,
       updatedAt: runtime.updatedAt,

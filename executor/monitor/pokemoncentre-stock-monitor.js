@@ -25,8 +25,45 @@ import {
 } from "../adapters/pokemoncentre-cortex.js";
 import { hyperConfigured } from "../antibot.js";
 
-/** Default PKC search keywords (admin can still edit; boot merges these in). */
-export const PC_DEFAULT_KEYWORDS = ["TCG", "binder", "playmat", "deck"];
+/** Default PKC search keywords (admin can still edit). */
+export const PC_DEFAULT_KEYWORDS = ["TCG"];
+/** Title/slug excludes — user asked for -binder -playmat -deck (not search terms). */
+export const PC_DEFAULT_NEGATIVE_KEYWORDS = ["binder", "playmat", "deck"];
+
+/**
+ * Split watchlist into positive search terms and `-term` negatives.
+ * @param {string|string[]} raw
+ * @returns {{ keywords: string[], negativeKeywords: string[] }}
+ */
+export function parsePcKeywordLists(raw) {
+  const keywords = [];
+  const negativeKeywords = [];
+  for (const tok of parseList(raw)) {
+    if (tok.startsWith("-") && tok.length > 1) {
+      const n = tok.slice(1).trim();
+      if (n) negativeKeywords.push(n);
+    } else if (tok && tok !== "-") {
+      keywords.push(tok);
+    }
+  }
+  return { keywords, negativeKeywords };
+}
+
+/** True when title/slug/sku matches a negative keyword (case-insensitive substring). */
+export function matchesPcNegativeKeyword(row, negativeKeywords = []) {
+  const list = Array.isArray(negativeKeywords) ? negativeKeywords : [];
+  if (!list.length) return false;
+  const blob = `${row?.title || ""} ${row?.slug || ""} ${row?.productId || ""} ${row?.name || ""}`
+    .toLowerCase()
+    .replace(/[_-]+/g, " ");
+  return list.some((n) => {
+    const needle = String(n || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[_-]+/g, " ");
+    return needle && blob.includes(needle);
+  });
+}
 
 /** @type {null | Promise<{ makeRemoteTlsDispatcher: Function, createJar: Function, request: Function, UA: string } | null>} */
 let httpTlsModulePromise = null;
@@ -226,14 +263,20 @@ export function normalizePcCatalogCard(p, { source } = {}) {
   } else if (typeof p.inStock === "boolean") inStock = p.inStock;
   else if (typeof p.available === "boolean") inStock = p.available;
   else if (p.addToCartForm || p.epItemId) inStock = true;
-  else if (
+  else if (/^category|^pdp_probe|^discovery_status/i.test(String(source || ""))) {
+    // Live category / PDP without an OOS enum — these are buyable listings (operator
+    // confirmed Discord soft 🔴 was wrong; PDP links were in stock). Soft only when
+    // BFF/JSON explicitly says NOT_AVAILABLE / COMING_SOON / SOLD_OUT above.
+    inStock = true;
+    softListed = false;
+  } else if (
     titleRaw ||
     p.pdpUrl ||
     p.url ||
     p.slug ||
-    /^search:|^sitemap|^category|^discovery/i.test(String(source || ""))
+    /^search:|^sitemap|^discovery/i.test(String(source || ""))
   ) {
-    // Card / URL exists without a buyable enum — hours-ahead listing signal.
+    // Search card / sitemap URL without buyable enum — hours-ahead soft list.
     inStock = false;
     softListed = true;
   }
@@ -423,9 +466,22 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     40,
     Math.max(5, Number(opts.searchRows || process.env.PC_MONITOR_SEARCH_ROWS) || 20),
   );
-  // Watchlist is admin-dashboard owned (same as Bandai keywords). Env is bootstrap only.
-  let keywords = parseList(
-    opts.keywords ?? process.env.PC_MONITOR_KEYWORDS ?? PC_DEFAULT_KEYWORDS.join("\n"),
+  // Watchlist is admin-dashboard owned. `-binder` style tokens are negatives (excludes).
+  const bootKw = parsePcKeywordLists(
+    opts.keywords ??
+      process.env.PC_MONITOR_KEYWORDS ??
+      [...PC_DEFAULT_KEYWORDS, ...PC_DEFAULT_NEGATIVE_KEYWORDS.map((n) => `-${n}`)].join("\n"),
+  );
+  let keywords = bootKw.keywords.length ? bootKw.keywords : [...PC_DEFAULT_KEYWORDS];
+  let negativeKeywords = [...bootKw.negativeKeywords];
+  for (const n of PC_DEFAULT_NEGATIVE_KEYWORDS) {
+    if (!negativeKeywords.some((x) => x.toLowerCase() === n.toLowerCase())) {
+      negativeKeywords.push(n);
+    }
+  }
+  // Never treat accessory excludes as positive search terms.
+  keywords = keywords.filter(
+    (k) => !PC_DEFAULT_NEGATIVE_KEYWORDS.some((n) => n.toLowerCase() === String(k).toLowerCase()),
   );
   let skus = parseList(opts.skus ?? process.env.PC_MONITOR_SKUS ?? "").map((s) => s.toUpperCase());
   // Sitemap + category URL discovery — catches random restock soft-publishes without a known SKU.
@@ -1167,6 +1223,18 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         });
       }
 
+      // Drop binder/playmat/deck (and other `-term` negatives) before catalog commit.
+      let negDropped = 0;
+      for (const [id, row] of [...next.entries()]) {
+        if (matchesPcNegativeKeyword(row, negativeKeywords)) {
+          next.delete(id);
+          negDropped += 1;
+        }
+      }
+      if (negDropped) {
+        sources.push({ kind: "negative_filter", ok: true, dropped: negDropped, negativeKeywords });
+      }
+
       if (next.size === 0) {
         const failNotes = sources
           .filter((s) => s && s.ok === false && s.note)
@@ -1544,6 +1612,7 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       scope,
       store: "pokemoncentre",
       keywords,
+      negativeKeywords,
       skus,
       discoveryEnable,
       discoveryPaths,
@@ -1589,8 +1658,21 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       return snapshot.get(id) || null;
     },
     setKeywords(raw) {
-      keywords = parseList(raw);
-      return [...keywords];
+      const parsed = parsePcKeywordLists(raw);
+      keywords = parsed.keywords.filter(
+        (k) =>
+          !PC_DEFAULT_NEGATIVE_KEYWORDS.some(
+            (n) => n.toLowerCase() === String(k).toLowerCase(),
+          ),
+      );
+      if (!keywords.length) keywords = [...PC_DEFAULT_KEYWORDS];
+      negativeKeywords = [...parsed.negativeKeywords];
+      for (const n of PC_DEFAULT_NEGATIVE_KEYWORDS) {
+        if (!negativeKeywords.some((x) => x.toLowerCase() === n.toLowerCase())) {
+          negativeKeywords.push(n);
+        }
+      }
+      return { keywords: [...keywords], negativeKeywords: [...negativeKeywords] };
     },
     setSkus(raw) {
       skus = parseList(raw).map((s) => s.toUpperCase());
@@ -1621,6 +1703,9 @@ export default {
   buildPcAnnounceEvents,
   extractPcProductUrls,
   extractPcProductCardsFromHtml,
+  parsePcKeywordLists,
+  matchesPcNegativeKeyword,
   PC_DEFAULT_KEYWORDS,
+  PC_DEFAULT_NEGATIVE_KEYWORDS,
   cortexScopeForLocale,
 };

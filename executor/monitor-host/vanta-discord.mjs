@@ -471,7 +471,12 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
   const stockxUrl = buildStockxSearchUrl(hit);
   const snkrUrl = buildSnkrDunkSearchUrl(hit);
   const typeLabel = pkcTypeLabel({ isSoftListed, isPreload, reason });
-  const inStock = !isSoftListed; // soft = not buyable yet (🔴); preload/restock/new = 🟢
+  // Prefer explicit hit.inStock — soft_listed reason alone used to paint live PDPs 🔴.
+  const inStock = isSoftListed
+    ? false
+    : hit?.inStock === false
+      ? false
+      : true;
   const cartLimit = hit?.cartLimit ?? hit?.quantityLimit ?? hit?.meta?.quantityLimit ?? null;
   const inviteOnly =
     hit?.inviteOnly != null

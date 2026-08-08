@@ -48,9 +48,9 @@ export function defaultConfigFromEnv() {
       String(process.env.PC_MONITOR_ENABLE ?? "1").trim(),
     ),
     pcLocale: String(process.env.PC_MONITOR_LOCALE || "en-au").trim() || "en-au",
-    // Bootstrap watchlist — admin can edit; boot also merges binder/playmat/deck.
+    // Bootstrap watchlist — `-binder` etc are negative excludes (not search terms).
     pcKeywords: String(
-      process.env.PC_MONITOR_KEYWORDS || "TCG\nbinder\nplaymat\ndeck",
+      process.env.PC_MONITOR_KEYWORDS || "TCG\n-binder\n-playmat\n-deck",
     ),
     pcSkus: String(process.env.PC_MONITOR_SKUS || ""),
     pcIntervalMs: Number(process.env.PC_MONITOR_INTERVAL_MS) || 15000,
