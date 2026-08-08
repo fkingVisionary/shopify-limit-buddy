@@ -471,13 +471,24 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     5_000,
     Number(opts.intervalMs || process.env.PC_MONITOR_INTERVAL_MS) || 15_000,
   );
+  // Hyper-light default: longer sticky amortizes Reese/DD warm cost.
+  const hyperLight = parseBool(
+    opts.hyperLight ?? process.env.PC_MONITOR_HYPER_LIGHT,
+    true,
+  );
+  const skipBff = parseBool(
+    opts.skipBff ?? process.env.PC_MONITOR_SKIP_BFF,
+    hyperLight,
+  );
   const stickyPolls = Math.max(
     1,
-    Number(opts.stickyPolls || process.env.PC_MONITOR_STICKY_POLLS) || 4,
+    Number(opts.stickyPolls || process.env.PC_MONITOR_STICKY_POLLS) ||
+      (hyperLight ? 20 : 4),
   );
   const stickyMaxMs = Math.max(
     30_000,
-    Number(opts.stickyMaxMs || process.env.PC_MONITOR_STICKY_MAX_MS) || 120_000,
+    Number(opts.stickyMaxMs || process.env.PC_MONITOR_STICKY_MAX_MS) ||
+      (hyperLight ? 900_000 : 120_000),
   );
   const searchRows = Math.min(
     40,
@@ -506,10 +517,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     opts.discoveryEnable ?? process.env.PC_MONITOR_DISCOVERY,
     true,
   );
+  // Sitemap first — cheapest hours-ahead soft signal once edge cookies exist.
   const discoveryPaths = parseList(
     opts.discoveryPaths ??
       process.env.PC_MONITOR_DISCOVERY_PATHS ??
-      `/${locale}/category/trading-card-game,/sitemap.xml`,
+      `/sitemap.xml,/${locale}/category/trading-card-game`,
   );
   const discoveryProbeLimit = Math.max(
     0,
@@ -522,6 +534,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   const pool = opts.proxyPool || createMonitorProxyPool(opts.proxy || {});
   /** @type {Map<string, object>} */
   let snapshot = new Map();
+  /** Optional seed from disk (monitor-host pc-catalog-cache). */
+  if (opts.initialCatalog instanceof Map && opts.initialCatalog.size) {
+    snapshot = new Map(opts.initialCatalog);
+  } else if (opts.initialCatalog && typeof opts.initialCatalog === "object") {
+    for (const [k, v] of Object.entries(opts.initialCatalog)) {
+      const id = String(k || v?.productId || "").toUpperCase();
+      if (id && v) snapshot.set(id, { ...v, productId: id });
+    }
+  }
+  let hyperSolves = 0;
+  const bumpHyper = (n = 1) => {
+    hyperSolves += n;
+  };
   let running = false;
   let stopping = false;
   let loopPromise = null;
@@ -592,13 +617,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function ensureEdge(session, ctx) {
-    // light: skip 2nd DD pass only — still solve interstitial/slider (required on this pool).
+    // light warm: soft-clear before DD when possible (saves Hyper slider credits).
     const warm = await warmPokemonCentre(session, ctx, { light: true });
     edgeWarms += 1;
     if (!warm.ok) {
       const note = String(warm.note || "");
       if (/HYPER_API_KEY|hyper/i.test(note)) hyperRequired = true;
-      // Only trust explicit Hyper/SDK flags — never infer burn from note text / URL t=bv.
       const isIpBanned = Boolean(warm.datadome?.isIpBanned || warm.isIpBanned);
       return {
         ok: false,
@@ -607,28 +631,46 @@ export function createPokemonCentreStockMonitor(opts = {}) {
         datadome: warm.datadome || null,
       };
     }
-    // Checkout grind: remint Reese before BFF auth (Imperva often 403s without it).
-    try {
-      await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
-    } catch {
-      /* best-effort */
+    // Hyper-light: do NOT remint Reese after a good warm/soft-clear — that was burning
+    // ~1 credit per sticky open even when discovery already worked.
+    const alreadyClear =
+      Boolean(warm.softClear) ||
+      Boolean(warm.hyperLight) ||
+      Boolean(session?.state?.reeseCleared) ||
+      /home clear|soft-clear/i.test(String(warm.note || ""));
+    if (!alreadyClear && !hyperLight) {
+      try {
+        await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
+        bumpHyper(1);
+      } catch {
+        /* best-effort */
+      }
     }
 
-    // Monitor never posts DataDome tags — tags escalate BFF/HTML to captcha 403.
-    // Checkout still does tags before ATC; stock poll only needs Reese+DD cookie + token.
+    // Skip BFF token in hyper-light — HTML sitemap/category is the monitor path.
     let tok = null;
-    try {
-      tok = await getPublicToken(session, ctx, { locale, scope });
-    } catch {
-      tok = { ok: false, note: "public_token_failed" };
-    }
-    if (!tok?.ok && !warm.softClear) {
-      return { ok: false, note: tok?.note || "public_token_failed", isIpBanned: false };
+    if (!skipBff) {
+      try {
+        tok = await getPublicToken(session, ctx, { locale, scope });
+      } catch {
+        tok = { ok: false, note: "public_token_failed" };
+      }
+      if (!tok?.ok && !warm.softClear) {
+        return { ok: false, note: tok?.note || "public_token_failed", isIpBanned: false };
+      }
     }
     return {
       ok: true,
       softClear: Boolean(warm.softClear),
-      note: [warm.note || "edge ok", tok?.ok ? tok.note : "html-discovery (no BFF token)"]
+      hyperLight,
+      note: [
+        warm.note || "edge ok",
+        skipBff
+          ? "hyper-light html-discovery (BFF off)"
+          : tok?.ok
+            ? tok.note
+            : "html-discovery (no BFF token)",
+      ]
         .filter(Boolean)
         .join(" · "),
       token: tok?.ok ? tok : null,
@@ -747,8 +789,10 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function remintBffAuth(session, ctx) {
+    if (skipBff) return { ok: false, note: "bff_skipped_hyper_light" };
     try {
       await clearIncapsulaReese(session, ctx, { pageUrl: `${base}/`, html: "" });
+      bumpHyper(1);
     } catch {
       /* ignore */
     }
@@ -875,7 +919,11 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       const next = new Map();
       const sources = [];
 
-      const hasToken = Boolean(session.state.cortexAuth?.accessToken);
+      const hasToken = !skipBff && Boolean(session.state.cortexAuth?.accessToken);
+      if (skipBff) {
+        sources.push({ kind: "bff", ok: true, note: "skipped_hyper_light" });
+      }
+
       for (const kw of keywords) {
         if (signal?.aborted) {
           const err = new Error("poll_aborted");
@@ -1169,26 +1217,25 @@ export function createPokemonCentreStockMonitor(opts = {}) {
           const kwRe = keywords.length
             ? new RegExp(keywords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "i")
             : null;
+          // Novel-only probes — never re-classify the whole catalog (Hyper/edge burn).
           const needsProbe = [...next.values()]
             .filter((r) => {
-              const a = String(r.availability || "").toUpperCase();
-              if (!r.pdpUrl) return false;
-              // Already classified buyable — skip.
-              if (r.inStock === true && /^AVAILABLE/i.test(a)) return false;
-              // Need enum from PDP (soft-pending category/sitemap/search).
-              return !a || a === "NOT_AVAILABLE" || r.softListed || !r.inStock;
+              const id = String(r.productId || "").toUpperCase();
+              if (!r.pdpUrl || !id) return false;
+              if (snapshot.has(id)) return false; // known SKU — keep prior class
+              // Sitemap novels are already confirmed soft — skip PDP unless forced.
+              if (/^sitemap$/i.test(String(r.source || "")) && hyperLight) return false;
+              return true;
             })
             .sort((a, b) => {
               const score = (r) => {
                 const blob = `${r.title || ""} ${r.slug || ""} ${r.productId || ""}`;
-                if (!snapshot.has(String(r.productId || "").toUpperCase())) return 3;
                 if (kwRe && kwRe.test(blob)) return 2;
-                if (/sitemap/i.test(String(r.source || ""))) return 2;
                 return 1;
               };
               return score(b) - score(a);
             })
-            .slice(0, pdpProbeLimit);
+            .slice(0, hyperLight ? Math.min(pdpProbeLimit, 6) : pdpProbeLimit);
           for (const r of needsProbe) {
             if (signal?.aborted) break;
             try {
@@ -1293,9 +1340,12 @@ export function createPokemonCentreStockMonitor(opts = {}) {
 
     if (!hyperConfigured()) {
       hyperRequired = true;
-      const err = new Error("HYPER_API_KEY missing — PKC edge needs Hyper (same as checkout)");
-      err.code = "PC_HYPER_MISSING";
-      throw err;
+      if (!hyperLight) {
+        const err = new Error("HYPER_API_KEY missing — PKC edge needs Hyper (same as checkout)");
+        err.code = "PC_HYPER_MISSING";
+        throw err;
+      }
+      // Hyper-light may still fail warm on incap — discovery soft-clear tries first.
     }
 
     // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
@@ -1487,6 +1537,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       edgeAttempts,
       transport: transport || lastTransport,
       transportNote: lastTransportNote,
+      hyperLight,
+      skipBff,
+      hyperSolves,
     };
     bus.emit("poll", summary);
 
@@ -1656,6 +1709,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       store: "pokemoncentre",
       keywords,
       negativeKeywords,
+      hyperLight,
+      skipBff,
+      hyperSolves,
       skus,
       discoveryEnable,
       discoveryPaths,
@@ -1702,6 +1758,19 @@ export function createPokemonCentreStockMonitor(opts = {}) {
       const id = String(productId || "").trim().toUpperCase();
       if (!id) return null;
       return snapshot.get(id) || null;
+    },
+    seedCatalog(mapOrEntries) {
+      if (mapOrEntries instanceof Map) {
+        snapshot = new Map(mapOrEntries);
+      } else if (mapOrEntries && typeof mapOrEntries === "object") {
+        const m = new Map();
+        for (const [k, v] of Object.entries(mapOrEntries)) {
+          const id = String(k || v?.productId || "").toUpperCase();
+          if (id && v) m.set(id, { ...v, productId: id });
+        }
+        snapshot = m;
+      }
+      return snapshot.size;
     },
     setKeywords(raw) {
       const parsed = parsePcKeywordLists(raw);

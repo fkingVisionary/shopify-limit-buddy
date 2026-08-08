@@ -741,6 +741,56 @@ export async function warmPokemonCentre(session, ctx, { tStep, light = false } =
     return { ok: true, home: home2, note };
   }
 
+  // Monitor light: try category/sitemap soft-clear BEFORE DataDome Hyper solves.
+  // Soft surfaces often work after Reese-only — saves interstitial/slider credits.
+  if (light && !home2.ok) {
+    const softEarly = await step("pc_soft_clear_before_dd", async () => {
+      const paths = [
+        `${session.state.base}/category/trading-card-game`,
+        `${PC_ORIGIN}/sitemap.xml`,
+      ];
+      for (const url of paths) {
+        try {
+          const res = await session.get(url, { headers: { referer: homeUrl } });
+          const html = await session.readText(res);
+          const incap = looksLikeIncapsulaChallenge(html, res.status);
+          const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
+          const productHits = (String(html || "").match(/\/product\/[A-Za-z0-9._-]+/g) || [])
+            .length;
+          const useful =
+            res.status === 200 &&
+            !incap &&
+            !dd &&
+            (productHits >= 3 ||
+              (html.length > 8_000 && /<urlset|<sitemapindex|pokemon|product/i.test(html)));
+          if (useful) {
+            return {
+              ok: true,
+              status: res.status,
+              note: `soft-clear-before-dd via ${url.includes("sitemap") ? "sitemap" : "category"} (${html.length}b, ${productHits} urls)`,
+              html,
+              via: url,
+            };
+          }
+        } catch {
+          /* next */
+        }
+      }
+      return { ok: false, note: "soft-clear-before-dd failed" };
+    });
+    if (softEarly.ok) {
+      const note = softEarly.note;
+      if (session?.state) session.state.edgeNote = note;
+      return {
+        ok: true,
+        home: softEarly,
+        softClear: true,
+        hyperLight: true,
+        note,
+      };
+    }
+  }
+
   if (home2.dd || home.dd) {
     const ddClear = await step("datadome_clear", async () => {
       try {
@@ -780,6 +830,56 @@ export async function warmPokemonCentre(session, ctx, { tStep, light = false } =
           return { ok: false, note: e?.message || String(e) };
         }
       });
+    }
+
+    // Monitor light: after DD cookie, try soft surfaces before another Reese remint.
+    if (light) {
+      const softAfterDd = await step("pc_soft_clear_after_dd", async () => {
+        const paths = [
+          `${session.state.base}/category/trading-card-game`,
+          `${PC_ORIGIN}/sitemap.xml`,
+        ];
+        for (const url of paths) {
+          try {
+            const res = await session.get(url, { headers: { referer: homeUrl } });
+            const html = await session.readText(res);
+            const incap = looksLikeIncapsulaChallenge(html, res.status);
+            const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
+            const productHits = (String(html || "").match(/\/product\/[A-Za-z0-9._-]+/g) || [])
+              .length;
+            const useful =
+              res.status === 200 &&
+              !incap &&
+              !dd &&
+              (productHits >= 3 ||
+                (html.length > 8_000 && /<urlset|<sitemapindex|pokemon|product/i.test(html)));
+            if (useful) {
+              return {
+                ok: true,
+                note: `soft-clear-after-dd via ${url.includes("sitemap") ? "sitemap" : "category"} (${html.length}b)`,
+                html,
+                via: url,
+                status: res.status,
+              };
+            }
+          } catch {
+            /* next */
+          }
+        }
+        return { ok: false };
+      });
+      if (softAfterDd.ok) {
+        const note = softAfterDd.note;
+        if (session?.state) session.state.edgeNote = note;
+        return {
+          ok: true,
+          home: softAfterDd,
+          datadome: ddClear,
+          softClear: true,
+          hyperLight: true,
+          note,
+        };
+      }
     }
 
     // DD cookie swap often re-triggers Incapsula — remint Reese *before* declaring clear,
