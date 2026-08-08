@@ -164,25 +164,69 @@ async function fetchDeviceHtml(session, deviceLink, referer) {
 
 /**
  * Pull DataDome slider puzzle (.jpg) + piece (.frag.png) URLs from device HTML.
- * Handles escaped JSON (`https:\/\/…`) and common CDN hosts.
+ * Hyper docs: prefer `captchaChallengePath: '…jpg'`, then derive piece by
+ * replacing `.jpg` → `.frag.png` (piece often is NOT present as a separate URL).
+ * @see https://docs.hypersolutions.co/datadome/slider-captcha.md
  */
 export function extractDdSliderImages(html) {
   const raw = String(html || "");
-  const unescaped = raw.replace(/\\\//g, "/").replace(/\\u002f/gi, "/");
-  const puzzleRe =
-    /https:\/\/(?:dd\.prod\.)?captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.jpe?g/i;
-  const pieceRe =
-    /https:\/\/(?:dd\.prod\.)?captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.frag\.png/i;
-  const puzzle =
-    (unescaped.match(puzzleRe) || [])[0] ||
-    (unescaped.match(/https?:\/\/[^"'\\\s>]+\.jpe?g/i) || [])[0] ||
+  const unescaped = raw
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\x2f/gi, "/")
+    .replace(/\\\//g, "/");
+
+  // Official Hyper parse path
+  const fromKey =
+    (unescaped.match(/captchaChallengePath\s*[=:]\s*['"]([^'"]+\.jpe?g(?:\?[^'"]*)?)['"]/i) ||
+      [])[1] ||
+    (unescaped.match(/["']captchaChallengePath["']\s*[=:]\s*['"]([^'"]+\.jpe?g(?:\?[^'"]*)?)['"]/i) ||
+      [])[1] ||
     null;
-  const piece =
-    (unescaped.match(pieceRe) || [])[0] ||
-    (unescaped.match(/https?:\/\/[^"'\\\s>]+\.frag\.png/i) || [])[0] ||
+
+  let puzzle =
+    fromKey ||
+    (unescaped.match(
+      /https:\/\/dd\.prod\.captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.jpe?g(?:\?[^\s"'\\]*)?/i,
+    ) || [])[0] ||
+    (unescaped.match(
+      /https:\/\/[^"'\\\s>]*captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.jpe?g(?:\?[^\s"'\\]*)?/i,
+    ) || [])[0] ||
+    (unescaped.match(/\/image\/\d{4}-\d{2}-\d{2}\/[a-f0-9]+\.jpe?g/i) || [])[0] ||
     null;
+
+  if (puzzle && puzzle.startsWith("/")) {
+    puzzle = `https://dd.prod.captcha-delivery.com${puzzle}`;
+  }
+  if (puzzle) {
+    // Strip trailing punctuation accidentally captured from JSON/JS
+    puzzle = puzzle.replace(/[,;]+$/, "");
+  }
+
+  // Hyper: piece URL = puzzle with .jpg → .frag.png (do not require piece in HTML).
+  let piece = null;
+  if (puzzle) {
+    piece = puzzle.replace(/\.jpe?g(\?[^#]*)?$/i, ".frag.png$1");
+  } else {
+    piece =
+      (unescaped.match(
+        /https:\/\/[^"'\\\s>]*captcha-delivery\.com\/image\/[A-Za-z0-9._/-]+\.frag\.png(?:\?[^\s"'\\]*)?/i,
+      ) || [])[0] || null;
+  }
+
   const needsHcaptcha = /hcaptcha\.com|h-captcha|data-sitekey/i.test(unescaped);
-  return { puzzleUrl: puzzle, pieceUrl: piece, needsHcaptcha, bytes: raw.length };
+  const hasCaptchaHost = /captcha-delivery\.com/i.test(unescaped);
+  const looksLikeStorefront =
+    /pokemoncenter\.com/i.test(unescaped) && /<html/i.test(unescaped) && !/captchaChallengePath/i.test(unescaped);
+
+  return {
+    puzzleUrl: puzzle,
+    pieceUrl: piece,
+    needsHcaptcha,
+    bytes: raw.length,
+    fromChallengePath: Boolean(fromKey),
+    hasCaptchaHost,
+    looksLikeStorefront,
+  };
 }
 
 /**
@@ -287,14 +331,56 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
       };
     }
     if (json.view === "captcha") {
-      // Escalation — usually TLS/header fingerprint, not an automatic proxy condemnation.
+      const captchaUrl = json.url || null;
+      // Escalation: interstitial → captcha URL. Try slider solve on that URL before failing closed.
+      if (captchaUrl && /captcha-delivery\.com\/captcha/i.test(captchaUrl)) {
+        try {
+          const escalated = await solveDatadomeCaptchaUrl(session, ctx, captchaUrl, {
+            pageUrl,
+          });
+          if (escalated.ok) {
+            if (session?.state) session.state.datadomeCleared = true;
+            return {
+              ok: true,
+              kind: "interstitial_captcha",
+              view: "captcha",
+              captchaUrl,
+              note: escalated.note || "interstitial→captcha slider solved",
+              dd,
+            };
+          }
+          return {
+            ok: false,
+            kind: "interstitial_escalated",
+            view: json.view,
+            captchaUrl,
+            status: postRes.status,
+            needsHcaptcha: Boolean(escalated.needsHcaptcha),
+            isIpBanned: Boolean(escalated.isIpBanned),
+            note:
+              escalated.note ||
+              "interstitial→captcha solve failed — rotate AU ISP sticky / check Hyper TLS",
+            dd,
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            kind: "interstitial_escalated",
+            view: json.view,
+            captchaUrl,
+            status: postRes.status,
+            note: e?.message || "interstitial→captcha threw",
+            dd,
+          };
+        }
+      }
       return {
         ok: false,
         kind: "interstitial_escalated",
         view: json.view,
-        captchaUrl: json.url || null,
+        captchaUrl,
         status: postRes.status,
-        note: "interstitial returned view=captcha (not redirect) — check Hyper header-order/TLS before blaming proxy",
+        note: "interstitial returned view=captcha without captcha URL — check Hyper header-order/TLS",
         refs: [
           "https://docs.hypersolutions.co/datadome/getting-started.md#posting-payload-solving-challenge",
           "https://docs.hypersolutions.co/request-based-basics/header-order.md",
@@ -321,12 +407,22 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
   const imgs = extractDdSliderImages(deviceHtml);
   const { puzzleUrl, pieceUrl } = imgs;
   if (!puzzleUrl || !pieceUrl) {
+    let note = `DataDome slider captchaChallengePath missing (${imgs.bytes}b device HTML)`;
+    if (imgs.needsHcaptcha) {
+      note =
+        "DataDome escalated to hCaptcha (no slider images) — rotate AU ISP sticky; CapSolver is for checkout Imperva, not this monitor warm";
+    } else if (imgs.looksLikeStorefront) {
+      note =
+        "DataDome deviceLink returned storefront HTML (not captcha) — sticky TLS/fingerprint mismatch; rotate AU ISP";
+    } else if (!imgs.hasCaptchaHost) {
+      note = `${note} — no captcha-delivery host in body; rotate sticky / check Hyper TLS`;
+    } else {
+      note = `${note} — rotate sticky / check Hyper TLS`;
+    }
     return {
       ok: false,
       kind: "slider",
-      note: imgs.needsHcaptcha
-        ? "DataDome escalated to hCaptcha (no slider images) — rotate AU ISP sticky; CapSolver is for checkout Imperva, not this monitor warm"
-        : `DataDome slider puzzle/piece URLs not found (${imgs.bytes}b device HTML) — rotate sticky / check Hyper TLS`,
+      note,
       needsHcaptcha: imgs.needsHcaptcha,
       dd,
     };
@@ -425,7 +521,9 @@ export async function solveDatadomeCaptchaUrl(session, ctx, captchaUrl, { pageUr
       ok: false,
       note: imgs.needsHcaptcha
         ? "captcha page escalated to hCaptcha — rotate sticky"
-        : `captcha page missing puzzle/piece (${imgs.bytes}b)`,
+        : imgs.looksLikeStorefront
+          ? "captcha URL returned storefront HTML — rotate sticky"
+          : `captchaChallengePath missing (${imgs.bytes}b)`,
       needsHcaptcha: imgs.needsHcaptcha,
       bytes: imgs.bytes,
     };

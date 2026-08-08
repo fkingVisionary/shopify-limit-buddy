@@ -263,8 +263,9 @@
             <strong>Sitemap + TCG category discovery</strong> runs by default so random restocks
             can soft-list hours ahead without a known SKU. Amber Discord = soft listed; blue = preload;
             black = buyable. Needs <code>HYPER_API_KEY</code> on Railway.
-            <strong>Force PKC poll</strong> searches your watchlist now and Discord-pings current
-            buyable / soft-list hits (up to 15). The live loop only pings on changes after baseline.
+            <strong>Force PKC poll</strong> saves the boxes below, searches that watchlist, and
+            Discord-pings current buyable / soft-list hits (up to 15). The live loop only pings on
+            changes after baseline. Needs AU ISP proxies + <code>HYPER_API_KEY</code> for edge warm.
           </p>
           <label for="pcKeywords">Keywords (one per line)</label>
           <textarea id="pcKeywords" placeholder="elite trainer box&#10;pokemon center"></textarea>
@@ -812,22 +813,26 @@
           toast("Bandai keywords live", "ok");
         } catch (e) { toast(e.message, "bad"); }
       };
+      async function savePcWatchlist() {
+        const r = await api("/admin/config", {
+          method: "PUT",
+          body: JSON.stringify({
+            pcKeywords: $("pcKeywords")?.value || "",
+            pcSkus: $("pcSkus")?.value || "",
+            pcIntervalMs: Number($("pcInterval")?.value) || 15000,
+            pcLocale: "en-au",
+            pcMonitorEnable: $("pcMonitorEnable")?.checked !== false,
+          }),
+        });
+        if (r.pcKeywords != null && $("pcKeywords")) $("pcKeywords").value = r.pcKeywords;
+        if (r.pcSkus != null && $("pcSkus")) $("pcSkus").value = r.pcSkus;
+        if (r.pcIntervalMs != null && $("pcInterval")) $("pcInterval").value = r.pcIntervalMs;
+        return r;
+      }
       if ($("btnSavePc")) {
         $("btnSavePc").onclick = async () => {
           try {
-            const r = await api("/admin/config", {
-              method: "PUT",
-              body: JSON.stringify({
-                pcKeywords: $("pcKeywords").value,
-                pcSkus: $("pcSkus").value,
-                pcIntervalMs: Number($("pcInterval").value) || 15000,
-                pcLocale: "en-au",
-                pcMonitorEnable: $("pcMonitorEnable")?.checked !== false,
-              }),
-            });
-            if (r.pcKeywords != null) $("pcKeywords").value = r.pcKeywords;
-            if (r.pcSkus != null) $("pcSkus").value = r.pcSkus;
-            if (r.pcIntervalMs != null) $("pcInterval").value = r.pcIntervalMs;
+            await savePcWatchlist();
             toast("PKC AU watchlist live", "ok");
             try {
               await loadAll();
@@ -842,6 +847,9 @@
       if ($("btnPcPoll")) {
         $("btnPcPoll").onclick = async () => {
           try {
+            // Always persist textarea first — phone UI often Force-polls without Save.
+            toast("Saving watchlist…", "ok");
+            await savePcWatchlist();
             toast("PKC poll…", "ok");
             const r = await api("/monitor/pkc/poll", { method: "POST", body: "{}" });
             const n = r.discordEvents ?? r.events?.length ?? 0;
@@ -858,13 +866,12 @@
               /* ignore refresh flake */
             }
           } catch (e) {
-            const hint = e.body?.hint ? ` — ${e.body.hint}` : "";
+            // Keep toast short for phone — full hint is in Logs.
             const msg = String(e.message || "pkc_poll_failed");
-            // Phone toasts truncate — keep status code / short TypeError readable.
-            const short = /bff_\d+|discovery_\d+|datadome|hcaptcha|pc_edge|pc_sticky|empty_fetch|cannot (read|set)/i.test(msg)
-              ? msg.slice(0, 160)
-              : msg.slice(0, 120);
-            toast(short + hint, "bad");
+            const short = msg
+              .replace(/\s*—\s*Edge\/BFF block[\s\S]*$/i, "")
+              .slice(0, 140);
+            toast(short || msg.slice(0, 140), "bad");
             try {
               await loadAll();
             } catch {
