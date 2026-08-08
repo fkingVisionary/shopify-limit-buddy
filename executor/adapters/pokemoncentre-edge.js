@@ -242,7 +242,7 @@ export function extractDdSliderImages(html) {
  * @see https://docs.hypersolutions.co/datadome/getting-started.md
  * @see https://docs.hypersolutions.co/request-based-basics/header-order.md
  */
-export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {}) {
+export async function clearDataDome(session, ctx, { pageUrl, html, headers, light = false } = {}) {
   if (!hyperConfigured()) {
     return { ok: false, note: "HYPER_API_KEY missing — cannot solve DataDome" };
   }
@@ -264,6 +264,14 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
       kind: "slider_hard_block",
       note: "DataDome slider t=bv — Hyper docs: hard IP block; rotate sticky session (solving has no effect)",
       ref: "https://docs.hypersolutions.co/datadome/getting-started.md#slider",
+      dd,
+    };
+  }
+  if (isSlider && light) {
+    return {
+      ok: false,
+      kind: "slider_light_skip",
+      note: "DataDome slider — rotate sticky (monitor light; skip slow Hyper slider)",
       dd,
     };
   }
@@ -351,8 +359,19 @@ export async function clearDataDome(session, ctx, { pageUrl, html, headers } = {
           dd,
         };
       }
-      // Escalation without t=bv: try slider solve on captcha URL.
+      // Escalation without t=bv: slider solve (slow). Monitor light mode rotates instead.
       if (captchaUrl && /captcha-delivery\.com\/captcha/i.test(captchaUrl)) {
+        if (light) {
+          return {
+            ok: false,
+            kind: "interstitial_escalated_light",
+            view: json.view,
+            captchaUrl,
+            status: postRes.status,
+            note: "interstitial→captcha — rotate sticky (monitor light; skip slider)",
+            dd,
+          };
+        }
         try {
           const escalated = await solveDatadomeCaptchaUrl(session, ctx, captchaUrl, {
             pageUrl,
@@ -670,7 +689,13 @@ export async function postDataDomeTags(session, ctx, { pageUrl } = {}) {
 /**
  * Warm locale home: Incapsula clear → optional re-GET → DataDome if still blocked.
  */
-export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
+/**
+ * @param {object} session
+ * @param {object} ctx
+ * @param {{ tStep?: Function, light?: boolean }} [opts]
+ *   light: monitor mode — skip slow slider solves + second DD clear; soft-clear via category.
+ */
+export async function warmPokemonCentre(session, ctx, { tStep, light = false } = {}) {
   const step = tStep || (async (_n, fn) => fn());
   const homeUrl = `${session.state.base}/`;
 
@@ -748,6 +773,7 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
           pageUrl: homeUrl,
           html: home2.html || home.html,
           headers: home2.headers || home.headers,
+          light,
         });
       } catch (e) {
         return { ok: false, note: e?.message || String(e) };
@@ -874,15 +900,16 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
       }
     }
 
-    // Soft DD again (not t=bv) → one more clear + Reese + home.
+    // Full checkout warm: optional second DD clear. Monitor light skips (too slow).
     let ddClear2 = null;
-    if (!home3.ok && home3.dd) {
+    if (!light && !home3.ok && home3.dd) {
       ddClear2 = await step("datadome_clear_home3", async () => {
         try {
           return await clearDataDome(session, ctx, {
             pageUrl: homeUrl,
             html: home3.html,
             headers: home3.headers,
+            light: false,
           });
         } catch (e) {
           return { ok: false, note: e?.message || String(e) };
@@ -904,41 +931,6 @@ export async function warmPokemonCentre(session, ctx, { tStep } = {}) {
           /* best-effort */
         }
         home3 = await step("pc_home_after_dd2", () => fetchHomeProbe("after_dd2"));
-        if (!home3.ok) {
-          const soft2 = await step("pc_soft_clear_after_dd2", async () => {
-            try {
-              const url = `${session.state.base}/category/trading-card-game`;
-              const res = await session.get(url, { headers: { referer: homeUrl } });
-              const html = await session.readText(res);
-              const incap = looksLikeIncapsulaChallenge(html, res.status);
-              const dd = looksLikeDataDomeBlock(html, res.status, res.headers);
-              const productHits = (String(html || "").match(/\/product\/[A-Za-z0-9._-]+/g) || [])
-                .length;
-              if (res.status === 200 && !incap && !dd && productHits >= 3) {
-                return {
-                  ok: true,
-                  note: `soft-clear via category after dd2 (${html.length}b, ${productHits} urls)`,
-                  html,
-                };
-              }
-            } catch {
-              /* ignore */
-            }
-            return { ok: false };
-          });
-          if (soft2.ok) {
-            const note = soft2.note;
-            if (session?.state) session.state.edgeNote = note;
-            return {
-              ok: true,
-              home: soft2,
-              datadome: ddClear2,
-              reeseAfterDd,
-              softClear: true,
-              note,
-            };
-          }
-        }
       }
     }
 

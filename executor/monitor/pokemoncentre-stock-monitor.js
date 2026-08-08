@@ -421,7 +421,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
   }
 
   async function ensureEdge(session, ctx) {
-    const warm = await warmPokemonCentre(session, ctx);
+    // light: skip slider solves + 2nd DD — walk more stickies inside the poll budget.
+    const warm = await warmPokemonCentre(session, ctx, { light: true });
     edgeWarms += 1;
     if (!warm.ok) {
       const note = String(warm.note || "");
@@ -908,9 +909,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
     const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
     const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
-    // Walk more stickies when pool is large — many ISP exits hit DD t=bv.
+    // Light warm ≈10–20s/sticky — walk a bigger slice of the ISP pool.
     const defaultAttempts = wantPcTlsWorker()
-      ? Math.min(8, Math.max(3, poolSize > 0 ? Math.ceil(poolSize * 0.1) : 3))
+      ? Math.min(12, Math.max(6, poolSize > 0 ? Math.ceil(poolSize * 0.15) : 6))
       : Math.min(15, Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4));
     const maxAttempts = Math.max(
       1,
@@ -985,8 +986,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const t0 = Date.now();
     // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
     const envBudget = Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS);
-    // tls-worker + Reese/DD remint needs headroom; 120s was timing out mid-warm.
-    const defaultBudget = announce ? 300_000 : 180_000;
+    // Light warm + more sticky rotates; keep Force poll generous.
+    const defaultBudget = announce ? 300_000 : 240_000;
     const pollBudgetMs = Math.max(
       45_000,
       Number.isFinite(envBudget) && envBudget > 0 ? envBudget : defaultBudget,
