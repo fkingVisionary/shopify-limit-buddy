@@ -170,26 +170,68 @@ function quickTaskComponents(hit, area) {
   ];
 }
 
-function baseFields(hit, area, productId) {
-  const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
-  const price = pickPrice(hit);
-  const productType = hit?.meta?.productType || hit?.productType || null;
-  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
-  return {
-    pdp,
-    fields: [
-      { name: "SKU", value: `\`${productId}\``, inline: true },
-      ...(nai ? [{ name: "Backend PID", value: `\`${nai}\``, inline: true }] : []),
-      ...(price ? [{ name: "Price", value: price, inline: true }] : []),
-      ...(productType ? [{ name: "Type", value: String(productType), inline: true }] : []),
-      { name: "Region", value: area.toUpperCase(), inline: true },
-      {
-        name: "PDP",
-        value: `[Open on Premium Bandai](${pdp})`,
-        inline: false,
-      },
-    ],
-  };
+/** Flux-style stock pill: green = buyable / listed live, red = not buyable. */
+function stockEmoji(inStock) {
+  return inStock ? "🟢" : "🔴";
+}
+
+function buildStockxSearchUrl(hit) {
+  const title = pickTitle(hit);
+  const sku = String(hit?.productId || hit?.sku || "").trim();
+  const q = String(title || sku || "").trim().slice(0, 80);
+  return `https://stockx.com/search?s=${encodeURIComponent(q || "pokemon")}`;
+}
+
+function buildSnkrDunkSearchUrl(hit) {
+  const title = pickTitle(hit);
+  const sku = String(hit?.productId || hit?.sku || "").trim();
+  const q = String(title || sku || "").trim().slice(0, 80);
+  return `https://snkrdunk.com/en/search?keyword=${encodeURIComponent(q || "pokemon")}`;
+}
+
+/**
+ * Compact monitor fields (Flux / Zephyr style):
+ * Price · Type · SKU · Stock · optional Cart Limit / Invite Only · Links
+ */
+function monitorCompactFields({
+  productId,
+  price,
+  typeLabel,
+  inStock,
+  cartLimit,
+  inviteOnly,
+  linksMarkdown,
+  extraInline,
+}) {
+  const fields = [
+    { name: "Price", value: price ? String(price) : "N/A", inline: true },
+    { name: "Type", value: String(typeLabel || "Restock"), inline: true },
+    { name: "SKU", value: String(productId || "?"), inline: true },
+    { name: "Stock", value: stockEmoji(inStock), inline: true },
+  ];
+  if (cartLimit != null && cartLimit !== "") {
+    fields.push({ name: "Cart Limit", value: String(cartLimit), inline: true });
+  }
+  if (inviteOnly != null) {
+    fields.push({ name: "Invite Only", value: inviteOnly ? "🟢" : "🔴", inline: true });
+  }
+  if (Array.isArray(extraInline)) {
+    for (const f of extraInline) {
+      if (f?.name && f?.value != null) fields.push({ ...f, inline: f.inline !== false });
+    }
+  }
+  if (linksMarkdown) {
+    fields.push({ name: "Links", value: String(linksMarkdown), inline: false });
+  }
+  return fields;
+}
+
+function bandaiTypeLabel(reason) {
+  const r = String(reason || "restock").toLowerCase().replace(/_/g, " ");
+  if (r === "new in stock") return "New Product";
+  if (r === "went oos" || r === "oos") return "Out of Stock";
+  if (r === "restock") return "Restock";
+  return r.replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
@@ -200,42 +242,40 @@ export function vantaRestockDiscordBody(hit, opts = {}) {
   const area = String(opts.area || "au").toLowerCase();
   const productId = String(hit?.productId || "?").trim() || "?";
   const title = pickTitle(hit) || productId;
-  const reason = String(hit?.reason || "restock").replace(/_/g, " ");
+  const reason = String(hit?.reason || "restock");
   const image = pickImage(hit);
   const isTest = opts.test === true;
-  const { pdp, fields } = baseFields(hit, area, productId);
-
-  const reasonLabel =
-    reason === "new in stock" ? "New in stock" : reason === "restock" ? "Restock" : reason;
+  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
+  const price = pickPrice(hit);
+  const nai = hit?.areaItemNo || hit?.meta?.areaItemNo || null;
+  const typeLabel = bandaiTypeLabel(reason);
   const { qtUrl, createUrl, setupUrl, ebayUrl } = restockActionLinks(hit, area);
 
-  // One QT mention in description (not duplicated in fields). Buttons mirror the same links.
-  const description = [
-    `**${reasonLabel}** · Premium Bandai AU`,
-    "",
-    `[⚡ Quick Task](${qtUrl}) · [Create only](${createUrl}) · [Setup presets](${setupUrl}) · [eBay sold](${ebayUrl})`,
-  ].join("\n");
+  const fields = monitorCompactFields({
+    productId,
+    price,
+    typeLabel,
+    inStock: true,
+    linksMarkdown: `[eBay](${ebayUrl}) · [⚡ Quick Task](${qtUrl})`,
+    extraInline: nai ? [{ name: "Backend PID", value: String(nai), inline: true }] : [],
+  });
 
   return {
     username: VANTA_NAME,
     embeds: [
       {
         author: {
-          name: isTest ? `${VANTA_NAME} · test restock` : `${VANTA_NAME} · Restock`,
+          name: isTest ? `Premium Bandai AU · test` : "Premium Bandai AU",
         },
         title: title.slice(0, 250),
         url: pdp,
-        description,
         color: VANTA_COLOR,
         fields,
-        ...(image
-          ? {
-              thumbnail: { url: image },
-              image: { url: image },
-            }
-          : {}),
+        ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest ? "Vanta monitor · test restock" : "Vanta · restock",
+          text: isTest
+            ? `Vanta · test · [Create only] · [Setup]`
+            : `Vanta · ${typeLabel} · eBay · Quick Task`,
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -257,28 +297,31 @@ export function vantaOosDiscordBody(hit, opts = {}) {
   const title = pickTitle(hit) || productId;
   const image = pickImage(hit);
   const isTest = opts.test === true;
-  const { pdp, fields } = baseFields(hit, area, productId);
+  const pdp = `https://p-bandai.com/${area}/item/${productId}`;
+  const price = pickPrice(hit);
   const ebayUrl = buildEbaySoldUrl(hit);
+  const fields = monitorCompactFields({
+    productId,
+    price,
+    typeLabel: "Out of Stock",
+    inStock: false,
+    linksMarkdown: `[eBay](${ebayUrl}) · [Open PDP](${pdp})`,
+  });
 
   return {
     username: VANTA_NAME,
     embeds: [
       {
         author: {
-          name: isTest ? `${VANTA_NAME} · test OOS` : `${VANTA_NAME} · OUT OF STOCK`,
+          name: isTest ? "Premium Bandai AU · test" : "Premium Bandai AU",
         },
-        title: `OOS · ${title}`.slice(0, 250),
+        title: title.slice(0, 250),
         url: pdp,
-        description: [
-          "**OUT OF STOCK** — no longer purchaseable on Premium Bandai AU",
-          "",
-          `[eBay sold](${ebayUrl})`,
-        ].join("\n"),
         color: VANTA_OOS_COLOR,
-        fields: [{ name: "Status", value: "`OOS`", inline: true }, ...fields],
+        fields,
         ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest ? "Vanta monitor · test OOS" : "Vanta · out of stock alert",
+          text: isTest ? "Vanta monitor · test OOS" : "Vanta · out of stock",
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -341,30 +384,30 @@ function pickPcImage(hit) {
   return null;
 }
 
-function pcBaseFields(hit, locale, productId, pdp) {
-  const price = pickPrice(hit);
-  const avail = hit?.availability || hit?.meta?.availability || null;
-  const source = hit?.source || hit?.meta?.source || null;
-  return {
-    fields: [
-      { name: "SKU", value: `\`${productId}\``, inline: true },
-      ...(avail ? [{ name: "Availability", value: `\`${avail}\``, inline: true }] : []),
-      ...(price ? [{ name: "Price", value: String(price), inline: true }] : []),
-      { name: "Region", value: String(locale || "en-au").toUpperCase(), inline: true },
-      ...(source ? [{ name: "Source", value: String(source), inline: true }] : []),
-      {
-        name: "PDP",
-        value: `[Open on Pokémon Centre](${pdp})`,
-        inline: false,
-      },
-    ],
-  };
+function pkcTypeLabel({ isSoftListed, isPreload, reason }) {
+  if (isSoftListed) return "Potential Upcoming Restock";
+  if (isPreload) return "Preorder";
+  const r = String(reason || "").toLowerCase().replace(/_/g, " ");
+  if (r === "new in stock") return "New Product";
+  if (r === "restock") return "Restock";
+  if (r === "went oos" || r === "oos") return "Out of Stock";
+  return r ? r.replace(/\b\w/g, (c) => c.toUpperCase()) : "Restock";
+}
+
+function pkcRegionLabel(locale) {
+  const loc = String(locale || "en-au").toLowerCase();
+  if (loc === "en-au") return "Pokemon Center AU";
+  if (loc === "en-nz") return "Pokemon Center NZ";
+  if (loc === "en-us") return "Pokemon Center US";
+  if (loc === "en-gb") return "Pokemon Center UK";
+  if (loc === "en-ca") return "Pokemon Center CA";
+  if (loc === "en-de" || loc === "de") return "Pokemon Center DE";
+  return "Pokemon Center";
 }
 
 /**
- * PKC restock / preload / soft-list — same layout as Bandai restock
- * (title · reason line · fields · thumbnail+image · link buttons).
- * No Bandai Quick Task (wrong store); PDP + eBay sold instead.
+ * PKC — Flux-style compact embed (Price / Type / SKU / Stock / Links).
+ * soft_listed → Type "Potential Upcoming Restock" (hours-ahead soft load).
  * @param {object} hit
  * @param {{ locale?: string, test?: boolean, preload?: boolean, softListed?: boolean }} [opts]
  */
@@ -372,7 +415,7 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
   const locale = String(opts.locale || hit?.locale || "en-au").toLowerCase();
   const productId = String(hit?.productId || hit?.sku || "?").trim() || "?";
   const title = pickTitle(hit) || productId;
-  const reason = String(hit?.reason || "restock").replace(/_/g, " ");
+  const reason = String(hit?.reason || "restock");
   const image = pickPcImage(hit);
   const isTest = opts.test === true;
   const isSoftListed =
@@ -386,59 +429,51 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
       /preorder|preload/i.test(String(hit?.reason || "")) ||
       /PRE[_-]?ORDER/i.test(String(hit?.availability || hit?.meta?.availability || "")));
   const pdp = pcPdpUrl(hit, locale);
-  const { fields } = pcBaseFields(hit, locale, productId, pdp);
+  const price = pickPrice(hit);
   const ebayUrl = buildEbaySoldUrl(hit);
+  const stockxUrl = buildStockxSearchUrl(hit);
+  const snkrUrl = buildSnkrDunkSearchUrl(hit);
+  const typeLabel = pkcTypeLabel({ isSoftListed, isPreload, reason });
+  const inStock = !isSoftListed; // soft = not buyable yet (🔴); preload/restock/new = 🟢
+  const cartLimit = hit?.cartLimit ?? hit?.quantityLimit ?? hit?.meta?.quantityLimit ?? null;
+  const inviteOnly =
+    hit?.inviteOnly != null
+      ? Boolean(hit.inviteOnly)
+      : hit?.meta?.inviteOnly != null
+        ? Boolean(hit.meta.inviteOnly)
+        : false;
 
-  const reasonLabel = isSoftListed
-    ? "Soft listed"
-    : isPreload
-      ? "Preorder / preload"
-      : reason === "new in stock"
-        ? "New in stock"
-        : reason === "restock"
-          ? "Restock"
-          : reason;
-
-  const authorKind = isSoftListed ? "Soft listed" : isPreload ? "Preorder" : "Restock";
+  // Flux uses blue accent for soft + new product pings.
   const color = isSoftListed
-    ? VANTA_PKC_SOFT_LIST_COLOR
+    ? VANTA_PKC_PRELOAD_COLOR
     : isPreload
       ? VANTA_PKC_PRELOAD_COLOR
       : VANTA_COLOR;
 
-  const description = [
-    `**${reasonLabel}** · Pokémon Centre AU`,
-    isSoftListed ? "_Not buyable yet — soft publish / search / sitemap._" : null,
-    "",
-    `[Open PDP](${pdp}) · [eBay sold](${ebayUrl})`,
-  ]
-    .filter((line) => line != null)
-    .join("\n");
+  const fields = monitorCompactFields({
+    productId,
+    price,
+    typeLabel,
+    inStock,
+    cartLimit: cartLimit != null ? cartLimit : undefined,
+    inviteOnly,
+    linksMarkdown: `[StockX](${stockxUrl})`,
+  });
 
   return {
     username: VANTA_NAME,
     embeds: [
       {
         author: {
-          name: isTest
-            ? `${VANTA_NAME} · test ${authorKind.toLowerCase()}`
-            : `${VANTA_NAME} · ${authorKind}`,
+          name: isTest ? `${pkcRegionLabel(locale)} · test` : pkcRegionLabel(locale),
         },
         title: title.slice(0, 250),
         url: pdp,
-        description,
         color,
         fields,
-        ...(image
-          ? {
-              thumbnail: { url: image },
-              image: { url: image },
-            }
-          : {}),
+        ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest
-            ? `Vanta monitor · test ${authorKind.toLowerCase()}`
-            : `Vanta · ${authorKind.toLowerCase()}`,
+          text: `SnkrDunk | Ebay | Vanta${isTest ? " · test" : ""}`,
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -450,7 +485,9 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
         type: 1,
         components: [
           { type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) },
-          { type: 2, style: 5, label: "eBay sold", url: ebayUrl.slice(0, 512) },
+          { type: 2, style: 5, label: "StockX", url: stockxUrl.slice(0, 512) },
+          { type: 2, style: 5, label: "eBay", url: ebayUrl.slice(0, 512) },
+          { type: 2, style: 5, label: "SnkrDunk", url: snkrUrl.slice(0, 512) },
         ],
       },
     ],
@@ -458,7 +495,7 @@ export function vantaPkcDiscordBody(hit, opts = {}) {
 }
 
 /**
- * PKC went OOS — same layout as Bandai OOS (red, eBay + PDP, thumbnail).
+ * PKC OOS — same compact Flux field layout, red accent.
  * @param {object} hit
  * @param {{ locale?: string, test?: boolean }} [opts]
  */
@@ -469,28 +506,33 @@ export function vantaPkcOosDiscordBody(hit, opts = {}) {
   const image = pickPcImage(hit);
   const isTest = opts.test === true;
   const pdp = pcPdpUrl(hit, locale);
-  const { fields } = pcBaseFields(hit, locale, productId, pdp);
+  const price = pickPrice(hit);
   const ebayUrl = buildEbaySoldUrl(hit);
+  const stockxUrl = buildStockxSearchUrl(hit);
+  const snkrUrl = buildSnkrDunkSearchUrl(hit);
+  const fields = monitorCompactFields({
+    productId,
+    price,
+    typeLabel: "Out of Stock",
+    inStock: false,
+    inviteOnly: false,
+    linksMarkdown: `[StockX](${stockxUrl})`,
+  });
 
   return {
     username: VANTA_NAME,
     embeds: [
       {
         author: {
-          name: isTest ? `${VANTA_NAME} · test OOS` : `${VANTA_NAME} · OUT OF STOCK`,
+          name: isTest ? `${pkcRegionLabel(locale)} · test` : pkcRegionLabel(locale),
         },
-        title: `OOS · ${title}`.slice(0, 250),
+        title: title.slice(0, 250),
         url: pdp,
-        description: [
-          "**OUT OF STOCK** — no longer purchaseable on Pokémon Centre AU",
-          "",
-          `[eBay sold](${ebayUrl})`,
-        ].join("\n"),
         color: VANTA_OOS_COLOR,
-        fields: [{ name: "Status", value: "`OOS`", inline: true }, ...fields],
+        fields,
         ...(image ? { thumbnail: { url: image } } : {}),
         footer: {
-          text: isTest ? "Vanta monitor · test OOS" : "Vanta · out of stock alert",
+          text: `SnkrDunk | Ebay | Vanta${isTest ? " · test" : ""}`,
         },
         timestamp: hit?.at || hit?.timestamp
           ? new Date(hit.at || hit.timestamp).toISOString()
@@ -501,8 +543,10 @@ export function vantaPkcOosDiscordBody(hit, opts = {}) {
       {
         type: 1,
         components: [
-          { type: 2, style: 5, label: "eBay sold", url: ebayUrl.slice(0, 512) },
           { type: 2, style: 5, label: "Open PDP", url: pdp.slice(0, 512) },
+          { type: 2, style: 5, label: "StockX", url: stockxUrl.slice(0, 512) },
+          { type: 2, style: 5, label: "eBay", url: ebayUrl.slice(0, 512) },
+          { type: 2, style: 5, label: "SnkrDunk", url: snkrUrl.slice(0, 512) },
         ],
       },
     ],
