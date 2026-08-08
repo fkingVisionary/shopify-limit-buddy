@@ -1241,14 +1241,15 @@ app.post("/monitor/pkc/poll", async (req, reply) => {
   } catch (e) {
     const msg = e?.message || "pkc_poll_failed";
     labLog("monitor", "err", `PKC force poll failed: ${msg}`);
-    const edgeBlocked = /datadome|slider|puzzle|hcaptcha|pc_edge|interstitial|public_token|bff_403/i.test(
-      msg,
-    );
+    const edgeBlocked =
+      /datadome|slider|puzzle|hcaptcha|pc_edge|pc_sticky|interstitial|public_token|bff_40[13]|bff_5\d\d|discovery_|empty_fetch|cannot read properties/i.test(
+        msg,
+      );
     return reply.code(503).send({
       ok: false,
       error: msg,
       hint: edgeBlocked
-        ? "Edge/DataDome block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies on the host"
+        ? "Edge/BFF block — monitor rotates ISP sticky and retries; confirm HYPER_API_KEY + AU residential proxies (bff_500 = Cortex/WAF after warm)"
         : undefined,
       pokemoncentre: pcMonitor.status(),
     });

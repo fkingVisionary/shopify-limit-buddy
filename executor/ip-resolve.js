@@ -70,13 +70,15 @@ function withTimeout(promise, ms, label) {
 }
 
 async function probeEndpoint(ep, ctx, timeoutMs) {
+  // Prefer ctx.request (monitor slim undici) over full executor http.js.
+  const req = typeof ctx?.request === "function" ? ctx.request : request;
   const res = await withTimeout(
-    request(ep.url, { method: "GET" }, ctx),
+    req(ep.url, { method: "GET" }, ctx),
     timeoutMs,
     ep.url,
   );
-  if (!(res.status >= 200 && res.status < 400)) {
-    throw new Error(`${ep.url} HTTP ${res.status}`);
+  if (!res || !(res.status >= 200 && res.status < 400)) {
+    throw new Error(`${ep.url} HTTP ${res?.status ?? "empty"}`);
   }
   const body = await res.text();
   const ip = ep.parse(body);
