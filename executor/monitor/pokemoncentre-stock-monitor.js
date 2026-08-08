@@ -909,9 +909,9 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     // tls-worker usually clears on first sticky (checkout path). undici may need more rotates.
     const poolSize = Number(pool.stats()?.isp || 0) + Number(pool.stats()?.dc || 0);
     const envAttempts = Number(process.env.PC_MONITOR_EDGE_RETRIES);
-    // Light warm ≈10–20s/sticky — walk a bigger slice of the ISP pool.
+    // Full slider solve ≈20–40s/sticky — fewer attempts, longer budget.
     const defaultAttempts = wantPcTlsWorker()
-      ? Math.min(12, Math.max(6, poolSize > 0 ? Math.ceil(poolSize * 0.15) : 6))
+      ? Math.min(6, Math.max(3, poolSize > 0 ? Math.ceil(poolSize * 0.08) : 3))
       : Math.min(15, Math.max(4, poolSize > 0 ? Math.min(12, Math.ceil(poolSize * 0.2)) : 4));
     const maxAttempts = Math.max(
       1,
@@ -986,8 +986,8 @@ export function createPokemonCentreStockMonitor(opts = {}) {
     const t0 = Date.now();
     // Force poll: allow checkout-style edge warm (+ a few sticky rotates). Live loop stays tighter.
     const envBudget = Number(process.env.PC_MONITOR_POLL_TIMEOUT_MS);
-    // Light warm + more sticky rotates; keep Force poll generous.
-    const defaultBudget = announce ? 300_000 : 240_000;
+    // Slider solves need headroom; Force poll stays generous.
+    const defaultBudget = announce ? 360_000 : 300_000;
     const pollBudgetMs = Math.max(
       45_000,
       Number.isFinite(envBudget) && envBudget > 0 ? envBudget : defaultBudget,
