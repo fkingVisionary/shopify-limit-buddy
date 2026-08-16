@@ -815,6 +815,136 @@ await app.register(fastifyStatic, {
 
 app.get("/admin", async (_req, reply) => reply.redirect("/admin/"));
 
+/** Vanta Beta desktop API keys (allowlist) — same env as dashboard control plane. */
+function desktopAllowlistedKeys() {
+  return new Set(
+    String(process.env.DESKTOP_API_KEYS || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+function desktopAuthMode() {
+  const m = String(process.env.DESKTOP_AUTH_MODE || "open").toLowerCase();
+  if (m === "allowlist" || m === "whop") return m;
+  return "open";
+}
+
+app.get("/admin/beta-keys", async (req, reply) => {
+  const token = String(req.query?.token || "").trim();
+  const expected = String(process.env.DESKTOP_KEYS_ADMIN_TOKEN || "").trim();
+  if (!expected || token !== expected) {
+    return reply.code(404).type("text/plain").send("Not found");
+  }
+  const mode = desktopAuthMode();
+  const keys = [...desktopAllowlistedKeys()].sort();
+  const html = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="robots" content="noindex"/>
+<title>Vanta Beta keys</title>
+<style>
+  body{font-family:"Segoe UI",system-ui,sans-serif;background:#0b1020;color:#f4f6fb;margin:0;padding:32px 20px}
+  main{max-width:640px;margin:0 auto}
+  h1{font-size:24px;margin:0 0 8px}
+  p{color:#b7c0d4;line-height:1.5}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:rgba(255,255,255,.06);padding:4px 8px;border-radius:6px;word-break:break-all}
+  ol{padding-left:1.2rem;line-height:1.9}
+  .meta{font-size:13px;color:#8b9bb8;margin-bottom:20px}
+  a{color:#9db7ff}
+</style>
+</head><body><main>
+  <h1>Vanta Beta — desktop keys</h1>
+  <p class="meta">Mode: <code>${escapeHtml(mode)}</code> · ${keys.length} key(s) · keep this URL private</p>
+  <p>Hand <strong>one key per tester</strong>. In the app: Settings → paste API key → save.</p>
+  <ol>
+    ${keys.map((k) => `<li><code>${escapeHtml(k)}</code></li>`).join("\n    ") || "<li><em>No keys in DESKTOP_API_KEYS</em></li>"}
+  </ol>
+  <p><a href="/download">Download app</a> · <a href="/admin/">Monitor admin</a></p>
+</main></body></html>`;
+  return reply
+    .header("cache-control", "no-store")
+    .type("text/html")
+    .send(html);
+});
+
+app.post("/api/public/desktop/validate-key", async (req, reply) => {
+  const key = String(req.body?.apiKey || "").trim();
+  const mode = desktopAuthMode();
+  if (!key) {
+    return reply.code(401).send({ ok: false, status: "invalid", message: "API key required", mode });
+  }
+  if (mode === "open") {
+    return {
+      ok: true,
+      status: "open",
+      message: "Accepted (DESKTOP_AUTH_MODE=open)",
+      mode,
+    };
+  }
+  if (mode === "allowlist") {
+    if (desktopAllowlistedKeys().has(key)) {
+      return { ok: true, status: "valid", message: "API key allowlisted", mode };
+    }
+    return reply.code(401).send({ ok: false, status: "invalid", message: "API key not in allowlist", mode });
+  }
+  return reply.code(401).send({
+    ok: false,
+    status: "invalid",
+    message: "DESKTOP_AUTH_MODE=whop is not wired on monitor host",
+    mode,
+  });
+});
+
+app.get("/download", async (_req, reply) => {
+  const product = "Vanta Beta";
+  const html = `<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Download ${product}</title>
+<style>
+  body{min-height:100vh;margin:0;font-family:"Segoe UI",system-ui,sans-serif;
+    background:linear-gradient(165deg,#0b1020 0%,#12182b 45%,#0e1422 100%);color:#f4f6fb;padding:48px 20px}
+  main{max-width:520px;margin:0 auto}
+  h1{font-size:36px;margin:0 0 12px}
+  p{color:#b7c0d4;line-height:1.55}
+  a.btn{display:block;text-align:center;padding:18px 20px;border-radius:12px;background:#3d7eff;color:#fff;
+    font-size:18px;font-weight:650;text-decoration:none;box-shadow:0 10px 30px rgba(61,126,255,.35)}
+  ol{margin:36px 0 0;padding:20px 20px 20px 40px;border-radius:14px;background:rgba(255,255,255,.04);
+    border:1px solid rgba(255,255,255,.08);line-height:1.6;color:#d5dced}
+  .meta{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#8b9bb8}
+  a.s{color:#9db7ff}
+</style>
+</head><body><main>
+  <p class="meta">${product}</p>
+  <h1>Download for Windows</h1>
+  <p>One installer. No coding. No terminal.</p>
+  <a class="btn" href="/api/public/desktop/setup">Download ${product}</a>
+  <p style="text-align:center;font-size:13px;color:#8b9bb8">Windows 10/11 · 64-bit</p>
+  <ol>
+    <li>Tap <strong>Download ${product}</strong> and save the file.</li>
+    <li>Open it. If Windows warns you: <strong>More info</strong> → <strong>Run anyway</strong>.</li>
+    <li>Open <strong>${product}</strong>, paste your beta API key in Settings.</li>
+  </ol>
+  <p style="text-align:center;font-size:13px;color:#8b9bb8;margin-top:28px">
+    <a class="s" href="/admin/">Monitor admin</a>
+  </p>
+</main></body></html>`;
+  return reply.type("text/html").send(html);
+});
+
+app.get("/api/public/desktop/setup", async (_req, reply) => {
+  const override = String(process.env.VANTA_WIN_SETUP_URL || process.env.DESKTOP_WIN_SETUP_URL || "").trim();
+  const repo = String(process.env.VANTA_GITHUB_REPO || "fkingVisionary/shopify-limit-buddy").trim();
+  const url =
+    override ||
+    `https://github.com/${repo}/releases/latest/download/Vanta-Beta-Setup.exe`;
+  return reply.redirect(url);
+});
+
 app.get("/", async (_req, reply) => {
   const st = hub.status();
   const m = st.monitor || {};
@@ -838,6 +968,8 @@ app.get("/", async (_req, reply) => {
       : null,
     links: {
       admin: "/admin/",
+      download: "/download",
+      betaKeys: "/admin/beta-keys?token=…",
       health: "/health",
       status: "/status",
       hits: "/hits",
