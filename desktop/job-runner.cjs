@@ -164,6 +164,12 @@ let takeBandaiHarvestFn = null;
 let pauseBandaiHarvestRefillFn = null;
 /** @type {null | (() => void)} */
 let resumeBandaiHarvestRefillFn = null;
+/** @type {null | (() => object|null)} */
+let takeToymateHarvestFn = null;
+/** @type {null | (() => void)} */
+let pauseToymateHarvestRefillFn = null;
+/** @type {null | (() => void)} */
+let resumeToymateHarvestRefillFn = null;
 /** @type {null | ((sku: string, area?: string) => object|null)} */
 let lookupBandaiProductFn = null;
 /** @type {null | ((entry: object) => void)} */
@@ -193,6 +199,18 @@ function configure(opts = {}) {
   if (Object.prototype.hasOwnProperty.call(opts, "resumeBandaiHarvestRefill")) {
     resumeBandaiHarvestRefillFn =
       typeof opts.resumeBandaiHarvestRefill === "function" ? opts.resumeBandaiHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "takeToymateHarvest")) {
+    takeToymateHarvestFn =
+      typeof opts.takeToymateHarvest === "function" ? opts.takeToymateHarvest : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "pauseToymateHarvestRefill")) {
+    pauseToymateHarvestRefillFn =
+      typeof opts.pauseToymateHarvestRefill === "function" ? opts.pauseToymateHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "resumeToymateHarvestRefill")) {
+    resumeToymateHarvestRefillFn =
+      typeof opts.resumeToymateHarvestRefill === "function" ? opts.resumeToymateHarvestRefill : null;
   }
   if (Object.prototype.hasOwnProperty.call(opts, "lookupBandaiProduct")) {
     lookupBandaiProductFn =
@@ -1894,6 +1912,34 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
+  // Toymate checkout: claim CF (+ spam) at run-start — spam TTL ~100s dies in queue.
+  if (
+    job.task?.store === "toymate" &&
+    String(job.task?.toymateMode || "checkout") === "checkout" &&
+    !job.task.harvestedSession?.cookies &&
+    typeof takeToymateHarvestFn === "function"
+  ) {
+    const harvestSession = takeToymateHarvestFn() || null;
+    if (harvestSession?.cookies) {
+      job.task.harvestedSession = harvestSession;
+      job.task.captchaToken = harvestSession.captchaToken || job.task.captchaToken || null;
+      if (harvestSession.proxy) {
+        job.proxyRaw = harvestSession.proxy;
+        job.proxyEntries = [harvestSession.proxy];
+        job.proxyIndex = 0;
+      }
+      emitLog(job.runId, job.task?.id, "info", "Using harvested CF session");
+      emitDetailedLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `Using harvested CF session (${harvestSession.proxyHost || "proxy"}${
+          harvestSession.captchaToken ? " + spam" : ""
+        } age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
+      );
+    }
+  }
+
   // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
   if (
     job.task?.store === "bandai" &&
@@ -2083,14 +2129,21 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 async function runSidecarCheckout(job, payload, summary, extra = {}) {
   const attemptLabel = extra.attemptLabel || "run";
   const bandaiMode = String(job.task?.bandaiMode || payload.bandaiMode || "checkout").toLowerCase();
-  const pauseHarvest =
+  const toyMode = String(job.task?.toymateMode || "checkout").toLowerCase();
+  const pauseBandaiHarvest =
     job.task?.store === "bandai" &&
     bandaiMode !== "monitor" &&
     bandaiMode !== "account_gen" &&
     typeof pauseBandaiHarvestRefillFn === "function";
+  const pauseToymateHarvest =
+    job.task?.store === "toymate" &&
+    toyMode === "checkout" &&
+    typeof pauseToymateHarvestRefillFn === "function";
+  const pauseHarvest = pauseBandaiHarvest || pauseToymateHarvest;
   if (pauseHarvest) {
     try {
-      pauseBandaiHarvestRefillFn();
+      if (pauseBandaiHarvest) pauseBandaiHarvestRefillFn();
+      if (pauseToymateHarvest) pauseToymateHarvestRefillFn();
       emitLog(job.runId, job.task?.id, "info", "Harvest refill paused (checkout lane)");
     } catch {
       /* ignore */
@@ -2200,9 +2253,14 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
   } finally {
     untrackExecutorTaskId(tid, payload.taskId);
     clearInterval(progressTimer);
-    if (pauseHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+    if (pauseHarvest) {
       try {
-        resumeBandaiHarvestRefillFn();
+        if (pauseBandaiHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+          resumeBandaiHarvestRefillFn();
+        }
+        if (pauseToymateHarvest && typeof resumeToymateHarvestRefillFn === "function") {
+          resumeToymateHarvestRefillFn();
+        }
       } catch {
         /* ignore */
       }

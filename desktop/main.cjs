@@ -580,6 +580,9 @@ function runnerHarvestHooks() {
     takeBandaiHarvest: () => bandaiHarvest.take(),
     pauseBandaiHarvestRefill: () => bandaiHarvest.pauseRefill(),
     resumeBandaiHarvestRefill: () => bandaiHarvest.resumeRefill(),
+    takeToymateHarvest: () => harvest.take({ preferSpam: true }),
+    pauseToymateHarvestRefill: () => harvest.pauseRefill(),
+    resumeToymateHarvestRefill: () => harvest.resumeRefill(),
   };
 }
 
@@ -2093,6 +2096,7 @@ ipcMain.handle("desktop:harvest-start", async (_e, opts = {}) => {
   const snap = harvest.start({
     proxyGroupId: gid,
     desired: opts.desired,
+    parallel: opts.parallel,
     solveSpam: opts.solveSpam,
     getEntries: harvestEntries,
   });
@@ -2128,6 +2132,7 @@ ipcMain.handle("desktop:harvest-once", async (_e, opts = {}) => {
   }
   if (opts.proxyGroupId) harvest.configure({ proxyGroupId: opts.proxyGroupId });
   if (opts.desired != null) harvest.configure({ desired: opts.desired });
+  if (opts.parallel != null) harvest.configure({ parallel: opts.parallel });
   if (opts.solveSpam != null) harvest.configure({ solveSpam: opts.solveSpam });
   const out = await harvest.harvestOne(harvestEntries());
   send({ type: "snapshot", data: snapshot() });
@@ -3135,29 +3140,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       }
       let jobProxyRaw = proxyRaw;
       let jobProxyEntries = entries.filter(Boolean);
-      // Toymate checkout: claim a harvested CF (+ spam) session when available.
-      if (
-        task.store === "toymate" &&
-        String(task.toymateMode || "checkout") === "checkout"
-      ) {
-        const session = harvest.take({ preferSpam: true });
-        if (session) {
-          taskCopy.harvestedSession = session;
-          taskCopy.captchaToken = session.captchaToken || taskCopy.captchaToken || null;
-          if (session.proxy) {
-            jobProxyRaw = session.proxy;
-            jobProxyEntries = [session.proxy];
-            proxyIndex = 0;
-          }
-          send({
-            type: "job",
-            phase: "log",
-            taskId: tid,
-            level: "info",
-            message: `Using harvested CF session (${session.proxyHost || "proxy"}${session.captchaToken ? " + spam" : ""})`,
-          });
-        }
-      }
+      // Toymate checkout harvest is claimed at run-start in job-runner (spam ~100s TTL).
       // Bandai Autocheckout: F5 harvest is claimed at run-start in job-runner
       // (not enqueue) so bank TTL stays fresh through the queue.
       // Disney checkout/pay: claim Akamai+CapSolver session when Harvest is armed.

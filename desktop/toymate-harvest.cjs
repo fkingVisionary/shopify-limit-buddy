@@ -1,8 +1,16 @@
 // Toymate CF + spam harvest pool (desktop main process).
 // Pre-solves CapSolver CF clearance (+ optional checkout reCAPTCHA) on sticky
 // proxies so checkout tasks can skip ~75s of warm/spam on the critical path.
+//
+// Mass-scale: parallel CapSolver mints (default 3) refill a larger bank (≤48).
+// Claim at run-start (job-runner) — spam tokens only last ~100s.
 
 const crypto = require("crypto");
+
+const MAX_DESIRED = 48;
+const MAX_PARALLEL = 8;
+const DEFAULT_PARALLEL = 3;
+const TICK_MS = 4_000;
 
 /** @typedef {{
  *  id: string,
@@ -20,6 +28,14 @@ const crypto = require("crypto");
 
 function now() {
   return Date.now();
+}
+
+function clampDesired(n) {
+  return Math.max(0, Math.min(MAX_DESIRED, Number(n) || 0));
+}
+
+function clampParallel(n) {
+  return Math.max(1, Math.min(MAX_PARALLEL, Number(n) || DEFAULT_PARALLEL));
 }
 
 function proxyHost(raw) {
@@ -46,18 +62,23 @@ function createHarvestPool({ sidecar, emit } = {}) {
   /** @type {HarvestSession[]} */
   let pool = [];
   let running = false;
-  let busy = false;
+  /** In-flight CapSolver harvests (parallel). */
+  let inflight = 0;
+  let refillPauseDepth = 0;
   let lastError = null;
   let solvedCount = 0;
   let failedCount = 0;
   let config = {
     proxyGroupId: null,
     desired: 2,
+    parallel: DEFAULT_PARALLEL,
     solveSpam: true,
     /** Round-robin index into proxy group entries. */
     proxyCursor: 0,
   };
   let tickTimer = null;
+  /** @type {null | (() => string[])} */
+  let getEntriesFn = null;
 
   function snapshot() {
     const t = now();
@@ -67,7 +88,9 @@ function createHarvestPool({ sidecar, emit } = {}) {
     );
     return {
       running,
-      busy,
+      busy: inflight > 0,
+      inflight,
+      refillPaused: refillPauseDepth > 0,
       lastError,
       solvedCount,
       failedCount,
@@ -120,7 +143,7 @@ function createHarvestPool({ sidecar, emit } = {}) {
       publish();
       return { ok: false, error: lastError };
     }
-    busy = true;
+    inflight += 1;
     publish();
     try {
       const res = await sidecar.harvestToymate({
@@ -159,37 +182,59 @@ function createHarvestPool({ sidecar, emit } = {}) {
       publish();
       return { ok: false, error: lastError };
     } finally {
-      busy = false;
+      inflight = Math.max(0, inflight - 1);
       publish();
     }
   }
 
+  /**
+   * Kick as many parallel CapSolver mints as needed to approach `desired`,
+   * without exceeding `parallel` in-flight.
+   */
   async function tick(getEntries) {
-    if (!running || busy) return;
+    if (!running || refillPauseDepth > 0) return;
     evictExpired();
-    const desired = Math.max(0, Math.min(12, Number(config.desired) || 0));
+    const desired = clampDesired(config.desired);
+    const parallel = clampParallel(config.parallel);
     const fresh = pool.filter((s) => s.cfExpiresAt > now());
-    if (fresh.length >= desired) {
+    const need = desired - fresh.length - inflight;
+    if (need <= 0) {
       publish();
       return;
     }
-    const entries = typeof getEntries === "function" ? getEntries() : [];
-    await harvestOne(entries);
+    const slots = Math.min(need, parallel - inflight);
+    if (slots <= 0) {
+      publish();
+      return;
+    }
+    const entries =
+      typeof getEntries === "function"
+        ? getEntries()
+        : typeof getEntriesFn === "function"
+          ? getEntriesFn()
+          : [];
+    const launches = [];
+    for (let i = 0; i < slots; i++) {
+      launches.push(harvestOne(entries));
+    }
+    await Promise.allSettled(launches);
   }
 
-  function start({ proxyGroupId, desired, solveSpam, getEntries } = {}) {
+  function start({ proxyGroupId, desired, parallel, solveSpam, getEntries } = {}) {
     if (proxyGroupId) config.proxyGroupId = proxyGroupId;
-    if (desired != null) config.desired = Math.max(0, Math.min(12, Number(desired) || 0));
+    if (desired != null) config.desired = clampDesired(desired);
+    if (parallel != null) config.parallel = clampParallel(parallel);
     if (solveSpam != null) config.solveSpam = Boolean(solveSpam);
+    if (typeof getEntries === "function") getEntriesFn = getEntries;
     running = true;
     lastError = null;
     publish();
     if (tickTimer) clearInterval(tickTimer);
-    // Kick immediately, then refill on an interval.
-    void tick(getEntries);
+    // Kick immediately, then refill on a short interval (spam ~100s TTL).
+    void tick(getEntriesFn);
     tickTimer = setInterval(() => {
-      void tick(getEntries);
-    }, 8_000);
+      void tick(getEntriesFn);
+    }, TICK_MS);
     return snapshot();
   }
 
@@ -211,8 +256,21 @@ function createHarvestPool({ sidecar, emit } = {}) {
 
   function configure(patch = {}) {
     if (patch.proxyGroupId != null) config.proxyGroupId = patch.proxyGroupId;
-    if (patch.desired != null) config.desired = Math.max(0, Math.min(12, Number(patch.desired) || 0));
+    if (patch.desired != null) config.desired = clampDesired(patch.desired);
+    if (patch.parallel != null) config.parallel = clampParallel(patch.parallel);
     if (patch.solveSpam != null) config.solveSpam = Boolean(patch.solveSpam);
+    publish();
+    return snapshot();
+  }
+
+  function pauseRefill() {
+    refillPauseDepth += 1;
+    publish();
+    return snapshot();
+  }
+
+  function resumeRefill() {
+    refillPauseDepth = Math.max(0, refillPauseDepth - 1);
     publish();
     return snapshot();
   }
@@ -250,6 +308,11 @@ function createHarvestPool({ sidecar, emit } = {}) {
     configure,
     take,
     harvestOne,
+    pauseRefill,
+    resumeRefill,
+    MAX_DESIRED,
+    MAX_PARALLEL,
+    DEFAULT_PARALLEL,
   };
 }
 
@@ -257,4 +320,8 @@ module.exports = {
   createHarvestPool,
   toProxyUrl,
   proxyHost,
+  MAX_DESIRED,
+  MAX_PARALLEL,
+  DEFAULT_PARALLEL,
+  TICK_MS,
 };

@@ -1,6 +1,6 @@
 # Toymate AU — Module notes
 
-_Status: adapter restored (isolated from Kmart)_
+_Status: adapter restored (isolated from Kmart) · mass-scale harvest hardened_
 
 ## Platform
 
@@ -10,6 +10,7 @@ _Status: adapter restored (isolated from Kmart)_
 | Stack | BigCommerce (Stencil) + Cloudflare |
 | Adapter | `executor/adapters/toymate.js` |
 | CF solve | CapSolver `AntiCloudflareTask` (`toymate-cf-solve.js`) |
+| Drop runbook | [`TOYMATE_HIGH_TRAFFIC_DROP.md`](./TOYMATE_HIGH_TRAFFIC_DROP.md) |
 
 **Hyper / Akamai / Paydock are not used.** Kmart paths stay untouched.
 
@@ -18,9 +19,10 @@ _Status: adapter restored (isolated from Kmart)_
 Pre-warm CapSolver off the critical path via the desktop **Harvest** tab:
 
 - `POST /toymate/harvest` → `toymate-harvest-session.js` mints `cf_clearance` (+ optional spam token) on a sticky proxy.
-- Desktop pool (`desktop/toymate-harvest.cjs`) keeps N sessions; Autocheckout `take()`s one and passes `harvestedSession` on `/run`.
+- Desktop pool (`desktop/toymate-harvest.cjs`) keeps N sessions with **parallel CapSolver mints** (default 3, max 8; bank ≤48); Autocheckout claims at **run-start** and passes `harvestedSession` on `/run`.
 - Adapter: fresh harvest skips `cf_warm` CapSolver and prefers harvested spam token before on-demand solve.
 - Sessions are single-use + IP-bound (same sticky exit). Empty bank = on-demand CapSolver fallback.
+- Refill **pauses** while a Toymate checkout lane is live (same pattern as Bandai F5).
 
 ### Proof (2026-07-26)
 
@@ -51,7 +53,7 @@ Artifact: `docs/toymate-harvest-bank-proof.json`. Checkout wall stays ~4× vs on
 ## Modes (`task.toymateMode`)
 
 1. **`account_gen`** — CapSolver CF warm → create-account form → POST `login.php?action=save_new_account` → save `{ email, password }`.
-2. **`checkout`** — CF warm (or harvested session) → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme` HTTP place-order** (BigPay). **No Playwright in the module path** — browser is research-only (`experiments/toymate-checkout-ui-research.mjs`, HAR capture scripts). **Decline proven** on synthetic card (BigPay 422 / 30102); real paid order still needs a live card + bank monitor.
+2. **`checkout`** — CF warm (or harvested session) → optional login (XSRF + SF-CSRF) → PDP → **`POST /remote/v1/cart/add`** ATC (retries 429/5xx) → Storefront checkout → spam reCAPTCHA → **Adyen v3 `scheme` HTTP place-order** (BigPay). **No Playwright in the module path** — browser is research-only (`experiments/toymate-checkout-ui-research.mjs`, HAR capture scripts). **Decline proven** on synthetic card (BigPay 422 / 30102); real paid order still needs a live card + bank monitor.
 3. **`monitor`** — keyword search hit/miss.
 
 ### Payment notes
@@ -70,7 +72,7 @@ Artifact: `docs/toymate-harvest-bank-proof.json`. Checkout wall stays ~4× vs on
 
 - Task store option: **Toymate AU**
 - Settings: **CapSolver API key** (passed to sidecar as `CAPSOLVER_API_KEY`)
-- **Harvest** tab: CF + spam bank with howto; Autocheckout auto-claims
+- **Harvest** tab: CF + spam bank (parallel mints, ≤48 sessions); Autocheckout auto-claims at run-start
 - **Accounts** tab stores generated logins (`storeId` + email)
 
 ## Isolation rules

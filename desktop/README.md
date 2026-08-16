@@ -70,16 +70,22 @@ proxies so Autocheckout skips ~45s CF + ~30s spam CapSolver on the critical path
 
 1. **Settings** → CapSolver API key → save.
 2. **Proxies** → sticky AU group (session-style lines).
-3. **Harvest** → pick that group → desired sessions (2–4) → leave Solve spam on → **Start harvest**.
-4. When Ready / With spam look good, run **Toymate → Autocheckout** tasks as usual.
+3. **Harvest → Toymate** → pick that group → **Sessions** = lane count (≤48) →
+   **Parallel** 3–6 → leave Solve spam on → **Start harvest**.
+4. When Ready / With spam look good, run **Toymate → Autocheckout** tasks as usual
+   (Smart Action stagger at T0 for multi-lane).
 
-Sessions are single-use and IP-bound. Checkout auto-claims a session, forces the
-harvested proxy, and skips proxy rotate on that run. Empty bank falls back to
-on-demand CapSolver (slower, still works). CF ~25 min TTL · spam ~100s.
+Sessions are single-use and IP-bound. Checkout claims at **run-start** (not enqueue)
+so spam TTL (~100s) stays fresh through the queue, forces the harvested proxy, and
+skips proxy rotate on that run. Empty bank falls back to on-demand CapSolver
+(slower, still works). CF ~25 min TTL · spam ~100s. Parallel CapSolver mints fill
+the bank; refill pauses while a checkout lane is live.
 
 Executor: `POST /toymate/harvest` · adapter skips warm when `harvestedSession` is fresh.
 
 **Proof (2026-07-26):** harvested checkout **36s** → BigPay decline vs baseline **144s** on-demand CapSolver (~4×). See `executor/docs/toymate-harvest-checkout-proof.json`.
+
+Drop runbook: `executor/docs/TOYMATE_HIGH_TRAFFIC_DROP.md`.
 
 ## Bandai (Premium Bandai / p-bandai.com)
 

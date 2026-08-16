@@ -940,20 +940,51 @@ export const toymateAdapter = {
         product_id: String(pid),
         "qty[]": String(qty),
       });
-      const remoteRes = await request(`${apex}/remote/v1/cart/add`, {
-        method: "POST",
-        headers: {
-          ...stencilHeaders({ referer: productUrl, origin, jar: ctx.jar }),
-          "content-type": mp.contentType,
-        },
-        body: mp.body,
-      }, ctx);
-      const remoteText = await readText(remoteRes);
+      // High-traffic: retry remote ATC on 429/5xx before storefront fallback.
+      let remoteRes = null;
+      let remoteText = "";
       let remoteJson = null;
-      try {
-        remoteJson = remoteText ? JSON.parse(remoteText) : null;
-      } catch {
+      const atcAttempts = Math.max(1, Math.min(6, Number(task.toymateAtcRetries) || 4));
+      for (let attempt = 0; attempt < atcAttempts; attempt++) {
+        if (attempt) await sleep(400 * attempt + 200, 150);
+        remoteRes = await request(`${apex}/remote/v1/cart/add`, {
+          method: "POST",
+          headers: {
+            ...stencilHeaders({ referer: productUrl, origin, jar: ctx.jar }),
+            "content-type": mp.contentType,
+          },
+          body: mp.body,
+        }, ctx);
+        remoteText = await readText(remoteRes);
         remoteJson = null;
+        try {
+          remoteJson = remoteText ? JSON.parse(remoteText) : null;
+        } catch {
+          remoteJson = null;
+        }
+        const remoteCartIdTry =
+          remoteJson?.data?.cart_id ||
+          remoteJson?.data?.cartId ||
+          remoteJson?.cart_id ||
+          remoteJson?.cartId ||
+          (remoteText.match(/"cart_id"\s*:\s*"([0-9a-f-]{36})"/i) || [])[1] ||
+          null;
+        if (remoteCartIdTry && remoteRes.status >= 200 && remoteRes.status < 300) break;
+        const remoteErrTry = String(remoteJson?.error || remoteJson?.message || "");
+        if (
+          remoteRes.status >= 200 &&
+          remoteRes.status < 300 &&
+          /don't have enough|out of stock|sold out|not available|insufficient/i.test(remoteErrTry)
+        ) {
+          break; // terminal stock — don't retry
+        }
+        const congested =
+          remoteRes.status === 429 ||
+          remoteRes.status === 502 ||
+          remoteRes.status === 503 ||
+          remoteRes.status === 504 ||
+          remoteRes.status === 0;
+        if (!congested) break;
       }
       const remoteCartId =
         remoteJson?.data?.cart_id ||
