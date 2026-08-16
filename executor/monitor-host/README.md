@@ -9,6 +9,10 @@ Open **`/admin/`** (e.g. `https://j1ms-bandai-monitor-production.up.railway.app/
 
 Unlock with `MONITOR_TOKEN` (operator/admin only).
 
+**Vanta Beta desktop keys** (after setting `DESKTOP_*` env vars):  
+`/admin/beta-keys?token=<DESKTOP_KEYS_ADMIN_TOKEN>`  
+Download page: `/download`
+
 Desktop consumers need **no token**: `GET /events` (SSE), `GET /hits`,
 `GET /preset-catalog`, and `GET /product-cache` are public by default
 (`MONITOR_FEED_PUBLIC=1`). Set `MONITOR_FEED_PUBLIC=0` to lock those behind Bearer.
@@ -38,6 +42,10 @@ Bot launches call Fly `POST /run` asynchronously and show recent run status on t
 |---|---|
 | `MONITOR_TOKEN` | Bearer for admin / bot / writes (not required for Desktop SSE) |
 | `HYPER_API_KEY` | Pokémon Centre AU edge (Incapsula Reese84 + DataDome); Bandai polls without it |
+| `DESKTOP_AUTH_MODE` | `open` (default) or `allowlist` for Vanta Beta desktop keys |
+| `DESKTOP_API_KEYS` | comma-separated beta keys when mode=`allowlist` |
+| `DESKTOP_KEYS_ADMIN_TOKEN` | secret for `/admin/beta-keys?token=…` (operator key list) |
+| `VANTA_WIN_SETUP_URL` | optional override for `/download` → Setup.exe |
 | `PC_MONITOR_ENABLE` | `1` (default) = PKC poller on when admin watchlist is set |
 | `MONITOR_FEED_PUBLIC` | `1` (default) = public SSE + catalog/cache reads; `0` = require Bearer |
 | `DISCORD_WEBHOOK_URL` | Operator restock / OOS channel |
