@@ -103,7 +103,11 @@ function classifyToymateRunResult(res, ctx = {}) {
   }
 
   // Terminal: BigPay / issuer decline (ok:true + paymentDeclined on Toymate).
-  if (isPaymentDeclined(res)) {
+  if (
+    isPaymentDeclined(res) ||
+    /^declined$/i.test(String(res?.checkoutStage || "")) ||
+    String(res?.paymentStatus || "").startsWith("declined")
+  ) {
     return {
       action: "stop",
       liveLabel: "Payment declined",

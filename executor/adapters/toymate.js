@@ -1455,7 +1455,9 @@ export const toymateAdapter = {
         orderNumber = http.orderNumber || null;
         paymentDeclined = Boolean(http.declined);
         paymentStatus = http.declined
-          ? "declined"
+          ? http.issuerLikely
+            ? "declined_insufficient_funds"
+            : "declined"
           : orderNumber
             ? "submitted"
             : http.ok
@@ -1469,6 +1471,11 @@ export const toymateAdapter = {
           status: http.status ?? null,
           note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 320),
           declined: http.declined,
+          bigpay: http.bigpay || null,
+          bigpayCode: http.bigpayCode ?? http.bigpay?.code ?? null,
+          bigpayTitle: http.bigpayTitle ?? http.bigpay?.title ?? null,
+          issuerLikely: Boolean(http.issuerLikely),
+          bankProofLikely: Boolean(http.bankProofLikely),
           paymentLogs: (http.paymentLogs || []).slice(0, 12),
           via: "http",
         };
@@ -1484,7 +1491,7 @@ export const toymateAdapter = {
       return {
         ok: Boolean(orderNumber) || paymentDeclined || pay.ok,
         steps,
-        checkoutStage: orderNumber ? "order" : paymentDeclined ? "tokenize" : "tokenize",
+        checkoutStage: orderNumber ? "order" : paymentDeclined ? "declined" : "tokenize",
         dryRun: false,
         orderNumber,
         orderId: orderNumber,
@@ -1495,6 +1502,11 @@ export const toymateAdapter = {
         atcVia: cart.via || null,
         cartId: checkoutId,
         paymentLogs: pay.paymentLogs || [],
+        bigpay: pay.bigpay || null,
+        bigpayCode: pay.bigpayCode ?? null,
+        bigpayTitle: pay.bigpayTitle ?? null,
+        issuerLikely: Boolean(pay.issuerLikely),
+        bankProofLikely: Boolean(pay.bankProofLikely),
         bigpayAuthPosts: authPosts,
         chargeReqCount: authPosts || null,
         paymentAttempted: authPosts >= 1,

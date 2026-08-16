@@ -38,17 +38,19 @@ Checkout wall **~4× faster** with a pre-warmed bank (~108s saved on the critica
 
 **Not a Revolut/bank ping on the synthetic A/B.** Those runs used Visa `…0002` → BigPay **30102** gateway refuse.
 
-### Bank proof with harvest (2026-07-26, disposable `…1806`)
+### Bank proof with harvest (2026-08-16, disposable `…1568`)
 
-Same harvest path, live empty card → BigPay **30106 insufficient funds** (issuer / Revolut should ping):
+WealthProxies sticky + CapSolver harvest → undici BigPay:
 
 | Step | Time |
 |------|------|
-| Harvest CF + spam | **79s** |
-| Checkout with harvest | **37s** (CF **0ms**, spam apply **1.3s**, place_order **16s**) |
-| BigPay | **422 / 30106** insufficient funds |
+| Harvest CF + spam | **61s** |
+| Checkout with harvest | **30s** (CF **0ms**, spam apply **2.4s**, place_order **13s**) |
+| BigPay | **422 / 30106** insufficient funds (issuer / bank ping) |
 
-Artifact: `docs/toymate-harvest-bank-proof.json`. Checkout wall stays ~4× vs on-demand CapSolver (~144s synthetic baseline earlier).
+Artifact: `docs/toymate-harvest-bank-proof.json`. Structured fields now on the adapter result: `bigpayCode`, `bigpayTitle`, `issuerLikely`, `bankProofLikely`.
+
+Earlier synthetic Visa `…0002` → **30102** gateway refuse (wiring only, no bank ping).
 
 ## Modes (`task.toymateMode`)
 

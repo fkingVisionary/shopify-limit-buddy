@@ -561,13 +561,59 @@ export async function placeOrderViaHttp({
   };
 
   const looksDeclined = (text) =>
-    /declin|refused|insufficient|invalid card|not enough|do not honour|payment_failed|"status"\s*:\s*"error"/i.test(
+    /declin|refused|insufficient|invalid card|not enough|do not honour|do not honor|payment_failed|"status"\s*:\s*"error"|"code"\s*:\s*3010[0-9]/i.test(
       String(text || ""),
     ) && !/unauthorized/i.test(String(text || ""));
   const looksMethodError = (text) =>
     /payment_method|not supported|invalid.*method|instrument.*not.*supported/i.test(
       String(text || ""),
     );
+
+  function parseBigPayPayload(text, status) {
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      json = null;
+    }
+    const codeRaw =
+      json?.code ??
+      json?.errors?.[0]?.code ??
+      json?.error?.code ??
+      (String(text || "").match(/"code"\s*:\s*(\d+)/)?.[1] ?? null);
+    const code = codeRaw != null && codeRaw !== "" ? Number(codeRaw) : null;
+    const title =
+      json?.title ||
+      json?.errors?.[0]?.title ||
+      json?.message ||
+      json?.error?.message ||
+      null;
+    const id = json?.id || json?.transaction_id || json?.payment_id || null;
+    const type = json?.type || json?.errors?.[0]?.type || null;
+    // 30102 = gateway refuse (often synthetic). 30106 = insufficient funds (issuer / bank ping).
+    const issuerLikely =
+      code === 30106 ||
+      code === 30103 ||
+      code === 30105 ||
+      /insufficient|fund|3ds|authentication|do not honour|do not honor/i.test(
+        String(title || text || ""),
+      );
+    const declined =
+      status === 422 ||
+      looksDeclined(text) ||
+      (Number.isFinite(code) && code >= 30100 && code < 30200);
+    return {
+      id: id ? String(id) : null,
+      status: status ?? json?.status ?? null,
+      code: Number.isFinite(code) ? code : null,
+      title: title ? String(title).slice(0, 160) : null,
+      type: type ? String(type).slice(0, 120) : null,
+      declined,
+      issuerLikely,
+      bankProofLikely: Boolean(declined && issuerLikely),
+      raw: String(text || "").replace(/\s+/g, " ").slice(0, 240),
+    };
+  }
 
   let payRes = null;
   let payText = "";
@@ -771,20 +817,29 @@ export async function placeOrderViaHttp({
     });
   }
 
-  const declined = looksDeclined(payText);
+  const declined = looksDeclined(payText) || payRes?.status === 422;
+  const bigpay = parseBigPayPayload(payText, payRes?.status ?? null);
   const orderNumber =
     payText.match(/order(?:_?(?:number|id))?["']?\s*:\s*["']?(\d{5,})/i)?.[1] ||
     (orderId ? String(orderId) : null);
 
-  if (declined) {
+  if (declined || bigpay.declined) {
     return {
       ok: true,
       declined: true,
       status: payRes?.status ?? null,
-      note: payText.replace(/\s+/g, " ").slice(0, 180),
+      note: (bigpay.title
+        ? `BigPay ${bigpay.code ?? payRes?.status}: ${bigpay.title}`
+        : payText.replace(/\s+/g, " ")
+      ).slice(0, 200),
       orderNumber: null,
       paymentLogs: logs,
       orderVia,
+      bigpay,
+      bigpayCode: bigpay.code,
+      bigpayTitle: bigpay.title,
+      issuerLikely: bigpay.issuerLikely,
+      bankProofLikely: bigpay.bankProofLikely,
     };
   }
   if (payRes && payRes.status >= 200 && payRes.status < 300) {
@@ -796,6 +851,11 @@ export async function placeOrderViaHttp({
       orderNumber,
       paymentLogs: logs,
       orderVia,
+      bigpay,
+      bigpayCode: bigpay.code,
+      bigpayTitle: bigpay.title,
+      issuerLikely: false,
+      bankProofLikely: false,
     };
   }
   return {
@@ -805,6 +865,11 @@ export async function placeOrderViaHttp({
     note: `http pay ${payRes?.status}: ${payText.replace(/\s+/g, " ").slice(0, 140)}`,
     paymentLogs: logs,
     orderVia,
+    bigpay,
+    bigpayCode: bigpay.code,
+    bigpayTitle: bigpay.title,
+    issuerLikely: bigpay.issuerLikely,
+    bankProofLikely: false,
   };
 }
 

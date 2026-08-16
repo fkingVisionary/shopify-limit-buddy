@@ -1,79 +1,79 @@
 {
-  "at": "2026-08-16T03:22:39.780Z",
+  "at": "2026-08-16T04:06:05.640Z",
   "start": {
     "pdp": "https://toymate.com.au/products.php?productId=53116",
     "proxyHost": "residential.wealthproxies.com",
-    "exitIp": "121.200.4.145",
-    "cardSynthetic": true
+    "exitIp": "125.63.19.57",
+    "cardSynthetic": false
   },
   "harvest": {
     "ok": true,
-    "ms": 24457,
+    "ms": 61112,
     "hasCf": true,
     "hasSpam": true,
     "cfNote": "cf_clearance minted",
     "spamNote": "ok via proxy",
-    "spamMs": 4234
+    "spamMs": 26845
   },
   "harvested": {
     "label": "harvested",
     "harvested": true,
-    "wallMs": 23542,
+    "wallMs": 30465,
     "paymentDeclined": true,
     "orderNumber": null,
     "checkoutStage": "tokenize",
     "error": null,
     "failedStep": null,
-    "placeNote": "{\"id\":\"40ef0622-7b60-4d80-8b28-2b99b45f59dd\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co",
-    "bigpayCode": 30102,
-    "bankProofLikely": false,
+    "placeNote": "{\"id\":\"01aa1c54-48c6-41b6-8215-06b13e5d4e02\",\"status\":422,\"code\":30106,\"title\":\"The payment was declined due to insufficient funds.\",\"type\":\"https://developer.bigcommerce.com/docs/ :: checkout_boot:200 | methods:200 | co",
+    "bigpayCode": 30106,
+    "bankProofLikely": true,
     "cfNote": "harvested cf_clearance age=0s host=residential.wealthproxies.com",
-    "cfMs": 0,
+    "cfMs": 1,
     "spamNote": "spam 200 via rest",
-    "spamMs": 992,
-    "captchaCriticalMs": 992,
-    "placeMs": 11819,
+    "spamMs": 2440,
+    "captchaCriticalMs": 2441,
+    "placeMs": 13131,
     "timing": {
-      "totalMs": 23542,
+      "totalMs": 30465,
       "steps": [
         {
           "step": "cf_warm",
-          "ms": 0,
+          "ms": 1,
           "ok": true
         },
         {
           "step": "account_login",
-          "ms": 2164,
+          "ms": 2400,
           "ok": true
         },
         {
           "step": "pdp_get",
-          "ms": 734,
+          "ms": 814,
           "ok": true
         },
         {
           "step": "cart_add",
-          "ms": 813,
+          "ms": 2551,
           "ok": true
         },
         {
           "step": "checkout_get",
-          "ms": 578,
+          "ms": 1084,
           "ok": true
         },
         {
           "step": "checkout_set_address",
-          "ms": 1623,
+          "ms": 1791,
           "ok": true
         },
         {
           "step": "checkout_set_billing",
-          "ms": 1495,
+          "ms": 2381,
           "ok": true
         },
         {
           "step": "checkout_spam",
-          "ms": 992,
+          "ms": 2440,
           "ok": true
         },
         {
@@ -83,44 +83,44 @@
         },
         {
           "step": "payment_methods",
-          "ms": 3068,
+          "ms": 3341,
           "ok": true
         },
         {
           "step": "place_order",
-          "ms": 11819,
+          "ms": 13131,
           "ok": true
         }
       ],
       "slowest": [
         {
           "step": "place_order",
-          "ms": 11819,
+          "ms": 13131,
           "ok": true
         },
         {
           "step": "payment_methods",
-          "ms": 3068,
+          "ms": 3341,
           "ok": true
         },
         {
-          "step": "account_login",
-          "ms": 2164,
-          "ok": true
-        },
-        {
-          "step": "checkout_set_address",
-          "ms": 1623,
-          "ok": true
-        },
-        {
-          "step": "checkout_set_billing",
-          "ms": 1495,
+          "step": "cart_add",
+          "ms": 2551,
           "ok": true
         },
         {
           "step": "checkout_spam",
-          "ms": 992,
+          "ms": 2440,
+          "ok": true
+        },
+        {
+          "step": "account_login",
+          "ms": 2400,
+          "ok": true
+        },
+        {
+          "step": "checkout_set_billing",
+          "ms": 2381,
           "ok": true
         }
       ]
@@ -130,56 +130,56 @@
         "step": "cf_warm",
         "ok": true,
         "status": 200,
-        "ms": 0,
+        "ms": 1,
         "note": "harvested cf_clearance age=0s host=residential.wealthproxies.com"
       },
       {
         "step": "account_login",
         "ok": true,
         "status": 302,
-        "ms": 2164,
+        "ms": 2400,
         "note": "logged in proof3+mrv40gx11rzw@bullposted.com (+sf csrf)"
       },
       {
         "step": "pdp_get",
         "ok": true,
         "status": 200,
-        "ms": 734,
+        "ms": 814,
         "note": "productId=53116 variant=53101"
       },
       {
         "step": "cart_add",
         "ok": true,
         "status": 200,
-        "ms": 813,
-        "note": "remote ATC cart b13cda4b-0e2c-4d06-b429-7bd7463151e3"
+        "ms": 2551,
+        "note": "remote ATC cart ad642494-ad14-49a2-bf28-b3e8ab5578ce (survived 2 chaos ATC fails)"
       },
       {
         "step": "checkout_get",
         "ok": true,
         "status": 200,
-        "ms": 578,
+        "ms": 1084,
         "note": "checkout 200"
       },
       {
         "step": "checkout_set_address",
         "ok": true,
         "status": 200,
-        "ms": 1623,
+        "ms": 1791,
         "note": "shipping option 12c9e054848593c98ded9cf3e5e5c516"
       },
       {
         "step": "checkout_set_billing",
         "ok": true,
         "status": 200,
-        "ms": 1495,
+        "ms": 2381,
         "note": "billing 200"
       },
       {
         "step": "checkout_spam",
         "ok": true,
         "status": 200,
-        "ms": 992,
+        "ms": 2440,
         "note": "spam 200 via rest"
       },
       {
@@ -193,24 +193,24 @@
         "step": "payment_methods",
         "ok": true,
         "status": 200,
-        "ms": 3068,
+        "ms": 3341,
         "note": "card method scheme/adyenv3"
       },
       {
         "step": "place_order",
         "ok": true,
         "status": 422,
-        "ms": 11819,
-        "note": "{\"id\":\"40ef0622-7b60-4d80-8b28-2b99b45f59dd\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co"
+        "ms": 13131,
+        "note": "{\"id\":\"01aa1c54-48c6-41b6-8215-06b13e5d4e02\",\"status\":422,\"code\":30106,\"title\":\"The payment was declined due to insufficient funds.\",\"type\":\"https://developer.bigcommerce.com/docs/ :: checkout_boot:200 | methods:200 | co"
       }
     ]
   },
   "baseline": null,
   "compare": {
     "phase": "compare",
-    "harvestMs": 24457,
-    "harvestedCheckoutMs": 23542,
-    "harvestedCaptchaCriticalMs": 992,
+    "harvestMs": 61112,
+    "harvestedCheckoutMs": 30465,
+    "harvestedCaptchaCriticalMs": 2441,
     "harvestedCfNote": "harvested cf_clearance age=0s host=residential.wealthproxies.com",
     "harvestedSpamNote": "spam 200 via rest",
     "baselineCheckoutMs": null,
@@ -218,16 +218,16 @@
     "baselineCfMs": null,
     "baselineSpamMs": null,
     "checkoutSavingsMs": null,
-    "harvestThenCheckoutMs": 47999,
+    "harvestThenCheckoutMs": 91577,
     "harvestedPaymentDeclined": true,
     "baselinePaymentDeclined": null,
-    "cardSynthetic": true,
-    "cardLast4": "0002",
-    "harvestedBigpayCode": 30102,
-    "harvestedBankProofLikely": false,
+    "cardSynthetic": false,
+    "cardLast4": "1568",
+    "harvestedBigpayCode": 30106,
+    "harvestedBankProofLikely": true,
     "baselineBigpayCode": null,
     "baselineBankProofLikely": null,
-    "note": "Synthetic Visa → BigPay 30102 is wiring-only; no Revolut/issuer ping expected. Set TOYMATE_CARD_* for bank proof (historically 30106).",
+    "note": "Live card used — score Revolut / bank for issuer proof.",
     "speedup": null
   }
 }

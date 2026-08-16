@@ -91,7 +91,7 @@ export async function harvestToymateSession({
     lastFail = out;
     const err = String(out.error || "");
     const retryable =
-      /ERROR_INVALID_TASK_DATA|ERROR_PROXY|proxy timeout|proxy connect|timeout|still challenging|cf_clearance missing/i.test(
+      /ERROR_INVALID_TASK_DATA|ERROR_PROXY|ERROR_CAPTCHA_SOLVE_FAILED|proxy timeout|proxy connect|timeout|still challenging|cf_clearance missing/i.test(
         err,
       );
     if (!retryable) return out;
