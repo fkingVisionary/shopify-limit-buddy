@@ -86,8 +86,8 @@ function DownloadPage() {
             <strong>Run anyway</strong> (this is an unsigned beta).
           </li>
           <li>
-            Open <strong>{PRODUCT}</strong> from your Desktop, then paste your API key from this
-            site (Settings).
+            Open <strong>{PRODUCT}</strong> from your Desktop, then paste the API key from
+            your beta invite (Settings → API key).
           </li>
         </ol>
 

@@ -64,7 +64,17 @@ That’s it. No new project required.
 |---|---|
 | `DESKTOP_AUTH_MODE` | `open` (default) · `allowlist` · `whop` (stub) |
 | `DESKTOP_API_KEYS` | comma-separated keys when mode=`allowlist` |
+| `DESKTOP_KEYS_ADMIN_TOKEN` | secret token for `/admin/beta-keys?token=…` (operator list) |
 | `DESKTOP_HYPER_PROVISION` | `1` to allow licensed desktop apps to fetch operator Hyper key |
+
+Seed keys locally (prints values; does not commit secrets):
+
+```bash
+node scripts/seed-beta-keys.mjs --write
+```
+
+Paste `DESKTOP_AUTH_MODE` + `DESKTOP_API_KEYS` (+ optional admin token) into Railway
+Variables, redeploy, then hand one key to each beta tester.
 
 See `desktop/README.md`.
 

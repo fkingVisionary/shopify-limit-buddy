@@ -1,11 +1,11 @@
-
 # Desktop Electron packaging output
 desktop/.env.local
 desktop/node_modules/
 desktop/release/
 desktop/build/
 desktop/*.exe
-*.proxies.local
+desktop/beta-keys.local.txt
+.env
 .dev.vars
 dist
 dist-ssr

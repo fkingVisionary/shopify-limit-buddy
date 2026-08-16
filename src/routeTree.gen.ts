@@ -14,6 +14,7 @@ import { Route as HarveyRouteImport } from './routes/harvey'
 import { Route as DownloadRouteImport } from './routes/download'
 import { Route as PairedRouteImport } from './routes/_paired'
 import { Route as PairedIndexRouteImport } from './routes/_paired/index'
+import { Route as AdminBetaKeysRouteImport } from './routes/admin.beta-keys'
 import { Route as PairedKmartRouteImport } from './routes/_paired/kmart'
 import { Route as PairedJbhifiRouteImport } from './routes/_paired/jbhifi'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
@@ -50,6 +51,11 @@ const PairedIndexRoute = PairedIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => PairedRoute,
+} as any)
+const AdminBetaKeysRoute = AdminBetaKeysRouteImport.update({
+  id: '/admin/beta-keys',
+  path: '/admin/beta-keys',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const PairedKmartRoute = PairedKmartRouteImport.update({
   id: '/kmart',
@@ -122,6 +128,7 @@ export interface FileRoutesByFullPath {
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
   '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
@@ -139,6 +146,7 @@ export interface FileRoutesByTo {
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
   '/': typeof PairedIndexRoute
   '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
@@ -159,6 +167,7 @@ export interface FileRoutesById {
   '/pair': typeof PairRoute
   '/_paired/jbhifi': typeof PairedJbhifiRoute
   '/_paired/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
   '/_paired/': typeof PairedIndexRoute
   '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
@@ -180,6 +189,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/jbhifi'
     | '/kmart'
+    | '/admin/beta-keys'
     | '/api/public/exec-milestones'
     | '/api/public/exec-test'
     | '/api/public/shopify'
@@ -197,6 +207,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/jbhifi'
     | '/kmart'
+    | '/admin/beta-keys'
     | '/'
     | '/api/public/exec-milestones'
     | '/api/public/exec-test'
@@ -216,6 +227,7 @@ export interface FileRouteTypes {
     | '/pair'
     | '/_paired/jbhifi'
     | '/_paired/kmart'
+    | '/admin/beta-keys'
     | '/_paired/'
     | '/api/public/exec-milestones'
     | '/api/public/exec-test'
@@ -234,6 +246,7 @@ export interface RootRouteChildren {
   DownloadRoute: typeof DownloadRoute
   HarveyRoute: typeof HarveyRoute
   PairRoute: typeof PairRoute
+  AdminBetaKeysRoute: typeof AdminBetaKeysRoute
   ApiPublicExecMilestonesRoute: typeof ApiPublicExecMilestonesRoute
   ApiPublicExecTestRoute: typeof ApiPublicExecTestRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
@@ -282,6 +295,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof PairedIndexRouteImport
       parentRoute: typeof PairedRoute
+    }
+    '/admin/beta-keys': {
+      id: '/admin/beta-keys'
+      path: '/admin/beta-keys'
+      fullPath: '/admin/beta-keys'
+      preLoaderRoute: typeof AdminBetaKeysRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_paired/kmart': {
       id: '/_paired/kmart'
@@ -390,6 +410,7 @@ const rootRouteChildren: RootRouteChildren = {
   DownloadRoute: DownloadRoute,
   HarveyRoute: HarveyRoute,
   PairRoute: PairRoute,
+  AdminBetaKeysRoute: AdminBetaKeysRoute,
   ApiPublicExecMilestonesRoute: ApiPublicExecMilestonesRoute,
   ApiPublicExecTestRoute: ApiPublicExecTestRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
