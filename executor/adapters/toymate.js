@@ -945,8 +945,37 @@ export const toymateAdapter = {
       let remoteText = "";
       let remoteJson = null;
       const atcAttempts = Math.max(1, Math.min(6, Number(task.toymateAtcRetries) || 4));
+      // Lab chaos (TOYMATE_CHAOS_*): simulate drop congestion — site rarely answers.
+      // First N ATC attempts force 429/503/timeout before the real request.
+      const chaosForced =
+        Math.max(0, Math.min(5, Number(process.env.TOYMATE_CHAOS_ATC_FAILS) || 0)) ||
+        (Number(process.env.TOYMATE_CHAOS_ATC || 0) > 0
+          ? Math.max(1, Math.min(4, Number(process.env.TOYMATE_CHAOS_ATC_MAX) || 2))
+          : 0);
+      const chaosStatus = Number(process.env.TOYMATE_CHAOS_ATC_STATUS) || 429;
+      const chaosDelayMs = Math.max(0, Number(process.env.TOYMATE_CHAOS_ATC_DELAY_MS) || 0);
+      let chaosInjected = 0;
       for (let attempt = 0; attempt < atcAttempts; attempt++) {
         if (attempt) await sleep(400 * attempt + 200, 150);
+        if (chaosDelayMs) await sleep(chaosDelayMs, Math.floor(chaosDelayMs * 0.3));
+        if (chaosForced > 0 && chaosInjected < chaosForced) {
+          chaosInjected += 1;
+          remoteRes = {
+            status: chaosStatus === 0 ? 0 : chaosStatus,
+            ok: false,
+            headers: { get: () => null },
+            text: async () =>
+              JSON.stringify({
+                error: "chaos_congestion",
+                message: "TOYMATE_CHAOS simulated high-traffic congestion",
+                attempt: chaosInjected,
+              }),
+          };
+          remoteText = await readText(remoteRes);
+          remoteJson = { error: "chaos_congestion", attempt: chaosInjected };
+          // Count as congested → continue retry loop.
+          continue;
+        }
         remoteRes = await request(`${apex}/remote/v1/cart/add`, {
           method: "POST",
           headers: {
@@ -969,7 +998,15 @@ export const toymateAdapter = {
           remoteJson?.cartId ||
           (remoteText.match(/"cart_id"\s*:\s*"([0-9a-f-]{36})"/i) || [])[1] ||
           null;
-        if (remoteCartIdTry && remoteRes.status >= 200 && remoteRes.status < 300) break;
+        if (remoteCartIdTry && remoteRes.status >= 200 && remoteRes.status < 300) {
+          if (chaosInjected > 0) {
+            remoteJson = {
+              ...(remoteJson && typeof remoteJson === "object" ? remoteJson : {}),
+              _chaosSurvived: chaosInjected,
+            };
+          }
+          break;
+        }
         const remoteErrTry = String(remoteJson?.error || remoteJson?.message || "");
         if (
           remoteRes.status >= 200 &&
@@ -995,14 +1032,19 @@ export const toymateAdapter = {
         null;
       const remoteItemId = remoteJson?.data?.cart_item?.id || remoteJson?.data?.cart_item_id || null;
       if (remoteCartId && remoteRes.status >= 200 && remoteRes.status < 300) {
+        const chaosNote =
+          remoteJson?._chaosSurvived > 0
+            ? ` (survived ${remoteJson._chaosSurvived} chaos ATC fails)`
+            : "";
         return {
           ok: true,
           status: remoteRes.status,
-          note: `remote ATC cart ${remoteCartId}`,
+          note: `remote ATC cart ${remoteCartId}${chaosNote}`,
           cartId: remoteCartId,
           itemId: remoteItemId,
           json: remoteJson,
           via: "remote",
+          chaosSurvived: remoteJson?._chaosSurvived || 0,
         };
       }
 

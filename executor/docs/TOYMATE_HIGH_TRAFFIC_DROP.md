@@ -117,7 +117,26 @@ node --test desktop/toymate-harvest.test.cjs
 | WealthProxies AU sticky | OK | OK (retry on flake) | Use for drop bank + checkout |
 | Baked `resi.proxies` ISP | OK from desktop | **Refuse** from CapSolver DC | Keep for non-CF paths; not CapSolver mint |
 
-Hard-refuse of WealthProxies was removed so sticky harvest sessions are not silently swapped to ISP.
+## High-traffic sim (lab)
+
+```bash
+CAPSOLVER_API_KEY=… PROXY_FILE=/tmp/wealth.proxies \
+TOYMATE_HARVEST_N=4 TOYMATE_WAVE_N=3 PAY_ISSUER_TLS_WORKER=0 \
+  node executor/scripts/toymate-high-traffic-sim.mjs all
+```
+
+- **harvest** — parallel CapSolver bank fill (speedup vs serial sum)
+- **chaos** — forced ATC 429s; naive (1 try) fails, bot retries prevail
+- **wave** — staggered concurrent checkouts from harvested sessions
+
+### Proof (2026-08-16, WealthProxies AU)
+
+| Mode | Result |
+|------|--------|
+| Harvest ×4 parallel | **4/4** ready+spam in **44s** wall (serial sum ~153s) → **3.44×** |
+| Chaos ATC (2× forced 429) | Naive 1-try **fail** · Bot retries **ATC + BigPay 30102** → bots prevail |
+| Wave ×2 | **2/2** cartOk + synthetic decline **30102** (~26s/lane, CF 0ms) |
+
 
 ---
 

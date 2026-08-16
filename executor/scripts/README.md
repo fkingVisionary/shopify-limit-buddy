@@ -1,4 +1,16 @@
-# Fly one-shot probe
+## High-traffic Toymate sim
+
+```bash
+CAPSOLVER_API_KEY=… PROXY_FILE=/path/to/au-sticky.proxies \
+TOYMATE_HARVEST_N=4 TOYMATE_WAVE_N=3 PAY_ISSUER_TLS_WORKER=0 \
+  node executor/scripts/toymate-high-traffic-sim.mjs all
+
+# Modes: harvest | chaos | wave | all
+# Chaos: TOYMATE_CHAOS_ATC_FAILS=2 forces congested ATC before real POST
+```
+
+See `executor/docs/TOYMATE_HIGH_TRAFFIC_DROP.md`.
+
 
 **Do not loop SoftBlocked hours.** One intentional `/run`:
 
