@@ -45,6 +45,11 @@
     </div>
   </header>
 
+  <div id="integrityBanner" class="integrity-banner" hidden>
+    <strong>Security lock</strong>
+    <span id="integrityBannerMsg">Network capture tooling detected — all tasks blocked.</span>
+  </div>
+
   <main>
 
     <!-- HOME -->
@@ -1238,6 +1243,13 @@
             <button type="button" class="secondary" id="btnValidate">Validate API key</button>
           </div>
           <p id="licenseMsg" class="hint"></p>
+          <hr style="border:none;border-top:1px solid rgba(255,255,255,.08);margin:20px 0" />
+          <h3 style="font-size:14px;margin:0 0 8px">Updates</h3>
+          <p id="updateMsg" class="hint">Installed builds check GitHub Releases automatically.</p>
+          <div class="row">
+            <button type="button" class="secondary" id="btnCheckUpdates">Check for updates</button>
+            <button type="button" id="btnQuitInstallUpdate" hidden>Restart &amp; install update</button>
+          </div>
         </div>
 
         <div class="settings-pane" data-pane="checkout">
