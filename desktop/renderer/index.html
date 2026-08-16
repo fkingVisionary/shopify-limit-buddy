@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Vanta</title>
+  <title>Vanta Beta</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <div class="titlebar">
     <div class="titlebar-drag">
       <img class="titlebar-logo" src="assets/icon.png" alt="" width="18" height="18" />
-      <span class="titlebar-brand">VANTA</span>
+      <span class="titlebar-brand">VANTA BETA</span>
     </div>
     <div class="titlebar-controls">
       <button type="button" class="win-btn" id="btnWinMin" aria-label="Minimize">─</button>
@@ -775,9 +775,9 @@
         <div id="bandaiHarvestSessionList" class="list harvest-session-list"></div>
       </div>
 
-      <details class="harvest-other">
-        <summary>Toymate <span class="muted">optional</span></summary>
-        <p class="hint">Needs a captcha key in Settings. Same idea — warm sessions on a sticky proxy group.</p>
+      <details class="harvest-other" open>
+        <summary>Toymate <span class="muted">CF + spam bank · drop prep</span></summary>
+        <p class="hint">Needs CapSolver in Settings. Pre-warm sticky AU sessions so Autocheckout skips ~75s CF+spam. Parallel mints fill the bank faster for multi-lane drops.</p>
         <div class="harvest-other-body">
           <div class="harvest-stats harvest-stats-compact" id="harvestStats">
             <div><span class="muted">Ready</span><strong id="hvReady">0</strong></div>
@@ -792,7 +792,10 @@
               <select id="hvProxyGroup"></select>
             </label>
             <label>Sessions
-              <input id="hvDesired" type="number" min="0" max="12" value="2" />
+              <input id="hvDesired" type="number" min="0" max="48" value="2" title="Bank size (match lane count; spam TTL ~100s)" />
+            </label>
+            <label>Parallel
+              <input id="hvParallel" type="number" min="1" max="8" value="3" title="Concurrent CapSolver mints" />
             </label>
           </div>
           <label class="check"><input id="hvSolveSpam" type="checkbox" checked /> Prepare checkout tokens</label>

@@ -64,6 +64,7 @@ export async function harvestToymateSession({
   proxyRaw,
   solveSpam = true,
   spamSitekey = TOYMATE_SPAM_SITEKEY,
+  maxCfAttempts = 3,
 } = {}) {
   const t0 = Date.now();
   if (!capsolverKey()) {
@@ -74,6 +75,37 @@ export async function harvestToymateSession({
     return { ok: false, error: "proxy required (sticky AU ISP/resi)", ms: 0 };
   }
 
+  const attempts = Math.max(1, Math.min(5, Number(maxCfAttempts) || 3));
+  let lastFail = null;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt) await sleep(800 * attempt + 400);
+    const out = await harvestToymateSessionOnce({
+      proxyUrl,
+      solveSpam,
+      spamSitekey,
+      t0,
+      attempt,
+    });
+    if (out.ok) return out;
+    lastFail = out;
+    const err = String(out.error || "");
+    const retryable =
+      /ERROR_INVALID_TASK_DATA|ERROR_PROXY|ERROR_CAPTCHA_SOLVE_FAILED|proxy timeout|proxy connect|timeout|still challenging|cf_clearance missing/i.test(
+        err,
+      );
+    if (!retryable) return out;
+  }
+  return lastFail || { ok: false, error: "harvest failed", ms: Date.now() - t0 };
+}
+
+async function harvestToymateSessionOnce({
+  proxyUrl,
+  solveSpam,
+  spamSitekey,
+  t0,
+  attempt = 0,
+}) {
   const dispatcher = makeDispatcher(proxyUrl, { forceUndici: true });
   const jar = createJar();
   const ctx = { dispatcher, jar, extraHeaders: {} };
@@ -125,6 +157,7 @@ export async function harvestToymateSession({
           ok: false,
           error: solved.error || "CF solve failed",
           ms: Date.now() - t0,
+          attempt,
         };
       }
       applyCookiesToJar(jar, solved.cookies);
@@ -137,20 +170,48 @@ export async function harvestToymateSession({
       }, ctx);
       const html2 = await readText(res2);
       if (looksLikeCfChallenge(html2, res2.status)) {
-        return {
-          ok: false,
-          error: "CF still challenging after CapSolver solve",
-          ms: Date.now() - t0,
-        };
+        // Clearance sometimes needs a second CapSolver pass on the same sticky.
+        const solved2 = await solveCloudflareChallenge({
+          pageUrl: "https://toymate.com.au/",
+          html: html2,
+          proxyRaw: proxyUrl,
+          userAgent: solvedUa,
+        });
+        if (!solved2.ok) {
+          return {
+            ok: false,
+            error: "CF still challenging after CapSolver solve",
+            ms: Date.now() - t0,
+            attempt,
+          };
+        }
+        applyCookiesToJar(jar, solved2.cookies);
+        solvedUa = solved2.userAgent || solvedUa;
+        ctx.extraHeaders = { "user-agent": solvedUa };
+        cfNote = `${cfNote}; rebind ok`;
+        const res3 = await request("https://www.toymate.com.au/", {
+          headers: navHeaders({ referer: "https://toymate.com.au/", userAgent: solvedUa }),
+        }, ctx);
+        const html3 = await readText(res3);
+        if (looksLikeCfChallenge(html3, res3.status)) {
+          return {
+            ok: false,
+            error: "CF still challenging after CapSolver solve",
+            ms: Date.now() - t0,
+            attempt,
+          };
+        }
+        status = res3.status;
+      } else {
+        status = res2.status;
       }
-      status = res2.status;
     } else if (lastErr && !html) {
-      return { ok: false, error: `warm fetch failed: ${lastErr}`, ms: Date.now() - t0 };
+      return { ok: false, error: `warm fetch failed: ${lastErr}`, ms: Date.now() - t0, attempt };
     }
 
     const cookies = jar.dump?.() || {};
     if (!cookies.cf_clearance && challenged) {
-      return { ok: false, error: "cf_clearance missing after solve", ms: Date.now() - t0 };
+      return { ok: false, error: "cf_clearance missing after solve", ms: Date.now() - t0, attempt };
     }
 
     let captchaToken = null;
@@ -209,10 +270,11 @@ export async function harvestToymateSession({
         spamNote,
         spamMs,
         status,
+        attempt,
       },
     };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e), ms: Date.now() - t0 };
+    return { ok: false, error: e?.message || String(e), ms: Date.now() - t0, attempt };
   } finally {
     try {
       await dispatcher.close?.();

@@ -2667,6 +2667,9 @@ function renderHarvest(snap) {
   if ($("hvDesired") && document.activeElement !== $("hvDesired")) {
     $("hvDesired").value = cfg.desired ?? 2;
   }
+  if ($("hvParallel") && document.activeElement !== $("hvParallel")) {
+    $("hvParallel").value = cfg.parallel ?? 3;
+  }
   if ($("hvSolveSpam") && document.activeElement !== $("hvSolveSpam")) {
     $("hvSolveSpam").checked = cfg.solveSpam !== false;
   }
@@ -2678,9 +2681,12 @@ function renderHarvest(snap) {
 
   const status = $("harvestStatusLine");
   if (status) {
-    if (harvestState.busy) status.textContent = "Working… solving captcha";
+    const inflight = harvestState.inflight || 0;
+    if (harvestState.refillPaused) status.textContent = "Paused · checkout lanes running";
+    else if (inflight > 0 || harvestState.busy)
+      status.textContent = `Working… ${inflight || 1} CapSolver mint(s)`;
     else if (harvestState.running)
-      status.textContent = `Running · keeping ${cfg.desired ?? 0} ready`;
+      status.textContent = `Running · keeping ${cfg.desired ?? 0} ready (×${cfg.parallel ?? 3})`;
     else status.textContent = "Stopped";
   }
 
@@ -2818,6 +2824,7 @@ function harvestOptsFromForm() {
   return {
     proxyGroupId: $("hvProxyGroup")?.value || null,
     desired: Number($("hvDesired")?.value) || 0,
+    parallel: Number($("hvParallel")?.value) || 3,
     solveSpam: $("hvSolveSpam")?.checked !== false,
   };
 }
@@ -4558,6 +4565,14 @@ if ($("hvDesired")) {
   $("hvDesired").onchange = async () => {
     const snap = await window.desktop.harvestConfigure({
       desired: Number($("hvDesired").value) || 0,
+    });
+    renderHarvest(snap);
+  };
+}
+if ($("hvParallel")) {
+  $("hvParallel").onchange = async () => {
+    const snap = await window.desktop.harvestConfigure({
+      parallel: Number($("hvParallel").value) || 3,
     });
     renderHarvest(snap);
   };

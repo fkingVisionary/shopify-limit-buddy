@@ -20,6 +20,9 @@ const {
   classifyBandaiRunResult,
   sleep: sleepMs,
 } = require("./bandai-retry-policy.cjs");
+const {
+  classifyToymateRunResult,
+} = require("./toymate-retry-policy.cjs");
 const { isPaymentAlreadySubmitted } = require("./payment-latch.cjs");
 const { auditEnqueueBatch } = require("./pay-forensics-audit.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
@@ -164,6 +167,12 @@ let takeBandaiHarvestFn = null;
 let pauseBandaiHarvestRefillFn = null;
 /** @type {null | (() => void)} */
 let resumeBandaiHarvestRefillFn = null;
+/** @type {null | (() => object|null)} */
+let takeToymateHarvestFn = null;
+/** @type {null | (() => void)} */
+let pauseToymateHarvestRefillFn = null;
+/** @type {null | (() => void)} */
+let resumeToymateHarvestRefillFn = null;
 /** @type {null | ((sku: string, area?: string) => object|null)} */
 let lookupBandaiProductFn = null;
 /** @type {null | ((entry: object) => void)} */
@@ -193,6 +202,18 @@ function configure(opts = {}) {
   if (Object.prototype.hasOwnProperty.call(opts, "resumeBandaiHarvestRefill")) {
     resumeBandaiHarvestRefillFn =
       typeof opts.resumeBandaiHarvestRefill === "function" ? opts.resumeBandaiHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "takeToymateHarvest")) {
+    takeToymateHarvestFn =
+      typeof opts.takeToymateHarvest === "function" ? opts.takeToymateHarvest : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "pauseToymateHarvestRefill")) {
+    pauseToymateHarvestRefillFn =
+      typeof opts.pauseToymateHarvestRefill === "function" ? opts.pauseToymateHarvestRefill : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(opts, "resumeToymateHarvestRefill")) {
+    resumeToymateHarvestRefillFn =
+      typeof opts.resumeToymateHarvestRefill === "function" ? opts.resumeToymateHarvestRefill : null;
   }
   if (Object.prototype.hasOwnProperty.call(opts, "lookupBandaiProduct")) {
     lookupBandaiProductFn =
@@ -1205,9 +1226,18 @@ function advanceJobProxy(job, { sticky, entries, dropHarvest = false } = {}) {
     delete job.task.harvestedBridgeId;
     delete job.task.harvestedProxy;
     delete job.task.proxyOverride;
+    delete job.task.harvestedSession;
+    delete job.task.captchaToken;
   }
   // Sticky single-line or after walking the list → mint a fresh session- token next run.
   return Boolean(sticky);
+}
+
+/** Drop spent Toymate CF/spam claim so the next executeOnce can take() a fresh bank slot. */
+function clearToymateHarvestClaim(job) {
+  if (!job?.task) return;
+  delete job.task.harvestedSession;
+  delete job.task.captchaToken;
 }
 
 function applyHeldCartForPayRetry(job, result) {
@@ -1596,10 +1626,12 @@ async function ensureBandaiNaiForTask(task, { proxy, area, log } = {}) {
 
 async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
   const path = require("path");
+  const { resolveExecutorDir } = require("./paths.cjs");
+  const executorDir = resolveExecutorDir();
   const { eventMatchesWatch, parseTaskWatch } = await import(
-    pathToFileUrl(path.join(__dirname, "..", "executor", "monitor", "event-filter.js"))
+    pathToFileUrl(path.join(executorDir, "monitor", "event-filter.js"))
   );
-  const monitorDir = path.join(__dirname, "..", "executor", "monitor");
+  const monitorDir = path.join(executorDir, "monitor");
   const mode = String(payload.bandaiMonitorMode || "local").toLowerCase();
   // Dry monitor (no checkout): small poll budget for labs.
   // Checkout-on-hit: keep polling until match (optional safety cap via env/task).
@@ -1894,6 +1926,34 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
     }
   }
 
+  // Toymate checkout: claim CF (+ spam) at run-start — spam TTL ~100s dies in queue.
+  if (
+    job.task?.store === "toymate" &&
+    String(job.task?.toymateMode || "checkout") === "checkout" &&
+    !job.task.harvestedSession?.cookies &&
+    typeof takeToymateHarvestFn === "function"
+  ) {
+    const harvestSession = takeToymateHarvestFn() || null;
+    if (harvestSession?.cookies) {
+      job.task.harvestedSession = harvestSession;
+      job.task.captchaToken = harvestSession.captchaToken || job.task.captchaToken || null;
+      if (harvestSession.proxy) {
+        job.proxyRaw = harvestSession.proxy;
+        job.proxyEntries = [harvestSession.proxy];
+        job.proxyIndex = 0;
+      }
+      emitLog(job.runId, job.task?.id, "info", "Using harvested CF session");
+      emitDetailedLog(
+        job.runId,
+        job.task?.id,
+        "info",
+        `Using harvested CF session (${harvestSession.proxyHost || "proxy"}${
+          harvestSession.captchaToken ? " + spam" : ""
+        } age≈${Math.round((Date.now() - (harvestSession.harvestedAt || Date.now())) / 1000)}s)`,
+      );
+    }
+  }
+
   // Autocheckout: ensure Backend PID before sidecar (skip if already set / pay-from-cart).
   if (
     job.task?.store === "bandai" &&
@@ -2083,14 +2143,21 @@ async function executeOnce(job, { rotateSession = false, attemptLabel = "run" } 
 async function runSidecarCheckout(job, payload, summary, extra = {}) {
   const attemptLabel = extra.attemptLabel || "run";
   const bandaiMode = String(job.task?.bandaiMode || payload.bandaiMode || "checkout").toLowerCase();
-  const pauseHarvest =
+  const toyMode = String(job.task?.toymateMode || "checkout").toLowerCase();
+  const pauseBandaiHarvest =
     job.task?.store === "bandai" &&
     bandaiMode !== "monitor" &&
     bandaiMode !== "account_gen" &&
     typeof pauseBandaiHarvestRefillFn === "function";
+  const pauseToymateHarvest =
+    job.task?.store === "toymate" &&
+    toyMode === "checkout" &&
+    typeof pauseToymateHarvestRefillFn === "function";
+  const pauseHarvest = pauseBandaiHarvest || pauseToymateHarvest;
   if (pauseHarvest) {
     try {
-      pauseBandaiHarvestRefillFn();
+      if (pauseBandaiHarvest) pauseBandaiHarvestRefillFn();
+      if (pauseToymateHarvest) pauseToymateHarvestRefillFn();
       emitLog(job.runId, job.task?.id, "info", "Harvest refill paused (checkout lane)");
     } catch {
       /* ignore */
@@ -2200,9 +2267,14 @@ async function runSidecarCheckout(job, payload, summary, extra = {}) {
   } finally {
     untrackExecutorTaskId(tid, payload.taskId);
     clearInterval(progressTimer);
-    if (pauseHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+    if (pauseHarvest) {
       try {
-        resumeBandaiHarvestRefillFn();
+        if (pauseBandaiHarvest && typeof resumeBandaiHarvestRefillFn === "function") {
+          resumeBandaiHarvestRefillFn();
+        }
+        if (pauseToymateHarvest && typeof resumeToymateHarvestRefillFn === "function") {
+          resumeToymateHarvestRefillFn();
+        }
       } catch {
         /* ignore */
       }
@@ -2465,6 +2537,116 @@ async function runOneBandai(job, { sticky, entries }) {
   return result;
 }
 
+/**
+ * Toymate persistent lane: grind ATC/CF/pay until confirmed, declined, hard 403, or stop.
+ * Congestion / CapSolver flake / timeouts are NOT terminal.
+ */
+async function runOneToymate(job, { sticky, entries }) {
+  const tid = job?.task?.id;
+  const mode = String(job.task?.toymateMode || "checkout").toLowerCase();
+  const maxLoops = Math.max(
+    8,
+    Math.min(
+      500,
+      Number(job.task?.toymateMaxLoops || process.env.TOYMATE_MAX_LOOPS) || 200,
+    ),
+  );
+  let rotateCount = 0;
+  let retryCount = 0;
+  let rotateSession = false;
+  let result = null;
+
+  for (let loop = 1; loop <= maxLoops && running; loop++) {
+    if (isTaskAborted(tid)) {
+      result = cancelledResult(job, "stopped_loop");
+      break;
+    }
+    if (tid) abortControllerFor(tid);
+
+    if (loop === 1) emitLiveStatus(job, "Starting");
+    else if (job.task?._toymateLiveLabel) emitLiveStatus(job, job.task._toymateLiveLabel);
+
+    result = await executeOnce(job, {
+      rotateSession,
+      attemptLabel: `toymate#${loop}`,
+    });
+    rotateSession = false;
+    logResultTail(job, result);
+
+    if (result?.stopped || isTaskAborted(tid)) {
+      result = cancelledResult(job, result?.debugError || "stopped");
+      break;
+    }
+
+    // Non-checkout modes (account_gen / monitor): single shot.
+    if (mode !== "checkout") break;
+
+    const decision = classifyToymateRunResult(result, {
+      mode,
+      retryCount,
+      rotateCount,
+      proxyCount: entries.length || 1,
+      maxRotate: Math.max(24, (entries.length || 1) * 4),
+    });
+
+    if (decision.liveLabel) {
+      emitLiveStatus(job, decision.liveLabel);
+      if (job.task) job.task._toymateLiveLabel = decision.liveLabel;
+    }
+    emitDetailedLog(
+      job.runId,
+      tid,
+      decision.action === "stop" ? "info" : "warn",
+      `Toymate ${decision.action} · ${decision.reason}${
+        decision.liveLabel ? ` · ${decision.liveLabel}` : ""
+      } (loop ${loop}/${maxLoops})`,
+    );
+
+    if (decision.action === "stop") {
+      result = {
+        ...result,
+        consumerLabel: decision.liveLabel || result.consumerLabel,
+        consumerCode: decision.consumerCode || result.consumerCode,
+        toymateStopReason: decision.reason,
+        toymateLoops: loop,
+      };
+      break;
+    }
+
+    if (decision.reclaimHarvest) clearToymateHarvestClaim(job);
+
+    if (decision.action === "rotate") {
+      rotateCount += 1;
+      retryCount += 1;
+      rotateSession = advanceJobProxy(job, {
+        sticky,
+        entries,
+        dropHarvest: true,
+      });
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
+      continue;
+    }
+
+    if (decision.action === "retry" || decision.action === "wait_restock") {
+      retryCount += 1;
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  if (tid) clearAbortState(tid);
+  if (result && job.task) delete job.task._toymateLiveLabel;
+  return result;
+}
+
 async function runOne(job) {
   const tid = job?.task?.id || null;
   emit({
@@ -2494,9 +2676,14 @@ async function runOne(job) {
     );
 
     const isBandai = String(job.task?.store || "") === "bandai";
+    const isToymateCheckout =
+      String(job.task?.store || "") === "toymate" &&
+      String(job.task?.toymateMode || "checkout") === "checkout";
     const result = isBandai
       ? await runOneBandai(job, { sticky, entries })
-      : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
+      : isToymateCheckout
+        ? await runOneToymate(job, { sticky, entries })
+        : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
 
     // Decline → drop in-memory hold so Retry pay cannot re-fire on stale cartSn.
     if (

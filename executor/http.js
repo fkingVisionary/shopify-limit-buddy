@@ -831,7 +831,10 @@ export async function request(url, opts, ctx) {
   // Dual-Revolut: issuer/pay POSTs prefer tls-worker even when the task dispatcher
   // is undici (Kmart bank was Chromium TLS; post-Kmart modules charged via undici).
   let issuerRemote = null;
-  if (!dispatcher?.remoteTls && shouldUseIssuerTlsWorker(url, method)) {
+  // Toymate BigPay (and labs) can force undici — tls-worker often times out on
+  // residential.wealthproxies.com issuer hops (2026-08-16 lab).
+  const forceUndiciIssuer = opts?.issuerTransport === "undici" || opts?.forceUndiciIssuer === true;
+  if (!forceUndiciIssuer && !dispatcher?.remoteTls && shouldUseIssuerTlsWorker(url, method)) {
     const { host: payHost, path: payPath } = parsePayUrl(url);
     const payStage = classifyPayWireStage(payHost, payPath);
     issuerRemote = await ensureIssuerRemoteTls(

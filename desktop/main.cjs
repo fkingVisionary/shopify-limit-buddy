@@ -1,4 +1,4 @@
-// J1m's Bot Desktop — main process.
+// Vanta Beta Desktop — main process.
 // Owns: BrowserWindow, local store, executor sidecar, job runner, license IPC.
 // Does NOT execute Kmart checkout in-process — that stays in executor/ via sidecar.
 
@@ -6,6 +6,12 @@ const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron")
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+
+try {
+  app.setName("Vanta Beta");
+} catch {
+  /* ignore */
+}
 
 // Isolated profile for smoke / live-status demo (must run before store.loadAll).
 if (
@@ -580,6 +586,9 @@ function runnerHarvestHooks() {
     takeBandaiHarvest: () => bandaiHarvest.take(),
     pauseBandaiHarvestRefill: () => bandaiHarvest.pauseRefill(),
     resumeBandaiHarvestRefill: () => bandaiHarvest.resumeRefill(),
+    takeToymateHarvest: () => harvest.take({ preferSpam: true }),
+    pauseToymateHarvestRefill: () => harvest.pauseRefill(),
+    resumeToymateHarvestRefill: () => harvest.resumeRefill(),
   };
 }
 
@@ -1271,7 +1280,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: "Vanta",
+    title: "Vanta Beta",
     backgroundColor: "#0a0a0b",
     icon: require("fs").existsSync(iconPath) ? iconPath : undefined,
     frame: false,
@@ -2093,6 +2102,7 @@ ipcMain.handle("desktop:harvest-start", async (_e, opts = {}) => {
   const snap = harvest.start({
     proxyGroupId: gid,
     desired: opts.desired,
+    parallel: opts.parallel,
     solveSpam: opts.solveSpam,
     getEntries: harvestEntries,
   });
@@ -2128,6 +2138,7 @@ ipcMain.handle("desktop:harvest-once", async (_e, opts = {}) => {
   }
   if (opts.proxyGroupId) harvest.configure({ proxyGroupId: opts.proxyGroupId });
   if (opts.desired != null) harvest.configure({ desired: opts.desired });
+  if (opts.parallel != null) harvest.configure({ parallel: opts.parallel });
   if (opts.solveSpam != null) harvest.configure({ solveSpam: opts.solveSpam });
   const out = await harvest.harvestOne(harvestEntries());
   send({ type: "snapshot", data: snapshot() });
@@ -2859,7 +2870,7 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
   let payload;
   if (kind === "monitor") {
     payload = {
-      username: "Vanta",
+      username: "Vanta Beta",
       embeds: [
         {
           title: "Smart Action completed!",
@@ -2869,7 +2880,7 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
             { name: "Trigger", value: "Webhook test", inline: false },
             { name: "Actions", value: "Notify Discord", inline: false },
           ],
-          footer: { text: "Vanta" },
+          footer: { text: "Vanta Beta" },
           timestamp: new Date().toISOString(),
         },
       ],
@@ -3135,29 +3146,7 @@ function enqueueTaskIds(taskIds, opts = {}) {
       }
       let jobProxyRaw = proxyRaw;
       let jobProxyEntries = entries.filter(Boolean);
-      // Toymate checkout: claim a harvested CF (+ spam) session when available.
-      if (
-        task.store === "toymate" &&
-        String(task.toymateMode || "checkout") === "checkout"
-      ) {
-        const session = harvest.take({ preferSpam: true });
-        if (session) {
-          taskCopy.harvestedSession = session;
-          taskCopy.captchaToken = session.captchaToken || taskCopy.captchaToken || null;
-          if (session.proxy) {
-            jobProxyRaw = session.proxy;
-            jobProxyEntries = [session.proxy];
-            proxyIndex = 0;
-          }
-          send({
-            type: "job",
-            phase: "log",
-            taskId: tid,
-            level: "info",
-            message: `Using harvested CF session (${session.proxyHost || "proxy"}${session.captchaToken ? " + spam" : ""})`,
-          });
-        }
-      }
+      // Toymate checkout harvest is claimed at run-start in job-runner (spam ~100s TTL).
       // Bandai Autocheckout: F5 harvest is claimed at run-start in job-runner
       // (not enqueue) so bank TTL stays fresh through the queue.
       // Disney checkout/pay: claim Akamai+CapSolver session when Harvest is armed.

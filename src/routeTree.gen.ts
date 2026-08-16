@@ -11,16 +11,21 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as HarveyRouteImport } from './routes/harvey'
+import { Route as DownloadRouteImport } from './routes/download'
 import { Route as PairedRouteImport } from './routes/_paired'
 import { Route as PairedIndexRouteImport } from './routes/_paired/index'
+import { Route as AdminBetaKeysRouteImport } from './routes/admin.beta-keys'
 import { Route as PairedKmartRouteImport } from './routes/_paired/kmart'
 import { Route as PairedJbhifiRouteImport } from './routes/_paired/jbhifi'
 import { Route as ApiPublicShopifyRouteImport } from './routes/api/public/shopify'
 import { Route as ApiPublicExecTestRouteImport } from './routes/api/public/exec-test'
+import { Route as ApiPublicExecMilestonesRouteImport } from './routes/api/public/exec-milestones'
 import { Route as ApiPublicRunnerReportRouteImport } from './routes/api/public/runner.report'
 import { Route as ApiPublicRunnerPollRouteImport } from './routes/api/public/runner.poll'
 import { Route as ApiPublicRunnerPairRouteImport } from './routes/api/public/runner.pair'
 import { Route as ApiPublicDesktopValidateKeyRouteImport } from './routes/api/public/desktop.validate-key'
+import { Route as ApiPublicDesktopSetupRouteImport } from './routes/api/public/desktop.setup'
+import { Route as ApiPublicDesktopPortableRouteImport } from './routes/api/public/desktop.portable'
 import { Route as ApiPublicDesktopHyperProvisionRouteImport } from './routes/api/public/desktop.hyper-provision'
 
 const PairRoute = PairRouteImport.update({
@@ -33,6 +38,11 @@ const HarveyRoute = HarveyRouteImport.update({
   path: '/harvey',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DownloadRoute = DownloadRouteImport.update({
+  id: '/download',
+  path: '/download',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PairedRoute = PairedRouteImport.update({
   id: '/_paired',
   getParentRoute: () => rootRouteImport,
@@ -41,6 +51,11 @@ const PairedIndexRoute = PairedIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => PairedRoute,
+} as any)
+const AdminBetaKeysRoute = AdminBetaKeysRouteImport.update({
+  id: '/admin/beta-keys',
+  path: '/admin/beta-keys',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const PairedKmartRoute = PairedKmartRouteImport.update({
   id: '/kmart',
@@ -60,6 +75,11 @@ const ApiPublicShopifyRoute = ApiPublicShopifyRouteImport.update({
 const ApiPublicExecTestRoute = ApiPublicExecTestRouteImport.update({
   id: '/api/public/exec-test',
   path: '/api/public/exec-test',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicExecMilestonesRoute = ApiPublicExecMilestonesRouteImport.update({
+  id: '/api/public/exec-milestones',
+  path: '/api/public/exec-milestones',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiPublicRunnerReportRoute = ApiPublicRunnerReportRouteImport.update({
@@ -83,6 +103,17 @@ const ApiPublicDesktopValidateKeyRoute =
     path: '/api/public/desktop/validate-key',
     getParentRoute: () => rootRouteImport,
   } as any)
+const ApiPublicDesktopSetupRoute = ApiPublicDesktopSetupRouteImport.update({
+  id: '/api/public/desktop/setup',
+  path: '/api/public/desktop/setup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPublicDesktopPortableRoute =
+  ApiPublicDesktopPortableRouteImport.update({
+    id: '/api/public/desktop/portable',
+    path: '/api/public/desktop/portable',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ApiPublicDesktopHyperProvisionRoute =
   ApiPublicDesktopHyperProvisionRouteImport.update({
     id: '/api/public/desktop/hyper-provision',
@@ -92,105 +123,140 @@ const ApiPublicDesktopHyperProvisionRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof PairedIndexRoute
+  '/download': typeof DownloadRoute
   '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
+  '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
+  '/api/public/desktop/portable': typeof ApiPublicDesktopPortableRoute
+  '/api/public/desktop/setup': typeof ApiPublicDesktopSetupRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
-  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
-  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRoutesByTo {
+  '/download': typeof DownloadRoute
   '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/jbhifi': typeof PairedJbhifiRoute
   '/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
   '/': typeof PairedIndexRoute
+  '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
+  '/api/public/desktop/portable': typeof ApiPublicDesktopPortableRoute
+  '/api/public/desktop/setup': typeof ApiPublicDesktopSetupRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
-  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
-  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_paired': typeof PairedRouteWithChildren
+  '/download': typeof DownloadRoute
   '/harvey': typeof HarveyRoute
   '/pair': typeof PairRoute
   '/_paired/jbhifi': typeof PairedJbhifiRoute
   '/_paired/kmart': typeof PairedKmartRoute
+  '/admin/beta-keys': typeof AdminBetaKeysRoute
   '/_paired/': typeof PairedIndexRoute
+  '/api/public/exec-milestones': typeof ApiPublicExecMilestonesRoute
   '/api/public/exec-test': typeof ApiPublicExecTestRoute
   '/api/public/shopify': typeof ApiPublicShopifyRoute
+  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
+  '/api/public/desktop/portable': typeof ApiPublicDesktopPortableRoute
+  '/api/public/desktop/setup': typeof ApiPublicDesktopSetupRoute
+  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
   '/api/public/runner/pair': typeof ApiPublicRunnerPairRoute
   '/api/public/runner/poll': typeof ApiPublicRunnerPollRoute
   '/api/public/runner/report': typeof ApiPublicRunnerReportRoute
-  '/api/public/desktop/validate-key': typeof ApiPublicDesktopValidateKeyRoute
-  '/api/public/desktop/hyper-provision': typeof ApiPublicDesktopHyperProvisionRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/download'
     | '/harvey'
     | '/pair'
     | '/jbhifi'
     | '/kmart'
+    | '/admin/beta-keys'
+    | '/api/public/exec-milestones'
     | '/api/public/exec-test'
     | '/api/public/shopify'
+    | '/api/public/desktop/hyper-provision'
+    | '/api/public/desktop/portable'
+    | '/api/public/desktop/setup'
+    | '/api/public/desktop/validate-key'
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
-    | '/api/public/desktop/validate-key'
-    | '/api/public/desktop/hyper-provision'
   fileRoutesByTo: FileRoutesByTo
   to:
+    | '/download'
     | '/harvey'
     | '/pair'
     | '/jbhifi'
     | '/kmart'
+    | '/admin/beta-keys'
     | '/'
+    | '/api/public/exec-milestones'
     | '/api/public/exec-test'
     | '/api/public/shopify'
+    | '/api/public/desktop/hyper-provision'
+    | '/api/public/desktop/portable'
+    | '/api/public/desktop/setup'
+    | '/api/public/desktop/validate-key'
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
-    | '/api/public/desktop/validate-key'
-    | '/api/public/desktop/hyper-provision'
   id:
     | '__root__'
     | '/_paired'
+    | '/download'
     | '/harvey'
     | '/pair'
     | '/_paired/jbhifi'
     | '/_paired/kmart'
+    | '/admin/beta-keys'
     | '/_paired/'
+    | '/api/public/exec-milestones'
     | '/api/public/exec-test'
     | '/api/public/shopify'
+    | '/api/public/desktop/hyper-provision'
+    | '/api/public/desktop/portable'
+    | '/api/public/desktop/setup'
+    | '/api/public/desktop/validate-key'
     | '/api/public/runner/pair'
     | '/api/public/runner/poll'
     | '/api/public/runner/report'
-    | '/api/public/desktop/validate-key'
-    | '/api/public/desktop/hyper-provision'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   PairedRoute: typeof PairedRouteWithChildren
+  DownloadRoute: typeof DownloadRoute
   HarveyRoute: typeof HarveyRoute
   PairRoute: typeof PairRoute
+  AdminBetaKeysRoute: typeof AdminBetaKeysRoute
+  ApiPublicExecMilestonesRoute: typeof ApiPublicExecMilestonesRoute
   ApiPublicExecTestRoute: typeof ApiPublicExecTestRoute
   ApiPublicShopifyRoute: typeof ApiPublicShopifyRoute
+  ApiPublicDesktopHyperProvisionRoute: typeof ApiPublicDesktopHyperProvisionRoute
+  ApiPublicDesktopPortableRoute: typeof ApiPublicDesktopPortableRoute
+  ApiPublicDesktopSetupRoute: typeof ApiPublicDesktopSetupRoute
+  ApiPublicDesktopValidateKeyRoute: typeof ApiPublicDesktopValidateKeyRoute
   ApiPublicRunnerPairRoute: typeof ApiPublicRunnerPairRoute
   ApiPublicRunnerPollRoute: typeof ApiPublicRunnerPollRoute
   ApiPublicRunnerReportRoute: typeof ApiPublicRunnerReportRoute
-  ApiPublicDesktopValidateKeyRoute: typeof ApiPublicDesktopValidateKeyRoute
-  ApiPublicDesktopHyperProvisionRoute: typeof ApiPublicDesktopHyperProvisionRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -209,6 +275,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof HarveyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/download': {
+      id: '/download'
+      path: '/download'
+      fullPath: '/download'
+      preLoaderRoute: typeof DownloadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_paired': {
       id: '/_paired'
       path: ''
@@ -222,6 +295,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof PairedIndexRouteImport
       parentRoute: typeof PairedRoute
+    }
+    '/admin/beta-keys': {
+      id: '/admin/beta-keys'
+      path: '/admin/beta-keys'
+      fullPath: '/admin/beta-keys'
+      preLoaderRoute: typeof AdminBetaKeysRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_paired/kmart': {
       id: '/_paired/kmart'
@@ -249,6 +329,13 @@ declare module '@tanstack/react-router' {
       path: '/api/public/exec-test'
       fullPath: '/api/public/exec-test'
       preLoaderRoute: typeof ApiPublicExecTestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/exec-milestones': {
+      id: '/api/public/exec-milestones'
+      path: '/api/public/exec-milestones'
+      fullPath: '/api/public/exec-milestones'
+      preLoaderRoute: typeof ApiPublicExecMilestonesRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/public/runner/report': {
@@ -279,6 +366,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiPublicDesktopValidateKeyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/public/desktop/setup': {
+      id: '/api/public/desktop/setup'
+      path: '/api/public/desktop/setup'
+      fullPath: '/api/public/desktop/setup'
+      preLoaderRoute: typeof ApiPublicDesktopSetupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/public/desktop/portable': {
+      id: '/api/public/desktop/portable'
+      path: '/api/public/desktop/portable'
+      fullPath: '/api/public/desktop/portable'
+      preLoaderRoute: typeof ApiPublicDesktopPortableRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/public/desktop/hyper-provision': {
       id: '/api/public/desktop/hyper-provision'
       path: '/api/public/desktop/hyper-provision'
@@ -306,15 +407,20 @@ const PairedRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   PairedRoute: PairedRouteWithChildren,
+  DownloadRoute: DownloadRoute,
   HarveyRoute: HarveyRoute,
   PairRoute: PairRoute,
+  AdminBetaKeysRoute: AdminBetaKeysRoute,
+  ApiPublicExecMilestonesRoute: ApiPublicExecMilestonesRoute,
   ApiPublicExecTestRoute: ApiPublicExecTestRoute,
   ApiPublicShopifyRoute: ApiPublicShopifyRoute,
+  ApiPublicDesktopHyperProvisionRoute: ApiPublicDesktopHyperProvisionRoute,
+  ApiPublicDesktopPortableRoute: ApiPublicDesktopPortableRoute,
+  ApiPublicDesktopSetupRoute: ApiPublicDesktopSetupRoute,
+  ApiPublicDesktopValidateKeyRoute: ApiPublicDesktopValidateKeyRoute,
   ApiPublicRunnerPairRoute: ApiPublicRunnerPairRoute,
   ApiPublicRunnerPollRoute: ApiPublicRunnerPollRoute,
   ApiPublicRunnerReportRoute: ApiPublicRunnerReportRoute,
-  ApiPublicDesktopValidateKeyRoute: ApiPublicDesktopValidateKeyRoute,
-  ApiPublicDesktopHyperProvisionRoute: ApiPublicDesktopHyperProvisionRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

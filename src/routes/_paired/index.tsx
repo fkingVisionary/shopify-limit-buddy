@@ -62,9 +62,9 @@ import jimsLogo from "@/assets/jims-logo.jpg";
 export const Route = createFileRoute("/_paired/")({
   head: () => ({
     meta: [
-      { title: "J1m's Bot" },
-      { name: "description", content: "J1m's Bot — Shopify monitor, profile manager, and one-tap checkout launcher." },
-      { property: "og:title", content: "J1m's Bot" },
+      { title: "Vanta Beta" },
+      { name: "description", content: "Vanta Beta — Shopify monitor, profile manager, and one-tap checkout launcher." },
+      { property: "og:title", content: "Vanta Beta" },
       { property: "og:description", content: "Shopify monitor, profile manager, and one-tap checkout launcher." },
     ],
   }),
@@ -1842,12 +1842,19 @@ function Index() {
       <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <img src={jimsLogo} alt="J1m's Bot" className="h-10 w-10 rounded-lg object-cover ring-2 ring-primary/40" />
+            <img src={jimsLogo} alt="Vanta Beta" className="h-10 w-10 rounded-lg object-cover ring-2 ring-primary/40" />
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-primary">J1m's Bot</div>
+              <div className="text-[10px] uppercase tracking-wider text-primary">Vanta Beta</div>
               <h1 className="text-base font-semibold leading-tight">{tabLabel}</h1>
             </div>
           </div>
+          <div className="flex items-center gap-2">
+            <a
+              href="/download"
+              className="rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-sm hover:opacity-90"
+            >
+              Download app
+            </a>
           {tab === "tasks" && (
             <Drawer open={createOpen} onOpenChange={setCreateOpen}>
               <DrawerTrigger asChild>
@@ -1869,6 +1876,7 @@ function Index() {
               />
             </Drawer>
           )}
+          </div>
         </div>
         {tab === "tasks" && (
           <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 pb-3">
@@ -4001,7 +4009,7 @@ function WelcomeWizard({
   const slides = [
     {
       icon: Sparkles,
-      title: "Welcome to J1m's Bot",
+      title: "Welcome to Vanta Beta",
       body: "A pocket-sized shopping bot. Tell it what you want, which store, and which profile — when stock drops it fires the checkout for you.",
       cta: { label: "Next", action: () => setStep(1) },
     },
@@ -4072,7 +4080,7 @@ function HelpView() {
       <Card className="p-4">
         <div className="flex items-center gap-2">
           <BookOpen className="h-4 w-4 text-primary" />
-          <h2 className="text-sm font-semibold">How J1m's Bot works</h2>
+          <h2 className="text-sm font-semibold">How Vanta Beta works</h2>
         </div>
         <ol className="mt-3 space-y-2 text-xs leading-relaxed text-muted-foreground">
           <li><b className="text-foreground">1. Profile</b> — your shipping + contact info, used to pre-fill Shopify checkout.</li>
@@ -4177,7 +4185,7 @@ function HelpView() {
         <div className="mt-3 space-y-3 text-xs">
           {[
             ["Why didn't the checkout tab open?", "Allow popups for this site in your browser settings — the bot can only auto-open with permission."],
-            ["Why was a task slower than expected?", "Browsers throttle background tabs. Keep J1m's Bot pinned and visible during a drop."],
+            ["Why was a task slower than expected?", "Browsers throttle background tabs. Keep Vanta Beta pinned and visible during a drop."],
             ["What stores work?", "Any public Shopify store. The bot reads each store's /products.json and /products/{handle}.js endpoints."],
             ["Do I need proxies?", "No — they're optional. They help when a store rate-limits during high traffic drops."],
             ["Is anything sent off-device?", "Profile data is stored locally in your browser. Product requests go directly to the store (or through your proxies)."],

@@ -3,18 +3,16 @@
 ## Cursor Cloud specific instructions
 
 ### Product overview
-This repo is **J1m's Bot** — a retail checkout automation dashboard. The root is a
+This repo is **Vanta Beta** — a retail checkout automation dashboard (formerly
+J1m's Bot). The root is a
 TanStack Start + Vite + React 19 UI (run **locally** with Bun — not a public
 Lovable deploy). The **real checkout engine** is `executor/` on **Fly.io**
-(`j1ms-bot-executor`). `runner/` (legacy Electron), `desktop/` (local Kmart app),
-and `supabase/` are optional auxiliaries.
+(`j1ms-bot-executor`). `runner/` (legacy Electron), `desktop/` (**Vanta Beta**
+Windows app), and `supabase/` are optional auxiliaries.
 
-**What matters for Kmart:** Fly tip (`/health` → `gitSha`) via **Deploy executor**.
-Do **not** treat `*.lovable.app` as the product control plane or ask to “redeploy
-Lovable.” Cloud-agent smokes may hit a stale preview host that still has old
-`exec-test` secrets — ignore its `proxyUsed` labels; trust Fly `resolve_ip` /
-`proxySource` / milestones. Prefer Fly `/run` + `/milestones` (Bearer
-`EXECUTOR_TOKEN`) or local `bun run dev` → Fly.
+Windows beta users download from the admin **`/download`** page (GitHub Releases
+hosts `Vanta-Beta-Setup.exe`). Do **not** treat `*.lovable.app` as the product
+control plane.
 
 ### Kmart charge path (lock)
 Proven tip: undici one-client + ISP (`executor/resi.proxies`). Bank proof
@@ -46,8 +44,9 @@ Forward plan (Bandai → Hyper-native stores → CF/browser track):
     warnings. This is **expected and harmless** for local UI work — server admin data
     paths degrade gracefully. Only add that secret if you specifically need server-side
     Supabase admin operations.
-  - A "Welcome to J1m's Bot" wizard modal appears on first load; click **Skip** to
+  - A "Welcome to Vanta Beta" wizard modal appears on first load; click **Skip** to
     dismiss (completion is stored in localStorage).
+  - Windows desktop download for beta users: **`/download`** (one-button page).
   - `bun run lint` currently reports **many pre-existing** `prettier/prettier` and other
     errors across `executor/`, `runner/`, and `src/` (eslint lints the whole repo).
     These are pre-existing repo state, not a setup problem; `bun run format` would
@@ -93,9 +92,11 @@ Forward plan (Bandai → Hyper-native stores → CF/browser track):
   download fails (common on Fly via api.github.com 403). Dockerfile must curl the
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
   If `transport_select` shows `tls-worker init failed → undici`, check that bake.
-- **Proxies:** WealthProxies / IPFist / Supabase “Test Pool” are **dead** (subs
-  cancelled). Fly `/run` refuses those hosts → `executor/resi.proxies` or direct.
-  Do not gate runs on sticky/drift IP checks.
+- **Proxies:** WealthProxies AU sticky work with CapSolver (2026-08-16 Toymate
+  lab). IPFist stays refused. Baked `executor/resi.proxies` ISP egress works from
+  the client, but CapSolver’s DC often cannot CONNECT those exits — prefer
+  WealthProxies (or CapSolver-reachable stickies) for Toymate harvest. Do not
+  gate runs on sticky/drift IP checks.
 - **Capture:** milestones on Fly disk + `kmartMilestone` log lines survive client
   timeouts. Always use a stable `taskId`.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
@@ -109,11 +110,11 @@ Forward plan (Bandai → Hyper-native stores → CF/browser track):
   Cloud lab: `PORT=8081 EXECUTOR_TOKEN=devtoken HYPER_API_KEY=… node server.js`.
 - `runner/`: Electron **desktop GUI** app (`cd runner && npm install && npm run
   install-browsers && npm start`). Requires a display; not practical to run headless.
-- `desktop/`: **J1m's Bot desktop v1** — local Kmart checkout with profiles/proxies/tasks
+  - `desktop/`: **Vanta Beta** Windows app — local checkout with profiles/proxies/tasks
   on disk, API-key license (Whop-ready, not gated), localhost proxies. Spawns
   `executor/` as a sidecar so the Kmart flow stays identical to Fly.
   (`cd desktop && npm run setup && npm start` → **Start engine after every pull**).
   Desktop uses undici (`kmartMode=current`). **No Playwright** recovery ladder.
-  See `desktop/README.md`.
+  See `desktop/README.md`. Users install via dashboard **`/download`**.
 - Deployment / external wiring (Fly.io, Railway, Oxylabs, Browserless) is documented in
   `SETUP.md`.

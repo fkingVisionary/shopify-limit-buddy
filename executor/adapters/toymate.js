@@ -940,20 +940,88 @@ export const toymateAdapter = {
         product_id: String(pid),
         "qty[]": String(qty),
       });
-      const remoteRes = await request(`${apex}/remote/v1/cart/add`, {
-        method: "POST",
-        headers: {
-          ...stencilHeaders({ referer: productUrl, origin, jar: ctx.jar }),
-          "content-type": mp.contentType,
-        },
-        body: mp.body,
-      }, ctx);
-      const remoteText = await readText(remoteRes);
+      // High-traffic: retry remote ATC on 429/5xx before storefront fallback.
+      let remoteRes = null;
+      let remoteText = "";
       let remoteJson = null;
-      try {
-        remoteJson = remoteText ? JSON.parse(remoteText) : null;
-      } catch {
+      const atcAttempts = Math.max(1, Math.min(8, Number(task.toymateAtcRetries) || 6));
+      // Lab chaos (TOYMATE_CHAOS_*): simulate drop congestion — site rarely answers.
+      // First N ATC attempts force 429/503/timeout before the real request.
+      const chaosForced =
+        Math.max(0, Math.min(5, Number(process.env.TOYMATE_CHAOS_ATC_FAILS) || 0)) ||
+        (Number(process.env.TOYMATE_CHAOS_ATC || 0) > 0
+          ? Math.max(1, Math.min(4, Number(process.env.TOYMATE_CHAOS_ATC_MAX) || 2))
+          : 0);
+      const chaosStatus = Number(process.env.TOYMATE_CHAOS_ATC_STATUS) || 429;
+      const chaosDelayMs = Math.max(0, Number(process.env.TOYMATE_CHAOS_ATC_DELAY_MS) || 0);
+      let chaosInjected = 0;
+      for (let attempt = 0; attempt < atcAttempts; attempt++) {
+        if (attempt) await sleep(400 * attempt + 200, 150);
+        if (chaosDelayMs) await sleep(chaosDelayMs, Math.floor(chaosDelayMs * 0.3));
+        if (chaosForced > 0 && chaosInjected < chaosForced) {
+          chaosInjected += 1;
+          remoteRes = {
+            status: chaosStatus === 0 ? 0 : chaosStatus,
+            ok: false,
+            headers: { get: () => null },
+            text: async () =>
+              JSON.stringify({
+                error: "chaos_congestion",
+                message: "TOYMATE_CHAOS simulated high-traffic congestion",
+                attempt: chaosInjected,
+              }),
+          };
+          remoteText = await readText(remoteRes);
+          remoteJson = { error: "chaos_congestion", attempt: chaosInjected };
+          // Count as congested → continue retry loop.
+          continue;
+        }
+        remoteRes = await request(`${apex}/remote/v1/cart/add`, {
+          method: "POST",
+          headers: {
+            ...stencilHeaders({ referer: productUrl, origin, jar: ctx.jar }),
+            "content-type": mp.contentType,
+          },
+          body: mp.body,
+        }, ctx);
+        remoteText = await readText(remoteRes);
         remoteJson = null;
+        try {
+          remoteJson = remoteText ? JSON.parse(remoteText) : null;
+        } catch {
+          remoteJson = null;
+        }
+        const remoteCartIdTry =
+          remoteJson?.data?.cart_id ||
+          remoteJson?.data?.cartId ||
+          remoteJson?.cart_id ||
+          remoteJson?.cartId ||
+          (remoteText.match(/"cart_id"\s*:\s*"([0-9a-f-]{36})"/i) || [])[1] ||
+          null;
+        if (remoteCartIdTry && remoteRes.status >= 200 && remoteRes.status < 300) {
+          if (chaosInjected > 0) {
+            remoteJson = {
+              ...(remoteJson && typeof remoteJson === "object" ? remoteJson : {}),
+              _chaosSurvived: chaosInjected,
+            };
+          }
+          break;
+        }
+        const remoteErrTry = String(remoteJson?.error || remoteJson?.message || "");
+        if (
+          remoteRes.status >= 200 &&
+          remoteRes.status < 300 &&
+          /don't have enough|out of stock|sold out|not available|insufficient/i.test(remoteErrTry)
+        ) {
+          break; // terminal stock — don't retry
+        }
+        const congested =
+          remoteRes.status === 429 ||
+          remoteRes.status === 502 ||
+          remoteRes.status === 503 ||
+          remoteRes.status === 504 ||
+          remoteRes.status === 0;
+        if (!congested) break;
       }
       const remoteCartId =
         remoteJson?.data?.cart_id ||
@@ -964,14 +1032,19 @@ export const toymateAdapter = {
         null;
       const remoteItemId = remoteJson?.data?.cart_item?.id || remoteJson?.data?.cart_item_id || null;
       if (remoteCartId && remoteRes.status >= 200 && remoteRes.status < 300) {
+        const chaosNote =
+          remoteJson?._chaosSurvived > 0
+            ? ` (survived ${remoteJson._chaosSurvived} chaos ATC fails)`
+            : "";
         return {
           ok: true,
           status: remoteRes.status,
-          note: `remote ATC cart ${remoteCartId}`,
+          note: `remote ATC cart ${remoteCartId}${chaosNote}`,
           cartId: remoteCartId,
           itemId: remoteItemId,
           json: remoteJson,
           via: "remote",
+          chaosSurvived: remoteJson?._chaosSurvived || 0,
         };
       }
 
@@ -1382,7 +1455,9 @@ export const toymateAdapter = {
         orderNumber = http.orderNumber || null;
         paymentDeclined = Boolean(http.declined);
         paymentStatus = http.declined
-          ? "declined"
+          ? http.issuerLikely
+            ? "declined_insufficient_funds"
+            : "declined"
           : orderNumber
             ? "submitted"
             : http.ok
@@ -1396,6 +1471,11 @@ export const toymateAdapter = {
           status: http.status ?? null,
           note: `${http.note || "http place failed"}${logHint ? ` :: ${logHint}` : ""}`.slice(0, 320),
           declined: http.declined,
+          bigpay: http.bigpay || null,
+          bigpayCode: http.bigpayCode ?? http.bigpay?.code ?? null,
+          bigpayTitle: http.bigpayTitle ?? http.bigpay?.title ?? null,
+          issuerLikely: Boolean(http.issuerLikely),
+          bankProofLikely: Boolean(http.bankProofLikely),
           paymentLogs: (http.paymentLogs || []).slice(0, 12),
           via: "http",
         };
@@ -1411,7 +1491,7 @@ export const toymateAdapter = {
       return {
         ok: Boolean(orderNumber) || paymentDeclined || pay.ok,
         steps,
-        checkoutStage: orderNumber ? "order" : paymentDeclined ? "tokenize" : "tokenize",
+        checkoutStage: orderNumber ? "order" : paymentDeclined ? "declined" : "tokenize",
         dryRun: false,
         orderNumber,
         orderId: orderNumber,
@@ -1422,6 +1502,11 @@ export const toymateAdapter = {
         atcVia: cart.via || null,
         cartId: checkoutId,
         paymentLogs: pay.paymentLogs || [],
+        bigpay: pay.bigpay || null,
+        bigpayCode: pay.bigpayCode ?? null,
+        bigpayTitle: pay.bigpayTitle ?? null,
+        issuerLikely: Boolean(pay.issuerLikely),
+        bankProofLikely: Boolean(pay.bankProofLikely),
         bigpayAuthPosts: authPosts,
         chargeReqCount: authPosts || null,
         paymentAttempted: authPosts >= 1,

@@ -88,7 +88,10 @@ function isProxyFail(res) {
 }
 
 function isPaymentDeclined(res) {
-  if (!res || res.ok) return false;
+  if (!res) return false;
+  // Toymate / BigPay: adapter sets paymentDeclined with ok:true (wiring success).
+  if (res.paymentDeclined === true) return true;
+  if (res.ok) return false;
   const text = [
     stepText(res),
     res?.debugError,
@@ -106,12 +109,12 @@ function isPaymentDeclined(res) {
   // Soft "failed to process / try again" is NOT a hard decline (cart may still be held).
   if (
     /failed to process|try again|temporarily unavailable|processing error/i.test(text) &&
-    !/do.?not.?honor|chargeAuthReject|hard.?declin|declined_or_auth_failed/i.test(text)
+    !/do.?not.?honor|chargeAuthReject|hard.?declin|declined_or_auth_failed|30102|30106/i.test(text)
   ) {
     return false;
   }
   const summary = res?.paymentSummary || {};
-  if (/declin|chargeAuthReject|do.?not.?honor|card.*declin/i.test(text)) return true;
+  if (/declin|chargeAuthReject|do.?not.?honor|card.*declin|"code"\s*:\s*3010[26]/i.test(text)) return true;
   if (summary.processStatus === "error" || summary.acsOk === false) {
     // 3DS reject / process error after tokenize — consumer "declined"
     if (summary.oneTimeToken || summary.charge3dsId) return true;
@@ -199,6 +202,10 @@ function consumerOutcome(res) {
     }
     if (res.orderNumber) {
       return { code: "confirmed", label: OUTCOME.confirmed, stockStatus: "ok" };
+    }
+    // Toymate BigPay decline is ok:true + paymentDeclined — surface as declined.
+    if (isPaymentDeclined(res)) {
+      return { code: "declined", label: OUTCOME.declined, stockStatus: "ok" };
     }
     // HTTP PayPal mint — approve URL ready (not a charged order).
     if (

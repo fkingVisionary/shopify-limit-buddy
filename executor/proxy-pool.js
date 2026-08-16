@@ -113,8 +113,11 @@ export function pickResiProxy(overrideEntries = null) {
   return { proxy: cachedEntries[index], source, index, poolSize: cachedEntries.length };
 }
 
-/** Cancelled provider hosts — never use even if a CF/Lovable client still sends them. */
-const DEAD_PROXY_HOST_RE = /wealthproxies\.com|ipfist\.|ipfist\.com/i;
+/** Cancelled / known-bad provider hosts. ipfist stays refused.
+ *  WealthProxies were hard-refused when the old Supabase "Test Pool" sub died;
+ *  active residential.wealthproxies.com lines must be honored (sticky harvest
+ *  + desktop groups) — do not silently swap to baked ISP. */
+const DEAD_PROXY_HOST_RE = /ipfist\.|ipfist\.com/i;
 
 export function isDeadProxyUrl(raw) {
   return DEAD_PROXY_HOST_RE.test(String(raw || ""));
@@ -126,8 +129,8 @@ export function isDeadProxyUrl(raw) {
  * when useProxy:true → null (direct).
  *
  * Control plane is a Cloudflare Worker (Lovable); checkout engine is Fly.
- * Older CF builds still inject Supabase "Test Pool" (WealthProxies) — refuse
- * those here so Fly can fall through to resi.proxies / direct.
+ * ipfist stays refused. WealthProxies are allowed again when the user supplies
+ * an active residential sub (sticky harvest / desktop groups).
  */
 export function resolveRunProxy({ proxy, proxies, proxyEntries, useProxy } = {}) {
   const explicit = typeof proxy === "string" && proxy.trim() ? proxy.trim() : null;

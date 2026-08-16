@@ -1,0 +1,58 @@
+{
+  "appId": "com.vanta.beta.desktop",
+  "productName": "Vanta Beta",
+  "copyright": "Copyright © Vanta",
+  "directories": {
+    "output": "release",
+    "buildResources": "buildResources"
+  },
+  "files": [
+    "**/*",
+    "!release/**",
+    "!build/**",
+    "!scripts/**",
+    "!**/*.test.cjs",
+    "!**/*.int.test.cjs",
+    "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+    "!**/node_modules/.cache/**"
+  ],
+  "extraResources": [
+    {
+      "from": "build/win-resources/executor",
+      "to": "executor",
+      "filter": ["**/*"]
+    },
+    {
+      "from": "build/win-resources/node",
+      "to": "node",
+      "filter": ["**/*"]
+    }
+  ],
+  "asar": true,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "Vanta-Beta-Setup-${version}-${arch}.${ext}",
+    "signAndEditExecutable": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "Vanta Beta",
+    "deleteAppDataOnUninstall": false,
+    "artifactName": "Vanta-Beta-Setup.exe"
+  },
+  "portable": {
+    "artifactName": "Vanta-Beta-Portable.exe"
+  }
+}
