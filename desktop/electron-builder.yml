@@ -29,6 +29,14 @@
     }
   ],
   "asar": true,
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "fkingVisionary",
+      "repo": "shopify-limit-buddy",
+      "releaseType": "release"
+    }
+  ],
   "win": {
     "target": [
       {

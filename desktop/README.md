@@ -13,14 +13,12 @@ npm start
 
 ## Windows installer (beta users)
 
-Non-technical users should **not** use this folder. Send them to the admin
-dashboard:
+Non-technical users should **not** use this folder. Send them to:
 
-**`https://<your-dashboard>/download`**
+**`https://<monitor-or-dashboard>/download`**
 
-That page has one big **Download Vanta Beta** button. The file is published via
-GitHub Releases (`Vanta-Beta-Setup.exe`) by the **Build desktop Windows**
-workflow.
+That page has one big **Download Vanta Beta** button. Releases publish
+`Vanta-Beta-Setup.exe` + `latest.yml` so the **installed** app can auto-update.
 
 Operators:
 
@@ -28,18 +26,20 @@ Operators:
 cd desktop
 npm ci
 npm run dist:win
-# → release/Vanta-Beta-Setup.exe
-# → release/Vanta-Beta-Portable.exe
 ```
 
-Then run the workflow (or tag `vanta-v*`) so `/download` resolves to the latest
-release. Optional Railway override: `VANTA_WIN_SETUP_URL=https://…/Vanta-Beta-Setup.exe`.
+Bump `version` in `desktop/package.json` before shipping so updaters see a newer build.
+
+## Security lock (anti-intercept)
+
+If HTTP Toolkit, Fiddler, Charles, mitmproxy, Wireshark, etc. are detected
+(or TLS key-log / local MITM proxy env), **all tasks and harvest stop** until
+the tooling is closed. This is a product integrity gate against signal scraping.
 
 ## API key
 
-Settings → paste API key from the dashboard. Empty control plane URL = local open
-mode. With a control plane URL, the app calls
-`POST /api/public/desktop/validate-key`.
+Settings → paste API key. Empty control plane URL = local open mode. With a
+control plane / monitor URL, the app calls `POST /api/public/desktop/validate-key`.
 
 ## Toymate / Bandai / Kmart
 

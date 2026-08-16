@@ -108,6 +108,21 @@ select { font: inherit; }
 .win-btn:hover { background: var(--panel-hover); color: var(--fg); }
 .win-btn.win-close:hover { background: #c45c5c; color: #fff; }
 
+.integrity-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  padding: 10px 16px;
+  background: #3b1212;
+  border-bottom: 1px solid #7a2a2a;
+  color: #ffd0d0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.integrity-banner[hidden] { display: none !important; }
+.integrity-banner strong { color: #fff; font-weight: 650; }
+
 /* ?? Top nav ?? */
 .topnav {
   height: var(--topnav-h);

@@ -264,10 +264,26 @@ document.body.addEventListener("click", (e) => {
 function engineUi() {
   const eng = state?.engine || {};
   const run = state?.runner || {};
+  const integrity = state?.integrity || {};
+  const updates = state?.updates || {};
   const dot = $("engineDot");
   const label = $("engineLabel");
   const retry = $("btnRetryEngine");
-  if (eng.running && run.inflight > 0) {
+  const banner = $("integrityBanner");
+  const bannerMsg = $("integrityBannerMsg");
+  if (banner) {
+    banner.hidden = !integrity.blocked;
+    if (bannerMsg && integrity.blocked) {
+      bannerMsg.textContent =
+        (integrity.reasons && integrity.reasons[0]) ||
+        "Network capture / MITM tooling detected — all tasks blocked until it is closed.";
+    }
+  }
+  if (integrity.blocked) {
+    dot.className = "dot";
+    label.textContent = "Security lock — capture tool detected";
+    if (retry) retry.hidden = true;
+  } else if (eng.running && run.inflight > 0) {
     dot.className = "dot busy";
     label.textContent = `Engine on · ${run.inflight} in flight · ${run.queued} queued`;
     if (retry) retry.hidden = true;
@@ -283,7 +299,9 @@ function engineUi() {
   }
   const engineLine = $("homeEngineLine");
   if (engineLine) {
-    if (eng.running) {
+    if (integrity.blocked) {
+      engineLine.textContent = "Security lock active — close HTTP Toolkit / Fiddler / Charles / Wireshark, then retry.";
+    } else if (eng.running) {
       engineLine.textContent = eng.hyperConfigured
         ? "Engine ready · checkout keys ready"
         : "Engine ready";
@@ -291,6 +309,20 @@ function engineUi() {
       engineLine.textContent = "Engine starting… save Settings or hit Retry if it stalls.";
     }
   }
+  const updateMsg = $("updateMsg");
+  const btnInstall = $("btnQuitInstallUpdate");
+  if (updateMsg) {
+    if (updates.downloaded) {
+      updateMsg.textContent = `Update ${updates.version || ""} downloaded — restart to install.`;
+    } else if (updates.available) {
+      updateMsg.textContent = `Update ${updates.version || ""} available — downloading…`;
+    } else if (updates.supported) {
+      updateMsg.textContent = `Current ${updates.currentVersion || ""} · auto-checks GitHub Releases.`;
+    } else {
+      updateMsg.textContent = "Auto-update runs in the installed Windows app (not npm start).";
+    }
+  }
+  if (btnInstall) btnInstall.hidden = !updates.downloaded;
 }
 
 function profilesInGroup(groupName) {
@@ -4288,6 +4320,26 @@ $("btnValidate").onclick = async () => {
   if (res.snapshot) applyState(res.snapshot);
   appendLog(esc(res.message || (res.ok ? "OK" : "Invalid")), res.ok ? "ok" : "err");
 };
+
+if ($("btnCheckUpdates")) {
+  $("btnCheckUpdates").onclick = async () => {
+    const res = await window.desktop.checkUpdates();
+    if (res?.status && state) {
+      state.updates = res.status;
+      engineUi();
+    }
+    appendLog(
+      esc(res?.ok ? "Update check finished" : res?.error || "Update check failed"),
+      res?.ok ? "ok" : "err",
+    );
+  };
+}
+if ($("btnQuitInstallUpdate")) {
+  $("btnQuitInstallUpdate").onclick = async () => {
+    const res = await window.desktop.quitAndInstallUpdate();
+    if (!res?.ok) appendLog(esc(res?.error || "Install failed"), "err");
+  };
+}
 
 document.body.addEventListener("click", async (e) => {
   const btn = e.target instanceof HTMLElement ? e.target.closest("[data-discord-test]") : null;

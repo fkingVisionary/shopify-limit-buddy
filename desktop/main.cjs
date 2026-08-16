@@ -40,6 +40,8 @@ const store = require("./store.cjs");
 const sidecar = require("./executor-sidecar.cjs");
 const runner = require("./job-runner.cjs");
 const license = require("./license.cjs");
+const integrityGuard = require("./integrity-guard.cjs");
+const autoUpdate = require("./auto-update.cjs");
 const { createHarvestPool } = require("./toymate-harvest.cjs");
 const { resolveAccountForTask, emailBase } = require("./account-assign.cjs");
 const {
@@ -605,6 +607,68 @@ function send(evt) {
   } catch {
     /* window tearing down */
   }
+}
+
+/** Scan for MITM / packet-capture tools. On hit: stop everything, refuse new work. */
+function enforceIntegrityClear({ announce = true } = {}) {
+  const prev = integrityGuard.getIntegrityStatus();
+  const wasBlocked = Boolean(prev.blocked);
+  const scan = integrityGuard.scanIntegrity();
+  if (!scan.blocked) {
+    if (wasBlocked && announce) {
+      send({
+        type: "job",
+        phase: "log",
+        level: "ok",
+        message: "Security lock cleared — capture tooling no longer detected",
+      });
+      send({ type: "snapshot", data: snapshot() });
+    }
+    return { ok: true, scan };
+  }
+  try {
+    runner.stop();
+  } catch {
+    /* ignore */
+  }
+  try {
+    harvest.stop?.();
+  } catch {
+    /* ignore */
+  }
+  try {
+    bandaiHarvest.stop?.();
+  } catch {
+    /* ignore */
+  }
+  try {
+    disneyHarvest.stop?.();
+  } catch {
+    /* ignore */
+  }
+  if (announce && (!wasBlocked || (prev.reasons || []).join("|") !== (scan.reasons || []).join("|"))) {
+    send({
+      type: "job",
+      phase: "log",
+      level: "err",
+      message: `Security lock: ${(scan.reasons || []).slice(0, 2).join("; ") || "intercept tooling detected"} — all tasks stopped`,
+    });
+    send({ type: "snapshot", data: snapshot() });
+  }
+  return {
+    ok: false,
+    error:
+      "Security lock: network capture / MITM tooling detected — close HTTP Toolkit / Fiddler / Charles / mitmproxy / Wireshark etc., then retry",
+    code: "VANTA_INTEGRITY_BLOCK",
+    reasons: scan.reasons || [],
+    snapshot: snapshot(),
+  };
+}
+
+function integrityBlockedResponse() {
+  const gate = enforceIntegrityClear({ announce: true });
+  if (gate.ok) return null;
+  return gate;
 }
 
 function persistDb() {
@@ -1213,6 +1277,7 @@ function snapshot() {
         countdown: formatCountdown(msUntil(dropSchedule.atMs)),
       }
     : { armed: false };
+  const integrity = integrityGuard.getIntegrityStatus();
   return {
     settings: {
       ...state.settings,
@@ -1237,6 +1302,12 @@ function snapshot() {
     accounts: (state.db.accounts || []).slice(0, 500),
     runner: runner.state(),
     engine: sidecar.status(),
+    integrity: {
+      blocked: Boolean(integrity.blocked),
+      reasons: integrity.reasons || [],
+      checkedAt: integrity.checkedAt || null,
+    },
+    updates: autoUpdate.getUpdateStatus(),
     harvest: harvest.snapshot(),
     bandaiHarvest: bandaiHarvest.snapshot(),
     disneyHarvest: disneyHarvest.snapshot(),
@@ -1796,7 +1867,19 @@ ipcMain.handle("desktop:validate-license", async () => {
   return { ...res, snapshot: snapshot() };
 });
 
+ipcMain.handle("desktop:integrity-status", () => {
+  const scan = integrityGuard.scanIntegrity();
+  return { ok: true, ...scan, snapshot: snapshot() };
+});
+
+ipcMain.handle("desktop:check-updates", async () => autoUpdate.checkForUpdates());
+
+ipcMain.handle("desktop:quit-and-install-update", () => autoUpdate.quitAndInstall());
+
 async function bootEngine() {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
+
   if (sidecar.status().running) {
     return { ok: true, already: true, snapshot: snapshot() };
   }
@@ -1941,6 +2024,8 @@ ipcMain.handle("desktop:disney-harvest-configure", (_e, patch) => {
 });
 
 ipcMain.handle("desktop:disney-harvest-start", async (_e, opts = {}) => {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
   const hyper = String(state.settings.hyperApiKey || "").trim();
   const capsolver = String(state.settings.capsolverApiKey || "").trim();
   if (!hyper) {
@@ -2012,6 +2097,8 @@ ipcMain.handle("desktop:bandai-harvest-configure", (_e, patch) => {
 });
 
 ipcMain.handle("desktop:bandai-harvest-start", async (_e, opts = {}) => {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
   if (!sidecar.status().running) {
     return {
       ok: false,
@@ -2077,6 +2164,8 @@ ipcMain.handle("desktop:harvest-configure", (_e, patch) => {
 });
 
 ipcMain.handle("desktop:harvest-start", async (_e, opts = {}) => {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
   const capsolver = String(state.settings.capsolverApiKey || "").trim();
   if (!capsolver) {
     return { ok: false, error: "Set CapSolver API key in Settings first", snapshot: snapshot() };
@@ -2923,6 +3012,8 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
  * (monitor → checkout handoff, or watchdog on an idle Autocheckout/ATC lane).
  */
 function enqueueGlobalMonitorCheckout(checkoutTask) {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
   if (!sidecar.status().running) {
     return { ok: false, error: "engine not running" };
   }
@@ -3028,6 +3119,9 @@ function enqueueGlobalMonitorCheckout(checkoutTask) {
  * Build + enqueue jobs for task ids. Supports staggered fire for drop T0.
  */
 function enqueueTaskIds(taskIds, opts = {}) {
+  const blocked = integrityBlockedResponse();
+  if (blocked) return blocked;
+
   if (!sidecar.status().running) {
     return { ok: false, error: "Start the engine first (app must stay open)" };
   }
@@ -4641,6 +4735,15 @@ app.whenReady().then(async () => {
   }
 
   createWindow();
+
+  // Integrity: block HTTP Toolkit / MITM / packet capture system-wide.
+  enforceIntegrityClear({ announce: true });
+  setInterval(() => {
+    enforceIntegrityClear({ announce: true });
+  }, 8_000).unref?.();
+
+  // Packaged NSIS builds: GitHub Releases auto-update.
+  autoUpdate.initAutoUpdater({ send });
 
   // Engine boots with the app — users shouldn't manage Start/Stop.
   setTimeout(() => {
