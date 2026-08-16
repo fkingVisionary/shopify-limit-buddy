@@ -618,6 +618,9 @@ export async function placeOrderViaHttp({
         body: payBodyStr,
         // Shared dual-Revolut rule: never replay a pay POST on socket flake.
         retry: false,
+        // WealthProxies / resi BigPay: undici is the proven decline path
+        // (tls-worker timed out on payments.bigcommerce.com 2026-08-16).
+        issuerTransport: "undici",
       },
       ctx,
     );
@@ -729,6 +732,8 @@ export async function placeOrderViaHttp({
               referer: `${apex}/checkout`,
             },
             body: cseBodyStr,
+            retry: false,
+            issuerTransport: "undici",
           },
           ctx,
         );

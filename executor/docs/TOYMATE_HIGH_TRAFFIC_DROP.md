@@ -108,6 +108,16 @@ node --test desktop/toymate-harvest.test.cjs
 | Engine concurrency | Settings `maxConcurrent` | Must cover simultaneous `/run` |
 | ATC retries | `task.toymateAtcRetries` | Default 4; congestion only |
 | Executor cap | `MAX_CONCURRENT` (sidecar) | Default 120 — harvest counts as inflight |
+| BigPay TLS | (fixed undici) | Do not force `PAY_ISSUER_TLS_WORKER` for Toymate — tls-worker times out on WealthProxies issuer |
+
+### Proxies (2026-08-16 lab)
+
+| Provider | Egress | CapSolver AntiCloudflare | Notes |
+|----------|--------|--------------------------|-------|
+| WealthProxies AU sticky | OK | OK (retry on flake) | Use for drop bank + checkout |
+| Baked `resi.proxies` ISP | OK from desktop | **Refuse** from CapSolver DC | Keep for non-CF paths; not CapSolver mint |
+
+Hard-refuse of WealthProxies was removed so sticky harvest sessions are not silently swapped to ISP.
 
 ---
 
@@ -115,4 +125,4 @@ node --test desktop/toymate-harvest.test.cjs
 
 - No Hyper / Akamai / Paydock. No Playwright in module place-order.
 - Do not gate Kmart on CapSolver; do not gate Toymate on Hyper.
-- Dead proxy hosts (WealthProxies / IPFist) stay refused — use sticky AU ISP/resi.
+- IPFist stays refused. WealthProxies OK when the sub is live — sticky AU session lines recommended.

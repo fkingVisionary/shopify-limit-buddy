@@ -1,38 +1,40 @@
 {
-  "at": "2026-07-26T00:29:56.559Z",
+  "at": "2026-08-16T03:22:39.780Z",
   "start": {
     "pdp": "https://toymate.com.au/products.php?productId=53116",
-    "proxyHost": "proxy-as1.noontideproxy.com",
-    "exitIp": "49.191.129.18",
+    "proxyHost": "residential.wealthproxies.com",
+    "exitIp": "121.200.4.145",
     "cardSynthetic": true
   },
   "harvest": {
     "ok": true,
-    "ms": 54080,
+    "ms": 24457,
     "hasCf": true,
     "hasSpam": true,
     "cfNote": "cf_clearance minted",
     "spamNote": "ok via proxy",
-    "spamMs": 13076
+    "spamMs": 4234
   },
   "harvested": {
     "label": "harvested",
     "harvested": true,
-    "wallMs": 35945,
+    "wallMs": 23542,
     "paymentDeclined": true,
     "orderNumber": null,
     "checkoutStage": "tokenize",
     "error": null,
     "failedStep": null,
-    "placeNote": "{\"id\":\"0e274065-4cb9-4b57-9d40-708cb7346eb2\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co",
-    "cfNote": "harvested cf_clearance age=0s host=proxy-as1.noontideproxy.com",
+    "placeNote": "{\"id\":\"40ef0622-7b60-4d80-8b28-2b99b45f59dd\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co",
+    "bigpayCode": 30102,
+    "bankProofLikely": false,
+    "cfNote": "harvested cf_clearance age=0s host=residential.wealthproxies.com",
     "cfMs": 0,
     "spamNote": "spam 200 via rest",
-    "spamMs": 1299,
-    "captchaCriticalMs": 1299,
-    "placeMs": 14475,
+    "spamMs": 992,
+    "captchaCriticalMs": 992,
+    "placeMs": 11819,
     "timing": {
-      "totalMs": 35945,
+      "totalMs": 23542,
       "steps": [
         {
           "step": "cf_warm",
@@ -41,84 +43,84 @@
         },
         {
           "step": "account_login",
-          "ms": 5477,
+          "ms": 2164,
           "ok": true
         },
         {
           "step": "pdp_get",
-          "ms": 2011,
+          "ms": 734,
           "ok": true
         },
         {
           "step": "cart_add",
-          "ms": 1328,
+          "ms": 813,
           "ok": true
         },
         {
           "step": "checkout_get",
-          "ms": 1001,
+          "ms": 578,
           "ok": true
         },
         {
           "step": "checkout_set_address",
-          "ms": 2418,
+          "ms": 1623,
           "ok": true
         },
         {
           "step": "checkout_set_billing",
-          "ms": 3413,
+          "ms": 1495,
           "ok": true
         },
         {
           "step": "checkout_spam",
-          "ms": 1299,
+          "ms": 992,
           "ok": true
         },
         {
           "step": "place_order_gate",
-          "ms": 1,
+          "ms": 0,
           "ok": true
         },
         {
           "step": "payment_methods",
-          "ms": 4049,
+          "ms": 3068,
           "ok": true
         },
         {
           "step": "place_order",
-          "ms": 14475,
+          "ms": 11819,
           "ok": true
         }
       ],
       "slowest": [
         {
           "step": "place_order",
-          "ms": 14475,
-          "ok": true
-        },
-        {
-          "step": "account_login",
-          "ms": 5477,
+          "ms": 11819,
           "ok": true
         },
         {
           "step": "payment_methods",
-          "ms": 4049,
+          "ms": 3068,
           "ok": true
         },
         {
-          "step": "checkout_set_billing",
-          "ms": 3413,
+          "step": "account_login",
+          "ms": 2164,
           "ok": true
         },
         {
           "step": "checkout_set_address",
-          "ms": 2418,
+          "ms": 1623,
           "ok": true
         },
         {
-          "step": "pdp_get",
-          "ms": 2011,
+          "step": "checkout_set_billing",
+          "ms": 1495,
+          "ok": true
+        },
+        {
+          "step": "checkout_spam",
+          "ms": 992,
           "ok": true
         }
       ]
@@ -129,243 +131,55 @@
         "ok": true,
         "status": 200,
         "ms": 0,
-        "note": "harvested cf_clearance age=0s host=proxy-as1.noontideproxy.com"
+        "note": "harvested cf_clearance age=0s host=residential.wealthproxies.com"
       },
       {
         "step": "account_login",
         "ok": true,
         "status": 302,
-        "ms": 5477,
+        "ms": 2164,
         "note": "logged in proof3+mrv40gx11rzw@bullposted.com (+sf csrf)"
       },
       {
         "step": "pdp_get",
         "ok": true,
         "status": 200,
-        "ms": 2011,
+        "ms": 734,
         "note": "productId=53116 variant=53101"
       },
       {
         "step": "cart_add",
         "ok": true,
         "status": 200,
-        "ms": 1328,
-        "note": "remote ATC cart 1c169db1-df84-4ac9-9774-cd2235de993a"
+        "ms": 813,
+        "note": "remote ATC cart b13cda4b-0e2c-4d06-b429-7bd7463151e3"
       },
       {
         "step": "checkout_get",
         "ok": true,
         "status": 200,
-        "ms": 1001,
+        "ms": 578,
         "note": "checkout 200"
       },
       {
         "step": "checkout_set_address",
         "ok": true,
         "status": 200,
-        "ms": 2418,
+        "ms": 1623,
         "note": "shipping option 12c9e054848593c98ded9cf3e5e5c516"
       },
       {
         "step": "checkout_set_billing",
         "ok": true,
         "status": 200,
-        "ms": 3413,
+        "ms": 1495,
         "note": "billing 200"
       },
       {
         "step": "checkout_spam",
         "ok": true,
         "status": 200,
-        "ms": 1299,
-        "note": "spam 200 via rest"
-      },
-      {
-        "step": "place_order_gate",
-        "ok": true,
-        "status": null,
-        "ms": 1,
-        "note": "placeOrder armed \u2014 Adyen scheme via HTTP (no Playwright)"
-      },
-      {
-        "step": "payment_methods",
-        "ok": true,
-        "status": 200,
-        "ms": 4049,
-        "note": "card method scheme/adyenv3"
-      },
-      {
-        "step": "place_order",
-        "ok": true,
-        "status": 422,
-        "ms": 14475,
-        "note": "{\"id\":\"0e274065-4cb9-4b57-9d40-708cb7346eb2\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co"
-      }
-    ]
-  },
-  "baseline": {
-    "label": "baseline",
-    "harvested": false,
-    "wallMs": 143603,
-    "paymentDeclined": true,
-    "orderNumber": null,
-    "checkoutStage": "tokenize",
-    "error": null,
-    "failedStep": null,
-    "placeNote": "{\"id\":\"96d808c4-80ba-4947-97b3-2357720034f4\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co",
-    "cfNote": "cf_clearance ok (cf_clearance minted); warm=https://www.toymate.com.au/; post=200",
-    "cfMs": 43638,
-    "spamNote": "spam 200 via rest",
-    "spamMs": 69290,
-    "captchaCriticalMs": 112928,
-    "placeMs": 13239,
-    "timing": {
-      "totalMs": 143603,
-      "steps": [
-        {
-          "step": "cf_warm",
-          "ms": 43638,
-          "ok": true
-        },
-        {
-          "step": "account_login",
-          "ms": 2902,
-          "ok": true
-        },
-        {
-          "step": "pdp_get",
-          "ms": 2128,
-          "ok": true
-        },
-        {
-          "step": "cart_add",
-          "ms": 1235,
-          "ok": true
-        },
-        {
-          "step": "checkout_get",
-          "ms": 1006,
-          "ok": true
-        },
-        {
-          "step": "checkout_set_address",
-          "ms": 2734,
-          "ok": true
-        },
-        {
-          "step": "checkout_set_billing",
-          "ms": 3321,
-          "ok": true
-        },
-        {
-          "step": "checkout_spam",
-          "ms": 69290,
-          "ok": true
-        },
-        {
-          "step": "place_order_gate",
-          "ms": 0,
-          "ok": true
-        },
-        {
-          "step": "payment_methods",
-          "ms": 3826,
-          "ok": true
-        },
-        {
-          "step": "place_order",
-          "ms": 13239,
-          "ok": true
-        }
-      ],
-      "slowest": [
-        {
-          "step": "checkout_spam",
-          "ms": 69290,
-          "ok": true
-        },
-        {
-          "step": "cf_warm",
-          "ms": 43638,
-          "ok": true
-        },
-        {
-          "step": "place_order",
-          "ms": 13239,
-          "ok": true
-        },
-        {
-          "step": "payment_methods",
-          "ms": 3826,
-          "ok": true
-        },
-        {
-          "step": "checkout_set_billing",
-          "ms": 3321,
-          "ok": true
-        },
-        {
-          "step": "account_login",
-          "ms": 2902,
-          "ok": true
-        }
-      ]
-    },
-    "steps": [
-      {
-        "step": "cf_warm",
-        "ok": true,
-        "status": 200,
-        "ms": 43638,
-        "note": "cf_clearance ok (cf_clearance minted); warm=https://www.toymate.com.au/; post=200"
-      },
-      {
-        "step": "account_login",
-        "ok": true,
-        "status": 302,
-        "ms": 2902,
-        "note": "logged in proof3+mrv40gx11rzw@bullposted.com (+sf csrf)"
-      },
-      {
-        "step": "pdp_get",
-        "ok": true,
-        "status": 200,
-        "ms": 2128,
-        "note": "productId=53116 variant=53101"
-      },
-      {
-        "step": "cart_add",
-        "ok": true,
-        "status": 200,
-        "ms": 1235,
-        "note": "remote ATC cart 1f2b0dbf-bc7c-40ab-ab00-f3c80c08e970"
-      },
-      {
-        "step": "checkout_get",
-        "ok": true,
-        "status": 200,
-        "ms": 1006,
-        "note": "checkout 200"
-      },
-      {
-        "step": "checkout_set_address",
-        "ok": true,
-        "status": 200,
-        "ms": 2734,
-        "note": "shipping option 12c9e054848593c98ded9cf3e5e5c516"
-      },
-      {
-        "step": "checkout_set_billing",
-        "ok": true,
-        "status": 200,
-        "ms": 3321,
-        "note": "billing 200"
-      },
-      {
-        "step": "checkout_spam",
-        "ok": true,
-        "status": 200,
-        "ms": 69290,
+        "ms": 992,
         "note": "spam 200 via rest"
       },
       {
@@ -373,43 +187,47 @@
         "ok": true,
         "status": null,
         "ms": 0,
-        "note": "placeOrder armed \u2014 Adyen scheme via HTTP (no Playwright)"
+        "note": "placeOrder armed — Adyen scheme via HTTP (no Playwright)"
       },
       {
         "step": "payment_methods",
         "ok": true,
         "status": 200,
-        "ms": 3826,
+        "ms": 3068,
         "note": "card method scheme/adyenv3"
       },
       {
         "step": "place_order",
         "ok": true,
         "status": 422,
-        "ms": 13239,
-        "note": "{\"id\":\"96d808c4-80ba-4947-97b3-2357720034f4\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co"
+        "ms": 11819,
+        "note": "{\"id\":\"40ef0622-7b60-4d80-8b28-2b99b45f59dd\",\"status\":422,\"code\":30102,\"title\":\"The payment was declined.\",\"type\":\"https://developer.bigcommerce.com/docs/ZG9jOjIyMDYwNg-api-status- :: checkout_boot:200 | methods:200 | co"
       }
     ]
   },
+  "baseline": null,
   "compare": {
     "phase": "compare",
-    "harvestMs": 54080,
-    "harvestedCheckoutMs": 35945,
-    "harvestedCaptchaCriticalMs": 1299,
-    "harvestedCfNote": "harvested cf_clearance age=0s host=proxy-as1.noontideproxy.com",
+    "harvestMs": 24457,
+    "harvestedCheckoutMs": 23542,
+    "harvestedCaptchaCriticalMs": 992,
+    "harvestedCfNote": "harvested cf_clearance age=0s host=residential.wealthproxies.com",
     "harvestedSpamNote": "spam 200 via rest",
-    "baselineCheckoutMs": 143603,
-    "baselineCaptchaCriticalMs": 112928,
-    "baselineCfMs": 43638,
-    "baselineSpamMs": 69290,
-    "checkoutSavingsMs": 107658,
-    "harvestThenCheckoutMs": 90025,
+    "baselineCheckoutMs": null,
+    "baselineCaptchaCriticalMs": null,
+    "baselineCfMs": null,
+    "baselineSpamMs": null,
+    "checkoutSavingsMs": null,
+    "harvestThenCheckoutMs": 47999,
     "harvestedPaymentDeclined": true,
-    "baselinePaymentDeclined": true,
-    "speedup": 4,
+    "baselinePaymentDeclined": null,
     "cardSynthetic": true,
     "cardLast4": "0002",
-    "note": "Synthetic Visa \u2192 BigPay 30102 is wiring-only; no Revolut/issuer ping expected. Set TOYMATE_CARD_* for bank proof (historically 30106).",
-    "bankProof": false
+    "harvestedBigpayCode": 30102,
+    "harvestedBankProofLikely": false,
+    "baselineBigpayCode": null,
+    "baselineBankProofLikely": null,
+    "note": "Synthetic Visa → BigPay 30102 is wiring-only; no Revolut/issuer ping expected. Set TOYMATE_CARD_* for bank proof (historically 30106).",
+    "speedup": null
   }
 }

@@ -64,6 +64,7 @@ export async function harvestToymateSession({
   proxyRaw,
   solveSpam = true,
   spamSitekey = TOYMATE_SPAM_SITEKEY,
+  maxCfAttempts = 3,
 } = {}) {
   const t0 = Date.now();
   if (!capsolverKey()) {
@@ -74,6 +75,35 @@ export async function harvestToymateSession({
     return { ok: false, error: "proxy required (sticky AU ISP/resi)", ms: 0 };
   }
 
+  const attempts = Math.max(1, Math.min(5, Number(maxCfAttempts) || 3));
+  let lastFail = null;
+
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt) await sleep(800 * attempt + 400);
+    const out = await harvestToymateSessionOnce({
+      proxyUrl,
+      solveSpam,
+      spamSitekey,
+      t0,
+      attempt,
+    });
+    if (out.ok) return out;
+    lastFail = out;
+    const err = String(out.error || "");
+    const retryable =
+      /ERROR_INVALID_TASK_DATA|ERROR_PROXY|proxy timeout|proxy connect|timeout/i.test(err);
+    if (!retryable) return out;
+  }
+  return lastFail || { ok: false, error: "harvest failed", ms: Date.now() - t0 };
+}
+
+async function harvestToymateSessionOnce({
+  proxyUrl,
+  solveSpam,
+  spamSitekey,
+  t0,
+  attempt = 0,
+}) {
   const dispatcher = makeDispatcher(proxyUrl, { forceUndici: true });
   const jar = createJar();
   const ctx = { dispatcher, jar, extraHeaders: {} };
@@ -125,6 +155,7 @@ export async function harvestToymateSession({
           ok: false,
           error: solved.error || "CF solve failed",
           ms: Date.now() - t0,
+          attempt,
         };
       }
       applyCookiesToJar(jar, solved.cookies);
@@ -141,16 +172,17 @@ export async function harvestToymateSession({
           ok: false,
           error: "CF still challenging after CapSolver solve",
           ms: Date.now() - t0,
+          attempt,
         };
       }
       status = res2.status;
     } else if (lastErr && !html) {
-      return { ok: false, error: `warm fetch failed: ${lastErr}`, ms: Date.now() - t0 };
+      return { ok: false, error: `warm fetch failed: ${lastErr}`, ms: Date.now() - t0, attempt };
     }
 
     const cookies = jar.dump?.() || {};
     if (!cookies.cf_clearance && challenged) {
-      return { ok: false, error: "cf_clearance missing after solve", ms: Date.now() - t0 };
+      return { ok: false, error: "cf_clearance missing after solve", ms: Date.now() - t0, attempt };
     }
 
     let captchaToken = null;
@@ -209,10 +241,11 @@ export async function harvestToymateSession({
         spamNote,
         spamMs,
         status,
+        attempt,
       },
     };
   } catch (e) {
-    return { ok: false, error: e?.message || String(e), ms: Date.now() - t0 };
+    return { ok: false, error: e?.message || String(e), ms: Date.now() - t0, attempt };
   } finally {
     try {
       await dispatcher.close?.();

@@ -93,9 +93,11 @@ Forward plan (Bandai → Hyper-native stores → CF/browser track):
   download fails (common on Fly via api.github.com 403). Dockerfile must curl the
   pinned release asset into `/app/vendor/tls-client-x64.so` and seed `TMPDIR`.
   If `transport_select` shows `tls-worker init failed → undici`, check that bake.
-- **Proxies:** WealthProxies / IPFist / Supabase “Test Pool” are **dead** (subs
-  cancelled). Fly `/run` refuses those hosts → `executor/resi.proxies` or direct.
-  Do not gate runs on sticky/drift IP checks.
+- **Proxies:** WealthProxies AU sticky work with CapSolver (2026-08-16 Toymate
+  lab). IPFist stays refused. Baked `executor/resi.proxies` ISP egress works from
+  the client, but CapSolver’s DC often cannot CONNECT those exits — prefer
+  WealthProxies (or CapSolver-reachable stickies) for Toymate harvest. Do not
+  gate runs on sticky/drift IP checks.
 - **Capture:** milestones on Fly disk + `kmartMilestone` log lines survive client
   timeouts. Always use a stable `taskId`.
 - Deploy workflow may run `direct-cart-gate.sh` as **advisory** (`continue-on-error`);
