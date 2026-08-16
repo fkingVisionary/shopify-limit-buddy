@@ -944,7 +944,7 @@ export const toymateAdapter = {
       let remoteRes = null;
       let remoteText = "";
       let remoteJson = null;
-      const atcAttempts = Math.max(1, Math.min(6, Number(task.toymateAtcRetries) || 4));
+      const atcAttempts = Math.max(1, Math.min(8, Number(task.toymateAtcRetries) || 6));
       // Lab chaos (TOYMATE_CHAOS_*): simulate drop congestion — site rarely answers.
       // First N ATC attempts force 429/503/timeout before the real request.
       const chaosForced =

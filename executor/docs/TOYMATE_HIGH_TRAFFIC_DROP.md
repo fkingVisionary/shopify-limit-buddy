@@ -117,7 +117,22 @@ node --test desktop/toymate-harvest.test.cjs
 | WealthProxies AU sticky | OK | OK (retry on flake) | Use for drop bank + checkout |
 | Baked `resi.proxies` ISP | OK from desktop | **Refuse** from CapSolver DC | Keep for non-CF paths; not CapSolver mint |
 
-## High-traffic sim (lab)
+## Grind until terminal (desktop)
+
+Autocheckout lanes keep retrying until:
+
+| Stop | Meaning |
+|------|---------|
+| Order confirmed | `orderNumber` |
+| Payment declined | BigPay `paymentDeclined` / 30102 / 30106 |
+| Pay submitted — check bank | Issuer POST already sent (no re-fire) |
+| Site blocked (403) | Hard `Request Blocked` after proxy pool walk |
+| User Stop | Abort |
+
+Everything else (429/5xx, CapSolver flake, timeouts, spam fail) → **retry** or **rotate** + reclaim harvest. Budget: `toymateMaxLoops` / `TOYMATE_MAX_LOOPS` (default **200**).
+
+Policy: `desktop/toymate-retry-policy.cjs`.
+
 
 ```bash
 CAPSOLVER_API_KEY=… PROXY_FILE=/tmp/wealth.proxies \

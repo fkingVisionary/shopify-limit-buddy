@@ -20,6 +20,9 @@ const {
   classifyBandaiRunResult,
   sleep: sleepMs,
 } = require("./bandai-retry-policy.cjs");
+const {
+  classifyToymateRunResult,
+} = require("./toymate-retry-policy.cjs");
 const { isPaymentAlreadySubmitted } = require("./payment-latch.cjs");
 const { auditEnqueueBatch } = require("./pay-forensics-audit.cjs");
 const { resolveAccountForTask } = require("./account-assign.cjs");
@@ -1223,9 +1226,18 @@ function advanceJobProxy(job, { sticky, entries, dropHarvest = false } = {}) {
     delete job.task.harvestedBridgeId;
     delete job.task.harvestedProxy;
     delete job.task.proxyOverride;
+    delete job.task.harvestedSession;
+    delete job.task.captchaToken;
   }
   // Sticky single-line or after walking the list → mint a fresh session- token next run.
   return Boolean(sticky);
+}
+
+/** Drop spent Toymate CF/spam claim so the next executeOnce can take() a fresh bank slot. */
+function clearToymateHarvestClaim(job) {
+  if (!job?.task) return;
+  delete job.task.harvestedSession;
+  delete job.task.captchaToken;
 }
 
 function applyHeldCartForPayRetry(job, result) {
@@ -2523,6 +2535,116 @@ async function runOneBandai(job, { sticky, entries }) {
   return result;
 }
 
+/**
+ * Toymate persistent lane: grind ATC/CF/pay until confirmed, declined, hard 403, or stop.
+ * Congestion / CapSolver flake / timeouts are NOT terminal.
+ */
+async function runOneToymate(job, { sticky, entries }) {
+  const tid = job?.task?.id;
+  const mode = String(job.task?.toymateMode || "checkout").toLowerCase();
+  const maxLoops = Math.max(
+    8,
+    Math.min(
+      500,
+      Number(job.task?.toymateMaxLoops || process.env.TOYMATE_MAX_LOOPS) || 200,
+    ),
+  );
+  let rotateCount = 0;
+  let retryCount = 0;
+  let rotateSession = false;
+  let result = null;
+
+  for (let loop = 1; loop <= maxLoops && running; loop++) {
+    if (isTaskAborted(tid)) {
+      result = cancelledResult(job, "stopped_loop");
+      break;
+    }
+    if (tid) abortControllerFor(tid);
+
+    if (loop === 1) emitLiveStatus(job, "Starting");
+    else if (job.task?._toymateLiveLabel) emitLiveStatus(job, job.task._toymateLiveLabel);
+
+    result = await executeOnce(job, {
+      rotateSession,
+      attemptLabel: `toymate#${loop}`,
+    });
+    rotateSession = false;
+    logResultTail(job, result);
+
+    if (result?.stopped || isTaskAborted(tid)) {
+      result = cancelledResult(job, result?.debugError || "stopped");
+      break;
+    }
+
+    // Non-checkout modes (account_gen / monitor): single shot.
+    if (mode !== "checkout") break;
+
+    const decision = classifyToymateRunResult(result, {
+      mode,
+      retryCount,
+      rotateCount,
+      proxyCount: entries.length || 1,
+      maxRotate: Math.max(24, (entries.length || 1) * 4),
+    });
+
+    if (decision.liveLabel) {
+      emitLiveStatus(job, decision.liveLabel);
+      if (job.task) job.task._toymateLiveLabel = decision.liveLabel;
+    }
+    emitDetailedLog(
+      job.runId,
+      tid,
+      decision.action === "stop" ? "info" : "warn",
+      `Toymate ${decision.action} · ${decision.reason}${
+        decision.liveLabel ? ` · ${decision.liveLabel}` : ""
+      } (loop ${loop}/${maxLoops})`,
+    );
+
+    if (decision.action === "stop") {
+      result = {
+        ...result,
+        consumerLabel: decision.liveLabel || result.consumerLabel,
+        consumerCode: decision.consumerCode || result.consumerCode,
+        toymateStopReason: decision.reason,
+        toymateLoops: loop,
+      };
+      break;
+    }
+
+    if (decision.reclaimHarvest) clearToymateHarvestClaim(job);
+
+    if (decision.action === "rotate") {
+      rotateCount += 1;
+      retryCount += 1;
+      rotateSession = advanceJobProxy(job, {
+        sticky,
+        entries,
+        dropHarvest: true,
+      });
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
+      continue;
+    }
+
+    if (decision.action === "retry" || decision.action === "wait_restock") {
+      retryCount += 1;
+      if (!(await sleepUnlessAborted(tid, decision.delayMs))) {
+        result = cancelledResult(job, "stopped_delay");
+        break;
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  if (tid) clearAbortState(tid);
+  if (result && job.task) delete job.task._toymateLiveLabel;
+  return result;
+}
+
 async function runOne(job) {
   const tid = job?.task?.id || null;
   emit({
@@ -2552,9 +2674,14 @@ async function runOne(job) {
     );
 
     const isBandai = String(job.task?.store || "") === "bandai";
+    const isToymateCheckout =
+      String(job.task?.store || "") === "toymate" &&
+      String(job.task?.toymateMode || "checkout") === "checkout";
     const result = isBandai
       ? await runOneBandai(job, { sticky, entries })
-      : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
+      : isToymateCheckout
+        ? await runOneToymate(job, { sticky, entries })
+        : await runOneLegacyRotate(job, { sticky, entries, harvestLocked });
 
     // Decline → drop in-memory hold so Retry pay cannot re-fire on stale cartSn.
     if (
