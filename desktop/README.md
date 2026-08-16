@@ -148,14 +148,38 @@ Fly works because Linux undici + AU egress is a different trust path.
 - Desktop uses the **same undici `kmartMode=current` path** as the dashboard → Fly.
   No TLS/Playwright auto-retry ladder (not scalable).
 
-## Package
+## Package (Windows installer)
+
+Windows-only beta ships an **NSIS installer** (+ portable exe) with a bundled
+checkout `executor/` and Node 22 runtime — end users do **not** need a system
+Node install.
 
 ```bash
-npm run package:win    # .exe folder
+cd desktop
+npm ci
+npm run dist:win          # stages executor+Node, then electron-builder NSIS
+# artifacts → desktop/release/J1msBot-Setup-0.1.0.exe
+#            desktop/release/J1msBot-Portable-0.1.0.exe
+```
+
+On Linux/macOS hosts, NSIS needs Wine. Prefer the GitHub Action
+**Build desktop Windows** (workflow_dispatch or tag `desktop-v*`) which builds
+on `windows-latest`.
+
+```bash
+# CI
+gh workflow run "Build desktop Windows"
+```
+
+Legacy folder packs (no installer / no bundled executor):
+
+```bash
+npm run package:win    # .exe folder via electron-packager
 npm run package:mac
 npm run package:linux
 ```
 
-Packaged builds still need the `executor/` tree + Node available for the
-sidecar in v1 (or bundle Node later). For day-to-day use, `npm start` from
-this repo is the supported path.
+Packaged app resolves `resources/executor` + `resources/node/node.exe` via
+`paths.cjs`. Dev `npm start` still uses the repo `executor/` + system Node.
+Bandai **Safe** (Playwright) needs a separate Chromium install; Toymate / Kmart
+undici paths work out of the box.

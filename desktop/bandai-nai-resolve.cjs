@@ -57,7 +57,8 @@ function toProxyUrl(raw) {
 }
 
 async function loadExecutorNai() {
-  const p = path.join(__dirname, "..", "executor", "adapters", "bandai-nai.js");
+  const { resolveExecutorDir } = require("./paths.cjs");
+  const p = path.join(resolveExecutorDir(), "adapters", "bandai-nai.js");
   return import(pathToFileURL(p).href);
 }
 

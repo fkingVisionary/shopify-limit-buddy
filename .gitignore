@@ -3,6 +3,9 @@
 desktop/.env.local
 desktop/node_modules/
 desktop/release/
+desktop/build/
+desktop/*.exe
+*.proxies.local
 .dev.vars
 dist
 dist-ssr

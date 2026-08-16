@@ -1,12 +1,14 @@
-// Always spawn system Node — Electron's process.execPath is not Node.
+// Always spawn a real Node binary — Electron's process.execPath is not Node.
+// Packaged Windows builds ship resources/node/node.exe + resources/executor/.
 const { spawn } = require("child_process");
 const path = require("path");
 const crypto = require("crypto");
 const net = require("net");
 const http = require("http");
 const fs = require("fs");
+const { resolveExecutorDir, resolveNodeBinary, resolveDotEnvPath } = require("./paths.cjs");
 
-const EXECUTOR_DIR = path.join(__dirname, "..", "executor");
+const EXECUTOR_DIR = resolveExecutorDir();
 
 // Kmart AU Paydock widget public key (client-side; safe to embed). Override via
 // Settings or PAYDOCK_PUBLIC_KEY. Filled once we have a known-good value.
@@ -139,8 +141,8 @@ async function startSidecar({
   hyperKeyInUse = hyperApiKey || null;
   maxConcurrentInUse = nextMax;
 
-  // Load repo-root .env into sidecar without overriding explicit settings.
-  const envFromFile = loadDotEnv(path.join(__dirname, "..", ".env"));
+  // Load optional .env into sidecar without overriding explicit settings.
+  const envFromFile = loadDotEnv(resolveDotEnvPath());
 
   const env = {
     ...process.env,
@@ -171,11 +173,20 @@ async function startSidecar({
   if (capKey) env.CAPSOLVER_API_KEY = capKey;
   else delete env.CAPSOLVER_API_KEY;
 
+  if (!fs.existsSync(path.join(EXECUTOR_DIR, "server.js"))) {
+    return {
+      ok: false,
+      error: `executor not found at ${EXECUTOR_DIR} — reinstall the app or run from the repo`,
+    };
+  }
+
   let stderr = "";
-  child = spawn("node", ["server.js"], {
+  const nodeBin = resolveNodeBinary();
+  child = spawn(nodeBin, ["server.js"], {
     cwd: EXECUTOR_DIR,
     env,
     stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
   });
 
   child.stdout.on("data", (d) => {

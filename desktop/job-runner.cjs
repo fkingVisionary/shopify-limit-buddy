@@ -1626,10 +1626,12 @@ async function ensureBandaiNaiForTask(task, { proxy, area, log } = {}) {
 
 async function runBandaiMonitorInProcess(job, payload, { checkoutOnHit = false } = {}) {
   const path = require("path");
+  const { resolveExecutorDir } = require("./paths.cjs");
+  const executorDir = resolveExecutorDir();
   const { eventMatchesWatch, parseTaskWatch } = await import(
-    pathToFileUrl(path.join(__dirname, "..", "executor", "monitor", "event-filter.js"))
+    pathToFileUrl(path.join(executorDir, "monitor", "event-filter.js"))
   );
-  const monitorDir = path.join(__dirname, "..", "executor", "monitor");
+  const monitorDir = path.join(executorDir, "monitor");
   const mode = String(payload.bandaiMonitorMode || "local").toLowerCase();
   // Dry monitor (no checkout): small poll budget for labs.
   // Checkout-on-hit: keep polling until match (optional safety cap via env/task).
