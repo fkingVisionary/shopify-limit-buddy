@@ -1,5 +1,5 @@
-# Build signed-ready Windows desktop installer (NSIS + portable).
-# Runs on windows-latest so Wine is not required.
+# Build + publish Vanta Beta Windows installer to GitHub Releases.
+# Non-technical users download from the admin /download page (one button).
 name: Build desktop Windows
 
 on:
@@ -7,9 +7,10 @@ on:
   push:
     tags:
       - "desktop-v*"
+      - "vanta-v*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows:
@@ -43,11 +44,33 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Upload artifacts
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: j1ms-bot-windows
+          name: vanta-beta-windows
           path: |
-            desktop/release/*.exe
-            desktop/release/latest.yml
+            desktop/release/Vanta-Beta-Setup.exe
+            desktop/release/Vanta-Beta-Portable.exe
           if-no-files-found: error
+
+      - name: Publish GitHub Release (latest)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('vanta-desktop-{0}', github.run_number) }}
+          name: Vanta Beta Windows ${{ github.ref_type == 'tag' && github.ref_name || format('build {0}', github.run_number) }}
+          body: |
+            **Vanta Beta** for Windows.
+
+            1. Download **Vanta-Beta-Setup.exe**
+            2. Run the installer (Windows may ask to allow it — click More info → Run anyway if unsigned)
+            3. Open **Vanta Beta** and paste your API key from the admin dashboard
+
+            Portable build is optional (no install).
+          files: |
+            desktop/release/Vanta-Beta-Setup.exe
+            desktop/release/Vanta-Beta-Portable.exe
+          draft: false
+          prerelease: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

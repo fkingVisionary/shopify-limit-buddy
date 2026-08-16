@@ -1,7 +1,7 @@
 {
-  "appId": "com.j1ms.bot.desktop",
-  "productName": "J1m's Bot",
-  "copyright": "Copyright © J1m's Bot",
+  "appId": "com.vanta.beta.desktop",
+  "productName": "Vanta Beta",
+  "copyright": "Copyright © Vanta",
   "directories": {
     "output": "release",
     "buildResources": "buildResources"
@@ -40,7 +40,7 @@
         "arch": ["x64"]
       }
     ],
-    "artifactName": "J1msBot-Setup-${version}-${arch}.${ext}",
+    "artifactName": "Vanta-Beta-Setup-${version}-${arch}.${ext}",
     "signAndEditExecutable": false
   },
   "nsis": {
@@ -48,11 +48,11 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "J1m's Bot",
+    "shortcutName": "Vanta Beta",
     "deleteAppDataOnUninstall": false,
-    "artifactName": "J1msBot-Setup-${version}.${ext}"
+    "artifactName": "Vanta-Beta-Setup.exe"
   },
   "portable": {
-    "artifactName": "J1msBot-Portable-${version}.${ext}"
+    "artifactName": "Vanta-Beta-Portable.exe"
   }
 }

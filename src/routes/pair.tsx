@@ -17,8 +17,8 @@ import { guessDeviceName, isPaired, savePairing } from "@/integrations/workspace
 export const Route = createFileRoute("/pair")({
   head: () => ({
     meta: [
-      { title: "Pair device — J1m's Bot" },
-      { name: "description", content: "Pair this device to a J1m's Bot workspace." },
+      { title: "Pair device — Vanta Beta" },
+      { name: "description", content: "Pair this device to a Vanta Beta workspace." },
     ],
   }),
   component: PairPage,
@@ -93,7 +93,7 @@ function PairPage() {
     <div className="min-h-[100dvh] flex items-center justify-center bg-background p-4 pb-[env(safe-area-inset-bottom)]">
       <Card className="w-full max-w-md p-6 space-y-6">
         <div className="text-center space-y-1">
-          <h1 className="text-2xl font-bold">J1m's Bot</h1>
+          <h1 className="text-2xl font-bold">Vanta Beta</h1>
           <p className="text-sm text-muted-foreground">Pair this device to a workspace</p>
         </div>
 

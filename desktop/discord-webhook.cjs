@@ -84,10 +84,10 @@ function bandaiRestockDiscordPayload(hit, opts = {}) {
   }
 
   return {
-    username: "Vanta",
+    username: "Vanta Beta",
     embeds: [
       {
-        author: { name: opts.test ? "Vanta · test ping" : "Vanta · Bandai AU" },
+        author: { name: opts.test ? "Vanta Beta · test ping" : "Vanta Beta · Bandai AU" },
         title,
         url: pdp,
         description,
@@ -248,7 +248,7 @@ function checkoutResultDiscordPayload(result, opts = {}) {
   push("Proxy", proxy, fieldsOpt.proxy);
 
   return {
-    username: "Vanta",
+    username: "Vanta Beta",
     embeds: [
       {
         title,
@@ -256,7 +256,7 @@ function checkoutResultDiscordPayload(result, opts = {}) {
         color,
         fields,
         ...(image ? { thumbnail: { url: image } } : {}),
-        footer: { text: "Vanta" },
+        footer: { text: "Vanta Beta" },
         timestamp: new Date(result?.at || Date.now()).toISOString(),
       },
     ],
@@ -266,7 +266,7 @@ function checkoutResultDiscordPayload(result, opts = {}) {
 /** Misc / Smart Action notify — blue Cybersole-style. */
 function miscDiscordPayload({ title, description, fields = [], imageUrl } = {}) {
   return {
-    username: "Vanta",
+    username: "Vanta Beta",
     embeds: [
       {
         title: String(title || "Update").slice(0, 250),
@@ -279,7 +279,7 @@ function miscDiscordPayload({ title, description, fields = [], imageUrl } = {}) 
         ...(imageUrl && String(imageUrl).startsWith("http")
           ? { thumbnail: { url: String(imageUrl) } }
           : {}),
-        footer: { text: "Vanta" },
+        footer: { text: "Vanta Beta" },
         timestamp: new Date().toISOString(),
       },
     ],

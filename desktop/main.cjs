@@ -1,4 +1,4 @@
-// J1m's Bot Desktop — main process.
+// Vanta Beta Desktop — main process.
 // Owns: BrowserWindow, local store, executor sidecar, job runner, license IPC.
 // Does NOT execute Kmart checkout in-process — that stays in executor/ via sidecar.
 
@@ -6,6 +6,12 @@ const { app, BrowserWindow, ipcMain, shell, Notification } = require("electron")
 const path = require("path");
 const os = require("os");
 const fs = require("fs");
+
+try {
+  app.setName("Vanta Beta");
+} catch {
+  /* ignore */
+}
 
 // Isolated profile for smoke / live-status demo (must run before store.loadAll).
 if (
@@ -1274,7 +1280,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: "Vanta",
+    title: "Vanta Beta",
     backgroundColor: "#0a0a0b",
     icon: require("fs").existsSync(iconPath) ? iconPath : undefined,
     frame: false,
@@ -2864,7 +2870,7 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
   let payload;
   if (kind === "monitor") {
     payload = {
-      username: "Vanta",
+      username: "Vanta Beta",
       embeds: [
         {
           title: "Smart Action completed!",
@@ -2874,7 +2880,7 @@ ipcMain.handle("desktop:discord-test", async (_e, opts = {}) => {
             { name: "Trigger", value: "Webhook test", inline: false },
             { name: "Actions", value: "Notify Discord", inline: false },
           ],
-          footer: { text: "Vanta" },
+          footer: { text: "Vanta Beta" },
           timestamp: new Date().toISOString(),
         },
       ],

@@ -14,7 +14,7 @@ import { runJbhifiProbe } from "@/lib/jbhifi-probe.functions";
 export const Route = createFileRoute("/_paired/jbhifi")({
   head: () => ({
     meta: [
-      { title: "JB Hi-Fi Recon — J1m's Bot" },
+      { title: "JB Hi-Fi Recon — Vanta Beta" },
       { name: "description", content: "Discover hidden JB Hi-Fi Shopify products before they hit the storefront." },
       { name: "robots", content: "noindex" },
     ],

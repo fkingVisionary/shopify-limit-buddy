@@ -19,7 +19,7 @@ export const DEFAULT_NOTIFY_CONFIG: NotifyConfig = {
 };
 
 const NOTIFY_KEY = "aio:notify";
-const BOT_NAME = "J1m's Bot";
+const BOT_NAME = "Vanta Beta";
 const BOT_VERSION = "v1.0";
 
 function logoUrl(): string {
@@ -199,17 +199,17 @@ export async function sendTestWebhook(url: string): Promise<boolean> {
         avatar_url: icon || undefined,
         embeds: [{
           title: "Successful Checkout!",
-          url: "https://j1ms-bot.com",
+          url: "https://github.com/fkingVisionary/shopify-limit-buddy/releases/latest",
           description: "Your Webhook works!",
           color: BRAND_GOLD,
           fields: [
-            { name: "Store",            value: v("J1m's Bot") },
-            { name: "Product",          value: v("J1m's Bot Lifetime Key") },
+            { name: "Store",            value: v("Vanta Beta") },
+            { name: "Product",          value: v("Vanta Beta Lifetime Key") },
             { name: "Price",            value: v("$67.90") },
-            { name: "Order #",          value: v("J1MS-00001") },
+            { name: "Order #",          value: v("VANTA-00001") },
             { name: "Checkout Time",    value: v("6.7 seconds") },
             { name: "QTY",              value: v(1) },
-            { name: "Profile / Email",  value: v("Jim S.**** / ji****@j1ms-bot.com") },
+            { name: "Profile / Email",  value: v("V**** / user****@example.com") },
             { name: "Payment Method",   value: v("Manual") },
             { name: "Mode",             value: v("Safe + Preload") },
             { name: "Proxy",            value: v("Localhost") },

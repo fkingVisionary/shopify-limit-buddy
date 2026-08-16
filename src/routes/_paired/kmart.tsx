@@ -24,7 +24,7 @@ import {
 export const Route = createFileRoute("/_paired/kmart")({
   head: () => ({
     meta: [
-      { title: "Kmart AU checkout — J1m's Bot" },
+      { title: "Kmart AU checkout — Vanta Beta" },
       { name: "description", content: "Run Kmart AU HTTP checkouts through the executor. Built-in chargePayDockWithToken for real submits." },
       { name: "robots", content: "noindex" },
     ],

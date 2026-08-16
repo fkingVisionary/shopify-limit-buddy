@@ -1,9 +1,9 @@
 {
-  "name": "j1ms-bot-desktop",
+  "name": "vanta-beta",
   "version": "0.1.0",
   "private": true,
-  "description": "J1m's Bot desktop — local checkout ops (proxies, API-key license, store adapters).",
-  "author": "J1m's Bot",
+  "description": "Vanta Beta — local checkout desktop (proxies, API-key license, store adapters).",
+  "author": "Vanta",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
@@ -14,9 +14,9 @@
     "stage:win": "node scripts/stage-win-resources.cjs",
     "dist:win": "npm run stage:win && electron-builder --win nsis portable --x64 --publish never",
     "dist:win:dir": "npm run stage:win && electron-builder --win dir --x64 --publish never",
-    "package:linux": "electron-packager . J1msBot --platform=linux --arch=x64 --out=release --overwrite",
-    "package:mac": "electron-packager . J1msBot --platform=darwin --arch=x64 --out=release --overwrite",
-    "package:win": "electron-packager . J1msBot --platform=win32 --arch=x64 --out=release --overwrite"
+    "package:linux": "electron-packager . VantaBeta --platform=linux --arch=x64 --out=release --overwrite",
+    "package:mac": "electron-packager . VantaBeta --platform=darwin --arch=x64 --out=release --overwrite",
+    "package:win": "electron-packager . VantaBeta --platform=win32 --arch=x64 --out=release --overwrite"
   },
   "dependencies": {},
   "devDependencies": {
