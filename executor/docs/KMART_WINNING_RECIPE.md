@@ -137,9 +137,40 @@ SMOKE_USE_PROXY=1 ./executor/scripts/fly-probe-once.sh
 | `akamai_unsolved` | IP SoftBlock / Hyper / script | One retry other ISP exit; do **not** enable tls by default |
 | `pdp_get` Ghost | SBSD / cookie | Ensure SBSD ran; same undici |
 | `cart_get` Ghost after get-token | Burnt exit **or** client split / jar break | `/run` auto-rotates pool (see `proxyAttempts`); if **many** exits fail the same way, diff tip vs bible — not one IP |
+| `cart_get` Ghost on **many** ISP + sticky exits, tip still undici | Not request-shape / not undici-only JA3 (see below) | Keep undici bible; cool pool / wait — do **not** default tls-worker |
 | Dies before tokenize | Profile/address | Check task.profile / fixtures |
 | `create_3ds_token` ok, no Revolut | Card/Paydock | Card secrets / gateway |
 | Revolut then widget reject | Operator Reject or ACS timeout | Approve promptly; not cart regression |
+
+### GraphQL-moment diff (2026-07-21) — wins vs current Ghosts
+
+Compared charge-path wins (`29790423175`, `29792597295`) vs Ghost fails (ISP rotate + fresh Noontide sticky) at the **exact** `cart_get` call:
+
+| Signal | Win | Ghost fail |
+|--------|-----|------------|
+| Transport | undici | undici |
+| `api_get_token` | 200 + `bm_sv` | 200 + `bm_sv` |
+| GraphQL `authorization` | absent (same as slim HAR) | absent |
+| `cart_get:hdrs` headerKeys | baseline apollo set | **identical** |
+| Cookie names at GraphQL | `_abck` `bm_sv` `ak_bmsc` `bm_sz` … | **identical** (no `ko_token` on either) |
+| `_abck` marker | `ind=0` / `~0~` | `ind=0` / `~0~` |
+| Step gap token → cart | sensor skipped → cart_get | **identical** |
+| Response | JSON 200 (`srv=-`) | AkamaiGHost HTML 403 |
+
+**Conclusion:** nothing app-layer (headers / cookie names / auth / step order) explains the break.
+
+### Lever 4 — all-`chrome_131` tls-worker end-to-end (2026-07-21)
+
+Opt-in only: `transport:"tls-worker"` with `sensorTls`/`apiTls` off so there is **no** undici PDP swap (`sensor_tls_*` steps absent). Bible defaults unchanged.
+
+| Probe | Exit | Result |
+|-------|------|--------|
+| sticky s15 | `1.41.92.30` | tls-worker kept; `akamai_solved`; **PDP Ghost** (classic keep-tls WWW deny); token later; GraphQL Ghost |
+| sticky s10/s20 | — | tunnel EOF before warm |
+| ISP `175.29.3.99` | static | tls-worker kept; akamai+PDP+token OK; **GraphQL Ghost** |
+| ISP `193.30.101.82` | static | tls-worker kept; akamai+PDP+token OK; **GraphQL Ghost** |
+
+**Conclusion:** switching the whole session to chrome_131 JA3 does **not** clear the GraphQL wall (and often worsens WWW/PDP on sticky). Do **not** change undici defaults. Edge denial is independent of undici-vs-tls at this tip.
 
 ### C. Rollback
 
