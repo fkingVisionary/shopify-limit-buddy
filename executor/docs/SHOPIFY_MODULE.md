@@ -90,6 +90,30 @@ Find a current purchasable `variantId` with:
 `curl -s "https://<store>/products.json?limit=50"` (look for `variants[].id`
 with `available:true`).
 
+## Verify a solver key (quick)
+
+Confirm a provider key + the wiring work, independent of any store, against a
+public Turnstile demo (Cloudflare's `3x…FF` interactive test sitekey):
+
+```bash
+cd executor
+UNCAPTCHA_API_KEY=... node -e '
+import("./adapters/shopify-captcha.js").then(async (m) => {
+  const r = await m.solveChallenge(
+    { type: "turnstile", siteKey: "3x00000000000000000000FF" },
+    { pageUrl: "https://2captcha.com/demo/cloudflare-turnstile", provider: "uncaptcha" });
+  console.log(r.ok ? `ok via ${r.via}, tokenLen=${String(r.token).length}` : `FAIL: ${r.error}`);
+});'
+```
+
+Verified 2026-10: uncaptcha returns a ~770-char Turnstile token. Swap the key
+env + `provider` for `capsolver` / `2captcha` to check those.
+
+> Residential-proxy runs cannot be tested from a restricted cloud sandbox
+> (outbound is locked to an allowlist). Run the full `scripts/shopify-live-smoke.mjs`
+> command where the executor runs (Fly / desktop), which is also where the
+> proxies are reachable.
+
 ## Boundary
 
 This module does not vault cards, call `deposit.*.shopifycs.com`, or hit the
