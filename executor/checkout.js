@@ -2,11 +2,13 @@
 //
 // Routing: pick a retailer adapter by hostname. Kmart AU goes through the
 // Hyper-backed Akamai chain. Anything without a dedicated adapter falls back
-// to the legacy generic-Shopify dry-run (homepage → cart/add → /cart →
-// checkout page) so existing Shopify recon flows keep working.
+// to the generic Shopify ATC chain (adapters/shopify.js → runShopify):
+// warm → optional variant verify → cart/add.js → cart.js → checkout handoff
+// (resolve the real /checkouts/cn URL). It stops before payment.
 
-import { makeDispatcher, makeRemoteTlsDispatcher, createJar, request } from "./http.js";
+import { makeDispatcher, makeRemoteTlsDispatcher, createJar } from "./http.js";
 import { pickAdapter } from "./adapters/index.js";
+import { runShopify } from "./adapters/shopify.js";
 import { kmartPlaywrightAdapter } from "./adapters/kmart-playwright.js";
 import { throwIfAborted } from "./run-control.js";
 import { markTaskDone, setTaskProgress, stageForStep, stageMeta, stageRank } from "./progress.js";
@@ -14,9 +16,13 @@ import { noteLiveMilestone, recordRunMilestone } from "./run-milestones.js";
 
 const now = () => Date.now();
 
-function step(steps, name, ok, status, ms, note) {
-  steps.push({ step: name, ok, status, ms, note });
-}
+// Fallback adapter for any store without a dedicated retailer adapter. Wraps
+// the generic Shopify ATC chain so it flows through the exact same progress /
+// milestone / result-builder path as the first-class adapters below.
+const GENERIC_SHOPIFY_ADAPTER = {
+  id: "shopify",
+  run: (task, ctx) => runShopify(task, ctx),
+};
 
 function wireProgress(ctx, taskId, meta = {}) {
   let lastRank = -1;
@@ -183,7 +189,12 @@ export async function runCheckout(task) {
   // Playwright handlers instead of the raw-HTTP kmart adapter.
   const wantPlaywright =
     task.kmartMode === "playwright" && kmartPlaywrightAdapter.matches(host);
-  const adapter = wantPlaywright ? kmartPlaywrightAdapter : pickAdapter(store);
+  // Dedicated retailer adapters win first; anything else (custom-domain Shopify
+  // stores and the like) falls through to the generic Shopify ATC chain — the
+  // same runShopify() the *.myshopify.com adapter wraps.
+  const adapter = wantPlaywright
+    ? kmartPlaywrightAdapter
+    : (pickAdapter(store) ?? GENERIC_SHOPIFY_ADAPTER);
   if (adapter) {
     // Expose a shared steps array so the catch path can return partial
     // progress instead of swallowing it.
@@ -289,6 +300,8 @@ export async function runCheckout(task) {
         possibleFraudDetected: out.possibleFraudDetected ?? null,
         isSameCartToken: out.isSameCartToken ?? null,
         harvest: out.harvest ?? null,
+        // Generic Shopify ATC adapter passthrough (cart + resolved checkout URL).
+        shopify: out.shopify ?? null,
       };
       // Persist milestones (cart_get+ / 3DS / order) so timed-out clients still
       // leave a trail on the machine + in Fly logs.
@@ -340,110 +353,5 @@ export async function runCheckout(task) {
     } finally {
       await closeDispatcher();
     }
-  }
-
-  // ── Legacy generic-Shopify fallback (unchanged behaviour) ──────────
-  const steps = [];
-  let lastUrl = store;
-
-  const tryStep = async (name, fn) => {
-    const s0 = now();
-    try {
-      const out = await fn();
-      step(steps, name, out.ok !== false, out.status ?? null, now() - s0, out.note);
-      return out;
-    } catch (e) {
-      step(steps, name, false, null, now() - s0, e?.message ?? String(e));
-      throw e;
-    }
-  };
-
-  try {
-    await tryStep("warm_home", async () => {
-      const res = await request(store + "/", { method: "GET" }, ctx);
-      const body = await res.text();
-      return { status: res.status, note: `${body.length}b body, jar=${Object.keys(jar.dump()).length} cookies` };
-    });
-
-    await tryStep("cart_add", async () => {
-      const res = await request(
-        store + "/cart/add.js",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/x-www-form-urlencoded",
-            referer: store + "/",
-            origin: store,
-          },
-          body: new URLSearchParams({ id: String(task.variantId), quantity: String(task.qty) }).toString(),
-        },
-        ctx,
-      );
-      const body = await res.text();
-      if (res.status >= 400) return { ok: false, status: res.status, note: body.slice(0, 200) };
-      return { status: res.status };
-    });
-
-    let checkoutUrl = null;
-    await tryStep("cart_redirect", async () => {
-      const res = await request(
-        store + "/cart",
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/x-www-form-urlencoded",
-            referer: store + "/cart",
-            origin: store,
-          },
-          body: new URLSearchParams({ checkout: "" }).toString(),
-        },
-        ctx,
-      );
-      const loc = res.headers.get("location");
-      if (loc) {
-        checkoutUrl = loc.startsWith("http") ? loc : store + loc;
-        lastUrl = checkoutUrl;
-      }
-      return { status: res.status, note: checkoutUrl ?? "(no Location header)" };
-    });
-
-    if (checkoutUrl) {
-      await tryStep("checkout_page", async () => {
-        const res = await request(checkoutUrl, { method: "GET", headers: { referer: store + "/cart" } }, ctx);
-        const body = await res.text();
-        const isCf = /cloudflare|cf-ray|__cf_chl_/i.test(body);
-        const isAk = /_abck|bm_sz|akam/i.test(body);
-        return {
-          ok: res.status < 400,
-          status: res.status,
-          note: `${body.length}b${isCf ? " cloudflare" : ""}${isAk ? " akamai" : ""}`,
-        };
-      });
-    }
-
-    return {
-      ok: true,
-      taskId: task.taskId,
-      adapter: "shopify-generic-fallback",
-      elapsedMs: now() - t0,
-      transport: dispatcher.transport,
-      steps,
-      finalUrl: lastUrl,
-      dryRun: true,
-      cookies: jar.dump(),
-    };
-  } catch (e) {
-    return {
-      ok: false,
-      taskId: task.taskId,
-      adapter: "shopify-generic-fallback",
-      error: e?.message ?? String(e),
-      failedStep: steps[steps.length - 1]?.step ?? "unknown",
-      elapsedMs: now() - t0,
-      transport: dispatcher.transport,
-      steps,
-    };
-  } finally {
-    await closeDispatcher();
   }
 }
