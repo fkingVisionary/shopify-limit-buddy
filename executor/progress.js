@@ -23,7 +23,7 @@ export function stageMeta(id) {
 export function stageForStep(stepName) {
   const s = String(stepName || "");
   if (!s) return null;
-  if (/^(warm_|akamai_|sbsd_|home_|api_get_token|api_sensor|antibot_|proxy_)/i.test(s)) return "warm";
+  if (/^(warm_|akamai_|sbsd_|home_|api_get_token|api_sensor|antibot_|proxy_|captcha_)/i.test(s)) return "warm";
   // Bandai / F5 login path
   if (/^(login|f5_bridge|member_refresh|login_|shipping_ensure)/i.test(s)) return "login";
   if (/^(pdp_|sku_|akamai_pixel|category_|product_get|product$)/i.test(s)) return "product";

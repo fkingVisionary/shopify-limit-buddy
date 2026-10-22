@@ -16,6 +16,13 @@
  * land a prepared cart and hand back a ready-to-pay checkout URL. A human (or a
  * separate, explicitly-authorized flow) finishes payment.
  *
+ * Antibot: when a storefront/checkout response is a solvable challenge
+ * (Cloudflare Turnstile / managed WAF, reCAPTCHA, hCaptcha, DataDome, Akamai)
+ * and a solver is configured, it is cleared via shopify-captcha.js and the
+ * request retried. See that module for the provider/env details. A hard 403
+ * from a datacenter IP is an IP block, not a challenge — use a residential
+ * proxy first.
+ *
  * Routing: `matches()` only claims `*.myshopify.com` so the dedicated retailer
  * adapters (kmart/toymate/bandai/pkc/disney) always win first. `runShopify` is
  * also used by the generic fallback in checkout.js for custom-domain Shopify
@@ -28,6 +35,12 @@
  */
 
 import { request } from "../http.js";
+import {
+  detectChallenge,
+  isSolvableChallenge,
+  solveChallenge,
+  anyProviderConfigured,
+} from "./shopify-captcha.js";
 
 const now = () => Date.now();
 
@@ -149,8 +162,9 @@ const HTML_HEADERS = (base, referer) => ({
 /**
  * Run the Shopify add-to-cart + checkout-handoff chain. Never submits payment.
  *
- * @param {object} task  { taskId, storeUrl, variantId, qty, handle?, pdpUrl? }
- * @param {object} ctx   { dispatcher, jar, onProgress?, steps? }
+ * @param {object} task  { taskId, storeUrl, variantId, qty, handle?, pdpUrl?,
+ *                          proxy?, captcha?, captchaProvider?, captchaToken? }
+ * @param {object} ctx   { dispatcher, jar, onProgress?, steps?, extraHeaders? }
  */
 export async function runShopify(task, ctx) {
   const t0 = now();
@@ -165,10 +179,20 @@ export async function runShopify(task, ctx) {
       /* progress must never break checkout */
     }
   };
-
   const step = (name, ok, status, ms, note) => {
     steps.push({ step: name, ok, status, ms, note });
     return { name, ok, status, ms, note };
+  };
+
+  // Captcha config. Enabled by default whenever a provider key is present; the
+  // solver only ever fires on an actually-detected challenge. task.captcha:false
+  // hard-disables; task.captchaProvider forces one provider; task.captchaToken
+  // pre-supplies a form token (reCAPTCHA/hCaptcha/Turnstile) to skip solving.
+  const captcha = {
+    enabled: task.captcha !== false && anyProviderConfigured(),
+    provider: typeof task.captchaProvider === "string" ? task.captchaProvider : "auto",
+    token: typeof task.captchaToken === "string" && task.captchaToken ? task.captchaToken : null,
+    attempts: [],
   };
 
   const shopify = {
@@ -176,6 +200,58 @@ export async function runShopify(task, ctx) {
     checkoutUrl: null,
     cart: null,
     variant: null,
+    captcha: { enabled: captcha.enabled, provider: captcha.provider, solved: [], detected: [] },
+  };
+
+  /**
+   * One HTTP call with challenge handling: request → detect → (solve + retry).
+   * Returns { res, body, challenge }. `retryable` guards the re-request for
+   * non-idempotent POSTs (only retried after a cleared challenge, which means
+   * the first attempt never reached the store).
+   */
+  const fetchResolving = async (label, url, opts, { retryable = true } = {}) => {
+    let res = await request(url, opts, ctx);
+    let body = await res.text();
+    let challenge = detectChallenge(res, body, url);
+
+    if (captcha.enabled && isSolvableChallenge(challenge)) {
+      shopify.captcha.detected.push(challenge.type);
+      step(
+        "captcha_detect",
+        true,
+        res.status,
+        0,
+        `${label}: ${challenge.type}${challenge.siteKey ? ` key=${String(challenge.siteKey).slice(0, 12)}…` : ""}`,
+      );
+      const s = now();
+      const solved = await solveChallenge(challenge, {
+        pageUrl: url,
+        proxy: task.proxy ?? null,
+        provider: captcha.provider,
+        userAgent: ctx.extraHeaders?.["user-agent"] ?? null,
+        jar: ctx.jar,
+        html: body,
+        ctx,
+        scriptUrl: challenge.scriptUrl ?? null,
+      });
+      captcha.attempts.push({ label, type: challenge.type, provider: solved.provider, ok: solved.ok });
+      if (solved.ok) {
+        // cf_clearance (and friends) are bound to IP+UA — apply both.
+        if (solved.cookies) for (const [k, v] of Object.entries(solved.cookies)) ctx.jar.set?.(k, v);
+        if (solved.userAgent) ctx.extraHeaders = { ...(ctx.extraHeaders || {}), "user-agent": solved.userAgent };
+        if (solved.token) shopify.captcha.lastToken = solved.token;
+        shopify.captcha.solved.push({ type: challenge.type, via: solved.via });
+        step("captcha_solve", true, null, now() - s, `${solved.provider} · ${solved.via}`);
+        if (retryable) {
+          res = await request(url, opts, ctx);
+          body = await res.text();
+          challenge = detectChallenge(res, body, url);
+        }
+      } else {
+        step("captcha_solve", false, null, now() - s, `${solved.provider || "none"}: ${solved.error}`);
+      }
+    }
+    return { res, body, challenge };
   };
 
   const done = (extra) => ({
@@ -193,16 +269,17 @@ export async function runShopify(task, ctx) {
   const fail = (failedStep, error, checkoutStage = "pre_cart") =>
     done({ ok: false, failedStep, error, checkoutStage });
 
-  // ── 1. Warm the session ────────────────────────────────────────────────
+  // ── 1. Warm the session (first place a Cloudflare interstitial shows) ───
   progress("warm_home");
   {
     const s = now();
     try {
-      const res = await request(`${base}/`, { method: "GET", headers: HTML_HEADERS(base) }, ctx);
-      await res.text();
+      const { res } = await fetchResolving("warm_home", `${base}/`, {
+        method: "GET",
+        headers: HTML_HEADERS(base),
+      });
       step("warm_home", res.status < 400, res.status, now() - s, `${host}`);
     } catch (e) {
-      // Non-fatal: ATC can still work from a cold jar on most stores.
       step("warm_home", false, null, now() - s, e?.message ?? String(e));
     }
   }
@@ -213,12 +290,11 @@ export async function runShopify(task, ctx) {
     progress("product_get");
     const s = now();
     try {
-      const res = await request(
+      const { res, body } = await fetchResolving(
+        "product_get",
         `${base}/products/${encodeURIComponent(handle)}.js`,
         { method: "GET", headers: JSON_HEADERS(base) },
-        ctx,
       );
-      const body = await res.text();
       if (res.status < 400) {
         const prod = JSON.parse(body);
         const v = (prod.variants || []).find((x) => Number(x.id) === variantId) || null;
@@ -252,7 +328,8 @@ export async function runShopify(task, ctx) {
   {
     const s = now();
     try {
-      const res = await request(
+      const { res, body } = await fetchResolving(
+        "cart_add",
         `${base}/cart/add.js`,
         {
           method: "POST",
@@ -260,9 +337,7 @@ export async function runShopify(task, ctx) {
           body: JSON.stringify({ items: [{ id: variantId, quantity: qty }] }),
           allowMutationRetry: false,
         },
-        ctx,
       );
-      const body = await res.text();
       if (res.status >= 400) {
         const { reason, description } = classifyCartAddError(res.status, body);
         step("cart_add", false, res.status, now() - s, `${reason}: ${description}`);
@@ -358,12 +433,10 @@ export async function runShopify(task, ctx) {
   {
     const s = now();
     try {
-      const res = await request(
-        shopify.checkoutUrl,
-        { method: "GET", headers: HTML_HEADERS(base, `${base}/cart`) },
-        ctx,
-      );
-      const html = await res.text();
+      const { res, body: html } = await fetchResolving("checkout_page", shopify.checkoutUrl, {
+        method: "GET",
+        headers: HTML_HEADERS(base, `${base}/cart`),
+      });
       const ok = res.status < 400 && looksLikeCheckout(html);
       shopify.reachedCheckout = ok;
       step(
