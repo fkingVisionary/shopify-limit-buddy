@@ -114,7 +114,50 @@ env + `provider` for `capsolver` / `2captcha` to check those.
 > command where the executor runs (Fly / desktop), which is also where the
 > proxies are reachable.
 
+## Fraud / risk tracking (buyer-side, read-only)
+
+`adapters/shopify-risk.js` watches an order **after** it's been submitted (by the
+full desktop bot — this executor's adapter stops before payment) and records
+when it gets flagged. It only reads order state and appends a quiet JSONL line
+(`SHOPIFY_RISK_LOG`, default `<tmpdir>/j1m-shopify-risk.jsonl`) — no alerts, no
+store writes.
+
+**Buyer vs merchant (important).** Shopify's actual fraud score and the exact
+indicators that fired (CVV/AVS, "high risk internet connection", billing≠shipping,
+device velocity) are **merchant-only** (`order.risk` on the Admin API). From the
+buyer side you only ever see the *downstream effect*: the order flipping to
+cancelled / refunded / held. So `correlateFlag()` yields *likely causes* at
+`low`/`medium` confidence, never ground truth — and says so.
+
+| Function | Does |
+|---|---|
+| `parseOrderStatus(input)` | order JSON **or** order-status HTML → `{ financialStatus, cancelled, cancelReason, flagged, flagSignal }` (`cancelled_fraud` / `refunded` / `payment_review` / `cancelled` / `paid`) |
+| `riskSignalsFromRun(result, task)` | buyer-visible pre-submission signals: `three_ds_stepup`, `captcha_rechallenge`, `billing_shipping_mismatch`, `proxy_used`, `declined` |
+| `classifyOutcome(prev, curr)` | flip detection (`paid → cancelled/refunded/held`) |
+| `correlateFlag(outcome, signals)` | maps a flag + run signals → likely-cause lines + honest confidence + merchant-side caveat |
+| `pollOrderStatus({orderStatusUrl, ctx, ...})` | polls the order-status URL until flagged/terminal, logging each change |
+| `recordRiskEvent(taskId, event, fields)` | quiet JSONL append + one console line |
+
+**Watch an order (no store changes):**
+
+```bash
+cd executor
+PROXY_URL="http://user:pass@host:port" \
+RUN_SIGNALS='["proxy_used","billing_shipping_mismatch"]' \
+node scripts/shopify-order-watch.mjs "<order_status_url>" 30 60
+```
+
+`<order_status_url>` is the buyer link Shopify returns after an order; `30` =
+poll seconds, `60` = max minutes. `RUN_SIGNALS` seeds what the checkout run saw
+so a later flag can be correlated to it.
+
+> To trace a flag to its *exact* indicator you need the merchant/Admin-API side
+> (`order.risk.assessments { riskLevel, facts { description sentiment } }`),
+> which is only available on a store you own — e.g. a dev store set up for
+> testing. That path is intentionally not built here (buyer-side scope).
+
 ## Boundary
 
 This module does not vault cards, call `deposit.*.shopifycs.com`, or hit the
 Checkout One completion GraphQL. It stops at a prepared cart + checkout URL.
+The risk tracker only *reads* order state and logs — it never cancels or refunds.
